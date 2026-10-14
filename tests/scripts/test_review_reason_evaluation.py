@@ -168,11 +168,226 @@ def test_revision_evidence_and_normalized_ids_survive_real_reviewer_and_checkpoi
         assert row["revision"] == revision.model_dump()
         assert row["evidence_ids"] == ["C1-E1"]
     assert json.loads(checkpoint.read_text())["rows"] == report["rows"]
+    for call in report["calls"]:
+        survivor = call["applied_survivors"][0]
+        assert survivor["content"] == revision.content
+        assert survivor["trigger"] == revision.trigger
+        assert survivor["rationale"] == revision.rationale
+        assert survivor["source_interaction_ids"] == [1]
+        assert "speculative" in survivor["notes"]
+        assert call["public_output"]["decisions"][0]["candidate_id"] == " C1 "
+
+
+def _accepted_preference():
+    return PlaybookCandidateReviewOutput(
+        decisions=[
+            CandidateReviewDecision(
+                id="C1",
+                decision="accept",
+                reason_code="grounded_useful",
+                evidence_ids=["C1-E1"],
+            )
+        ]
+    )
+
+
+def _observation(monkeypatch, *, complete: bool = True):
+    # These tests exercise runner control flow, not provider measurement quality.
+    metrics = MagicMock()
+    metrics.data = {
+        "observation_complete": complete,
+        "estimated_cost_complete": complete,
+    }
+    monkeypatch.setattr(evaluation, "ReviewCallMetrics", lambda *_: metrics)
+    return metrics
+
+
+@pytest.mark.parametrize("failed_call", [1, 2])
+def test_strict_run_stops_first_or_second_arm_without_replacement(
+    monkeypatch, failed_call
+):
+    _observation(monkeypatch)
+    case = next(c for c in load_cases(DEFAULT_CASES) if c.id == "positive-preference")
+    client = MagicMock()
+    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
+    client.generate_chat_response.side_effect = [
+        *[_accepted_preference() for _ in range(failed_call - 1)],
+        RuntimeError("provider failed"),
+    ]
+    report = evaluate([case], client, 3, stop_on_incomplete=True)
+    assert report["complete"] is False
+    assert report["planned_calls"] == 6
+    assert report["attempted_calls"] == failed_call
+    assert report["unbegun_calls"] == 6 - failed_call
+    assert len(report["errors"]) == 1
+    assert len(report["rows"]) == failed_call - 1
+    assert report["calls"][-1]["applied_survivors"] is None
+    assert client.generate_chat_response.call_count == failed_call
+
+
+@pytest.mark.parametrize("missing", ["observation_complete", "estimated_cost_complete"])
+def test_strict_incomplete_observation_keeps_applied_output_without_scoring(
+    monkeypatch, missing
+):
+    metrics = _observation(monkeypatch)
+    metrics.data[missing] = False
+    case = next(c for c in load_cases(DEFAULT_CASES) if c.id == "positive-preference")
+    client = MagicMock()
+    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
+    client.generate_chat_response.return_value = _accepted_preference()
+    report = evaluate([case], client, 2, stop_on_incomplete=True)
+    assert report["complete"] is False
+    assert report["rows"] == []
+    assert report["attempted_calls"] == 1
+    assert report["unbegun_calls"] == 3
+    assert len(report["measurement_errors"]) == 1
+    assert report["calls"][0]["public_output"]["decisions"][0]["decision"] == "accept"
+    assert (
+        report["calls"][0]["applied_survivors"][0]["content"]
+        == case.candidates[0].content
+    )
+
+
+def test_strict_application_failure_keeps_public_output(monkeypatch):
+    _observation(monkeypatch)
+    case = next(c for c in load_cases(DEFAULT_CASES) if c.id == "positive-preference")
+    client = MagicMock()
+    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
+    client.generate_chat_response.return_value = _accepted_preference()
+    monkeypatch.setattr(
+        evaluation.PlaybookCandidateReviewer,
+        "apply_decisions",
+        MagicMock(side_effect=ValueError("application failed")),
+    )
+    report = evaluate([case], client, 1, stop_on_incomplete=True)
+    assert report["complete"] is False
+    assert report["rows"] == []
+    assert report["errors"][0]["error_type"] == "ValueError"
+    assert report["calls"][0]["public_output"] is not None
+    assert report["calls"][0]["applied_survivors"] is None
+
+
+def test_application_interrupt_cannot_mark_checkpoint_measured(monkeypatch, tmp_path):
+    _observation(monkeypatch)
+    case = next(c for c in load_cases(DEFAULT_CASES) if c.id == "positive-preference")
+    client = MagicMock()
+    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
+    client.generate_chat_response.return_value = _accepted_preference()
+    monkeypatch.setattr(
+        evaluation.PlaybookCandidateReviewer,
+        "apply_decisions",
+        MagicMock(side_effect=KeyboardInterrupt),
+    )
+    checkpoint = tmp_path / "interrupted.json"
+    with pytest.raises(KeyboardInterrupt):
+        evaluate([case], client, 1, checkpoint, stop_on_incomplete=True)
+    saved = json.loads(checkpoint.read_text())
+    assert saved["complete"] is False
+    assert saved["rows"] == []
+    assert saved["calls"][0]["measurement_complete"] is False
+    assert saved["calls"][0]["public_output"] is not None
+    assert saved["calls"][0]["applied_survivors"] is None
+    assert client.generate_chat_response.call_count == 1
+
+
+def test_semantic_failures_continue_with_global_counterbalance(monkeypatch):
+    _observation(monkeypatch)
+    cases = [
+        c
+        for c in load_cases(DEFAULT_CASES)
+        if c.id in {"positive-preference", "positive-code-review-preference"}
+    ]
+    client = MagicMock()
+    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
+    client.generate_chat_response.return_value = PlaybookCandidateReviewOutput(
+        decisions=[
+            CandidateReviewDecision(
+                id="C1", decision="reject", reason_code="generic", evidence_ids=[]
+            )
+        ]
+    )
+    report = evaluate(cases, client, 1, stop_on_incomplete=True)
+    assert report["complete"] is True
+    assert report["attempted_calls"] == 4
+    assert report["unbegun_calls"] == 0
+    assert [call["version"] for call in report["calls"]] == [
+        "1.3.0",
+        "1.4.0",
+        "1.4.0",
+        "1.3.0",
+    ]
+    assert all(not row["decision_correct"] for row in report["rows"])
+    assert all(call["applied_survivors"] == [] for call in report["calls"])
+
+
+def test_baseline_screen_has_no_candidate_calls_or_denominator(monkeypatch):
+    _observation(monkeypatch)
+    case = next(c for c in load_cases(DEFAULT_CASES) if c.id == "positive-preference")
+    client = MagicMock()
+    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
+    client.generate_chat_response.return_value = _accepted_preference()
+    report = evaluate([case], client, 2, baseline_only=True, stop_on_incomplete=True)
+    assert report["complete"] is True
+    assert report["candidate_version"] is None
+    assert report["baseline_only"] is True
+    assert set(report["summary"]) == {"1.3.0"}
+    assert set(report["prompt_identities"]) == {"1.3.0"}
+    assert report["planned_calls"] == report["attempted_calls"] == 2
+    assert [call["version"] for call in report["calls"]] == ["1.3.0", "1.3.0"]
+    assert all(
+        "Reason-code precedence" not in str(call.args[0])
+        for call in client.generate_chat_response.call_args_list
+    )
+
+
+def test_paired_inputs_are_isolated_from_reviewer_mutation(monkeypatch):
+    case = next(c for c in load_cases(DEFAULT_CASES) if c.id == "positive-preference")
+    prepared = prepare_case(case)
+    monkeypatch.setattr(evaluation, "prepare_case", lambda _: prepared)
+    original = evaluation.PlaybookCandidateReviewer.decide
+    seen = []
+
+    def mutate_first_arm(reviewer, **arguments):
+        candidate = arguments["candidates"][0]
+        seen.append(candidate.notes)
+        if len(seen) == 1:
+            candidate.notes = "First arm only"
+        return original(reviewer, **arguments)
+
+    monkeypatch.setattr(
+        evaluation.PlaybookCandidateReviewer, "decide", mutate_first_arm
+    )
+    client = MagicMock()
+    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
+    client.generate_chat_response.return_value = _accepted_preference()
+    report = evaluate([case], client, 1)
+    assert not report["errors"]
+    assert seen == [None, None]
+    assert prepared[1][0].notes is None
+    assert "First arm only" in report["calls"][0]["applied_survivors"][0]["notes"]
+    assert "First arm only" not in report["calls"][1]["applied_survivors"][0]["notes"]
+
+
+@pytest.mark.parametrize("symlink", [False, True])
+def test_existing_trial_is_preserved_before_calls(tmp_path, symlink):
+    target = tmp_path / "prior.json"
+    target.write_text("prior evidence")
+    checkpoint = tmp_path / "checkpoint.json" if symlink else target
+    if symlink:
+        checkpoint.symlink_to(target)
+    client = MagicMock()
+    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
+    with pytest.raises(FileExistsError):
+        evaluate(load_cases(DEFAULT_CASES)[:1], client, 1, checkpoint)
+    assert target.read_text() == "prior evidence"
+    assert checkpoint.is_symlink() is symlink
+    client.generate_chat_response.assert_not_called()
 
 
 @pytest.mark.parametrize("actual_model", ["expected-model", "another-model"])
+@pytest.mark.parametrize("baseline_only", [False, True])
 def test_cli_checks_expected_role_model_before_evaluating(
-    monkeypatch, tmp_path: Path, actual_model: str
+    monkeypatch, tmp_path: Path, actual_model: str, baseline_only: bool
 ):
     client = MagicMock()
     client._resolve_primary_model.return_value = actual_model
@@ -191,11 +406,14 @@ def test_cli_checks_expected_role_model_before_evaluating(
             "expected-model",
             "--out",
             str(tmp_path / "out.json"),
+            *(["--baseline-only"] if baseline_only else []),
         ],
     )
     if actual_model == "expected-model":
         assert evaluation.main() == 0
         run.assert_called_once()
+        assert run.call_args.kwargs["stop_on_incomplete"] is True
+        assert run.call_args.kwargs["baseline_only"] is baseline_only
     else:
         with pytest.raises(SystemExit) as error:
             evaluation.main()
