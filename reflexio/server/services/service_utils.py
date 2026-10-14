@@ -265,6 +265,15 @@ class PromptConfig:
 
     prompt_id: str
     variables: dict[str, any]  # type: ignore[reportGeneralTypeIssues]
+    template_identity: dict[str, str] | None = None
+
+    def render(self, manager: PromptManager) -> str:
+        """Render an explicitly frozen template when the caller supplies one."""
+        if self.template_identity is not None:
+            return manager.render_prompt_from_identity(
+                self.prompt_id, self.variables, self.template_identity
+            )
+        return manager.render_prompt(self.prompt_id, self.variables)
 
 
 @dataclass
@@ -540,10 +549,7 @@ def construct_messages_from_interactions(
 
     # Add system message if configured
     if config.system_prompt_config:
-        system_content = config.prompt_manager.render_prompt(
-            config.system_prompt_config.prompt_id,
-            config.system_prompt_config.variables,
-        )
+        system_content = config.system_prompt_config.render(config.prompt_manager)
         messages.append({"role": "system", "content": system_content})
 
     # Build combined user message content
@@ -551,10 +557,7 @@ def construct_messages_from_interactions(
 
     # Add user prompt if configured
     if config.user_prompt_config:
-        user_prompt_content = config.prompt_manager.render_prompt(
-            config.user_prompt_config.prompt_id,
-            config.user_prompt_config.variables,
-        )
+        user_prompt_content = config.user_prompt_config.render(config.prompt_manager)
         combined_content.append({"type": "text", "text": user_prompt_content})
 
     # Add last interaction's image (if present)

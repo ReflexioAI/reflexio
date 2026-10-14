@@ -35,6 +35,7 @@ import multiprocessing
 import os
 import queue
 import re
+import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -364,6 +365,81 @@ def is_structured_output_correction_turn(
         and isinstance(content, str)
         and content.startswith(STRUCTURED_OUTPUT_CORRECTION_PREFIX)
         and len(content) <= _MAX_CORRECTION_CHARS
+    )
+
+
+_VALIDATION_REPAIR_PREFIX = "Your previous response failed validation for schema "
+_VALIDATION_REPAIR_SUFFIX = (
+    "\n\nReply with a corrected response that satisfies the schema. "
+    "Respond only with the corrected structured output."
+)
+_MAX_REPAIR_ECHO_MARKER_CHARS = len(
+    f"\n...(omitted {sys.maxsize} characters from previous response)...\n"
+)
+_MAX_REPAIR_ERROR_FRAMING_CHARS = (
+    3 * _MAX_REPAIR_ERRORS
+    + len("...(truncated)")
+    + len(f"\n- ...({sys.maxsize} more errors)")
+)
+
+
+def _validation_repair_correction(schema_name: str, errors: Sequence[str]) -> str:
+    error_lines = "\n".join(f"- {error}" for error in _bounded_repair_errors(errors))
+    return f"{_VALIDATION_REPAIR_PREFIX}{schema_name}:\n{error_lines}{_VALIDATION_REPAIR_SUFFIX}"
+
+
+def _is_structured_output_validation_repair_turn(
+    base_messages: Sequence[Any], messages: Sequence[Any], *, schema_name: str
+) -> bool:
+    """Recognize the separate validated-rung repair, leaving plain checks strict.
+
+    This is a request-shape check, not evidence or model-output authorization.
+    The caller independently binds the exact original logical request, schema,
+    generation policy, real token budget and cumulative attempt allocation.
+    """
+    if len(messages) != len(base_messages) + 2 or list(messages[:-2]) != list(
+        base_messages
+    ):
+        return False
+    echo, correction = messages[-2:]
+    if any(
+        not isinstance(message, dict)
+        or set(message) != {"role", "content"}
+        or not isinstance(message["content"], str)
+        for message in (echo, correction)
+    ):
+        return False
+    if echo["role"] != "assistant" or correction["role"] != "user":
+        return False
+    text = echo["content"]
+    if not text.strip():
+        return False
+    if len(text) > _MAX_REPAIR_ECHO_CHARS:
+        if len(text) > _MAX_REPAIR_ECHO_CHARS + _MAX_REPAIR_ECHO_MARKER_CHARS:
+            return False
+        half = _MAX_REPAIR_ECHO_CHARS // 2
+        middle = text[half:-half]
+        if (
+            re.fullmatch(
+                r"\n\.\.\.\(omitted [1-9][0-9]* characters from previous response\)\.\.\.\n",
+                middle,
+            )
+            is None
+        ):
+            return False
+    content = correction["content"]
+    prefix = f"{_VALIDATION_REPAIR_PREFIX}{schema_name}:\n"
+    # Bound exactly the native error framing, including line prefixes, one
+    # truncation marker and the optional count of additional errors.
+    return (
+        content.startswith(prefix)
+        and content[len(prefix) :].startswith("- ")
+        and content.endswith(_VALIDATION_REPAIR_SUFFIX)
+        and len(content)
+        <= len(prefix)
+        + len(_VALIDATION_REPAIR_SUFFIX)
+        + _MAX_REPAIR_ERROR_CHARS
+        + _MAX_REPAIR_ERROR_FRAMING_CHARS
     )
 
 
@@ -1804,9 +1880,6 @@ class TextGenerationMixin:
             schema_name: str,
             errors: Sequence[str],
         ) -> list[dict[str, Any]]:
-            error_lines = "\n".join(
-                f"- {error}" for error in _bounded_repair_errors(errors)
-            )
             return [
                 *base_messages,
                 {
@@ -1815,12 +1888,7 @@ class TextGenerationMixin:
                 },
                 {
                     "role": "user",
-                    "content": (
-                        "Your previous response failed validation for schema "
-                        f"{schema_name}:\n{error_lines}\n\n"
-                        "Reply with a corrected response that satisfies the schema. "
-                        "Respond only with the corrected structured output."
-                    ),
+                    "content": _validation_repair_correction(schema_name, errors),
                 },
             ]
 

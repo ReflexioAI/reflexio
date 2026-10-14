@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 from reflexio.server.services.storage.storage_base import (
     BaseStorage,
+    PendingToolCallRecord,
     PendingToolCallStatus,
     PriorAnswerMatch,
     build_scope_hash,
@@ -20,6 +24,149 @@ logger = logging.getLogger(__name__)
 ASK_HUMAN_TOOL_NAME = "ask_human"
 MAX_KNOWLEDGE_QUERY_CHARS = 4_000
 MAX_RESULT_CHARS = 1_200
+
+
+@dataclass(frozen=True)
+class CapturedPriorKnowledge:
+    """Immutable complete context for package planning, before durable admission.
+
+    This is not an authorization receipt. The caller must validate the returned
+    answer witnesses in its admission and publication transactions. Properties
+    return fresh decoded values so prompt construction cannot mutate the capture.
+    """
+
+    _json: str = field(repr=False)
+
+    @property
+    def contract_digest(self) -> str:
+        return hashlib.sha256(self._json.encode()).hexdigest()
+
+    @property
+    def suffix(self) -> list[dict[str, Any]]:
+        return json.loads(self._json)["suffix"]
+
+    @property
+    def answer_witnesses(self) -> dict[str, Any]:
+        return json.loads(self._json)["answer_witnesses"]
+
+    @property
+    def snapshot(self) -> dict[str, Any]:
+        """Private context to install atomically with the admitted descriptor."""
+        return json.loads(self._json)
+
+    def require_lookup(
+        self,
+        *,
+        org_id: str,
+        knowledge_need_query: str,
+        similarity_threshold: float,
+        limit: int = 8,
+        exclude_pending_tool_call_ids: set[str] | None = None,
+    ) -> None:
+        """Bind a capture to the caller's actual original-seed lookup policy."""
+        from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+
+        expected = {
+            "version": 1,
+            "query_policy": "original-seed-v1",
+            "org_id": org_id,
+            "query_digest": hashlib.sha256(knowledge_need_query.encode()).hexdigest(),
+            "limit": limit,
+            "excluded": sorted(exclude_pending_tool_call_ids or []),
+            "similarity_threshold": similarity_threshold,
+        }
+        values = self.snapshot
+        if any(values.get(key) != value for key, value in expected.items()):
+            raise InputBudgetConfigurationError("Prior lookup contract changed")
+
+
+def _resolved_prior_record(
+    storage: BaseStorage, match: PriorAnswerMatch
+) -> PendingToolCallRecord:
+    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+
+    record = storage.get_pending_tool_call(match.pending_tool_call_id)
+    if record is None or (
+        record.question_text != match.question_text
+        or record.result != match.result
+        or record.resolved_at != match.resolved_at
+        or record.valid_until != match.valid_until
+    ):
+        raise InputBudgetConfigurationError("Prior answer changed during capture")
+    return record
+
+
+def capture_prior_knowledge_context(
+    *,
+    messages: list[dict[str, Any]],
+    storage: BaseStorage,
+    org_id: str,
+    extractor_kind: str,
+    extractor_config: Any,
+    source: str | None,
+    agent_version: str | None,
+    limit: int = 8,
+    similarity_threshold: float = 0.0,
+    exclude_pending_tool_call_ids: set[str] | None = None,
+) -> CapturedPriorKnowledge:
+    """Look up once from the ORIGINAL seed and preserve full answer qualifiers.
+
+    Uses the existing org-scoped lookup, including its query embedding. Performs
+    no generation or journal writes. Package consumers freeze this result before
+    compression and price the complete suffix, rather than repeating the lookup
+    with compressed text. Legacy append behavior remains separate and unchanged.
+    """
+    from reflexio.server.services.extraction.overflow_answers import (
+        answer_witness,
+        require_current_answer,
+    )
+
+    query = build_knowledge_need_query(
+        extractor_kind=extractor_kind,
+        extractor_config=extractor_config,
+        source=source,
+        agent_version=agent_version,
+        messages=messages,
+    )
+    matches = find_prior_answer_matches(
+        storage=storage,
+        org_id=org_id,
+        knowledge_need_query=query,
+        limit=limit,
+        similarity_threshold=similarity_threshold,
+        exclude_pending_tool_call_ids=exclude_pending_tool_call_ids,
+    )
+    answers = {}
+    for match in matches:
+        if match.status == PendingToolCallStatus.RESOLVED:
+            record = _resolved_prior_record(storage, match)
+            witness = answer_witness(asdict(record))
+            require_current_answer(witness, org_id, datetime.now(UTC))
+            if record.id != match.pending_tool_call_id:
+                from reflexio.server.llm.input_budget import (
+                    InputBudgetConfigurationError,
+                )
+
+                raise InputBudgetConfigurationError("Prior answer identity changed")
+            answers[record.id] = witness
+    context = format_prior_knowledge_context(matches, truncate_results=False)
+    return CapturedPriorKnowledge(
+        canonical_json(
+            {
+                "version": 1,
+                "query_policy": "original-seed-v1",
+                "org_id": org_id,
+                "query_digest": hashlib.sha256(query.encode()).hexdigest(),
+                "limit": limit,
+                "similarity_threshold": similarity_threshold,
+                "excluded": sorted(exclude_pending_tool_call_ids or []),
+                "suffix": [{"role": "user", "content": context}]
+                if context is not None
+                else [],
+                "answer_witnesses": answers,
+            }
+        )
+    )
 
 
 def _content_to_text(content: Any) -> str:
@@ -235,20 +382,7 @@ def append_prior_knowledge_context(
     if coordinator is not None:
         for match in matches:
             if match.status == PendingToolCallStatus.RESOLVED:
-                record = storage.get_pending_tool_call(match.pending_tool_call_id)
-                if record is None or (
-                    record.question_text != match.question_text
-                    or record.result != match.result
-                    or record.resolved_at != match.resolved_at
-                    or record.valid_until != match.valid_until
-                ):
-                    from reflexio.server.llm.input_budget import (
-                        InputBudgetConfigurationError,
-                    )
-
-                    raise InputBudgetConfigurationError(
-                        "Prior answer changed during capture"
-                    )
+                record = _resolved_prior_record(storage, match)
                 pin_overflow_answer(record)
     context = format_prior_knowledge_context(
         matches, truncate_results=coordinator is None

@@ -16,7 +16,7 @@ information, and resumes outside the request path.
 |------|----------------|
 | `resumable_agent.py` | Runs extraction agents, records agent usage, injects resolved pending-tool context, and exposes pending tool-call helpers. |
 | `pending_tool_call_dispatch.py` | Implements the `ask_human` and pending-info tool dispatch flow. |
-| `prior_answer_search.py` | Finds and formats previous human answers for async extraction context. |
+| `prior_answer_search.py` | Finds and formats previous human answers; captures immutable complete prior context before package planning, without admission or journal writes. |
 | `agent_run_records.py` | Builds durable extraction-agent run records and source interaction identity. |
 | `resume_scheduler.py` | Discovers and schedules due paused/finalization work in a background singleton. |
 | `recovery.py` | Content-free inspection and strict preview manifests for explicitly selected saved-output recovery. Never opens the scheduler gate. |
@@ -27,6 +27,7 @@ information, and resumes outside the request path.
 | `compression.py` | Provider-free window planning and guarded execution for the shared compressor; restores original range references and checks window authority before and after execution. Does not select a production worker protocol. |
 | `source_package.py` | Pure consumer rendering and validated, immutable presentation of selected original ranges, attribution and visible quotation boundaries. |
 | `package_compression.py` | Compresses against an already-admitted package journal, binding exact per-node inputs/native contracts to durable selections and actual charged attempts. Does not admit, consume or publish a window. |
+| `profile_package_preparation.py` | Freezes profile prompt context, templates, actual native ladders/schema/tools/output policy and complete input pricing before package compression. No admission or worker selection. |
 | `protected_record.py` | Accumulates source-verified quotations for cross-chunk context; capacity failure never silently removes an earlier correction. |
 | `protected_pass.py` | Builds that context with checkpointed source-validated model passes; keeps scoped approvals and reported versus observed outcomes distinct. Bounded repair feedback identifies invalid quotation entries without disclosing source text; inner-JSON escaping and exact spelling remain source invariants. |
 | `overflow_coordinator.py` | Owns scoped provider admission, monotonic durable attempt reservations, immutable step receipts and historical observed usage. Never publishes child learnings. |
@@ -423,3 +424,41 @@ The returned result and validated source presentation do not mark window
 coverage, run the judge/extractor, finalize a parent, write learnings or bill a
 completed extraction. Consumer contract composition and worker admission remain
 separate integration work. No default worker selection or enable flag changes.
+
+### Complete profile consumer preparation (inactive)
+
+`profile_package_original_seed` builds the existing profile prompt from original
+history for the existing bounded prior-answer query. Capture that query once
+with `capture_prior_knowledge_context`; it uses the same org-scoped retrieval
+and preserves complete answers, including conditions after 1,200 characters.
+The immutable capture stores only the query digest, suffix and exact resolved
+answer witnesses. It writes no journal and grants no authority: admission and
+publication must still validate answer lifetime and source/lease ownership.
+`prepare_profile_package` rejects a capture from a different seed or retrieval
+policy rather than repeating lookup after compression.
+
+Preparation freezes template identities, selected existing-profile context,
+actual pending-tool specs/configuration, original output schemas, native full
+ladders and generation-contract hashes. Potentially credential-bearing route
+descriptors and context-limit keys are hashed, not copied into the snapshot.
+The real request builder runs inside a temporary dispatch-refusing extraction
+guard, preserving native output-reservation/model-policy order and restoring
+the enclosing guard on both success and failure. No provider or quota callback
+runs during this preparation.
+
+The compressor measures the maximum COMPLETE initial gate/agent input across
+all native rungs, including schema instructions, real tools, full prior answers
+and the existing 20% counting margin. Its input ceiling is the minimum of 32,768
+and each rung's context minus its native output reservation. The packet's raw
+size and provider usage are separate quantities. Fixed prompt overflow fails
+before compression work; consumer output defaults are preserved.
+
+The prepared request checker verifies route/generation/schema/tool policy,
+ordered ladder, built messages, native bounded repairs and 32K input before a
+caller reserves quota. Plain parser corrections and validator repairs have
+different native formats; their checks remain separate. A model echo remains
+untrusted, never source evidence. The caller must still authenticate the raw
+seed/continuation, bind the contract to its durable parent, install the check
+before every dispatch, and handle dynamic dedup prompts and continuations.
+No parent admission, consumer dispatch, processed coverage, publication,
+billing or runtime enablement is introduced by preparation alone.

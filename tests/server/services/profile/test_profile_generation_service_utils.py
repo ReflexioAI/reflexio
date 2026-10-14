@@ -4,6 +4,7 @@ import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -38,6 +39,83 @@ def _mime_type_from_image_fixture(image_path: Path) -> str:
     if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
         return "image/webp"
     raise AssertionError(f"Unsupported test fixture image type: {image_path}")
+
+
+def test_frozen_profile_templates_preserve_native_messages_and_reject_drift():
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        ProfileGenerationServiceConstants as Constants,
+    )
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        build_profile_gate_prompt,
+    )
+
+    manager = PromptManager()
+    identities = {
+        prompt_id: manager.get_prompt_template_identity(prompt_id)
+        for prompt_id in (
+            Constants.PROFILE_UPDATE_MAIN_PROMPT_ID,
+            Constants.PROFILE_UPDATE_INSTRUCTION_START_PROMPT_ID,
+            Constants.PROFILE_SHOULD_GENERATE_PROMPT_ID,
+        )
+    }
+    arguments: dict[str, Any] = {
+        "prompt_manager": manager,
+        "request_interaction_data_models": [],
+        "existing_profiles": [],
+        "agent_context_prompt": "Agent context",
+        "context_prompt": "Context",
+        "extraction_definition_prompt": "Only explicit preferences",
+        "source_text": "original package",
+    }
+    expected = construct_profile_extraction_messages_from_sessions(**arguments)
+    assert (
+        construct_profile_extraction_messages_from_sessions(
+            **arguments, template_identities=identities
+        )
+        == expected
+    )
+    gate_args: dict[str, Any] = {
+        "prompt_manager": manager,
+        "agent_context_prompt": "Agent context",
+        "extraction_definition_prompt": "Only explicit preferences",
+        "condition_prompt": "Corrections",
+        "source_text": "original package",
+    }
+    gate_identity = identities[Constants.PROFILE_SHOULD_GENERATE_PROMPT_ID]
+    expected_gate = build_profile_gate_prompt(**gate_args)
+    assert (
+        build_profile_gate_prompt(**gate_args, template_identity=gate_identity)
+        == expected_gate
+    )
+    # A changed active selection must not replace the frozen template.
+    with patch.object(manager, "render_prompt", side_effect=AssertionError("active")):
+        assert (
+            construct_profile_extraction_messages_from_sessions(
+                **arguments, template_identities=identities
+            )
+            == expected
+        )
+        assert (
+            build_profile_gate_prompt(**gate_args, template_identity=gate_identity)
+            == expected_gate
+        )
+    for prompt_id in (
+        Constants.PROFILE_UPDATE_MAIN_PROMPT_ID,
+        Constants.PROFILE_UPDATE_INSTRUCTION_START_PROMPT_ID,
+    ):
+        changed = {
+            **identities,
+            prompt_id: {**identities[prompt_id], "template_content_digest": "0" * 64},
+        }
+        with pytest.raises(ValueError, match="drifted"):
+            construct_profile_extraction_messages_from_sessions(
+                **arguments, template_identities=changed
+            )
+    with pytest.raises(ValueError, match="drifted"):
+        build_profile_gate_prompt(
+            **gate_args,
+            template_identity={**gate_identity, "template_content_digest": "0" * 64},
+        )
 
 
 def test_construct_profile_extraction_messages_with_sessions():
