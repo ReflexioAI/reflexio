@@ -22,6 +22,7 @@ information, and resumes outside the request path.
 | `recovery.py` | Content-free inspection and strict preview manifests for explicitly selected saved-output recovery. Never opens the scheduler gate. |
 | `resume_worker.py` | Resumes paused runs, rebuilds request context, and records retry state. Finalization uses an immutable run-keyed receipt so learning writes and retry billing reuse the same persisted IDs. |
 | `outcome.py` | Provides the generic extraction outcome wrapper used by callers. |
+| `overflow_protocol.py` | Pure validation of the inactive outer-v2 source-package descriptor, frozen stage budgets and typed source-selection receipts. |
 | `input_preparation.py` | Ownership-checked field collection and bounded, lossless legacy chunks with original field/character spans. The new collector does not impose legacy chunk geometry. |
 | `compression.py` | Qualification adapter for the shared compressor; restores original range references and checks window authority before and after preparation. Does not select a production worker protocol. |
 | `protected_record.py` | Accumulates source-verified quotations for cross-chunk context; capacity failure never silently removes an earlier correction. |
@@ -282,3 +283,71 @@ points, recording the partial result and omission totals. All repair attempts
 consume the same guarded quota; source-integrity errors still abort.
 Complete selections are admitted first at their true size. Space for a new
 omission notice is reserved only when the complete selection cannot fit.
+
+
+### Source-package journal prerequisite (inactive)
+
+Outer journal version 2 requires `input_protocol.name=source-package`, descriptor
+version 1 and preparation version 4. The unchanged current executor rejects that
+preparation version before legacy input preparation or cached publication. The
+existing enable flag does not admit this protocol. Outer-v1 fields, prompts,
+partitions, model receipts and quota behavior retain their established path.
+An already admitted outer-v1 run or marker-free legacy output cannot be converted
+to outer2 through adoption.
+
+`OverflowCoordinator.initial_package_manifest` copies an explicit frozen native
+plan descriptor. It binds the original source witness, DTO cache witness, native
+plan/contract digests, ordered sections and exact parent scope. The future caller
+must rebuild and compare the actual model/schema/pricing/output/passthrough and
+consumer contracts and resolve selections against original sources. Ordered
+section witnesses need not be unique; every position counts toward geometry,
+and the full native plan witness binds actual source identities. Structural
+journal validation alone does not prove those semantics or source coverage.
+No source text, API credentials or endpoint credentials belong in the descriptor.
+
+The profile follow-on allowance is `F=Lg+16Le+2Ld` using actual resolved native
+ladder lengths (the gate term is zero when skipped). Source-quoted playbooks use
+`F=2Li`. At most 48 sections are admitted and `max(0,2S-1)+F` must fit 128.
+The compressor cap is `128-F`; each consumer stage has its own frozen cap. These
+are cumulative physical-dispatch limits, not completion guarantees: failures,
+repairs, fallbacks and crashes may exhaust a stage before it produces a result.
+Cached outputs cost no new attempt. Unused consumer capacity does not enlarge the
+compressor cap after restart.
+
+`attempt_stage(stage, minimum_remaining_attempts=0)` attributes every reservation
+inside the existing shared SQL CAS. The minimum names additional required work
+in that same stage after the proposed dispatch. Counts are recomputed from saved
+attempts, including calls with unknown usage after a crash. Missing attribution,
+changed scope, stale revisions and exhausted stage/global caps reject before a
+transport call. Observations cannot change stage or previously observed usage.
+The yielded list contains actual newly reserved IDs for binding a node receipt.
+Consumer stages compare the actual native guard's ordered literal model ladder
+with the frozen stage ladder before reserving. Compression remains guarded by
+the native planner. This comparison does not validate the full route, schema or
+generation contract: future runtime composition must still prove those witnesses.
+The CAS also compares the caller's frozen descriptor with the locked saved copy.
+
+`complete_selection_step` saves a distinct source-selection receipt with original,
+plan, node, input-reference and request-contract digests and actual compressor
+attempt IDs. Its output is the exact server-normalized native cache choice:
+reference groups, fixed host labels, local omission counters and host diagnostics.
+Those omissions survive cache reuse verbatim; receipts do not invent authored
+model provenance. `input_refs_digest` must describe the actual visible inputs for
+that node, and `request_contract_digest` must describe its actual native request
+contract. The current core load/save callbacks expose only a hashed node key and
+normalized choice. Runtime integration must obtain those witnesses from actual
+per-node inputs/request observations or a minimal deeper seam; rehashing the node
+key and naming it either witness is invalid. The node key already binds the source
+witness, messages and schema, but does not substitute for these separately named
+proofs. Source-selection receipts are bounded to 64 KiB, with at most 128 completed
+steps. Typed consumer model-output receipts retain their native output/trace
+contract; no new small limit clips complete human/tool results. Host-only passthrough/union
+coverage and package publication are later integration work, not fake paid
+selection receipts. Provider input rejection cannot invoke legacy repartition.
+
+An old worker may expose a configuration failure and update its ordinary retry
+backoff/status for outer2, but snapshot, revision, paid attempts, receipts and
+committed output must survive unchanged. A new coordinator can reload that failed
+parent without refunding quota. The frozen actual outer-v1 reader fixture and
+HTTP/storage tests protect this mixed-version boundary. None of this enables a
+new runtime, changes billing, deploys code, or establishes semantic qualification.

@@ -1,0 +1,155 @@
+"""Frozen actual old validator/failure handler; do not modernize function bodies."""
+
+from dataclasses import fields
+from typing import Any
+
+from reflexio.server.services.durable_learning import worker as _worker
+from reflexio.server.services.extraction.overflow_coordinator import (
+    OverflowSuspendedError,
+)
+from reflexio.server.services.storage.storage_base import BaseStorage
+from reflexio.server.services.storage.storage_base._extraction_stream import (
+    LeaseLostError,
+    OverflowCheckpointConflictError,
+    Window,
+)
+
+logger = _worker.logger
+record_health = _worker.record_health
+exception_locator = _worker.exception_locator
+SNAPSHOT_COMMIT = "82d79dd1eb7b22602e2299190380e5832a4fdacd"
+SNAPSHOT_FUNCTIONS_SHA256 = "336f7764f9fa350affef22e4510a47fb04c8c5afd7b85d12b13f3381759bc1b8"
+
+
+def _valid_overflow_provenance(provenance: Any) -> bool:
+    from reflexio.server.llm._litellm_types import ModelProvenance
+
+    return (
+        isinstance(provenance, dict)
+        and set(provenance).issubset(field.name for field in fields(ModelProvenance))
+        and all(
+            value is None or isinstance(value, str) for value in provenance.values()
+        )
+    )
+
+
+def validate_extraction_overflow_manifest(manifest: Any) -> dict[str, Any]:
+    """Reject damaged saved quota before mutation or provider admission."""
+    from reflexio.server.llm.token_accounting import RunTokenTotals
+
+    if (
+        not isinstance(manifest, dict)
+        or type(manifest.get("version")) is not int
+        or manifest["version"] != 1
+        or not isinstance(manifest.get("source_digest"), str)
+        or type(manifest.get("attempt_limit")) is not int
+        or manifest["attempt_limit"] != 128
+        or type(manifest.get("revision")) is not int
+        or not isinstance(manifest.get("attempts"), list)
+    ):
+        raise OverflowCheckpointConflictError("Invalid extraction overflow marker")
+    checkpoint = manifest.get("checkpoint")
+    if (
+        not isinstance(checkpoint, dict)
+        or not isinstance(checkpoint.get("stage"), str)
+        or not checkpoint["stage"]
+        or not isinstance(checkpoint.get("completed_steps"), dict)
+        or len(checkpoint["completed_steps"]) > 128
+    ):
+        raise OverflowCheckpointConflictError("Invalid extraction checkpoint")
+    for key, receipt in checkpoint["completed_steps"].items():
+        if (
+            not isinstance(key, str)
+            or not key
+            or not isinstance(receipt, dict)
+            or "output" not in receipt
+            or "model_provenance" not in receipt
+            or not _valid_overflow_provenance(receipt["model_provenance"])
+        ):
+            raise OverflowCheckpointConflictError("Invalid extraction step receipt")
+    attempts = manifest["attempts"]
+    if len(attempts) > 128:
+        raise OverflowCheckpointConflictError("Invalid extraction attempt journal")
+    usage_fields = {field.name for field in fields(RunTokenTotals)}
+    identities: set[str] = set()
+    for attempt in attempts:
+        if (
+            not isinstance(attempt, dict)
+            or not isinstance(attempt.get("id"), str)
+            or not attempt["id"]
+            or attempt["id"] in identities
+            or "usage" not in attempt
+            or "model_provenance" not in attempt
+        ):
+            raise OverflowCheckpointConflictError("Invalid extraction attempt journal")
+        identities.add(attempt["id"])
+        usage = attempt["usage"]
+        if usage is not None and (
+            not isinstance(usage, dict)
+            or set(usage) != usage_fields
+            or any(type(value) is not int or value < 0 for value in usage.values())
+        ):
+            raise OverflowCheckpointConflictError("Invalid extraction attempt usage")
+        provenance = attempt["model_provenance"]
+        if provenance is not None and not _valid_overflow_provenance(provenance):
+            raise OverflowCheckpointConflictError("Invalid extraction model provenance")
+    return manifest
+
+
+def _input_budget_failure_reason(exc: BaseException) -> str | None:
+    from reflexio.server.llm.input_budget import (
+        InputBudgetConfigurationError,
+        InputBudgetExceededError,
+    )
+    from reflexio.server.services.extraction.input_preparation import (
+        ExtractionInputBudgetExceededError,
+    )
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        OverflowAttemptBudgetExceededError,
+    )
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, InputBudgetConfigurationError):
+            return "input_budget_configuration_error"
+        if isinstance(
+            current,
+            InputBudgetExceededError
+            | ExtractionInputBudgetExceededError
+            | OverflowAttemptBudgetExceededError,
+        ):
+            return "input_budget_exceeded"
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def _handle_window_failure(
+    storage: BaseStorage, window: Window, token: str, exc: Exception
+) -> str:
+    if isinstance(exc, OverflowSuspendedError):
+        storage.suspend_extraction(window, token)
+        return "suspended"
+    reason = _input_budget_failure_reason(exc)
+    if reason is not None:
+        storage.fail_extraction_input_budget(window, token, reason)
+        record_health("worker.input_budget_failures", reason=reason)
+        return "input_budget_failure"
+    where = exception_locator(exc)
+    logger.warning(
+        "Extraction window failed kind=%s error=%s at=%s",
+        window.kind,
+        type(exc).__name__,
+        where,
+    )
+    # Only class/source coordinates are stored; messages may contain customer
+    # content. An already committed window retries its durable effects.
+    try:
+        storage.retry_extraction(window, token, f"{type(exc).__name__}@{where}")
+    except LeaseLostError:
+        storage.retry_extraction_effects(window)
+        record_health("worker.retries", phase="effects")
+    else:
+        record_health("worker.retries", phase="window")
+    return "failure"

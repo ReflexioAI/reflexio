@@ -139,7 +139,7 @@ def validate_extraction_overflow_manifest(manifest: Any) -> dict[str, Any]:
     if (
         not isinstance(manifest, dict)
         or type(manifest.get("version")) is not int
-        or manifest["version"] != 1
+        or manifest["version"] not in (1, 2)
         or not isinstance(manifest.get("source_digest"), str)
         or type(manifest.get("attempt_limit")) is not int
         or manifest["attempt_limit"] != 128
@@ -157,6 +157,12 @@ def validate_extraction_overflow_manifest(manifest: Any) -> dict[str, Any]:
     ):
         raise OverflowCheckpointConflictError("Invalid extraction checkpoint")
     for key, receipt in checkpoint["completed_steps"].items():
+        if (
+            manifest["version"] == 2
+            and isinstance(receipt, dict)
+            and receipt.get("kind") == "source_selection"
+        ):
+            continue
         if (
             not isinstance(key, str)
             or not key
@@ -192,6 +198,17 @@ def validate_extraction_overflow_manifest(manifest: Any) -> dict[str, Any]:
         provenance = attempt["model_provenance"]
         if provenance is not None and not _valid_overflow_provenance(provenance):
             raise OverflowCheckpointConflictError("Invalid extraction model provenance")
+    if manifest["version"] == 2:
+        from reflexio.server.services.extraction.overflow_protocol import (
+            validate_package_manifest,
+        )
+
+        try:
+            validate_package_manifest(manifest)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise OverflowCheckpointConflictError(
+                "Invalid source-package journal"
+            ) from exc
     return manifest
 
 
@@ -1133,7 +1150,7 @@ class ExtractionStreamStore:
                     "Extraction coordinator is no longer active"
                 )
             rows = db.query(
-                f"SELECT generation_request_snapshot,status,committed_output FROM {db.table('_agent_runs')} "
+                f"SELECT generation_request_snapshot,status,committed_output,request_id,agent_version FROM {db.table('_agent_runs')} "
                 "WHERE id=? AND org_id=? AND user_id=? AND extractor_kind=?"
                 + db.lock(),
                 (
@@ -1151,9 +1168,17 @@ class ExtractionStreamStore:
             existing = snapshot.get("overflow")
             if "overflow" in snapshot:
                 existing = validate_extraction_overflow_manifest(existing)
+                _validate_package_parent_scope(existing, self.org_id, window, rows[0])
                 if existing.get("source_digest") != source_digest:
                     raise OverflowCheckpointConflictError(
                         "Extraction source binding changed"
+                    )
+                if (manifest.get("version") == 2 or existing["version"] == 2) and (
+                    manifest.get("version") != existing["version"]
+                    or manifest.get("input_protocol") != existing.get("input_protocol")
+                ):
+                    raise OverflowCheckpointConflictError(
+                        "Frozen package protocol changed"
                     )
                 return existing
             if (
@@ -1201,8 +1226,11 @@ class ExtractionStreamStore:
         *,
         expected_revision: int,
         source_digest: str,
+        expected_input_protocol: dict[str, Any] | None = None,
         checkpoint: dict[str, Any] | None = None,
         reserve_attempt_id: str | None = None,
+        reserve_attempt_stage: str | None = None,
+        minimum_remaining_attempts: int = 0,
         observed_attempt: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Atomically advance one scoped coordinator without refunding quota.
@@ -1230,7 +1258,7 @@ class ExtractionStreamStore:
                 )
             run_id = f"window:{window.window_id}"
             rows = db.query(
-                f"SELECT generation_request_snapshot,status FROM {db.table('_agent_runs')} "
+                f"SELECT generation_request_snapshot,status,request_id,agent_version FROM {db.table('_agent_runs')} "
                 "WHERE id=? AND org_id=? AND user_id=? AND extractor_kind=?"
                 + db.lock(),
                 (run_id, self.org_id, window.user_id, window.kind),
@@ -1241,14 +1269,32 @@ class ExtractionStreamStore:
                 )
             snapshot = decoded(rows[0]["generation_request_snapshot"])
             manifest = validate_extraction_overflow_manifest(snapshot.get("overflow"))
+            _validate_package_parent_scope(manifest, self.org_id, window, rows[0])
             if (
                 manifest.get("revision") != expected_revision
                 or manifest.get("source_digest") != source_digest
+                or (
+                    manifest["version"] == 2
+                    and manifest["input_protocol"] != expected_input_protocol
+                )
+                or (manifest["version"] == 1 and expected_input_protocol is not None)
             ):
                 raise OverflowCheckpointConflictError(
                     "Extraction checkpoint binding changed"
                 )
             attempts = manifest["attempts"]
+            if manifest["version"] == 1 and (
+                reserve_attempt_stage is not None or minimum_remaining_attempts != 0
+            ):
+                raise OverflowCheckpointConflictError(
+                    "Legacy attempt attribution changed"
+                )
+            if reserve_attempt_id is None and (
+                reserve_attempt_stage is not None or minimum_remaining_attempts != 0
+            ):
+                raise OverflowCheckpointConflictError(
+                    "Stage budget lacks a reservation"
+                )
             if reserve_attempt_id is not None:
                 if not reserve_attempt_id or any(
                     a["id"] == reserve_attempt_id for a in attempts
@@ -1260,9 +1306,17 @@ class ExtractionStreamStore:
                     raise OverflowAttemptBudgetExceededError(
                         "Extraction provider attempt budget exhausted"
                     )
-                attempts.append(
-                    {"id": reserve_attempt_id, "usage": None, "model_provenance": None}
+                attempt_record = {
+                    "id": reserve_attempt_id,
+                    "usage": None,
+                    "model_provenance": None,
+                }
+                attempt_record.update(
+                    _package_attempt_stage(
+                        manifest, reserve_attempt_stage, minimum_remaining_attempts
+                    )
                 )
+                attempts.append(attempt_record)
             if observed_attempt is not None:
                 matches = [a for a in attempts if a["id"] == observed_attempt.get("id")]
                 if len(matches) != 1:
@@ -1270,6 +1324,14 @@ class ExtractionStreamStore:
                         "Provider usage lacks a reservation"
                     )
                 attempt = matches[0]
+                if (
+                    manifest["version"] == 2
+                    and "stage" in observed_attempt
+                    and observed_attempt["stage"] != attempt["stage"]
+                ):
+                    raise OverflowCheckpointConflictError(
+                        "Provider attempt stage is immutable"
+                    )
                 usage = observed_attempt.get("usage")
                 if not isinstance(usage, dict):
                     raise ValueError("Invalid provider usage observation")
@@ -1592,6 +1654,55 @@ class ExtractionStreamStore:
                     f"DELETE FROM {db.table('learning_work')} WHERE org_id=? AND user_id=?",
                     (self.org_id, user_id),
                 )
+
+
+def _package_attempt_stage(
+    manifest: dict[str, Any], stage: str | None, minimum_remaining: int
+) -> dict[str, str]:
+    if manifest["version"] == 1:
+        return {}
+    caps = manifest["input_protocol"]["stage_caps"]
+    if (
+        not isinstance(stage, str)
+        or stage not in caps
+        or type(minimum_remaining) is not int
+        or minimum_remaining < 0
+    ):
+        raise OverflowCheckpointConflictError("Invalid package attempt stage")
+    used = sum(attempt["stage"] == stage for attempt in manifest["attempts"])
+    if used + 1 + minimum_remaining > caps[stage]:
+        raise OverflowAttemptBudgetExceededError(
+            "Package stage attempt budget exhausted"
+        )
+    return {"stage": stage}
+
+
+def _validate_package_parent_scope(
+    manifest: dict[str, Any], org_id: str, window: Window, row: dict[str, Any]
+) -> None:
+    if manifest["version"] != 2:
+        return
+    from reflexio.server.services.extraction.overflow_protocol import (
+        validate_package_scope,
+    )
+
+    try:
+        validate_package_scope(
+            manifest,
+            {
+                "org_id": org_id,
+                "project_id": window.project_id,
+                "user_id": window.user_id,
+                "window_id": window.window_id,
+                "kind": window.kind,
+                "request_id": row["request_id"],
+                "agent_version": row["agent_version"],
+            },
+        )
+    except ValueError as exc:
+        raise OverflowCheckpointConflictError(
+            "Frozen package parent binding changed"
+        ) from exc
 
 
 def _validate_overflow_repartition(
