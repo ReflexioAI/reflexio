@@ -233,10 +233,22 @@ class CompressionPlan:
     passthrough: bool
     witness: str
     _execute: Callable[..., CompressionResult] = field(repr=False, compare=False)
+    _check_requests: Callable[[Callable[[list[dict[str, str]]], None]], None] = field(
+        repr=False, compare=False
+    )
 
     @property
     def sections(self) -> int:
         return len(self.section_digests)
+
+    def check_requests(self, check: Callable[[list[dict[str, str]]], None]) -> None:
+        """Check exact initial leaf requests without dispatch or checkpoint I/O.
+
+        Each callback receives fresh messages, including the single-leaf final
+        flag. Passthrough has no model requests. Dynamic reductions and repairs
+        still require checks at actual dispatch.
+        """
+        self._check_requests(check)
 
     def execute(
         self,
@@ -611,6 +623,15 @@ def _combine(
     return products[0], levels
 
 
+def _check_leaf_requests(
+    sections: Sequence[EvidencePacket],
+    messages_for: Callable[..., list[dict[str, str]]],
+    check: Callable[[list[dict[str, str]]], None],
+) -> None:
+    for section in sections:
+        check(messages_for([section], final=len(sections) == 1))
+
+
 def plan_compression_input(
     sources: Sequence[EvidenceSource],
     *,
@@ -690,6 +711,7 @@ def plan_compression_input(
             lambda **_kwargs: replace(
                 result, packet=result.packet.model_copy(deep=True)
             ),
+            lambda _check: None,
         )
     fragments = _fragments(sources)
     if not fragments:
@@ -889,6 +911,7 @@ def plan_compression_input(
         False,
         witness,
         execute,
+        lambda check: _check_leaf_requests(sections, messages_for, check),
     )
 
 

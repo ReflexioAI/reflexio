@@ -125,3 +125,27 @@ caller's responsibility. It does not grant source authorization, reserve durable
 provider attempts, prove semantic retention, or enable a worker protocol. Every
 actual dispatch, including repairs and retries, still needs the caller's shared
 durable quota guard. Passthrough plans have zero selection sections/calls.
+
+For native model admission, `input_compression_llm.plan_with_client(...)` builds
+this core plan once, then checks every initial leaf through the actual LiteLLM
+request builder and existing complete-request capacity guard. This includes
+provider schema instructions, direct-answer mode and the configured output
+reservation. A custom endpoint requires its context declaration. These checks
+also run for cache-only compression work; passthrough has no model leaf to check.
+The planner rejects an oversized native leaf without repacking or dispatching.
+
+The returned `ClientCompressionPlan` exposes `.compression` for core geometry,
+its stronger `.witness`, and `.execute(before_call=..., load=..., save=...)`.
+Persist/compare that native witness in the durable caller: it additionally binds
+actual generation policy, the pinned transport ladder, capacity declarations,
+initial augmented message digests and measured request sizes. Existing v6 node
+keys remain compatible; they do not replace this stronger parent binding.
+Execution checks model/policy and initial-message drift before reading cached
+selections. Reductions and corrections still undergo native checks on every
+actual dispatch. Preparation never reads checkpoints, calls the lease/quota hook,
+or adds usage. Execution forwards observed usage once to the parent capture;
+elapsed time includes native preparation and execution, excluding the caller's
+wait between them. `CompressionPlan.check_requests(checker)` is the low-level
+seam for these fresh initial messages; a checker cannot change saved geometry.
+These library interfaces do not admit new durable work or enable compression in
+production workers.
