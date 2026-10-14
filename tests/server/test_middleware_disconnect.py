@@ -145,6 +145,16 @@ def test_normal_response_keeps_security_headers_correlation_id_and_tp_state():
             "Forbidden: Suspicious user agent",
         ),
         ({"User-Agent": ""}, "/", 200, None),
+        # The liveness probe is what container health checks hit with curl.
+        ({"User-Agent": "curl/8.0"}, "/healthz", 200, None),
+        ({"User-Agent": ""}, "/healthz", 200, None),
+        # The exemption is an exact path match, not a prefix.
+        (
+            {"User-Agent": "curl/8.0"},
+            "/healthz/eval",
+            403,
+            "Forbidden: Suspicious user agent",
+        ),
         ({"User-Agent": "pytest-agent"}, "/probe", 200, None),
     ],
 )
