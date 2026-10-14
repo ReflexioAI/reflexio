@@ -11,7 +11,7 @@ Description: Shared helpers between FastAPI domain routes and business logic —
 | `request_context.py` | `RequestContext` — bundles `org_id`, `storage`, `configurator`, `prompt_manager`. Built per request via `get_request_context()` (FastAPI `Depends`). The one object every handler reads storage/config/prompts through. |
 | `publisher_api.py` | Publishing + direct CRUD helpers: `add_user_interaction/profile/playbook`, session outcome collection/read, `update_*`, and the full family of single / by-ids / bulk delete helpers for interactions, profiles, playbooks, requests, and sessions; plus `run_playbook_aggregation()` and `clear_user_data()`. |
 | `account_api.py` | Identity/config helpers behind `/api/whoami`, `/api/my_config`. |
-| `health_api.py` | `GET /`, `/health`, `/healthz`, `/healthz/eval`; `install()` adds response-time + liveness tracking. |
+| `health_api.py` | `GET /`, `/health`, `/livez`, `/healthz`, `/healthz/eval`; `install()` adds response-time + liveness tracking. |
 | `pending_tool_call_api.py` | Router for resumable-extraction human clarification: list/get, `resolve`, `answer`, `not_applicable`, `cancel`; HMAC signature verify + migration-retry helpers. |
 | `stall_state_api.py` | `GET /api/stall_state`, `POST /api/stall_state/notified` — extraction-agent waiting state. |
 | `precondition_checks.py` | `precondition_checks()` — shared request validation. |

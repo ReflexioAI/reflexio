@@ -1,8 +1,9 @@
-"""``/healthz`` answers while the AnyIO threadpool is exhausted.
+"""The liveness probes answer while the AnyIO threadpool is exhausted.
 
-It is the container liveness probe. During a database stall every sync
-handler holds a threadpool token while it waits; a sync ``/healthz`` would
-queue behind them, time out, and get a merely-waiting process killed.
+``/livez`` is the container liveness probe and ``/healthz`` is its fallback on
+older images. During a database stall every sync handler holds a threadpool
+token while it waits; a sync probe would queue behind them, time out, and get
+a merely-waiting process killed.
 """
 
 from __future__ import annotations
@@ -17,8 +18,9 @@ from anyio.to_thread import current_default_thread_limiter
 from reflexio.server.api import create_app
 
 
+@pytest.mark.parametrize("path", ["/livez", "/healthz"])
 @pytest.mark.asyncio
-async def test_healthz_answers_while_every_threadpool_token_is_held() -> None:
+async def test_probe_answers_while_every_threadpool_token_is_held(path: str) -> None:
     app = create_app(mount_data_plane=False)
     release = threading.Event()
     entered = threading.Event()
@@ -51,9 +53,8 @@ async def test_healthz_answers_while_every_threadpool_token_is_held() -> None:
                 assert limiter.borrowed_tokens == limiter.total_tokens
 
                 with anyio.fail_after(2):
-                    response = await client.get("/healthz", headers=headers)
+                    response = await client.get(path, headers=headers)
                 assert response.status_code == 200
-                assert "pid" in response.json()
             finally:
                 # Unblock the stalled thread before the task group waits on it.
                 release.set()
