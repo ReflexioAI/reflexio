@@ -392,22 +392,28 @@ def _sections(
     """Pack actual serialized metadata/text and reject before spending calls."""
     sections: list[EvidencePacket] = []
     current: list[EvidenceSource] = []
-    for fragment in fragments:
-        candidate = EvidencePacket(evidence=[*current, fragment])
-        if current and (
+
+    def exceeds_capacity(candidate: EvidencePacket) -> bool:
+        return (
             compression_tokens(_json(_packet_payloads([candidate])))
             > budget.section_tokens
             or request_tokens([candidate]) > budget.input_tokens
-        ):
+        )
+
+    for fragment in fragments:
+        candidate = EvidencePacket(evidence=[*current, fragment])
+        if exceeds_capacity(candidate):
+            if not current:
+                raise CompressionError(
+                    "One source fragment exceeds compression capacity"
+                )
             sections.append(EvidencePacket(evidence=current))
             current = []
             candidate = EvidencePacket(evidence=[fragment])
-        if (
-            compression_tokens(_json(_packet_payloads([candidate])))
-            > budget.section_tokens
-            or request_tokens([candidate]) > budget.input_tokens
-        ):
-            raise CompressionError("One source fragment exceeds compression capacity")
+            if exceeds_capacity(candidate):
+                raise CompressionError(
+                    "One source fragment exceeds compression capacity"
+                )
         current.append(fragment)
         if len(sections) >= budget.max_sections:
             raise CompressionError("Compression exceeds its source section budget")
