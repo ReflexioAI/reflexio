@@ -259,8 +259,24 @@ point. Exact-source and downstream quality qualification remain required.
 After the existing bounded semantic repair, the guarded seam can discard entire
 groups containing unseen references from a complete schema-valid response.
 Every retained group is revalidated. No individual reference is guessed or
-removed from a retained group, and parse, refusal, model-route, budget and
+removed from a retained group, and parse, refusal, model-route, provider-budget and
 integrity failures are not converted to accepted results. Host omission notices
 and `provider_reference_recoveries` make this partial selection visible. That
 counter describes new provider work in this operation; cache hits may carry
 earlier omission notices without a new recovery.
+
+`packet.omission_counts` carries two bounded host-owned counters through unions,
+model reductions and cache replay: `capacity_points` and
+`unseen_reference_groups`. They count discarded groups/points across processing
+stages, not distinct missing source passages. They remain visible when a later
+selection has no new human-readable omission notice. Actual output measurements
+include this metadata; the offline adapter also retains it in the analyst's
+non-citable compaction summary.
+
+Before accepting capacity loss, native selection validation reports how many
+whole points would be dropped and asks for tighter original passages through
+the existing bounded semantic-repair mechanism. This can remove unrelated
+neighboring logs without the server severing a point's evidence. If the complete
+repaired selection still exceeds capacity, the host may retain fitting whole
+points, recording the partial result and omission totals. All repair attempts
+consume the same guarded quota; source-integrity errors still abort.

@@ -10,6 +10,7 @@ from reflexio.server.services.input_compression import (
     CompressionError,
     CompressionPoint,
     EvidenceSource,
+    OmissionCounts,
     compress_input,
     compression_tokens,
 )
@@ -94,6 +95,68 @@ def test_small_input_is_unchanged_without_model_or_cache_access():
     assert result.packet.evidence == [original]
     assert result.calls == result.cache_hits == 0
     assert result.covered_source_ids == (original.source_id,)
+
+
+def test_host_omission_totals_survive_paid_reductions_and_cache_replay():
+    originals = [
+        source(index, f"Record {index}: " + "diagnostic " * 650)
+        for index in range(1, 5)
+    ]
+    cache = {}
+    leaf_calls = []
+
+    def complete(call):
+        packets = packets_for(call)
+        leaf = len(packets) == 1
+        leaf_calls.append(leaf)
+        refs = [s["source_id"] for packet in packets for s in packet["evidence"]]
+        return CompressionChoice(
+            points=[
+                CompressionPoint(category="selected_evidence", evidence_refs=[ref])
+                for ref in (refs if leaf else refs[:1])
+            ],
+            # Simulate the native adapter's host-counted semantic recovery.
+            omission_counts=OmissionCounts(unseen_reference_groups=int(leaf)),
+        )
+
+    options = {
+        "budget": CompressionBudget(output_tokens=1024, section_tokens=2000),
+        "load": cache.get,
+        "save": cache.__setitem__,
+    }
+    result = run(originals, complete=complete, **options)
+    assert result.sections >= 2 and result.calls > result.sections
+    assert result.packet.omission_counts.unseen_reference_groups == sum(leaf_calls)
+    assert result.packet.omission_counts.capacity_points > 0
+    assert result.output_tokens == compression_tokens(result.packet.render()) <= 1024
+
+    replay = run(
+        originals,
+        complete=lambda _call: pytest.fail("Replay must use saved selections"),
+        **options,
+    )
+    assert replay.packet == result.packet
+    assert replay.calls == 0 and replay.cache_hits == result.calls
+
+
+def test_fitting_union_keeps_both_children_host_omission_totals():
+    from reflexio.server.services.input_compression import EvidencePacket, _combine
+
+    packets = [
+        EvidencePacket(omission_counts=OmissionCounts(capacity_points=3)),
+        EvidencePacket(omission_counts=OmissionCounts(unseen_reference_groups=2)),
+    ]
+    packet, _levels = _combine(
+        packets,
+        output_tokens=1024,
+        measure_output=lambda packet: compression_tokens(packet.render()),
+        parent_cost=lambda packet: compression_tokens(packet.render()),
+        intermediate_limit=2048,
+        select=lambda *_args, **_kwargs: pytest.fail("Fitting union needs no call"),
+    )
+    assert packet.omission_counts == OmissionCounts(
+        capacity_points=3, unseen_reference_groups=2
+    )
 
 
 @pytest.mark.parametrize("policy", ["extraction", "offline_tuning"])

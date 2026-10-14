@@ -18,7 +18,7 @@ from typing import Any, Literal
 import tiktoken
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-VERSION = "source-compression-v3"
+VERSION = "source-compression-v5"
 CompressionPolicy = Literal["extraction", "offline_tuning"]
 
 
@@ -64,6 +64,23 @@ class CompressionPoint(BaseModel):
     evidence_refs: list[str] = Field(min_length=1)
 
 
+class OmissionCounts(BaseModel):
+    """Host-counted drops across stages, not counts of unique source passages."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    capacity_points: int = Field(default=0, ge=0)
+    unseen_reference_groups: int = Field(default=0, ge=0)
+
+    def plus(self, other: OmissionCounts) -> OmissionCounts:
+        return OmissionCounts(
+            capacity_points=self.capacity_points + other.capacity_points,
+            unseen_reference_groups=(
+                self.unseen_reference_groups + other.unseen_reference_groups
+            ),
+        )
+
+
 class CompressionChoice(BaseModel):
     """The model returns IDs; the host supplies the authoritative quotations."""
 
@@ -73,6 +90,7 @@ class CompressionChoice(BaseModel):
     points: list[CompressionPoint] = Field(max_length=128)
     unresolved: list[str] = Field(default_factory=list, max_length=32)
     omissions: list[str] = Field(default_factory=list, max_length=32)
+    omission_counts: OmissionCounts = Field(default_factory=OmissionCounts)
 
     @model_validator(mode="before")
     @classmethod
@@ -105,6 +123,7 @@ class EvidencePacket(BaseModel):
     evidence: list[EvidenceSource] = Field(default_factory=list)
     unresolved: list[str] = Field(default_factory=list)
     omissions: list[str] = Field(default_factory=list)
+    omission_counts: OmissionCounts = Field(default_factory=OmissionCounts)
 
     def render(self) -> str:
         return _json(self.model_dump(mode="json", exclude_none=True))
@@ -145,8 +164,36 @@ class CompressionCall:
     key: str
     messages: list[dict[str, str]]
     output_tokens: int
-    validate: Callable[[CompressionChoice], list[str]]
+    pack_choice: Callable[[CompressionChoice], EvidencePacket]
     visible_refs: tuple[str, ...] = ()
+
+    def validate(self, choice: CompressionChoice) -> list[str]:
+        """Validate a possibly partial whole-point result without hiding errors."""
+        try:
+            self.pack_choice(choice)
+        except CompressionError as exc:
+            return [str(exc)]
+        return []
+
+    def validate_selection(self, choice: CompressionChoice) -> list[str]:
+        """Request bounded repair before accepting avoidable capacity loss."""
+        try:
+            packet = self.pack_choice(choice)
+        except CompressionError as exc:
+            return [str(exc)]
+        dropped = len(choice.points) - len(packet.points)
+        return (
+            [
+                f"Copying these selections would discard {dropped} of "
+                f"{len(choice.points)} whole points for capacity. Select tighter "
+                "original evidence groups within the displayed rendered and "
+                "next-request budgets. Routine neighboring logs are not "
+                "qualifying evidence merely because they share a turn. "
+                "Retain material constraints, conditions and counterevidence."
+            ]
+            if dropped
+            else []
+        )
 
 
 @dataclass(frozen=True)
@@ -403,6 +450,7 @@ def _materialize(
         evidence=evidence,
         unresolved=choice.unresolved,
         omissions=choice.omissions,
+        omission_counts=choice.omission_counts,
     )
     measured = measure_output(packet)
     if measured > output_tokens:
@@ -451,6 +499,9 @@ def _pack_choice(
                 ]
                 if dropped
                 else choice.omissions,
+                "omission_counts": choice.omission_counts.plus(
+                    OmissionCounts(capacity_points=dropped)
+                ),
             }
         )
         return _materialize(value, available, output_tokens, measure_output)
@@ -498,6 +549,7 @@ def _combine(
                 ),
                 unresolved=[item for p in pair for item in p.unresolved],
                 omissions=[item for p in pair for item in p.omissions],
+                omission_counts=pair[0].omission_counts.plus(pair[1].omission_counts),
             )
             following.append(
                 merged
@@ -665,18 +717,22 @@ def compress_input(
             }
         )
 
-        def validate(choice: CompressionChoice) -> list[str]:
-            try:
-                _pack_choice(
-                    choice,
-                    available,
-                    budget.output_tokens,
-                    measure_output,
-                    lambda packet: final or parent_cost(packet) <= intermediate_limit,
-                )
-            except CompressionError as exc:
-                return [str(exc)]
-            return []
+        def with_prior_omissions(choice: CompressionChoice) -> CompressionChoice:
+            # Cache only this selection's LOCAL counts. Reconstruct inherited
+            # counts from its children on every read, never add them twice.
+            counts = choice.omission_counts
+            for packet in packets:
+                counts = counts.plus(packet.omission_counts)
+            return choice.model_copy(update={"omission_counts": counts})
+
+        def pack_choice(choice: CompressionChoice) -> EvidencePacket:
+            return _pack_choice(
+                with_prior_omissions(choice),
+                available,
+                budget.output_tokens,
+                measure_output,
+                lambda packet: final or parent_cost(packet) <= intermediate_limit,
+            )
 
         cached = load(key)
         if cached is not None:
@@ -687,18 +743,16 @@ def compress_input(
                 raise CompressionError("Compression exceeds its model-call budget")
             choice = complete(
                 CompressionCall(
-                    key, messages, budget.output_tokens, validate, tuple(available)
+                    key,
+                    messages,
+                    budget.output_tokens,
+                    pack_choice,
+                    tuple(available),
                 )
             )
             calls += 1
             input_tokens += cost
-        packet = _pack_choice(
-            choice,
-            available,
-            budget.output_tokens,
-            measure_output,
-            lambda packet: final or parent_cost(packet) <= intermediate_limit,
-        )
+        packet = pack_choice(choice)
         if cached is None:
             save(key, choice.model_dump(mode="json"))
         return packet

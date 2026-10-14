@@ -399,6 +399,159 @@ def test_real_litellm_repair_dispatch_preserves_guards_and_parent_accounting(
     assert all(request["model"] == live_client.config.model for request in requests)
 
 
+@pytest.mark.parametrize("repair_fits", [True, False])
+def test_capacity_feedback_repairs_or_keeps_explicit_whole_point_partial_result(
+    monkeypatch, repair_fits
+):
+    import litellm
+
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+    live_client = LiteLLMClient(
+        LiteLLMConfig(model="minimax/MiniMax-M3", max_tokens=8192, fallback_models=[])
+    )
+    requests = []
+
+    def transport(params, _hard_timeout):
+        requests.append(params)
+        body = next(
+            json.loads(message["content"])
+            for message in params["messages"]
+            if isinstance(message.get("content"), str)
+            and message["content"].startswith('{"allowed_evidence_refs"')
+        )
+        refs = body["allowed_evidence_refs"]
+        if repair_fits and len(requests) == 2:
+            refs = refs[:1]
+        return litellm.ModelResponse(
+            choices=[
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps(
+                            {"points": [{"evidence_refs": [ref]} for ref in refs]}
+                        ),
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+        )
+
+    monkeypatch.setattr(live_client, "_completion_with_hard_timeout", transport)
+    monkeypatch.setattr(
+        "reflexio.server.llm.input_budget.litellm.token_counter", Mock(return_value=100)
+    )
+    sources = [
+        EvidenceSource(
+            source_id=f"source-{index}",
+            request_id="request",
+            interaction_id=index,
+            field="content",
+            speaker="User",
+            source_order=index,
+            text=f"Constraint {index} approval " * 300,
+        )
+        for index in (1, 2)
+    ]
+    result = compress_with_client(
+        sources,
+        scope={"org_id": "org", "project_id": "project", "user_id": "alice"},
+        policy="offline_tuning",
+        budget=CompressionBudget(output_tokens=1024),
+        client=live_client,
+        context_limits={live_client.config.model: 512000},
+    )
+    assert result.sections == 1
+    assert len(requests) == result.provider_attempts == 2
+    assert result.provider_reference_recoveries == 0
+    assert result.packet.points and result.output_tokens <= 1024
+    assert bool(result.packet.omission_counts.capacity_points) is not repair_fits
+    assert result.provider_input_tokens == 200 and result.provider_output_tokens == 40
+
+
+def test_capacity_repair_preserves_all_constraints_without_neighboring_routine_logs(
+    monkeypatch,
+):
+    import litellm
+
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+    live_client = LiteLLMClient(
+        LiteLLMConfig(model="minimax/MiniMax-M3", max_tokens=8192, fallback_models=[])
+    )
+    requests = []
+
+    def transport(params, _hard_timeout):
+        requests.append(params)
+        body = next(
+            json.loads(message["content"])
+            for message in params["messages"]
+            if isinstance(message.get("content"), str)
+            and message["content"].startswith('{"allowed_evidence_refs"')
+        )
+        records = body["input_packets"][0]["evidence"]
+        groups = []
+        for index in range(0, len(records), 2):
+            refs = [records[index]["source_id"]]
+            if len(requests) == 1:
+                refs.append(records[index + 1]["source_id"])
+            groups.append({"evidence_refs": refs})
+        return litellm.ModelResponse(
+            choices=[
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps({"points": groups}),
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+        )
+
+    monkeypatch.setattr(live_client, "_completion_with_hard_timeout", transport)
+    monkeypatch.setattr(
+        "reflexio.server.llm.input_budget.litellm.token_counter", Mock(return_value=100)
+    )
+    sources = []
+    for index in range(1, 11):
+        for field, text in (
+            (
+                "content",
+                f"Target service_{index} needs owner_{index} approval, never another owner's approval.",
+            ),
+            ("tools_used[0]", "routine " * 400),
+        ):
+            sources.append(
+                EvidenceSource(
+                    source_id=f"{index}:{field}",
+                    request_id=f"request-{index}",
+                    interaction_id=index,
+                    field=field,
+                    speaker="User" if field == "content" else "Assistant",
+                    source_order=index,
+                    text=text,
+                )
+            )
+    result = compress_with_client(
+        sources,
+        scope={"org_id": "org", "project_id": "project", "user_id": "alice"},
+        policy="offline_tuning",
+        budget=CompressionBudget(output_tokens=4096),
+        client=live_client,
+        context_limits={live_client.config.model: 512000},
+    )
+    assert result.sections == result.calls == 1
+    assert result.provider_attempts == len(requests) == 2
+    assert result.packet.omission_counts.capacity_points == 0
+    assert len(result.packet.evidence) == 10
+    assert [source.text for source in result.packet.evidence] == [
+        source.text for source in sources if source.field == "content"
+    ]
+    assert result.output_tokens <= 4096
+
+
 def test_bounded_repair_discards_only_whole_unverifiable_reference_groups(monkeypatch):
     import litellm
 
@@ -445,6 +598,7 @@ def test_bounded_repair_discards_only_whole_unverifiable_reference_groups(monkey
         "reflexio.server.llm.input_budget.litellm.token_counter", Mock(return_value=100)
     )
     original = group()
+    cache = {}
     result = compress_extraction_window(
         [original],
         org_id="org",
@@ -453,15 +607,33 @@ def test_bounded_repair_discards_only_whole_unverifiable_reference_groups(monkey
         budget=CompressionBudget(output_tokens=2048),
         client=live_client,
         context_limits={live_client.config.model: 512000},
+        load=cache.get,
+        save=cache.__setitem__,
     )
     assert len(requests) == result.provider_attempts == 2
     assert result.provider_reference_recoveries == 1
+    assert result.packet.omission_counts.unseen_reference_groups == 1
     assert len(result.packet.points) == len(result.packet.evidence) == 1
     assert result.packet.evidence[0].text in original.interactions[0].content
     assert any(
         "discarded 1 entire groups" in notice for notice in result.packet.omissions
     )
     assert result.provider_input_tokens == 200 and result.provider_output_tokens == 40
+    replay = compress_extraction_window(
+        [original],
+        org_id="org",
+        project_id="project",
+        user_id="alice",
+        budget=CompressionBudget(output_tokens=2048),
+        client=live_client,
+        context_limits={live_client.config.model: 512000},
+        load=cache.get,
+        save=cache.__setitem__,
+    )
+    assert replay.packet == result.packet
+    assert replay.packet.omission_counts.unseen_reference_groups == 1
+    assert replay.provider_attempts == replay.provider_reference_recoveries == 0
+    assert len(requests) == 2
 
 
 @pytest.mark.parametrize(

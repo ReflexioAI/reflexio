@@ -23,6 +23,7 @@ from reflexio.server.services.input_compression import (
     CompressionResult,
     EvidencePacket,
     EvidenceSource,
+    OmissionCounts,
     compress_input,
     packet_tokens,
 )
@@ -161,7 +162,7 @@ def compress_with_client(
         def validate(value: BaseModel) -> list[str]:
             if not isinstance(value, _ReferenceSelection):
                 return ["Expected structured compression selections"]
-            return call.validate(value.choice())
+            return call.validate_selection(value.choice())
 
         request_options: dict[str, Any] = (
             {"extra_body": {"thinking": {"type": "disabled"}}} if direct_answer else {}
@@ -198,15 +199,23 @@ def compress_with_client(
                 if all(ref in visible for ref in point.evidence_refs)
             ]
             discarded = len(candidate.points) - len(retained)
-            if not discarded:
-                raise
             choice = _ReferenceSelection(points=retained).choice()
-            choice.omissions = [
-                f"Host discarded {discarded} entire groups with unseen references after bounded repair; source selection is incomplete."
-            ]
+            capacity_loss = bool(call.validate_selection(choice))
+            if not discarded and not capacity_loss:
+                raise
+            choice.omissions = (
+                [
+                    f"Host discarded {discarded} entire groups with unseen references after bounded repair; source selection is incomplete."
+                ]
+                if discarded
+                else [
+                    "Host: Selection still exceeds capacity after bounded repair; whole points may be omitted."
+                ]
+            )
+            choice.omission_counts = OmissionCounts(unseen_reference_groups=discarded)
             if call.validate(choice):
                 raise
-            reference_recoveries += 1
+            reference_recoveries += bool(discarded)
             return choice
         if not isinstance(result, _ReferenceSelection):
             raise CompressionError("Provider returned no structured compression")

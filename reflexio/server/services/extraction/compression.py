@@ -24,7 +24,7 @@ from reflexio.server.services.input_compression import (
 )
 from reflexio.server.services.input_compression_llm import compress_with_client
 
-EXTRACTION_OUTPUT_CONTRACT = "extraction-original-ranges-content-groups-v3"
+EXTRACTION_OUTPUT_CONTRACT = "extraction-original-ranges-content-groups-v4"
 
 
 def _canonical_packet(packet: EvidencePacket) -> EvidencePacket:
