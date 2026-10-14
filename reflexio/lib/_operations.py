@@ -78,9 +78,16 @@ class OperationsMixin(ReflexioBase):
                             f"Auto-recovered: operation was stuck for {elapsed}s "
                             f"(threshold: {BATCH_STALE_PROGRESS_SECONDS}s)"
                         )
-                        self._get_storage().update_operation_state(
-                            progress_key, operation_state
-                        )
+                        owner = operation_state.get("current_request_id")
+                        if owner:
+                            operation_state["in_progress"] = False
+                            self._get_storage().clear_in_progress_lock_if_owner(
+                                progress_key, owner, operation_state
+                            )
+                        else:
+                            self._get_storage().update_operation_state(
+                                progress_key, operation_state
+                            )
 
             # Convert to OperationStatusInfo
             operation_status_info = OperationStatusInfo(**operation_state)

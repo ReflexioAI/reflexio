@@ -956,3 +956,18 @@ class TestRerunHooks:
 
         assert user_ids == ["u1", "u2"]
         request_context.storage.get_rerun_user_ids.assert_called_once()
+
+
+@pytest.mark.parametrize("processed", [0, 1])
+def test_manual_partial_batch_reports_failure(service, request_context, processed):
+    state = MagicMock()
+    state.check_in_progress.return_value = None
+    request_context.storage.get_all_user_ids.return_value = ["u1", "u2"]
+    with (
+        patch.object(service, "_create_state_manager", return_value=state),
+        patch.object(service, "_run_batch_with_progress", return_value=(processed, 3)),
+    ):
+        response = service.run_manual_regular(ManualProfileGenerationRequest())
+    assert response.success is False
+    assert response.profiles_generated == 3
+    assert f"{processed}/2" in response.msg

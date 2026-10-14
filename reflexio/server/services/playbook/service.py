@@ -1251,7 +1251,7 @@ class PlaybookGenerationService(
                 "source": request.source,
                 "mode": "manual_regular",
             }
-            self._run_batch_with_progress(
+            users_processed, _ = self._run_batch_with_progress(
                 user_ids=user_ids,
                 request=request,  # type: ignore[reportArgumentType]
                 request_params=request_params,
@@ -1262,8 +1262,13 @@ class PlaybookGenerationService(
             total_playbooks = self._count_manual_generated(request)
 
             return ManualPlaybookGenerationResponse(
-                success=True,
-                msg=f"Generated {total_playbooks} playbook entries",
+                success=users_processed == len(user_ids),
+                msg=(
+                    f"Generated {total_playbooks} playbook entries"
+                    if users_processed == len(user_ids)
+                    else f"Generation incomplete: completed {users_processed}/{len(user_ids)} user(s); "
+                    "check generation status for failures or cancellation"
+                ),
                 playbooks_generated=total_playbooks,
             )
 

@@ -287,17 +287,21 @@ def regenerate(
         wait_for_response=wait,
     )
 
-    # When waiting, auto-promote PENDING profiles to CURRENT so they're
-    # immediately visible in `list` output.  Without this, regenerated
-    # profiles stay in PENDING status and the default list filter (CURRENT
-    # only) returns 0 results.
+    # Failed or canceled generation retains pending output for inspection.
+    raise_if_failed(resp, default="Generation did not complete")
     promoted = 0
     if wait:
         try:
             upgrade_resp = client.upgrade_profiles(user_id=user_id)
-            promoted = upgrade_resp.profiles_promoted
-        except Exception:
-            print_info("Warning: promotion failed, but regeneration succeeded")
+        except Exception as exc:
+            raise CliError(
+                error_type="api",
+                message=f"Generation succeeded, but promotion failed: {exc}",
+            ) from exc
+        raise_if_failed(
+            upgrade_resp, default="Generation succeeded, but promotion failed"
+        )
+        promoted = upgrade_resp.profiles_promoted
 
     json_mode: bool = ctx.obj.json_mode
     if json_mode:

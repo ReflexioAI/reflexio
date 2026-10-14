@@ -92,8 +92,8 @@ def raise_if_failed(resp: object, default: str = "operation failed") -> None:
     ``update-status``) so that ``success=False`` envelopes do not get
     reported as a success. The server's response schemas use either
     ``message`` or ``msg`` for the human-readable error string; both
-    are checked. Call only in non-JSON mode — JSON-mode callers
-    introspect the response envelope themselves.
+    are checked. ``handle_errors`` renders a structured error in JSON mode;
+    callers that need the original response envelope may handle it themselves.
 
     Args:
         resp: Response object returned by the client.
@@ -156,7 +156,7 @@ def handle_errors(fn):  # noqa: ANN001, ANN201
         # Determine json_mode from context if available
         import typer
 
-        ctx = None
+        ctx = kwargs.get("ctx")
         for arg in args:
             if isinstance(arg, typer.Context):
                 ctx = arg

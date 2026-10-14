@@ -50,6 +50,7 @@ from reflexio.server.auth import (
 )
 from reflexio.server.cache import reflexio_cache
 from reflexio.server.rate_limit import limiter
+from reflexio.server.services.operation_state_utils import OperationStateManager
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -330,10 +331,20 @@ def rerun_profile_generation_endpoint(
 
     # Run the long-running task in the background to avoid proxy timeout
     # Client polls get_operation_status for progress
+    manager = OperationStateManager(
+        reflexio.get_storage(), org_id, "profile_generation"
+    )
+    if not manager.claim_progress(payload.model_dump(mode="json")):
+        return RerunProfileGenerationResponse(
+            success=False, msg="Another generation attempt is already in progress"
+        )
+    payload._operation_id = manager.operation_id
     background_tasks.add_task(reflexio.rerun_profile_generation, payload)
 
     return RerunProfileGenerationResponse(
-        success=True, msg="Profile generation started"
+        success=True,
+        msg="Profile generation started",
+        operation_id=manager.operation_id or "",
     )
 
 

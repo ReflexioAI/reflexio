@@ -2471,6 +2471,7 @@ class ReflexioClient:
         poll_interval: float = 3.0,
         max_wait: float = 600.0,
         min_started_at: int | None = None,
+        operation_id: str | None = None,
     ) -> GetOperationStatusResponse:
         """
         Poll the operation status endpoint until the operation completes, fails, or is cancelled.
@@ -2479,8 +2480,9 @@ class ReflexioClient:
             service_name: The service name to poll (e.g. "profile_generation", "playbook_generation")
             poll_interval: Seconds between polls
             max_wait: Maximum seconds to wait before raising TimeoutError
-            min_started_at: Optional Unix timestamp. Ignore stale operation
-                states that started before this timestamp.
+            min_started_at: Optional Unix timestamp for legacy uncorrelated polling.
+            operation_id: Exact admitted attempt. When provided, matching identity
+                replaces the timestamp heuristic and tolerates clock skew.
 
         Returns:
             GetOperationStatusResponse: Final operation status
@@ -2507,7 +2509,18 @@ class ReflexioClient:
             # The API stores operation timestamps at second precision. Accept a
             # one-second skew so a just-submitted operation that starts near the
             # client timestamp boundary is not treated as stale forever.
-            if op and min_started_at is not None and op.started_at < min_started_at - 1:
+            if (
+                op
+                and operation_id is not None
+                and op.request_params.get("operation_id") != operation_id
+            ):
+                op = None
+            if (
+                op
+                and operation_id is None
+                and min_started_at is not None
+                and op.started_at < min_started_at - 1
+            ):
                 op = None
             if op and op.status in (
                 OperationStatus.COMPLETED,
@@ -2528,6 +2541,8 @@ class ReflexioClient:
         """Internal sync method to rerun profile generation.
 
         Submits the request, then polls operation status until completion.
+        The server must return an attempt ID; a legacy service label cannot
+        confirm synchronous completion.
         """
         submitted_at = int(time.time())
         response = self._make_request(
@@ -2538,31 +2553,52 @@ class ReflexioClient:
         initial = RerunProfileGenerationResponse(**response)
         if not initial.success:
             return initial
+        # Older servers return a constant service label, which cannot prove an attempt.
+        if (
+            initial.operation_id == "rerun_profile_generation"
+            or not initial.operation_id
+        ):
+            return RerunProfileGenerationResponse(
+                operation_id=initial.operation_id,
+                success=False,
+                msg="Server cannot identify this generation attempt; upgrade the server before using wait_for_response",
+            )
 
         # Poll until the background task completes
         try:
             status_response = self._poll_operation_status(
-                "profile_generation", min_started_at=submitted_at
+                "profile_generation",
+                min_started_at=submitted_at,
+                operation_id=initial.operation_id,
             )
             op = status_response.operation_status
             if op and op.status == OperationStatus.COMPLETED:
                 return RerunProfileGenerationResponse(
+                    operation_id=initial.operation_id,
                     success=True,
                     msg="Profile generation completed",
-                    profiles_generated=op.processed_users,
+                    profiles_generated=op.stats.get("total_generated", 0),
                 )
             if op and op.status == OperationStatus.FAILED:
                 return RerunProfileGenerationResponse(
+                    operation_id=initial.operation_id,
                     success=False,
                     msg=op.error_message or "Profile generation failed",
+                    profiles_generated=op.stats.get("total_generated", 0),
                 )
             return RerunProfileGenerationResponse(
+                operation_id=initial.operation_id,
                 success=False,
                 msg="Profile generation was cancelled",
+                profiles_generated=op.stats.get("total_generated", 0) if op else 0,
             )
-        except (TimeoutError, Exception) as e:
+        except Exception as e:
             logger.warning("Error while polling profile generation status: %s", e)
-            return initial
+            return RerunProfileGenerationResponse(
+                operation_id=initial.operation_id,
+                success=False,
+                msg="Could not confirm generation completion; check generation status before retrying",
+            )
 
     async def _rerun_profile_generation_async(
         self, request: RerunProfileGenerationRequest
@@ -2594,7 +2630,10 @@ class ReflexioClient:
 
         Args:
             request (Optional[RerunProfileGenerationRequest]): The rerun request object (alternative to kwargs)
-            wait_for_response (bool, optional): If True, wait for response. If False, send request without waiting. Defaults to False.
+            wait_for_response (bool, optional): If True, wait for the exact server-admitted
+                attempt; requires a server returning attempt IDs. Partial failure,
+                cancellation or unconfirmed completion returns success=False. If False,
+                submit without waiting. Defaults to False.
             user_id (Optional[str]): Specific user ID to rerun for. If None, runs for all users.
             start_time (Optional[datetime]): Filter interactions by start time.
             end_time (Optional[datetime]): Filter interactions by end time.
@@ -2721,6 +2760,8 @@ class ReflexioClient:
         """Internal sync method to rerun playbook generation.
 
         Submits the request, then polls operation status until completion.
+        The server must return an attempt ID; a legacy service label cannot
+        confirm synchronous completion.
         """
         submitted_at = int(time.time())
         response = self._make_request(
@@ -2731,31 +2772,52 @@ class ReflexioClient:
         initial = RerunPlaybookGenerationResponse(**response)
         if not initial.success:
             return initial
+        # Older servers return a constant service label, which cannot prove an attempt.
+        if (
+            initial.operation_id == "rerun_playbook_generation"
+            or not initial.operation_id
+        ):
+            return RerunPlaybookGenerationResponse(
+                operation_id=initial.operation_id,
+                success=False,
+                msg="Server cannot identify this generation attempt; upgrade the server before using wait_for_response",
+            )
 
         # Poll until the background task completes
         try:
             status_response = self._poll_operation_status(
-                "playbook_generation", min_started_at=submitted_at
+                "playbook_generation",
+                min_started_at=submitted_at,
+                operation_id=initial.operation_id,
             )
             op = status_response.operation_status
             if op and op.status == OperationStatus.COMPLETED:
                 return RerunPlaybookGenerationResponse(
+                    operation_id=initial.operation_id,
                     success=True,
                     msg="Playbook generation completed",
-                    playbooks_generated=op.processed_users,
+                    playbooks_generated=op.stats.get("total_generated", 0),
                 )
             if op and op.status == OperationStatus.FAILED:
                 return RerunPlaybookGenerationResponse(
+                    operation_id=initial.operation_id,
                     success=False,
                     msg=op.error_message or "Playbook generation failed",
+                    playbooks_generated=op.stats.get("total_generated", 0),
                 )
             return RerunPlaybookGenerationResponse(
+                operation_id=initial.operation_id,
                 success=False,
                 msg="Playbook generation was cancelled",
+                playbooks_generated=op.stats.get("total_generated", 0) if op else 0,
             )
-        except (TimeoutError, Exception) as e:
+        except Exception as e:
             logger.warning("Error while polling playbook generation status: %s", e)
-            return initial
+            return RerunPlaybookGenerationResponse(
+                operation_id=initial.operation_id,
+                success=False,
+                msg="Could not confirm generation completion; check generation status before retrying",
+            )
 
     async def _rerun_playbook_generation_async(
         self, request: RerunPlaybookGenerationRequest
@@ -2786,7 +2848,10 @@ class ReflexioClient:
 
         Args:
             request (Optional[RerunPlaybookGenerationRequest]): The rerun request object (alternative to kwargs)
-            wait_for_response (bool, optional): If True, wait for response. If False, send request without waiting. Defaults to False.
+            wait_for_response (bool, optional): If True, wait for the exact server-admitted
+                attempt; requires a server returning attempt IDs. Partial failure,
+                cancellation or unconfirmed completion returns success=False. If False,
+                submit without waiting. Defaults to False.
             agent_version (str): Required. The agent version to evaluate.
             start_time (Optional[datetime]): Filter by start time.
             end_time (Optional[datetime]): Filter by end time.

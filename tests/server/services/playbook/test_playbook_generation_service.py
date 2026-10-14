@@ -1,6 +1,7 @@
 import datetime
 import tempfile
 from datetime import UTC
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
@@ -1507,3 +1508,30 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+@pytest.mark.parametrize("processed", [0, 1])
+def test_manual_partial_batch_reports_failure(processed):
+    context = MagicMock()
+    context.org_id = "partial-batch"
+    service = PlaybookGenerationService(llm_client=MagicMock(), request_context=context)
+    state = MagicMock()
+    state.check_in_progress.return_value = None
+    context.storage.get_sessions.return_value = {
+        "session": [
+            SimpleNamespace(request=SimpleNamespace(user_id="u1", source="test")),
+            SimpleNamespace(request=SimpleNamespace(user_id="u2", source="test")),
+        ]
+    }
+    with (
+        patch.object(service, "_create_state_manager", return_value=state),
+        patch.object(service, "_run_batch_with_progress", return_value=(processed, 3)),
+        patch.object(service, "_count_manual_generated", return_value=3),
+    ):
+        response = service.run_manual_regular(
+            ManualPlaybookGenerationRequest(agent_version="v1")
+        )
+    assert response.success is False
+    assert response.playbooks_generated == 3
+    assert response.msg is not None
+    assert f"{processed}/2" in response.msg
