@@ -882,3 +882,19 @@ def test_plan_request_checker_receives_exact_fresh_leaf_messages(large):
         assert prepared.passthrough and not checked and not actual
     else:
         assert prepared.sections > 1 and result.sections == len(checked)
+
+
+def test_impossible_fixed_rendering_refuses_before_section_preparation(monkeypatch):
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("Impossible fixed rendering must not plan sections or call models")
+
+    monkeypatch.setattr("reflexio.server.services.input_compression._sections", forbidden)
+    with pytest.raises(CompressionError, match="fixed consumer rendering"):
+        run(
+            [source()],
+            complete=forbidden,
+            load=forbidden,
+            save=forbidden,
+            measure_output=lambda _packet: 2048,
+            output_contract="impossible-consumer-input-v1",
+        )

@@ -24,7 +24,8 @@ information, and resumes outside the request path.
 | `outcome.py` | Provides the generic extraction outcome wrapper used by callers. |
 | `overflow_protocol.py` | Pure validation of the inactive outer-v2 source-package descriptor, frozen stage budgets and typed source-selection receipts. |
 | `input_preparation.py` | Ownership-checked field collection and bounded, lossless legacy chunks with original field/character spans. The new collector does not impose legacy chunk geometry. |
-| `compression.py` | Qualification adapter for the shared compressor; restores original range references and checks window authority before and after preparation. Does not select a production worker protocol. |
+| `compression.py` | Provider-free window planning and guarded execution for the shared compressor; restores original range references and checks window authority before and after execution. Does not select a production worker protocol. |
+| `source_package.py` | Pure consumer rendering and validated, immutable presentation of selected original ranges, attribution and visible quotation boundaries. |
 | `protected_record.py` | Accumulates source-verified quotations for cross-chunk context; capacity failure never silently removes an earlier correction. |
 | `protected_pass.py` | Builds that context with checkpointed source-validated model passes; keeps scoped approvals and reported versus observed outcomes distinct. Bounded repair feedback identifies invalid quotation entries without disclosing source text; inner-JSON escaping and exact spelling remain source invariants. |
 | `overflow_coordinator.py` | Owns scoped provider admission, monotonic durable attempt reservations, immutable step receipts and historical observed usage. Never publishes child learnings. |
@@ -351,3 +352,46 @@ committed output must survive unchanged. A new coordinator can reload that faile
 parent without refunding quota. The frozen actual outer-v1 reader fixture and
 HTTP/storage tests protect this mixed-version boundary. None of this enables a
 new runtime, changes billing, deploys code, or establishes semantic qualification.
+
+### Provider-free window planning and source presentation
+
+`plan_extraction_window` returns an `ExtractionCompressionPlan` before any lease,
+cache or provider callbacks run. It combines the full original-window witness
+(including empty interactions) with the native plan witness. Rebuild and compare
+that witness under the caller's durable scope before execution; the narrower
+`source_cache_digest` alone is not an authorization or publication receipt.
+Execution retains before/after authority checks and per-dispatch checks. Text
+plans refuse images rather than silently dropping their evidence.
+
+The default output contract still counts packet JSON. A caller may supply a
+pure `measure_output` with a separately versioned `output_contract` to count the
+complete judge and extractor input instead. For that contract the result's
+`output_tokens` means the measured complete consumer input, not packet-only
+size or provider output usage. Instructions, existing context, tools and output
+schemas must all be included; the input limit must also leave each consumer's
+actual output reservation within its model capacity. `measure_request_input_tokens`
+uses the same complete-input counter and 20% margin as native admission, but
+returns oversized counts so packing can remove whole groups. Actual dispatch
+still needs the rejecting admission guard on every continuation and repair.
+If the fixed rendering cannot fit even with no selected evidence, planning
+refuses before native section preparation or provider work; the shared core
+enforces the same rule for other consumer renderers.
+An optional inexpensive `estimate_output` only sizes advisory source menus;
+exact measurement remains authoritative. Both callbacks must be pure, frozen
+and named by the rendering contract. Planning time and execution time are counted
+without including the caller's wait between them.
+
+`source_package_presentation` verifies each selected range and all original
+metadata, ordering and point references against `ExtractionSources`. It freezes
+prompt bytes and the selected visible original spans. Its renderer includes
+producer/role attribution and labels host navigation as non-citable. A quotation
+checker must use only these visible spans; it may join adjacent original ranges
+but cannot recover text across a gap. This presentation does not prove complete
+processing, own tenant authorization, or install a runtime context.
+
+The profile prompt builder accepts explicit `source_text`, and
+`build_profile_gate_prompt` renders the existing criteria from explicit inputs.
+They allow faithful prompt costing without a fabricated legacy chunk or
+coordinator. Durable callers must also freeze real template identities and add
+all native tool/schema/answer augmentation. These planning seams do not admit
+new source-package workers or change existing saved journals.

@@ -94,6 +94,40 @@ def supply_extraction_output_reservation(params: dict[str, Any]) -> None:
     params[key] = maximum
 
 
+def measure_request_input_tokens(params: Mapping[str, Any]) -> int:
+    """Count complete built input with margin, without rejecting for capacity.
+
+    This is the same counter used by admission. Pure compression renderers need
+    an oversized integer so they can drop whole evidence groups; configuration
+    and counting failures still raise. Output reservation and context capacity
+    remain the admission guard's responsibility.
+    """
+    model = params.get("model")
+    if not isinstance(model, str) or not model:
+        raise InputBudgetConfigurationError("Missing effective model")
+    messages = params.get("messages")
+    if not isinstance(messages, list):
+        raise InputBudgetConfigurationError("Complete provider messages are required")
+    try:
+        tokens = litellm.token_counter(
+            model=model,
+            messages=messages,
+            tools=params.get("tools"),
+            tool_choice=params.get("tool_choice"),
+        )
+        response_format = params.get("response_format")
+        if response_format:
+            if hasattr(response_format, "model_json_schema"):
+                response_format = response_format.model_json_schema()
+            tokens += litellm.token_counter(
+                model=model,
+                text=json.dumps(response_format, ensure_ascii=False, sort_keys=True),
+            )
+    except Exception as exc:
+        raise InputBudgetConfigurationError("Complete prompt counting failed") from exc
+    return math.ceil(tokens * 1.2)
+
+
 def check_request_input_budget(
     params: Mapping[str, Any],
     *,
@@ -131,27 +165,7 @@ def check_request_input_budget(
     output_tokens = params.get("max_completion_tokens", params.get("max_tokens"))
     if type(output_tokens) is not int or output_tokens <= 0:
         raise InputBudgetConfigurationError("Effective output reservation is required")
-    messages = params.get("messages")
-    if not isinstance(messages, list):
-        raise InputBudgetConfigurationError("Complete provider messages are required")
-    try:
-        tokens = litellm.token_counter(
-            model=model,
-            messages=messages,
-            tools=params.get("tools"),
-            tool_choice=params.get("tool_choice"),
-        )
-        response_format = params.get("response_format")
-        if response_format:
-            if hasattr(response_format, "model_json_schema"):
-                response_format = response_format.model_json_schema()
-            tokens += litellm.token_counter(
-                model=model,
-                text=json.dumps(response_format, ensure_ascii=False, sort_keys=True),
-            )
-    except Exception as exc:
-        raise InputBudgetConfigurationError("Complete prompt counting failed") from exc
-    budgeted_tokens = math.ceil(tokens * 1.2)
+    budgeted_tokens = measure_request_input_tokens(params)
     if budgeted_tokens > min(prompt_target, context_limit - output_tokens):
         raise InputBudgetExceededError(
             "Complete extraction prompt exceeds input capacity"

@@ -224,6 +224,8 @@ def construct_profile_extraction_messages_from_sessions(
     agent_context_prompt: str,
     context_prompt: str,
     extraction_definition_prompt: str,
+    *,
+    source_text: str | None = None,
 ) -> list[dict]:
     """
     Construct LLM messages for profile extraction from sessions.
@@ -239,6 +241,8 @@ def construct_profile_extraction_messages_from_sessions(
         agent_context_prompt: Context about the agent for system message
         context_prompt: Additional context for system message
         extraction_definition_prompt: Definition of what profiles should contain
+        source_text: Explicit original-evidence presentation for pure request costing.
+            None retains the existing ContextVar/history behavior.
 
     Returns:
         list[dict]: List of messages ready for profile extraction
@@ -266,9 +270,13 @@ def construct_profile_extraction_messages_from_sessions(
         prompt_id=ProfileGenerationServiceConstants.PROFILE_UPDATE_MAIN_PROMPT_ID,
         variables={
             "existing_profiles": formatted_existing_profiles,
-            "interactions": presentation.text
-            if presentation is not None
-            else format_sessions_to_history_string(request_interaction_data_models),
+            "interactions": source_text
+            if source_text is not None
+            else (
+                presentation.text
+                if presentation is not None
+                else format_sessions_to_history_string(request_interaction_data_models)
+            ),
         },
     )
 
@@ -285,3 +293,34 @@ def construct_profile_extraction_messages_from_sessions(
     )
 
     return construct_messages_from_interactions(interactions, config)
+
+
+def build_profile_gate_prompt(
+    *,
+    prompt_manager: PromptManager,
+    agent_context_prompt: str,
+    extraction_definition_prompt: str | None,
+    condition_prompt: str | None,
+    source_text: str,
+) -> str | None:
+    """Render the existing gate from explicit inputs, without storage/provider work.
+
+    PromptManager resolves local templates. Callers doing durable planning also
+    freeze template identities, contexts and source authorization themselves.
+    """
+    criteria_parts = []
+    if extraction_definition_prompt:
+        criteria_parts.append(f"definition: {extraction_definition_prompt.strip()}")
+    if condition_prompt:
+        criteria_parts.append(f"condition: {condition_prompt.strip()}")
+    combined_criteria = "; ".join(criteria_parts)
+    if not combined_criteria:
+        return None
+    return prompt_manager.render_prompt(
+        ProfileGenerationServiceConstants.PROFILE_SHOULD_GENERATE_PROMPT_ID,
+        {
+            "agent_context_prompt": agent_context_prompt,
+            "should_extract_profile_prompt": combined_criteria,
+            "new_interactions": source_text,
+        },
+    )
