@@ -10,6 +10,9 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.llm.litellm_client import LiteLLMClient
+    from reflexio.server.services.profile.components.consolidator import (
+        ProfileConsolidator,
+    )
 
 from reflexio.models.api_schema.domain.entities import LineageContext
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
@@ -161,6 +164,18 @@ class ProfileGenerationService(
             [p for result in results if result for p in result]
         )
 
+    def _create_consolidator(self) -> ProfileConsolidator:
+        """Use native consolidation unless a scoped executor supplies its journal."""
+        from reflexio.server.services.profile.components.consolidator import (
+            ProfileConsolidator,
+        )
+
+        return ProfileConsolidator(
+            request_context=self.request_context,
+            llm_client=self.client,
+            output_pending_status=self.output_pending_status,
+        )
+
     def _resolve_write_plan(
         self, results: list[list[UserProfile]]
     ) -> ProfileWritePlan | None:
@@ -186,15 +201,7 @@ class ProfileGenerationService(
 
         # Always run deduplicator when there are new profiles
         if all_new_profiles:
-            from reflexio.server.services.profile.components.consolidator import (
-                ProfileConsolidator,
-            )
-
-            consolidator = ProfileConsolidator(
-                request_context=self.request_context,
-                llm_client=self.client,
-                output_pending_status=self.output_pending_status,
-            )
+            consolidator = self._create_consolidator()
             all_new_profiles, existing_ids_to_delete, _superseded_profiles = (
                 consolidator.deduplicate(
                     all_new_profiles, user_id, generation_request_id

@@ -253,7 +253,7 @@ class OverflowCoordinator:
     def initial_package_manifest(
         source_digest: str, input_protocol: dict[str, Any]
     ) -> dict[str, Any]:
-        """Construct only; runtime admission remains explicitly unsupported."""
+        """Construct only; admission belongs to an explicit window executor."""
         manifest = {
             **OverflowCoordinator.initial_manifest(source_digest),
             "version": 2,
@@ -301,6 +301,16 @@ class OverflowCoordinator:
             raise ProviderRequestGuardError(
                 "Extraction cannot publish without verified full source coverage"
             )
+
+    def billing_input_text(self) -> str:
+        """Count original primary fields once, independent of provider retries."""
+        fields: dict[tuple[int, str, str], list[str]] = {}
+        for chunk in self.require_prepared().chunks:
+            for span in chunk.spans:
+                fields.setdefault(
+                    (span.interaction_id, span.request_id, span.field), []
+                ).append(span.text)
+        return "\n".join("".join(pieces) for pieces in fields.values())
 
     def verified_adopted_record(self, index: int) -> ProtectedRecord:
         """Revalidate separate evidence under the original legacy run contract."""

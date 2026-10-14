@@ -28,6 +28,9 @@ information, and resumes outside the request path.
 | `source_package.py` | Pure consumer rendering and validated, immutable presentation of selected original ranges, attribution and visible quotation boundaries. |
 | `package_compression.py` | Compresses against an already-admitted package journal, binding exact per-node inputs/native contracts to durable selections and actual charged attempts. Does not admit, consume or publish a window. |
 | `profile_package_preparation.py` | Freezes profile prompt context, templates, actual native ladders/schema/tools/output policy and complete input pricing before package compression. No admission or worker selection. |
+| `profile_package_consumer.py` | Consumes an already-admitted package through one real gate and the durable profile child; never publishes its parent. |
+| `profile_package_consolidator.py` | Journals frozen OLD inputs and real native duplicate-check decisions, preserving typed host fallback and paid attempts. |
+| `profile_package_state.py` | Canonical consumed-field witnesses shared by profile runtime and the locked SQL publication fence. |
 | `protected_record.py` | Accumulates source-verified quotations for cross-chunk context; capacity failure never silently removes an earlier correction. |
 | `protected_pass.py` | Builds that context with checkpointed source-validated model passes; keeps scoped approvals and reported versus observed outcomes distinct. Bounded repair feedback identifies invalid quotation entries without disclosing source text; inner-JSON escaping and exact spelling remain source invariants. |
 | `overflow_coordinator.py` | Owns scoped provider admission, monotonic durable attempt reservations, immutable step receipts and historical observed usage. Never publishes child learnings. |
@@ -446,7 +449,7 @@ actual pending-tool specs/configuration, original output schemas, native full
 ladders and generation-contract hashes. Potentially credential-bearing route
 descriptors and context-limit keys are hashed, not copied into the snapshot.
 Pending-tool signing secrets are also excluded; only their configuration digest
-is retained. A future runtime must obtain actual secrets from live approved
+is retained. Runtime callers must obtain actual secrets from live approved
 configuration rather than reconstructing credentials from this private snapshot.
 The real request builder runs inside a temporary dispatch-refusing extraction
 guard, preserving native output-reservation/model-policy order and restoring
@@ -498,3 +501,39 @@ This entry point does not install worker admission, deduplicate candidates,
 authorize final coverage, publish profiles, advance cursors, bill completion or
 activate runtime selection. Those remaining integration boundaries must be
 qualified separately before selecting this path in a worker.
+
+
+### Explicit profile parent qualification
+
+`durable_learning/profile_package_executor.py::ProfilePackageWindowExecutor`
+connects the prepared package to the existing atomic window publication and
+outbox. Ordinary workers still select `WindowExecutor`; this entry point adds
+no flag, deployment or automatic runtime activation.
+
+It freezes the actual template versions, selected profile context, complete prior
+answers and native consumer contract before admitting an outer2 parent. Resume
+rebuilds that preparation from authoritative originals and frozen context rather
+than repeating prior lookup or selecting newly activated prompts. Legacy parents
+retain their own protocol and are refused by this entry point.
+
+`profile_package_consolidator.py` reuses the ordinary native duplicate checker,
+freezing its retrieved OLD rows, ordering, template and actual paid decision.
+A first-parsed or transport fallback remains explicitly a host fallback; malformed
+cached receipts cannot enter that fallback. Converted candidate IDs, TTL clocks,
+resolved write plan and precomputed vectors are frozen once. Their binding includes
+the actual replayed child output/provenance, source and consumer contract. Shared
+checkpoint CAS forbids changing those host decisions after capture.
+
+`profile_package_state.py` defines the consumed-field witness for existing profile
+context and duplicate-check rows. The shared SQL fence reads bounded named-column
+batches and holds row locks through publication. Deleted, expired, superseded or
+changed OLD rows block both fresh and cached publication, including no-action
+dedup decisions. Original inputs, answers, lease and project retain their existing
+fences. Profiles, finalization receipt, cursor and effects commit together.
+
+Positive extraction counts original fields once for its source-input billing basis;
+physical provider usage comes from the durable attempt journal. A negative gate
+produces no learning or source-input charge, while its actual model usage remains
+in the existing strict token outbox. Processing receipts prove processing, not
+semantic recall. Live quality qualification and default worker selection remain
+separate gates.

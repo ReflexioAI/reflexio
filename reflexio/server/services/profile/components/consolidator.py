@@ -5,7 +5,9 @@ and against existing profiles in the database using hybrid search and LLM.
 
 import logging
 from collections import Counter
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -16,7 +18,7 @@ from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.env_utils import env_bool
 from reflexio.server.error_reporting import capture_anomaly
-from reflexio.server.llm._litellm_types import ModelProvenance
+from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
@@ -545,6 +547,44 @@ class ProfileConsolidator(BaseDeduplicator):
         )
         return existing_profiles
 
+    def _render_dedup_prompt(
+        self,
+        new_profiles: list[UserProfile],
+        existing_profiles: list[UserProfile],
+        *,
+        template_identity: Mapping[str, str] | None = None,
+    ) -> str:
+        """Render native inputs, optionally using one frozen template identity."""
+        new_text, existing_text = self._format_new_and_existing_for_prompt(
+            new_profiles, existing_profiles
+        )
+        variables = {
+            "new_profile_count": len(new_profiles),
+            "new_profiles": new_text,
+            "existing_profile_count": len(existing_profiles),
+            "existing_profiles": existing_text,
+        }
+        manager = self.request_context.prompt_manager
+        if template_identity is not None:
+            return manager.render_prompt_from_identity(
+                self._get_prompt_id(), variables, template_identity
+            )
+        return manager.render_prompt(self._get_prompt_id(), variables)
+
+    def _call_native_dedup(
+        self,
+        messages: list[dict[str, Any]],
+        output_schema: type[BaseModel],
+        validator: Callable[[BaseModel], list[str]],
+    ) -> CompletionResult[Any]:
+        """Keep the existing native request and fallback behavior in one seam."""
+        return self.client.generate_chat_response_with_provenance(
+            messages=messages,
+            model=self.model_name,
+            response_format=output_schema,
+            structured_output_validator=validator,
+        )
+
     def deduplicate(
         self,
         new_profiles: list[UserProfile],
@@ -577,21 +617,7 @@ class ProfileConsolidator(BaseDeduplicator):
         # Retrieve existing profiles via hybrid search
         existing_profiles = self._retrieve_existing_profiles(new_profiles, user_id)
 
-        # Format for prompt
-        new_text, existing_text = self._format_new_and_existing_for_prompt(
-            new_profiles, existing_profiles
-        )
-
-        # Build and call LLM
-        prompt = self.request_context.prompt_manager.render_prompt(
-            self._get_prompt_id(),
-            {
-                "new_profile_count": len(new_profiles),
-                "new_profiles": new_text,
-                "existing_profile_count": len(existing_profiles),
-                "existing_profiles": existing_text,
-            },
-        )
+        prompt = self._render_dedup_prompt(new_profiles, existing_profiles)
 
         output_schema_class = self._get_output_schema_class()
 
@@ -631,11 +657,10 @@ class ProfileConsolidator(BaseDeduplicator):
                 logger, "Profile deduplication", [{"role": "user", "content": prompt}]
             )
 
-            completion = self.client.generate_chat_response_with_provenance(
+            completion = self._call_native_dedup(
                 messages=[{"role": "user", "content": prompt}],
-                model=self.model_name,
-                response_format=output_schema_class,
-                structured_output_validator=_validate_output,
+                output_schema=output_schema_class,
+                validator=_validate_output,
             )
             self.model_provenance = completion.provenance
             response = completion.value

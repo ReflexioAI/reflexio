@@ -85,6 +85,7 @@ class SQLiteStreamSQL:
             "_pending_tool_calls",
             "_run_tool_dependencies",
             "user_playbooks",
+            "profiles",
         }:
             raise ValueError("Unknown extraction table")
         return name

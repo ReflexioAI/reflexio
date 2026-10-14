@@ -48,7 +48,7 @@ strings before deleting old import paths in the same PR.
 
 | Directory | Purpose |
 |-----------|---------|
-| `durable_learning/` | `admission.py` commits incoming streams; `scheduler.py` / `worker.py` run bounded user turns; `window_executor.py` / `window_codec.py` compute frozen windows; `user_lease.py` shares ownership with manual/resumed generation; `waiting.py` bounds HTTP waits; `local.py` recovers standalone-library work. |
+| `durable_learning/` | `admission.py` commits incoming streams; `scheduler.py` / `worker.py` run bounded user turns; `window_executor.py` / `window_codec.py` compute frozen windows; `profile_package_executor.py` explicitly qualifies source-package profile publication without changing worker selection; `user_lease.py` shares ownership with manual/resumed generation; `waiting.py` bounds HTTP waits; `local.py` recovers standalone-library work. |
 | `extraction/` | Shared async extraction runtime: `resumable_agent.py`, `resume_scheduler.py`, `resume_worker.py`, `pending_tool_call_dispatch.py` (`ask_human`), `prior_answer_search.py`, `agent_run_records.py`, and `outcome.py`. Long-horizon / tool-mediated extraction continues outside the request path. See [README](extraction/README.md). |
 | `input_compression.py`, `input_compression_llm.py` | Shared source-backed compression with extraction/session policies, exact original excerpts, bounded hierarchical selection, provider-free admission planning and guarded provider dispatch. Callable qualification adapters; importing them does not switch worker protocols. |
 
