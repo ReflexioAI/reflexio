@@ -483,6 +483,12 @@ class WindowExecutor:
                 coordinator.require_full_source_coverage()
                 if is_source_quoted_window(coordinator):
                     validate_source_quoted_plan(coordinator, service, plan)
+                    if plan is not None and plan.write_plan is not None:
+                        # Cached timestamps are not authority for the creation
+                        # clock. Assign it at the fenced persistence boundary.
+                        created_at = int(time.time())
+                        for row in plan.write_plan.new_playbooks:
+                            row.created_at = created_at
                 self.storage.validate_extraction_source_digest(
                     window, coordinator.source_digest
                 )

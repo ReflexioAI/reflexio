@@ -380,6 +380,8 @@ at storage float32 precision. Initial row IDs must be zero, and active/waiting
 child continuations cannot be bypassed. Cached multi-chunk protocol
 plans without that receipt, changed text/vectors, and retirement/merge proposals are
 refused. Existing drafts and attempt journals are not rewritten or reset. Copied
+rows receive their creation timestamp from the trusted clock at fenced persistence,
+so cached timestamps cannot alter chronology. Copied
 rules are excluded from automatic optimizer admission and GEPA publication;
 ordinary human-reviewed agent aggregation remains a separate derived workflow.
 

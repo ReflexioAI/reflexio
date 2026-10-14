@@ -2533,6 +2533,7 @@ def payload(request_id, count=10, user_id="u", force=False):
         "existing_id_cache",
         "active_cache",
         "waiting_cache",
+        "clock_cache",
     ],
 )
 def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
@@ -2630,6 +2631,7 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
         {"role": "Assistant", "content": "Diagnostic output. " * 18000},
         {"role": "Assistant", "content": "No deployment performed."},
     ]
+    started_at = int(time.time())
     assert client.post("/api/publish_interaction", json=body).json()["success"]
     token_bill = Mock(wraps=metering_events.record_extraction_tokens)
     learning_bill = Mock(
@@ -2673,6 +2675,8 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
                 outcome["write_plan"]["new_playbooks"][0]["embedding"][0] = 0.9
             if replay == "dimension_cache":
                 outcome["write_plan"]["new_playbooks"][0]["embedding"] = [0.9]
+            if replay == "clock_cache":
+                outcome["write_plan"]["new_playbooks"][0]["created_at"] = 1
             if replay == "existing_id_cache":
                 outcome["write_plan"]["new_playbooks"][0]["user_playbook_id"] = (
                     old.user_playbook_id
@@ -2703,9 +2707,9 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
             now = db.now()
         monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: now + 600)
         assert worker.drain_org("stream-test", 1, 300) == (
-            1 if replay == "commit_failure" else 0
+            1 if replay in {"commit_failure", "clock_cache"} else 0
         )
-    expected = 2 if replay in {"clean", "commit_failure"} else 1
+    expected = 2 if replay in {"clean", "commit_failure", "clock_cache"} else 1
     rows = storage.get_user_playbooks(user_id="u", include_embedding=True)
     assert len(rows) == expected
     assert (
@@ -2717,8 +2721,9 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
         assert new.content == new.source_span == instruction
         assert new.trigger == instruction and new.rationale is None
         assert new.embedding and new.expanded_terms is None
+        assert started_at <= new.created_at <= int(time.time())
         assert "User corrected" not in new.notes
-    if replay in {"clean", "empty", "commit_failure"}:
+    if replay in {"clean", "empty", "commit_failure", "clock_cache"}:
         # Commit and its durable effects are separate worker turns.
         token_bill.assert_not_called()
         learning_bill.assert_not_called()
