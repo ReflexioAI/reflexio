@@ -3,6 +3,7 @@
 import copy
 import hashlib
 import json
+import shutil
 from typing import Any
 from unittest.mock import Mock
 
@@ -570,3 +571,69 @@ def test_unrelated_or_unbounded_validator_suffix_refuses(monkeypatch, mutation):
         params["messages"][-2]["tool_calls"] = []
     with pytest.raises(InputBudgetConfigurationError, match="messages changed"):
         prepared.check_request("agent", messages, params, ("gpt-4o-mini",), True)
+
+
+@pytest.mark.parametrize("passthrough", [True, False])
+@pytest.mark.parametrize("drift", ["template", "schema", "consumer_ladder"])
+def test_consumer_drift_refuses_before_cache_or_provider(
+    monkeypatch, tmp_path, passthrough, drift
+):
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        ProfileGenerationServiceConstants as Prompts,
+    )
+
+    manager = PromptManager()
+    for prompt_id in (
+        Prompts.PROFILE_UPDATE_INSTRUCTION_START_PROMPT_ID,
+        Prompts.PROFILE_UPDATE_MAIN_PROMPT_ID,
+        Prompts.PROFILE_SHOULD_GENERATE_PROMPT_ID,
+    ):
+        origin = next(
+            path / prompt_id
+            for path in manager.prompt_bank_paths
+            if (path / prompt_id).is_dir()
+        )
+        shutil.copytree(origin, tmp_path / prompt_id)
+    manager = PromptManager(prompt_bank_path=tmp_path)
+    original = group()
+    original.interactions[0].content = (
+        "Short original statement."
+        if passthrough
+        else "Operational history with conditions. " * 3000
+    )
+    prepared, client = preparation(
+        monkeypatch,
+        groups=[original],
+        prompt_manager=manager,
+        gate_model="gpt-4o",
+        context_limits={"gpt-4o-mini": 131072, "gpt-4o": 14000},
+    )
+    assert prepared.compression.native.compression.passthrough is passthrough
+    if drift == "template":
+        identity = prepared.snapshot["templates"][Prompts.PROFILE_UPDATE_MAIN_PROMPT_ID]
+        path = (
+            tmp_path
+            / Prompts.PROFILE_UPDATE_MAIN_PROMPT_ID
+            / f"v{identity['active_version']}.prompt.md"
+        )
+        path.write_text(path.read_text() + "\nChanged instructions\n")
+    elif drift == "schema":
+        monkeypatch.setattr(
+            StructuredProfilesOutput,
+            "model_json_schema",
+            Mock(return_value={"type": "null"}),
+        )
+    else:
+        client.config.fallback_models.append("gpt-4o")
+    load = Mock(side_effect=AssertionError("cache must not run"))
+    before = Mock(side_effect=AssertionError("provider admission must not run"))
+    wire = Mock(side_effect=AssertionError("provider must not run"))
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
+    with pytest.raises(
+        (ValueError, InputBudgetConfigurationError),
+        match="drifted|schema changed|contract changed",
+    ):
+        prepared.compression.execute(load=load, before_call=before)
+    load.assert_not_called()
+    before.assert_not_called()
+    wire.assert_not_called()

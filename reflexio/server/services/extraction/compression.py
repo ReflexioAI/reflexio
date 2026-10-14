@@ -110,6 +110,7 @@ def plan_extraction_window(
     measure_output: Callable[[EvidencePacket], int] = packet_tokens,
     estimate_output: Callable[[EvidencePacket], int] | None = None,
     output_contract: str = EXTRACTION_OUTPUT_CONTRACT,
+    validate_output_contract: Callable[[], None] = lambda: None,
 ) -> ExtractionCompressionPlan:
     """Collect original fields and plan before legacy geometry or provider I/O.
 
@@ -120,6 +121,8 @@ def plan_extraction_window(
     The optional estimate only sizes advisory source menus; exact measurement
     still controls acceptance. Existing packet-budget qualification uses the
     unchanged default v4 contract.
+    A frozen consumer supplies validate_output_contract to reject drift before
+    cache access and every new dispatch, including passthrough execution.
     """
     preparation_started = time.monotonic()
     if any(
@@ -247,11 +250,16 @@ def plan_extraction_window(
         inspect_node: Callable[[CompressionNodeInput], None],
     ) -> CompressionResult:
         execution_started = time.monotonic()
-        before_call()
+
+        def validate() -> None:
+            validate_output_contract()
+            before_call()
+
+        validate()
         result = native.execute(
-            before_call=before_call, load=load, save=save, inspect_node=inspect_node
+            before_call=validate, load=load, save=save, inspect_node=inspect_node
         )
-        before_call()
+        validate()
         return replace(
             result,
             packet=with_original_content(result.packet),

@@ -70,6 +70,33 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode()).hexdigest()
 
 
+def _validate_profile_native_contract(
+    client: LiteLLMClient,
+    stage_options: dict[str, dict[str, Any]],
+    ladders: dict[str, list[str]],
+    contracts: dict[str, list[str]],
+    schemas: dict[str, Any],
+    requests: Callable[[str, list[dict[str, Any]]], list[dict[str, Any]]],
+) -> None:
+    if schemas != {
+        "agent": StructuredProfilesOutput.model_json_schema(),
+        "dedup": ProfileDeduplicationOutput.model_json_schema(),
+    }:
+        raise InputBudgetConfigurationError("Profile output schema changed")
+    for stage, models in ladders.items():
+        if not models:
+            continue
+        if (
+            list(client.get_completion_model_ladder(**stage_options[stage])) != models
+            or [
+                _digest(client._completion_request_contract_from_params(request))
+                for request in requests(stage, [])
+            ]
+            != contracts[stage]
+        ):
+            raise InputBudgetConfigurationError("Profile native contract changed")
+
+
 def build_profile_package_request(
     client: LiteLLMClient, messages: list[dict[str, Any]], **options: Any
 ) -> dict[str, Any]:
@@ -363,6 +390,15 @@ def prepare_profile_package(
     }
     contract_digest = _digest(snapshot)
 
+    def validate_consumer() -> None:
+        # This preflight also runs on passthrough and cache-only execution,
+        # before any lookup or model call can consume work under a stale plan.
+        render_agent("")
+        render_gate("")
+        _validate_profile_native_contract(
+            client, stage_options, ladders, contracts, snapshot["schemas"], requests
+        )
+
     def measure(packet: EvidencePacket) -> int:
         # Original witness is authoritative, including empty interactions.
         # Assigned once below before the planner invokes this callback.
@@ -397,6 +433,7 @@ def prepare_profile_package(
         client=client,
         context_limits=context_limits,
         measure_output=measure,
+        validate_output_contract=validate_consumer,
         output_contract=f"profile-package-complete-native-v1:{contract_digest}",
     )
     if plan.source_digest != source_digest:
@@ -420,11 +457,7 @@ def prepare_profile_package(
             or "fallbacks" in params
         ):
             raise InputBudgetConfigurationError("Profile dispatch policy changed")
-        if snapshot["schemas"] != {
-            "agent": StructuredProfilesOutput.model_json_schema(),
-            "dedup": ProfileDeduplicationOutput.model_json_schema(),
-        }:
-            raise InputBudgetConfigurationError("Profile output schema changed")
+        validate_consumer()
         index = ladder.index(params["model"])
         actual_contract = _digest(
             client._completion_request_contract_from_params(params)
