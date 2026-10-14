@@ -768,7 +768,7 @@ class UserPlaybookStoreMixin:
         return row
 
     def precompute_user_playbook_embeddings(
-        self, playbooks: list[UserPlaybook]
+        self, playbooks: list[UserPlaybook], *, expand_documents: bool = True
     ) -> None:
         """Populate ``.embedding`` / ``.expanded_terms`` in place; no DB write.
 
@@ -780,7 +780,7 @@ class UserPlaybookStoreMixin:
         for up in playbooks:
             text = embedding_text(up)
             if text:
-                if self._should_expand_documents():
+                if expand_documents and self._should_expand_documents():
                     with ThreadPoolExecutor(max_workers=2) as executor:
                         emb_future = executor.submit(self._get_embedding, text)
                         exp_future = executor.submit(self._expand_document, text)
@@ -1368,6 +1368,19 @@ class UserPlaybookStoreMixin:
         conditions: list[str] = []
         params: list[Any] = []
 
+        if options and options.exclude_source_quoted:
+            # CASE is lazy in SQLite: malformed legacy notes never reach JSON
+            # extraction. Last duplicate key wins, matching Python and JSONB.
+            # Only the exact object policy marks protected rows.
+            conditions.append(
+                "CASE WHEN json_valid(up.notes) THEN "
+                "CASE WHEN json_type(up.notes) = 'object' THEN COALESCE("
+                "(SELECT CASE WHEN marker.type = 'text' THEN marker.value = ? ELSE 0 END "
+                "FROM json_each(up.notes) AS marker WHERE marker.key = 'policy' "
+                "ORDER BY marker.id DESC LIMIT 1), 0) ELSE 0 END "
+                "ELSE 0 END = 0"
+            )
+            params.append("source-quoted-playbooks-v1")
         if user_id:
             conditions.append("up.user_id = ?")
             params.append(user_id)

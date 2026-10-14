@@ -44,6 +44,12 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookGenerationRequest,
 )
 from reflexio.server.services.playbook.service import PlaybookGenerationService
+from reflexio.server.services.playbook.source_quoted_overflow import (
+    compute_source_quoted_plan,
+    is_source_quoted_window,
+    ordinary_playbook_notes,
+    validate_source_quoted_plan,
+)
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileGenerationRequest,
 )
@@ -360,7 +366,11 @@ class WindowExecutor:
             return
         saved_run = coordinator.saved_run
         claims: dict[str, Any] = {}
-        if saved_run is not None and saved_run.committed_output is not None:
+        if (
+            not is_source_quoted_window(coordinator)
+            and saved_run is not None
+            and saved_run.committed_output is not None
+        ):
             payload, _ = decode_committed_output(saved_run.committed_output)
             items = (
                 payload.get(
@@ -389,7 +399,11 @@ class WindowExecutor:
                 agent_context=coordinator.agent_context,
                 candidates=claims,
                 minimum_following_attempts=(
-                    len(claims) * 2 + 1 if claims else len(prepared.chunks) + 3
+                    0
+                    if is_source_quoted_window(coordinator)
+                    else len(claims) * 2 + 1
+                    if claims
+                    else len(prepared.chunks) + 3
                 ),
             )
 
@@ -427,6 +441,22 @@ class WindowExecutor:
                 "Saved extraction parent completion lost ownership"
             )
 
+    def _preserve_ordinary_plan_notes(
+        self, window: Window, coordinator: OverflowCoordinator | None, plan: Any
+    ) -> None:
+        # Cached outcomes bypass ordinary extraction/resolution. Determine the
+        # actual protocol before touching notes; genuine projections are sealed
+        # and validated below, not normalized by an ordinary-generation path.
+        if (
+            window.kind != "playbook"
+            or plan is None
+            or plan.write_plan is None
+            or (coordinator is not None and is_source_quoted_window(coordinator))
+        ):
+            return
+        for row in plan.write_plan.new_playbooks:
+            row.notes = ordinary_playbook_notes(row.notes)
+
     def execute(self, window: Window, token: str) -> None:
         service, request, config = self.service(window)
         coordinator = self._coordinator(window, token, service, request, config)
@@ -450,15 +480,39 @@ class WindowExecutor:
             outcome = encode_plan(plan, service)
             self.storage.save_extraction_outcome(window, token, outcome)
         else:
-            plan = decode_plan(
-                window.outcome, window.kind, config, window.user_id, service
-            )
+            try:
+                plan = decode_plan(
+                    window.outcome, window.kind, config, window.user_id, service
+                )
+            except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                if coordinator is not None and is_source_quoted_window(coordinator):
+                    raise InputBudgetConfigurationError(
+                        "Cached source projection plan is malformed"
+                    ) from exc
+                raise
+        self._preserve_ordinary_plan_notes(window, coordinator, plan)
         with self.storage.commit_scope():
             # Explicit deletion wins over a cached compute as well as live compute.
             self.storage.fence_user_extraction(window.user_id, token)
             self.storage.validate_extraction_inputs(window)
             if coordinator is not None:
                 coordinator.require_full_source_coverage()
+                if is_source_quoted_window(coordinator):
+                    validate_source_quoted_plan(coordinator, service, plan)
+                    # Projection has one logical run and no model-authored
+                    # output. Cached operational metadata is not authority.
+                    service._last_extractor_run_stats = {
+                        "total": 1,
+                        "failed": 0,
+                        "timed_out": 0,
+                    }
+                    service._last_model_provenance = None
+                    if plan is not None and plan.write_plan is not None:
+                        # Cached timestamps are not authority for the creation
+                        # clock. Assign it at the fenced persistence boundary.
+                        created_at = int(time.time())
+                        for row in plan.write_plan.new_playbooks:
+                            row.created_at = created_at
                 self.storage.validate_extraction_source_digest(
                     window, coordinator.source_digest
                 )
@@ -503,6 +557,8 @@ class WindowExecutor:
         try:
             self._prepare_overflow_context(coordinator, config)
             with coordinator.provider_scope():
+                if is_source_quoted_window(coordinator):
+                    return compute_source_quoted_plan(coordinator, service, config)
                 return service.compute_generation(request)
         except Exception as exc:
             current: BaseException | None = exc

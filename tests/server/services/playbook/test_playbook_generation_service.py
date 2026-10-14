@@ -655,6 +655,7 @@ def test_resolve_write_plan_honors_reject_all_consolidation():
             agent_version="1.0",
             request_id="test_request_id",
             content="A candidate already covered by an existing playbook.",
+            notes='{"policy":"source-quoted-playbooks-v1"}',
             trigger="When handling the same task",
         )
 
@@ -670,6 +671,15 @@ def test_resolve_write_plan_honors_reject_all_consolidation():
             plan = service._resolve_write_plan([[candidate]])
 
         assert plan is None
+        from reflexio.server.services.playbook.source_quoted_overflow import (
+            is_source_quoted_playbook,
+        )
+
+        assert not is_source_quoted_playbook(candidate)
+        assert candidate.notes.endswith('{"policy":"source-quoted-playbooks-v1"}')
+        assert consolidator_class.return_value.deduplicate.call_args.args[0] == [
+            [candidate]
+        ]
         precompute.assert_not_called()
 
 

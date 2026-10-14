@@ -35,6 +35,9 @@ from reflexio.server.services.deduplication_utils import (
 from reflexio.server.services.playbook.playbook_service_utils import (
     is_evidence_validated,
 )
+from reflexio.server.services.playbook.source_quoted_overflow import (
+    is_source_quoted_playbook,
+)
 from reflexio.server.services.profile.profile_generation_service_utils import (
     check_string_token_overlap,
 )
@@ -705,10 +708,13 @@ class PlaybookConsolidator(BaseDeduplicator):
                     threshold=self._dedup_config.search_threshold,
                     top_k=self._dedup_config.search_top_k,
                 )
-                search_options = SearchOptions(query_embedding=embeddings[i])
+                search_options = SearchOptions(
+                    query_embedding=embeddings[i], exclude_source_quoted=True
+                )
                 results = storage.search_user_playbooks(  # type: ignore[reportOptionalMemberAccess]
                     search_request, search_options
                 )
+                results = [row for row in results if not is_source_quoted_playbook(row)]
                 self._remember_retrieval_matches(query_playbooks[i], results)
                 for fb in results:
                     if fb.user_playbook_id and fb.user_playbook_id not in seen_ids:
@@ -1046,6 +1052,11 @@ class PlaybookConsolidator(BaseDeduplicator):
             existing_playbooks = self.retrieve_existing_playbooks(
                 new_playbooks, user_id=user_id, agent_version=agent_version
             )
+        # Earlier review stages can supply their own retrieved rows. Preserve
+        # copied instructions through every automatic consolidation strategy.
+        existing_playbooks = [
+            row for row in existing_playbooks if not is_source_quoted_playbook(row)
+        ]
 
         from reflexio.server.services.playbook.components.overflow_evidence import (
             remember_historical_playbooks,

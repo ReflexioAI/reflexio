@@ -300,6 +300,50 @@ class TestFormatNewAndExistingForPrompt:
 class TestRetrieveExistingPlaybooks:
     """Tests for retrieve_existing_playbooks."""
 
+    def test_copied_instructions_are_not_model_consolidation_inputs(
+        self, mock_consolidator
+    ):
+        import json
+
+        from reflexio.server.services.playbook.source_quoted_overflow import POLICY
+
+        candidate = _make_user_playbook(0)
+        copied = _make_user_playbook(
+            1, user_playbook_id=10, notes=json.dumps({"policy": POLICY})
+        )
+        ordinary = _make_user_playbook(2, user_playbook_id=20)
+        storage = mock_consolidator.request_context.storage
+        storage._get_embedding.return_value = [0.1, 0.2, 0.3]
+        storage.search_user_playbooks.return_value = [copied, ordinary]
+        assert mock_consolidator.retrieve_existing_playbooks([candidate]) == [ordinary]
+        assert storage.search_user_playbooks.call_args.args[1].exclude_source_quoted
+
+    def test_audited_prefetched_inputs_also_exclude_copied_instructions(
+        self, mock_consolidator, monkeypatch
+    ):
+        import json
+
+        from reflexio.models.config_schema import DeduplicationConfig
+        from reflexio.server.services.playbook.source_quoted_overflow import POLICY
+
+        monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+        mock_consolidator._dedup_config = DeduplicationConfig(strategy="audited")
+        copied = _make_user_playbook(
+            1, user_playbook_id=10, notes=json.dumps({"policy": POLICY})
+        )
+        with patch(
+            "reflexio.server.services.playbook.components.reconciliation.reconcile_playbooks",
+            return_value=([], [], []),
+        ) as reconcile:
+            mock_consolidator.deduplicate(
+                [[_make_user_playbook(0)]],
+                request_id="later",
+                user_id="u",
+                agent_version="v1",
+                existing_playbooks=[copied],
+            )
+        assert reconcile.call_args.args[2] == []
+
     def test_with_embeddings(self, mock_consolidator):
         """Test retrieval embeds queries via the storage's own embedding path."""
         new_fb = _make_user_playbook(0, trigger="user asks about billing")

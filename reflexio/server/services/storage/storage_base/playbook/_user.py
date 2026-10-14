@@ -165,7 +165,7 @@ class UserPlaybookStoreMixin:
 
     @abstractmethod
     def precompute_user_playbook_embeddings(
-        self, playbooks: list[UserPlaybook]
+        self, playbooks: list[UserPlaybook], *, expand_documents: bool = True
     ) -> None:
         """Populate ``.embedding`` (and ``.expanded_terms`` when document
         expansion is enabled) on each playbook in place, issuing NO DB write.
@@ -174,6 +174,10 @@ class UserPlaybookStoreMixin:
         outside the writer transaction, then pass ``skip_embedding=True`` to
         :meth:`save_user_playbooks` so the fenced persist writes the
         pre-computed vector without re-embedding.
+
+        ``expand_documents=False`` computes vectors without generated search
+        terms, even when document expansion is configured. Source-quoted recovery
+        uses this to preserve its sealed, original-only publication fields.
         """
         raise NotImplementedError
 

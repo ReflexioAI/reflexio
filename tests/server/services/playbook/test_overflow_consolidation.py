@@ -374,7 +374,9 @@ def test_rebuilt_proposal_reuses_receipt_across_clock_and_unrelated_witness_chan
     coordinator = SimpleNamespace(
         source_digest="frozen-source",
         checkpoint=checkpoint,
-        saved_run=SimpleNamespace(created_at=datetime(2026, 10, 1, 12, tzinfo=UTC)),
+        saved_run=SimpleNamespace(
+            created_at=datetime(2026, 10, 1, 12, tzinfo=UTC), committed_output=None
+        ),
         completed_step=receipts.get,
         require_remaining_work=MagicMock(),
     )

@@ -76,7 +76,9 @@ def test_overflow_candidate_refuses_missing_persisted_creation_time(
         agent_context="Test agent",
     )
     coordinator = SimpleNamespace(
-        saved_run=None if missing == "run" else SimpleNamespace(created_at=None)
+        saved_run=None
+        if missing == "run"
+        else SimpleNamespace(created_at=None, committed_output=None)
     )
     token = current_overflow_coordinator.set(cast(OverflowCoordinator, coordinator))
     try:
@@ -110,7 +112,9 @@ def test_overflow_rebuilt_candidate_uses_parent_time_despite_ambient_clock_chang
         agent_context="Test agent",
     )
     created = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
-    coordinator = SimpleNamespace(saved_run=SimpleNamespace(created_at=created))
+    coordinator = SimpleNamespace(
+        saved_run=SimpleNamespace(created_at=created, committed_output=None)
+    )
     entry = StructuredPlaybookContent(content="Require separate deployment approval.")
     token = current_overflow_coordinator.set(cast(OverflowCoordinator, coordinator))
     try:
@@ -1300,12 +1304,14 @@ class TestBuildUserPlaybook:
     list-processing _process_structured_response_list method.
     """
 
+    @pytest.mark.parametrize("reserved_notes", [False, True])
     def test_resolves_validated_local_evidence_to_persisted_provenance(
         self,
         request_context,
         mock_llm_client,
         extractor_config,
         service_config,
+        reserved_notes,
     ):
         extractor = PlaybookExtractor(
             request_context=request_context,
@@ -1322,7 +1328,11 @@ class TestBuildUserPlaybook:
             trigger="when reviewing a deployment change",
             content="Run the regional deployment checklist before approval.",
             reader_angle="correction",
-            notes="Applies only to regional deployments.",
+            notes=(
+                '{"policy":"source-quoted-playbooks-v1"}'
+                if reserved_notes
+                else "Applies only to regional deployments."
+            ),
             evidence=[
                 StructuredPlaybookEvidence(
                     turn_ref="T7", source_span="Use the regional checklist"
@@ -1345,7 +1355,15 @@ class TestBuildUserPlaybook:
         assert result.source_interaction_ids == [712]
         assert result.source_span == "Use the regional checklist"
         assert result.reader_angle == "correction"
-        assert result.notes == "Applies only to regional deployments."
+        if reserved_notes:
+            from reflexio.server.services.playbook.source_quoted_overflow import (
+                is_source_quoted_playbook,
+            )
+
+            assert not is_source_quoted_playbook(result)
+            assert result.notes.endswith(entry.notes)
+        else:
+            assert result.notes == "Applies only to regional deployments."
 
     def test_resolves_evidence_unit_refs_without_model_authored_quotes(
         self,
@@ -2500,3 +2518,49 @@ class TestStrictBatchValidation:
         strict_output_validation_errors(output, self._sources(), self._units())
 
         assert output.model_dump_json() == before
+
+
+def test_saved_ordinary_parent_reserved_notes_fail_before_rekeying_proposals(
+    request_context, mock_llm_client, extractor_config, service_config
+):
+    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+        current_overflow_coordinator,
+    )
+
+    extractor = PlaybookExtractor(
+        request_context=request_context,
+        llm_client=mock_llm_client,
+        extractor_config=extractor_config,
+        service_config=service_config,
+        agent_context="Test agent",
+    )
+    saved = SimpleNamespace(
+        created_at=datetime(2026, 10, 1, tzinfo=UTC), committed_output={"playbooks": []}
+    )
+    journal = {
+        "completed_steps": {"original-proposal": {"output": "unchanged"}},
+        "attempts": ["already charged"],
+    }
+    coordinator = SimpleNamespace(saved_run=saved, checkpoint=journal)
+    mock_llm_client.reset_mock()
+    token = current_overflow_coordinator.set(cast("OverflowCoordinator", coordinator))
+    try:
+        with pytest.raises(
+            InputBudgetConfigurationError, match="Saved ordinary output"
+        ):
+            extractor._build_user_playbook(
+                StructuredPlaybookContent(
+                    content="Preserve approval.",
+                    notes='{"policy":"source-quoted-playbooks-v1"}',
+                ),
+                source_interaction_ids=[7],
+            )
+        assert coordinator.checkpoint == {
+            "completed_steps": {"original-proposal": {"output": "unchanged"}},
+            "attempts": ["already charged"],
+        }
+        assert mock_llm_client.mock_calls == []
+    finally:
+        current_overflow_coordinator.reset(token)
