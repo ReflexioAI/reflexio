@@ -121,7 +121,10 @@ def _assignment_response(mode: str = "task_assignment") -> dict[str, Any]:
 
 
 def _actual_reviewer(
-    monkeypatch: pytest.MonkeyPatch, responses: list[dict[str, Any] | Exception]
+    monkeypatch: pytest.MonkeyPatch,
+    responses: list[dict[str, Any] | Exception],
+    *,
+    version: str = "1.51.0",
 ) -> tuple[PlaybookCandidateReviewer, list[dict[str, Any]]]:
     # The real client builds/parses/repairs requests; only transport is replaced.
     # Constructor bypass avoids credential discovery, as in shared SDK controls.
@@ -166,7 +169,7 @@ def _actual_reviewer(
     monkeypatch.setattr(client, "_completion_with_hard_timeout", completion)
     context = MagicMock()
     context.prompt_manager = PromptManager(
-        version_override={"playbook_candidate_review": "1.51.0"}
+        version_override={"playbook_candidate_review": version}
     )
     return (
         PlaybookCandidateReviewer(
@@ -187,15 +190,19 @@ def _decide(reviewer: PlaybookCandidateReviewer, sources, candidate):
     )
 
 
+@pytest.mark.parametrize("version", ["1.51.0", "1.52.0"])
 def test_actual_tool_supply_repair_preserves_core_and_uses_neutral_assignment(
     monkeypatch,
+    version,
 ):
     from reflexio.server.services.playbook.components.reviewer_native import (
         SurvivorReviewOutput,
     )
 
     wrong, correct = _assignment_response("assigned_input"), _assignment_response()
-    reviewer, requests = _actual_reviewer(monkeypatch, [wrong, correct])
+    reviewer, requests = _actual_reviewer(
+        monkeypatch, [wrong, correct], version=version
+    )
     parsed: list[object] = []
     actual_parse = reviewer.client._maybe_parse_structured_output
 
@@ -369,6 +376,33 @@ def test_same_version_policy_drift_after_transport_is_not_repaired_or_fallen_bac
     with pytest.raises(ProviderRequestGuardError):
         _decide(reviewer, sources, candidate)
     assert manager.get_active_version("playbook_candidate_review") == "1.51.0"
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("version", ["1.51.0", "1.52.0"])
+def test_native_version_change_after_transport_stops_without_repair_or_fallback(
+    monkeypatch, version
+):
+    reviewer, requests = _actual_reviewer(
+        monkeypatch, [_assignment_response()], version=version
+    )
+    reviewer.client.config.fallback_models = ["gpt-4o"]
+    manager = reviewer.request_context.prompt_manager
+    actual_completion = reviewer.client._completion_with_hard_timeout
+
+    def completion(params, hard_timeout):
+        response = actual_completion(params, hard_timeout)
+        monkeypatch.setattr(
+            manager,
+            "get_active_version",
+            lambda *_args: "1.52.0" if version == "1.51.0" else "1.51.0",
+        )
+        return response
+
+    monkeypatch.setattr(reviewer.client, "_completion_with_hard_timeout", completion)
+    sources, candidate = _source_and_candidate()
+    with pytest.raises(ProviderRequestGuardError):
+        _decide(reviewer, sources, candidate)
     assert len(requests) == 1
 
 

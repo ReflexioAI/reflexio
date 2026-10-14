@@ -637,6 +637,7 @@ def review_native(
     }
     original_digest = _candidate_digest(candidates)
     manager = reviewer.request_context.prompt_manager
+    prompt_version = manager.get_active_version(reviewer.PROMPT_ID)
     policy = manager.render_prompt(reviewer.PROMPT_ID, {})
     coordinator = current_overflow_coordinator.get()
     reviewer._format_existing(existing_playbooks)
@@ -654,6 +655,7 @@ def review_native(
         model = client._resolve_primary_model(None, ModelRole.GENERATION)
         profile = json.dumps(
             {
+                "prompt_version": prompt_version,
                 "model": model,
                 "fallback_models": list(client.config.fallback_models),
                 "configured_timeout": client.config.timeout,
@@ -790,10 +792,11 @@ def review_native(
             ) from error
         if (
             current != prepared
+            or bound_profile["policy"] != policy
             or reviewer.request_context.prompt_manager.get_active_version(
                 reviewer.PROMPT_ID
             )
-            != "1.51.0"
+            != prompt_version
         ):
             raise ProviderRequestGuardError(
                 "Reviewer source/context/catalog/profile binding changed"

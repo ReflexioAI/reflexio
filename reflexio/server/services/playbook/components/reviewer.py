@@ -946,10 +946,10 @@ class PlaybookCandidateReviewer:
         prompt_context, agent_context, scope_messages = self._review_context(
             candidates, request_interaction_data_models, agent_context
         )
-        if (
-            self.request_context.prompt_manager.get_active_version(self.PROMPT_ID)
-            == "1.51.0"
-        ):
+        if self.request_context.prompt_manager.get_active_version(self.PROMPT_ID) in {
+            "1.51.0",
+            "1.52.0",
+        }:
             from reflexio.server.services.playbook.components.reviewer_native import (
                 review_native,
             )

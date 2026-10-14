@@ -95,8 +95,8 @@ def _response(action, *, revise=False):
     }
 
 
-@pytest.fixture
-def protected_native(monkeypatch):
+@pytest.fixture(params=["1.51.0", "1.52.0"])
+def protected_native(monkeypatch, request):
     """Real coordinator/client/parser; only provider transport and storage are fake."""
     for name in provider_env_vars():
         monkeypatch.delenv(name, raising=False)
@@ -151,7 +151,7 @@ def protected_native(monkeypatch):
     )
     context = MagicMock()
     context.prompt_manager = PromptManager(
-        version_override={"playbook_candidate_review": "1.51.0"}
+        version_override={"playbook_candidate_review": request.param}
     )
     reviewer = PlaybookCandidateReviewer(request_context=context, llm_client=client)
     wire = [_response(action) for action in _ACTIONS]
@@ -353,9 +353,9 @@ def test_native_cache_hit_reparses_and_revalidates_foreign_source(
     assert fixture.storage.checkpoint_extraction_overflow.call_count == writes
 
 
-@pytest.mark.parametrize("changed", ["role", "catalog", "profile"])
+@pytest.mark.parametrize("changed", ["role", "catalog", "profile", "version"])
 def test_native_cache_identity_refuses_stale_source_catalog_or_profile(
-    protected_native, changed
+    protected_native, changed, monkeypatch
 ):
     fixture = protected_native
     fixture.decide()
@@ -367,8 +367,20 @@ def test_native_cache_identity_refuses_stale_source_catalog_or_profile(
         existing = [_candidate(999, "Stored distinct source.", content="Stored rule.")]
         existing[0].user_playbook_id = 900
         existing[0].user_id = _OWNER
-    else:
+    elif changed == "profile":
         fixture.client.config.timeout += 1
+    else:
+        manager = fixture.reviewer.request_context.prompt_manager
+        previous = manager.render_prompt("playbook_candidate_review", {})
+        selected = manager.get_active_version("playbook_candidate_review")
+        # Even identical policy bytes cannot make two selected versions share a
+        # checkpoint. This isolates version identity from normal policy drift.
+        monkeypatch.setattr(manager, "render_prompt", lambda *_args: previous)
+        monkeypatch.setattr(
+            manager,
+            "get_active_version",
+            lambda *_args: "1.52.0" if selected == "1.51.0" else "1.51.0",
+        )
     try:
         fixture.decide(existing=existing)
     except ProviderRequestGuardError:

@@ -547,7 +547,7 @@ current v1.3 default uses its existing messages and response schema. Qualificati
 still audits complete instructions, triggers and rationales, including healthy
 multi-turn workflows, before holdout, staging and a separate activation change.
 
-Inactive v1.51.0 uses the internal `reviewer_native.py` survivor-witness
+Inactive v1.51.0 and v1.52.0 use the internal `reviewer_native.py` survivor-witness
 contract. It separates literal original-candidate anchors from source quotations
 and records positive support for retained actions. Revision premises distinguish
 actual User instructions/input, non-User task assignments, prerequisites and
@@ -556,6 +556,13 @@ non-User source cannot be relabeled as a User request. Role-repair feedback
 points to the truthful alternative without treating a format error as proof
 that no supported rule remains. Substring, role and structural validation do not
 prove semantic support; real-model source audits remain required.
+
+V1.51 failed a fully measured development pilot: two of twelve results discarded
+supported guidance. Inactive v1.52 tests a compact procedure that first considers
+supported original parts, then original defects and the final disposition. It
+retains the same schema, defect priorities, fatal overrides, source requirements
+and sampling. This is an unqualified prompt hypothesis, not an adoption decision.
+Selected prompt version is part of cache identity and cannot change mid-call.
 
 The existing SDK owns parsing, repairs and fallback. Native calls bind the
 originals, source chronology, catalog, prompt and nonsecret inference settings;
