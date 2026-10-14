@@ -14,7 +14,7 @@ import math
 import os
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from ipaddress import ip_address
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -80,6 +80,7 @@ class InferenceServiceCapabilities:
     configured_reranker_model: str | None
     reranker_enabled: bool
     reranker_ready: bool
+    workload: str = "shared"
 
 
 def _local_service_url() -> str:
@@ -187,7 +188,7 @@ def cached_inference_service_capabilities() -> InferenceServiceCapabilities | No
 
 
 def resolve_inference_service_capabilities(
-    *, advertised: dict[str, Any] | None = None
+    *, advertised: dict[str, Any] | None = None, service_url: str | None = None
 ) -> InferenceServiceCapabilities:
     """Discover and process-cache both models with one ``/health`` request.
 
@@ -214,16 +215,18 @@ def resolve_inference_service_capabilities(
         if os.environ.get(_ENV_SERVICE_URL, "").strip()
         else "local_service"
     )
-    service_url = embedding_service_url(mode)
+    service_url = (service_url or embedding_service_url(mode)).rstrip("/")
     cache_key = (os.getpid(), service_url)
     cached = _configured_model_cache.get(cache_key)
     if cached is not None:
         return cached
-    admitted = (
-        _configured_model_lock.acquire(timeout=_ADVERTISED_CAPABILITY_LOCK_SECONDS)
+    admission_seconds = (
+        _ADVERTISED_CAPABILITY_LOCK_SECONDS
         if advertised is not None
-        else _configured_model_lock.acquire()
+        else embedding_service_timeout_seconds(mode)
     )
+    discovery_deadline = time.monotonic() + remaining(admission_seconds)
+    admitted = _configured_model_lock.acquire(timeout=remaining(admission_seconds))
     if not admitted:
         raise EmbeddingUnavailableError("Inference capability discovery is busy")
     try:
@@ -232,12 +235,10 @@ def resolve_inference_service_capabilities(
             return cached
         try:
             if advertised is None:
-                response = _http_client().get(
-                    f"{service_url}/health",
-                    timeout=embedding_service_timeout_seconds(mode),
+                body = _inference_service_health(
+                    service_url,
+                    seconds=max(0, discovery_deadline - time.monotonic()),
                 )
-                response.raise_for_status()
-                body = response.json()
             else:
                 body = advertised
             configured_model = body.get("configured_model")
@@ -265,11 +266,28 @@ def resolve_inference_service_capabilities(
             ),
             reranker_enabled=body.get("reranker_enabled") is True,
             reranker_ready=body.get("reranker_ready") is True,
+            workload=body.get("workload", "shared"),
         )
         _configured_model_cache[cache_key] = capabilities
         return capabilities
     finally:
         _configured_model_lock.release()
+
+
+def _inference_service_health(service_url: str, *, seconds: float) -> dict[str, Any]:
+    try:
+        response = _http_client().get(
+            f"{service_url}/health", timeout=remaining(seconds)
+        )
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, dict):
+            raise ValueError("Inference health must be an object")
+        return body
+    except (httpx.HTTPError, ValueError) as exc:
+        raise EmbeddingUnavailableError(
+            f"Could not discover inference health from {service_url}/health: {exc}"
+        ) from exc
 
 
 def _http_client() -> httpx.Client:
@@ -393,6 +411,77 @@ def should_use_embedding_service(model: str) -> bool:
 def query_embedding_service_url() -> str:
     """Optional isolated query service; an empty value retains shared routing."""
     return env_str(_ENV_QUERY_URL, "").rstrip("/")
+
+
+def search_reranker_service_url() -> str:
+    """Optional search-only reranker; generic reranking keeps shared routing."""
+    return env_str("REFLEXIO_SEARCH_RERANK_SERVICE_URL", "").rstrip("/")
+
+
+def validate_search_reranker_service(
+    *, advertised: dict[str, Any] | None = None
+) -> str:
+    """Bind reserved reranking to immutable models and current operational health.
+
+    Readiness supplies fresh bounded health. Healthy request-path discovery stays
+    cached; an unhealthy first discovery is retried without changing model identity.
+    """
+    endpoint = search_reranker_service_url()
+    if not endpoint:
+        return inference_service_url()
+    if endpoint != query_embedding_service_url() or endpoint == inference_service_url():
+        raise EmbeddingUnavailableError(
+            "Search reranking must use the isolated query worker"
+        )
+    shared = resolve_inference_service_capabilities()
+    validate_query_embedding_service(shared.configured_model, None)
+    cached = _configured_model_cache.get((os.getpid(), endpoint))
+    isolated = resolve_inference_service_capabilities(
+        advertised=advertised, service_url=endpoint
+    )
+    if (
+        advertised is None
+        and cached is not None
+        and (
+            isolated.workload != "search"
+            or isolated.configured_model != shared.configured_model
+            or not isolated.reranker_enabled
+            or not isolated.reranker_ready
+        )
+    ):
+        advertised = _inference_service_health(
+            endpoint, seconds=embedding_service_timeout_seconds()
+        )
+    if advertised is not None:
+        if (
+            advertised.get("configured_model") != isolated.configured_model
+            or advertised.get("configured_reranker_model")
+            != isolated.configured_reranker_model
+        ):
+            raise EmbeddingUnavailableError(
+                "Search worker model identity changed; restart API required"
+            )
+        # Only operational state may refresh; the two model identities remain
+        # bound to this API process even across temporary reranker failures.
+        isolated = replace(
+            isolated,
+            workload=advertised.get("workload", "shared"),
+            reranker_enabled=advertised.get("reranker_enabled") is True,
+            reranker_ready=advertised.get("reranker_ready") is True,
+        )
+        _configured_model_cache[(os.getpid(), endpoint)] = isolated
+    if (
+        isolated.workload != "search"
+        or isolated.configured_model != shared.configured_model
+        or not isolated.reranker_enabled
+        or not isolated.reranker_ready
+        or not isolated.configured_reranker_model
+        or isolated.configured_reranker_model != shared.configured_reranker_model
+    ):
+        raise EmbeddingUnavailableError(
+            "Search worker reranker contract is incompatible or unready"
+        )
+    return endpoint
 
 
 def _vector_contract(body: dict[str, Any], *, query: bool) -> tuple[str, str, int]:

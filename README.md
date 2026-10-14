@@ -509,6 +509,29 @@ restarting API workers; a failed query endpoint never fails over to shared CPU.
 When constructing workers with `create_embedding_app`, supply a `model_contract`
 callback returning the loaded encoder's `model`, pinned `revision`, and
 `dimensions` on both apps. The factory exposes `/health/model` and derives
-`workload` from `query_only`. Without that callback it returns 503 rather than
+the embedding `workload` from admission policy. Without that callback it returns 503 rather than
 inventing a revision. Additional metadata such as device and thread count can
 be returned by the callback.
+
+### Optional reserved search reranking
+
+`create_embedding_app(workload="search", ...)` keeps query-only embedding
+admission and enables the configured reranker. Its `/health/model` still reports
+`workload="query"`, so existing embedding clients can coexist during a rolling
+upgrade; `/health` separately advertises the `search` workload and reranker readiness.
+Legacy `query_only=True` remains embedding-only and rejects reranking.
+Search workers require a successful reranker prewarm before serving. If a later
+prediction fails, `/health` and `/health/rerank` can retry one warmup under a
+one-second request budget. Recovery uses the existing inference scheduler when
+supplied; overlapping health probes never run overlapping warmups, including
+when a slow prediction continues after its health request times out. The worker
+remains unready until a real prediction succeeds.
+
+Set `REFLEXIO_SEARCH_RERANK_SERVICE_URL` to the same endpoint as
+`REFLEXIO_QUERY_EMBEDDING_SERVICE_URL` to route retrieval relevance scoring there.
+The client verifies matching immutable vector contracts, the same configured
+reranker as the shared worker, and a ready search workload. Generic
+`score_pairs`/`score_pairs_with_model` calls keep shared routing; retrieval uses
+the explicit `score_search_pairs` helpers. Unset search routing preserves the
+existing path. Failed isolated calls do not retry against the shared worker;
+retrieval retains its existing unavailable-reranker behavior and deadlines.

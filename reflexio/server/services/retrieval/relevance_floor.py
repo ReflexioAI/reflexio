@@ -15,11 +15,15 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from reflexio.server.llm.rerank import score_pairs
 from reflexio.server.llm.rerank.common import resolve_retrieval_floor
 from reflexio.server.llm.rerank.cross_encoder_reranker import (
     CrossEncoderUnavailableError,
-    score_pairs_with_model,
+)
+from reflexio.server.llm.rerank.cross_encoder_reranker import (
+    score_search_pairs as score_pairs,
+)
+from reflexio.server.llm.rerank.cross_encoder_reranker import (
+    score_search_pairs_with_model as score_pairs_with_model,
 )
 from reflexio.server.tracing import profile_step
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from typing import Any
 from unittest.mock import Mock
 
@@ -353,5 +355,76 @@ def test_embedding_retry_backoff_uses_shared_search_budget(monkeypatch, scope_ki
             assert request() == [[0.1]]
             assert len(calls) == 2
             assert sleeps == [provider._EMBEDDING_RETRY_BACKOFF_SECONDS]
+    finally:
+        search_runtime._scope.reset(token)
+
+
+@pytest.mark.parametrize("endpoint", [None, "http://reserved"])
+@pytest.mark.parametrize("advertised", [None, {"configured_model": "local/pinned"}])
+def test_cold_capability_lock_is_bounded_by_search_deadline(
+    monkeypatch, endpoint, advertised
+):
+    from reflexio.server import search_runtime
+
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "internal_service")
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://shared")
+    _reset_cache(monkeypatch)
+    lock = threading.Lock()
+    monkeypatch.setattr(provider, "_configured_model_lock", lock)
+    monkeypatch.setattr(
+        provider,
+        "_http_client",
+        lambda: pytest.fail("Lock admission failure must not fetch health"),
+    )
+    lock.acquire()
+    started = time.monotonic()
+    token = search_runtime._scope.set(
+        search_runtime.SearchScope(deadline=started + 0.02)
+    )
+    try:
+        with pytest.raises(EmbeddingUnavailableError, match="discovery is busy"):
+            resolve_inference_service_capabilities(
+                advertised=advertised, service_url=endpoint
+            )
+        assert time.monotonic() - started < 0.3
+    finally:
+        lock.release()
+        search_runtime._scope.reset(token)
+
+
+@pytest.mark.parametrize("endpoint", [None, "http://reserved"])
+def test_capability_http_timeout_uses_budget_remaining_after_lock(
+    monkeypatch, endpoint
+):
+    from reflexio.server import search_runtime
+
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "internal_service")
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://shared")
+    _reset_cache(monkeypatch)
+    clock = [100.0]
+    monkeypatch.setattr(provider.time, "monotonic", lambda: clock[0])
+
+    class Lock:
+        def acquire(self, *, timeout):
+            assert timeout == pytest.approx(0.05)
+            clock[0] += 0.01
+            return True
+
+        def release(self):
+            pass
+
+    client = Mock()
+    client.get.return_value = _Response({"configured_model": "local/pinned"})
+    monkeypatch.setattr(provider, "_configured_model_lock", Lock())
+    monkeypatch.setattr(provider, "_http_client", lambda: client)
+    token = search_runtime._scope.set(search_runtime.SearchScope(deadline=100.05))
+    try:
+        assert (
+            resolve_inference_service_capabilities(
+                service_url=endpoint
+            ).configured_model
+            == "local/pinned"
+        )
+        assert client.get.call_args.kwargs["timeout"] == pytest.approx(0.04)
     finally:
         search_runtime._scope.reset(token)
