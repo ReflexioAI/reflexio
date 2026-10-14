@@ -45,6 +45,104 @@ from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 pytestmark = pytest.mark.integration
 
 
+@pytest.mark.parametrize("prefetched", [False, True])
+def test_later_normal_extraction_preserves_source_quoted_rule(
+    consolidator, sqlite_storage, monkeypatch, prefetched
+):
+    import json
+
+    from reflexio.server.services.playbook.source_quoted_overflow import POLICY
+
+    copied = _make_candidate(content="Do not deploy without named approval.")
+    copied.notes = json.dumps({"policy": POLICY})
+    copied.source_span = copied.content
+    sqlite_storage.save_user_playbooks([copied], skip_embedding=True)
+    before = sqlite_storage.get_user_playbook_by_id(copied.user_playbook_id).model_dump(
+        mode="json"
+    )
+    candidate = _make_candidate(content="Check the deployment destination.")
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    monkeypatch.setattr(
+        consolidator, "retrieve_existing_playbooks", lambda *_, **__: [copied]
+    )
+    consolidator.client.generate_chat_response.return_value = (
+        PlaybookConsolidationOutput(
+            decisions=[
+                UnifyDecision(
+                    new_id="NEW-0",
+                    archive_existing_ids=[0],
+                    content="Deploy immediately.",
+                    trigger="Always",
+                    rationale="invented",
+                )
+            ]
+        )
+    )
+    rows, retired, merged = consolidator.deduplicate(
+        [[candidate]],
+        request_id="later",
+        user_id="u1",
+        agent_version="v0",
+        existing_playbooks=[copied] if prefetched else None,
+    )
+    assert retired == merged == []
+    assert len(rows) == 1 and rows[0].content == candidate.content
+    sqlite_storage.save_user_playbooks(rows, skip_embedding=True)
+    assert (
+        sqlite_storage.get_user_playbook_by_id(copied.user_playbook_id).model_dump(
+            mode="json"
+        )
+        == before
+    )
+    assert len(sqlite_storage.get_user_playbooks(user_id="u1")) == 2
+    consolidator.client.generate_chat_response.assert_not_called()
+
+
+@pytest.mark.parametrize("operation", ["overwrite", "retire", "merge"])
+def test_cached_normal_plan_cannot_replace_source_quoted_rule(
+    sqlite_storage, operation
+):
+    import json
+
+    from reflexio.models.api_schema.domain.entities import LineageContext
+    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+    from reflexio.server.services.deferred_learning_plan import PlaybookWritePlan
+    from reflexio.server.services.playbook.service import PlaybookGenerationService
+    from reflexio.server.services.playbook.source_quoted_overflow import POLICY
+
+    copied = _make_candidate(content="Do not deploy without named approval.")
+    copied.notes = json.dumps({"policy": POLICY})
+    sqlite_storage.save_user_playbooks([copied], skip_embedding=True)
+    before = sqlite_storage.get_user_playbook_by_id(copied.user_playbook_id).model_dump(
+        mode="json"
+    )
+    candidate = _make_candidate(content="Model rewrite.")
+    if operation == "overwrite":
+        candidate.user_playbook_id = copied.user_playbook_id
+    plan = PlaybookWritePlan(
+        request_id="later",
+        output_pending_status=False,
+        skip_aggregation=True,
+        new_playbooks=[candidate],
+        superseded_ids=[copied.user_playbook_id] if operation == "retire" else [],
+        merge_groups=[(0, [copied.user_playbook_id])] if operation == "merge" else [],
+        lineage_contexts=[
+            LineageContext(op_kind="create", actor="extractor", request_id="later")
+        ],
+    )
+    service = object.__new__(PlaybookGenerationService)
+    service.storage = sqlite_storage
+    with pytest.raises(InputBudgetConfigurationError), sqlite_storage.commit_scope():
+        service._persist_write_plan(plan)
+    assert (
+        sqlite_storage.get_user_playbook_by_id(copied.user_playbook_id).model_dump(
+            mode="json"
+        )
+        == before
+    )
+    assert len(sqlite_storage.get_user_playbooks(user_id="u1")) == 1
+
+
 # ===============================
 # Fixtures
 # ===============================

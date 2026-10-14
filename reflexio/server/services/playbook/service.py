@@ -34,6 +34,7 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.models.config_schema import PlaybookConfig
 from reflexio.server.llm._litellm_types import ModelProvenance
+from reflexio.server.llm.input_budget import InputBudgetConfigurationError
 from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     StatusChangeOperation,
@@ -654,6 +655,24 @@ class PlaybookGenerationService(
         ``emit_generation_side_effects`` (durable / ``.run()``) or right after
         persist in ``_finalize_extracted_items`` (resume/manual).
         """
+        from reflexio.server.services.playbook.source_quoted_overflow import (
+            is_source_quoted_playbook,
+        )
+
+        # Cached plans bypass retrieval. Recheck only the bounded existing IDs
+        # they would overwrite or retire, through the shared project-scoped store.
+        targets = set(plan.superseded_ids)
+        targets.update(pid for _, ids in plan.merge_groups for pid in ids)
+        targets.update(
+            row.user_playbook_id for row in plan.new_playbooks if row.user_playbook_id
+        )
+        if targets and any(
+            is_source_quoted_playbook(row)
+            for row in self.storage.get_user_playbooks_by_ids_any_user(sorted(targets))  # type: ignore[reportOptionalMemberAccess]
+        ):
+            raise InputBudgetConfigurationError(
+                "Automatic consolidation cannot replace source-quoted rules"
+            )
         try:
             if plan.new_playbooks:
                 self.storage.save_user_playbooks(  # type: ignore[reportOptionalMemberAccess]
