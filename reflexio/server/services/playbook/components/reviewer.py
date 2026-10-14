@@ -949,6 +949,7 @@ class PlaybookCandidateReviewer:
         if self.request_context.prompt_manager.get_active_version(self.PROMPT_ID) in {
             "1.51.0",
             "1.52.0",
+            "1.53.0",
         }:
             from reflexio.server.services.playbook.components.reviewer_native import (
                 review_native,

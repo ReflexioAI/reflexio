@@ -95,7 +95,7 @@ def _response(action, *, revise=False):
     }
 
 
-@pytest.fixture(params=["1.51.0", "1.52.0"])
+@pytest.fixture(params=["1.51.0", "1.52.0", "1.53.0"])
 def protected_native(monkeypatch, request):
     """Real coordinator/client/parser; only provider transport and storage are fake."""
     for name in provider_env_vars():

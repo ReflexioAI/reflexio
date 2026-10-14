@@ -190,7 +190,7 @@ def _decide(reviewer: PlaybookCandidateReviewer, sources, candidate):
     )
 
 
-@pytest.mark.parametrize("version", ["1.51.0", "1.52.0"])
+@pytest.mark.parametrize("version", ["1.51.0", "1.52.0", "1.53.0"])
 def test_actual_tool_supply_repair_preserves_core_and_uses_neutral_assignment(
     monkeypatch,
     version,
@@ -248,6 +248,106 @@ def test_actual_tool_supply_repair_preserves_core_and_uses_neutral_assignment(
     assert "semicolon" not in survivor.rationale
     assert "standing default" not in survivor.rationale
     assert PromptManager().get_active_version("playbook_candidate_review") == "1.3.0"
+
+
+@pytest.mark.parametrize("version", ["1.51.0", "1.52.0", "1.53.0"])
+@pytest.mark.parametrize(
+    "premise_kind", ["task_assignment", "user_instruction", "prerequisite"]
+)
+def test_literal_premise_subquote_preserves_raw_source_and_saved_fields(
+    monkeypatch, version, premise_kind
+):
+    sources, candidate = _source_and_candidate()
+    raw = _assignment_response()
+    witness = raw["decisions"][0]["survivor_witnesses"][0]
+    premise = raw["decisions"][0]["revision"]["premise"]
+    if premise_kind == "user_instruction":
+        text = "For future export jobs, follow this procedure: " + _ACTION
+        short = _ACTION
+        sources[0].interactions[0].role = "user"
+        witness["kind"] = "user_learning"
+        witness["input_facts"] = None
+        premise["original_span"] = {"field": "content", "text": _ACTION}
+    elif premise_kind == "prerequisite":
+        short = "Export jobs must use the delimiter assigned to that job."
+        text = short + " " + _SUPPLY
+        witness["kind"] = "necessary_procedure"
+        premise.pop("original_span")
+        premise["fact"] = short
+    else:
+        text = _SUPPLY
+        short = (
+            "current export job has an explicitly assigned delimiter value of semicolon"
+        )
+    sources[0].interactions[0].content = text
+    candidate.source_span = text
+    full_reference = {"evidence_id": "C1-E1", "text": text}
+    witness["excerpts"] = [full_reference]
+    if witness["input_facts"] is not None:
+        witness["input_facts"]["supply_excerpts"] = [full_reference]
+        witness["input_facts"]["use_excerpts"] = [full_reference]
+    premise.update(kind=premise_kind, source={"evidence_id": "C1-E1", "text": short})
+    exact = copy.deepcopy(raw)
+    exact["decisions"][0]["revision"]["premise"]["source"] = full_reference
+    reviewer, requests = _actual_reviewer(monkeypatch, [raw, exact], version=version)
+
+    outcome = _decide(reviewer, sources, candidate)
+
+    assert len(requests) == (1 if version == "1.53.0" else 2)
+    assert outcome.native_output is not None
+    assert outcome.native_output.model_dump(mode="json") == (
+        raw if version == "1.53.0" else exact
+    )
+    survivor = reviewer.apply_decisions(candidates=[candidate], outcome=outcome)[0]
+    assert survivor.content == _ACTION
+    assert survivor.source_interaction_ids == [1]
+    assert survivor.rationale
+    assert "C1-E1" not in survivor.rationale
+    assert "Keep this original annotation." in (survivor.notes or "")
+
+
+@pytest.mark.parametrize("fault", ["foreign_id", "disjoint", "expanded", "blank"])
+def test_premise_subquote_cannot_escape_selected_supply(monkeypatch, fault):
+    sources, candidate = _source_and_candidate()
+    selected = (
+        "current export job has an explicitly assigned delimiter value of semicolon"
+    )
+    correct = _assignment_response()
+    row = correct["decisions"][0]
+    reference = {"evidence_id": "C1-E1", "text": selected}
+    row["survivor_witnesses"][0]["input_facts"]["supply_excerpts"] = [reference]
+    # Separate JSON locations must not share a mutable fixture dictionary: a
+    # premise-only corruption must leave its selected supply proof unchanged.
+    row["revision"]["premise"]["source"] = copy.deepcopy(reference)
+    if fault == "foreign_id":
+        other = (
+            sources[0]
+            .interactions[0]
+            .model_copy(update={"interaction_id": 2}, deep=True)
+        )
+        sources[0].interactions.append(other)
+        candidate.source_interaction_ids = [1, 2]
+        row["evidence_ids"].append("C1-E2")
+    wrong = copy.deepcopy(correct)
+    source = wrong["decisions"][0]["revision"]["premise"]["source"]
+    if fault == "foreign_id":
+        source["evidence_id"] = "C1-E2"
+    else:
+        source["text"] = {
+            "disjoint": "This is that job task input, not the provider default.",
+            "expanded": _SUPPLY,
+            "blank": " ",
+        }[fault]
+    reviewer, requests = _actual_reviewer(
+        monkeypatch, [wrong, correct], version="1.53.0"
+    )
+
+    outcome = _decide(reviewer, sources, candidate)
+
+    assert len(requests) == 2
+    assert outcome.native_output is not None
+    assert outcome.native_output.model_dump(mode="json") == correct
+    assert len(reviewer.apply_decisions(candidates=[candidate], outcome=outcome)) == 1
 
 
 def test_source_text_cannot_be_substituted_for_an_original_action(monkeypatch):
@@ -379,7 +479,7 @@ def test_same_version_policy_drift_after_transport_is_not_repaired_or_fallen_bac
     assert len(requests) == 1
 
 
-@pytest.mark.parametrize("version", ["1.51.0", "1.52.0"])
+@pytest.mark.parametrize("version", ["1.51.0", "1.52.0", "1.53.0"])
 def test_native_version_change_after_transport_stops_without_repair_or_fallback(
     monkeypatch, version
 ):

@@ -188,8 +188,12 @@ def project(
         originals
     ):
         raise ValueError("Exact candidate accounting required")
+    source_subquotes = json.loads(data["profile"]).get("prompt_version") == "1.53.0"
     public = PlaybookCandidateReviewOutput(
-        decisions=[_project_decision(decision, data) for decision in raw.decisions]
+        decisions=[
+            _project_decision(decision, data, source_subquotes=source_subquotes)
+            for decision in raw.decisions
+        ]
     )
     canonical_units = {
         candidate_id: [CandidateEvidenceUnit(**unit) for unit in units]
@@ -202,7 +206,7 @@ def project(
 
 
 def _project_decision(
-    decision: SurvivorDecision, data: dict[str, Any]
+    decision: SurvivorDecision, data: dict[str, Any], *, source_subquotes: bool = False
 ) -> CandidateReviewDecision:
     original = data["originals"][decision.id]
     own = {u["evidence_id"]: u for u in data["units"][decision.id]}
@@ -275,7 +279,7 @@ def _project_decision(
             original_quote(premise.original_span)
         source_quote(premise.source)
         _validate_user_premise_role(premise, own[premise.source.evidence_id]["role"])
-        rationale = _render_premise(premise, witness)
+        rationale = _render_premise(premise, witness, source_subquotes=source_subquotes)
         revision = CandidateRevision(
             content=draft.content, trigger=draft.trigger, rationale=rationale
         )
@@ -379,8 +383,31 @@ def _validate_shape(
 
 
 def _render_premise(
-    premise: ActionPremise | SourceFactPremise, witness: PositiveCoreWitness
+    premise: ActionPremise | SourceFactPremise,
+    witness: PositiveCoreWitness,
+    *,
+    source_subquotes: bool = False,
 ) -> str:
+    def selected_source(excerpts: tuple[SourceQuote, ...]) -> bool:
+        return premise.source in excerpts or (
+            source_subquotes
+            and bool(premise.source.text.strip())
+            and any(
+                premise.source.evidence_id == excerpt.evidence_id
+                and premise.source.text in excerpt.text
+                for excerpt in excerpts
+            )
+        )
+
+    reference_hint = (
+        " Copy premise.source from the selected witness.excerpts (or "
+        "input_facts.supply_excerpts for an assignment), or quote a nonblank "
+        "literal substring within that selected excerpt with the same evidence ID. "
+        "Do not expand it or select a disjoint excerpt. Keep an assignment's "
+        "original_span exactly in input_facts.original_parameter_spans."
+        if source_subquotes
+        else ""
+    )
     if isinstance(premise, SourceFactPremise):
         allowed = (
             {"necessary_procedure"}
@@ -389,11 +416,12 @@ def _render_premise(
         )
         if (
             witness.kind not in allowed
-            or premise.source not in witness.excerpts
+            or not selected_source(witness.excerpts)
             or not premise.fact.strip()
         ):
             raise ValueError(
                 "Source fact requires matching positive witness and own excerpt"
+                + reference_hint
             )
         prefix = (
             "The recorded source establishes this prerequisite: "
@@ -402,17 +430,23 @@ def _render_premise(
         )
         rationale = prefix + premise.fact
     elif premise.kind == "user_instruction":
-        if premise.source not in witness.excerpts:
-            raise ValueError("Instruction premise must reference its positive witness")
+        if not selected_source(witness.excerpts):
+            raise ValueError(
+                "Instruction premise must reference its positive witness"
+                + reference_hint
+            )
         rationale = f"The user requested this procedure: {premise.original_span.text}"
     else:
         facts = witness.input_facts
         if (
             facts is None
             or premise.original_span not in facts.original_parameter_spans
-            or premise.source not in facts.supply_excerpts
+            or not selected_source(facts.supply_excerpts)
         ):
-            raise ValueError("Assignment premise requires actual positive supply proof")
+            raise ValueError(
+                "Assignment premise requires actual positive supply proof"
+                + reference_hint
+            )
         prefix = (
             "For the recorded task, the user supplied a value for this input: "
             if premise.kind == "assigned_input"
