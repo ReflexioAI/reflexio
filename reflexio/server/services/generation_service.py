@@ -362,8 +362,10 @@ class GenerationService:
             except PostCommitStorageError as error:
                 _warn_publish_followup(result, error)
             admitted = True
+            extraction_ready = False
             with publish_timing.phase("post_publish"), _publish_followup(result):
                 ensure_local_extraction(self.request_context)
+                extraction_ready = True
             with publish_timing.phase("evaluation_schedule"), _publish_followup(result):
                 self._schedule_post_publish_evaluations(
                     new_request=new_request,
@@ -395,7 +397,7 @@ class GenerationService:
             # `publisher_api.add_user_interaction`, reports instead -- which
             # also catches a failure that never reaches this method at all,
             # such as a cold `get_reflexio` construction.
-            if not defer_learning:
+            if not defer_learning and extraction_ready:
                 from reflexio.server.services.durable_learning.waiting import (
                     acquire_waiter,
                     coverage_stalled,
