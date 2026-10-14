@@ -801,3 +801,30 @@ async def test_session_finalization_and_completion_publish_bind_on_wire(monkeypa
         session.finalize_session("u1", OTHER)
     with pytest.raises(ValueError):
         await session.finalize_session_async("u1", OTHER)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("success", [False, True])
+async def test_successful_finalization_invalidates_learning_caches(
+    monkeypatch, asynchronous, success
+):
+    client = _make_client()
+    response = {"success": success, "accepted": success}
+    monkeypatch.setattr(client, "_make_request", lambda *_args, **_kwargs: response)
+
+    async def send(*args, **kwargs):
+        return response
+
+    monkeypatch.setattr(client, "_make_async_request", send)
+    for method in ("get_profiles", "get_agent_playbooks", "get_profile_statistics"):
+        client._cache.set(method, "cached", user_id="u1")
+    if asynchronous:
+        await client.for_session(BOUND).finalize_session_async("u1")
+    else:
+        client.for_session(BOUND).finalize_session("u1")
+    for method in ("get_profiles", "get_agent_playbooks"):
+        assert client._cache.get(method, user_id="u1") == (
+            None if success else "cached"
+        )
+    assert client._cache.get("get_profile_statistics", user_id="u1") == "cached"

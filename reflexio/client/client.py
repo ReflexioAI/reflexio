@@ -468,22 +468,30 @@ class ReflexioClient:
         enabled, and the session can receive later publications.
         """
         request = FinalizeSessionRequest(user_id=user_id, session_id=session_id)
-        return FinalizeSessionResponse(
+        result = FinalizeSessionResponse(
             **self._make_request(
                 "POST", "/api/finalize_session", json=request.model_dump(mode="json")
             )
         )
+        if result.success:
+            self._cache.invalidate("get_profiles")
+            self._cache.invalidate("get_agent_playbooks")
+        return result
 
     async def finalize_session_async(
         self, user_id: str, session_id: str
     ) -> FinalizeSessionResponse:
         """Native-async counterpart to :meth:`finalize_session`."""
         request = FinalizeSessionRequest(user_id=user_id, session_id=session_id)
-        return FinalizeSessionResponse(
+        result = FinalizeSessionResponse(
             **await self._make_async_request(
                 "POST", "/api/finalize_session", json=request.model_dump(mode="json")
             )
         )
+        if result.success:
+            self._cache.invalidate("get_profiles")
+            self._cache.invalidate("get_agent_playbooks")
+        return result
 
     def _publish_interaction_sync(
         self,
