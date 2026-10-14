@@ -414,6 +414,10 @@ dispatch retains the existing scoped CAS lease/identity checks; the bridge does
 not add a full blob read or duplicate lease query per call. Standalone OSS's
 explicit empty project ID is a distinct cache scope, never a wildcard; omitted
 projects and empty organization/user identities remain invalid.
+Both boundaries also lock and revalidate the current durable parent, descriptor,
+revision, project and active window through the same shared check used by CAS.
+Cache-only and passthrough runs cannot rely on a cancelled or changed in-memory
+parent. This validation does not advance the journal or refund consumed attempts.
 
 The returned result and validated source presentation do not mark window
 coverage, run the judge/extractor, finalize a parent, write learnings or bill a

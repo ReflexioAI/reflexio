@@ -315,6 +315,17 @@ class OverflowCoordinator:
             raise InputBudgetConfigurationError("Extraction is not package protocol")
         return copy.deepcopy(self._manifest["input_protocol"])
 
+    def validate_current_parent(self) -> None:
+        """Fence cache-only results using the same authority checks as dispatch."""
+        with self._lock:
+            self.storage.validate_extraction_overflow(
+                self.window,
+                self.token,
+                expected_revision=self._manifest["revision"],
+                source_digest=self.source_digest,
+                expected_input_protocol=self._manifest.get("input_protocol"),
+            )
+
     @property
     def checkpoint(self) -> dict[str, Any]:
         with self._lock:

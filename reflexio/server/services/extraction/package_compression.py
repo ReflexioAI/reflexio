@@ -50,9 +50,7 @@ def compress_source_package(
 
     def authorize() -> None:
         with coordinator.storage.commit_scope():
-            coordinator.storage.fence_user_extraction(
-                coordinator.window.user_id, coordinator.token
-            )
+            coordinator.validate_current_parent()
             coordinator.storage.validate_extraction_inputs(coordinator.window)
             coordinator.storage.validate_extraction_source_digest(
                 coordinator.window, plan.source_digest
