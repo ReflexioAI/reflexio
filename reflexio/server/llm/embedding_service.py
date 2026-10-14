@@ -218,13 +218,25 @@ async def _until_disconnected(
 
 def _model_health(
     model_contract: Callable[[], Mapping[str, str | int]] | None,
-    query_only: bool,
+    workload: str,
 ) -> dict[str, str | int]:
     if model_contract is None:
         raise HTTPException(
             status_code=503, detail="Pinned model identity is not configured"
         )
-    return {**model_contract(), "workload": "query" if query_only else "shared"}
+    # Existing clients bind query-only embedding admission through this contract.
+    # Search adds a separately advertised rerank capability without changing it.
+    embedding_workload = "query" if workload == "search" else workload
+    return {**model_contract(), "workload": embedding_workload}
+
+
+def _workload(query_only: bool, workload: str | None) -> str:
+    resolved = workload or ("query" if query_only else "shared")
+    if resolved not in {"shared", "query", "search"}:
+        raise ValueError("Inference workload must be shared, query or search")
+    if query_only and resolved != "query":
+        raise ValueError("query_only conflicts with the explicit workload")
+    return resolved
 
 
 def create_embedding_app(
@@ -248,6 +260,7 @@ def create_embedding_app(
     | None = None,
     inference_shutdown: Callable[[], None] | None = None,
     query_only: bool = False,
+    workload: str | None = None,
     model_contract: Callable[[], Mapping[str, str | int]] | None = None,
 ) -> FastAPI:
     """Create a daemon with optional encoders and their pinned vector identity.
@@ -256,6 +269,9 @@ def create_embedding_app(
     encoder's model, immutable revision and dimensions. Workload is derived
     from this app's admission policy, never from the supplied metadata.
     """
+    selected_workload = _workload(query_only, workload)
+    query_only = selected_workload != "shared"
+    rerank_allowed = selected_workload != "query"
     effective_encoders = dict(model_encoders or {})
     effective_fixed_dimensions = dict(fixed_dimensions or {})
     effective_allowed_models = (
@@ -280,7 +296,7 @@ def create_embedding_app(
                 logger.exception("Failed to warm embedding model %s", default_model)
                 raise
         _warm_reranker(
-            runner, require_ready=inference_submit is not None, enabled=not query_only
+            runner, require_ready=inference_submit is not None, enabled=rerank_allowed
         )
         logger.info(
             "event=inference_service_ready configured_model=%s "
@@ -290,9 +306,9 @@ def create_embedding_app(
             reranker_model,
             os.environ.get("NOMIC_EMBED_DEVICE", "cpu"),
             os.environ.get("REFLEXIO_RERANK_DEVICE", "cpu"),
-            not query_only and runner.ready(),
+            rerank_allowed and runner.ready(),
             os.environ.get("HF_HUB_OFFLINE", "0"),
-            "query" if query_only else "shared",
+            selected_workload,
         )
         try:
             yield
@@ -303,7 +319,7 @@ def create_embedding_app(
     embedding_app = FastAPI(title="Reflexio Embedding Service", lifespan=lifespan)
 
     embedding_app.get("/health/model", name="health_model")(
-        lambda: _model_health(model_contract, query_only)
+        lambda: _model_health(model_contract, selected_workload)
     )
 
     @embedding_app.get("/health")
@@ -314,14 +330,15 @@ def create_embedding_app(
             "active_model": _ACTIVE_MODEL,
             "configured_model": default_model,
             "configured_reranker_model": reranker_model,
-            "reranker_enabled": not query_only and reranker_enabled(),
-            "reranker_ready": not query_only and runner.ready(),
+            "workload": selected_workload,
+            "reranker_enabled": rerank_allowed and reranker_enabled(),
+            "reranker_ready": rerank_allowed and runner.ready(),
         }
 
     @embedding_app.get("/health/rerank", response_model=RerankHealthResponse)
     def rerank_health(response: Response) -> RerankHealthResponse:
         """Report reranker readiness without affecting embedding health."""
-        enabled = not query_only and reranker_enabled()
+        enabled = rerank_allowed and reranker_enabled()
         ready = enabled and runner.ready()
         if not ready:
             response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
@@ -406,7 +423,7 @@ def create_embedding_app(
             raise HTTPException(
                 status_code=400, detail=f"Unsupported model: {request.model}"
             )
-        if query_only or not reranker_enabled():
+        if not rerank_allowed or not reranker_enabled():
             raise HTTPException(
                 status_code=503,
                 detail="Reranking is disabled by REFLEXIO_RERANK_ENABLED",

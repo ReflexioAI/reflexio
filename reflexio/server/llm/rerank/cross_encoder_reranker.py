@@ -12,7 +12,10 @@ from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
     inference_http_client,
     inference_service_url,
+    resolve_inference_service_capabilities,
     resolve_service_configured_reranker_model,
+    search_reranker_service_url,
+    validate_search_reranker_service,
 )
 from reflexio.server.llm.rerank.common import (
     RERANK_ENABLED_ENV_VAR,
@@ -20,7 +23,7 @@ from reflexio.server.llm.rerank.common import (
     CrossEncoderUnavailableError,
     reranker_enabled,
 )
-from reflexio.server.search_runtime import remaining
+from reflexio.server.search_runtime import increment, remaining
 from reflexio.server.tracing import profile_step
 
 _SERVICE_TIMEOUT_MS_ENV_VAR = "REFLEXIO_RERANK_SERVICE_TIMEOUT_MS"
@@ -39,14 +42,42 @@ def score_pairs(query: str, docs: list[str]) -> list[float]:
 
 def score_pairs_with_model(query: str, docs: list[str]) -> tuple[str, list[float]]:
     """Score pairs and return the discovered model used for the logits."""
+    return _score_pairs_with_model(query, docs, isolated=False)
+
+
+def score_search_pairs(query: str, docs: list[str]) -> list[float]:
+    """Score retrieval candidates on reserved search capacity when configured."""
+    return score_search_pairs_with_model(query, docs)[1]
+
+
+def score_search_pairs_with_model(
+    query: str, docs: list[str]
+) -> tuple[str, list[float]]:
+    """Preserve shared routing unless search isolation was explicitly configured."""
+    return _score_pairs_with_model(
+        query, docs, isolated=bool(search_reranker_service_url())
+    )
+
+
+def _score_pairs_with_model(
+    query: str, docs: list[str], *, isolated: bool
+) -> tuple[str, list[float]]:
     if not reranker_enabled():
         raise CrossEncoderUnavailableError(
             f"Reranker is disabled by {RERANK_ENABLED_ENV_VAR}"
         )
     service_url = inference_service_url()
-    expected_local_unavailability = _is_colocated_service(service_url)
+    expected_local_unavailability = not isolated and _is_colocated_service(service_url)
     try:
-        model = resolve_service_configured_reranker_model()
+        if isolated:
+            service_url = validate_search_reranker_service()
+            model = resolve_inference_service_capabilities(
+                service_url=service_url
+            ).configured_reranker_model
+            if model is None:
+                raise EmbeddingUnavailableError("Search worker lacks a reranker model")
+        else:
+            model = resolve_service_configured_reranker_model()
     except EmbeddingUnavailableError as exc:
         raise CrossEncoderUnavailableError(
             f"Could not discover reranker model: {exc}",
@@ -63,6 +94,8 @@ def score_pairs_with_model(query: str, docs: list[str]) -> tuple[str, list[float
             expected_local_unavailability=expected_local_unavailability,
         )
     )
+    if isolated and docs:
+        increment("search.rerank.search_worker")
     return model, scores
 
 
