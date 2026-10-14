@@ -436,6 +436,8 @@ answer witnesses. It writes no journal and grants no authority: admission and
 publication must still validate answer lifetime and source/lease ownership.
 `prepare_profile_package` rejects a capture from a different seed or retrieval
 policy rather than repeating lookup after compression.
+When pending-input tools are active, the capture is required even when its
+lookup found no matches; an omitted lookup must not stand in for an empty result.
 Its required `source` argument is the actual service/run trigger, including
 None for a rerun; it must not be inferred from the newest original request.
 

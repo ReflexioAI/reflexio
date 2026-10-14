@@ -44,6 +44,42 @@ prior_storage = prior_tests.storage
 pytestmark = pytest.mark.unit
 
 
+def empty_prior_capture(monkeypatch, *, groups=None):
+    """Exercise real capture/query binding with a deliberately empty lookup."""
+    from reflexio.server.services.extraction.prior_answer_search import (
+        capture_prior_knowledge_context,
+    )
+
+    if groups is None:
+        original = group()
+        original.interactions[0].content = "Production requires separate approval."
+        groups = [original]
+    config = ProfileExtractorConfig(extraction_definition_prompt="Stable preferences")
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            "reflexio.server.services.extraction.prior_answer_search.find_prior_answer_matches",
+            Mock(return_value=[]),
+        )
+        return capture_prior_knowledge_context(
+            messages=profile_package_original_seed(
+                prompt_manager=PromptManager(),
+                groups=groups,
+                existing_profiles=[],
+                agent_context="Agent context",
+                extractor_config=config,
+            ),
+            storage=Mock(),
+            org_id="org",
+            extractor_kind="profile",
+            extractor_config=config,
+            source=groups[-1].request.source,
+            agent_version=None,
+            similarity_threshold=PendingToolCallConfig()
+            .for_tool("attach_pending_info_request")
+            .similarity_threshold,
+        )
+
+
 @pytest.mark.parametrize(
     "model", ["gpt-4o-mini", "minimax/MiniMax-M3", "anthropic/claude-sonnet-4-5"]
 )
@@ -198,6 +234,7 @@ def test_pending_tools_are_real_and_counted_with_the_actual_schema(monkeypatch):
         gate_enabled=False,
         pending_tools_active=True,
         pending_tool_config=PendingToolCallConfig(),
+        prior_context=empty_prior_capture(monkeypatch),
     )
     assert prepared.gate_messages("source") == []
     assert [spec["function"]["name"] for spec in prepared.snapshot["tools"]] == [
@@ -211,6 +248,12 @@ def test_pending_tools_are_real_and_counted_with_the_actual_schema(monkeypatch):
     assert prepared.snapshot["stage_caps"]["compress"] == 110
     with pytest.raises(InputBudgetConfigurationError, match="configuration"):
         preparation(monkeypatch, pending_tools_active=True)
+    with pytest.raises(InputBudgetConfigurationError, match="prior capture"):
+        preparation(
+            monkeypatch,
+            pending_tools_active=True,
+            pending_tool_config=PendingToolCallConfig(),
+        )
 
 
 def test_fixed_native_request_overflow_refuses_before_provider(monkeypatch):
@@ -219,6 +262,47 @@ def test_fixed_native_request_overflow_refuses_before_provider(monkeypatch):
     with pytest.raises(ValueError, match="fixed|Fixed"):
         preparation(monkeypatch, agent_context="fixed instructions " * 20000)
     wire.assert_not_called()
+
+
+def test_empty_sqlite_prior_capture_is_distinct_from_skipped_lookup(
+    monkeypatch, prior_storage
+):
+    from reflexio.server.services.extraction.prior_answer_search import (
+        capture_prior_knowledge_context,
+    )
+
+    original = group()
+    config = ProfileExtractorConfig(extraction_definition_prompt="Stable preferences")
+    tools_config = PendingToolCallConfig()
+    captured = capture_prior_knowledge_context(
+        messages=profile_package_original_seed(
+            prompt_manager=PromptManager(),
+            groups=[original],
+            existing_profiles=[],
+            agent_context="Agent context",
+            extractor_config=config,
+        ),
+        storage=prior_storage,
+        org_id="org_1",
+        extractor_kind="profile",
+        extractor_config=config,
+        source=original.request.source,
+        agent_version=None,
+        similarity_threshold=tools_config.for_tool(
+            "attach_pending_info_request"
+        ).similarity_threshold,
+    )
+    assert captured.suffix == []
+    assert captured.answer_witnesses == {}
+    prepared, _ = preparation(
+        monkeypatch,
+        groups=[original],
+        org_id="org_1",
+        prior_context=captured,
+        pending_tools_active=True,
+        pending_tool_config=tools_config,
+    )
+    assert prepared.snapshot["prior_context"] == captured.snapshot
 
 
 @pytest.mark.parametrize("pending_active", [False, True])
@@ -246,6 +330,7 @@ def test_custom_route_credentials_are_not_in_preparation_snapshot(
         client=client,
         context_limits={f"openai/private@{route}": 60000},
         pending_tools_active=pending_active,
+        prior_context=empty_prior_capture(monkeypatch) if pending_active else None,
         pending_tool_config=PendingToolCallConfig(
             hmac_secrets=["configured-hmac-secret"]
         ),
@@ -266,7 +351,11 @@ def test_custom_route_credentials_are_not_in_preparation_snapshot(
 
 def test_signing_secret_rotation_changes_only_its_frozen_digest(monkeypatch):
     original = group()
-    options = {"groups": [original], "pending_tools_active": True}
+    options = {
+        "groups": [original],
+        "pending_tools_active": True,
+        "prior_context": empty_prior_capture(monkeypatch, groups=[original]),
+    }
     first, _ = preparation(
         monkeypatch,
         **options,
@@ -582,6 +671,16 @@ def test_captured_full_prior_suffix_is_priced_and_never_looked_up_again(
         "search_prior_tool_calls",
         Mock(side_effect=AssertionError("no second lookup")),
     )
+    with pytest.raises(InputBudgetConfigurationError, match="prior capture"):
+        preparation(
+            monkeypatch,
+            groups=groups,
+            org_id="org_1",
+            source=trigger_source,
+            extractor_config=config,
+            pending_tools_active=True,
+            pending_tool_config=tools_config,
+        )
     prepared, _ = preparation(
         monkeypatch,
         groups=groups,

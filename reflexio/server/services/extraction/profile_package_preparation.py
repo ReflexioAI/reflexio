@@ -234,8 +234,12 @@ def prepare_profile_package(
     prior = prior_context.snapshot if prior_context is not None else None
     if prior is not None and (prior["org_id"] != org_id or not pending_tools_active):
         raise InputBudgetConfigurationError("Profile prior context scope changed")
-    if pending_tools_active and pending_tool_config is None:
-        raise InputBudgetConfigurationError("Profile tool configuration is required")
+    if pending_tools_active and (
+        pending_tool_config is None or prior_context is None
+    ):
+        raise InputBudgetConfigurationError(
+            "Profile tool configuration and prior capture are required"
+        )
     suffix = prior["suffix"] if prior is not None else []
     tools = ToolRegistry(
         create_pending_info_tools_for_extractor_kind("profile")
