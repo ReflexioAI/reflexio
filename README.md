@@ -471,7 +471,28 @@ Publishing commits interactions before returning success. Background workers pro
 configured sliding windows in admission order, regardless of request boundaries.
 Different users can extract concurrently within `REFLEXIO_PUBLISH_LEARNING_WORKERS`
 (default 4 per process); each user's profile/playbook cursors retry independently.
-A partial window waits for more input or an eligible `force_extraction` request.
+A partial window is evaluated after an optional completion hint or six hours of
+session inactivity by default. Both paths retain the usefulness judge; a negative
+judge result covers the input without generating learnings. Normal full windows
+and strides run as before. Later messages in a finalized session remain valid.
+
+```python
+client.publish_interaction(user_id="u", session_id="s", interactions=messages,
+                           session_finished=True)
+# Or signal completion after messages were already saved:
+client.finalize_session(user_id="u", session_id="s")
+```
+
+Completion returns acceptance, not extraction completion. The async and
+`client.for_session("s")` APIs support the same operation. Set Config's
+`extraction_idle_timeout_seconds` (default `21600`; `0` disables fallback for new
+publications). This is a configurable low-urgency policy, not proof that a session
+ended. Activity is scoped by organization/project/user/session; other sessions do
+not postpone its deadline. Each publication captures its timeout, so edits apply
+to subsequent publications. Existing pre-upgrade admissions have no inferred
+idle deadline; explicitly finalize those surviving sessions when needed.
+The library scheduler needs a live process and reachable `Reflexio` handle;
+reopening resumes durable deadlines without another publish.
 Provider fallback remains enabled. Existing extracted data is preserved, and
 interactions stored before stream admission are not automatically replayed.
 
@@ -489,9 +510,9 @@ or waiting for input, reporting `learning_status="deferred"` with
 `learning_reason="waiting_for_window"`. Poll `GET /api/learning_status` with the
 returned `request_id` to see coverage complete later. Note the practical
 consequence of the default `window_size` of 10: a brand-new user's first window
-needs ten eligible interactions before anything is extracted, so a single publish
-legitimately returns uncovered. Pass `force_extraction` when you need that publish
-extracted on its own.
+normally needs ten eligible interactions, so an incomplete first publish returns
+uncovered until more input, an optional completion hint, or its idle deadline.
+Reserve `force_extraction` for an explicit manual bypass of the judge.
 
 ### Nomic dependency compatibility
 

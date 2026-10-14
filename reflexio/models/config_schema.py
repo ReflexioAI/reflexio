@@ -924,6 +924,8 @@ class Config(BaseModel):
     # extraction parameters
     window_size: int = Field(default=DEFAULT_WINDOW_SIZE, gt=0)
     stride_size: int = Field(default=DEFAULT_STRIDE_SIZE, gt=0)
+    # Captured at admission; 0 disables idle finalization for new publications.
+    extraction_idle_timeout_seconds: int = Field(default=21600, ge=0)
     # API key configuration for LLM providers
     api_key_config: APIKeyConfig | None = None
     # LLM model configuration overrides

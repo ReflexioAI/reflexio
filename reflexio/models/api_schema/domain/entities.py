@@ -88,6 +88,8 @@ __all__ = [
     "ClearUserDataRequest",
     "ClearUserDataResponse",
     "InteractionData",
+    "FinalizeSessionRequest",
+    "FinalizeSessionResponse",
     "PublishUserInteractionRequest",
     "PublishUserInteractionResponse",
     "WhoamiResponse",
@@ -1611,6 +1613,9 @@ class PublishUserInteractionRequest(CapturesUnknownFields):
     # this is used for aggregating interactions for generating agent playbooks
     agent_version: str = Field(default="", max_length=1_000)
     session_id: NonEmptyStr  # used for grouping requests together
+    session_finished: bool = (
+        False  # Finalize the saved prefix without bypassing the judge.
+    )
     skip_aggregation: bool = (
         False  # when True, extract profiles/playbooks but skip aggregation
     )
@@ -1771,6 +1776,21 @@ class PublishUserInteractionRequest(CapturesUnknownFields):
 
 
 # publish user interaction response
+class FinalizeSessionRequest(BaseModel):
+    """Optional completion hint for an authenticated user's saved session."""
+
+    user_id: NonEmptyStr
+    session_id: NonEmptyStr
+
+
+class FinalizeSessionResponse(BaseModel):
+    """Acceptance only; extraction continues asynchronously through its judge."""
+
+    success: bool
+    accepted: bool = False
+    message: str = ""
+
+
 class PublishUserInteractionResponse(BaseModel):
     success: bool
     message: str = ""

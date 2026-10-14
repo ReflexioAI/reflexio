@@ -35,6 +35,8 @@ BINDING_ENTRY_POINT = {"for_session"}
 # ReflexioClient methods whose SIGNATURE exposes a session argument.
 SESSION_PARAM_CLIENT_METHODS = {
     "delete_session",
+    "finalize_session",
+    "finalize_session_async",
     "get_requests",
     "get_retrieved_learning_evaluation_results",
     "get_session_outcomes",
@@ -76,6 +78,7 @@ _RESPONSES: dict[str, dict[str, Any]] = {
     },
     "/api/search_user_playbooks": {"success": True, "user_playbooks": []},
     "/api/publish_interaction": {"success": True},
+    "/api/finalize_session": {"success": True, "accepted": True},
     "/api/session_outcome": {"success": True, "recorded": True},
     "/api/get_session_outcomes": {"success": True, "outcomes": []},
     "/api/get_requests": {"success": True, "sessions": []},
@@ -778,3 +781,23 @@ def test_request_objects_reach_the_unscoped_client_untouched(monkeypatch) -> Non
     client.get_requests(GetRequestsRequest(user_id="u1", session_id="legacy"))
 
     assert captured["/api/get_requests"]["session_id"] == "legacy"
+
+
+@pytest.mark.asyncio
+async def test_session_finalization_and_completion_publish_bind_on_wire(monkeypatch):
+    client = _make_client()
+    sync = _capture_sync(monkeypatch, client)
+    asynchronous = _capture_async(monkeypatch, client)
+    session = client.for_session(BOUND)
+    assert session.finalize_session("u1").accepted
+    assert (await session.finalize_session_async("u1")).accepted
+    assert sync["/api/finalize_session"] == {"user_id": "u1", "session_id": BOUND}
+    assert asynchronous["/api/finalize_session"] == sync["/api/finalize_session"]
+    session.publish_interaction("u1", INTERACTIONS, session_finished=True)
+    await session.publish_interaction_async("u1", INTERACTIONS, session_finished=True)
+    assert sync["/api/publish_interaction"]["session_finished"] is True
+    assert asynchronous["/api/publish_interaction"]["session_finished"] is True
+    with pytest.raises(ValueError):
+        session.finalize_session("u1", OTHER)
+    with pytest.raises(ValueError):
+        await session.finalize_session_async("u1", OTHER)

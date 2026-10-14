@@ -124,6 +124,8 @@ from reflexio.models.api_schema.service_schemas import (
     DeleteUserPlaybooksByIdsRequest,
     DeleteUserProfileRequest,
     DeleteUserProfileResponse,
+    FinalizeSessionRequest,
+    FinalizeSessionResponse,
     GetOperationStatusResponse,
     GetSessionOutcomesRequest,
     GetSessionOutcomesResponse,
@@ -457,6 +459,32 @@ class ReflexioClient:
                 "Is REFLEXIO_URL pointing at the API host?"
             ) from exc
 
+    def finalize_session(
+        self, user_id: str, session_id: str
+    ) -> FinalizeSessionResponse:
+        """Accept an optional completion hint for saved messages.
+
+        Returns acceptance, not extraction completion. The judge remains
+        enabled, and the session can receive later publications.
+        """
+        request = FinalizeSessionRequest(user_id=user_id, session_id=session_id)
+        return FinalizeSessionResponse(
+            **self._make_request(
+                "POST", "/api/finalize_session", json=request.model_dump(mode="json")
+            )
+        )
+
+    async def finalize_session_async(
+        self, user_id: str, session_id: str
+    ) -> FinalizeSessionResponse:
+        """Native-async counterpart to :meth:`finalize_session`."""
+        request = FinalizeSessionRequest(user_id=user_id, session_id=session_id)
+        return FinalizeSessionResponse(
+            **await self._make_async_request(
+                "POST", "/api/finalize_session", json=request.model_dump(mode="json")
+            )
+        )
+
     def _publish_interaction_sync(
         self,
         request: PublishUserInteractionRequest,
@@ -511,6 +539,7 @@ class ReflexioClient:
         override_learning_stall: bool,
         retrieval_experiment_id: str | None,
         retrieval_experiment_arm: Literal["treatment", "holdout"] | None,
+        session_finished: bool = False,
     ) -> PublishUserInteractionRequest:
         """Validate and build the request shared by sync and async publishing."""
         if session_id is None or not session_id.strip():
@@ -531,6 +560,7 @@ class ReflexioClient:
             agent_version=agent_version,
             skip_aggregation=skip_aggregation,
             force_extraction=force_extraction,
+            session_finished=session_finished,
             evaluation_only=evaluation_only,
             override_learning_stall=override_learning_stall,
             retrieval_experiment_id=retrieval_experiment_id,
@@ -562,6 +592,7 @@ class ReflexioClient:
         override_learning_stall: bool = False,
         retrieval_experiment_id: str | None = None,
         retrieval_experiment_arm: Literal["treatment", "holdout"] | None = None,
+        session_finished: bool = False,
     ) -> PublishUserInteractionResponse:
         """Publish user interactions.
 
@@ -598,6 +629,8 @@ class ReflexioClient:
             force_extraction: If True, bypass all extraction gates
                 (stride_size, cheap pre-filter, LLM should_run) and
                 always run extractors.
+            session_finished: Optional completion hint; evaluates the saved prefix
+                through the judge without waiting for a full window. Later messages remain valid.
             evaluation_only: If True, store the interaction for
                 session-level evaluation only and permanently exclude it
                 from profile/playbook extraction.
@@ -639,6 +672,7 @@ class ReflexioClient:
             session_id=session_id,
             skip_aggregation=skip_aggregation,
             force_extraction=force_extraction,
+            session_finished=session_finished,
             evaluation_only=evaluation_only,
             override_learning_stall=override_learning_stall,
             retrieval_experiment_id=retrieval_experiment_id,
@@ -669,6 +703,7 @@ class ReflexioClient:
         override_learning_stall: bool = False,
         retrieval_experiment_id: str | None = None,
         retrieval_experiment_arm: Literal["treatment", "holdout"] | None = None,
+        session_finished: bool = False,
     ) -> PublishUserInteractionResponse:
         """Native-async counterpart to :meth:`publish_interaction`."""
         request = self._build_publish_interaction_request(
@@ -679,6 +714,7 @@ class ReflexioClient:
             session_id=session_id,
             skip_aggregation=skip_aggregation,
             force_extraction=force_extraction,
+            session_finished=session_finished,
             evaluation_only=evaluation_only,
             override_learning_stall=override_learning_stall,
             retrieval_experiment_id=retrieval_experiment_id,
@@ -3724,6 +3760,20 @@ class SessionScopedClient:
             )
         return attribute
 
+    def finalize_session(
+        self, user_id: str, session_id: str | None = None
+    ) -> FinalizeSessionResponse:
+        """Finalize the bound session's saved prefix, retaining the judge."""
+        return self._client.finalize_session(user_id, self._resolve(session_id))
+
+    async def finalize_session_async(
+        self, user_id: str, session_id: str | None = None
+    ) -> FinalizeSessionResponse:
+        """Native-async completion hint for the bound session."""
+        return await self._client.finalize_session_async(
+            user_id, self._resolve(session_id)
+        )
+
     # -- publishing -------------------------------------------------------
 
     def publish_interaction(
@@ -3740,6 +3790,7 @@ class SessionScopedClient:
         override_learning_stall: bool = False,
         retrieval_experiment_id: str | None = None,
         retrieval_experiment_arm: Literal["treatment", "holdout"] | None = None,
+        session_finished: bool = False,
     ) -> PublishUserInteractionResponse:
         """Publish interactions into the bound session.
 
@@ -3755,6 +3806,7 @@ class SessionScopedClient:
             wait_for_response=wait_for_response,
             skip_aggregation=skip_aggregation,
             force_extraction=force_extraction,
+            session_finished=session_finished,
             evaluation_only=evaluation_only,
             override_learning_stall=override_learning_stall,
             retrieval_experiment_id=retrieval_experiment_id,
@@ -3775,6 +3827,7 @@ class SessionScopedClient:
         override_learning_stall: bool = False,
         retrieval_experiment_id: str | None = None,
         retrieval_experiment_arm: Literal["treatment", "holdout"] | None = None,
+        session_finished: bool = False,
     ) -> PublishUserInteractionResponse:
         """Native-async counterpart to :meth:`publish_interaction`."""
         return await self._client.publish_interaction_async(
@@ -3786,6 +3839,7 @@ class SessionScopedClient:
             wait_for_response=wait_for_response,
             skip_aggregation=skip_aggregation,
             force_extraction=force_extraction,
+            session_finished=session_finished,
             evaluation_only=evaluation_only,
             override_learning_stall=override_learning_stall,
             retrieval_experiment_id=retrieval_experiment_id,

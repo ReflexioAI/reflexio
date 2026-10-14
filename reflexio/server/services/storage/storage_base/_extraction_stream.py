@@ -241,6 +241,7 @@ class ExtractionStreamStore:
     """Methods join the storage commit_scope; never perform model/network work."""
 
     org_id: str
+    commit_scope: Any
 
     def _stream_sql(
         self,
@@ -272,7 +273,12 @@ class ExtractionStreamStore:
             )
             end = int(rows[0]["highwater"])
             start = end - len(interaction_ids) + 1
-            admission = {**admission, "min_seq": start, "max_seq": end}
+            admission = {
+                **admission,
+                "min_seq": start,
+                "max_seq": end,
+                "admitted_at": db.now(),
+            }
             db.query(
                 f"UPDATE {db.table('requests')} SET learning_admission=? "
                 "WHERE request_id=? AND user_id=?",
@@ -380,7 +386,7 @@ class ExtractionStreamStore:
     ) -> list[dict[str, Any]]:
         comparator, order = ("<=", "DESC") if context else (">", "ASC")
         rows = db.query(
-            f"SELECT i.interaction_id,i.ingestion_seq,i.request_id,r.learning_admission "
+            f"SELECT i.interaction_id,i.ingestion_seq,i.request_id,r.session_id,r.learning_admission "
             f"FROM {db.table('interactions')} i JOIN {db.table('requests')} r "
             "ON r.request_id=i.request_id AND r.user_id=i.user_id "
             f"WHERE i.user_id=? AND {db.project_filter()} AND i.ingestion_seq {comparator} ? AND {db.eligible(kind)} "
@@ -389,8 +395,113 @@ class ExtractionStreamStore:
         )
         return list(reversed(rows)) if context else rows
 
+    def finalize_session(self, user_id: str, session_id: str) -> bool:
+        """Persist a completion boundary and wake work in one transaction.
+
+        No new stream is created for an unknown session. The marker is a hint,
+        not a closed state; subsequent publication remains valid.
+        """
+        with self.commit_scope(), self._stream_sql() as db:
+            if not db.query(
+                f"SELECT highwater FROM {db.table('learning_work')} "
+                "WHERE org_id=? AND user_id=?" + db.lock(),
+                (self.org_id, user_id),
+            ):
+                return False
+            end = db.admission_value("max_seq")
+            rows = db.query(
+                f"SELECT r.request_id,r.learning_admission FROM {db.table('requests')} r "
+                f"WHERE r.user_id=? AND {db.project_filter()} AND r.session_id=? "
+                f"AND {end} IS NOT NULL ORDER BY {end} DESC LIMIT 1",
+                (user_id, current_project_id() or "", session_id),
+            )
+            if not rows:
+                return False
+            # Reuse enterprise subject-erasure admission guards in this same
+            # transaction, after the shared work lock and scoped existence check.
+            self.lock_extraction_stream(user_id)
+            row = rows[0]
+            admission = decoded(row["learning_admission"])
+            admission["session_finished"] = True
+            db.query(
+                f"UPDATE {db.table('requests')} SET learning_admission=? "
+                "WHERE user_id=? AND request_id=?",
+                (json.dumps(admission), user_id, row["request_id"]),
+            )
+            db.query(
+                f"UPDATE {db.table('learning_work')} SET due_at=0,revision=revision+1 "
+                "WHERE org_id=? AND user_id=?",
+                (self.org_id, user_id),
+            )
+            return True
+
+    def _completion_boundary(
+        self, db: StreamSQL, user_id: str, kind: Kind, after: int, project_id: str
+    ) -> int | None:
+        # Marker eligibility is independent of input eligibility. A consumed or
+        # erased prefix must not leave an empty barrier blocking later inputs.
+        end = db.admission_value("max_seq")
+        eligible = db.eligible(kind).replace("r.", "er.")
+        project = db.project_filter().replace("r.", "er.")
+        rows = db.query(
+            f"SELECT {end} AS boundary FROM {db.table('requests')} r "
+            f"WHERE r.user_id=? AND {db.project_filter()} "
+            f"AND {db.admission_value('session_finished')}=1 AND {end}>? "
+            f"AND EXISTS (SELECT 1 FROM {db.table('interactions')} live "
+            f"JOIN {db.table('requests')} er ON er.user_id=live.user_id AND er.request_id=live.request_id "
+            f"WHERE er.user_id=r.user_id AND er.session_id=r.session_id AND {project} "
+            f"AND {eligible} AND live.ingestion_seq>? AND live.ingestion_seq<={end}) "
+            f"ORDER BY {end} LIMIT 1",
+            (user_id, project_id, after, project_id, after),
+        )
+        return int(rows[0]["boundary"]) if rows else None
+
+    def _idle_boundary(
+        self,
+        db: StreamSQL,
+        user_id: str,
+        project_id: str,
+        pending: list[dict[str, Any]],
+        deadlines: list[float] | None,
+    ) -> int | None:
+        boundary = None
+        end = db.admission_value("max_seq")
+        now: float | None = None
+        for session_id in {row["session_id"] for row in pending}:
+            rows = db.query(
+                f"SELECT {end} AS end_seq,{db.admission_value('admitted_at')} AS admitted_at,"
+                f"{db.admission_value('idle_timeout_seconds')} AS idle_timeout_seconds FROM {db.table('requests')} r "
+                f"WHERE r.user_id=? AND {db.project_filter()} AND r.session_id=? "
+                f"AND {end} IS NOT NULL ORDER BY {end} DESC LIMIT 1",
+                (user_id, project_id, session_id),
+            )
+            if not rows:
+                continue
+            activity = rows[0]
+            timeout = activity["idle_timeout_seconds"]
+            admitted_at = activity["admitted_at"]
+            # Legacy data has no trustworthy admission clock. Explicit finish
+            # still works, but no idle backfill is inferred on upgrade.
+            if not timeout or admitted_at is None:
+                continue
+            due = float(admitted_at) + int(timeout)
+            if now is None:
+                now = db.now()
+            if due <= now:
+                value = int(activity["end_seq"])
+                boundary = value if boundary is None else min(boundary, value)
+            elif deadlines is not None:
+                deadlines.append(due)
+        return boundary
+
     def _select(
-        self, db: StreamSQL, user_id: str, kind: Kind, cursor: dict[str, Any]
+        self,
+        db: StreamSQL,
+        user_id: str,
+        kind: Kind,
+        cursor: dict[str, Any],
+        *,
+        deadlines: list[float] | None = None,
     ) -> tuple[Window | None, int]:
         after = int(cursor["completed_seq"])
         project_id = cursor["project_id"]
@@ -419,9 +530,13 @@ class ExtractionStreamStore:
             (user_id, project_id, after, after),
         )[0]["barrier"]
         forced = barrier is not None
+        if not forced:
+            barrier = self._completion_boundary(db, user_id, kind, after, project_id)
+            if barrier is None and len(new) < needed:
+                barrier = self._idle_boundary(db, user_id, project_id, new, deadlines)
         if barrier is not None:
             new = [row for row in new if int(row["ingestion_seq"]) <= barrier]
-        if len(new) < needed and not forced:
+        if len(new) < needed and barrier is None:
             return None, needed - len(new)
         new = new[:needed]
         if not new:
@@ -476,7 +591,12 @@ class ExtractionStreamStore:
                         (cursor["window_id"],),
                     )
                     return Window.from_row(rows[0])
-                window, _ = self._select(db, user_id, cursor["kind"], cursor)
+                deadlines: list[float] = []
+                window, _ = self._select(
+                    db, user_id, cursor["kind"], cursor, deadlines=deadlines
+                )
+                if deadlines:
+                    next_due = min(next_due, *deadlines)
                 if window is None:
                     continue
                 db.query(

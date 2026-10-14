@@ -63,6 +63,12 @@ def migrate_extraction_stream(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS interactions_arrival ON interactions(user_id,ingestion_seq)"
     )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS extraction_session_activity ON requests(user_id,session_id,json_extract(learning_admission,'$.max_seq') DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS extraction_completion_boundary ON requests(user_id,json_extract(learning_admission,'$.max_seq')) WHERE json_extract(learning_admission,'$.session_finished')=1"
+    )
     conn.commit()
 
 
@@ -99,7 +105,13 @@ class SQLiteStreamSQL:
         return ""  # commit_scope owns BEGIN IMMEDIATE
 
     def admission_value(self, field: str) -> str:
-        if field not in {"force", "max_seq"}:
+        if field not in {
+            "force",
+            "max_seq",
+            "session_finished",
+            "admitted_at",
+            "idle_timeout_seconds",
+        }:
             raise ValueError("Unknown admission field")
         return f"json_extract(r.learning_admission, '$.{field}')"
 

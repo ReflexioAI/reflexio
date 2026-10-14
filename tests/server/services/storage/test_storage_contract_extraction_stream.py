@@ -21,6 +21,9 @@ def publish(
     force=False,
     playbook=False,
     eligible=True,
+    session="s",
+    finished=False,
+    idle_timeout=0,
 ):
     items = [
         Interaction(
@@ -40,7 +43,9 @@ def publish(
     with storage.commit_scope():
         storage.lock_extraction_stream(user)
         storage.add_request(
-            Request(user_id=user, request_id=request_id, session_id="s", source="test")
+            Request(
+                user_id=user, request_id=request_id, session_id=session, source="test"
+            )
         )
         storage.add_user_interactions_bulk(user, items, embeddings_prepared=True)
         storage.admit_extraction(
@@ -51,6 +56,8 @@ def publish(
                 "profile": policy,
                 "playbook": {**policy, "eligible": playbook},
                 "force": force,
+                "session_finished": finished,
+                "idle_timeout_seconds": idle_timeout,
             },
         )
     return items
@@ -501,3 +508,108 @@ def test_combined_report_counts_more_than_one_receipt_page(storage):
     status, counts = storage.extraction_report("u", "r")
     assert status == {"status": "done", "reason": "covered"}
     assert counts == {"profile": 201, "playbook": 0}
+
+
+@pytest.mark.parametrize("playbook", [False, True])
+def test_judged_finish_survives_late_full_window_and_is_idempotent(storage, playbook):
+    publish(storage, 2, width=5, stride=3, playbook=playbook)
+    assert drain(storage) == []
+    assert storage.finalize_session("u", "s")
+    assert storage.finalize_session("u", "s")
+    publish(storage, 3, request_id="late", width=5, stride=3, playbook=playbook)
+    windows = drain(storage)
+    assert [w.end_seq for w in windows if w.kind == "profile"] == [2, 5]
+    if playbook:
+        assert [w.end_seq for w in windows if w.kind == "playbook"] == [2, 5]
+    assert not any(w.force for w in windows)
+    assert storage.finalize_session("u", "s")
+    assert drain(storage) == []
+
+
+def test_ineligible_completion_marker_cannot_stall_later_work(storage):
+    publish(storage, 2, width=5, stride=3)
+    publish(storage, 1, request_id="excluded", eligible=False, finished=True)
+    assert [w.end_seq for w in drain(storage)] == [2]
+    publish(storage, 1, request_id="late", width=5, stride=3, finished=True)
+    assert [w.end_seq for w in drain(storage)] == [4]
+
+
+def test_idle_is_session_scoped_and_deadline_survives_reopen(storage, monkeypatch):
+    from reflexio.server.services.storage.sqlite_storage._extraction_stream import (
+        SQLiteStreamSQL,
+    )
+
+    now = 1000.0
+    monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: now)
+    publish(storage, 2, width=10, stride=5, session="A", idle_timeout=21600)
+    assert drain(storage) == []
+    with storage._stream_sql(read_only=True) as db:
+        assert db.query("SELECT due_at FROM learning_work")[0]["due_at"] == 22600
+    now = 22599
+    publish(storage, 1, request_id="B", session="B", idle_timeout=21600)
+    assert drain(storage) == []
+    now = 22600
+    windows = drain(storage)
+    assert [w.end_seq for w in windows] == [2]
+    assert not windows[0].force
+    assert storage.extraction_status("u", "B")["status"] == "pending"
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_disabled_and_legacy_idle_require_explicit_finish(storage, monkeypatch, legacy):
+    from reflexio.server.services.storage.sqlite_storage._extraction_stream import (
+        SQLiteStreamSQL,
+    )
+
+    now = 1.0
+    monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: now)
+    publish(storage, 2, idle_timeout=21600 if legacy else 0)
+    if legacy:
+        # Upgrade fixture: old rows predate the server admission clock.
+        with storage._stream_sql() as db:
+            db.query(
+                "UPDATE requests SET learning_admission=json_remove(learning_admission, '$.admitted_at') WHERE request_id=?",
+                ("r",),
+            )
+    now = 1000000.0
+    assert drain(storage) == []
+    assert not storage.finalize_session("other", "s")
+    assert not storage.finalize_session("u", "unknown")
+    assert storage.finalize_session("u", "s")
+    assert [w.end_seq for w in drain(storage)] == [2]
+
+
+def test_session_activity_and_marker_queries_use_indexes(storage):
+    with storage._stream_sql(read_only=True) as db:
+        activity = db.query(
+            "EXPLAIN QUERY PLAN SELECT learning_admission FROM requests r WHERE user_id=? AND session_id=? AND json_extract(r.learning_admission, '$.max_seq') IS NOT NULL ORDER BY json_extract(r.learning_admission, '$.max_seq') DESC LIMIT 1",
+            ("u", "s"),
+        )
+        marker = db.query(
+            "EXPLAIN QUERY PLAN SELECT json_extract(r.learning_admission, '$.max_seq') FROM requests r WHERE user_id=? AND json_extract(r.learning_admission, '$.session_finished')=1 AND json_extract(r.learning_admission, '$.max_seq')>? ORDER BY json_extract(r.learning_admission, '$.max_seq') LIMIT 1",
+            ("u", 0),
+        )
+    assert "extraction_session_activity" in str(activity)
+    assert "extraction_completion_boundary" in str(marker)
+
+
+def test_completion_marker_and_wakeup_rollback_together(storage):
+    publish(storage, 2)
+    assert drain(storage) == []
+    with pytest.raises(RuntimeError, match="crash"), storage.commit_scope():
+        assert storage.finalize_session("u", "s")
+        raise RuntimeError("crash before finalize commit")
+    assert drain(storage) == []
+    assert storage.finalize_session("u", "s")
+    assert [w.end_seq for w in drain(storage)] == [2]
+
+
+def test_erased_completion_prefix_does_not_block_later_inputs(storage):
+    publish(storage, 2, finished=True)
+    with storage._stream_sql() as db:
+        db.query("DELETE FROM interactions WHERE request_id=?", ("r",))
+    publish(storage, 1, request_id="late-after-erasure", finished=True)
+    windows = drain(storage)
+    assert [w.end_seq for w in windows] == [3]
+    assert [m["seq"] for m in windows[0].manifest] == [3]
+    assert not windows[0].force

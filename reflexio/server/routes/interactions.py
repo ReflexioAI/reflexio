@@ -33,6 +33,8 @@ from reflexio.models.api_schema.service_schemas import (
     DeleteSessionResponse,
     DeleteUserInteractionRequest,
     DeleteUserInteractionResponse,
+    FinalizeSessionRequest,
+    FinalizeSessionResponse,
     GetSessionOutcomesRequest,
     GetSessionOutcomesResponse,
     LearningStatusResponse,
@@ -58,6 +60,18 @@ from reflexio.server.rate_limit import limiter
 logger = logging.getLogger(__name__)
 router = APIRouter()
 PUBLISH_REQUEST_TIMEOUT_SECONDS = 240.0
+
+
+@router.post("/api/finalize_session", response_model=FinalizeSessionResponse)
+@limiter.limit("60/minute")
+def finalize_session(
+    request: Request,
+    payload: FinalizeSessionRequest,
+    org_id: str = Depends(default_get_org_id),
+    _gate: None = Depends(default_billing_gate("learnings_generated")),  # noqa: B008
+) -> FinalizeSessionResponse:
+    """Accept a completion hint; this does not wait for extraction."""
+    return publisher_api.get_reflexio(org_id=org_id).finalize_session(payload)
 
 
 @router.post(
