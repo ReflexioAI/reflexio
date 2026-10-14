@@ -421,3 +421,42 @@ def test_custom_none_output_cap_cannot_inherit_native_maximum(counter, monkeypat
             params(max_tokens=None, api_base="https://custom.invalid")
         )
     lookup.assert_not_called()
+
+
+@pytest.mark.unit
+def test_nonrejecting_measurement_uses_the_admission_counter(counter):
+    from pydantic import BaseModel
+
+    from reflexio.server.llm.input_budget import (
+        check_request_input_budget,
+        measure_request_input_tokens,
+    )
+
+    class Output(BaseModel):
+        decision: bool
+
+    counter.return_value = 1000
+    request = params(
+        tools=[{"type": "function", "function": {"name": "ask_human"}}],
+        tool_choice="auto",
+        response_format=Output,
+    )
+    assert measure_request_input_tokens(request) == 2400
+    assert counter.call_args_list[0].kwargs["tools"] == request["tools"]
+    assert counter.call_args_list[0].kwargs["tool_choice"] == "auto"
+    assert '"decision"' in counter.call_args_list[1].kwargs["text"]
+    with pytest.raises(InputBudgetExceededError):
+        check_request_input_budget(request, context_limits={"test-model": 10000})
+    assert (
+        check_request_input_budget(request, context_limits={"test-model": 20000})
+        == 2400
+    )
+
+
+@pytest.mark.unit
+def test_nonrejecting_measurement_keeps_counting_failure_typed(counter):
+    from reflexio.server.llm.input_budget import measure_request_input_tokens
+
+    counter.side_effect = RuntimeError("counter unavailable")
+    with pytest.raises(InputBudgetConfigurationError, match="counting failed"):
+        measure_request_input_tokens(params())

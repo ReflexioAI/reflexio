@@ -42,7 +42,7 @@ from reflexio.server.services.extraction.overflow_presentation import (
 from reflexio.server.services.profile.components.extractor import ProfileExtractor
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileGenerationRequest,
-    ProfileGenerationServiceConstants,
+    build_profile_gate_prompt,
 )
 from reflexio.server.services.service_utils import (
     format_sessions_to_history_string,
@@ -538,31 +538,12 @@ class ProfileGenerationService(
             if presentation is not None
             else format_sessions_to_history_string(session_data_models)
         )
-        agent_context = self.configurator.get_agent_context()
-        prompt_manager = self.request_context.prompt_manager
-
-        criteria_parts = []
-        if scoped_config.extraction_definition_prompt:
-            criteria_parts.append(
-                f"definition: {scoped_config.extraction_definition_prompt.strip()}"
-            )
-        if scoped_config.should_extract_profile_prompt_override:
-            criteria_parts.append(
-                "condition: "
-                f"{scoped_config.should_extract_profile_prompt_override.strip()}"
-            )
-
-        combined_criteria = "; ".join(criteria_parts)
-        if not combined_criteria:
-            return None
-
-        return prompt_manager.render_prompt(
-            ProfileGenerationServiceConstants.PROFILE_SHOULD_GENERATE_PROMPT_ID,
-            {
-                "agent_context_prompt": agent_context,
-                "should_extract_profile_prompt": combined_criteria,
-                "new_interactions": new_interactions,
-            },
+        return build_profile_gate_prompt(
+            prompt_manager=self.request_context.prompt_manager,
+            agent_context_prompt=self.configurator.get_agent_context(),
+            extraction_definition_prompt=scoped_config.extraction_definition_prompt,
+            condition_prompt=scoped_config.should_extract_profile_prompt_override,
+            source_text=new_interactions,
         )
 
     def _get_extractor_state_service_name(self) -> str:

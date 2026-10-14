@@ -288,3 +288,54 @@ def test_calculate_expiration_timestamp_ignores_local_dst(
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.unit
+def test_explicit_source_rendering_preserves_actual_profile_prompt_contract():
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        ProfileGenerationServiceConstants,
+        build_profile_gate_prompt,
+    )
+
+    manager = PromptManager()
+    source = (
+        '{"input_protocol":"source-package-v1","evidence":"Production needs review."}'
+    )
+    messages = construct_profile_extraction_messages_from_sessions(
+        prompt_manager=manager,
+        request_interaction_data_models=[],
+        existing_profiles=[],
+        agent_context_prompt="Agent context",
+        context_prompt="Context",
+        extraction_definition_prompt="Stable preferences only",
+        source_text=source,
+    )
+    # Real configured templates, not a stub renderer or a fabricated coordinator.
+    assert any(source in str(message["content"]) for message in messages)
+    assert any(
+        "Stable preferences only" in str(message["content"]) for message in messages
+    )
+    assert build_profile_gate_prompt(
+        prompt_manager=manager,
+        agent_context_prompt="Agent context",
+        extraction_definition_prompt=" Stable preferences only ",
+        condition_prompt=" Explicit corrections ",
+        source_text=source,
+    ) == manager.render_prompt(
+        ProfileGenerationServiceConstants.PROFILE_SHOULD_GENERATE_PROMPT_ID,
+        {
+            "agent_context_prompt": "Agent context",
+            "should_extract_profile_prompt": "definition: Stable preferences only; condition: Explicit corrections",
+            "new_interactions": source,
+        },
+    )
+    assert (
+        build_profile_gate_prompt(
+            prompt_manager=manager,
+            agent_context_prompt="Agent context",
+            extraction_definition_prompt=None,
+            condition_prompt=None,
+            source_text=source,
+        )
+        is None
+    )
