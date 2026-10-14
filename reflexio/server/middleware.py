@@ -121,7 +121,10 @@ def backstop_for(path: str, wait_for_response: bool) -> float:
 
 
 SUSPICIOUS_USER_AGENTS = ["bot", "crawler", "spider", "scraper", "curl", "wget"]
-ALLOWED_EMPTY_UA_PATHS = ["/health", "/"]  # Paths that allow empty user agents
+# Probe paths exempt from every user-agent check (empty AND suspicious UAs such
+# as curl). ``/healthz`` is the dependency-free liveness probe that container
+# health checks run with ``curl -f``; ``/health`` is the readiness probe.
+ALLOWED_EMPTY_UA_PATHS = ["/health", "/healthz", "/"]
 DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024
 
 
@@ -194,7 +197,7 @@ class BotProtectionMiddleware:
         user_agent = request.headers.get("user-agent", "").lower()
         path = request.url.path
 
-        # Allow health check and root without user agent
+        # Allow health/liveness probes and root without any user-agent check
         if path not in ALLOWED_EMPTY_UA_PATHS:
             detail = None
             # Block requests with no user agent
