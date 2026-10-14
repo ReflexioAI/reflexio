@@ -2549,20 +2549,25 @@ class ReflexioClient:
                 return RerunProfileGenerationResponse(
                     success=True,
                     msg="Profile generation completed",
-                    profiles_generated=op.processed_users,
+                    profiles_generated=op.stats.get("total_generated", 0),
                 )
             if op and op.status == OperationStatus.FAILED:
                 return RerunProfileGenerationResponse(
                     success=False,
                     msg=op.error_message or "Profile generation failed",
+                    profiles_generated=op.stats.get("total_generated", 0),
                 )
             return RerunProfileGenerationResponse(
                 success=False,
                 msg="Profile generation was cancelled",
+                profiles_generated=op.stats.get("total_generated", 0) if op else 0,
             )
-        except (TimeoutError, Exception) as e:
+        except Exception as e:
             logger.warning("Error while polling profile generation status: %s", e)
-            return initial
+            return RerunProfileGenerationResponse(
+                success=False,
+                msg="Could not confirm generation completion; check generation status before retrying",
+            )
 
     async def _rerun_profile_generation_async(
         self, request: RerunProfileGenerationRequest
@@ -2742,20 +2747,25 @@ class ReflexioClient:
                 return RerunPlaybookGenerationResponse(
                     success=True,
                     msg="Playbook generation completed",
-                    playbooks_generated=op.processed_users,
+                    playbooks_generated=op.stats.get("total_generated", 0),
                 )
             if op and op.status == OperationStatus.FAILED:
                 return RerunPlaybookGenerationResponse(
                     success=False,
                     msg=op.error_message or "Playbook generation failed",
+                    playbooks_generated=op.stats.get("total_generated", 0),
                 )
             return RerunPlaybookGenerationResponse(
                 success=False,
                 msg="Playbook generation was cancelled",
+                playbooks_generated=op.stats.get("total_generated", 0) if op else 0,
             )
-        except (TimeoutError, Exception) as e:
+        except Exception as e:
             logger.warning("Error while polling playbook generation status: %s", e)
-            return initial
+            return RerunPlaybookGenerationResponse(
+                success=False,
+                msg="Could not confirm generation completion; check generation status before retrying",
+            )
 
     async def _rerun_playbook_generation_async(
         self, request: RerunPlaybookGenerationRequest

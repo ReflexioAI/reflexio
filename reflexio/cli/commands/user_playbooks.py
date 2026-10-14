@@ -352,17 +352,21 @@ def regenerate(
         wait_for_response=wait,
     )
 
-    # When waiting, auto-promote PENDING user playbooks to CURRENT so
-    # they're immediately visible in `list` output.
+    # Failed or canceled generation retains pending output for inspection.
+    raise_if_failed(resp, default="Generation did not complete")
     promoted = 0
     if wait:
         try:
-            upgrade_resp = client.upgrade_user_playbooks(
-                agent_version=resolved_version,
-            )
-            promoted = upgrade_resp.user_playbooks_promoted
-        except Exception:
-            print_info("Warning: promotion failed, but regeneration succeeded")
+            upgrade_resp = client.upgrade_user_playbooks(agent_version=resolved_version)
+        except Exception as exc:
+            raise CliError(
+                error_type="api",
+                message=f"Generation succeeded, but promotion failed: {exc}",
+            ) from exc
+        raise_if_failed(
+            upgrade_resp, default="Generation succeeded, but promotion failed"
+        )
+        promoted = upgrade_resp.user_playbooks_promoted
 
     json_mode: bool = ctx.obj.json_mode
     if json_mode:

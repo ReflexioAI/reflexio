@@ -1,4 +1,4 @@
-import { MethodDef } from "../types";
+import type { MethodDef } from "../types";
 
 export const generationMethods: MethodDef[] = [
   {
@@ -7,7 +7,7 @@ export const generationMethods: MethodDef[] = [
     displayName: "Rerun Profile Generation",
     group: "generation",
     description:
-      "Rerun profile generation for users. Uses ALL interactions and outputs PENDING status profiles.",
+      "Rerun profile generation for users. Uses ALL interactions and outputs PENDING status profiles. With wait_for_response=True, partial failures or cancellation return success=False and retain valid pending output. Polling failures do not confirm completion.",
     httpMethod: "POST",
     endpoint: "/api/rerun_profile_generation",
     requestStyle: "json_body",
@@ -52,7 +52,7 @@ export const generationMethods: MethodDef[] = [
     displayName: "Manual Profile Generation",
     group: "generation",
     description:
-      "Manually trigger profile generation with window-sized interactions. Outputs CURRENT status profiles.",
+      "Manually trigger profile generation with window-sized interactions. Outputs CURRENT status profiles. Partial batches report success=False while retaining valid generated records.",
     httpMethod: "POST",
     endpoint: "/api/manual_profile_generation",
     requestStyle: "json_body",
@@ -84,7 +84,7 @@ export const generationMethods: MethodDef[] = [
     displayName: "Rerun Playbook Generation",
     group: "generation",
     description:
-      "Rerun user playbook generation for an agent version. Uses ALL interactions and outputs PENDING status user playbooks. Aggregation into agent playbooks is a separate step.",
+      "Rerun user playbook generation for an agent version. Uses ALL interactions and outputs PENDING status user playbooks. Aggregation into agent playbooks is a separate step. With wait_for_response=True, partial failures or cancellation return success=False and retain valid pending output. Polling failures do not confirm completion.",
     httpMethod: "POST",
     endpoint: "/api/rerun_playbook_generation",
     requestStyle: "json_body",
@@ -127,7 +127,7 @@ export const generationMethods: MethodDef[] = [
     displayName: "Manual Playbook Generation",
     group: "generation",
     description:
-      "Manually trigger user playbook generation with window-sized interactions. Outputs CURRENT status user playbooks.",
+      "Manually trigger user playbook generation with window-sized interactions. Outputs CURRENT status user playbooks. Partial batches report success=False while retaining valid generated records.",
     httpMethod: "POST",
     endpoint: "/api/manual_playbook_generation",
     requestStyle: "json_body",

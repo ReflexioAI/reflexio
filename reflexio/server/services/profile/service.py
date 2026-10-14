@@ -946,8 +946,13 @@ class ProfileGenerationService(
             )
 
             return ManualProfileGenerationResponse(
-                success=True,
-                msg=f"Generated {total_profiles} profiles for {users_processed} user(s)",
+                success=users_processed == len(user_ids),
+                msg=(
+                    f"Generated {total_profiles} profiles for {users_processed} user(s)"
+                    if users_processed == len(user_ids)
+                    else f"Generation incomplete: completed {users_processed}/{len(user_ids)} user(s); "
+                    "check generation status for failures or cancellation"
+                ),
                 profiles_generated=total_profiles,
             )
 

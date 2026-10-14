@@ -668,3 +668,18 @@ The docs server started by `reflexio services start` binds to `127.0.0.1`, just
 like the standalone backend. For remote browsing, forward the docs and backend
 ports through SSH; an API key is still required when configured. This does not
 change the bind address of production containers or custom embedded backend apps.
+
+## Generation completion and CLI errors
+
+`user-profiles regenerate --wait` and `user-playbooks regenerate --wait` report
+success only after generation and promotion both succeed. Failed or canceled
+batches exit nonzero in text and `--json` modes, leave valid pending output stored,
+and skip automatic promotion. A promotion failure also exits nonzero. Inspect
+operation status and pending records before retrying; regeneration can delete
+prior pending records, so a blind whole-batch retry is not a safe recovery.
+
+Batch progress is `failed` if any selected user fails. Cancellation remains
+`cancelled`; both terminal outcomes retain processed/failed-user statistics and
+generated counts. A successful batch may legitimately produce zero records.
+A synchronous SDK polling error reports `success=False`: acceptance does not
+prove completion. Generated counts represent records, rather than processed users.

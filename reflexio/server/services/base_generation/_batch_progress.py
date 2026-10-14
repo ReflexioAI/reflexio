@@ -90,7 +90,7 @@ class BatchProgressMixin(Generic[TRequest]):  # noqa: UP046
 
             # Process each user
             users_processed = 0
-            processed_user_ids: list[str] = []
+            generated_user_ids: list[str] = []
             for user_id in user_ids:
                 # Check for cancellation before starting next user
                 if state_manager.is_cancellation_requested():
@@ -101,24 +101,26 @@ class BatchProgressMixin(Generic[TRequest]):  # noqa: UP046
                         total_users,
                     )
                     state_manager.mark_cancelled()
-                    return users_processed, self._get_generated_count(
-                        request, processed_user_ids=processed_user_ids
+                    total_generated = self._get_generated_count(
+                        request, processed_user_ids=generated_user_ids
                     )
+                    state_manager.finalize_progress(users_processed, total_generated)
+                    return users_processed, total_generated
 
                 state_manager.set_current_item(user_id)
 
                 try:
                     run_request = self._create_run_request_for_item(user_id, request)
                     self.run(run_request)
-                    users_processed += 1
-                    processed_user_ids.append(user_id)
-
+                    # Generation can commit output before its progress write fails.
+                    generated_user_ids.append(user_id)
                     state_manager.update_progress(
                         item_id=user_id,
                         count=0,  # Extractors collect their own data
                         success=True,
                         total_users=total_users,
                     )
+                    users_processed += 1
 
                 except Exception as e:
                     logger.error(
@@ -138,7 +140,7 @@ class BatchProgressMixin(Generic[TRequest]):  # noqa: UP046
 
             # Get generated count and finalize
             total_generated = self._get_generated_count(
-                request, processed_user_ids=processed_user_ids
+                request, processed_user_ids=generated_user_ids
             )
             state_manager.finalize_progress(users_processed, total_generated)
 
@@ -293,8 +295,14 @@ class BatchProgressMixin(Generic[TRequest]):  # noqa: UP046
                 state_manager=state_manager,
             )
 
-            msg = f"Completed for {users_processed} user(s)"
-            return self._create_rerun_response(True, msg, total_generated)
+            success = users_processed == len(user_ids)
+            msg = (
+                f"Completed for {users_processed} user(s)"
+                if success
+                else f"Generation incomplete: completed {users_processed}/{len(user_ids)} user(s); "
+                "check generation status for failures or cancellation"
+            )
+            return self._create_rerun_response(success, msg, total_generated)
 
         except Exception as e:
             state_manager.mark_progress_failed(str(e))

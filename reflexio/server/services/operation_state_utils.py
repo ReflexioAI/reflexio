@@ -272,7 +272,7 @@ class OperationStateManager:
         self.storage.update_operation_state(key, current_state)
 
     def finalize_progress(self, total_processed: int, total_generated: int = 0) -> None:
-        """Mark operation as COMPLETED and finalize state.
+        """Finalize statistics without hiding failed users or cancellation.
 
         Args:
             total_processed: Total number of items processed
@@ -283,9 +283,20 @@ class OperationStateManager:
         final_state = (
             state_entry.get("operation_state", state_entry) if state_entry else {}
         )
-        final_state["status"] = OperationStatus.COMPLETED.value
+        if final_state.get("status") != OperationStatus.CANCELLED.value:
+            failed_users = final_state.get("failed_users", 0)
+            final_state["status"] = (
+                OperationStatus.FAILED.value
+                if failed_users
+                else OperationStatus.COMPLETED.value
+            )
+            if failed_users:
+                final_state["error_message"] = (
+                    f"Generation failed for {failed_users} user(s)"
+                )
         final_state["completed_at"] = int(datetime.now(UTC).timestamp())
-        final_state["progress_percentage"] = 100.0
+        if final_state["status"] != OperationStatus.CANCELLED.value:
+            final_state["progress_percentage"] = 100.0
         final_state["stats"]["total_interactions_processed"] = total_processed
         final_state["stats"]["total_generated"] = total_generated
         self.storage.update_operation_state(key, final_state)

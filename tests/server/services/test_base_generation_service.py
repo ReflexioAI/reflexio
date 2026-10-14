@@ -1137,8 +1137,12 @@ class TestErrorHandling:
 
         response = service.run_rerun(request)
 
-        # Should still complete successfully for other users
-        assert response["success"] is True
+        # Other users finish, but the batch must report the retained failure.
+        assert response["success"] is False
+        state = service._create_state_manager().get_progress()
+        assert state is not None
+        assert state["status"] == "failed"
+        assert state["processed_users"] == state["failed_users"] == 1
 
 
 # ===============================
@@ -1617,7 +1621,7 @@ class TestCancellationInBatch:
 
         response = service.run_rerun(request)
 
-        assert response["success"] is True
+        assert response["success"] is False
         # user1 processed, then cancellation detected before user2/user3
         assert response["count"] < 3  # Cancellation should stop before all users
 
