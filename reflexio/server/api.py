@@ -143,6 +143,7 @@ _PUBLIC_PATHS = frozenset(
         "/health",
         "/healthz",
         "/healthz/eval",
+        "/livez",
         "/meta/version",
         "/token",
         "/docs",

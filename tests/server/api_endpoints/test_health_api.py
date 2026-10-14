@@ -44,3 +44,9 @@ def test_healthz_rss_mb_optional() -> None:
     if body["rss_mb"] is not None:
         assert isinstance(body["rss_mb"], float)
         assert body["rss_mb"] > 0.0
+
+
+def test_livez_is_a_cheap_constant_liveness_answer() -> None:
+    response = TestClient(_build_app()).get("/livez")
+    assert response.status_code == 200
+    assert response.json() == {"status": "alive"}

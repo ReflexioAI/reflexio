@@ -953,6 +953,15 @@ FULL_ROUTES = [
         (),
     ),
     (
+        "/livez",
+        ("GET",),
+        "dict",
+        None,
+        (),
+        "livez",
+        (),
+    ),
+    (
         "/healthz/eval",
         ("GET",),
         "dict",
@@ -984,6 +993,15 @@ NODP_ROUTES = [
         None,
         (),
         "healthz",
+        (),
+    ),
+    (
+        "/livez",
+        ("GET",),
+        "dict",
+        None,
+        (),
+        "livez",
         (),
     ),
     (

@@ -44,6 +44,7 @@ class LocalAccessMiddleware:
                 "/health",
                 "/healthz",
                 "/healthz/eval",
+                "/livez",
                 "/meta/version",
                 "/docs",
                 "/redoc",
