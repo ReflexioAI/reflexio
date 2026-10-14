@@ -520,6 +520,12 @@ admission and enables the configured reranker. Its `/health/model` still reports
 `workload="query"`, so existing embedding clients can coexist during a rolling
 upgrade; `/health` separately advertises the `search` workload and reranker readiness.
 Legacy `query_only=True` remains embedding-only and rejects reranking.
+Search workers require a successful reranker prewarm before serving. If a later
+prediction fails, `/health` and `/health/rerank` can retry one warmup under a
+one-second request budget. Recovery uses the existing inference scheduler when
+supplied; overlapping health probes never run overlapping warmups, including
+when a slow prediction continues after its health request times out. The worker
+remains unready until a real prediction succeeds.
 
 Set `REFLEXIO_SEARCH_RERANK_SERVICE_URL` to the same endpoint as
 `REFLEXIO_QUERY_EMBEDDING_SERVICE_URL` to route retrieval relevance scoring there.

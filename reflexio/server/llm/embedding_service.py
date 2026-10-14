@@ -7,12 +7,14 @@ import math
 import os
 import threading
 import time
+from _thread import LockType
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import anyio
+from anyio.to_thread import run_sync
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
@@ -74,6 +76,16 @@ _ACTIVE_BATCH_PROCESSORS = 0
 _JOB_WAIT_TIMEOUT_SECONDS = 600.0
 
 EmbeddingEncoder = Callable[[list[str]], list[list[float]]]
+InferenceSubmit = Callable[
+    [
+        Callable[[list[str]], list[Any]],
+        list[str],
+        Literal["interactive", "bulk"],
+        int,
+        int,
+    ],
+    Awaitable[list[Any]],
+]
 
 
 @dataclass
@@ -239,6 +251,41 @@ def _workload(query_only: bool, workload: str | None) -> str:
     return resolved
 
 
+async def _recover_search_reranker(
+    request: Request,
+    runner: CrossEncoderRunner,
+    recovery_lock: LockType,
+    inference_submit: InferenceSubmit | None,
+    *,
+    enabled: bool,
+) -> None:
+    if not enabled or not reranker_enabled() or runner.ready():
+        return
+
+    def recover(_texts: list[str]) -> list[bool]:
+        # A timed-out prediction still owns this lock until it actually ends.
+        # Other health requests must not start another model recovery attempt.
+        if not recovery_lock.acquire(blocking=False):
+            return [False]
+        try:
+            return [runner.ready() or runner.prewarm()]
+        finally:
+            recovery_lock.release()
+
+    try:
+        if inference_submit is not None:
+            await _until_disconnected(
+                request, inference_submit(recover, ["warmup"], "interactive", 1000, 1)
+            )
+        else:
+            with anyio.fail_after(1):
+                # Starlette supports AnyIO 3 and 4; this alias works with both.
+                await run_sync(recover, ["warmup"], cancellable=True)
+    except (CrossEncoderUnavailableError, HTTPException, TimeoutError):
+        # Readiness stays false unless the runner completes a real probe.
+        logger.warning("Search reranker health recovery did not complete")
+
+
 def create_embedding_app(
     default_model: str | None = None,
     *,
@@ -247,17 +294,7 @@ def create_embedding_app(
     fixed_dimensions: Mapping[str, int] | None = None,
     reranker_model: str = RERANK_MODEL,
     reranker_runner: CrossEncoderRunner | None = None,
-    inference_submit: Callable[
-        [
-            Callable[[list[str]], list[Any]],
-            list[str],
-            Literal["interactive", "bulk"],
-            int,
-            int,
-        ],
-        Awaitable[list[Any]],
-    ]
-    | None = None,
+    inference_submit: InferenceSubmit | None = None,
     inference_shutdown: Callable[[], None] | None = None,
     query_only: bool = False,
     workload: str | None = None,
@@ -278,6 +315,7 @@ def create_embedding_app(
         set(allowed_models) if allowed_models is not None else set(_SUPPORTED_MODELS)
     )
     runner = reranker_runner or CrossEncoderRunner(reranker_model)
+    recovery_lock = threading.Lock()
 
     def embed_texts(model: str, texts: list[str]) -> list[list[float]]:
         return _embed_texts(
@@ -296,7 +334,9 @@ def create_embedding_app(
                 logger.exception("Failed to warm embedding model %s", default_model)
                 raise
         _warm_reranker(
-            runner, require_ready=inference_submit is not None, enabled=rerank_allowed
+            runner,
+            require_ready=inference_submit is not None or selected_workload == "search",
+            enabled=rerank_allowed,
         )
         logger.info(
             "event=inference_service_ready configured_model=%s "
@@ -323,8 +363,15 @@ def create_embedding_app(
     )
 
     @embedding_app.get("/health")
-    def health() -> dict[str, Any]:
+    async def health(request: Request) -> dict[str, Any]:
         """Health check endpoint."""
+        await _recover_search_reranker(
+            request,
+            runner,
+            recovery_lock,
+            inference_submit,
+            enabled=selected_workload == "search",
+        )
         return {
             "status": "ok",
             "active_model": _ACTIVE_MODEL,
@@ -336,8 +383,17 @@ def create_embedding_app(
         }
 
     @embedding_app.get("/health/rerank", response_model=RerankHealthResponse)
-    def rerank_health(response: Response) -> RerankHealthResponse:
+    async def rerank_health(
+        request: Request, response: Response
+    ) -> RerankHealthResponse:
         """Report reranker readiness without affecting embedding health."""
+        await _recover_search_reranker(
+            request,
+            runner,
+            recovery_lock,
+            inference_submit,
+            enabled=selected_workload == "search",
+        )
         enabled = rerank_allowed and reranker_enabled()
         ready = enabled and runner.ready()
         if not ready:
