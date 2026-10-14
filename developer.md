@@ -154,6 +154,38 @@ checks via `scripts/verify_nomic_artifact.py`; see the README's Nomic dependency
 compatibility section. Keep its checkpoint, 512-dimensional normalization and
 serialized encoding contract intact when upgrading dependencies.
 
+### Dependency compatibility
+
+Prefer updating our caller to the maintained dependency API and declaring a
+tested minimum version. Do not add an upper bound, exact pin, downgrade or
+resolver override merely to hide a failure with a newer package. Reproduce the
+failure in a clean installed artifact, inspect current upstream support, and
+exercise the operation that failed. Importing a package or loading model weights
+alone does not verify inference.
+
+A necessary compatibility restriction must have a reproduced failure or upstream
+issue, the narrowest affected range, an owning component, qualification evidence,
+and a documented widening/removal condition. Review it at the next owning release
+or upstream fix, and immediately for relevant security updates. Do not blindly
+remove bounds that protect security, API contracts or model/runtime compatibility.
+
+Keep release lockfiles and frozen builds reproducible. Dedicated deployment pins
+belong to a qualified environment and require a tested upgrade path; they should
+not automatically become restrictions on the public package. Check manifests,
+extras, overrides, Docker install steps and runtime version guards across every
+repository, including submodules. A source lockfile does not constrain what a
+fresh PyPI installation resolves. Keep server/model dependencies out of the
+lightweight client distribution.
+
+For example, SDK 0.2.32's fresh-install Nomic warm-up failed on Transformers
+5.19.0 when the loader selected legacy remote model code. Native Nomic loading
+with `trust_remote_code=False` passed diagnostic inference using the same weights
+on 5.19.0, with matching normalized 512-dimensional vectors for the tested inputs.
+The proposed `transformers<5.17` restriction was never applied. Qualify that
+forward-compatible loader rather than treating the legacy failure as proof that
+newer Transformers must be prohibited. Full release qualification remains
+separate from these diagnostic probes.
+
 ## Environment Variables
 
 Copy `.env.example` to `.env` and fill in values. Key variables:
