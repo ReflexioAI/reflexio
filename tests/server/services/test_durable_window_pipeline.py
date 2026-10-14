@@ -4715,3 +4715,38 @@ def test_ordinary_window_marker_notes_cannot_claim_source_projection(
         for row in saved
     )
     assert storage.extraction_status(user, "ordinary-marker")["status"] == "done"
+
+
+@pytest.mark.parametrize("phase", ["runner", "evaluation", "metering"])
+def test_post_commit_followup_failure_preserves_admission(pipeline, monkeypatch, phase):
+    from reflexio.server.services.generation_service import GenerationService
+
+    engine, _, client = pipeline
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("follow-up unavailable")
+
+    if phase == "runner":
+        monkeypatch.setattr(
+            "reflexio.server.services.durable_learning.local.ensure_local_extraction",
+            fail,
+        )
+    elif phase == "evaluation":
+        monkeypatch.setattr(
+            GenerationService, "_schedule_post_publish_evaluations", fail
+        )
+    else:
+        monkeypatch.setattr(GenerationService, "_emit_publish_success_events", fail)
+    response = client.post(
+        "/api/publish_interaction", json=payload("followup", force=True)
+    )
+    assert response.status_code == 200
+    result = response.json()
+    assert result["success"] is True
+    assert result["request_id"] == "followup"
+    assert result["learning_status"] == "deferred"
+    assert result["warnings"] and "were stored" in result["warnings"][0]
+    storage = engine.get_storage()
+    assert storage.get_request("followup") is not None
+    assert len(storage.get_user_interaction("u")) == 10
+    assert storage.extraction_status("u", "followup")["status"] != "not_tracked"

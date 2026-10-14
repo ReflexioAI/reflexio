@@ -170,6 +170,7 @@ class GenerationService:
         agent_version = resolve_agent_version(
             publish_user_interaction_request.agent_version
         )
+        admitted = False
         try:
             retrieval_experiment_id = getattr(
                 publish_user_interaction_request,
@@ -325,6 +326,7 @@ class GenerationService:
                         new_request, new_interactions, admission
                     )
                 result.interaction_ids = [i.interaction_id for i in new_interactions]
+            admitted = True
             with publish_timing.phase("post_publish"):
                 ensure_local_extraction(self.request_context)
             with publish_timing.phase("evaluation_schedule"):
@@ -412,6 +414,20 @@ class GenerationService:
             return result
 
         except Exception as e:
+            if admitted:
+                # This request and its durable work are already committed.
+                # A follow-up failure must not invite another admission/retry.
+                logger.warning(
+                    "event=publish_followup_failed request_id=%s error_type=%s",
+                    sanitise_for_log(result.request_id or ""),
+                    type(e).__name__,
+                    exc_info=True,
+                )
+                result.warnings.append(
+                    "Interactions were stored; follow-up processing was deferred. "
+                    "Check learning status before retrying this request."
+                )
+                return result
             with publish_timing.phase("metering"):
                 record_usage_event(
                     org_id=self.org_id,

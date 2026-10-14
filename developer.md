@@ -717,12 +717,13 @@ change the bind address of production containers or custom embedded backend apps
 
 ## Generation completion and CLI errors
 
-`publish` exits nonzero when the server rejects admission (`success=False`),
+`publish` exits nonzero when the server reports a failure (`success=False`),
 in both human and `--json` modes. JSON failures use the standard `ok:false`
 error envelope. File/JSONL batches stop at the first rejection: earlier accepted
 payloads stay accepted and later payloads are not sent. Inspect those earlier
 results before retrying; rerunning the entire input can duplicate accepted data.
-An accepted publish with deferred extraction remains successful; acceptance and
+Post-commit follow-up failures return accepted work with a warning rather than
+a false admission failure. An accepted publish with deferred extraction remains successful; acceptance and
 learning completion are separate states.
 
 `user-profiles regenerate --wait` and `user-playbooks regenerate --wait` report
