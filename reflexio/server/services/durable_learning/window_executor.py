@@ -113,7 +113,7 @@ class WindowExecutor:
             "force_extraction": window.force,
         }
         if window.kind == "profile":
-            service = ProfileGenerationService(self.client, self.context)
+            service = self._profile_service()
             request = ProfileGenerationRequest(**common)
             config = ProfileExtractorConfig.model_validate(window.policy["extractor"])
         else:
@@ -127,6 +127,9 @@ class WindowExecutor:
                 window.policy["extractor"]
             )
         return self._configure(service, request, config, groups, window)
+
+    def _profile_service(self) -> ProfileGenerationService:
+        return ProfileGenerationService(self.client, self.context)
 
     @staticmethod
     def _configure(
@@ -525,6 +528,7 @@ class WindowExecutor:
                 self.storage.validate_extraction_historical_playbooks(
                     window, coordinator.checkpoint.get("historical_playbooks", {})
                 )
+                self._validate_overflow_plan(coordinator, service, plan)
                 if plan is not None:
                     plan.token_totals = coordinator.token_totals
                     service._last_token_totals = plan.token_totals
@@ -550,6 +554,11 @@ class WindowExecutor:
             )
             self.storage.complete_extraction(window, token, effects)
         record_health("worker.commits")
+
+    def _validate_overflow_plan(
+        self, coordinator: OverflowCoordinator, service: Any, plan: Any
+    ) -> None:
+        """Scoped consumers may fence additional frozen decision inputs."""
 
     def _compute_overflow_window(
         self, coordinator: OverflowCoordinator, service: Any, request: Any, config: Any
@@ -639,7 +648,6 @@ class WindowExecutor:
         from reflexio.server.llm.token_accounting import RunTokenTotals
         from reflexio.server.metering_signals import (
             count_input_tokens,
-            platform_llm_from_config,
         )
 
         if plan is None:
@@ -656,24 +664,28 @@ class WindowExecutor:
             ids = plan.finalization_result.learning_ids
         totals = plan.token_totals or RunTokenTotals()
         if coordinator is not None:
-            fields: dict[tuple[int, str, str], list[str]] = {}
-            for chunk in coordinator.require_prepared().chunks:
-                for span in chunk.spans:
-                    fields.setdefault(
-                        (span.interaction_id, span.request_id, span.field), []
-                    ).append(span.text)
-            # Rejoin primary pieces before tokenizing: partition boundaries,
-            # neighbors and repeated provider calls are not new source input.
-            input_text = "\n".join("".join(pieces) for pieces in fields.values())
+            input_text = coordinator.billing_input_text()
         else:
             input_text = service._extraction_input_text(plan.prepared)
+        # Preserve the existing event clock before source tokenization, which
+        # can itself cross a billing-cycle boundary on a large original input.
+        created_at = time.time()
+        return self._token_billing_snapshot(
+            ids, count_input_tokens(input_text), totals, created_at=created_at
+        )
+
+    def _token_billing_snapshot(
+        self, ids: list[str], input_tokens: int, totals: Any, *, created_at: float
+    ) -> dict[str, Any]:
+        from reflexio.server.metering_signals import platform_llm_from_config
+
         return {
             "ids": ids,
-            "created_at": time.time(),
+            "created_at": created_at,
             "platform_llm": platform_llm_from_config(
                 self.context.configurator.get_config()
             ),
-            "input_tokens": count_input_tokens(input_text),
+            "input_tokens": input_tokens,
             "prompt_tokens": totals.prompt_tokens,
             "completion_tokens": totals.completion_tokens,
             # `.get(...)` on the read side, not here: an effects blob written by

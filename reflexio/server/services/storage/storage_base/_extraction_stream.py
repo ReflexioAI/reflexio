@@ -22,6 +22,31 @@ Kind = Literal["profile", "playbook"]
 KINDS: tuple[Kind, ...] = ("profile", "playbook")
 
 
+def _validate_frozen_profile_checkpoint(
+    previous_checkpoint: dict[str, Any], checkpoint: dict[str, Any]
+) -> None:
+    """Host decisions are append-only, like the physical attempt receipts."""
+    for field in (
+        "profile_package_candidates",
+        "profile_dedup_inputs",
+        "profile_dedup_decision",
+        "profile_package_plan",
+        "profile_package_plan_digest",
+    ):
+        if (
+            field in previous_checkpoint
+            and checkpoint.get(field) != previous_checkpoint[field]
+        ):
+            raise OverflowCheckpointConflictError(
+                "Frozen profile decision is immutable"
+            )
+    if any(
+        checkpoint.get("historical_profiles", {}).get(key) != value
+        for key, value in previous_checkpoint.get("historical_profiles", {}).items()
+    ):
+        raise OverflowCheckpointConflictError("Historical profile witness is immutable")
+
+
 class StreamSQL(Protocol):
     """Parameterised queries; identifiers are resolved by the backend."""
 
@@ -1392,6 +1417,9 @@ class ExtractionStreamStore:
                     "completed_steps", {}
                 )
                 if manifest["version"] == 2:
+                    _validate_frozen_profile_checkpoint(
+                        manifest["checkpoint"], checkpoint
+                    )
                     previous_bindings = manifest["checkpoint"].get(
                         "profile_attempt_bindings", {}
                     )
@@ -1522,6 +1550,55 @@ class ExtractionStreamStore:
             if observed != witnesses:
                 raise InputBudgetConfigurationError(
                     "Historical playbook changed after computation"
+                )
+
+    def validate_extraction_historical_profiles(
+        self, window: Window, witnesses: dict[str, str]
+    ) -> None:
+        """Lock precisely the current OLD rows actually shown to this profile run.
+
+        All callers use sorted primary-key order. Bounded ID batches keep both
+        projections and row counts finite without truncating a frozen decision.
+        Enter the existing commit scope to retain these locks through publication.
+        """
+        from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+        from reflexio.server.services.extraction.profile_package_state import (
+            PROFILE_WITNESS_FIELDS,
+            profile_row_witness,
+        )
+
+        if window.kind != "profile" or window.project_id != (
+            current_project_id() or ""
+        ):
+            raise InputBudgetConfigurationError("Historical profile scope changed")
+        if not witnesses:
+            return
+        identities = sorted(witnesses)
+        with self._stream_sql() as db:
+            now = int(db.now())
+            observed = {}
+            for start in range(0, len(identities), 128):
+                batch = identities[start : start + 128]
+                placeholders = ",".join("?" for _ in batch)
+                rows = db.query(
+                    f"SELECT {','.join(PROFILE_WITNESS_FIELDS)} FROM {db.table('profiles')} r "
+                    f"WHERE user_id=? AND {db.project_filter()} AND profile_id IN ({placeholders}) "
+                    "AND status IS NULL AND merged_into IS NULL AND superseded_by IS NULL "
+                    "AND retired_at IS NULL AND expiration_timestamp>=? "
+                    "ORDER BY profile_id LIMIT 128" + db.lock(),
+                    (window.user_id, window.project_id, *batch, now),
+                )
+                try:
+                    observed.update(
+                        {row["profile_id"]: profile_row_witness(row) for row in rows}
+                    )
+                except (KeyError, TypeError, ValueError):
+                    raise InputBudgetConfigurationError(
+                        "Historical profile is malformed"
+                    ) from None
+            if observed != witnesses:
+                raise InputBudgetConfigurationError(
+                    "Historical profile changed after computation"
                 )
 
     def consume_extraction_answer_dependencies(
