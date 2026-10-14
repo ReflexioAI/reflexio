@@ -18,6 +18,8 @@ from reflexio.server.services.input_compression import (
     plan_compression_input,
 )
 
+pytestmark = pytest.mark.unit
+
 SCOPE = {"org_id": "org-a", "project_id": "project-a", "user_id": "alice"}
 
 
