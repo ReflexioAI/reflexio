@@ -989,6 +989,16 @@ class PlaybookExtractor:
 
         playbook_content = ensure_playbook_content(entry.content, entry)
 
+        from reflexio.server.services.playbook.source_quoted_overflow import (
+            ordinary_playbook_notes,
+        )
+
+        coordinator = current_overflow_coordinator.get()
+        saved_output = (
+            coordinator is not None
+            and coordinator.saved_run is not None
+            and coordinator.saved_run.committed_output is not None
+        )
         playbook = UserPlaybook(
             playbook_name=get_extractor_name(self.config),
             user_id=self.service_config.user_id,
@@ -999,10 +1009,11 @@ class PlaybookExtractor:
             rationale=entry.rationale,
             source_interaction_ids=resolved_source_ids,
             source_span=source_span,
-            notes=entry.notes,
+            notes=ordinary_playbook_notes(
+                entry.notes, saved_ordinary_output=saved_output
+            ),
             reader_angle=entry.reader_angle or entry.evidence_kind,
         )
-        coordinator = current_overflow_coordinator.get()
         if coordinator is not None:
             saved_run = coordinator.saved_run
             if saved_run is None or saved_run.created_at is None:

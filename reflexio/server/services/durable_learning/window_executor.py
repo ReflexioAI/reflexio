@@ -47,6 +47,7 @@ from reflexio.server.services.playbook.service import PlaybookGenerationService
 from reflexio.server.services.playbook.source_quoted_overflow import (
     compute_source_quoted_plan,
     is_source_quoted_window,
+    ordinary_playbook_notes,
     validate_source_quoted_plan,
 )
 from reflexio.server.services.profile.profile_generation_service_utils import (
@@ -440,6 +441,22 @@ class WindowExecutor:
                 "Saved extraction parent completion lost ownership"
             )
 
+    def _preserve_ordinary_plan_notes(
+        self, window: Window, coordinator: OverflowCoordinator | None, plan: Any
+    ) -> None:
+        # Cached outcomes bypass ordinary extraction/resolution. Determine the
+        # actual protocol before touching notes; genuine projections are sealed
+        # and validated below, not normalized by an ordinary-generation path.
+        if (
+            window.kind != "playbook"
+            or plan is None
+            or plan.write_plan is None
+            or (coordinator is not None and is_source_quoted_window(coordinator))
+        ):
+            return
+        for row in plan.write_plan.new_playbooks:
+            row.notes = ordinary_playbook_notes(row.notes)
+
     def execute(self, window: Window, token: str) -> None:
         service, request, config = self.service(window)
         coordinator = self._coordinator(window, token, service, request, config)
@@ -473,6 +490,7 @@ class WindowExecutor:
                         "Cached source projection plan is malformed"
                     ) from exc
                 raise
+        self._preserve_ordinary_plan_notes(window, coordinator, plan)
         with self.storage.commit_scope():
             # Explicit deletion wins over a cached compute as well as live compute.
             self.storage.fence_user_extraction(window.user_id, token)

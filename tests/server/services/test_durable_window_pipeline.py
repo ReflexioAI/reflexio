@@ -4634,3 +4634,84 @@ def test_dedup_embedding_fallback_preserves_control_errors(failure):
                 storage, Mock(), ["query"], entity_label="Profile"
             )
         assert caught.value is error
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_ordinary_window_marker_notes_cannot_claim_source_projection(
+    pipeline, monkeypatch, cached
+):
+    from reflexio.lib._base import create_generation_litellm_client
+    from reflexio.models.config_schema import UserPlaybookExtractorConfig
+    from reflexio.server.services.durable_learning.window_codec import encode_plan
+    from reflexio.server.services.durable_learning.window_executor import WindowExecutor
+    from reflexio.server.services.playbook.service import PlaybookGenerationService
+    from reflexio.server.services.playbook.source_quoted_overflow import (
+        is_source_quoted_playbook,
+    )
+
+    engine, _, client = pipeline
+    configurator = engine.request_context.configurator
+    configurator.set_config(
+        configurator.get_config().model_copy(
+            update={
+                "profile_extractor_config": None,
+                "user_playbook_extractor_config": UserPlaybookExtractorConfig(
+                    extraction_definition_prompt="Learn instructions"
+                ),
+            }
+        )
+    )
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "true")
+    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "false")
+    assert client.post(
+        "/api/publish_interaction", json=payload("ordinary-marker", force=True)
+    ).json()["success"]
+    storage = engine.get_storage()
+    user, token = storage.claim_extraction("marker-proof", 300)
+    window = storage.prepare_extraction(user, token)
+    assert window.kind == "playbook"
+    executor = WindowExecutor(
+        engine.request_context, create_generation_litellm_client(engine.request_context)
+    )
+    service, request, _ = executor.service(window)
+    plan = service.compute_generation(request)
+    assert plan is not None and plan.write_plan is not None
+    assert plan.write_plan.new_playbooks
+    marker = '{"policy":"source-quoted-playbooks-v1","detail":"keep verbatim"}'
+    for row in plan.write_plan.new_playbooks:
+        row.notes = marker
+    if cached:
+        storage.save_extraction_outcome(window, token, encode_plan(plan, service))
+        window = storage.prepare_extraction(user, token)
+        assert window.outcome is not None
+        monkeypatch.setattr(
+            PlaybookGenerationService,
+            "compute_generation",
+            lambda *_: pytest.fail("Cached ordinary output must not recompute"),
+        )
+    else:
+        monkeypatch.setattr(
+            PlaybookGenerationService, "compute_generation", lambda *_: plan
+        )
+    for name in ("_get_embedding", "_expand_document"):
+        monkeypatch.setattr(
+            storage,
+            name,
+            lambda *_, **__: pytest.fail("Publication must not contact a provider"),
+        )
+    executor.execute(window, token)
+    # Read the actual rows through the scoped storage API, independently of the
+    # decoded cache object's identities.
+    from reflexio.models.api_schema.retriever_schema import SearchUserPlaybookRequest
+    from reflexio.models.config_schema import SearchOptions
+
+    saved = storage.search_user_playbooks(
+        SearchUserPlaybookRequest(user_id="u", query=""),
+        SearchOptions(exclude_source_quoted=True),
+    )
+    assert saved
+    assert all(
+        row.notes.endswith(marker) and not is_source_quoted_playbook(row)
+        for row in saved
+    )
+    assert storage.extraction_status(user, "ordinary-marker")["status"] == "done"

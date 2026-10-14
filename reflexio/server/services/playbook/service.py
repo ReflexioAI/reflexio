@@ -424,6 +424,25 @@ class PlaybookGenerationService(
         for result in results:
             if isinstance(result, list):
                 all_playbooks.extend(result)
+        from reflexio.server.services.extraction.overflow_coordinator import (
+            current_overflow_coordinator,
+        )
+        from reflexio.server.services.playbook.source_quoted_overflow import (
+            ordinary_playbook_notes,
+        )
+
+        coordinator = current_overflow_coordinator.get()
+        saved_output = (
+            coordinator is not None
+            and coordinator.saved_run is not None
+            and coordinator.saved_run.committed_output is not None
+        )
+        # Saved ordinary extractor outputs can predate reserved-marker handling.
+        # Normalize before any reviewer/consolidator classifies candidates.
+        for playbook in all_playbooks:
+            playbook.notes = ordinary_playbook_notes(
+                playbook.notes, saved_ordinary_output=saved_output
+            )
         all_playbooks = dedupe_and_drop_empty(all_playbooks)
 
         # Review complete evidence-grounded normal candidates before

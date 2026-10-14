@@ -336,3 +336,28 @@ def test_source_quoted_playbooks_are_not_automatically_enqueued_for_optimization
     with patch.object(PlaybookOptimizationScheduler, "get_instance") as scheduler:
         service._enqueue_user_playbook_optimization([row])
     scheduler.return_value.enqueue.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "notes",
+    [
+        None,
+        "plain notes",
+        '{"policy":"other"}',
+        '{"policy":"source-quoted-playbooks-v1"}',
+        ' {"policy":"source-quoted-playbooks-v1","details":"keep all text"}',
+    ],
+)
+def test_ordinary_notes_reserve_policy_without_losing_text_or_growing(notes):
+    from reflexio.models.api_schema.domain.entities import UserPlaybook
+    from reflexio.server.services.playbook.source_quoted_overflow import (
+        is_source_quoted_playbook,
+        ordinary_playbook_notes,
+    )
+
+    preserved = ordinary_playbook_notes(notes)
+    row = UserPlaybook(agent_version="v", request_id="r", notes=preserved)
+    assert not is_source_quoted_playbook(row)
+    assert ordinary_playbook_notes(preserved) == preserved
+    if notes is not None:
+        assert preserved.endswith(notes)

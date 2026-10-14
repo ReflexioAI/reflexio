@@ -45,10 +45,31 @@ POLICY = "source-quoted-playbooks-v1"
 PUBLICATION_TOKENS = 8192
 
 
+def ordinary_playbook_notes(
+    notes: str | None, *, saved_ordinary_output: bool = False
+) -> str | None:
+    """Preserve model notes as prose, without granting reserved server policy.
+
+    Apply only at ordinary generation boundaries, never when reading persisted
+    rows or constructing the validated source projection.
+    """
+    if _has_source_quoted_policy(notes):
+        if saved_ordinary_output:
+            raise InputBudgetConfigurationError(
+                "Saved ordinary output claims reserved source-projection policy"
+            )
+        return "Ordinary generation notes (verbatim):\n" + (notes or "")
+    return notes
+
+
 def is_source_quoted_playbook(row: UserPlaybook) -> bool:
     """Persisted policy marker also excludes automatic generative successors."""
+    return _has_source_quoted_policy(row.notes)
+
+
+def _has_source_quoted_policy(notes: str | None) -> bool:
     try:
-        metadata = json.loads(row.notes or "null")
+        metadata = json.loads(notes or "null")
     except (ValueError, TypeError):
         return False
     return isinstance(metadata, dict) and metadata.get("policy") == POLICY

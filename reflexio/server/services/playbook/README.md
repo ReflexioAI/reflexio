@@ -405,3 +405,17 @@ Structurally valid checkpoints with invalid source references or quotations also
 report a content-free configuration failure before publication. They retain their
 journal and use the existing configuration retry backoff; this is not a quota
 refund or a guarantee of a permanent hold.
+
+
+The exact JSON `notes.policy` marker is reserved for the server's validated
+source projection. Ordinary model-written notes that claim it are preserved
+verbatim inside a prose envelope at extraction, ordinary candidate resolution
+(including saved parent outputs), and ordinary cached-plan publication. This
+normalization precedes candidate classification and never runs on validated
+source-projection plans or persisted-row reads. No public notes-write endpoint
+is exposed. Reserved markers in saved ordinary parent output fail with the typed
+configuration error before proposal re-keying; their existing quota/receipts are
+retained. Cached final ordinary write plans can normalize notes without model
+work, vector changes, or regenerating proposals. Existing stored accidental marker collisions cannot be distinguished
+retroactively from genuine source rows by their notes alone; this prospective
+reservation does not backfill or rewrite historical rows.
