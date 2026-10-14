@@ -375,8 +375,10 @@ selections of one source copy it once. There is no semantic deduplication or
 historical retirement, so duplicate lessons and conservative omissions are possible.
 
 A versioned `source_quoted_publication` receipt binds source, scope, selection and
-row meaning before the existing fenced write plan. Cached multi-chunk protocol
-plans without that receipt, changed rows, and retirement/merge proposals are
+row meaning before the existing fenced write plan. It separately seals vectors
+at storage float32 precision. Initial row IDs must be zero, and active/waiting
+child continuations cannot be bypassed. Cached multi-chunk protocol
+plans without that receipt, changed text/vectors, and retirement/merge proposals are
 refused. Existing drafts and attempt journals are not rewritten or reset. Copied
 rules are excluded from automatic optimizer admission and GEPA publication;
 ordinary human-reviewed agent aggregation remains a separate derived workflow.

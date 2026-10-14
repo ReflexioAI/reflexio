@@ -2521,7 +2521,19 @@ def payload(request_id, count=10, user_id="u", force=False):
 
 @pytest.mark.parametrize(
     "replay",
-    ["clean", "empty", "commit_failure", "altered_cache", "tagged_cache", "old_cache"],
+    [
+        "clean",
+        "empty",
+        "commit_failure",
+        "altered_cache",
+        "tagged_cache",
+        "old_cache",
+        "vector_cache",
+        "dimension_cache",
+        "existing_id_cache",
+        "active_cache",
+        "waiting_cache",
+    ],
 )
 def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
     pipeline, monkeypatch, replay
@@ -2657,6 +2669,24 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
                 )
             if replay == "tagged_cache":
                 outcome["write_plan"]["new_playbooks"][0]["tags"] = ["unapproved"]
+            if replay == "vector_cache":
+                outcome["write_plan"]["new_playbooks"][0]["embedding"][0] = 0.9
+            if replay == "dimension_cache":
+                outcome["write_plan"]["new_playbooks"][0]["embedding"] = [0.9]
+            if replay == "existing_id_cache":
+                outcome["write_plan"]["new_playbooks"][0]["user_playbook_id"] = (
+                    old.user_playbook_id
+                )
+            if replay in {"active_cache", "waiting_cache"}:
+                run = storage.get_agent_run("window:" + row["window_id"])
+                key = "active_child" if replay == "active_cache" else "waiting_child"
+                run.generation_request_snapshot["overflow"]["checkpoint"][key] = {
+                    "key": "unconsumed-child"
+                }
+                db.query(
+                    "UPDATE _agent_runs SET generation_request_snapshot=? WHERE id=?",
+                    (json.dumps(run.generation_request_snapshot), run.id),
+                )
             if replay == "old_cache":
                 run = storage.get_agent_run("window:" + row["window_id"])
                 run.generation_request_snapshot["overflow"]["checkpoint"].pop(

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import struct
 import time
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
@@ -17,6 +18,7 @@ import tiktoken
 
 from reflexio.models.api_schema.domain.entities import LineageContext, UserPlaybook
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
+from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
 from reflexio.server.llm.input_budget import InputBudgetConfigurationError
 from reflexio.server.services.extraction.input_preparation import (
     PreparedExtractionInput,
@@ -152,6 +154,13 @@ def _projection(
             "Source projection generation binding changed"
         )
     prepared = coordinator.require_prepared()
+    if (
+        coordinator.checkpoint.get("active_child") is not None
+        or coordinator.checkpoint.get("waiting_child") is not None
+    ):
+        raise InputBudgetConfigurationError(
+            "Source projection cannot bypass a child continuation"
+        )
     coverage = [coordinator.candidate_key(chunk.text) for chunk in prepared.chunks]
     if (
         not is_source_quoted_window(coordinator)
@@ -226,11 +235,33 @@ def _projection(
 
 
 def _row_witness(row: UserPlaybook) -> dict[str, Any]:
-    # Identity, clock and vectors are assigned later; configured postcommit
-    # tagging may classify rows. Behavioral text and attribution stay sealed.
+    # Identity and clock are assigned later; vectors have a separate digest and
+    # postcommit tagging may classify rows. Behavioral text stays sealed.
     return row.model_dump(
         mode="json", exclude={"user_playbook_id", "created_at", "embedding", "tags"}
     )
+
+
+def _embedding_digest(row: UserPlaybook) -> str:
+    """Bind precomputed search vectors carried by the durable cached plan."""
+    if row.embedding is None or len(row.embedding) != EMBEDDING_DIMENSIONS:
+        raise InputBudgetConfigurationError("Source projection lacks a search vector")
+    try:
+        if any(isinstance(value, bool) for value in row.embedding):
+            raise ValueError("Boolean vector component")
+        encoded = json.dumps(
+            [
+                struct.unpack("!f", struct.pack("!f", float(value)))[0]
+                for value in row.embedding
+            ],
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise InputBudgetConfigurationError(
+            "Source projection has an invalid search vector"
+        ) from exc
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def compute_source_quoted_plan(
@@ -247,6 +278,11 @@ def compute_source_quoted_plan(
     from reflexio.server.services.storage.storage_base import AgentRunStatus
 
     rows, receipt = _projection(coordinator, service)
+    if rows:
+        coordinator.storage.precompute_user_playbook_embeddings(
+            rows, expand_documents=False
+        )
+    receipt["embedding_digests"] = [_embedding_digest(row) for row in rows]
     checkpoint = coordinator.checkpoint
     previous = checkpoint.get("source_quoted_publication")
     if previous is not None and previous != receipt:
@@ -289,10 +325,6 @@ def compute_source_quoted_plan(
     service._last_model_provenance = None  # Selection did not author the copied text.
     service._last_token_totals = coordinator.token_totals
     service._last_extractor_run_stats = {"total": 1, "failed": 0, "timed_out": 0}
-    if rows:
-        coordinator.storage.precompute_user_playbook_embeddings(
-            rows, expand_documents=False
-        )
     write_plan = (
         PlaybookWritePlan(
             request_id=receipt["request_id"],
@@ -337,6 +369,11 @@ def validate_source_quoted_plan(
     """Reject old freeform cached plans and any mutation after projection."""
     rows, expected = _projection(coordinator, service)
     write = plan.write_plan if plan is not None else None
+    expected["embedding_digests"] = (
+        [_embedding_digest(row) for row in write.new_playbooks]
+        if write is not None
+        else []
+    )
     if (
         coordinator.checkpoint.get("source_quoted_publication") != expected
         or plan is None
@@ -355,6 +392,7 @@ def validate_source_quoted_plan(
                 or write.output_pending_status
                 or write.skip_aggregation != service.skip_aggregation
                 or any(row.tags is not None for row in write.new_playbooks)
+                or any(row.user_playbook_id != 0 for row in write.new_playbooks)
                 or write.lineage_contexts
                 != [
                     LineageContext(

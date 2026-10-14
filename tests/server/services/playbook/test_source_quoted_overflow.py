@@ -270,6 +270,37 @@ def test_postcommit_classification_tags_do_not_rewrite_source_witness():
     assert _row_witness(row) != before
 
 
+def test_vector_receipt_uses_storage_precision_but_rejects_changed_search_vector():
+    from reflexio.models.api_schema.service_schemas import UserPlaybook
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+    from reflexio.server.services.playbook.source_quoted_overflow import (
+        _embedding_digest,
+    )
+
+    row = UserPlaybook.model_construct(
+        embedding=[0.10000000149011612] * EMBEDDING_DIMENSIONS
+    )
+    expected = _embedding_digest(row)
+    row.embedding = [0.1] * EMBEDDING_DIMENSIONS  # pgvector text round trip.
+    assert _embedding_digest(row) == expected
+    row.embedding[0] = 0.9
+    assert _embedding_digest(row) != expected
+
+
+@pytest.mark.parametrize("component", [True, float("nan"), float("inf"), 1e300])
+def test_invalid_source_projection_vectors_cannot_be_sealed(component):
+    from reflexio.models.api_schema.service_schemas import UserPlaybook
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+    from reflexio.server.services.playbook.source_quoted_overflow import (
+        _embedding_digest,
+    )
+
+    row = UserPlaybook.model_construct(embedding=[component] * EMBEDDING_DIMENSIONS)
+    with pytest.raises(InputBudgetConfigurationError):
+        _embedding_digest(row)
+
+
 def test_source_quoted_playbooks_are_not_automatically_enqueued_for_optimization():
     import json
     from types import SimpleNamespace

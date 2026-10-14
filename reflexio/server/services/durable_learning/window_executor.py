@@ -7,6 +7,8 @@ import time
 from dataclasses import replace
 from typing import Any
 
+from pydantic import ValidationError
+
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.config_schema import (
     ProfileExtractorConfig,
@@ -463,9 +465,16 @@ class WindowExecutor:
             outcome = encode_plan(plan, service)
             self.storage.save_extraction_outcome(window, token, outcome)
         else:
-            plan = decode_plan(
-                window.outcome, window.kind, config, window.user_id, service
-            )
+            try:
+                plan = decode_plan(
+                    window.outcome, window.kind, config, window.user_id, service
+                )
+            except ValidationError as exc:
+                if coordinator is not None and is_source_quoted_window(coordinator):
+                    raise InputBudgetConfigurationError(
+                        "Cached source projection plan is malformed"
+                    ) from exc
+                raise
         with self.storage.commit_scope():
             # Explicit deletion wins over a cached compute as well as live compute.
             self.storage.fence_user_extraction(window.user_id, token)
