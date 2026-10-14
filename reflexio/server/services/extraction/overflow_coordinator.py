@@ -16,7 +16,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.server.llm._litellm_types import (
@@ -51,6 +51,11 @@ from reflexio.server.services.storage.storage_base._extraction_stream import (
     Window,
     validate_extraction_overflow_manifest,
 )
+
+if TYPE_CHECKING:
+    from reflexio.server.services.extraction.profile_package_preparation import (
+        ProfilePackagePreparation,
+    )
 
 
 class OverflowSuspendedError(ProviderRequestGuardError):
@@ -160,6 +165,76 @@ class OverflowCoordinator:
         self._attempt_stage: ContextVar[tuple[str, int, list[str]] | None] = ContextVar(
             "reflexio_overflow_attempt_stage", default=None
         )
+        self._profile_request: ContextVar[
+            tuple[ProfilePackagePreparation, str, list[dict[str, Any]], str] | None
+        ] = ContextVar("reflexio_profile_package_request", default=None)
+
+    @contextmanager
+    def profile_request(
+        self,
+        preparation: ProfilePackagePreparation,
+        stage: str,
+        messages: list[dict[str, Any]],
+        *,
+        receipt_key: str,
+    ) -> Iterator[list[str]]:
+        """Bind one authenticated logical request before native quota admission.
+
+        The consumer owns the seed/continuation. This scope freezes its complete
+        raw messages; native fallback and repair guards use that same seed.
+        """
+        protocol = self.package_protocol
+        if (
+            self.window.kind != "profile"
+            or preparation.contract_digest != protocol["contract_digest"]
+            or preparation.compression.witness != protocol["plan_digest"]
+            or preparation.compression.source_digest != self.source_digest
+            or preparation.snapshot["consumer"] != protocol["consumer"]
+            or stage not in {"gate", "agent", "dedup"}
+            or len(receipt_key) != 64
+            or any(char not in "0123456789abcdef" for char in receipt_key)
+            or self._profile_request.get() is not None
+        ):
+            raise InputBudgetConfigurationError("Profile package request changed")
+        self.validate_current_parent()
+        binding = self._profile_request.set(
+            (preparation, stage, copy.deepcopy(messages), receipt_key)
+        )
+        attempt_stage = {
+            "gate": "gate",
+            "agent": "profile_agent",
+            "dedup": "profile_dedup",
+        }[stage]
+        try:
+            with self.provider_scope(), self.attempt_stage(attempt_stage) as attempts:
+                yield attempts
+        finally:
+            self._profile_request.reset(binding)
+
+    def validate_profile_attempts(
+        self, stage: str, identities: Any, receipt_key: str
+    ) -> None:
+        """Only real attempts for this exact logical step can support its result."""
+        protocol = self.package_protocol
+        attempts = {attempt["id"]: attempt for attempt in self._manifest["attempts"]}
+        bindings = self.checkpoint.get("profile_attempt_bindings", {})
+        if (
+            stage not in {"gate", "profile_agent", "profile_dedup"}
+            or not isinstance(identities, list)
+            or not identities
+            or len(identities) > protocol["stage_caps"].get(stage, 0)
+            or any(not isinstance(identity, str) for identity in identities)
+            or len(set(identities)) != len(identities)
+            or any(
+                identity not in attempts
+                or attempts[identity]["stage"] != stage
+                or bindings.get(identity) != receipt_key
+                for identity in identities
+            )
+        ):
+            raise InputBudgetConfigurationError(
+                "Profile result lacks bound paid attempts"
+            )
 
     @staticmethod
     def initial_manifest(source_digest: str) -> dict[str, Any]:
@@ -600,11 +675,28 @@ class OverflowCoordinator:
                     raise InputBudgetConfigurationError(
                         "Package consumer model ladder changed"
                     )
+                if self.window.kind == "profile":
+                    binding = self._profile_request.get()
+                    if binding is None or binding[1] != ladder_name:
+                        raise InputBudgetConfigurationError(
+                            "Profile package dispatch lacks its request contract"
+                        )
+                    binding[0].check_request(
+                        ladder_name, binding[2], params, _ladder, _structured
+                    )
             reservation.update(
                 reserve_attempt_stage=stage[0], minimum_remaining_attempts=stage[1]
             )
         try:
-            self._advance(**reservation)
+            with self._lock:
+                binding = self._profile_request.get()
+                if self._manifest["version"] == 2 and binding is not None:
+                    checkpoint = self.checkpoint
+                    checkpoint.setdefault("profile_attempt_bindings", {})[
+                        attempt_id
+                    ] = binding[3]
+                    reservation["checkpoint"] = checkpoint
+                self._advance(**reservation)
         except Exception as exc:
             raise ProviderRequestGuardError(
                 "Durable extraction attempt reservation failed"

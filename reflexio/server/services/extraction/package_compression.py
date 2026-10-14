@@ -25,10 +25,14 @@ from reflexio.server.services.input_compression import (
 class CompressedSourcePackage:
     result: CompressionResult
     presentation: SourcePackagePresentation
+    node_keys: tuple[str, ...] = ()
 
 
 def compress_source_package(
-    plan: ExtractionCompressionPlan, coordinator: OverflowCoordinator
+    plan: ExtractionCompressionPlan,
+    coordinator: OverflowCoordinator,
+    *,
+    cache_only: bool = False,
 ) -> CompressedSourcePackage:
     """Reuse exact selections and charge each new native dispatch durably.
 
@@ -60,6 +64,7 @@ def compress_source_package(
     # dispatches use the existing scoped CAS guard's lease/identity checks.
     authorize()
     active: CompressionNodeInput | None = None
+    nodes: list[str] = []
     attempt_start = 0
     with (
         coordinator.provider_scope(),
@@ -69,6 +74,7 @@ def compress_source_package(
         def inspect(node: CompressionNodeInput) -> None:
             nonlocal active, attempt_start
             active, attempt_start = node, len(attempts)
+            nodes.append(node.key)
 
         def bindings(key: str) -> dict[str, Any]:
             if active is None or active.key != key:
@@ -87,6 +93,10 @@ def compress_source_package(
             expected = bindings(key)
             saved = coordinator.completed_step(key)
             if saved is None:
+                if cache_only:
+                    raise InputBudgetConfigurationError(
+                        "Source package replay lacks a completed selection"
+                    )
                 return None
             if any(saved.get(name) != value for name, value in expected.items()):
                 raise InputBudgetConfigurationError("Saved compression node changed")
@@ -107,5 +117,7 @@ def compress_source_package(
         result = plan.execute(load=load, save=save, inspect_node=inspect)
     authorize()
     return CompressedSourcePackage(
-        result, source_package_presentation(result.packet, sources=plan.sources)
+        result,
+        source_package_presentation(result.packet, sources=plan.sources),
+        tuple(nodes),
     )

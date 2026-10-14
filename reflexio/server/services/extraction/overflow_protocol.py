@@ -323,6 +323,19 @@ def validate_package_manifest(manifest: dict[str, Any]) -> None:
     checkpoint = manifest.get("checkpoint")
     if not isinstance(checkpoint, dict) or "repartition" in checkpoint:
         raise ValueError("Package cannot use legacy repartition")
+    bindings = checkpoint.get("profile_attempt_bindings", {})
+    paid = {attempt["id"]: attempt for attempt in attempts}
+    _require(
+        isinstance(bindings, dict)
+        and len(bindings) <= 128
+        and all(
+            identity in paid
+            and paid[identity]["stage"] in {"gate", "profile_agent", "profile_dedup"}
+            and _digest(key)
+            for identity, key in bindings.items()
+        ),
+        "Invalid profile attempt bindings",
+    )
     steps = checkpoint.get("completed_steps")
     if not isinstance(steps, dict) or len(steps) > 128:
         raise ValueError("Invalid package steps")
