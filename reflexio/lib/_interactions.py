@@ -206,7 +206,15 @@ class InteractionsMixin(ReflexioBase):
         )
 
         if accepted:
-            ensure_local_extraction(self.request_context)
+            try:
+                ensure_local_extraction(self.request_context)
+            except Exception as error:
+                # The marker is durable; scheduler wakeup is best-effort.
+                logger.warning(
+                    "event=session_finalization_wakeup_failed error_type=%s",
+                    type(error).__name__,
+                    exc_info=True,
+                )
         return FinalizeSessionResponse(
             success=True,
             accepted=accepted,

@@ -4830,3 +4830,33 @@ def test_two_short_messages_reach_judge_and_negative_is_covered(
     ).json()["success"]
     worker.drain_org("stream-test", 1, 300)
     judge.assert_called_once()
+
+
+@pytest.mark.parametrize("transport", ["http", "library"])
+def test_finalization_wakeup_failure_preserves_durable_acceptance(
+    pipeline, monkeypatch, transport
+):
+    engine, worker, client = pipeline
+    assert client.post(
+        "/api/publish_interaction", json=payload("short", count=2)
+    ).json()["success"]
+
+    def fail(_context):
+        raise RuntimeError("scheduler unavailable")
+
+    monkeypatch.setattr(
+        "reflexio.server.services.durable_learning.local.ensure_local_extraction",
+        fail,
+    )
+    request = {"user_id": "u", "session_id": "s"}
+    if transport == "http":
+        response = client.post("/api/finalize_session", json=request)
+        assert response.status_code == 200
+        result = response.json()
+    else:
+        result = engine.finalize_session(request).model_dump()
+    assert result["success"] and result["accepted"]
+    storage = engine.get_storage()
+    assert storage.extraction_report("u", "short")[0]["reason"] == "queued"
+    worker.drain_org("stream-test", 1, 300)
+    assert storage.extraction_status("u", "short")["status"] == "done"
