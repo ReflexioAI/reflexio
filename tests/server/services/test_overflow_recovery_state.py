@@ -56,7 +56,6 @@ def _prepare_failed_saved_output(pipeline, monkeypatch, *, kind, cached):
                         "candidate_ref": "C1",
                         "kind": "instruction",
                         "evidence_refs": [span.evidence_ref],
-                        "quote": span.text,
                     }
                 ]
             }
