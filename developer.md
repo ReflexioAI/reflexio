@@ -147,6 +147,13 @@ client = ReflexioClient(url_endpoint=f"http://localhost:{BACKEND_PORT}")
 - **Python**: Use `uv` (`uv sync`, `uv add`, `uv run <cmd>`, or activate `.venv`)
 - **Docs frontend**: Use `npm` (run from `docs/` directory)
 
+Nomic uses the maintained native Transformers implementation with remote model
+code disabled. The full package declares the tested minimum `transformers>=5.6.2`
+without an upper cap. Release qualification must run real installed-wheel encode
+checks via `scripts/verify_nomic_artifact.py`; see the README's Nomic dependency
+compatibility section. Keep its checkpoint, 512-dimensional normalization and
+serialized encoding contract intact when upgrading dependencies.
+
 ## Environment Variables
 
 Copy `.env.example` to `.env` and fill in values. Key variables:

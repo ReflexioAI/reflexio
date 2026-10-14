@@ -49,6 +49,8 @@ dependencies = [
     "numpy>=1.26.0",
     # Cross-encoder reranker and Nomic local embeddings.
     "sentence-transformers>=3.0",
+    # Native Nomic loading avoids the deprecated remote-code attention API.
+    "transformers>=5.6.2",
     "einops>=0.8.0",
     # Native KNN search via the sqlite-vec loadable extension. A pure-Python
     # fallback exists (see sqlite_storage/_base.py) for the rare platform whose
