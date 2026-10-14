@@ -1,6 +1,8 @@
 """Exercise the same public compression interface as both runtime callers."""
 
 import json
+from collections import UserDict
+from types import MappingProxyType
 
 import pytest
 
@@ -826,3 +828,23 @@ def test_source_section_and_call_limits_reject_during_planning():
                 output_tokens=1024, max_calls=1, section_tokens=1200
             ),
         )
+
+
+@pytest.mark.parametrize("mapping", [MappingProxyType, UserDict])
+def test_plan_preserves_schema_mapping_api_and_direct_cache_replay(mapping):
+    originals = [source(text="approval required. " + "diagnostic " * 650)]
+    schema = {"type": "object", "properties": {"points": {"type": "array"}}}
+    prepared = plan(originals, response_schema=mapping(schema))
+    assert prepared.witness == plan(originals, response_schema=schema).witness
+    cache = {}
+    result = prepared.execute(complete=selected, save=cache.__setitem__)
+    replay = run(
+        originals,
+        response_schema=mapping(schema),
+        complete=lambda _call: pytest.fail(
+            "Mapping schema must preserve cache identity"
+        ),
+        load=cache.get,
+    )
+    assert replay.calls == 0 and replay.cache_hits == result.calls
+    assert replay.packet == result.packet

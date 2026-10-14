@@ -636,7 +636,7 @@ def plan_compression_input(
     sources = tuple(sources)
     scope = dict(scope)
     schema = (
-        json.loads(_json(response_schema))
+        json.loads(_json(dict(response_schema)))
         if response_schema is not None
         else CompressionChoice.model_json_schema()
     )
