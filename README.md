@@ -493,6 +493,31 @@ needs ten eligible interactions before anything is extracted, so a single publis
 legitimately returns uncovered. Pass `force_extraction` when you need that publish
 extracted on its own.
 
+### Nomic dependency compatibility
+
+The full package requires Transformers 5.6.2 or newer and uses its native Nomic
+implementation with remote model code disabled. There is no Transformers upper
+cap in Reflexio's requirement. The checkpoint, task prefixes, pooling, 8192-token
+sequence limit and normalized 512-dimensional vectors remain the same; serialized
+access to the shared model is preserved.
+
+For release qualification, install the built full wheel into a fresh environment
+and run `scripts/verify_nomic_artifact.py` with that environment's Python from
+outside the checkout. It rejects editable imports and exercises real short and
+long inference, checking the native model and finite normalized vectors. Model
+weights must be cached or downloadable. Run with `OMP_NUM_THREADS=1` and
+`OPENBLAS_NUM_THREADS=1`; the verifier caps Torch at two threads. This is keyless,
+not a paid LLM test. Loading weights alone is insufficient qualification.
+
+Native/legacy diagnostic parity matched on the sampled short/medium inputs and
+one 2,346-token input before this migration. This establishes bounded evidence,
+not equivalence for every possible input. The opt-in real-model concurrency and
+long-input tests fail on load/inference errors when enabled:
+
+```bash
+RUN_LOW_PRIORITY=1 nice -n 10 uv run pytest tests/server/llm/test_nomic_embedding_realmodel_concurrency.py -o addopts=
+```
+
 ### Optional isolated query embeddings
 
 Deployments may set `REFLEXIO_QUERY_EMBEDDING_SERVICE_URL` to a separate query-only

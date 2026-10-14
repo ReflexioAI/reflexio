@@ -185,7 +185,7 @@ class NomicEmbedder:
             device = os.environ.get("NOMIC_EMBED_DEVICE", "cpu")
             self._model = SentenceTransformer(
                 _HF_MODEL_NAME,
-                trust_remote_code=True,  # Nomic v1.5 ships custom code
+                trust_remote_code=False,  # Use Transformers' maintained native Nomic model.
                 device=device,
             )
             _LOGGER.info(
@@ -210,19 +210,11 @@ class NomicEmbedder:
         """
         model = self._load()
         safe = [(t or "")[:_MAX_CHARS] for t in texts]
-        # The sentence-transformers model is NOT thread-safe: nomic-bert's
-        # rotary-embedding code mutates instance attrs (``_cos_cached`` /
-        # ``_sin_cached``) on every forward pass, so two concurrent
-        # ``encode()`` calls on this shared singleton corrupt each other's
-        # buffers (observed in prod as "size of tensor a (N) must match tensor
-        # b (M)" and "'NoneType' object is not subscriptable"). Serialize the
-        # encode so every caller — daemon, in-process fallback, prewarm,
-        # regeneration — is safe by construction. ``_load()`` acquires and
-        # releases ``_model_lock`` and returns before we re-acquire it here, so
-        # there is no nesting/deadlock. NOTE: ``threading.Lock`` is not FIFO-fair
-        # — do not "improve" this into a fairness queue without measuring; the
-        # micro-batch coalescing in ``embedding_service`` is where throughput
-        # comes from, not parallel encodes on one model.
+        # Preserve serialized encode access to the shared model across daemon,
+        # fallback, prewarm and regeneration callers. The legacy implementation
+        # had mutable rotary caches; using native Nomic does not waive this
+        # ownership contract. _load() releases the same lock before we take it
+        # here. Micro-batching in embedding_service owns throughput.
         with self._model_lock:
             # show_progress_bar=False so server logs stay clean during ingest
             # batches. convert_to_numpy=True returns a numpy ndarray; we slice

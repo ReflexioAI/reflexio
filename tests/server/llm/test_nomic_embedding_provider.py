@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -15,11 +15,8 @@ from reflexio.server.llm.providers.nomic_embedding_provider import NomicEmbedder
 class _ReentrancyDetectingModel:
     """Fake sentence-transformers model that flags concurrent ``encode()``.
 
-    The real ``nomic-bert`` model mutates instance-level rotary caches
-    (``_cos_cached``/``_sin_cached``) on every forward pass, so two threads
-    inside ``encode()`` at once corrupt each other. This stub makes that
-    corruption observable: it raises (and records a flag) the moment a second
-    thread enters while the first has not yet exited.
+    Protect the shared model's serialized encode contract independently of
+    which rotary-cache implementation the upstream model uses.
     """
 
     def __init__(self, hold: float = 0.02) -> None:
@@ -134,3 +131,24 @@ def test_encode_is_serialized_across_threads() -> None:
     assert model.calls == len(payloads)
     assert len(results) == len(payloads)
     assert all(len(vec) == 512 for out in results for vec in out)
+
+
+def test_loader_uses_native_model_and_preserves_encode_contract() -> None:
+    """Legacy remote loading breaks on current Transformers during encoding."""
+    model = MagicMock()
+    model.get_sentence_embedding_dimension.return_value = 768
+    model.encode.return_value = np.ones((2, 768))
+    with patch("sentence_transformers.SentenceTransformer", return_value=model) as load:
+        embedder = NomicEmbedder()
+        output = embedder.embed(["search_query: dates", "search_document: timeline"])
+        embedder.embed(["again"])
+    load.assert_called_once()
+    assert load.call_args.args == ("nomic-ai/nomic-embed-text-v1.5",)
+    assert load.call_args.kwargs["trust_remote_code"] is False
+    assert len(output) == 2
+    assert all(len(vector) == 512 for vector in output)
+    assert all(np.isclose(np.linalg.norm(vector), 1) for vector in output)
+    assert model.encode.call_args_list[0].args[0] == [
+        "search_query: dates",
+        "search_document: timeline",
+    ]
