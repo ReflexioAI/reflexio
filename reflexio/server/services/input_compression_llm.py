@@ -20,6 +20,7 @@ from reflexio.server.services.input_compression import (
     CompressionCall,
     CompressionChoice,
     CompressionError,
+    CompressionNodeInput,
     CompressionPlan,
     CompressionPoint,
     CompressionPolicy,
@@ -102,6 +103,7 @@ class ClientCompressionPlan:
 
     compression: CompressionPlan
     witness: str
+    request_contract_digest: str
     _execute: Callable[..., CompressionResult] = field(repr=False, compare=False)
 
     def execute(
@@ -110,8 +112,11 @@ class ClientCompressionPlan:
         before_call: Callable[[], None] = lambda: None,
         load: Callable[[str], Mapping[str, Any] | None] = lambda _key: None,
         save: Callable[[str, dict[str, Any]], None] = lambda _key, _value: None,
+        inspect_node: Callable[[CompressionNodeInput], None] = lambda _node: None,
     ) -> CompressionResult:
-        return self._execute(before_call=before_call, load=load, save=save)
+        return self._execute(
+            before_call=before_call, load=load, save=save, inspect_node=inspect_node
+        )
 
 
 def plan_with_client(
@@ -243,12 +248,21 @@ def plan_with_client(
     ).hexdigest()
 
     preparation_seconds = time.monotonic() - preparation_started
+    request_contract_digest = hashlib.sha256(
+        json.dumps(
+            {"native": native_contract, "ladder": ladder},
+            sort_keys=True,
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode()
+    ).hexdigest()
 
     def execute(
         *,
         before_call: Callable[[], None],
         load: Callable[[str], Mapping[str, Any] | None],
         save: Callable[[str, dict[str, Any]], None],
+        inspect_node: Callable[[CompressionNodeInput], None],
     ) -> CompressionResult:
         execution_started = time.monotonic()
         # Check drift before even reading a cached selection. Physical requests
@@ -338,7 +352,9 @@ def plan_with_client(
         capture = CompressionUsageCapture(run_token_capture.get())
         token = run_token_capture.set(capture)
         try:
-            result = compression.execute(complete=complete, load=load, save=save)
+            result = compression.execute(
+                complete=complete, load=load, save=save, inspect_node=inspect_node
+            )
             prompt, completion = capture.known_usage(attempts)
             return replace(
                 result,
@@ -353,7 +369,7 @@ def plan_with_client(
         finally:
             run_token_capture.reset(token)
 
-    return ClientCompressionPlan(compression, witness, execute)
+    return ClientCompressionPlan(compression, witness, request_contract_digest, execute)
 
 
 def compress_with_client(

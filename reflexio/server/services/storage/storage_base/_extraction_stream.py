@@ -1219,6 +1219,79 @@ class ExtractionStreamStore:
             )
             return manifest
 
+    def _load_locked_extraction_overflow(
+        self,
+        db: StreamSQL,
+        window: Window,
+        token: str,
+        *,
+        expected_revision: int,
+        source_digest: str,
+        expected_input_protocol: dict[str, Any] | None,
+    ) -> tuple[str, dict[str, Any], dict[str, Any]]:
+        """One authority check shared by mutation and cache-only validation."""
+        self._fence(db, window.user_id, token)
+        if window.project_id != (current_project_id() or ""):
+            raise OverflowCheckpointConflictError("Extraction project scope changed")
+        windows = db.query(
+            f"SELECT invalidated,completed FROM {db.table('extraction_windows')} "
+            "WHERE window_id=? AND user_id=? AND kind=? AND project_id=?" + db.lock(),
+            (window.window_id, window.user_id, window.kind, window.project_id),
+        )
+        if not windows or windows[0]["invalidated"] or windows[0]["completed"]:
+            raise WindowInputsDeletedError("Extraction coordinator is no longer active")
+        run_id = f"window:{window.window_id}"
+        rows = db.query(
+            f"SELECT generation_request_snapshot,status,request_id,agent_version FROM {db.table('_agent_runs')} "
+            "WHERE id=? AND org_id=? AND user_id=? AND extractor_kind=?" + db.lock(),
+            (run_id, self.org_id, window.user_id, window.kind),
+        )
+        if not rows or rows[0]["status"] in ("cancelled", "expired", "finalized"):
+            raise OverflowCheckpointConflictError(
+                "Extraction coordinator is unavailable"
+            )
+        snapshot = decoded(rows[0]["generation_request_snapshot"])
+        manifest = validate_extraction_overflow_manifest(snapshot.get("overflow"))
+        _validate_package_parent_scope(manifest, self.org_id, window, rows[0])
+        if (
+            manifest.get("revision") != expected_revision
+            or manifest.get("source_digest") != source_digest
+            or (
+                manifest["version"] == 2
+                and manifest["input_protocol"] != expected_input_protocol
+            )
+            or (manifest["version"] == 1 and expected_input_protocol is not None)
+        ):
+            raise OverflowCheckpointConflictError(
+                "Extraction checkpoint binding changed"
+            )
+        return run_id, snapshot, manifest
+
+    def validate_extraction_overflow(
+        self,
+        window: Window,
+        token: str,
+        *,
+        expected_revision: int,
+        source_digest: str,
+        expected_input_protocol: dict[str, Any] | None = None,
+    ) -> None:
+        """Lock and validate current parent authority without changing its ledger.
+
+        Use inside the caller's short commit scope alongside input validation.
+        Cached and passthrough work obey the same active window, project, parent
+        status and immutable descriptor/revision checks as paid reservations.
+        """
+        with self._stream_sql() as db:
+            self._load_locked_extraction_overflow(
+                db,
+                window,
+                token,
+                expected_revision=expected_revision,
+                source_digest=source_digest,
+                expected_input_protocol=expected_input_protocol,
+            )
+
     def checkpoint_extraction_overflow(
         self,
         window: Window,
@@ -1241,47 +1314,14 @@ class ExtractionStreamStore:
         usage unknown and never makes that attempt available again.
         """
         with self._stream_sql() as db:
-            self._fence(db, window.user_id, token)
-            if window.project_id != (current_project_id() or ""):
-                raise OverflowCheckpointConflictError(
-                    "Extraction project scope changed"
-                )
-            windows = db.query(
-                f"SELECT invalidated,completed FROM {db.table('extraction_windows')} "
-                "WHERE window_id=? AND user_id=? AND kind=? AND project_id=?"
-                + db.lock(),
-                (window.window_id, window.user_id, window.kind, window.project_id),
+            run_id, snapshot, manifest = self._load_locked_extraction_overflow(
+                db,
+                window,
+                token,
+                expected_revision=expected_revision,
+                source_digest=source_digest,
+                expected_input_protocol=expected_input_protocol,
             )
-            if not windows or windows[0]["invalidated"] or windows[0]["completed"]:
-                raise WindowInputsDeletedError(
-                    "Extraction coordinator is no longer active"
-                )
-            run_id = f"window:{window.window_id}"
-            rows = db.query(
-                f"SELECT generation_request_snapshot,status,request_id,agent_version FROM {db.table('_agent_runs')} "
-                "WHERE id=? AND org_id=? AND user_id=? AND extractor_kind=?"
-                + db.lock(),
-                (run_id, self.org_id, window.user_id, window.kind),
-            )
-            if not rows or rows[0]["status"] in ("cancelled", "expired", "finalized"):
-                raise OverflowCheckpointConflictError(
-                    "Extraction coordinator is unavailable"
-                )
-            snapshot = decoded(rows[0]["generation_request_snapshot"])
-            manifest = validate_extraction_overflow_manifest(snapshot.get("overflow"))
-            _validate_package_parent_scope(manifest, self.org_id, window, rows[0])
-            if (
-                manifest.get("revision") != expected_revision
-                or manifest.get("source_digest") != source_digest
-                or (
-                    manifest["version"] == 2
-                    and manifest["input_protocol"] != expected_input_protocol
-                )
-                or (manifest["version"] == 1 and expected_input_protocol is not None)
-            ):
-                raise OverflowCheckpointConflictError(
-                    "Extraction checkpoint binding changed"
-                )
             attempts = manifest["attempts"]
             if manifest["version"] == 1 and (
                 reserve_attempt_stage is not None or minimum_remaining_attempts != 0

@@ -26,6 +26,7 @@ information, and resumes outside the request path.
 | `input_preparation.py` | Ownership-checked field collection and bounded, lossless legacy chunks with original field/character spans. The new collector does not impose legacy chunk geometry. |
 | `compression.py` | Provider-free window planning and guarded execution for the shared compressor; restores original range references and checks window authority before and after execution. Does not select a production worker protocol. |
 | `source_package.py` | Pure consumer rendering and validated, immutable presentation of selected original ranges, attribution and visible quotation boundaries. |
+| `package_compression.py` | Compresses against an already-admitted package journal, binding exact per-node inputs/native contracts to durable selections and actual charged attempts. Does not admit, consume or publish a window. |
 | `protected_record.py` | Accumulates source-verified quotations for cross-chunk context; capacity failure never silently removes an earlier correction. |
 | `protected_pass.py` | Builds that context with checkpointed source-validated model passes; keeps scoped approvals and reported versus observed outcomes distinct. Bounded repair feedback identifies invalid quotation entries without disclosing source text; inner-JSON escaping and exact spelling remain source invariants. |
 | `overflow_coordinator.py` | Owns scoped provider admission, monotonic durable attempt reservations, immutable step receipts and historical observed usage. Never publishes child learnings. |
@@ -335,10 +336,12 @@ reference groups, fixed host labels, local omission counters and host diagnostic
 Those omissions survive cache reuse verbatim; receipts do not invent authored
 model provenance. `input_refs_digest` must describe the actual visible inputs for
 that node, and `request_contract_digest` must describe its actual native request
-contract. The current core load/save callbacks expose only a hashed node key and
-normalized choice. Runtime integration must obtain those witnesses from actual
-per-node inputs/request observations or a minimal deeper seam; rehashing the node
-key and naming it either witness is invalid. The node key already binds the source
+contract. The original load/save signatures still expose only a hashed node key
+and normalized choice. `plan.execute(inspect_node=...)` additionally reports the
+actual visible-original-source digest before each node's cache access, and the
+native plan exposes `request_contract_digest` for its actual frozen generation
+descriptor and resolved ladder. Rehashing the node key and naming it either
+witness is invalid. The node key already binds the source
 witness, messages and schema, but does not substitute for these separately named
 proofs. Source-selection receipts are bounded to 64 KiB, with at most 128 completed
 steps. Typed consumer model-output receipts retain their native output/trace
@@ -395,3 +398,28 @@ They allow faithful prompt costing without a fabricated legacy chunk or
 coordinator. Durable callers must also freeze real template identities and add
 all native tool/schema/answer augmentation. These planning seams do not admit
 new source-package workers or change existing saved journals.
+
+### Durable package compression handoff (inactive)
+
+`package_compression.compress_source_package` requires a matching already-admitted
+outer2 descriptor. It uses the real native planner, coordinator, stage-attempt
+guard and SQL checkpoint CAS. Per-node selection receipts retain the exact
+visible-source and generation-contract witnesses, canonical cache choice and
+attempt IDs reserved while computing that node. Cache replay compares those
+bindings and revalidates selected originals and rendered capacity. A process
+restart reuses committed nodes without refunding or paying for them again.
+
+Full original-source witnesses are checked at operation boundaries. Each actual
+dispatch retains the existing scoped CAS lease/identity checks; the bridge does
+not add a full blob read or duplicate lease query per call. Standalone OSS's
+explicit empty project ID is a distinct cache scope, never a wildcard; omitted
+projects and empty organization/user identities remain invalid.
+Both boundaries also lock and revalidate the current durable parent, descriptor,
+revision, project and active window through the same shared check used by CAS.
+Cache-only and passthrough runs cannot rely on a cancelled or changed in-memory
+parent. This validation does not advance the journal or refund consumed attempts.
+
+The returned result and validated source presentation do not mark window
+coverage, run the judge/extractor, finalize a parent, write learnings or bill a
+completed extraction. Consumer contract composition and worker admission remain
+separate integration work. No default worker selection or enable flag changes.

@@ -1109,3 +1109,41 @@ def test_native_prepared_cache_replay_preserves_keys_usage_and_parent_capture(
         fake.generate_chat_response.assert_not_called()
     finally:
         run_token_capture.reset(token)
+
+
+@pytest.mark.unit
+def test_native_selection_contract_and_node_witnesses_survive_warm_replay(monkeypatch):
+    fake = client(monkeypatch)
+    original = EvidenceSource(
+        source_id="source",
+        request_id="request",
+        interaction_id=1,
+        field="content",
+        speaker="User",
+        source_order=1,
+        text="approval " + "log " * 1700,
+    )
+    options: dict[str, Any] = {
+        "scope": {"org_id": "org", "project_id": "project", "user_id": "alice"},
+        "policy": "extraction",
+        "budget": CompressionBudget(output_tokens=1024),
+        "client": fake,
+        "context_limits": {fake.config.model: 512000},
+    }
+    prepared = plan_with_client([original], **options)
+    assert len(prepared.request_contract_digest) == 64
+    assert prepared.request_contract_digest != prepared.witness
+    nodes, cache = [], {}
+    cold = prepared.execute(inspect_node=nodes.append, save=cache.__setitem__)
+    original_nodes = tuple(nodes)
+    assert len(nodes) == cold.calls > 0
+    assert all(len(node.input_refs_digest) == 64 for node in nodes)
+    nodes.clear()
+    warm = prepared.execute(inspect_node=nodes.append, load=cache.get)
+    assert warm.packet == cold.packet and warm.provider_attempts == 0
+    assert tuple(nodes) == original_nodes
+    fake.config.model = "other-model"
+    changed_nodes = Mock()
+    with pytest.raises(ProviderRequestGuardError, match="changed"):
+        prepared.execute(inspect_node=changed_nodes)
+    changed_nodes.assert_not_called()

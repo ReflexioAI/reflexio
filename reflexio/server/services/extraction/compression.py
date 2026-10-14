@@ -21,6 +21,7 @@ from reflexio.server.services.extraction.source_package import evidence_from_sou
 from reflexio.server.services.input_compression import (
     CompressionBudget,
     CompressionError,
+    CompressionNodeInput,
     CompressionPoint,
     CompressionResult,
     EvidencePacket,
@@ -63,9 +64,12 @@ class ExtractionCompressionPlan:
         before_call: Callable[[], None] = lambda: None,
         load: Callable[[str], Mapping[str, Any] | None] = lambda _key: None,
         save: Callable[[str, dict[str, Any]], None] = lambda _key, _value: None,
+        inspect_node: Callable[[CompressionNodeInput], None] = lambda _node: None,
     ) -> CompressionResult:
         """Check caller authority before/after execution and on each dispatch."""
-        return self._execute(before_call=before_call, load=load, save=save)
+        return self._execute(
+            before_call=before_call, load=load, save=save, inspect_node=inspect_node
+        )
 
 
 def _canonical_packet(packet: EvidencePacket) -> EvidencePacket:
@@ -240,10 +244,13 @@ def plan_extraction_window(
         before_call: Callable[[], None],
         load: Callable[[str], Mapping[str, Any] | None],
         save: Callable[[str, dict[str, Any]], None],
+        inspect_node: Callable[[CompressionNodeInput], None],
     ) -> CompressionResult:
         execution_started = time.monotonic()
         before_call()
-        result = native.execute(before_call=before_call, load=load, save=save)
+        result = native.execute(
+            before_call=before_call, load=load, save=save, inspect_node=inspect_node
+        )
         before_call()
         return replace(
             result,

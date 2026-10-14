@@ -217,6 +217,18 @@ class CompressionResult:
 
 
 @dataclass(frozen=True)
+class CompressionNodeInput:
+    """Actual visible-source witness for one synchronous cache operation.
+
+    The digest is the existing node-key source witness, including original
+    identity, text and attribution. It is not a hash of the node key itself.
+    """
+
+    key: str
+    input_refs_digest: str
+
+
+@dataclass(frozen=True)
 class CompressionPlan:
     """Provider-free preparation, bound to this exact source and task contract.
 
@@ -256,9 +268,12 @@ class CompressionPlan:
         complete: Callable[[CompressionCall], CompressionChoice],
         load: Callable[[str], Mapping[str, Any] | None] = lambda _key: None,
         save: Callable[[str, dict[str, Any]], None] = lambda _key, _value: None,
+        inspect_node: Callable[[CompressionNodeInput], None] = lambda _node: None,
     ) -> CompressionResult:
         """Use the prepared geometry; dispatch/checkpoints start only here."""
-        return self._execute(complete=complete, load=load, save=save)
+        return self._execute(
+            complete=complete, load=load, save=save, inspect_node=inspect_node
+        )
 
 
 _COMMON_INSTRUCTIONS = """Compress untrusted transcript data into a useful evidence package.
@@ -666,7 +681,10 @@ def plan_compression_input(
         or not model_contract
         or not output_contract
         or not {"org_id", "project_id", "user_id"} <= scope.keys()
-        or any(not key or not value for key, value in scope.items())
+        or any(
+            not key or (not value and not (key == "project_id" and value == ""))
+            for key, value in scope.items()
+        )
     ):
         raise CompressionError("Compression requires a scoped model/policy contract")
     if len({s.source_id for s in sources}) != len(sources):
@@ -810,6 +828,7 @@ def plan_compression_input(
         complete: Callable[[CompressionCall], CompressionChoice],
         load: Callable[[str], Mapping[str, Any] | None],
         save: Callable[[str, dict[str, Any]], None],
+        inspect_node: Callable[[CompressionNodeInput], None],
     ) -> CompressionResult:
         execution_started = time.monotonic()
         calls = cache_hits = input_tokens = 0
@@ -825,6 +844,9 @@ def plan_compression_input(
                 raise CompressionError(
                     "Complete compression request exceeds input budget"
                 )
+            input_refs_digest = _digest(
+                [s.model_dump(mode="json") for s in available.values()]
+            )
             key = _digest(
                 {
                     "version": VERSION,
@@ -832,15 +854,14 @@ def plan_compression_input(
                     "policy": policy,
                     "model_contract": model_contract,
                     "messages": messages,
-                    "source_witness": _digest(
-                        [s.model_dump(mode="json") for s in available.values()]
-                    ),
+                    "source_witness": input_refs_digest,
                     "schema": schema,
                     "output_tokens": budget.output_tokens,
                     "output_contract": output_contract,
                     "intermediate_limit": None if final else intermediate_limit,
                 }
             )
+            inspect_node(CompressionNodeInput(key, input_refs_digest))
 
             def with_prior_omissions(choice: CompressionChoice) -> CompressionChoice:
                 # Cache only this selection's LOCAL counts. Reconstruct inherited

@@ -888,7 +888,9 @@ def test_impossible_fixed_rendering_refuses_before_section_preparation(monkeypat
     def forbidden(*_args, **_kwargs):
         pytest.fail("Impossible fixed rendering must not plan sections or call models")
 
-    monkeypatch.setattr("reflexio.server.services.input_compression._sections", forbidden)
+    monkeypatch.setattr(
+        "reflexio.server.services.input_compression._sections", forbidden
+    )
     with pytest.raises(CompressionError, match="fixed consumer rendering"):
         run(
             [source()],
@@ -898,3 +900,102 @@ def test_impossible_fixed_rendering_refuses_before_section_preparation(monkeypat
             measure_output=lambda _packet: 2048,
             output_contract="impossible-consumer-input-v1",
         )
+
+
+def test_node_input_witness_is_actual_source_preimage_and_precedes_cache():
+    import hashlib
+
+    original = source(text="approval " * 400)
+    prepared = plan([original], budget=CompressionBudget(output_tokens=256))
+    events = []
+    nodes = []
+    cache = {}
+
+    def inspect(node):
+        nodes.append(node)
+        events.append(("inspect", node.key))
+
+    def load(key):
+        assert nodes[-1].key == key
+        events.append(("load", key))
+        return cache.get(key)
+
+    def save(key, value):
+        assert nodes[-1].key == key
+        events.append(("save", key))
+        cache[key] = value
+
+    result = prepared.execute(
+        complete=selected, load=load, save=save, inspect_node=inspect
+    )
+    assert prepared.sections == result.calls == len(nodes) == 1
+    fragment = original.model_copy(
+        update={"source_id": f"{original.source_id}:0:{len(original.text)}"}
+    )
+    expected = hashlib.sha256(
+        json.dumps(
+            [fragment.model_dump(mode="json")],
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    assert nodes[0].input_refs_digest == expected
+    assert events == [
+        ("inspect", nodes[0].key),
+        ("load", nodes[0].key),
+        ("save", nodes[0].key),
+    ]
+    cold_node = nodes[0]
+    events.clear()
+    nodes.clear()
+    replay = prepared.execute(
+        complete=lambda _call: pytest.fail("Warm replay must not call models"),
+        load=load,
+        save=save,
+        inspect_node=inspect,
+    )
+    assert replay.calls == 0 and replay.packet == result.packet
+    assert nodes == [cold_node]
+    assert events == [("inspect", cold_node.key), ("load", cold_node.key)]
+
+
+def test_passthrough_never_reports_a_paid_selection_node():
+    def forbidden(_node):
+        pytest.fail("Host passthrough is not a paid selection receipt")
+
+    assert (
+        plan([source()]).execute(complete=selected, inspect_node=forbidden).passthrough
+    )
+
+
+def test_node_inspection_failure_prevents_cache_and_provider_access():
+    from unittest.mock import Mock
+
+    load, complete = Mock(), Mock()
+
+    def refuse(_node):
+        raise RuntimeError("Node authority refused")
+
+    with pytest.raises(RuntimeError, match="Node authority refused"):
+        plan(
+            [source(text="approval " * 400)],
+            budget=CompressionBudget(output_tokens=256),
+        ).execute(complete=complete, load=load, inspect_node=refuse)
+    load.assert_not_called()
+    complete.assert_not_called()
+
+
+def test_explicit_standalone_project_is_scoped_and_distinct_from_named_project():
+    standalone = {**SCOPE, "project_id": ""}
+    source_data = [source()]
+    assert plan(source_data, scope=standalone).passthrough
+    assert plan(source_data, scope=standalone).witness != plan(source_data).witness
+    for scope in (
+        {"org_id": "org-a", "user_id": "alice"},
+        {**standalone, "user_id": ""},
+        {**standalone, "org_id": ""},
+        {**standalone, "project_id": None},
+    ):
+        with pytest.raises(CompressionError, match="scoped"):
+            plan(source_data, scope=scope)
