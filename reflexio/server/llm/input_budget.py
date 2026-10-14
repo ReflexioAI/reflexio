@@ -128,17 +128,16 @@ def measure_request_input_tokens(params: Mapping[str, Any]) -> int:
     return math.ceil(tokens * 1.2)
 
 
-def check_request_input_budget(
+def request_input_capacity(
     params: Mapping[str, Any],
     *,
     context_limits: Mapping[str, int],
     prompt_target: int = 65536,
 ) -> int:
-    """Check actual built params; return conservatively budgeted input tokens.
+    """Return the input ceiling after the actual native output reservation.
 
-    Caller invokes this for each repair, continuation and fallback rung. Custom
-    endpoints never inherit another deployment's advertised model capacity.
-    No credentials or prompt text appear in failure messages.
+    This is provider-free and does not count messages. Pure consumer preparation
+    uses the same capacity rules as dispatch; custom routes need declarations.
     """
     model = params.get("model")
     if not isinstance(model, str) or not model or prompt_target <= 0:
@@ -165,8 +164,21 @@ def check_request_input_budget(
     output_tokens = params.get("max_completion_tokens", params.get("max_tokens"))
     if type(output_tokens) is not int or output_tokens <= 0:
         raise InputBudgetConfigurationError("Effective output reservation is required")
+    return min(prompt_target, context_limit - output_tokens)
+
+
+def check_request_input_budget(
+    params: Mapping[str, Any],
+    *,
+    context_limits: Mapping[str, int],
+    prompt_target: int = 65536,
+) -> int:
+    """Check each actual built request, including repairs and fallback rungs."""
+    capacity = request_input_capacity(
+        params, context_limits=context_limits, prompt_target=prompt_target
+    )
     budgeted_tokens = measure_request_input_tokens(params)
-    if budgeted_tokens > min(prompt_target, context_limit - output_tokens):
+    if budgeted_tokens > capacity:
         raise InputBudgetExceededError(
             "Complete extraction prompt exceeds input capacity"
         )
