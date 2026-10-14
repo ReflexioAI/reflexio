@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 
@@ -21,6 +23,7 @@ def endpoints(monkeypatch):
         "ready": True,
         "status": 200,
         "model": "paired-reranker",
+        "payloads": [],
     }
 
     def handle(request):
@@ -49,6 +52,7 @@ def endpoints(monkeypatch):
                 },
             )
         calls.append(str(request.url))
+        settings["payloads"].append(json.loads(request.content))
         return httpx.Response(
             settings["status"] if reserved else 200,
             json={
@@ -59,6 +63,19 @@ def endpoints(monkeypatch):
     with httpx.Client(transport=httpx.MockTransport(handle)) as client:
         monkeypatch.setattr(provider, "_http_client", lambda: client)
         yield calls, settings
+
+
+def test_shared_worker_distinguishes_search_from_other_interactive_reranks(
+    endpoints, monkeypatch
+):
+    calls, settings = endpoints
+    monkeypatch.delenv("REFLEXIO_SEARCH_RERANK_SERVICE_URL")
+    monkeypatch.delenv("REFLEXIO_QUERY_EMBEDDING_SERVICE_URL")
+    assert reranker.score_search_pairs("q", ["a", "b"]) == [4.0, -2.0]
+    assert reranker.score_pairs("q", ["a", "b"]) == [4.0, -2.0]
+    assert calls == ["http://shared/v1/rerank"] * 2
+    assert settings["payloads"][0]["priority"] == "search"
+    assert "priority" not in settings["payloads"][1]
 
 
 def test_only_search_reranking_uses_reserved_capacity(endpoints):
