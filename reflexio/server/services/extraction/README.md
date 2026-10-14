@@ -299,7 +299,9 @@ to outer2 through adoption.
 plan descriptor. It binds the original source witness, DTO cache witness, native
 plan/contract digests, ordered sections and exact parent scope. The future caller
 must rebuild and compare the actual model/schema/pricing/output/passthrough and
-consumer contracts and resolve selections against original sources; structural
+consumer contracts and resolve selections against original sources. Ordered
+section witnesses need not be unique; every position counts toward geometry,
+and the full native plan witness binds actual source identities. Structural
 journal validation alone does not prove those semantics or source coverage.
 No source text, API credentials or endpoint credentials belong in the descriptor.
 

@@ -144,8 +144,7 @@ def validate_package_protocol(protocol: Any) -> dict[str, Any]:
     _require(
         isinstance(sections, list)
         and len(sections) <= 48
-        and all(_digest(value) for value in sections)
-        and len(sections) == len(set(sections)),
+        and all(_digest(value) for value in sections),
         "Invalid frozen package sections",
     )
     caps = package_stage_caps(protocol["consumer"])

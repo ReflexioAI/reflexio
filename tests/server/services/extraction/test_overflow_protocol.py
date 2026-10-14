@@ -102,8 +102,13 @@ def selection(manifest, *, ids=None):
 @pytest.mark.parametrize(
     ("rungs", "sections"), [(1, 48), (2, 45), (3, 36), (4, 26), (5, 17), (6, 7)]
 )
-def test_actual_ladder_arithmetic_preserves_follow_on_budget(rungs, sections):
+@pytest.mark.parametrize("repeated_witnesses", [False, True])
+def test_actual_ladder_arithmetic_preserves_follow_on_budget(
+    rungs, sections, repeated_witnesses
+):
     descriptor = protocol(rungs=rungs, sections=sections)
+    if repeated_witnesses:
+        descriptor["section_digests"] = [DIGEST] * sections
     caps = descriptor["stage_caps"]
     assert sum(caps.values()) == 128
     assert caps["gate"] == rungs
@@ -112,10 +117,11 @@ def test_actual_ladder_arithmetic_preserves_follow_on_budget(rungs, sections):
     manifest = OverflowCoordinator.initial_package_manifest(DIGEST, descriptor)
     assert validate_extraction_overflow_manifest(manifest) is manifest
     if sections < 48:
+        overflowing = protocol(rungs=rungs, sections=sections + 1)
+        if repeated_witnesses:
+            overflowing["section_digests"] = [DIGEST] * (sections + 1)
         with pytest.raises(OverflowCheckpointConflictError):
-            OverflowCoordinator.initial_package_manifest(
-                DIGEST, protocol(rungs=rungs, sections=sections + 1)
-            )
+            OverflowCoordinator.initial_package_manifest(DIGEST, overflowing)
 
 
 def test_gate_skipping_and_playbook_intent_are_distinct_frozen_caps():
@@ -303,6 +309,7 @@ def test_locked_parent_scope_refuses_descriptor_drift_without_reserving(
             token,
             expected_revision=0,
             source_digest=manifest["source_digest"],
+            expected_input_protocol=manifest["input_protocol"],
             reserve_attempt_id="must-not-reserve",
             reserve_attempt_stage="compress",
         )
