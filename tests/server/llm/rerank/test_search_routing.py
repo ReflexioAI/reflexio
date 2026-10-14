@@ -1,6 +1,7 @@
 import httpx
 import pytest
 
+from reflexio.server import search_runtime
 from reflexio.server.llm.providers import embedding_service_provider as provider
 from reflexio.server.llm.rerank import cross_encoder_reranker as reranker
 
@@ -95,3 +96,71 @@ def test_unconfigured_search_reranking_retains_shared_route(endpoints, monkeypat
         [4.0, -2.0],
     )
     assert calls == ["http://shared/v1/rerank"]
+
+
+def test_initially_unready_search_worker_recovers_without_api_restart(endpoints):
+    calls, settings = endpoints
+    settings["ready"] = False
+    with pytest.raises(reranker.CrossEncoderUnavailableError):
+        reranker.score_search_pairs_with_model("q", ["a", "b"])
+    assert calls == []
+    settings["ready"] = True
+    assert reranker.score_search_pairs_with_model("q", ["a", "b"]) == (
+        "paired-reranker",
+        [4.0, -2.0],
+    )
+    assert calls == ["http://reserved/v1/rerank"]
+
+
+def test_healthy_search_contract_does_not_repeat_health_discovery(
+    endpoints, monkeypatch
+):
+    reranker.score_search_pairs_with_model("q", ["a", "b"])
+    client = provider._http_client()
+    monkeypatch.setattr(
+        client,
+        "get",
+        lambda *_args, **_kwargs: pytest.fail("Hot search fetched health"),
+    )
+    assert reranker.score_search_pairs_with_model("q", ["a", "b"])[1] == [4.0, -2.0]
+
+
+@pytest.mark.parametrize(
+    "route,expected_calls,expected_counter",
+    [
+        ("reserved", ["http://reserved/v1/rerank"], 1),
+        ("shared_search", ["http://shared/v1/rerank"], 0),
+        ("shared_generic", ["http://shared/v1/rerank"], 0),
+        ("empty", [], 0),
+        ("reserved_failure", ["http://reserved/v1/rerank"], 0),
+    ],
+)
+def test_search_worker_counter_proves_successful_nonempty_reserved_scoring(
+    endpoints, monkeypatch, route, expected_calls, expected_counter
+):
+    calls, settings = endpoints
+    if route == "shared_search":
+        monkeypatch.delenv("REFLEXIO_SEARCH_RERANK_SERVICE_URL")
+    if route == "reserved_failure":
+        settings["status"] = 503
+    score = (
+        reranker.score_pairs
+        if route == "shared_generic"
+        else reranker.score_search_pairs
+    )
+    scope = search_runtime.SearchScope()
+    token = search_runtime._scope.set(scope)
+    try:
+        if route == "reserved_failure":
+            with pytest.raises(reranker.CrossEncoderUnavailableError):
+                score("q", ["a", "b"])
+        else:
+            assert score("q", [] if route == "empty" else ["a", "b"]) == (
+                [] if route == "empty" else [4.0, -2.0]
+            )
+        assert calls == expected_calls
+        assert scope.counters == (
+            {"search.rerank.search_worker": 1} if expected_counter else {}
+        )
+    finally:
+        search_runtime._scope.reset(token)
