@@ -182,7 +182,8 @@ def test_browser_authentication_failures_preserve_cors_and_security_headers(
         "/health",
         "/healthz",
         "/healthz/eval",
-        "/livez",
+        "/health/live",
+        "/health/ready",
         "/meta/version",
         "/docs",
         "/redoc",
@@ -232,5 +233,12 @@ def test_standalone_swagger_advertises_the_bearer_authentication_option(
     assert schema["components"]["securitySchemes"]["BearerAuth"]["scheme"] == "bearer"
     expected = [{"BearerAuth": []}] if key else [{"BearerAuth": []}, {}]
     assert schema["paths"]["/api/whoami"]["get"]["security"] == expected
-    for path in ["/health", "/healthz", "/healthz/eval", "/livez", "/meta/version"]:
+    for path in [
+        "/health",
+        "/health/live",
+        "/health/ready",
+        "/healthz",
+        "/healthz/eval",
+        "/meta/version",
+    ]:
         assert schema["paths"][path]["get"]["security"] == []

@@ -95,6 +95,16 @@ FULL_ROUTES = [
         ("default_readiness",),
     ),
     (
+        # The same handler as /health, which is its deprecated alias.
+        "/health/ready",
+        ("GET",),
+        None,
+        None,
+        (),
+        "health_check",
+        ("default_readiness",),
+    ),
+    (
         "/api/whoami",
         ("GET",),
         "WhoamiResponse",
@@ -953,12 +963,12 @@ FULL_ROUTES = [
         (),
     ),
     (
-        "/livez",
+        "/health/live",
         ("GET",),
         "dict",
         None,
         (),
-        "livez",
+        "health_live",
         (),
     ),
     (
@@ -996,12 +1006,12 @@ NODP_ROUTES = [
         (),
     ),
     (
-        "/livez",
+        "/health/live",
         ("GET",),
         "dict",
         None,
         (),
-        "livez",
+        "health_live",
         (),
     ),
     (
