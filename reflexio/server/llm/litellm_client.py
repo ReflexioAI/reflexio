@@ -7,6 +7,7 @@ using LiteLLM. It maintains the same interface as the existing LLMClient for eas
 
 import logging
 import os
+from typing import Any
 
 import litellm
 
@@ -288,6 +289,33 @@ class LiteLLMClient(TextGenerationMixin, EmbeddingMixin, StructuredOutputMixin):
             Model name string.
         """
         return self.config.model
+
+    def get_completion_request_contract(self, **kwargs: Any) -> dict[str, Any]:
+        """Resolve primary completion identity without provider dispatch.
+
+        Accepts the same per-call generation overrides (including model_role,
+        max_tokens and temperature); messages are intentionally an empty probe.
+        Forward overrides unchanged, including explicit None values. Fixed keys
+        and absent values are stable for internal admission comparison/hashing.
+        API keys, messages and observability metadata are excluded, but route
+        URLs can contain credentials: do not log or expose this descriptor.
+        """
+        params = self._build_completion_params(messages=[], **kwargs)[0]
+        return {
+            key: params.get(key)
+            for key in (
+                "model",
+                "api_base",
+                "base_url",
+                "api_version",
+                "custom_llm_provider",
+                "temperature",
+                "top_p",
+                "seed",
+                "max_tokens",
+                "max_completion_tokens",
+            )
+        }
 
     def get_config(self) -> LiteLLMConfig:
         """
