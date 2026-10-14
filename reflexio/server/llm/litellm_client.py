@@ -5,8 +5,11 @@ This module provides a unified interface to multiple LLM providers (OpenAI, Clau
 using LiteLLM. It maintains the same interface as the existing LLMClient for easy replacement.
 """
 
+import hashlib
+import json
 import logging
 import os
+from typing import Any
 
 import litellm
 
@@ -91,6 +94,7 @@ from reflexio.server.llm._litellm_types import (
 from reflexio.server.llm._litellm_types import (
     StructuredOutputParseError as StructuredOutputParseError,
 )
+from reflexio.server.llm.llm_utils import is_pydantic_model
 from reflexio.server.llm.providers.claude_code_provider import (
     register_if_enabled as _register_claude_code,
 )
@@ -288,6 +292,94 @@ class LiteLLMClient(TextGenerationMixin, EmbeddingMixin, StructuredOutputMixin):
             Model name string.
         """
         return self.config.model
+
+    def get_completion_request_contract(self, **kwargs: Any) -> dict[str, Any]:
+        """Resolve primary completion identity without provider dispatch.
+
+        Accepts the same per-call generation overrides (including model_role,
+        max_tokens and temperature); messages are intentionally an empty probe.
+        Generation overrides preserve explicit None values; fallback_models=None
+        uses configured fallbacks, as in public chat generation. Fixed keys and
+        absent values are stable for internal admission comparison/hashing.
+        The generation-policy digest binds all remaining built provider fields,
+        including tools, schema controls and native extensions, without returning
+        arbitrary custom data. Messages, credentials/headers, observations and
+        dispatch timeouts/retries are excluded and must be bound separately when
+        relevant; prompt/schema witnesses remain caller-owned, including schema
+        instructions embedded in messages. Pydantic response-format classes use
+        their JSON Schema; other non-JSON values and nonfinite numbers are rejected;
+        there is no stringification fallback for unsupported descriptors.
+        API keys, messages and observability metadata are excluded, but route
+        URLs can contain credentials: do not log or expose this descriptor.
+        """
+        if kwargs.get("fallback_models") is None:
+            kwargs.pop("fallback_models", None)
+        params = self._build_completion_params(messages=[], **kwargs)[0]
+        contract = {
+            key: params.get(key)
+            for key in (
+                "model",
+                "api_base",
+                "base_url",
+                "api_version",
+                "custom_llm_provider",
+                "temperature",
+                "top_p",
+                "seed",
+                "max_tokens",
+                "max_completion_tokens",
+            )
+        }
+        # Bind every remaining built generation parameter, including future
+        # provider extensions. Credentials, observations and dispatch controls
+        # are caller/transport concerns; message/schema witnesses stay separate.
+        excluded = {
+            "messages",
+            "api_key",
+            "azure_ad_token",
+            "aws_access_key_id",
+            "aws_secret_access_key",
+            "aws_session_token",
+            "vertex_credentials",
+            "headers",
+            "extra_headers",
+            "metadata",
+            "callbacks",
+            "success_callback",
+            "failure_callback",
+            "logger_fn",
+            "litellm_logging_obj",
+            "litellm_call_id",
+            "timeout",
+            "num_retries",
+            "fallbacks",
+            "structured_output_validator",
+            "provider_request_guard",
+        }
+        policy = {key: value for key, value in params.items() if key not in excluded}
+        if is_pydantic_model(policy.get("response_format")):
+            policy["response_format"] = policy["response_format"].model_json_schema()
+        contract["generation_policy_digest"] = hashlib.sha256(
+            json.dumps(
+                policy,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode()
+        ).hexdigest()
+        return contract
+
+    def get_completion_model_ladder(self, **kwargs: Any) -> tuple[str, ...]:
+        """Resolve the ordered transport ladder without provider dispatch.
+
+        Forward the same effective per-call overrides used for generation,
+        including model, model_role and fallback_models. As in public chat
+        generation, None uses configured fallbacks and [] disables them. This describes
+        distinct network rungs, not retries or structured repair attempts.
+        """
+        if kwargs.get("fallback_models") is None:
+            kwargs.pop("fallback_models", None)
+        return tuple(self._resolve_ladder(**kwargs))
 
     def get_config(self) -> LiteLLMConfig:
         """

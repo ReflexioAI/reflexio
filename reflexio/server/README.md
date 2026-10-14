@@ -219,6 +219,24 @@ Key files:
 - **Z.ai support**: `zai/*` completions default to the coding endpoint at `https://api.z.ai/api/coding/paas/v4` unless a custom endpoint or per-call `api_base` overrides it. Z.ai structured output uses a guarded schema instruction plus JSON-object mode; tool turns leave `response_format` unset and validate the terminal result locally.
 - API keys read from environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY) or `ApiKeyConfig`
 - Interface: `generate_response()`, `generate_chat_response()`, `get_embedding()`
+- `get_completion_request_contract()` resolves the actual primary route, role,
+  selected generation fields and output cap without dispatch. The ten primary
+  fields preserve `None` for absent values; `generation_policy_digest` binds built
+  every remaining actual built generation parameter (including tools, schema
+  controls and native extensions) by canonical hash, without returning sensitive
+  custom data. Messages, credentials/headers, observations and dispatch timeout/
+  retry controls are excluded; callers bind those separately when relevant.
+  Non-JSON policy values and nonfinite numbers are rejected, never stringified.
+  Legacy hashes can explicitly select the ten fields. API keys
+  and messages are excluded; endpoint URLs may contain credentials, so the
+  descriptor is internal and must not be logged or exposed.
+- `get_completion_model_ladder()` returns an immutable ordered tuple from the
+  native generation resolver, applying role precedence, custom endpoint pinning
+  and fallback deduplication. Pass the same effective overrides as generation;
+  `fallback_models=None` uses configured fallbacks, while `[]` disables them,
+  matching public chat generation. Its length counts transport rungs, not
+  repair/retry attempts. Both
+  descriptors resolve configuration only and never call providers.
 - **Structured Outputs**: Supports Pydantic models via `response_format` parameter
 - **Structured-output repair**: `generate_chat_response(..., response_format=..., structured_output_validator=...)` opts a call into bounded corrective repair. The validator receives the parsed Pydantic object and returns semantic errors; an empty list means valid. Opted-in calls repair malformed, blank, and semantically invalid outputs with one same-model corrective follow-up. If that still fails and `REFLEXIO_LLM_FALLBACK_MODELS` has an eligible network fallback, one final corrective turn is sent to the first eligible fallback model. Exhaustion raises `StructuredOutputRepairError` with the latest raw response and validation errors for programmatic handling; `parsed_output` is the most recent attempt that parsed at all, which may be an earlier attempt when the final response fails parsing — do not treat it as metadata of the latest raw response. Exception text does not include raw output.
 - **Two-level retry model**: transport failures/timeouts walk a reflexio-owned per-rung fallback ladder within a generation turn (`num_retries=0`, primary then configured fallbacks) — the client rebuilds request params for each rung itself rather than delegating to LiteLLM's native `fallbacks` kwarg. Structured-output repair is across turns and is opt-in via `structured_output_validator`. Callers without a validator keep their single same-model parse retry, and that retry is **corrective whenever the parse failure carried validation errors**: the rung's original messages plus a bounded turn naming the failing field paths and pydantic error tags (`decision: missing`, `manifest_role: extra_forbidden`, ...). It never echoes the model's own output — unlike the validator path's repair turn — and it re-keys `extra_headers["Idempotency-Key"]` via `structured_output_repair_idempotency_key` so a provider honouring the header cannot replay the rejected answer. The validator path's repair turn is re-keyed the same way, being a strictly larger change to the request. A parse failure that names nothing — the deliberate "appears truncated" diagnostic — still re-issues identically, key included: its params are rebuilt from the caller's kwargs rather than reusing the dict attempt 1 handed the transport, so a provider that wrote its own `Authorization`/`Content-Type` into that dict cannot have them re-sent as caller intent. A `provider_request_guard` can recognise the corrective shape with `is_structured_output_correction_turn`.
