@@ -97,6 +97,30 @@ class OverflowCoordinator:
         validate_extraction_overflow_manifest(manifest)
         if manifest.get("source_digest") != source_digest:
             raise OverflowCheckpointConflictError("Invalid extraction coordinator")
+        if manifest["version"] == 2:
+            from reflexio.server.services.extraction.overflow_protocol import (
+                validate_package_scope,
+            )
+
+            try:
+                validate_package_scope(
+                    manifest,
+                    {
+                        "org_id": storage.org_id,
+                        "project_id": window.project_id,
+                        "user_id": window.user_id,
+                        "window_id": window.window_id,
+                        "kind": window.kind,
+                    },
+                )
+            except ValueError as exc:
+                raise OverflowCheckpointConflictError(
+                    "Invalid package coordinator scope"
+                ) from exc
+            if prepared is not None:
+                raise OverflowCheckpointConflictError(
+                    "Package cannot impersonate legacy chunks"
+                )
         if turn_seconds <= 0:
             raise ValueError("Extraction turn budget must be positive")
         legacy = manifest.get("legacy_observed_usage")
@@ -133,6 +157,9 @@ class OverflowCoordinator:
         self._active_attempt: ContextVar[str | None] = ContextVar(
             "reflexio_overflow_active_attempt", default=None
         )
+        self._attempt_stage: ContextVar[tuple[str, int, list[str]] | None] = ContextVar(
+            "reflexio_overflow_attempt_stage", default=None
+        )
 
     @staticmethod
     def initial_manifest(source_digest: str) -> dict[str, Any]:
@@ -146,6 +173,45 @@ class OverflowCoordinator:
             "attempts": [],
             "checkpoint": {"stage": "prepare", "completed_steps": {}},
         }
+
+    @staticmethod
+    def initial_package_manifest(
+        source_digest: str, input_protocol: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Construct only; runtime admission remains explicitly unsupported."""
+        manifest = {
+            **OverflowCoordinator.initial_manifest(source_digest),
+            "version": 2,
+            "preparation_version": 4,
+            "input_protocol": copy.deepcopy(input_protocol),
+        }
+        validate_extraction_overflow_manifest(manifest)
+        return manifest
+
+    @contextmanager
+    def attempt_stage(
+        self, stage: str, *, minimum_remaining_attempts: int = 0
+    ) -> Iterator[list[str]]:
+        """Attribute physical dispatches, retaining stage quota across restarts.
+
+        ``minimum_remaining_attempts`` is the required additional SAME-stage
+        work after each proposed dispatch. Cache hits reserve nothing. The
+        caller can bind the yielded actual IDs to its completed node receipt.
+        """
+        if (
+            self._manifest["version"] != 2
+            or stage not in self._manifest["input_protocol"]["stage_caps"]
+            or type(minimum_remaining_attempts) is not int
+            or minimum_remaining_attempts < 0
+            or self._attempt_stage.get() is not None
+        ):
+            raise InputBudgetConfigurationError("Invalid package attempt stage")
+        identities: list[str] = []
+        token = self._attempt_stage.set((stage, minimum_remaining_attempts, identities))
+        try:
+            yield identities
+        finally:
+            self._attempt_stage.reset(token)
 
     def require_full_source_coverage(self) -> None:
         """Cached plans and fresh plans obey the same publication barrier."""
@@ -270,6 +336,8 @@ class OverflowCoordinator:
 
     def _advance(self, **change: Any) -> None:
         with self._lock:
+            if self._manifest["version"] == 2:
+                change["expected_input_protocol"] = self._manifest["input_protocol"]
             self._manifest = self.storage.checkpoint_extraction_overflow(
                 self.window,
                 self.token,
@@ -413,6 +481,8 @@ class OverflowCoordinator:
             checkpoint = self.checkpoint
             steps = checkpoint.setdefault("completed_steps", {})
             receipt = {"output": output, "model_provenance": asdict(provenance)}
+            if self._manifest["version"] == 2:
+                receipt["kind"] = "model_output"
             if key in steps:
                 if steps[key] != receipt:
                     raise OverflowCheckpointConflictError(
@@ -426,6 +496,27 @@ class OverflowCoordinator:
             steps[key] = receipt
             if checkpoint.get("active_child", {}).get("key") == key:
                 checkpoint.pop("active_child")
+            self.save_checkpoint(checkpoint)
+
+    def complete_selection_step(self, key: str, receipt: dict[str, Any]) -> None:
+        """Save a host-normalized selection without inventing authored provenance."""
+        if self._manifest["version"] != 2:
+            raise InputBudgetConfigurationError(
+                "Selection receipts require package protocol"
+            )
+        with self._lock:
+            checkpoint = self.checkpoint
+            steps = checkpoint["completed_steps"]
+            if key in steps:
+                if steps[key] != receipt:
+                    raise OverflowCheckpointConflictError(
+                        "Completed source selection is immutable"
+                    )
+                return
+            steps[key] = copy.deepcopy(receipt)
+            validate_extraction_overflow_manifest(
+                {**self._manifest, "checkpoint": checkpoint}
+            )
             self.save_checkpoint(checkpoint)
 
     def _request_fingerprint(self, params: dict[str, Any]) -> str:
@@ -470,18 +561,53 @@ class OverflowCoordinator:
         if hard_timeout <= 0 or hard_timeout + 5 > self._deadline - time.monotonic():
             raise OverflowSuspendedError("Extraction turn needs continuation")
         attempt_id = uuid.uuid4().hex
+        reservation: dict[str, Any] = {"reserve_attempt_id": attempt_id}
+        stage = self._attempt_stage.get()
+        if self._manifest["version"] == 2:
+            if stage is None:
+                raise InputBudgetConfigurationError(
+                    "Package dispatch lacks stage attribution"
+                )
+            if stage[0] != "compress":
+                ladder_name = {
+                    "gate": "gate",
+                    "profile_agent": "agent",
+                    "profile_dedup": "dedup",
+                    "playbook_intent": "intent",
+                }[stage[0]]
+                expected_ladder = self._manifest["input_protocol"]["consumer"][
+                    "ladders"
+                ][ladder_name]
+                if _ladder != tuple(expected_ladder):
+                    raise InputBudgetConfigurationError(
+                        "Package consumer model ladder changed"
+                    )
+            reservation.update(
+                reserve_attempt_stage=stage[0], minimum_remaining_attempts=stage[1]
+            )
         try:
-            self._advance(reserve_attempt_id=attempt_id)
+            self._advance(**reservation)
         except Exception as exc:
             raise ProviderRequestGuardError(
                 "Durable extraction attempt reservation failed"
             ) from exc
         self._active_attempt.set(attempt_id)
+        if stage is not None and self._manifest["version"] == 2:
+            stage[2].append(attempt_id)
         from reflexio.server.services.extraction.overflow_presentation import (
             current_overflow_presentation,
         )
 
         presentation = current_overflow_presentation.get()
+        if self._manifest["version"] == 2:
+            extraction_request_identity.set(
+                {
+                    "attempt_id": attempt_id,
+                    "request_fingerprint": fingerprint,
+                    "protocol_version": 2,
+                }
+            )
+            return
         extraction_request_identity.set(
             {
                 "attempt_id": attempt_id,
@@ -495,6 +621,10 @@ class OverflowCoordinator:
 
     def repartition_rejected_input(self, error: ProviderInputOverflowError) -> None:
         """Freeze one changed source plan; preserve attempts and immutable receipts."""
+        if self._manifest["version"] == 2:
+            raise InputBudgetExceededError(
+                "Package rejection cannot use legacy repartition"
+            ) from error
         checkpoint = self.checkpoint
         prepared = self.require_prepared()
         identity = error.identity
