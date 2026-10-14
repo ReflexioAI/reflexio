@@ -116,3 +116,62 @@ def test_unset_seed_and_explicit_temperature_none_keep_builder_semantics(monkeyp
         client.get_completion_request_contract(temperature=None)["temperature"] is None
     )
     assert client.config.temperature == 0.7
+
+
+@pytest.mark.parametrize(
+    "override", [None, [], ["gpt-4o-mini", "local/nomic", "gpt-4o", "gpt-4o"]]
+)
+def test_public_ladder_uses_actual_deduped_resolver_without_dispatch(
+    monkeypatch, override
+):
+    from unittest.mock import Mock
+
+    import litellm
+
+    dispatch = Mock(side_effect=AssertionError("No provider for ladder resolution"))
+    monkeypatch.setattr(litellm, "completion", dispatch)
+    client = LiteLLMClient(
+        LiteLLMConfig(
+            model="gpt-4o-mini",
+            fallback_models=["gpt-4o-mini", "gpt-4o", "gpt-4o", "local/nomic"],
+        )
+    )
+    assert client.get_completion_model_ladder() == ("gpt-4o-mini", "gpt-4o")
+    options = {"fallback_models": override}
+    assert client.get_completion_model_ladder(**options) == tuple(
+        client._resolve_ladder(**options)
+    )
+    assert client.get_completion_model_ladder(**options) == (
+        ("gpt-4o-mini", "gpt-4o") if override else ("gpt-4o-mini",)
+    )
+    dispatch.assert_not_called()
+
+
+def test_public_ladder_uses_role_precedence_and_custom_endpoint_pin(monkeypatch):
+    from unittest.mock import Mock
+
+    import litellm
+
+    dispatch = Mock(side_effect=AssertionError("No provider for ladder resolution"))
+    monkeypatch.setattr(litellm, "completion", dispatch)
+    client = LiteLLMClient(
+        LiteLLMConfig(model="gpt-4o-mini", fallback_models=["gpt-4o", "gpt-4o"])
+    )
+    overrides = {"model": "ignored-model", "model_role": ModelRole.EXTRACTION_AGENT}
+    primary = client.get_completion_request_contract(**overrides)["model"]
+    assert client.get_completion_model_ladder(**overrides) == tuple(
+        dict.fromkeys([primary, "gpt-4o"])
+    )
+    assert primary != "ignored-model"
+    client.config.api_key_config = APIKeyConfig(
+        custom_endpoint=CustomEndpointConfig(
+            model="openai/pinned",
+            api_key="test-private",
+            api_base="https://example.invalid/v1",
+        )
+    )
+    assert client.get_completion_model_ladder(**overrides) == ("openai/pinned",)
+    assert (
+        client.get_completion_request_contract(**overrides)["model"] == "openai/pinned"
+    )
+    dispatch.assert_not_called()

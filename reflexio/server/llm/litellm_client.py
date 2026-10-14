@@ -317,6 +317,16 @@ class LiteLLMClient(TextGenerationMixin, EmbeddingMixin, StructuredOutputMixin):
             )
         }
 
+    def get_completion_model_ladder(self, **kwargs: Any) -> tuple[str, ...]:
+        """Resolve the ordered transport ladder without provider dispatch.
+
+        Forward the same effective per-call overrides used for generation,
+        including model, model_role and fallback_models. Explicit None/empty
+        fallback overrides retain the resolver's semantics. This describes
+        distinct network rungs, not retries or structured repair attempts.
+        """
+        return tuple(self._resolve_ladder(**kwargs))
+
     def get_config(self) -> LiteLLMConfig:
         """
         Get the current configuration.
