@@ -50,7 +50,7 @@ strings before deleting old import paths in the same PR.
 |-----------|---------|
 | `durable_learning/` | `admission.py` commits incoming streams; `scheduler.py` / `worker.py` run bounded user turns; `window_executor.py` / `window_codec.py` compute frozen windows; `user_lease.py` shares ownership with manual/resumed generation; `waiting.py` bounds HTTP waits; `local.py` recovers standalone-library work. |
 | `extraction/` | Shared async extraction runtime: `resumable_agent.py`, `resume_scheduler.py`, `resume_worker.py`, `pending_tool_call_dispatch.py` (`ask_human`), `prior_answer_search.py`, `agent_run_records.py`, and `outcome.py`. Long-horizon / tool-mediated extraction continues outside the request path. See [README](extraction/README.md). |
-| `input_compression.py`, `input_compression_llm.py` | Shared source-backed compression with extraction/session policies, exact original excerpts, bounded hierarchical selection and guarded provider dispatch. Callable qualification adapters; importing them does not switch worker protocols. |
+| `input_compression.py`, `input_compression_llm.py` | Shared source-backed compression with extraction/session policies, exact original excerpts, bounded hierarchical selection, provider-free admission planning and guarded provider dispatch. Callable qualification adapters; importing them does not switch worker protocols. |
 
 ### Evaluation, Search & Integrations
 
@@ -99,3 +99,29 @@ Generation uses configured actors and fenced persistence; deferred workers rebui
 - **Aggregation state is per agent version** — scheduled intake, centroid matching, cluster membership, invalidation, and agent-playbook generation must never cross versions; keep LLM and clustering work outside `commit_scope()`.
 - **`tool_can_use` lives at root `Config`** — shared by playbook extraction and success evaluation, not per-service.
 - **Preserve governance subject refs/barriers** — route validation through `services/governance/` and `storage/governance_validation.py`; do not bypass retention or subject-write checks in storage implementations.
+
+
+## Source compression planning
+
+`input_compression.plan_compression_input(...)` prepares original sources and
+exact section geometry without dispatching a model or reading/writing cached
+selections. Its transient `CompressionPlan` exposes section digests, complete
+request token estimates (including the response schema and 20% margin), and a
+contract witness. The existing `compress_input(...)` interface prepares and
+executes through this same implementation; prompts, node cache keys and the
+`source-compression-v6` selection policy remain unchanged.
+
+Callers may compare/persist the witness before admitting a durable parent, then
+call `plan.execute(complete=..., load=..., save=...)`. Rebuild the plan from
+original authorized sources on resume and require the stored witness to match.
+Only the digest witness is a storage value: do not serialize the transient plan,
+which retains private source text and pure output-rendering callbacks. Keep those
+callbacks fixed and name their behavior in `output_contract`. The witness binds
+scope, source provenance, policy, model, schema, all budgets and ordered sections.
+
+This low-level planner estimates the compressor's complete requests; native model
+capacity/output reservation checks and final consumer prompt fit remain the
+caller's responsibility. It does not grant source authorization, reserve durable
+provider attempts, prove semantic retention, or enable a worker protocol. Every
+actual dispatch, including repairs and retries, still needs the caller's shared
+durable quota guard. Passthrough plans have zero selection sections/calls.

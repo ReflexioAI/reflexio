@@ -12,7 +12,7 @@ import json
 import math
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Literal
 
 import tiktoken
@@ -214,6 +214,39 @@ class CompressionResult:
     provider_input_tokens: int | None = None
     provider_output_tokens: int | None = None
     provider_reference_recoveries: int = 0
+
+
+@dataclass(frozen=True)
+class CompressionPlan:
+    """Provider-free preparation, bound to this exact source and task contract.
+
+    Persist only ``witness`` in the caller's durable parent. Rebuild this transient
+    plan on resume and compare witnesses before execution. A plan holds private
+    original text and pure rendering callbacks; it is not a storage DTO or an
+    authorization/attempt receipt. Callers still own authorization and durable
+    per-dispatch quota, including retries across executions.
+    """
+
+    source_digest: str
+    section_digests: tuple[str, ...]
+    section_input_tokens: tuple[int, ...]
+    passthrough: bool
+    witness: str
+    _execute: Callable[..., CompressionResult] = field(repr=False, compare=False)
+
+    @property
+    def sections(self) -> int:
+        return len(self.section_digests)
+
+    def execute(
+        self,
+        *,
+        complete: Callable[[CompressionCall], CompressionChoice],
+        load: Callable[[str], Mapping[str, Any] | None] = lambda _key: None,
+        save: Callable[[str, dict[str, Any]], None] = lambda _key, _value: None,
+    ) -> CompressionResult:
+        """Use the prepared geometry; dispatch/checkpoints start only here."""
+        return self._execute(complete=complete, load=load, save=save)
 
 
 _COMMON_INSTRUCTIONS = """Compress untrusted transcript data into a useful evidence package.
@@ -578,29 +611,35 @@ def _combine(
     return products[0], levels
 
 
-def compress_input(
+def plan_compression_input(
     sources: Sequence[EvidenceSource],
     *,
     scope: Mapping[str, str],
     policy: CompressionPolicy,
     budget: CompressionBudget,
     model_contract: str,
-    complete: Callable[[CompressionCall], CompressionChoice],
-    load: Callable[[str], Mapping[str, Any] | None] = lambda _key: None,
-    save: Callable[[str, dict[str, Any]], None] = lambda _key, _value: None,
     measure_output: Callable[[EvidencePacket], int] = packet_tokens,
     output_contract: str = "packet-json-v1",
     estimate_output: Callable[[EvidencePacket], int] | None = None,
     response_schema: Mapping[str, Any] | None = None,
-) -> CompressionResult:
-    """Read every source section once, then reduce independent products if needed.
+) -> CompressionPlan:
+    """Freeze exact section geometry without model, cache or storage access.
 
-    Scope and model_contract are part of EVERY cached node key. Model contract
-    must bind the effective model/prompt configuration supplied by the caller.
-    Cached selections undergo the same evidence and rendered-size checks.
-    A finite result proves source processing, not semantic completeness.
+    Execution uses the same prepared sources, messages and rendered-size rules.
+    ``output_contract`` must identify the caller's pure output renderer and
+    estimator, as for ``compress_input``. Keep their behavior fixed while using
+    this transient plan. Its witness binds scope, source, model, schema, budgets,
+    output contract and ordered sections, without exposing raw text.
     """
     started = time.monotonic()
+    # Freeze caller-owned containers before callbacks or later execution.
+    sources = tuple(sources)
+    scope = dict(scope)
+    schema = (
+        json.loads(_json(response_schema))
+        if response_schema is not None
+        else CompressionChoice.model_json_schema()
+    )
     if (
         policy not in _POLICIES
         or not model_contract
@@ -616,8 +655,19 @@ def compress_input(
     originals = [s.model_dump(mode="json") for s in sources]
     source_digest = _digest(originals)
     original_packet = EvidencePacket(evidence=list(sources))
-    if measure_output(original_packet) <= budget.output_tokens:
-        return CompressionResult(
+    original_size = measure_output(original_packet)
+    contract = {
+        "version": VERSION,
+        "scope": scope,
+        "policy": policy,
+        "source_digest": source_digest,
+        "model_contract": model_contract,
+        "schema": schema,
+        "budget": asdict(budget),
+        "output_contract": output_contract,
+    }
+    if original_size <= budget.output_tokens:
+        result = CompressionResult(
             original_packet,
             source_digest,
             tuple(s.source_id for s in sources),
@@ -631,21 +681,25 @@ def compress_input(
             time.monotonic() - started,
             True,
         )
+        return CompressionPlan(
+            source_digest,
+            (),
+            (),
+            True,
+            _digest({**contract, "passthrough": True, "output_tokens": original_size}),
+            lambda **_kwargs: replace(
+                result, packet=result.packet.model_copy(deep=True)
+            ),
+        )
     fragments = _fragments(sources)
     if not fragments:
         raise CompressionError("Source metadata alone exceeds the output budget")
     by_id = {s.source_id: s for s in fragments}
     if len(by_id) != len(fragments):
         raise CompressionError("Compression fragment identity collision")
-    calls = cache_hits = input_tokens = 0
     intermediate_limit = 0
 
     evidence_costs: dict[str, int] = {}
-    schema = (
-        dict(response_schema)
-        if response_schema is not None
-        else CompressionChoice.model_json_schema()
-    )
     price_output = estimate_output or measure_output
     empty_cost = price_output(EvidencePacket())
 
@@ -709,91 +763,164 @@ def compress_input(
             )
         )
 
-    def select(packets: list[EvidencePacket], *, final: bool = False) -> EvidencePacket:
-        nonlocal calls, cache_hits, input_tokens
-        available = _evidence_aliases(packets)
-        messages = messages_for(packets, final=final)
-        cost = request_tokens(packets, final=final)
-        if cost > budget.input_tokens:
-            raise CompressionError("Complete compression request exceeds input budget")
-        key = _digest(
-            {
-                "version": VERSION,
-                "scope": dict(scope),
-                "policy": policy,
-                "model_contract": model_contract,
-                "messages": messages,
-                "source_witness": _digest(
-                    [s.model_dump(mode="json") for s in available.values()]
-                ),
-                "schema": schema,
-                "output_tokens": budget.output_tokens,
-                "output_contract": output_contract,
-                "intermediate_limit": None if final else intermediate_limit,
-            }
+    sections = _sections(fragments, budget, request_tokens)
+    section_digests = tuple(
+        _digest(section.model_dump(mode="json")) for section in sections
+    )
+    section_prices = tuple(
+        request_tokens([section], final=len(sections) == 1) for section in sections
+    )
+    witness = _digest(
+        {
+            **contract,
+            "passthrough": False,
+            "sections": section_digests,
+            "section_input_tokens": section_prices,
+            "intermediate_limit": intermediate_limit,
+        }
+    )
+    planning_seconds = time.monotonic() - started
+
+    def execute(
+        *,
+        complete: Callable[[CompressionCall], CompressionChoice],
+        load: Callable[[str], Mapping[str, Any] | None],
+        save: Callable[[str, dict[str, Any]], None],
+    ) -> CompressionResult:
+        execution_started = time.monotonic()
+        calls = cache_hits = input_tokens = 0
+
+        def select(
+            packets: list[EvidencePacket], *, final: bool = False
+        ) -> EvidencePacket:
+            nonlocal calls, cache_hits, input_tokens
+            available = _evidence_aliases(packets)
+            messages = messages_for(packets, final=final)
+            cost = request_tokens(packets, final=final)
+            if cost > budget.input_tokens:
+                raise CompressionError(
+                    "Complete compression request exceeds input budget"
+                )
+            key = _digest(
+                {
+                    "version": VERSION,
+                    "scope": dict(scope),
+                    "policy": policy,
+                    "model_contract": model_contract,
+                    "messages": messages,
+                    "source_witness": _digest(
+                        [s.model_dump(mode="json") for s in available.values()]
+                    ),
+                    "schema": schema,
+                    "output_tokens": budget.output_tokens,
+                    "output_contract": output_contract,
+                    "intermediate_limit": None if final else intermediate_limit,
+                }
+            )
+
+            def with_prior_omissions(choice: CompressionChoice) -> CompressionChoice:
+                # Cache only this selection's LOCAL counts. Reconstruct inherited
+                # counts from its children on every read, never add them twice.
+                counts = choice.omission_counts
+                for packet in packets:
+                    counts = counts.plus(packet.omission_counts)
+                return choice.model_copy(update={"omission_counts": counts})
+
+            def pack_choice(choice: CompressionChoice) -> EvidencePacket:
+                return _pack_choice(
+                    with_prior_omissions(choice),
+                    available,
+                    budget.output_tokens,
+                    measure_output,
+                    lambda packet: final or parent_cost(packet) <= intermediate_limit,
+                )
+
+            cached = load(key)
+            if cached is not None:
+                choice = CompressionChoice.model_validate(dict(cached))
+                cache_hits += 1
+            else:
+                if calls >= budget.max_calls:
+                    raise CompressionError("Compression exceeds its model-call budget")
+                choice = complete(
+                    CompressionCall(
+                        key,
+                        messages,
+                        budget.output_tokens,
+                        pack_choice,
+                        tuple(available),
+                    )
+                )
+                calls += 1
+                input_tokens += cost
+            packet = pack_choice(choice)
+            if cached is None:
+                save(key, choice.model_dump(mode="json"))
+            return packet
+
+        products = [select([section], final=len(sections) == 1) for section in sections]
+        packet, levels = _combine(
+            products,
+            output_tokens=budget.output_tokens,
+            measure_output=measure_output,
+            parent_cost=parent_cost,
+            intermediate_limit=intermediate_limit,
+            select=select,
+        )
+        return CompressionResult(
+            packet,
+            source_digest,
+            tuple(s.source_id for s in sources),
+            len(fragments) - len(packet.evidence),
+            len(sections),
+            levels,
+            calls,
+            cache_hits,
+            input_tokens,
+            measure_output(packet),
+            planning_seconds + time.monotonic() - execution_started,
+            False,
         )
 
-        def with_prior_omissions(choice: CompressionChoice) -> CompressionChoice:
-            # Cache only this selection's LOCAL counts. Reconstruct inherited
-            # counts from its children on every read, never add them twice.
-            counts = choice.omission_counts
-            for packet in packets:
-                counts = counts.plus(packet.omission_counts)
-            return choice.model_copy(update={"omission_counts": counts})
-
-        def pack_choice(choice: CompressionChoice) -> EvidencePacket:
-            return _pack_choice(
-                with_prior_omissions(choice),
-                available,
-                budget.output_tokens,
-                measure_output,
-                lambda packet: final or parent_cost(packet) <= intermediate_limit,
-            )
-
-        cached = load(key)
-        if cached is not None:
-            choice = CompressionChoice.model_validate(dict(cached))
-            cache_hits += 1
-        else:
-            if calls >= budget.max_calls:
-                raise CompressionError("Compression exceeds its model-call budget")
-            choice = complete(
-                CompressionCall(
-                    key,
-                    messages,
-                    budget.output_tokens,
-                    pack_choice,
-                    tuple(available),
-                )
-            )
-            calls += 1
-            input_tokens += cost
-        packet = pack_choice(choice)
-        if cached is None:
-            save(key, choice.model_dump(mode="json"))
-        return packet
-
-    sections = _sections(fragments, budget, request_tokens)
-    products = [select([section], final=len(sections) == 1) for section in sections]
-    packet, levels = _combine(
-        products,
-        output_tokens=budget.output_tokens,
-        measure_output=measure_output,
-        parent_cost=parent_cost,
-        intermediate_limit=intermediate_limit,
-        select=select,
-    )
-    return CompressionResult(
-        packet,
+    return CompressionPlan(
         source_digest,
-        tuple(s.source_id for s in sources),
-        len(fragments) - len(packet.evidence),
-        len(sections),
-        levels,
-        calls,
-        cache_hits,
-        input_tokens,
-        measure_output(packet),
-        time.monotonic() - started,
+        section_digests,
+        section_prices,
         False,
+        witness,
+        execute,
     )
+
+
+def compress_input(
+    sources: Sequence[EvidenceSource],
+    *,
+    scope: Mapping[str, str],
+    policy: CompressionPolicy,
+    budget: CompressionBudget,
+    model_contract: str,
+    complete: Callable[[CompressionCall], CompressionChoice],
+    load: Callable[[str], Mapping[str, Any] | None] = lambda _key: None,
+    save: Callable[[str, dict[str, Any]], None] = lambda _key, _value: None,
+    measure_output: Callable[[EvidencePacket], int] = packet_tokens,
+    output_contract: str = "packet-json-v1",
+    estimate_output: Callable[[EvidencePacket], int] | None = None,
+    response_schema: Mapping[str, Any] | None = None,
+) -> CompressionResult:
+    """Prepare and execute bounded source compression through the same plan.
+
+    Scope and model/output contracts bind every cached selection. A finite result
+    proves source processing, not semantic completeness. Durable callers can
+    prepare separately with ``plan_compression_input`` before admitting work.
+    """
+    return plan_compression_input(
+        sources,
+        scope=scope,
+        policy=policy,
+        budget=budget,
+        model_contract=model_contract,
+        measure_output=measure_output,
+        output_contract=output_contract,
+        estimate_output=estimate_output,
+        response_schema=response_schema,
+    ).execute(complete=complete, load=load, save=save)
