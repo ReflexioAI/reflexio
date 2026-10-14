@@ -405,6 +405,93 @@ def test_request_changes_refuse_before_attempt_reservation(monkeypatch, mutation
     reserve.assert_not_called()
 
 
+def test_fitting_initial_request_refuses_oversized_native_repair_before_reservation(
+    monkeypatch,
+):
+    from reflexio.server.services.profile.components.extractor import (
+        _profile_evidence_validation_errors,
+    )
+
+    prepared, client = preparation(monkeypatch)
+
+    def initial(count):
+        messages = prepared.agent_messages(" original evidence" * count)
+        params = build_profile_package_request(
+            client,
+            messages,
+            model="gpt-4o-mini",
+            response_format=StructuredProfilesOutput,
+            tools=None,
+            tool_choice=None,
+            fallback_models=[],
+        )
+        return messages, measure_request_input_tokens(params)
+
+    # Find a fitting complete initial request using the real native counter.
+    low, high = 0, 32768
+    while low + 1 < high:
+        middle = (low + high) // 2
+        if initial(middle)[1] <= 32768:
+            low = middle
+        else:
+            high = middle
+    messages, tokens = initial(low)
+    assert 32760 <= tokens <= 32768 < initial(high)[1]
+    original = copy.deepcopy(messages)
+    reserve = Mock()
+    checked = []
+
+    def guard(params, _timeout, ladder, parse):
+        checked.append(copy.deepcopy(params))
+        prepared.check_request("agent", messages, params, ladder, parse)
+        reserve()
+
+    wire = Mock(
+        return_value=litellm.ModelResponse(
+            choices=[
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps(
+                            {
+                                "profiles": [
+                                    {
+                                        "content": "unsupported preference",
+                                        "time_to_live": "infinity",
+                                        "source_span": "absent quotation",
+                                    }
+                                ]
+                            }
+                        ),
+                    },
+                    "finish_reason": "stop",
+                }
+            ]
+        )
+    )
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
+    token = extraction_provider_guard.set(guard)
+    try:
+        with pytest.raises(InputBudgetExceededError):
+            client.generate_chat_response(
+                messages,
+                model_role=ModelRole.EXTRACTION_AGENT,
+                response_format=StructuredProfilesOutput,
+                structured_output_validator=lambda output: (
+                    _profile_evidence_validation_errors(output, ())
+                ),
+                tools=None,
+                tool_choice=None,
+            )
+    finally:
+        extraction_provider_guard.reset(token)
+    assert reserve.call_count == wire.call_count == 1
+    assert len(checked) == 2
+    assert measure_request_input_tokens(checked[0]) <= 32768
+    assert measure_request_input_tokens(checked[1]) > 32768
+    assert messages == original
+
+
 def test_long_complete_continuation_rejects_at_32k_without_clipping(monkeypatch):
     prepared, client = preparation(monkeypatch)
     answer = "complete human answer " * 20000 + "ONLY with approval"

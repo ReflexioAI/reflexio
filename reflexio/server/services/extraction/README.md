@@ -465,6 +465,9 @@ different native formats; their checks remain separate. A model echo remains
 untrusted, never source evidence. The caller must still authenticate the raw
 seed/continuation, bind the contract to its durable parent, install the check
 before every dispatch, and handle dynamic dedup prompts and continuations.
+Initial-fit pricing does not reserve space for every possible repair or tool
+continuation. A fitting first request can therefore fail on a larger repair;
+the completed attempt remains consumed and no successful result is returned.
 Consumer-contract preflight also runs before cache access or passthrough, before
 each new compression dispatch and at operation completion. Template, schema and
 consumer-ladder drift cannot wait until final packet measurement to be rejected.
