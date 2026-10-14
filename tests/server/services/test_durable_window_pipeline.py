@@ -2497,7 +2497,10 @@ def pipeline(tmp_path, monkeypatch):
         "reflexio.server.api_endpoints.publisher_api.get_reflexio", lambda **_: engine
     )
     worker = DurableLearningWorker(lambda _: engine.request_context)
-    client = TestClient(create_app(get_org_id=lambda: "stream-test"))
+    # Independent clients must not share a rate-limit bucket across test cases.
+    client = TestClient(
+        create_app(get_org_id=lambda: "stream-test"), client=(tmp_path.name, 50000)
+    )
     return engine, worker, client
 
 
@@ -3056,10 +3059,11 @@ def test_real_extractor_persist_and_outcome_replay(pipeline):
     assert storage.count_all_profiles() == before
 
 
+@pytest.mark.parametrize("short_session", [False, True])
 @pytest.mark.parametrize("gate_negative", [False, True])
 @pytest.mark.parametrize("fail_commit", [False, True])
 def test_enabled_overflow_profile_uses_real_window_commit_once(
-    pipeline, monkeypatch, gate_negative, fail_commit
+    pipeline, monkeypatch, gate_negative, fail_commit, short_session
 ):
     import json
     from types import SimpleNamespace
@@ -3116,8 +3120,8 @@ def test_enabled_overflow_profile_uses_real_window_commit_once(
         schema_name = getattr(response_format, "__name__", "") or json.dumps(
             response_format, default=str
         )
-        if gate_negative and response_format is None:
-            response.choices[0].message.content = "false"
+        if response_format is None:
+            response.choices[0].message.content = "false" if gate_negative else "true"
         if "ProfileDeduplicationOutput" in schema_name or any(
             "unique_ids" in str(message.get("content", ""))
             for message in params["messages"]
@@ -3131,7 +3135,14 @@ def test_enabled_overflow_profile_uses_real_window_commit_once(
     monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
     assert client.post(
         "/api/publish_interaction",
-        json=payload("overflow-enabled", force=not gate_negative),
+        json={
+            **payload(
+                "overflow-enabled",
+                count=2 if short_session else 10,
+                force=not gate_negative and not short_session,
+            ),
+            "session_finished": short_session,
+        },
     ).json()["success"]
     storage = engine.get_storage()
     if fail_commit:
@@ -3162,7 +3173,7 @@ def test_enabled_overflow_profile_uses_real_window_commit_once(
         assert attempts == 2
     assert storage.extraction_status("u", "overflow-enabled")["status"] == "done"
     assert storage.count_all_profiles() == (0 if gate_negative else 1)
-    expected_calls = 1 if gate_negative else 2
+    expected_calls = 1 if gate_negative else 3 if short_session else 2
     assert dispatch.call_count == expected_calls
     with storage._stream_sql() as db:
         rows = db.query("SELECT id FROM _agent_runs WHERE user_id=? LIMIT 2", ("u",))
@@ -4777,3 +4788,75 @@ def test_post_commit_followup_failure_preserves_admission(pipeline, monkeypatch,
     assert storage.extraction_status("u", "followup")["status"] != "not_tracked"
     if phase in {"index", "index_rollback", "runner"}:
         assert evaluations == ["followup"]
+
+
+@pytest.mark.parametrize("completion", ["explicit", "publish", "idle"])
+def test_two_short_messages_reach_judge_and_negative_is_covered(
+    pipeline, monkeypatch, completion
+):
+    from reflexio.server.llm.litellm_client import LiteLLMClient
+    from reflexio.server.services.storage.sqlite_storage._extraction_stream import (
+        SQLiteStreamSQL,
+    )
+
+    engine, worker, client = pipeline
+    clock = [1000.0]
+    monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: clock[0])
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "false")
+    judge = Mock(return_value="false")
+    monkeypatch.setattr(LiteLLMClient, "generate_chat_response", judge)
+    data = {**payload("short", count=2), "session_finished": completion == "publish"}
+    data["interaction_data_list"][0]["content"] = "Use uv"
+    data["interaction_data_list"][1]["content"] = "OK"
+    assert client.post("/api/publish_interaction", json=data).json()["success"]
+    if completion != "publish":
+        worker.drain_org("stream-test", 1, 300)
+        judge.assert_not_called()
+    if completion == "explicit":
+        result = client.post(
+            "/api/finalize_session", json={"user_id": "u", "session_id": "s"}
+        )
+        assert result.json()["accepted"]
+    elif completion == "idle":
+        clock[0] += 21600
+    worker.drain_org("stream-test", 1, 300)
+    judge.assert_called_once()
+    storage = engine.get_storage()
+    assert storage.extraction_status("u", "short")["status"] == "done"
+    assert storage.count_all_profiles() == 0
+    assert client.post(
+        "/api/finalize_session", json={"user_id": "u", "session_id": "s"}
+    ).json()["success"]
+    worker.drain_org("stream-test", 1, 300)
+    judge.assert_called_once()
+
+
+@pytest.mark.parametrize("transport", ["http", "library"])
+def test_finalization_wakeup_failure_preserves_durable_acceptance(
+    pipeline, monkeypatch, transport
+):
+    engine, worker, client = pipeline
+    assert client.post(
+        "/api/publish_interaction", json=payload("short", count=2)
+    ).json()["success"]
+
+    def fail(_context):
+        raise RuntimeError("scheduler unavailable")
+
+    monkeypatch.setattr(
+        "reflexio.server.services.durable_learning.local.ensure_local_extraction",
+        fail,
+    )
+    request = {"user_id": "u", "session_id": "s"}
+    if transport == "http":
+        response = client.post("/api/finalize_session", json=request)
+        assert response.status_code == 200
+        result = response.json()
+    else:
+        result = engine.finalize_session(request).model_dump()
+    assert result["success"] and result["accepted"]
+    storage = engine.get_storage()
+    assert storage.extraction_report("u", "short")[0]["reason"] == "queued"
+    worker.drain_org("stream-test", 1, 300)
+    assert storage.extraction_status("u", "short")["status"] == "done"

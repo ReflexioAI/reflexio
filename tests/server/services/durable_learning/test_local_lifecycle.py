@@ -212,3 +212,81 @@ def test_committed_admission_wakes_consumer_but_rollback_does_not(
     finally:
         if scheduler is not None:
             scheduler.stop()
+
+
+def test_library_reopen_resumes_idle_deadline_without_another_publish(
+    tmp_path, isolated_registry, monkeypatch
+):
+    from reflexio.lib.reflexio_lib import Reflexio
+    from reflexio.server.services.storage.sqlite_storage._extraction_stream import (
+        SQLiteStreamSQL,
+    )
+
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "off")
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "false")
+    clock = [1000.0]
+    monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: clock[0])
+    judge = Mock(return_value="false")
+    monkeypatch.setattr(LiteLLMClient, "generate_chat_response", judge)
+    context = _context(tmp_path / "idle-reopen", "idle-reopen")
+    config = context.configurator
+    config.set_config(
+        config.get_config().model_copy(update={"window_size": 5, "stride_size": 3})
+    )
+    engine = Reflexio(
+        org_id=context.org_id,
+        storage_base_dir=context.storage_base_dir,
+        configurator=config,
+    )
+    result = engine.publish_interaction(
+        {
+            "request_id": "short",
+            "user_id": "u",
+            "session_id": "s",
+            "interaction_data_list": [
+                {"role": "User", "content": "Use uv"},
+                {"role": "Assistant", "content": "OK"},
+            ],
+        },
+        defer_learning=True,
+    )
+    assert result.success
+    store = engine.get_storage()
+
+    def wait_for(predicate):
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(0.02)
+        pytest.fail("durable scheduler did not reach the expected state")
+
+    def scheduled():
+        with store._stream_sql(read_only=True) as db:
+            return (
+                db.query("SELECT due_at FROM learning_work WHERE user_id=?", ("u",))[0][
+                    "due_at"
+                ]
+                == 22600
+            )
+
+    wait_for(scheduled)
+    judge.assert_not_called()
+    # Retire this process's scheduler, then reopen from persisted state at due time.
+    with local._lock:
+        scheduler = local._schedulers.pop(context.storage_base_dir)
+    scheduler.stop()
+    clock[0] = 22600
+    reopened = Reflexio(
+        org_id=context.org_id,
+        storage_base_dir=context.storage_base_dir,
+        configurator=config,
+    )
+    wait_for(
+        lambda: (
+            reopened.get_storage().extraction_status("u", "short")["status"] == "done"
+        )
+    )
+    judge.assert_called_once()
+    assert reopened.get_storage().count_all_profiles() == 0

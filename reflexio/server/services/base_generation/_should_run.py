@@ -159,7 +159,7 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
             )
 
         # Cheap pre-filter: apply user-text-only heuristics (slash-commands,
-        # short turns, extractor-prompt echoes) without burning a 5–7s LLM
+        # extractor-prompt echoes) without burning a 5–7s LLM
         # call. Batches with no non-empty user text bypass these heuristics;
         # stride/window eligibility was already evaluated independently.
         from reflexio.server.services.base_generation_service import (
@@ -176,7 +176,7 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
             )
             # Report WHICH heuristic rejected, not just that we skipped: the
             # caller's bare ``should_skip`` cannot distinguish "the cheap
-            # pre-filter rejected on short/slash-command turns" from "the LLM
+            # pre-filter rejected on slash-command turns" from "the LLM
             # gate voted no", and the cheap path never reaches the LLM so there
             # is no token spend to infer it from either.
             #

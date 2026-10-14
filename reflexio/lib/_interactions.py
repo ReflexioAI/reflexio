@@ -25,6 +25,8 @@ from reflexio.models.api_schema.service_schemas import (
     DeleteSessionResponse,
     DeleteUserInteractionRequest,
     DeleteUserInteractionResponse,
+    FinalizeSessionRequest,
+    FinalizeSessionResponse,
     PublishUserInteractionRequest,
     PublishUserInteractionResponse,
 )
@@ -180,6 +182,46 @@ class InteractionsMixin(ReflexioBase):
             )
         except Exception as e:
             return PublishUserInteractionResponse(success=False, message=str(e))
+
+    def finalize_session(
+        self,
+        request: FinalizeSessionRequest | dict,
+    ) -> FinalizeSessionResponse:
+        """Accept an optional completion hint without bypassing the judge.
+
+        The saved prefix is processed asynchronously. Later publications are
+        accepted. A missing session is a successful no-op.
+        """
+        if not self._is_storage_configured():
+            return FinalizeSessionResponse(
+                success=False, message=STORAGE_NOT_CONFIGURED_MSG
+            )
+        if isinstance(request, dict):
+            request = FinalizeSessionRequest(**request)
+        accepted = self._get_storage().finalize_session(
+            request.user_id, request.session_id
+        )
+        from reflexio.server.services.durable_learning.local import (
+            ensure_local_extraction,
+        )
+
+        if accepted:
+            try:
+                ensure_local_extraction(self.request_context)
+            except Exception as error:
+                # The marker is durable; scheduler wakeup is best-effort.
+                logger.warning(
+                    "event=session_finalization_wakeup_failed error_type=%s",
+                    type(error).__name__,
+                    exc_info=True,
+                )
+        return FinalizeSessionResponse(
+            success=True,
+            accepted=accepted,
+            message="Completion hint accepted; learning is asynchronous."
+            if accepted
+            else "No saved session to finalize.",
+        )
 
     def search_interactions(
         self,

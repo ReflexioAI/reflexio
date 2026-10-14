@@ -14,6 +14,8 @@ def extraction_admission(
 ) -> dict[str, Any]:
     admission: dict[str, Any] = {
         "force": request.force_extraction,
+        "session_finished": request.session_finished,
+        "idle_timeout_seconds": config.extraction_idle_timeout_seconds,
         "skip_aggregation": request.skip_aggregation,
     }
     for kind, extractor in (
