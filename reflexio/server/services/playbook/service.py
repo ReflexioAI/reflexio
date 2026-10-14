@@ -956,11 +956,16 @@ class PlaybookGenerationService(
         )
 
         scheduler = PlaybookOptimizationScheduler.get_instance()
+        from reflexio.server.services.playbook.source_quoted_overflow import (
+            is_source_quoted_playbook,
+        )
+
         for playbook in saved_playbooks:
             if (
                 not playbook.user_playbook_id
                 or playbook.status is not None
                 or not playbook.source_interaction_ids
+                or is_source_quoted_playbook(playbook)
             ):
                 continue
             target = PlaybookOptimizationTarget(

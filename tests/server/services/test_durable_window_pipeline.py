@@ -2519,6 +2519,229 @@ def payload(request_id, count=10, user_id="u", force=False):
     }
 
 
+@pytest.mark.parametrize(
+    "replay",
+    ["clean", "empty", "commit_failure", "altered_cache", "tagged_cache", "old_cache"],
+)
+def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
+    pipeline, monkeypatch, replay
+):
+    import json
+
+    from reflexio.models.api_schema.service_schemas import UserPlaybook
+    from reflexio.models.config_schema import UserPlaybookExtractorConfig
+    from reflexio.server import metering_events
+    from reflexio.server.metering_signals import count_input_tokens
+    from reflexio.server.services.durable_learning.window_executor import WindowExecutor
+    from reflexio.server.services.extraction.protected_record import (
+        ProtectedEvidence,
+        ProtectedRecord,
+    )
+    from reflexio.server.services.playbook.service import PlaybookGenerationService
+    from reflexio.server.services.storage.sqlite_storage._extraction_stream import (
+        SQLiteStreamSQL,
+    )
+
+    engine, worker, client = pipeline
+    configurator = engine.request_context.configurator
+    configurator.set_config(
+        configurator.get_config().model_copy(
+            update={
+                "profile_extractor_config": None,
+                "user_playbook_extractor_config": UserPlaybookExtractorConfig(
+                    extraction_definition_prompt="Learn deployment instructions"
+                ),
+            }
+        )
+    )
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
+    storage = engine.get_storage()
+    old = UserPlaybook(
+        user_id="u",
+        agent_version="v",
+        request_id="old",
+        content="An existing rule remains unchanged.",
+    )
+    storage.save_user_playbooks([old], skip_embedding=True)
+    before = storage.get_user_playbook_by_id(old.user_playbook_id).model_dump(
+        mode="json"
+    )
+
+    # Only the semantic selection is controlled; real HTTP admission, original
+    # witnesses, coordinator journal, cached plan and fenced commit remain real.
+    def prepare(_self, coordinator, _config):
+        prepared = coordinator.require_prepared()
+        assert len(prepared.chunks) > 1
+        selected = next(s for c in prepared.chunks for s in c.spans if s.role == "User")
+        coordinator.record = ProtectedRecord(
+            evidence=(
+                ProtectedEvidence(
+                    kind="instruction",
+                    evidence_refs=(selected.evidence_ref,),
+                    quote=selected.text,
+                ),
+            )
+        )
+        if replay == "empty":
+            coordinator.record = ProtectedRecord()
+        checkpoint = coordinator.checkpoint
+        checkpoint["protected_record"] = coordinator.record.model_dump(mode="json")
+        checkpoint["protected_coverage"] = [
+            coordinator.candidate_key(c.text) for c in prepared.chunks
+        ]
+        coordinator.save_checkpoint(checkpoint)
+
+    monkeypatch.setattr(WindowExecutor, "_prepare_overflow_context", prepare)
+    monkeypatch.setattr(storage, "_get_embedding", lambda *_: [0.1] * 512)
+    storage._enable_document_expansion = True
+    expansion = Mock(
+        side_effect=AssertionError(
+            "Source-quoted rules must not generate expansion text"
+        )
+    )
+    monkeypatch.setattr(storage, "_expand_document", expansion)
+    monkeypatch.setattr(
+        PlaybookGenerationService, "_dispatch_playbook_schedulers", lambda *_: None
+    )
+    generative = Mock(
+        side_effect=AssertionError(
+            "Overflow must not call a prose generator or consolidator"
+        )
+    )
+    monkeypatch.setattr(PlaybookGenerationService, "compute_generation", generative)
+    instruction = "Verify the named destination before presenting the plan. Keep STAGING_APPROVAL_REQUIRED. File inspection is not execution."
+    body = payload("source-quote", count=3, force=True)
+    body["agent_version"] = "v"
+    body["interaction_data_list"] = [
+        {"role": "User", "content": instruction},
+        {"role": "Assistant", "content": "Diagnostic output. " * 18000},
+        {"role": "Assistant", "content": "No deployment performed."},
+    ]
+    assert client.post("/api/publish_interaction", json=body).json()["success"]
+    token_bill = Mock(wraps=metering_events.record_extraction_tokens)
+    learning_bill = Mock(
+        wraps=metering_events.record_learnings_generated_records_strict
+    )
+    monkeypatch.setattr(metering_events, "record_extraction_tokens", token_bill)
+    monkeypatch.setattr(
+        metering_events, "record_learnings_generated_records_strict", learning_bill
+    )
+    complete = storage.complete_extraction
+    calls = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1 and replay not in {"clean", "empty"}:
+            raise RuntimeError("Crash before commit")
+        return complete(*args, **kwargs)
+
+    monkeypatch.setattr(storage, "complete_extraction", fail_once)
+    assert worker.drain_org("stream-test", 1, 300) == (
+        1 if replay in {"clean", "empty"} else 0
+    )
+    if replay not in {"clean", "empty"}:
+        assert len(storage.get_user_playbooks(user_id="u")) == 1
+        token_bill.assert_not_called()
+        learning_bill.assert_not_called()
+        with storage._stream_sql() as db:
+            row = db.query(
+                "SELECT window_id,outcome FROM extraction_windows WHERE user_id=? AND completed=0 LIMIT 1",
+                ("u",),
+            )[0]
+            outcome = json.loads(row["outcome"])
+            if replay == "altered_cache":
+                outcome["write_plan"]["new_playbooks"][0]["content"] = (
+                    "Deploy to production without approval."
+                )
+            if replay == "tagged_cache":
+                outcome["write_plan"]["new_playbooks"][0]["tags"] = ["unapproved"]
+            if replay == "old_cache":
+                run = storage.get_agent_run("window:" + row["window_id"])
+                run.generation_request_snapshot["overflow"]["checkpoint"].pop(
+                    "source_quoted_publication"
+                )
+                db.query(
+                    "UPDATE _agent_runs SET generation_request_snapshot=? WHERE id=?",
+                    (json.dumps(run.generation_request_snapshot), run.id),
+                )
+            db.query(
+                "UPDATE extraction_windows SET outcome=? WHERE window_id=?",
+                (json.dumps(outcome), row["window_id"]),
+            )
+            now = db.now()
+        monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: now + 600)
+        assert worker.drain_org("stream-test", 1, 300) == (
+            1 if replay == "commit_failure" else 0
+        )
+    expected = 2 if replay in {"clean", "commit_failure"} else 1
+    rows = storage.get_user_playbooks(user_id="u", include_embedding=True)
+    assert len(rows) == expected
+    assert (
+        storage.get_user_playbook_by_id(old.user_playbook_id).model_dump(mode="json")
+        == before
+    )
+    if expected == 2:
+        new = next(row for row in rows if row.user_playbook_id != old.user_playbook_id)
+        assert new.content == new.source_span == instruction
+        assert new.trigger == instruction and new.rationale is None
+        assert new.embedding and new.expanded_terms is None
+        assert "User corrected" not in new.notes
+    if replay in {"clean", "empty", "commit_failure"}:
+        # Commit and its durable effects are separate worker turns.
+        token_bill.assert_not_called()
+        learning_bill.assert_not_called()
+        assert worker.drain_org("stream-test", 1, 300) == 1
+        status = client.get(
+            "/api/learning_status", params={"request_id": "source-quote"}
+        ).json()
+        assert status["status"] == "done"
+        with storage._stream_sql(read_only=True) as db:
+            window = db.query(
+                "SELECT window_id,effects_done FROM extraction_windows WHERE user_id=? AND kind=? LIMIT 1",
+                ("u", "playbook"),
+            )[0]
+        assert window["effects_done"] == 1
+        run_id = "window:" + window["window_id"]
+        assert storage.get_agent_run(run_id).status.value == "finalized"
+        ids = storage.get_agent_run_finalization_receipt(
+            run_id=run_id, entity_type="user_playbook"
+        )
+        assert ids == [
+            str(row.user_playbook_id)
+            for row in rows
+            if row.user_playbook_id != old.user_playbook_id
+        ]
+        token_bill.assert_called_once()
+        learning_bill.assert_called_once()
+        assert learning_bill.call_args.kwargs["learning_ids"] == ids
+        assert token_bill.call_args.kwargs["strict"] is True
+        assert token_bill.call_args.kwargs["event_key"] == "tok:" + window["window_id"]
+        assert token_bill.call_args.kwargs[
+            "billing_input_tokens"
+        ] == count_input_tokens(
+            "\n".join(item["content"] for item in body["interaction_data_list"])
+        )
+        worker.drain_org("stream-test", 1, 300)  # May claim one final empty turn.
+        assert len(storage.get_user_playbooks(user_id="u")) == expected
+        token_bill.assert_called_once()
+        learning_bill.assert_called_once()
+    else:
+        status = client.get(
+            "/api/learning_status", params={"request_id": "source-quote"}
+        ).json()
+        assert status == {
+            "status": "failed",
+            "reason": "input_budget_configuration_error",
+        }
+        token_bill.assert_not_called()
+        learning_bill.assert_not_called()
+    assert len(storage.get_user_interaction("u")) == 3
+    generative.assert_not_called()
+    expansion.assert_not_called()
+
+
 def test_http_ack_is_durable_and_backlog_does_not_skip(pipeline, monkeypatch):
     engine, worker, client = pipeline
     entered, released = threading.Event(), threading.Event()

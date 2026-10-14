@@ -768,7 +768,7 @@ class UserPlaybookStoreMixin:
         return row
 
     def precompute_user_playbook_embeddings(
-        self, playbooks: list[UserPlaybook]
+        self, playbooks: list[UserPlaybook], *, expand_documents: bool = True
     ) -> None:
         """Populate ``.embedding`` / ``.expanded_terms`` in place; no DB write.
 
@@ -780,7 +780,7 @@ class UserPlaybookStoreMixin:
         for up in playbooks:
             text = embedding_text(up)
             if text:
-                if self._should_expand_documents():
+                if expand_documents and self._should_expand_documents():
                     with ThreadPoolExecutor(max_workers=2) as executor:
                         emb_future = executor.submit(self._get_embedding, text)
                         exp_future = executor.submit(self._expand_document, text)

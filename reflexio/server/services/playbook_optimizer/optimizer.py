@@ -471,7 +471,15 @@ class PlaybookOptimizer:
                 return None
             return playbook
         user_playbook = self.storage.get_user_playbook_by_id(target.target_id)
-        if user_playbook is None or user_playbook.status is not None:
+        from reflexio.server.services.playbook.source_quoted_overflow import (
+            is_source_quoted_playbook,
+        )
+
+        if (
+            user_playbook is None
+            or user_playbook.status is not None
+            or is_source_quoted_playbook(user_playbook)
+        ):
             return None
         return _agent_like_playbook(user_playbook)
 

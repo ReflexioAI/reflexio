@@ -420,11 +420,16 @@ class GEPAUserPlaybookDecisionVerifier:
             job.target_id
         )
         incumbent = self._storage.get_user_playbook_by_id(job.target_id)
+        from reflexio.server.services.playbook.source_quoted_overflow import (
+            is_source_quoted_playbook,
+        )
+
         if (
             subject_epochs != request.subject_epochs_json
             or metadata.get(PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY)
             != json.loads(subject_epochs)
             or incumbent is None
+            or is_source_quoted_playbook(incumbent)
             or incumbent.trigger != request.projection.preserved_trigger
             or sha256(incumbent.content.encode("utf-8")).hexdigest()
             != request.incumbent_content_digest

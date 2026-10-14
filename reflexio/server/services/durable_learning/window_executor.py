@@ -44,6 +44,11 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookGenerationRequest,
 )
 from reflexio.server.services.playbook.service import PlaybookGenerationService
+from reflexio.server.services.playbook.source_quoted_overflow import (
+    compute_source_quoted_plan,
+    is_source_quoted_window,
+    validate_source_quoted_plan,
+)
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileGenerationRequest,
 )
@@ -360,7 +365,11 @@ class WindowExecutor:
             return
         saved_run = coordinator.saved_run
         claims: dict[str, Any] = {}
-        if saved_run is not None and saved_run.committed_output is not None:
+        if (
+            not is_source_quoted_window(coordinator)
+            and saved_run is not None
+            and saved_run.committed_output is not None
+        ):
             payload, _ = decode_committed_output(saved_run.committed_output)
             items = (
                 payload.get(
@@ -389,7 +398,11 @@ class WindowExecutor:
                 agent_context=coordinator.agent_context,
                 candidates=claims,
                 minimum_following_attempts=(
-                    len(claims) * 2 + 1 if claims else len(prepared.chunks) + 3
+                    0
+                    if is_source_quoted_window(coordinator)
+                    else len(claims) * 2 + 1
+                    if claims
+                    else len(prepared.chunks) + 3
                 ),
             )
 
@@ -459,6 +472,8 @@ class WindowExecutor:
             self.storage.validate_extraction_inputs(window)
             if coordinator is not None:
                 coordinator.require_full_source_coverage()
+                if is_source_quoted_window(coordinator):
+                    validate_source_quoted_plan(coordinator, service, plan)
                 self.storage.validate_extraction_source_digest(
                     window, coordinator.source_digest
                 )
@@ -503,6 +518,8 @@ class WindowExecutor:
         try:
             self._prepare_overflow_context(coordinator, config)
             with coordinator.provider_scope():
+                if is_source_quoted_window(coordinator):
+                    return compute_source_quoted_plan(coordinator, service, config)
                 return service.compute_generation(request)
         except Exception as exc:
             current: BaseException | None = exc

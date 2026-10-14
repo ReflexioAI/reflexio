@@ -946,6 +946,58 @@ def test_gepa_verifier_rejects_durable_winner_tampering_before_staging(tmp_path)
     )
 
 
+def test_source_quoted_rule_cannot_start_or_publish_a_generative_optimizer_run(
+    tmp_path,
+):
+    from reflexio.server.services.playbook.source_quoted_overflow import POLICY
+    from reflexio.server.services.playbook_optimizer.optimizer import (
+        _agent_like_playbook,
+    )
+
+    storage = _storage(tmp_path)
+    incumbent = _incumbent(storage)
+    storage.conn.execute(
+        "UPDATE user_playbooks SET notes=? WHERE user_playbook_id=?",
+        (json.dumps({"policy": POLICY}), incumbent.user_playbook_id),
+    )
+    storage.conn.commit()
+    incumbent = storage.get_user_playbook_by_id(incumbent.user_playbook_id)
+    before = incumbent.model_dump(mode="json")
+    optimizer = _optimizer(storage, tmp_path)
+    _install_winning_gepa(optimizer, storage, _window(incumbent.user_playbook_id))
+    target = PlaybookOptimizationTarget(
+        kind="user_playbook", target_id=incumbent.user_playbook_id
+    )
+    assert optimizer.optimize(target) == "skipped"
+    assert (
+        storage.conn.execute(
+            "SELECT COUNT(*) FROM playbook_optimization_jobs"
+        ).fetchone()[0]
+        == 0
+    )
+    # Simulate a legacy/direct entry bypassing admission. Even a fully passing,
+    # correctly bound winner must not rewrite a source-quoted incumbent.
+    with (
+        patch.object(
+            optimizer, "_load_incumbent", return_value=_agent_like_playbook(incumbent)
+        ),
+        pytest.raises(ValueError, match="publication binding changed"),
+    ):
+        optimizer.optimize(target)
+    assert (
+        storage.get_user_playbook_by_id(incumbent.user_playbook_id).model_dump(
+            mode="json"
+        )
+        == before
+    )
+    assert (
+        storage.conn.execute(
+            "SELECT COUNT(*) FROM user_playbook_publication_staging"
+        ).fetchone()[0]
+        == 0
+    )
+
+
 def test_gepa_stale_worker_fence_rejects_before_staging(tmp_path):
     storage = _storage(tmp_path)
     incumbent = _incumbent(storage)

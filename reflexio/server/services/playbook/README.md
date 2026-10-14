@@ -24,6 +24,7 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 | `playbook_evidence.py` | Strict evidence validation, call-local reference checks, and persisted provenance helpers |
 | `components/overflow_consolidation.py` | Bounded metadata proposals, exact historical quotations, and semantic verification before overflow consolidation applies original rows |
 | `components/overflow_evidence.py` | Canonical historical row fingerprints checked under final commit locks |
+| `source_quoted_overflow.py` | Multi-chunk recovery: original User-message copying, bounded publication, immutable source-policy receipt and cached-plan validation |
 | `review_window.py` | Shared fail-closed reconstruction of persisted review chronology for automatic and manual review |
 | `review_service.py` | Time-window selection, persisted evidence reconstruction, reporting, and newest-first per-playbook apply |
 | `aggregation_trigger.py` | Converts post-generation activity into an idempotent durable scheduling signal |
@@ -356,10 +357,30 @@ the source: inspecting or searching a file cannot establish execution, and a
 selective exclusion cannot establish a default that excludes every other case.
 Conditional rules must retain their supported applicability and exceptions.
 
-Overflow recovery applies a conservative publication rule: only drafts accepted
-unchanged by source review survive. Drafts requiring a rewrite are discarded;
-their originals and review receipts remain available. Accepted drafts retain
-their original content, trigger, rationale and generation provenance. Ordinary
-non-overflow review continues to support revisions. A fully covered window may
-complete with no new learnings when every draft is unsupported or already covered
-by existing rules; original inputs and existing learning constraints stay intact.
+Multi-chunk overflow playbooks use source-quoted recovery. The protected pass
+selects original instruction/correction references; the server copies the complete
+bounded original `content` message only when its transcript role is User. A
+reference selecting “deploy” cannot remove “Do not” elsewhere in that message.
+Assistant, tool and historical unknown-author text cannot supply new instructions.
+Transcript role User does not establish human authorship or deployment permission.
+
+This path bypasses prose extraction, candidate review and generative consolidation.
+Content, source span and trigger are exact copies; the trigger gives the existing
+search path original text to embed. Rationale remains empty and notes contain
+neutral source provenance. Embedding preparation explicitly disables generated
+document expansion while retaining embeddings. The serialized publication
+(including all copies and metadata) is capped at 8,192 tokens. Oversized complete messages
+are omitted, not clipped; later smaller messages remain eligible. Repeated
+selections of one source copy it once. There is no semantic deduplication or
+historical retirement, so duplicate lessons and conservative omissions are possible.
+
+A versioned `source_quoted_publication` receipt binds source, scope, selection and
+row meaning before the existing fenced write plan. Cached multi-chunk protocol
+plans without that receipt, changed rows, and retirement/merge proposals are
+refused. Existing drafts and attempt journals are not rewritten or reset. Copied
+rules are excluded from automatic optimizer admission and GEPA publication;
+ordinary human-reviewed agent aggregation remains a separate derived workflow.
+
+One-chunk protocol work retains accept-unchanged/discard-revision review, and
+ordinary non-overflow review still supports revisions. Fully scanned windows may
+complete with zero new rows; originals and existing learnings remain intact.
