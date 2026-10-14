@@ -7,8 +7,9 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from reflexio.server.llm import StructuredOutputRepairError
 from reflexio.server.llm.input_budget import check_request_input_budget
 from reflexio.server.llm.litellm_client import LiteLLMClient, ProviderRequestGuardError
 from reflexio.server.llm.token_accounting import RunTokenCapture, run_token_capture
@@ -30,7 +31,6 @@ from reflexio.server.services.input_compression import (
 class _ReferenceGroup(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    category: str = Field(min_length=1, max_length=32)
     evidence_refs: list[str] = Field(min_length=1)
 
 
@@ -43,7 +43,7 @@ class _ReferenceSelection(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def wrap_one_group(cls, value: Any) -> Any:
-        if isinstance(value, dict) and set(value) == {"category", "evidence_refs"}:
+        if isinstance(value, dict) and set(value) == {"evidence_refs"}:
             return {"points": [value]}
         return value
 
@@ -51,7 +51,7 @@ class _ReferenceSelection(BaseModel):
         return CompressionChoice(
             points=[
                 CompressionPoint(
-                    category=point.category, evidence_refs=point.evidence_refs
+                    category="selected_evidence", evidence_refs=point.evidence_refs
                 )
                 for point in self.points
             ]
@@ -135,6 +135,7 @@ def compress_with_client(
     model = str(contract["model"])
     direct_answer = model in {"minimax/MiniMax-M3", "zai/glm-5.1"}
     attempts = 0
+    reference_recoveries = 0
 
     def guard(params: dict[str, Any], *_args: Any) -> None:
         nonlocal attempts
@@ -155,6 +156,8 @@ def compress_with_client(
         attempts += 1
 
     def complete(call: CompressionCall) -> CompressionChoice:
+        nonlocal reference_recoveries
+
         def validate(value: BaseModel) -> list[str]:
             if not isinstance(value, _ReferenceSelection):
                 return ["Expected structured compression selections"]
@@ -163,16 +166,48 @@ def compress_with_client(
         request_options: dict[str, Any] = (
             {"extra_body": {"thinking": {"type": "disabled"}}} if direct_answer else {}
         )
-        result = client.generate_chat_response(
-            messages=call.messages,
-            response_format=_ReferenceSelection,
-            max_tokens=output_reservation,
-            temperature=0,
-            fallback_models=[],
-            provider_request_guard=guard,
-            structured_output_validator=validate,
-            **request_options,
-        )
+        try:
+            result = client.generate_chat_response(
+                messages=call.messages,
+                response_format=_ReferenceSelection,
+                max_tokens=output_reservation,
+                temperature=0,
+                fallback_models=[],
+                provider_request_guard=guard,
+                structured_output_validator=validate,
+                **request_options,
+            )
+        except StructuredOutputRepairError as error:
+            # Recovery is only for COMPLETE schema-valid selections after the
+            # client's bounded repair. Never salvage truncated JSON, guess a
+            # reference, sever one group's qualifiers, or mask integrity errors.
+            if (
+                error.failure_kind != "semantic"
+                or error.model != model
+                or not isinstance(error.raw_content, str)
+            ):
+                raise
+            try:
+                candidate = _ReferenceSelection.model_validate_json(error.raw_content)
+            except ValidationError:
+                raise error from None
+            visible = set(call.visible_refs)
+            retained = [
+                point
+                for point in candidate.points
+                if all(ref in visible for ref in point.evidence_refs)
+            ]
+            discarded = len(candidate.points) - len(retained)
+            if not discarded:
+                raise
+            choice = _ReferenceSelection(points=retained).choice()
+            choice.omissions = [
+                f"Host discarded {discarded} entire groups with unseen references after bounded repair; source selection is incomplete."
+            ]
+            if call.validate(choice):
+                raise
+            reference_recoveries += 1
+            return choice
         if not isinstance(result, _ReferenceSelection):
             raise CompressionError("Provider returned no structured compression")
         return result.choice()
@@ -202,6 +237,7 @@ def compress_with_client(
             provider_attempts=attempts,
             provider_input_tokens=prompt,
             provider_output_tokens=completion,
+            provider_reference_recoveries=reference_recoveries,
         )
     finally:
         run_token_capture.reset(token)

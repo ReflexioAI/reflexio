@@ -42,7 +42,6 @@ def client(monkeypatch, callback=None) -> Any:
         schema = kwargs["response_format"].model_json_schema()
         assert set(schema["properties"]) == {"points"}
         assert set(schema["$defs"]["_ReferenceGroup"]["properties"]) == {
-            "category",
             "evidence_refs",
         }
         params = {
@@ -61,11 +60,7 @@ def client(monkeypatch, callback=None) -> Any:
             if "approval" in s.get("text", "")
         ]
         value = kwargs["response_format"].model_validate(
-            {
-                "points": [{"category": "constraint", "evidence_refs": selected[:1]}]
-                if selected
-                else []
-            }
+            {"points": [{"evidence_refs": selected[:1]}] if selected else []}
         )
         assert not kwargs["structured_output_validator"](value)
         capture = run_token_capture.get()
@@ -365,13 +360,13 @@ def test_real_litellm_repair_dispatch_preserves_guards_and_parent_accounting(
             json.JSONDecoder().raw_decode(message["content"])[0]
             for message in params["messages"]
             if isinstance(message.get("content"), str)
-            and message["content"].startswith('{"input_packets"')
+            and message["content"].startswith("{")
+            and "input_packets" in json.JSONDecoder().raw_decode(message["content"])[0]
         )
         ref = body["input_packets"][0]["evidence"][0]["source_id"]
         choice = {
             "points": [
                 {
-                    "category": "constraint",
                     "evidence_refs": ["unseen" if len(requests) == 1 else ref],
                 }
             ],
@@ -402,6 +397,140 @@ def test_real_litellm_repair_dispatch_preserves_guards_and_parent_accounting(
     assert result.packet.overview == "" and result.packet.unresolved == []
     assert all(point.detail == "Original evidence." for point in result.packet.points)
     assert all(request["model"] == live_client.config.model for request in requests)
+
+
+def test_bounded_repair_discards_only_whole_unverifiable_reference_groups(monkeypatch):
+    import litellm
+
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+    live_client = LiteLLMClient(
+        LiteLLMConfig(model="minimax/MiniMax-M3", max_tokens=8192, fallback_models=[])
+    )
+    requests = []
+
+    def transport(params, _hard_timeout):
+        requests.append(params)
+        body = next(
+            json.loads(message["content"])
+            for message in params["messages"]
+            if isinstance(message.get("content"), str)
+            and message["content"].startswith('{"allowed_evidence_refs"')
+        )
+        ref = body["allowed_evidence_refs"][0]
+        return litellm.ModelResponse(
+            choices=[
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps(
+                            {
+                                "points": [
+                                    {"evidence_refs": [ref]},
+                                    # The valid part of a rejected group must NOT be salvaged:
+                                    # it may omit an unseen qualification from that same group.
+                                    {"evidence_refs": [ref, "e999999"]},
+                                ]
+                            }
+                        ),
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+        )
+
+    monkeypatch.setattr(live_client, "_completion_with_hard_timeout", transport)
+    monkeypatch.setattr(
+        "reflexio.server.llm.input_budget.litellm.token_counter", Mock(return_value=100)
+    )
+    original = group()
+    result = compress_extraction_window(
+        [original],
+        org_id="org",
+        project_id="project",
+        user_id="alice",
+        budget=CompressionBudget(output_tokens=2048),
+        client=live_client,
+        context_limits={live_client.config.model: 512000},
+    )
+    assert len(requests) == result.provider_attempts == 2
+    assert result.provider_reference_recoveries == 1
+    assert len(result.packet.points) == len(result.packet.evidence) == 1
+    assert result.packet.evidence[0].text in original.interactions[0].content
+    assert any(
+        "discarded 1 entire groups" in notice for notice in result.packet.omissions
+    )
+    assert result.provider_input_tokens == 200 and result.provider_output_tokens == 40
+
+
+@pytest.mark.parametrize(
+    ("failure_kind", "error_model", "integrity_fault"),
+    [
+        ("parse", "minimax/MiniMax-M3", False),
+        ("refusal", "minimax/MiniMax-M3", False),
+        ("semantic", "another-model", False),
+        ("semantic", "minimax/MiniMax-M3", True),
+    ],
+)
+def test_reference_recovery_never_accepts_parse_refusal_route_or_integrity_failure(
+    monkeypatch, failure_kind, error_model, integrity_fault
+):
+    from reflexio.server.llm import StructuredOutputRepairError
+    from reflexio.server.services.input_compression import (
+        CompressionError,
+        packet_tokens,
+    )
+
+    fake = client(monkeypatch)
+    dispatched = False
+
+    def fail(messages, **_kwargs):
+        nonlocal dispatched
+        dispatched = True
+        ref = json.loads(messages[1]["content"])["allowed_evidence_refs"][0]
+        raise StructuredOutputRepairError(
+            "Rejected output",
+            failure_kind=failure_kind,
+            model=error_model,
+            raw_content=json.dumps(
+                {
+                    "points": [
+                        {"evidence_refs": [ref]},
+                        {"evidence_refs": [ref, "e999999"]},
+                    ]
+                }
+            ),
+        )
+
+    def measure(packet):
+        if integrity_fault and dispatched and packet.evidence:
+            raise CompressionError("Original source changed")
+        return packet_tokens(packet)
+
+    fake.generate_chat_response = Mock(side_effect=fail)
+    parent = run_token_capture.get()
+    with pytest.raises(StructuredOutputRepairError):
+        compress_with_client(
+            [
+                EvidenceSource(
+                    source_id="source",
+                    request_id="request",
+                    interaction_id=1,
+                    field="content",
+                    speaker="User",
+                    source_order=0,
+                    text="approval " + "log " * 1500,
+                )
+            ],
+            scope={"org_id": "org", "project_id": "project", "user_id": "alice"},
+            policy="extraction",
+            budget=CompressionBudget(output_tokens=1024),
+            client=fake,
+            context_limits={fake.config.model: 512000},
+            measure_output=measure,
+        )
+    assert dispatched and run_token_capture.get() is parent
 
 
 def test_compression_usage_excludes_sibling_usage_but_parent_bills_both(monkeypatch):

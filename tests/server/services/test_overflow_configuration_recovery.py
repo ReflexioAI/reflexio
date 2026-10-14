@@ -2,6 +2,7 @@
 
 import json
 import math
+import socket
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -32,6 +33,14 @@ def test_corrected_context_declaration_resumes_only_the_original_contract(
     endpoint = "https://custom.invalid/v1"
     model = "openai/gpt-4o"
     declaration_key = f"{model}@{endpoint}"
+    # This test stubs every provider dispatch. Keep endpoint safety validation
+    # active while making its public DNS answer deterministic and network-free.
+    monkeypatch.setattr(
+        "reflexio.models.api_schema.validators.socket.getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ],
+    )
     keys = APIKeyConfig(
         custom_endpoint=CustomEndpointConfig(
             model=model,

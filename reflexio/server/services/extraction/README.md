@@ -228,10 +228,10 @@ Model prompts hoist shared source origins and use short evidence IDs. Exact
 duplicate text may reference its first displayed occurrence, without merging
 source identities or chronology. The server copies selected original spans and
 restores full references; input-origin metadata remains server-owned.
-The guarded LLM seam requests only brief labels and evidence-reference groups,
+The guarded LLM seam requests only evidence-reference groups,
 never generated factual descriptions, summaries, unresolved-status claims or
 omission claims. The host supplies fixed navigation text and measured omission
-metadata. Preserved conversation fields have their own host-created group.
+metadata and labels. Preserved conversation fields have their own host-created group.
 Every cached selection is revalidated against the current visible source and
 the caller's actual output renderer. Cache identities bind scope, source,
 policy/schema, effective model route/generation settings and rendering contract.
@@ -255,3 +255,12 @@ reports omitted points rather than repeatedly asking the provider to count its
 copied quotations. This is a bounded partial result, not proof of semantic
 completeness: a model can still place counterevidence in a separate dropped
 point. Exact-source and downstream quality qualification remain required.
+
+After the existing bounded semantic repair, the guarded seam can discard entire
+groups containing unseen references from a complete schema-valid response.
+Every retained group is revalidated. No individual reference is guessed or
+removed from a retained group, and parse, refusal, model-route, budget and
+integrity failures are not converted to accepted results. Host omission notices
+and `provider_reference_recoveries` make this partial selection visible. That
+counter describes new provider work in this operation; cache hits may carry
+earlier omission notices without a new recovery.
