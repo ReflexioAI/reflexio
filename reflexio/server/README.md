@@ -222,9 +222,12 @@ Key files:
 - `get_completion_request_contract()` resolves the actual primary route, role,
   selected generation fields and output cap without dispatch. The ten primary
   fields preserve `None` for absent values; `generation_policy_digest` binds built
-  reasoning settings and arbitrary native extra-body settings by canonical hash,
-  without returning sensitive custom data. Callers still bind their own
-  messages/tools/schemas. Legacy hashes can explicitly select the ten fields. API keys
+  every remaining actual built generation parameter (including tools, schema
+  controls and native extensions) by canonical hash, without returning sensitive
+  custom data. Messages, credentials/headers, observations and dispatch timeout/
+  retry controls are excluded; callers bind those separately when relevant.
+  Non-JSON policy values and nonfinite numbers are rejected, never stringified.
+  Legacy hashes can explicitly select the ten fields. API keys
   and messages are excluded; endpoint URLs may contain credentials, so the
   descriptor is internal and must not be logged or exposed.
 - `get_completion_model_ladder()` returns an immutable ordered tuple from the

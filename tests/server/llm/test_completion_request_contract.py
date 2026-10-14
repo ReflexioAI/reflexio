@@ -252,3 +252,80 @@ def test_reasoning_digest_uses_canonical_native_mapping_order():
         extra_body={"thinking": {"type": "enabled"}, "reasoning_effort": "low"}
     )
     assert left == right
+
+
+@pytest.mark.parametrize(
+    ("key", "left", "right"),
+    [
+        ("frequency_penalty", 0, 1),
+        ("presence_penalty", 0, 1),
+        ("stop", ["stop-a"], ["stop-b"]),
+        ("n", 1, 2),
+        ("logprobs", False, True),
+        ("drop_params", False, True),
+        ("allowed_openai_params", ["a"], ["b"]),
+        ("tool_choice", "auto", "none"),
+        (
+            "tools",
+            [{"type": "function", "function": {"name": "a"}}],
+            [{"type": "function", "function": {"name": "b"}}],
+        ),
+        ("response_format", {"type": "json_object"}, {"type": "text"}),
+        ("future_provider_generation_knob", 1, 2),
+    ],
+)
+def test_contract_binds_every_built_generation_parameter(key, left, right):
+    client = LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini"))
+    one = client.get_completion_request_contract(**{key: left})
+    two = client.get_completion_request_contract(**{key: right})
+    assert one["generation_policy_digest"] != two["generation_policy_digest"]
+
+
+def test_contract_excludes_credentials_observations_and_dispatch_controls():
+    client = LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini"))
+    base = client.get_completion_request_contract()
+    changed = client.get_completion_request_contract(
+        api_key="private-override",
+        extra_headers={"Authorization": "private-header"},
+        metadata={"private": "private-trace"},
+        callbacks=[lambda: None],
+        provider_request_guard=lambda *_args: None,
+        structured_output_validator=lambda _value: [],
+        timeout=999,
+    )
+    assert changed == base
+    assert "private-" not in str(changed)
+
+
+@pytest.mark.parametrize("value", [object(), float("nan"), float("inf")])
+def test_contract_rejects_unsupported_policy_values_without_stringification(value):
+    client = LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini"))
+    with pytest.raises((TypeError, ValueError)):
+        client.get_completion_request_contract(future_provider_generation_knob=value)
+
+
+def test_contract_canonicalizes_actual_pydantic_passthrough_schema(monkeypatch):
+    from pydantic import BaseModel, ConfigDict
+
+    class Count(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        answer: int
+
+    class Text(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        answer: str
+
+    client = LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini"))
+    monkeypatch.setattr(
+        client, "_structured_output_strategy", lambda **_kwargs: "pydantic_passthrough"
+    )
+    assert (
+        client._build_completion_params(messages=[], response_format=Count)[0][
+            "response_format"
+        ]
+        is Count
+    )
+    one = client.get_completion_request_contract(response_format=Count)
+    two = client.get_completion_request_contract(response_format=Text)
+    assert one["generation_policy_digest"] != two["generation_policy_digest"]
+    assert one == client.get_completion_request_contract(response_format=Count)

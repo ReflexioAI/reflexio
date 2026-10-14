@@ -94,6 +94,7 @@ from reflexio.server.llm._litellm_types import (
 from reflexio.server.llm._litellm_types import (
     StructuredOutputParseError as StructuredOutputParseError,
 )
+from reflexio.server.llm.llm_utils import is_pydantic_model
 from reflexio.server.llm.providers.claude_code_provider import (
     register_if_enabled as _register_claude_code,
 )
@@ -300,9 +301,14 @@ class LiteLLMClient(TextGenerationMixin, EmbeddingMixin, StructuredOutputMixin):
         Generation overrides preserve explicit None values; fallback_models=None
         uses configured fallbacks, as in public chat generation. Fixed keys and
         absent values are stable for internal admission comparison/hashing.
-        The generation-policy digest binds built reasoning and native extra-body
-        settings without exposing arbitrary custom data. This selected identity
-        does not replace caller-owned message/tool/schema witnesses.
+        The generation-policy digest binds all remaining built provider fields,
+        including tools, schema controls and native extensions, without returning
+        arbitrary custom data. Messages, credentials/headers, observations and
+        dispatch timeouts/retries are excluded and must be bound separately when
+        relevant; prompt/schema witnesses remain caller-owned, including schema
+        instructions embedded in messages. Pydantic response-format classes use
+        their JSON Schema; other non-JSON values and nonfinite numbers are rejected;
+        there is no stringification fallback for unsupported descriptors.
         API keys, messages and observability metadata are excluded, but route
         URLs can contain credentials: do not log or expose this descriptor.
         """
@@ -324,19 +330,38 @@ class LiteLLMClient(TextGenerationMixin, EmbeddingMixin, StructuredOutputMixin):
                 "max_completion_tokens",
             )
         }
+        # Bind every remaining built generation parameter, including future
+        # provider extensions. Credentials, observations and dispatch controls
+        # are caller/transport concerns; message/schema witnesses stay separate.
+        excluded = {
+            "messages",
+            "api_key",
+            "azure_ad_token",
+            "aws_access_key_id",
+            "aws_secret_access_key",
+            "aws_session_token",
+            "vertex_credentials",
+            "headers",
+            "extra_headers",
+            "metadata",
+            "callbacks",
+            "success_callback",
+            "failure_callback",
+            "logger_fn",
+            "litellm_logging_obj",
+            "litellm_call_id",
+            "timeout",
+            "num_retries",
+            "fallbacks",
+            "structured_output_validator",
+            "provider_request_guard",
+        }
+        policy = {key: value for key, value in params.items() if key not in excluded}
+        if is_pydantic_model(policy.get("response_format")):
+            policy["response_format"] = policy["response_format"].model_json_schema()
         contract["generation_policy_digest"] = hashlib.sha256(
             json.dumps(
-                {
-                    key: params.get(key)
-                    for key in (
-                        "reasoning_effort",
-                        "reasoning",
-                        "thinking",
-                        "reasoning_split",
-                        "output_config",
-                        "extra_body",
-                    )
-                },
+                policy,
                 sort_keys=True,
                 separators=(",", ":"),
                 allow_nan=False,
