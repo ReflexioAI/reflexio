@@ -332,7 +332,14 @@ plan, node, input-reference and request-contract digests and actual compressor
 attempt IDs. Its output is the exact server-normalized native cache choice:
 reference groups, fixed host labels, local omission counters and host diagnostics.
 Those omissions survive cache reuse verbatim; receipts do not invent authored
-model provenance. Source-selection receipts are bounded to 64 KiB, with at most 128 completed
+model provenance. `input_refs_digest` must describe the actual visible inputs for
+that node, and `request_contract_digest` must describe its actual native request
+contract. The current core load/save callbacks expose only a hashed node key and
+normalized choice. Runtime integration must obtain those witnesses from actual
+per-node inputs/request observations or a minimal deeper seam; rehashing the node
+key and naming it either witness is invalid. The node key already binds the source
+witness, messages and schema, but does not substitute for these separately named
+proofs. Source-selection receipts are bounded to 64 KiB, with at most 128 completed
 steps. Typed consumer model-output receipts retain their native output/trace
 contract; no new small limit clips complete human/tool results. Host-only passthrough/union
 coverage and package publication are later integration work, not fake paid
