@@ -7,8 +7,6 @@ import time
 from dataclasses import replace
 from typing import Any
 
-from pydantic import ValidationError
-
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.config_schema import (
     ProfileExtractorConfig,
@@ -469,7 +467,7 @@ class WindowExecutor:
                 plan = decode_plan(
                     window.outcome, window.kind, config, window.user_id, service
                 )
-            except ValidationError as exc:
+            except (ValueError, KeyError, TypeError, AttributeError) as exc:
                 if coordinator is not None and is_source_quoted_window(coordinator):
                     raise InputBudgetConfigurationError(
                         "Cached source projection plan is malformed"

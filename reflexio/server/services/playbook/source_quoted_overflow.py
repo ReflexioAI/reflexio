@@ -20,6 +20,9 @@ from reflexio.models.api_schema.domain.entities import LineageContext, UserPlayb
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
 from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.providers.embedding_service_provider import (
+    EmbeddingUnavailableError,
+)
 from reflexio.server.services.extraction.input_preparation import (
     PreparedExtractionInput,
     source_witness_bytes,
@@ -282,6 +285,12 @@ def compute_source_quoted_plan(
         coordinator.storage.precompute_user_playbook_embeddings(
             rows, expand_documents=False
         )
+        if any(not row.embedding for row in rows):
+            # SQLite exposes a temporary provider outage as an empty vector.
+            # No publication has been sealed yet, so leave this retryable.
+            raise EmbeddingUnavailableError(
+                "Source projection search vectors are unavailable"
+            )
     receipt["embedding_digests"] = [_embedding_digest(row) for row in rows]
     checkpoint = coordinator.checkpoint
     previous = checkpoint.get("source_quoted_publication")
@@ -386,8 +395,8 @@ def validate_source_quoted_plan(
             write is not None
             and (
                 [_row_witness(row) for row in write.new_playbooks] != expected["rows"]
-                or write.superseded_ids
-                or write.merge_groups
+                or write.superseded_ids != []
+                or write.merge_groups != []
                 or write.request_id != expected["request_id"]
                 or write.output_pending_status
                 or write.skip_aggregation != service.skip_aggregation

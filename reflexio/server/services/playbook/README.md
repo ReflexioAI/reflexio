@@ -384,6 +384,8 @@ rows receive their creation timestamp from the trusted clock at fenced persisten
 so cached timestamps cannot alter chronology. Copied
 rules are excluded from automatic optimizer admission and GEPA publication;
 ordinary human-reviewed agent aggregation remains a separate derived workflow.
+An unavailable live embedding before sealing remains retryable; malformed cached
+plan structures are held for investigation.
 
 One-chunk protocol work retains accept-unchanged/discard-revision review, and
 ordinary non-overflow review still supports revisions. Fully scanned windows may

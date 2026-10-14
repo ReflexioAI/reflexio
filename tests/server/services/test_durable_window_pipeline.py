@@ -2534,6 +2534,13 @@ def payload(request_id, count=10, user_id="u", force=False):
         "active_cache",
         "waiting_cache",
         "clock_cache",
+        "embedding_outage",
+        "missing_cache",
+        "null_cache",
+        "version_cache",
+        "token_cache",
+        "merge_shape_cache",
+        "retire_shape_cache",
     ],
 )
 def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
@@ -2607,6 +2614,10 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
 
     monkeypatch.setattr(WindowExecutor, "_prepare_overflow_context", prepare)
     monkeypatch.setattr(storage, "_get_embedding", lambda *_: [0.1] * 512)
+    if replay == "embedding_outage":
+        monkeypatch.setattr(
+            storage, "_get_embedding", Mock(side_effect=[[], [0.1] * 512])
+        )
     storage._enable_document_expansion = True
     expansion = Mock(
         side_effect=AssertionError(
@@ -2647,7 +2658,7 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
     def fail_once(*args, **kwargs):
         nonlocal calls
         calls += 1
-        if calls == 1 and replay not in {"clean", "empty"}:
+        if calls == 1 and replay not in {"clean", "empty", "embedding_outage"}:
             raise RuntimeError("Crash before commit")
         return complete(*args, **kwargs)
 
@@ -2664,23 +2675,33 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
                 "SELECT window_id,outcome FROM extraction_windows WHERE user_id=? AND completed=0 LIMIT 1",
                 ("u",),
             )[0]
-            outcome = json.loads(row["outcome"])
-            if replay == "altered_cache":
-                outcome["write_plan"]["new_playbooks"][0]["content"] = (
-                    "Deploy to production without approval."
-                )
-            if replay == "tagged_cache":
-                outcome["write_plan"]["new_playbooks"][0]["tags"] = ["unapproved"]
-            if replay == "vector_cache":
-                outcome["write_plan"]["new_playbooks"][0]["embedding"][0] = 0.9
-            if replay == "dimension_cache":
-                outcome["write_plan"]["new_playbooks"][0]["embedding"] = [0.9]
-            if replay == "clock_cache":
-                outcome["write_plan"]["new_playbooks"][0]["created_at"] = 1
-            if replay == "existing_id_cache":
-                outcome["write_plan"]["new_playbooks"][0]["user_playbook_id"] = (
-                    old.user_playbook_id
-                )
+            outcome = json.loads(row["outcome"] or "{}")
+            if replay == "embedding_outage":
+                assert row["outcome"] is None
+            if replay == "missing_cache":
+                del outcome["write_plan"]["lineage_contexts"]
+            if replay == "null_cache":
+                outcome["write_plan"]["new_playbooks"] = None
+            if replay == "version_cache":
+                outcome["version"] = 99
+            if replay == "token_cache":
+                outcome["token_totals"] = [1]
+            write_mutations = {
+                "merge_shape_cache": {"merge_groups": None},
+                "retire_shape_cache": {"superseded_ids": False},
+            }
+            if replay in write_mutations:
+                outcome["write_plan"].update(write_mutations[replay])
+            row_mutations = {
+                "altered_cache": {"content": "Deploy to production without approval."},
+                "tagged_cache": {"tags": ["unapproved"]},
+                "vector_cache": {"embedding": [0.9] + [0.1] * 511},
+                "dimension_cache": {"embedding": [0.9]},
+                "clock_cache": {"created_at": 1},
+                "existing_id_cache": {"user_playbook_id": old.user_playbook_id},
+            }
+            if replay in row_mutations:
+                outcome["write_plan"]["new_playbooks"][0].update(row_mutations[replay])
             if replay in {"active_cache", "waiting_cache"}:
                 run = storage.get_agent_run("window:" + row["window_id"])
                 key = "active_child" if replay == "active_cache" else "waiting_child"
@@ -2700,16 +2721,21 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
                     "UPDATE _agent_runs SET generation_request_snapshot=? WHERE id=?",
                     (json.dumps(run.generation_request_snapshot), run.id),
                 )
-            db.query(
-                "UPDATE extraction_windows SET outcome=? WHERE window_id=?",
-                (json.dumps(outcome), row["window_id"]),
-            )
+            if replay != "embedding_outage":
+                db.query(
+                    "UPDATE extraction_windows SET outcome=? WHERE window_id=?",
+                    (json.dumps(outcome), row["window_id"]),
+                )
             now = db.now()
         monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: now + 600)
         assert worker.drain_org("stream-test", 1, 300) == (
-            1 if replay in {"commit_failure", "clock_cache"} else 0
+            1 if replay in {"commit_failure", "clock_cache", "embedding_outage"} else 0
         )
-    expected = 2 if replay in {"clean", "commit_failure", "clock_cache"} else 1
+    expected = (
+        2
+        if replay in {"clean", "commit_failure", "clock_cache", "embedding_outage"}
+        else 1
+    )
     rows = storage.get_user_playbooks(user_id="u", include_embedding=True)
     assert len(rows) == expected
     assert (
@@ -2723,7 +2749,13 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
         assert new.embedding and new.expanded_terms is None
         assert started_at <= new.created_at <= int(time.time())
         assert "User corrected" not in new.notes
-    if replay in {"clean", "empty", "commit_failure", "clock_cache"}:
+    if replay in {
+        "clean",
+        "empty",
+        "commit_failure",
+        "clock_cache",
+        "embedding_outage",
+    }:
         # Commit and its durable effects are separate worker turns.
         token_bill.assert_not_called()
         learning_bill.assert_not_called()
