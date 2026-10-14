@@ -490,6 +490,44 @@ def test_bounded_packing_retains_whole_qualified_points_and_reports_loss():
     assert packet_tokens(packet) <= 1024
 
 
+@pytest.mark.parametrize("boundary", ["output", "intermediate"])
+def test_complete_fitting_selection_needs_no_omission_reservation_or_repair(boundary):
+    from reflexio.server.services.input_compression import (
+        CompressionCall,
+        _materialize,
+        _pack_choice,
+        packet_tokens,
+    )
+
+    available = {
+        "e1": source(1, "Staging is allowed only after owner approval."),
+        "e2": source(2, "Production requires its own separate approval."),
+    }
+    prior = OmissionCounts(capacity_points=3, unseen_reference_groups=2)
+    choice = CompressionChoice(
+        points=[CompressionPoint(category="constraint", evidence_refs=["e1", "e2"])],
+        omission_counts=prior,
+    )
+    complete = _materialize(choice, available, 10000, packet_tokens)
+    exact_size = packet_tokens(complete)
+    output_limit = exact_size if boundary == "output" else exact_size * 2
+
+    def pack(value):
+        return _pack_choice(
+            value,
+            available,
+            output_limit,
+            packet_tokens,
+            lambda packet: boundary == "output" or packet_tokens(packet) <= exact_size,
+        )
+
+    packet = pack(choice)
+    assert packet == complete
+    assert packet.omission_counts == prior and packet.omissions == []
+    call = CompressionCall("key", [], output_limit, pack)
+    assert call.validate_selection(choice) == []
+
+
 def test_priced_wire_overhead_of_many_distinct_short_origins_fits_all_parents():
     import math
 

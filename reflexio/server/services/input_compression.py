@@ -18,7 +18,7 @@ from typing import Any, Literal
 import tiktoken
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-VERSION = "source-compression-v5"
+VERSION = "source-compression-v6"
 CompressionPolicy = Literal["extraction", "offline_tuning"]
 
 
@@ -505,6 +505,16 @@ def _pack_choice(
             }
         )
         return _materialize(value, available, output_tokens, measure_output)
+
+    # A fitting complete selection needs neither an omission notice nor its
+    # reserved space. Test the true packet before conservatively packing drops.
+    try:
+        complete = packet_for(choice.points, 0)
+    except _RenderedCapacityError:
+        pass
+    else:
+        if admissible(complete):
+            return complete
 
     # Reserve the omission notice before accepting any point, so a later drop
     # cannot evict previously admitted evidence just to fit its receipt.

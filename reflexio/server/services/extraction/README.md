@@ -280,3 +280,5 @@ neighboring logs without the server severing a point's evidence. If the complete
 repaired selection still exceeds capacity, the host may retain fitting whole
 points, recording the partial result and omission totals. All repair attempts
 consume the same guarded quota; source-integrity errors still abort.
+Complete selections are admitted first at their true size. Space for a new
+omission notice is reserved only when the complete selection cannot fit.
