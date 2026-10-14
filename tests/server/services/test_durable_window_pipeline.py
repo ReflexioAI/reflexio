@@ -2519,6 +2519,67 @@ def payload(request_id, count=10, user_id="u", force=False):
     }
 
 
+def _corrupt_source_projection_evidence(
+    storage, db, window_id, replay, monkeypatch, prepare_original
+):
+    if replay not in {"invalid_evidence_cache", "invalid_evidence_fresh"}:
+        return None
+    import json
+
+    from reflexio.server.services.durable_learning.window_executor import WindowExecutor
+
+    run = storage.get_agent_run("window:" + window_id)
+    manifest = run.generation_request_snapshot["overflow"]
+    manifest["checkpoint"]["protected_record"]["evidence"][0]["evidence_refs"] = [
+        "i999:content:0:5"
+    ]
+    corrupt_manifest = json.loads(json.dumps(manifest))
+    db.query(
+        "UPDATE _agent_runs SET generation_request_snapshot=? WHERE id=?",
+        (json.dumps(run.generation_request_snapshot), run.id),
+    )
+    if replay == "invalid_evidence_fresh":
+        # Exercise the actual complete-coverage fast path with no cached outcome.
+        monkeypatch.setattr(
+            WindowExecutor, "_prepare_overflow_context", prepare_original
+        )
+    return corrupt_manifest
+
+
+def _assert_source_projection_failure_preserves_journal(
+    storage, worker, window_id, now, corrupt_manifest
+):
+    if corrupt_manifest is None:
+        return
+    held = storage.get_agent_run("window:" + window_id).generation_request_snapshot[
+        "overflow"
+    ]
+    assert held["attempts"] == corrupt_manifest["attempts"]
+    assert held["checkpoint"] == corrupt_manifest["checkpoint"]
+    with storage._stream_sql(read_only=True) as db:
+        cursor = db.query(
+            "SELECT attempts,retry_at,last_error FROM extraction_cursors WHERE user_id=? AND kind=? LIMIT 1",
+            ("u", "playbook"),
+        )[0]
+    assert cursor["last_error"] == "input_budget_configuration_error"
+    assert now + 600 < cursor["retry_at"] <= now + 900
+    assert worker.drain_org("stream-test", 1, 300) == 0
+    assert (
+        storage.get_agent_run("window:" + window_id).generation_request_snapshot[
+            "overflow"
+        ]
+        == held
+    )
+    with storage._stream_sql(read_only=True) as db:
+        assert (
+            db.query(
+                "SELECT attempts,retry_at,last_error FROM extraction_cursors WHERE user_id=? AND kind=? LIMIT 1",
+                ("u", "playbook"),
+            )[0]
+            == cursor
+        )
+
+
 @pytest.mark.parametrize(
     "replay",
     [
@@ -2538,6 +2599,8 @@ def payload(request_id, count=10, user_id="u", force=False):
         "missing_cache",
         "empty_lineage_cache",
         "replaced_lineage_cache",
+        "invalid_evidence_cache",
+        "invalid_evidence_fresh",
         "null_cache",
         "version_cache",
         "token_cache",
@@ -2617,6 +2680,7 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
         ]
         coordinator.save_checkpoint(checkpoint)
 
+    prepare_original = WindowExecutor._prepare_overflow_context
     monkeypatch.setattr(WindowExecutor, "_prepare_overflow_context", prepare)
     monkeypatch.setattr(storage, "_get_embedding", lambda *_: [0.1] * 512)
     embedding_attempts = {
@@ -2743,6 +2807,9 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
                     "UPDATE _agent_runs SET generation_request_snapshot=? WHERE id=?",
                     (json.dumps(run.generation_request_snapshot), run.id),
                 )
+            corrupt_manifest = _corrupt_source_projection_evidence(
+                storage, db, row["window_id"], replay, monkeypatch, prepare_original
+            )
             if replay == "old_cache":
                 run = storage.get_agent_run("window:" + row["window_id"])
                 run.generation_request_snapshot["overflow"]["checkpoint"].pop(
@@ -2755,7 +2822,12 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
             if replay not in {"embedding_outage", "seal_replay"}:
                 db.query(
                     "UPDATE extraction_windows SET outcome=? WHERE window_id=?",
-                    (json.dumps(outcome), row["window_id"]),
+                    (
+                        None
+                        if replay == "invalid_evidence_fresh"
+                        else json.dumps(outcome),
+                        row["window_id"],
+                    ),
                 )
             now = db.now()
         monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: now + 600)
@@ -2869,6 +2941,9 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
         }
         token_bill.assert_not_called()
         learning_bill.assert_not_called()
+        _assert_source_projection_failure_preserves_journal(
+            storage, worker, row["window_id"], now, corrupt_manifest
+        )
     assert len(storage.get_user_interaction("u")) == 3
     generative.assert_not_called()
     expansion.assert_not_called()

@@ -172,12 +172,20 @@ def _projection(
         raise InputBudgetConfigurationError(
             "Source projection requires a complete protected scan"
         )
-    messages = project_source_messages(
-        prepared,
-        config.window_interactions,
-        coordinator.record,
-        user_id=coordinator.window.user_id,
-    )
+    try:
+        messages = project_source_messages(
+            prepared,
+            config.window_interactions,
+            coordinator.record,
+            user_id=coordinator.window.user_id,
+        )
+    except ValueError as exc:
+        # A persisted record can pass structural parsing but reference an
+        # unshown source or invalid quote. This pure validation failure must
+        # use the typed configuration path, preserving the saved journal.
+        raise InputBudgetConfigurationError(
+            "Source projection evidence or source witness is invalid"
+        ) from exc
     rows = [
         UserPlaybook(
             user_id=config.user_id,

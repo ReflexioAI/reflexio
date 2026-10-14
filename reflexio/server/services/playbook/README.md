@@ -386,7 +386,7 @@ so cached timestamps cannot alter chronology. Copied
 rules are excluded from automatic optimizer admission and GEPA publication;
 later normal consolidation excludes them from retrieval and prefetched history,
 and persistence rejects cached plans that would overwrite or retire them.
-ordinary human-reviewed agent aggregation remains a separate derived workflow.
+Ordinary human-reviewed agent aggregation remains a separate derived workflow.
 An unavailable live embedding before sealing remains retryable; malformed cached
 plan structures are held for investigation.
 Operational statistics and model attribution are restored from trusted projection
@@ -401,3 +401,7 @@ before storage candidate limits (SQLite and enterprise PostgreSQL retrieval).
 Ordinary user search still returns these original instructions. Source-projection
 create lineage names every original interaction ID; cached plans missing that
 lineage fail closed without rewriting saved events or resetting the attempt budget.
+Structurally valid checkpoints with invalid source references or quotations also
+report a content-free configuration failure before publication. They retain their
+journal and use the existing configuration retry backoff; this is not a quota
+refund or a guarantee of a permanent hold.
