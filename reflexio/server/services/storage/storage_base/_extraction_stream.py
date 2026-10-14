@@ -1391,6 +1391,18 @@ class ExtractionStreamStore:
                 previous_steps = manifest.get("checkpoint", {}).get(
                     "completed_steps", {}
                 )
+                if manifest["version"] == 2:
+                    previous_bindings = manifest["checkpoint"].get(
+                        "profile_attempt_bindings", {}
+                    )
+                    next_bindings = checkpoint.get("profile_attempt_bindings", {})
+                    if any(
+                        next_bindings.get(key) != value
+                        for key, value in previous_bindings.items()
+                    ):
+                        raise OverflowCheckpointConflictError(
+                            "Profile attempt binding is immutable"
+                        )
                 next_steps = checkpoint.get("completed_steps", {})
                 if (
                     not isinstance(next_steps, dict)

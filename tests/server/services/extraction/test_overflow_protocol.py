@@ -332,7 +332,9 @@ def test_selection_reload_preserves_native_choice_and_immutable_usage_and_receip
         f"window:{window.window_id}"
     ).generation_request_snapshot["overflow"]
     reloaded = coordinator(storage, window, token, saved)
-    choice = CompressionChoice.model_validate(reloaded.completed_step(NODE)["output"])
+    completed = reloaded.completed_step(NODE)
+    assert completed is not None
+    choice = CompressionChoice.model_validate(completed["output"])
     assert choice.model_dump(mode="json") == receipt["output"]
     assert choice.omission_counts.capacity_points == 3
     assert choice.omission_counts.unseen_reference_groups == 2
@@ -443,7 +445,7 @@ def test_one_128_ledger_enforces_every_frozen_stage(package_pipeline):
 
 @pytest.mark.integration
 @pytest.mark.parametrize("descriptor_drift", [False, True])
-def test_actual_native_dispatch_requires_stage_and_reloads_paid_cap(
+def test_actual_native_dispatch_requires_stage_and_full_consumer_contract(
     package_pipeline, monkeypatch, descriptor_drift
 ):
     monkeypatch.setenv("OPENAI_API_KEY", "fixture-no-provider")
@@ -498,14 +500,15 @@ def test_actual_native_dispatch_requires_stage_and_reloads_paid_cap(
                 storage.get_agent_run(parent.id).generation_request_snapshot == snapshot
             )
             return
-        with current.attempt_stage("gate") as ids:
-            assert call().value == StructuredProfilesOutput(profiles=[])
-        assert len(ids) == 1
+        with (
+            current.attempt_stage("gate"),
+            pytest.raises(InputBudgetConfigurationError, match="request contract"),
+        ):
+            call()
     saved = storage.get_agent_run(
         f"window:{window.window_id}"
     ).generation_request_snapshot["overflow"]
-    assert saved["attempts"][0]["stage"] == "gate"
-    assert saved["attempts"][0]["usage"]["prompt_tokens"] == 10
+    assert saved["attempts"] == []
     restarted = coordinator(storage, window, token, saved)
     with (
         restarted.provider_scope(),
@@ -513,7 +516,7 @@ def test_actual_native_dispatch_requires_stage_and_reloads_paid_cap(
         pytest.raises(ProviderRequestGuardError),
     ):
         call()
-    assert wire.call_count == 1
+    wire.assert_not_called()
     assert (
         storage.get_agent_run(f"window:{window.window_id}").generation_request_snapshot[
             "overflow"
@@ -525,11 +528,12 @@ def test_actual_native_dispatch_requires_stage_and_reloads_paid_cap(
 def old_snapshot():
     path = Path(__file__).parent / "fixtures/overflow_manifest_v1_snapshot.py.txt"
     source = path.read_text()
-    functions = [
-        ast.get_source_segment(source, item)
-        for item in ast.parse(source).body
-        if isinstance(item, ast.FunctionDef)
-    ]
+    functions = []
+    for item in ast.parse(source).body:
+        if isinstance(item, ast.FunctionDef):
+            segment = ast.get_source_segment(source, item)
+            assert segment is not None
+            functions.append(segment)
     namespace = runpy.run_path(str(path))
     assert (
         hashlib.sha256(("\n\n\n".join(functions) + "\n").encode()).hexdigest()

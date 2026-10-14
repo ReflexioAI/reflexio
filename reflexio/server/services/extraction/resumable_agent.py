@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -43,8 +44,17 @@ from reflexio.server.usage_metrics import record_usage_event
 
 if TYPE_CHECKING:
     from reflexio.server.api_endpoints.request_context import RequestContext
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+    )
     from reflexio.server.services.extraction.overflow_pipeline import (
         OverflowExtractionCall,
+    )
+    from reflexio.server.services.extraction.package_compression import (
+        CompressedSourcePackage,
+    )
+    from reflexio.server.services.extraction.profile_package_preparation import (
+        ProfilePackagePreparation,
     )
 
 logger = logging.getLogger(__name__)
@@ -363,6 +373,54 @@ class ResumableExtractionAgent:
         self.max_steps = max_steps
         self.model_role = model_role
 
+    def start_profile_package(
+        self,
+        *,
+        run: AgentRunRecord,
+        preparation: ProfilePackagePreparation,
+        package: CompressedSourcePackage,
+        coordinator: OverflowCoordinator,
+        extra_tools: list[Tool],
+        extra_tool_context: Any,
+        cache_only: bool = False,
+    ) -> AgentRunResult:
+        """Consume a verified package through the existing durable one-turn loop."""
+        from reflexio.server.services.extraction.profile_package_consumer import (
+            validate_profile_package,
+        )
+        from reflexio.server.services.profile.components.extractor import (
+            _profile_evidence_validation_errors,
+        )
+        from reflexio.server.services.profile.profile_generation_service_utils import (
+            StructuredProfilesOutput,
+        )
+
+        witness = validate_profile_package(preparation, package, coordinator)
+        if self.max_steps != preparation.snapshot["agent_max_steps"]:
+            raise InputBudgetConfigurationError("Profile package step limit changed")
+        if coordinator.checkpoint.get("package_processing") != witness:
+            raise InputBudgetConfigurationError("Profile package was not processed")
+        if [tool.openai_spec() for tool in extra_tools] != preparation.snapshot[
+            "tools"
+        ]:
+            raise InputBudgetConfigurationError("Profile package tools changed")
+        with coordinator.provider_scope():
+            return self._start_overflow_step(
+                run=run,
+                messages=preparation.agent_messages(package.presentation.text),
+                output_schema=StructuredProfilesOutput,
+                extra_tools=extra_tools,
+                extra_tool_context=extra_tool_context,
+                log_label=None,
+                structured_output_validator=lambda output: (
+                    _profile_evidence_validation_errors(
+                        output, package.presentation.visible_spans
+                    )
+                ),
+                package_request=(preparation, package),
+                cache_only=cache_only,
+            )
+
     def start(
         self,
         *,
@@ -463,10 +521,12 @@ class ResumableExtractionAgent:
         extra_tool_context: Any | None,
         log_label: str | None,
         structured_output_validator: Callable[[BaseModel], Sequence[str]] | None,
+        package_request: tuple[ProfilePackagePreparation, CompressedSourcePackage]
+        | None = None,
+        cache_only: bool = False,
     ) -> AgentRunResult:
         """Stage a child receipt; only the full window owns parent completion."""
         from reflexio.server.services.extraction.overflow_coordinator import (
-            OverflowSuspendedError,
             current_overflow_coordinator,
         )
         from reflexio.server.services.extraction.overflow_presentation import (
@@ -474,11 +534,19 @@ class ResumableExtractionAgent:
         )
 
         coordinator = current_overflow_coordinator.get()
-        presentation = current_overflow_presentation.get()
+        legacy_presentation = current_overflow_presentation.get()
+        if package_request is not None:
+            presentation = package_request[1].presentation
+            source_digest = presentation.source_digest
+        else:
+            if legacy_presentation is None:
+                raise RuntimeError("Overflow extraction presentation is unavailable")
+            presentation = legacy_presentation
+            source_digest = legacy_presentation.prepared.source_digest
         if (
             coordinator is None
             or presentation is None
-            or presentation.prepared.source_digest != coordinator.source_digest
+            or source_digest != coordinator.source_digest
         ):
             raise RuntimeError("Overflow extraction presentation binding changed")
         if not presentation.is_present_in(messages):
@@ -499,34 +567,100 @@ class ResumableExtractionAgent:
                 "Overflow extraction output schema changed"
             )
         if selected_schema is None:
+            if cache_only:
+                raise InputBudgetConfigurationError("Profile package schema is missing")
             checkpoint["output_schema_name"] = output_schema.__name__
             coordinator.save_checkpoint(checkpoint)
         registry = ToolRegistry(list(extra_tools or []))
         key = coordinator.step_key(
-            "extract-v1",
+            "extract-package-v1" if package_request is not None else "extract-v1",
             {
                 "messages": messages,
                 "schema": output_schema.model_json_schema(),
                 "tools": [tool.openai_spec() for tool in (extra_tools or [])],
             },
         )
-        coordinator.register_extraction_child(presentation.chunk.text, key)
+        if package_request is None:
+            if legacy_presentation is None:
+                raise RuntimeError("Overflow extraction presentation is unavailable")
+            coordinator.register_extraction_child(legacy_presentation.chunk.text, key)
+        else:
+            checkpoint = coordinator.checkpoint
+            child = {
+                "key": key,
+                "package_digest": package_request[1].presentation.package_digest,
+                "contract_digest": package_request[0].contract_digest,
+            }
+            previous = checkpoint.get("package_child")
+            if previous is not None and previous != child:
+                raise InputBudgetConfigurationError("Profile package child changed")
+            if previous is None:
+                if cache_only:
+                    raise InputBudgetConfigurationError(
+                        "Profile package child is missing"
+                    )
+                checkpoint["package_child"] = child
+                coordinator.save_checkpoint(checkpoint)
         saved = coordinator.completed_step(key)
         if saved is not None:
             payload = saved["output"]
+            if package_request is not None:
+                coordinator.validate_profile_attempts(
+                    "profile_agent", payload.get("attempt_ids"), key
+                )
+            output = output_schema.model_validate(payload["output"])
+            if (
+                package_request is not None
+                and structured_output_validator is not None
+                and structured_output_validator(output)
+            ):
+                raise InputBudgetConfigurationError("Saved profile quotes changed")
             return AgentRunResult(
                 run_id=run.id,
-                output=output_schema.model_validate(payload["output"]),
+                output=output,
                 pending_tool_call_ids=[],
                 messages=[],
                 trace=ToolLoopTrace.model_validate(payload["trace"]),
                 finished_reason="structured_output",
                 model_provenance=ModelProvenance(**saved["model_provenance"]),
             )
+        if cache_only:
+            raise InputBudgetConfigurationError("Profile package child is unfinished")
+        return self._run_overflow_child(
+            coordinator=coordinator,
+            run=run,
+            key=key,
+            messages=messages,
+            output_schema=output_schema,
+            registry=registry,
+            extra_tool_context=extra_tool_context,
+            log_label=log_label,
+            structured_output_validator=structured_output_validator,
+            preparation=package_request[0] if package_request is not None else None,
+        )
+
+    def _run_overflow_child(
+        self,
+        *,
+        coordinator: OverflowCoordinator,
+        run: AgentRunRecord,
+        key: str,
+        messages: list[dict[str, Any]],
+        output_schema: type[BaseModel],
+        registry: ToolRegistry,
+        extra_tool_context: Any,
+        log_label: str | None,
+        structured_output_validator: Callable[[BaseModel], Sequence[str]] | None,
+        preparation: ProfilePackagePreparation | None,
+    ) -> AgentRunResult:
+        """One shared durable loop for legacy chunks and source packages."""
         # A pending child is resumed by the coordinator's protocol, never by
         # restarting its seed prompt and attaching another human request.
         from reflexio.server.services.extraction.overflow_answers import (
             resume_waiting_child,
+        )
+        from reflexio.server.services.extraction.overflow_coordinator import (
+            OverflowSuspendedError,
         )
 
         resume_waiting_child(coordinator, key)
@@ -537,24 +671,46 @@ class ResumableExtractionAgent:
             )
         remaining = active["max_steps_remaining"] if active else self.max_steps
         current_messages = active["messages"] if active else messages
+        child_attempts = active.get("attempt_ids") if active is not None else []
+        if preparation is not None and active is not None:
+            coordinator.validate_profile_attempts("profile_agent", child_attempts, key)
+        if preparation is not None and (
+            type(remaining) is not int
+            or not 0 <= remaining <= self.max_steps
+            or current_messages[: len(messages)] != messages
+        ):
+            raise InputBudgetConfigurationError("Profile package continuation changed")
         trace = (
             ToolLoopTrace.model_validate(active["trace"]) if active else ToolLoopTrace()
         )
         while remaining > 0:
             # One model turn at a time preserves synchronous tool progress before
             # a deadline yield; the original per-child step limit is not reset.
-            result = run_tool_loop(
-                client=self.client,
-                messages=current_messages,
-                registry=registry,
-                model_role=self.model_role,
-                max_steps=1,
-                ctx=extra_tool_context,
-                response_format=output_schema,
-                structured_output_validator=structured_output_validator,
-                tool_choice="auto",
-                log_label=log_label,
-            )
+            with (
+                coordinator.profile_request(
+                    preparation, "agent", current_messages, receipt_key=key
+                )
+                if preparation is not None
+                else nullcontext()
+            ) as attempts:
+                result = run_tool_loop(
+                    client=self.client,
+                    messages=current_messages,
+                    registry=registry,
+                    model_role=self.model_role,
+                    max_steps=1,
+                    ctx=extra_tool_context,
+                    response_format=output_schema,
+                    structured_output_validator=structured_output_validator,
+                    tool_choice="auto",
+                    log_label=log_label,
+                )
+            if preparation is not None:
+                if attempts is None:
+                    raise InputBudgetConfigurationError(
+                        "Profile turn lacks an attempt scope"
+                    )
+                child_attempts.extend(attempts)
             remaining -= 1
             trace.turns.extend(result.trace.turns)
             trace.finished = result.trace.finished
@@ -571,6 +727,7 @@ class ResumableExtractionAgent:
                 "max_steps_remaining": remaining,
                 "output_schema_name": output_schema.__name__,
                 "trace": trace.model_dump(mode="json"),
+                **({"attempt_ids": child_attempts} if preparation is not None else {}),
             }
             if result.pending_tool_call_ids:
                 checkpoint["waiting_child"] = {
@@ -587,11 +744,14 @@ class ResumableExtractionAgent:
             raise InputBudgetExceededError(
                 "Overflow extraction child step budget exhausted"
             )
+        if preparation is not None:
+            coordinator.validate_profile_attempts("profile_agent", child_attempts, key)
         coordinator.complete_step(
             key,
             {
                 "output": result.structured_output.model_dump(mode="json"),
                 "trace": trace.model_dump(mode="json"),
+                **({"attempt_ids": child_attempts} if preparation is not None else {}),
             },
             result.provenance or ModelProvenance(),
         )

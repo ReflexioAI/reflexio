@@ -475,3 +475,26 @@ each new compression dispatch and at operation completion. Template, schema and
 consumer-ladder drift cannot wait until final packet measurement to be rejected.
 No parent admission, consumer dispatch, processed coverage, publication,
 billing or runtime enablement is introduced by preparation alone.
+
+`profile_package_consumer.consume_profile_package` is an explicit entry point
+for an already-admitted profile package. It verifies the frozen preparation,
+original inputs and pinned human answers before compression, records the actual
+processed node keys and final package identity, and feeds that exact presentation
+to one gate and the existing durable eight-turn child loop. Every native consumer
+dispatch now requires the complete prepared request contract before quota
+reservation, including repairs, fallback rungs and complete tool continuations.
+The same quota CAS binds actual paid attempts to the logical step; bindings are
+immutable. Cached gate and child receipts must reference real attempts at their
+exact stage and step, including completed turns before a waiting restart.
+Unknown lost-response attempts remain consumed without inventing a result.
+Unmatched signing configuration is refused before any paid work.
+
+Cache-only replay rebuilds the package from selection receipts and refuses
+missing work; it does not spend a new model call. Passthrough and host unions
+have processing witnesses without invented model provenance or paid attempts.
+These witnesses establish processing, not semantic completeness or publication
+authority. Child completion leaves the parent running with no committed output.
+This entry point does not install worker admission, deduplicate candidates,
+authorize final coverage, publish profiles, advance cursors, bill completion or
+activate runtime selection. Those remaining integration boundaries must be
+qualified separately before selecting this path in a worker.
