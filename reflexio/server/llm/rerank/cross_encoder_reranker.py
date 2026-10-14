@@ -55,12 +55,12 @@ def score_search_pairs_with_model(
 ) -> tuple[str, list[float]]:
     """Preserve shared routing unless search isolation was explicitly configured."""
     return _score_pairs_with_model(
-        query, docs, isolated=bool(search_reranker_service_url())
+        query, docs, isolated=bool(search_reranker_service_url()), search=True
     )
 
 
 def _score_pairs_with_model(
-    query: str, docs: list[str], *, isolated: bool
+    query: str, docs: list[str], *, isolated: bool, search: bool = False
 ) -> tuple[str, list[float]]:
     if not reranker_enabled():
         raise CrossEncoderUnavailableError(
@@ -92,6 +92,7 @@ def _score_pairs_with_model(
             query,
             docs,
             expected_local_unavailability=expected_local_unavailability,
+            search=search,
         )
     )
     if isolated and docs:
@@ -119,9 +120,12 @@ def _score_pairs_remote(
     docs: list[str],
     *,
     expected_local_unavailability: bool,
+    search: bool = False,
 ) -> list[float]:
     url = f"{service_url.rstrip('/')}/v1/rerank"
     payload = {"model": model, "query": query, "documents": docs}
+    if search:
+        payload["priority"] = "search"
     timeout_seconds = _rerank_service_timeout_seconds()
     payload["timeout_ms"] = max(1, min(600_000, int(remaining(timeout_seconds) * 1000)))
     with profile_step(

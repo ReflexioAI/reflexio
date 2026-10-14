@@ -84,6 +84,7 @@ def test_unset_or_blank_query_url_retains_shared_routing(routing, monkeypatch):
     monkeypatch.setenv("REFLEXIO_QUERY_EMBEDDING_SERVICE_URL", " \t")
     provider.get_service_embeddings(["query: text"], model=MODEL, purpose="query")
     assert [(r.method, r.url.host) for r in calls] == [("POST", "shared")]
+    assert b'"purpose":"query"' in calls[0].content
 
 
 def test_local_model_query_route_uses_default_shared_daemon(routing, monkeypatch):

@@ -80,7 +80,7 @@ InferenceSubmit = Callable[
     [
         Callable[[list[str]], list[Any]],
         list[str],
-        Literal["interactive", "bulk"],
+        Literal["search", "interactive", "bulk"],
         int,
         int,
     ],
@@ -153,6 +153,7 @@ class RerankRequest(BaseModel):
     model: str
     query: str
     documents: list[str]
+    priority: Literal["search", "interactive"] = "interactive"
     timeout_ms: int = Field(default=5_000, gt=0, le=600_000)
 
 
@@ -447,7 +448,9 @@ def create_embedding_app(
                 inference_submit(
                     encoder or (lambda chunk: _encode_texts_now(request.model, chunk)),
                     texts,
-                    "interactive" if query_only else request.priority,
+                    "search"
+                    if query_only or request.purpose == "query"
+                    else request.priority,
                     request.timeout_ms,
                     1,
                 ),
@@ -491,7 +494,7 @@ def create_embedding_app(
                     inference_submit(
                         lambda chunk: runner.score_pairs(request.query, chunk),
                         request.documents,
-                        "interactive",
+                        request.priority,
                         request.timeout_ms,
                         4,
                     ),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+import pytest
 from fastapi.testclient import TestClient
 
 from reflexio.server.llm import embedding_service
@@ -42,6 +43,72 @@ class _Runner:
 
     def status(self) -> str:
         return "ready" if self._ready else "unavailable"
+
+
+@pytest.mark.parametrize("priority", [None, "search"])
+def test_rerank_request_forwards_search_priority_and_preserves_default(priority):
+    submitted = []
+    runner = _Runner(scores=[0.25, -1.5])
+
+    async def submit(encode, texts, scheduling_priority, timeout_ms, chunk):
+        submitted.append((scheduling_priority, timeout_ms, chunk))
+        return encode(texts)
+
+    client = TestClient(
+        create_embedding_app(
+            reranker_runner=runner,  # type: ignore[arg-type]
+            inference_submit=submit,
+        )
+    )
+    payload = {"model": RERANK_MODEL, "query": "q", "documents": ["a", "b"]}
+    if priority is not None:
+        payload["priority"] = priority
+    response = client.post("/v1/rerank", json=payload)
+    assert response.status_code == 200
+    assert [row["score"] for row in response.json()["data"]] == [0.25, -1.5]
+    assert submitted == [(priority or "interactive", 5000, 4)]
+
+
+@pytest.mark.parametrize(
+    "purpose,priority,expected",
+    [
+        ("query", "interactive", "search"),
+        ("document", "interactive", "interactive"),
+        ("document", "bulk", "bulk"),
+    ],
+)
+def test_shared_embedding_request_keeps_explicit_purpose_priority(
+    monkeypatch, purpose, priority, expected
+):
+    monkeypatch.setattr(embedding_service, "_ACTIVE_MODEL", None)
+    model = "local/priority-test"
+    submitted = []
+
+    async def submit(encode, texts, scheduling_priority, _timeout_ms, _chunk):
+        submitted.append(scheduling_priority)
+        return encode(texts)
+
+    client = TestClient(
+        create_embedding_app(
+            allowed_models={model},
+            fixed_dimensions={model: 2},
+            model_encoders={model: lambda texts: [[1.0, 0.0] for _ in texts]},
+            reranker_runner=_Runner(),  # type: ignore[arg-type]
+            inference_submit=submit,
+        )
+    )
+    response = client.post(
+        "/v1/embeddings",
+        json={
+            "model": model,
+            "input": ["text"],
+            "purpose": purpose,
+            "priority": priority,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["data"][0]["embedding"] == [1.0, 0.0]
+    assert submitted == [expected]
 
 
 def test_rerank_endpoint_uses_configured_runner_and_model() -> None:

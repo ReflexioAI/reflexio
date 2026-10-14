@@ -659,7 +659,7 @@ def _post_embedding_batch(
 ) -> list[list[float]]:
     """POST one bounded batch of texts to the embedding service."""
     payload: dict[str, Any] = {"model": model, "input": texts}
-    if purpose == "query" and query_embedding_service_url():
+    if purpose == "query":
         payload["purpose"] = "query"
     interactive = (
         purpose == "query"

@@ -513,6 +513,24 @@ the embedding `workload` from admission policy. Without that callback it returns
 inventing a revision. Additional metadata such as device and thread count can
 be returned by the callback.
 
+### Search priority on a shared CPU worker
+
+Explicit query embedding requests always forward `purpose="query"`, including
+when routed to the shared inference endpoint. Full-search reranking forwards
+`priority="search"`; generic profile reranking retains interactive priority.
+The embedding service passes these classifications to its injected inference
+scheduler. An older reranking service ignores the new optional field and
+continues its existing interactive behavior.
+
+The enterprise CPU scheduler uses the same models and worker for all work.
+Search gets priority between model chunks, with a turn for other queued
+interactive work after at most four search chunks and a bulk turn after at
+most 32 foreground chunks. Each foreground queue keeps earliest-deadline
+ordering; cancellation, request deadlines, vector contents, and rerank policy
+are unchanged. This needs no additional worker or load balancer. Deploy the
+updated worker before the API, and verify full-search latency under competing
+interactive and bulk work before production promotion.
+
 ### Optional reserved search reranking
 
 `create_embedding_app(workload="search", ...)` keeps query-only embedding
