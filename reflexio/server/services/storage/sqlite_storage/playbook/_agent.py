@@ -172,12 +172,50 @@ class AgentPlaybookStoreMixin:
         ap.agent_playbook_id = cur.lastrowid or 0
         return cur
 
+    def prepare_agent_playbooks_for_save(
+        self, agent_playbooks: list[AgentPlaybook]
+    ) -> None:
+        """Resolve model calls before the aggregator acquires its writer scope."""
+        for ap in agent_playbooks:
+            text = embedding_text(ap)
+            if text and self._should_expand_documents():
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    emb_future = executor.submit(self._get_embedding, text)
+                    exp_future = executor.submit(self._expand_document, text)
+                    ap.embedding = emb_future.result(timeout=15)
+                    ap.expanded_terms = exp_future.result(timeout=15)
+            elif text:
+                ap.embedding = self._get_embedding(text)
+                ap.expanded_terms = None
+            else:
+                ap.embedding = []
+                ap.expanded_terms = None
+
+    def save_prepared_agent_playbooks(
+        self,
+        agent_playbooks: list[AgentPlaybook],
+        *,
+        lineage_contexts: list[LineageContext],
+    ) -> list[AgentPlaybook]:
+        """Join the caller's fenced transaction without repeating model calls."""
+        for ap in agent_playbooks:
+            if not embedding_text(ap):
+                continue
+            if not ap.embedding:
+                raise ValueError("prepared agent playbook has no embedding")
+        return self.save_agent_playbooks(
+            agent_playbooks,
+            lineage_contexts=lineage_contexts,
+            embeddings_prepared=True,
+        )
+
     @SQLiteStorageBase.handle_exceptions
     def save_agent_playbooks(
         self,
         agent_playbooks: list[AgentPlaybook],
         *,
         lineage_contexts: list[LineageContext] | None = None,
+        embeddings_prepared: bool = False,
     ) -> list[AgentPlaybook]:
         if lineage_contexts is not None and len(lineage_contexts) != len(
             agent_playbooks
@@ -200,21 +238,10 @@ class AgentPlaybookStoreMixin:
         contexts = lineage_contexts or [
             LineageContext(op_kind="create") for _ap in agent_playbooks
         ]
+        if not embeddings_prepared:
+            self.prepare_agent_playbooks_for_save(agent_playbooks)
         rows: list[tuple[AgentPlaybook, LineageContext, str]] = []
         for ap, context in zip(agent_playbooks, contexts, strict=True):
-            text = embedding_text(ap)
-            if text and self._should_expand_documents():
-                with ThreadPoolExecutor(max_workers=2) as executor:
-                    emb_future = executor.submit(self._get_embedding, text)
-                    exp_future = executor.submit(self._expand_document, text)
-                    ap.embedding = emb_future.result(timeout=15)
-                    ap.expanded_terms = exp_future.result(timeout=15)
-            elif text:
-                ap.embedding = self._get_embedding(text)
-                ap.expanded_terms = None
-            else:
-                ap.embedding = []
-                ap.expanded_terms = None
             rows.append((ap, context, _epoch_to_iso(ap.created_at)))
 
         with self.commit_scope():

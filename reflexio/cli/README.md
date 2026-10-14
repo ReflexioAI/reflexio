@@ -118,6 +118,14 @@ failures never fall back to in-process inference.
 
 The top-level `publish` shortcut is the fastest way to get a conversation into Reflexio. It forwards to `interactions publish` and supports three input modes: single-turn flags, inline JSON, and file/stdin payloads.
 
+A server-reported failure exits with code 1. In `--json` mode, stderr contains an
+`ok:false` error envelope. Batches stop at the first rejection: earlier accepted
+payloads remain stored and later payloads are not submitted. Reconcile both
+earlier results and the failed payload before retrying: transport errors and
+older servers may leave admission uncertain. Accepted work whose extraction
+is deferred still exits successfully. Once stored, a failure in follow-up
+processing returns acceptance with a warning.
+
 Reflexio learns most from interactions that contain a **signal** — a user correction, a stated preference, or an explicit choice between alternatives. Examples throughout this doc use that kind of content rather than trivial Q&A.
 
 ### Mode 1 — Single-turn (shortcut flags)

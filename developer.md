@@ -371,6 +371,19 @@ When working in a git worktree, services must run on different ports to avoid co
 
 ### Storage requirements for publishing
 
+SQLite deferred index failures raise `PostCommitStorageError` after the primary
+commit; publish preserves the admitted request and reports deferred follow-up.
+Extraction-runner and evaluation scheduling failures are contained independently
+so one cannot prevent the other follow-up from running. If the extraction runner
+cannot start, synchronous callers return deferred work without entering the
+coverage waiter.
+SQLite standalone write failures roll back their owned implicit transactions;
+failures inside `commit_scope` leave rollback to the outer owner. Interrupted
+scopes also roll back. Self-committing FTS/vector index operations roll back a
+failed replacement so they cannot leave a writer lock behind. Aggregation prepares
+agent-playbook embeddings and document expansion before its fenced write scope,
+then uses prepared persistence for atomic row, lineage and cluster changes.
+
 Custom storage backends must implement `add_request_if_absent(request) -> bool`
 as an atomic insert that participates in `commit_scope`: return false for an
 existing request ID without modifying it. The base implementation raises
@@ -709,6 +722,15 @@ ports through SSH; an API key is still required when configured. This does not
 change the bind address of production containers or custom embedded backend apps.
 
 ## Generation completion and CLI errors
+
+`publish` exits nonzero when the server reports a failure (`success=False`),
+in both human and `--json` modes. JSON failures use the standard `ok:false`
+error envelope. File/JSONL batches stop at the first rejection: earlier accepted
+payloads stay accepted and later payloads are not sent. Inspect those earlier
+results before retrying; rerunning the entire input can duplicate accepted data.
+Post-commit follow-up failures return accepted work with a warning rather than
+a false admission failure. An accepted publish with deferred extraction remains successful; acceptance and
+learning completion are separate states.
 
 `user-profiles regenerate --wait` and `user-playbooks regenerate --wait` report
 success only after generation and promotion both succeed. Failed or canceled

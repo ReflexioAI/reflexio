@@ -14,6 +14,10 @@ class StorageError(Exception):
         return f"StorageError: {self.message}"
 
 
+class PostCommitStorageError(StorageError):
+    """Primary rows committed, but a deferred index operation failed."""
+
+
 class ReadinessUnavailableError(StorageError):
     """Required infrastructure is not yet qualified for this operation."""
 

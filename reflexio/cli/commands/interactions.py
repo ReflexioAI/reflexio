@@ -180,8 +180,10 @@ def _oneline(text: str, max_len: int = _MAX_WARNING_LEN) -> str:
     return collapsed[: max_len - 1] + "…"
 
 
-def _print_publish_result(result: PublishUserInteractionResponse, user_id: str) -> None:
-    """Print human-readable publish result with diagnostics.
+def _render_publish_result(
+    result: PublishUserInteractionResponse, user_id: str, *, json_mode: bool
+) -> None:
+    """Validate publication, then render its successful result with diagnostics.
 
     Surfaces storage routing + extraction counts so users can tell *where*
     their publish landed and *what* the extraction produced, not just that
@@ -193,9 +195,13 @@ def _print_publish_result(result: PublishUserInteractionResponse, user_id: str) 
     warnings = result.warnings or []
 
     if not result.success:
-        print_error(f"Publish failed for {user_id}: {message}")
-        for warning in warnings:
-            print_error(f"  Warning: {_oneline(warning)}")
+        raise CliError(
+            error_type="api",
+            message=f"Publish failed for {user_id}: {message or 'server rejected publication'}",
+            hint="; ".join(_oneline(warning) for warning in warnings) or None,
+        )
+    if json_mode:
+        render(result, json_mode=True)
         return
 
     header = f"Published ({user_id})"
@@ -350,10 +356,7 @@ def publish(
             evaluation_only=evaluation_only,
             override_learning_stall=override_learning_stall,
         )
-        if json_mode:
-            render(result, json_mode=True)
-        else:
-            _print_publish_result(result, user_id)
+        _render_publish_result(result, user_id, json_mode=json_mode)
         return
 
     # Determine raw JSON from --data, --file, or --stdin
@@ -379,7 +382,8 @@ def publish(
         )
 
     payloads = _parse_json_payload(raw)
-    print_info(f"Processing {len(payloads)} payload(s)...")
+    if not json_mode:
+        print_info(f"Processing {len(payloads)} payload(s)...")
 
     resolved_version = resolve_agent_version(agent_version)
     for payload in payloads:
@@ -414,11 +418,7 @@ def publish(
                 "override_learning_stall", override_learning_stall
             ),
         )
-        if json_mode:
-            render(result, json_mode=True)
-        else:
-            uid = payload.get("user_id", user_id)
-            _print_publish_result(result, uid)
+        _render_publish_result(result, resolved_user_id, json_mode=json_mode)
 
 
 @app.command(name="list")

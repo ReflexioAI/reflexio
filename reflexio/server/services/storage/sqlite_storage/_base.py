@@ -57,6 +57,7 @@ from reflexio.server.llm.providers.embedding_service_provider import (
 )
 from reflexio.server.services.embedding_text import embedding_input
 from reflexio.server.services.storage.error import (
+    PostCommitStorageError,
     StorageError,
     require_non_empty_session_id,
 )
@@ -1020,9 +1021,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             try:
                 return func(*args, **kwargs)
-            except StorageError:
-                raise
             except Exception as e:
+                args[0]._rollback_owned_transaction()
+                if isinstance(e, StorageError):
+                    raise
                 import traceback
 
                 stack_trace = traceback.format_exc()
@@ -1143,6 +1145,15 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         """True when the caller is NOT inside a commit_scope (owns its BEGIN/commit)."""
         return self._scope_depth == 0
 
+    def _rollback_owned_transaction(self) -> None:
+        """Release a failed standalone write without undoing an outer scope."""
+        with self._lock:
+            if self._own_transaction():
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    logger.warning("Rollback after failed write failed", exc_info=True)
+
     @contextlib.contextmanager
     def commit_scope(self) -> Generator[None, None, None]:
         """Group writes into one atomic commit; defer FTS/vec index ops.
@@ -1170,10 +1181,18 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 with publish_timing.phase("scope_commit"):
                     self.conn.commit()
                 ops, self._deferred_index_ops = self._deferred_index_ops, []
-                for kind, args in ops:
-                    self._flush_index_op(kind, args)  # self-commits — fine post-commit
-            except Exception:
-                self.conn.rollback()
+                try:
+                    for kind, args in ops:
+                        self._flush_index_op(kind, args)
+                except Exception as error:
+                    raise PostCommitStorageError(
+                        "Primary rows committed; deferred index update failed"
+                    ) from error
+            except BaseException:
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    logger.warning("Rollback after failed scope failed", exc_info=True)
                 self._deferred_index_ops = []
                 raise
             finally:
@@ -3194,10 +3213,14 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self, sql: str, params: tuple[Any, ...] | list[Any] = ()
     ) -> sqlite3.Cursor:
         with self._lock:
-            cur = self.conn.execute(sql, params)
-            if self._own_transaction():
-                self.conn.commit()
-            return cur
+            try:
+                cur = self.conn.execute(sql, params)
+                if self._own_transaction():
+                    self.conn.commit()
+                return cur
+            except BaseException:
+                self._rollback_owned_transaction()
+                raise
 
     def _fetchone(
         self, sql: str, params: tuple[Any, ...] | list[Any] = ()

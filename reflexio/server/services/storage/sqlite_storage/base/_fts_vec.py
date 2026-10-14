@@ -72,7 +72,7 @@ class SQLiteFtsVecMixin:
     def _fts_upsert_now(
         self, table: str, rowid: int, **text_fields: str | None
     ) -> None:
-        with self._lock:
+        with self._lock, self.conn:
             self.conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))  # noqa: S608
             cols = list(text_fields.keys())
             vals = [text_fields[c] or "" for c in cols]
@@ -91,7 +91,7 @@ class SQLiteFtsVecMixin:
         self._fts_delete_now(table, rowid)
 
     def _fts_delete_now(self, table: str, rowid: int) -> None:
-        with self._lock:
+        with self._lock, self.conn:
             self.conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))  # noqa: S608
             self.conn.commit()
 
@@ -105,7 +105,7 @@ class SQLiteFtsVecMixin:
         self._fts_upsert_profile_now(profile_id, content)
 
     def _fts_upsert_profile_now(self, profile_id: str, content: str) -> None:
-        with self._lock:
+        with self._lock, self.conn:
             self.conn.execute(
                 "DELETE FROM profiles_fts WHERE profile_id = ?", (profile_id,)
             )
@@ -122,7 +122,7 @@ class SQLiteFtsVecMixin:
         self._fts_delete_profile_now(profile_id)
 
     def _fts_delete_profile_now(self, profile_id: str) -> None:
-        with self._lock:
+        with self._lock, self.conn:
             self.conn.execute(
                 "DELETE FROM profiles_fts WHERE profile_id = ?", (profile_id,)
             )
@@ -144,7 +144,7 @@ class SQLiteFtsVecMixin:
     def _vec_upsert_now(self, table: str, rowid: int, embedding: list[float]) -> None:
         if not self._has_sqlite_vec:
             return
-        with self._lock:
+        with self._lock, self.conn:
             self.conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))  # noqa: S608
             self.conn.execute(
                 f"INSERT INTO {table}(rowid, embedding) VALUES (?, ?)",  # noqa: S608
@@ -164,7 +164,7 @@ class SQLiteFtsVecMixin:
     def _vec_delete_now(self, table: str, rowid: int) -> None:
         if not self._has_sqlite_vec:
             return
-        with self._lock:
+        with self._lock, self.conn:
             self.conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))  # noqa: S608
             self.conn.commit()
 

@@ -449,3 +449,25 @@ def test_the_publish_path_issues_no_retention_round_trips() -> None:
         "the publish path still reaches retention storage methods, so it still "
         f"pays for them whether or not a phase reports it: {sorted(set(calls))}"
     )
+
+
+def test_runner_failure_returns_admission_without_synchronous_wait(monkeypatch):
+    def fail_runner(_context):
+        raise RuntimeError("runner unavailable")
+
+    monkeypatch.setattr(
+        "reflexio.server.services.durable_learning.local.ensure_local_extraction",
+        fail_runner,
+    )
+    monkeypatch.setattr(
+        "reflexio.server.services.durable_learning.waiting.acquire_waiter",
+        lambda _org: pytest.fail("A failed runner must not enter the coverage waiter"),
+    )
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = _service(temp_dir)
+        result = service.run(_publish_request(), defer_learning=False)
+        assert result.request_id == "req-publish-timing"
+        assert result.interaction_ids
+        assert result.warnings and "were stored" in result.warnings[0]
+        assert service.storage is not None
+        assert service.storage.get_request(result.request_id) is not None

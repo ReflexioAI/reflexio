@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -105,6 +106,30 @@ class GenerationServiceResult:
     interaction_ids: list[int] = field(default_factory=list)
 
 
+def _warn_publish_followup(result: GenerationServiceResult, error: Exception) -> None:
+    logger.warning(
+        "event=publish_followup_failed request_id=%s error_type=%s",
+        sanitise_for_log(result.request_id or ""),
+        type(error).__name__,
+        exc_info=True,
+    )
+    warning = (
+        "Interactions were stored; follow-up processing was deferred. "
+        "Check learning status before retrying this request."
+    )
+    if warning not in result.warnings:
+        result.warnings.append(warning)
+
+
+@contextmanager
+def _publish_followup(result: GenerationServiceResult) -> Iterator[None]:
+    """Contain independent best-effort work after durable admission."""
+    try:
+        yield
+    except Exception as error:
+        _warn_publish_followup(result, error)
+
+
 class GenerationService:
     """
     Main service for orchestrating profile, playbook, and agent success evaluation generation.
@@ -170,6 +195,8 @@ class GenerationService:
         agent_version = resolve_agent_version(
             publish_user_interaction_request.agent_version
         )
+        admitted = False
+
         try:
             retrieval_experiment_id = getattr(
                 publish_user_interaction_request,
@@ -283,51 +310,63 @@ class GenerationService:
             with publish_timing.phase("embeddings"):
                 storage.prepare_interaction_embeddings(new_interactions)
             check_admission_deadline()
-            with publish_timing.phase("commit_scope"), storage.commit_scope():
-                with publish_timing.phase("lock_stream"):
-                    storage.lock_publish_stream(user_id, new_interactions)
-                check_admission_deadline()
-                if admission_participant is not None:
-                    receipt = admission_participant.claim(request_id, user_id)
-                    if receipt is not None:
-                        result.request_id = receipt.request_id
-                        result.interaction_ids = list(receipt.interaction_ids)
-                        result.replayed = True
-                        return result
-                    # Preparation may have outlived a policy edit or billing stall.
-                    stall_warning = self._refresh_publish_stall_warning(
-                        publish_user_interaction_request, result, stall_warning
-                    )
-                    admission = extraction_admission(
-                        self.configurator.get_config(),
-                        publish_user_interaction_request,
-                        stalled=stall_warning is not None,
-                    )
-                # The unique request key arbitrates concurrent publishes, even
-                # across users whose extraction-stream locks are independent.
-                # Never upsert here: a duplicate must roll back the whole scope.
-                with publish_timing.phase("add_request"):
-                    if not storage.add_request_if_absent(new_request):
-                        raise ValueError(f"request_id {request_id!r} already exists")
-                with publish_timing.phase("add_interactions"):
-                    storage.add_user_interactions_bulk(
-                        user_id, new_interactions, embeddings_prepared=True
-                    )
-                with publish_timing.phase("admit_extraction"):
-                    storage.admit_extraction(
-                        user_id,
-                        request_id,
-                        [i.interaction_id for i in new_interactions],
-                        admission,
-                    )
-                if admission_participant is not None:
-                    admission_participant.complete(
-                        new_request, new_interactions, admission
-                    )
-                result.interaction_ids = [i.interaction_id for i in new_interactions]
-            with publish_timing.phase("post_publish"):
+            from reflexio.server.services.storage.error import PostCommitStorageError
+
+            try:
+                with publish_timing.phase("commit_scope"), storage.commit_scope():
+                    with publish_timing.phase("lock_stream"):
+                        storage.lock_publish_stream(user_id, new_interactions)
+                    check_admission_deadline()
+                    if admission_participant is not None:
+                        receipt = admission_participant.claim(request_id, user_id)
+                        if receipt is not None:
+                            result.request_id = receipt.request_id
+                            result.interaction_ids = list(receipt.interaction_ids)
+                            result.replayed = True
+                            return result
+                        # Preparation may have outlived a policy edit or billing stall.
+                        stall_warning = self._refresh_publish_stall_warning(
+                            publish_user_interaction_request, result, stall_warning
+                        )
+                        admission = extraction_admission(
+                            self.configurator.get_config(),
+                            publish_user_interaction_request,
+                            stalled=stall_warning is not None,
+                        )
+                    # The unique request key arbitrates concurrent publishes, even
+                    # across users whose extraction-stream locks are independent.
+                    # Never upsert here: a duplicate must roll back the whole scope.
+                    with publish_timing.phase("add_request"):
+                        if not storage.add_request_if_absent(new_request):
+                            raise ValueError(
+                                f"request_id {request_id!r} already exists"
+                            )
+                    with publish_timing.phase("add_interactions"):
+                        storage.add_user_interactions_bulk(
+                            user_id, new_interactions, embeddings_prepared=True
+                        )
+                    with publish_timing.phase("admit_extraction"):
+                        storage.admit_extraction(
+                            user_id,
+                            request_id,
+                            [i.interaction_id for i in new_interactions],
+                            admission,
+                        )
+                    if admission_participant is not None:
+                        admission_participant.complete(
+                            new_request, new_interactions, admission
+                        )
+                    result.interaction_ids = [
+                        i.interaction_id for i in new_interactions
+                    ]
+            except PostCommitStorageError as error:
+                _warn_publish_followup(result, error)
+            admitted = True
+            extraction_ready = False
+            with publish_timing.phase("post_publish"), _publish_followup(result):
                 ensure_local_extraction(self.request_context)
-            with publish_timing.phase("evaluation_schedule"):
+                extraction_ready = True
+            with publish_timing.phase("evaluation_schedule"), _publish_followup(result):
                 self._schedule_post_publish_evaluations(
                     new_request=new_request,
                     interactions=new_interactions,
@@ -335,7 +374,7 @@ class GenerationService:
                     agent_version=agent_version,
                     source=source,
                 )
-            with publish_timing.phase("metering"):
+            with publish_timing.phase("metering"), _publish_followup(result):
                 self._emit_publish_success_events(
                     interactions=new_interactions,
                     user_id=user_id,
@@ -358,7 +397,7 @@ class GenerationService:
             # `publisher_api.add_user_interaction`, reports instead -- which
             # also catches a failure that never reaches this method at all,
             # such as a cold `get_reflexio` construction.
-            if not defer_learning:
+            if not defer_learning and extraction_ready:
                 from reflexio.server.services.durable_learning.waiting import (
                     acquire_waiter,
                     coverage_stalled,
@@ -412,6 +451,11 @@ class GenerationService:
             return result
 
         except Exception as e:
+            if admitted:
+                # This request and its durable work are already committed.
+                # A follow-up failure must not invite another admission/retry.
+                _warn_publish_followup(result, e)
+                return result
             with publish_timing.phase("metering"):
                 record_usage_event(
                     org_id=self.org_id,
