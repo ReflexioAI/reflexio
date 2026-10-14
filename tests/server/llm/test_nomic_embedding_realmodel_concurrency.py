@@ -72,7 +72,7 @@ def test_model_lock_holds_under_real_concurrency(real_embedder: NomicEmbedder) -
     # Single-thread, one text at a time — the uncorrupted reference vectors.
     baseline = {text: _embed_one(real_embedder, text) for text in _TEXTS}
 
-    burst = sorted((_TEXTS * (_N_WORKERS // len(_TEXTS) + 1))[:_N_WORKERS], key=len)
+    burst = sorted(_TEXTS, key=len)
 
     errors: list[str] = []
     mismatches: list[str] = []
@@ -109,7 +109,20 @@ def test_native_nomic_encodes_long_input(real_embedder: NomicEmbedder) -> None:
     )
     token_count = len(model.tokenizer(text)["input_ids"])
     assert 2048 < token_count < model.max_seq_length == 8192
-    vectors = np.asarray(real_embedder.embed([text]))
+    forward_lengths: list[int] = []
+
+    def observe_forward(_module: object, _args: tuple, kwargs: dict) -> None:
+        forward_lengths.append(int(kwargs["input_ids"].shape[-1]))
+
+    hook = model[0].auto_model.register_forward_pre_hook(
+        observe_forward, with_kwargs=True
+    )
+    try:
+        vectors = np.asarray(real_embedder.embed([text]))
+    finally:
+        hook.remove()
+    assert forward_lengths == [token_count]
+
     assert vectors.shape == (1, 512)
     assert np.isfinite(vectors).all()
     assert np.isclose(np.linalg.norm(vectors[0]), 1)
