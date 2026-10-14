@@ -7,7 +7,7 @@ Provider prompt budgets and protected-record judgement belong to the caller.
 
 import hashlib
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
@@ -268,6 +268,108 @@ def _split_field(
         start = best
 
 
+@dataclass(frozen=True)
+class ExtractionSources:
+    source_digest: str
+    spans: tuple[SourceSpan, ...]
+
+
+def _iter_source_fields(
+    sessions: list[RequestInteractionDataModel],
+    *,
+    user_id: str,
+    include_timestamps: bool,
+    include_request_source: bool,
+    observe_witness: Callable[[bytes], object],
+) -> Iterator[SourceSpan]:
+    if not user_id:
+        raise ValueError("Invalid extraction preparation scope or capacity")
+    seen: set[int] = set()
+    source_order = 0
+    for session in sessions:
+        if session.request.user_id != user_id:
+            raise ValueError("Extraction request owner mismatch")
+        for interaction in session.interactions:
+            if (
+                interaction.user_id != user_id
+                or interaction.request_id != session.request.request_id
+                or interaction.interaction_id <= 0
+                or interaction.interaction_id in seen
+            ):
+                raise ValueError("Extraction source identity mismatch")
+            seen.add(interaction.interaction_id)
+            source_order += 1
+            observe_witness(source_witness_bytes(session.request, interaction))
+            fields = [
+                ("content", interaction.content),
+                ("shadow_content", interaction.shadow_content),
+                ("expert_content", interaction.expert_content),
+                ("user_action_description", interaction.user_action_description),
+            ]
+            if interaction.user_action.value != "none":
+                fields.append(("user_action", interaction.user_action.value))
+            fields.extend(
+                (
+                    f"tools_used[{index}]",
+                    json.dumps(
+                        tool.model_dump(mode="json"),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+                for index, tool in enumerate(interaction.tools_used)
+            )
+            for field, text in fields:
+                if text:
+                    yield SourceSpan(
+                        interaction.interaction_id,
+                        interaction.request_id,
+                        interaction.role,
+                        field,
+                        0,
+                        len(text),
+                        text,
+                        source_order,
+                        interaction.created_at if include_timestamps else None,
+                        session.request.created_at if include_timestamps else None,
+                        session.session_id if include_timestamps else None,
+                        session.request.source if include_request_source else None,
+                    )
+
+
+def collect_extraction_sources(
+    sessions: list[RequestInteractionDataModel],
+    *,
+    user_id: str,
+    include_timestamps: bool = False,
+    include_request_source: bool = False,
+    max_source_bytes: int | None = None,
+) -> ExtractionSources:
+    """Collect exact fields with the same owners/order/witness as legacy prep.
+
+    The shared compressor supplies its own byte/section/call admission. Legacy
+    preparation consumes the iterator lazily to retain its early chunk bound.
+    """
+    source_hash = hashlib.sha256()
+    spans: list[SourceSpan] = []
+    source_bytes = 0
+    for span in _iter_source_fields(
+        sessions,
+        user_id=user_id,
+        include_timestamps=include_timestamps,
+        include_request_source=include_request_source,
+        observe_witness=source_hash.update,
+    ):
+        source_bytes += len(span.text.encode())
+        if max_source_bytes is not None and source_bytes > max_source_bytes:
+            raise ExtractionInputBudgetExceededError(
+                "Complete evidence exceeds source byte limit"
+            )
+        spans.append(span)
+    return ExtractionSources(source_hash.hexdigest(), tuple(spans))
+
+
 def prepare_extraction_input(
     sessions: list[RequestInteractionDataModel],
     *,
@@ -301,7 +403,6 @@ def prepare_extraction_input(
         raise ExtractionInputBudgetExceededError(
             "Neighbor context exceeds chunk capacity"
         )
-    source_hash = hashlib.sha256()
     chunks: list[PreparedChunk] = []
     current: list[SourceSpan] = []
     frame_tokens = len(
@@ -309,106 +410,74 @@ def prepare_extraction_input(
     )
     current_tokens = frame_tokens
     current_origins: set[int] = set()
-    seen: set[int] = set()
-    source_order = 0
-    for session in sessions:
-        if session.request.user_id != user_id:
-            raise ValueError("Extraction request owner mismatch")
-        for interaction in session.interactions:
-            if (
-                interaction.user_id != user_id
-                or interaction.request_id != session.request.request_id
-                or interaction.interaction_id <= 0
-                or interaction.interaction_id in seen
-            ):
-                raise ValueError("Extraction source identity mismatch")
-            seen.add(interaction.interaction_id)
-            source_order += 1
-            source_hash.update(source_witness_bytes(session.request, interaction))
-            fields = [
-                ("content", interaction.content),
-                ("shadow_content", interaction.shadow_content),
-                ("expert_content", interaction.expert_content),
-                ("user_action_description", interaction.user_action_description),
-            ]
-            if interaction.user_action.value != "none":
-                fields.append(("user_action", interaction.user_action.value))
-            fields.extend(
-                (
-                    f"tools_used[{index}]",
-                    json.dumps(
-                        tool.model_dump(mode="json"),
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
+    source_hash = hashlib.sha256()
+    originals = _iter_source_fields(
+        sessions,
+        user_id=user_id,
+        include_timestamps=require_overlap,
+        include_request_source=include_request_source,
+        observe_witness=source_hash.update,
+    )
+    for original in originals:
+        for span in _split_field(
+            interaction_id=original.interaction_id,
+            request_id=original.request_id,
+            role=original.role,
+            field=original.field,
+            text=original.text,
+            encoding=encoding,
+            span_tokens=span_tokens,
+            source_order=original.source_order,
+            created_at=original.created_at,
+            request_created_at=original.request_created_at,
+            session_id=original.session_id,
+            request_source=original.request_source,
+        ):
+            evidence_cost = (
+                len(
+                    encoding.encode(
+                        json.dumps(
+                            span.evidence_payload(),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                        disallowed_special=(),
+                    )
                 )
-                for index, tool in enumerate(interaction.tools_used)
+                + 1
             )
-            for field, text in fields:
-                for span in _split_field(
-                    interaction_id=interaction.interaction_id,
-                    request_id=interaction.request_id,
-                    role=interaction.role,
-                    field=field,
-                    text=text,
-                    encoding=encoding,
-                    span_tokens=span_tokens,
-                    source_order=source_order,
-                    created_at=interaction.created_at if require_overlap else None,
-                    request_created_at=session.request.created_at
-                    if require_overlap
-                    else None,
-                    session_id=session.session_id if require_overlap else None,
-                    request_source=session.request.source
-                    if include_request_source
-                    else None,
-                ):
-                    evidence_cost = (
-                        len(
-                            encoding.encode(
-                                json.dumps(
-                                    span.evidence_payload(),
-                                    ensure_ascii=False,
-                                    separators=(",", ":"),
-                                ),
-                                disallowed_special=(),
-                            )
-                        )
-                        + 1
+            origin_cost = (
+                len(
+                    encoding.encode(
+                        json.dumps(
+                            {str(span.interaction_id): span.origin_payload()},
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                        disallowed_special=(),
                     )
-                    origin_cost = (
-                        len(
-                            encoding.encode(
-                                json.dumps(
-                                    {str(span.interaction_id): span.origin_payload()},
-                                    ensure_ascii=False,
-                                    separators=(",", ":"),
-                                ),
-                                disallowed_special=(),
-                            )
-                        )
-                        + 1
-                    )
-                    cost = evidence_cost + (
-                        origin_cost if span.interaction_id not in current_origins else 0
-                    )
-                    if frame_tokens + evidence_cost + origin_cost > primary_capacity:
-                        raise ExtractionInputBudgetExceededError(
-                            "Evidence framing exceeds chunk capacity"
-                        )
-                    if current and current_tokens + cost > primary_capacity:
-                        chunks.append(PreparedChunk(len(chunks), tuple(current)))
-                        current, current_tokens = [], frame_tokens
-                        current_origins.clear()
-                        cost = evidence_cost + origin_cost
-                    if len(chunks) >= max_chunks:
-                        raise ExtractionInputBudgetExceededError(
-                            "Complete evidence exceeds chunk limit"
-                        )
-                    current.append(span)
-                    current_origins.add(span.interaction_id)
-                    current_tokens += cost
+                )
+                + 1
+            )
+            cost = evidence_cost + (
+                origin_cost if span.interaction_id not in current_origins else 0
+            )
+            if frame_tokens + evidence_cost + origin_cost > primary_capacity:
+                raise ExtractionInputBudgetExceededError(
+                    "Evidence framing exceeds chunk capacity"
+                )
+            if current and current_tokens + cost > primary_capacity:
+                chunks.append(PreparedChunk(len(chunks), tuple(current)))
+                current, current_tokens = [], frame_tokens
+                current_origins.clear()
+                cost = evidence_cost + origin_cost
+            if len(chunks) >= max_chunks:
+                raise ExtractionInputBudgetExceededError(
+                    "Complete evidence exceeds chunk limit"
+                )
+            current.append(span)
+            current_origins.add(span.interaction_id)
+            current_tokens += cost
     if current:
         chunks.append(PreparedChunk(len(chunks), tuple(current)))
 
