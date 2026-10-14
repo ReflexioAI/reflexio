@@ -22,6 +22,7 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 | `playbook_service_constants.py` | Prompt IDs for all playbook operations |
 | `playbook_service_utils.py` | Request dataclasses, Pydantic output schemas, message construction utilities |
 | `playbook_evidence.py` | Strict evidence validation, call-local reference checks, and persisted provenance helpers |
+| `components/reviewer_native.py` | Inactive v1.51 survivor-witness DTOs, provenance projection and source/profile/cache integrity checks; default remains v1.3 |
 | `components/overflow_consolidation.py` | Bounded metadata proposals, exact historical quotations, and semantic verification before overflow consolidation applies original rows |
 | `components/overflow_evidence.py` | Canonical historical row fingerprints checked under final commit locks |
 | `review_window.py` | Shared fail-closed reconstruction of persisted review chronology for automatic and manual review |
@@ -363,3 +364,5 @@ their original content, trigger, rationale and generation provenance. Ordinary
 non-overflow review continues to support revisions. A fully covered window may
 complete with no new learnings when every draft is unsupported or already covered
 by existing rules; original inputs and existing learning constraints stay intact.
+
+Inactive v1.54 keeps v1.53 policy/schema and tests per-call temperature 1 / top_p 0.95; default and shared client configuration are unchanged.
