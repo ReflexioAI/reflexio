@@ -2542,6 +2542,7 @@ def payload(request_id, count=10, user_id="u", force=False):
         "merge_shape_cache",
         "retire_shape_cache",
         "seal_replay",
+        "stats_cache",
     ],
 )
 def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
@@ -2640,8 +2641,9 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
         )
     )
     monkeypatch.setattr(storage, "_expand_document", expansion)
+    dispatch = Mock()
     monkeypatch.setattr(
-        PlaybookGenerationService, "_dispatch_playbook_schedulers", lambda *_: None
+        PlaybookGenerationService, "_dispatch_playbook_schedulers", dispatch
     )
     generative = Mock(
         side_effect=AssertionError(
@@ -2702,10 +2704,13 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
                 del outcome["write_plan"]["lineage_contexts"]
             if replay == "null_cache":
                 outcome["write_plan"]["new_playbooks"] = None
-            if replay == "version_cache":
-                outcome["version"] = 99
-            if replay == "token_cache":
-                outcome["token_totals"] = [1]
+            outcome_mutations = {
+                "version_cache": {"version": 99},
+                "token_cache": {"token_totals": [1]},
+                "stats_cache": {"stats": None},
+            }
+            if replay in outcome_mutations:
+                outcome.update(outcome_mutations[replay])
             write_mutations = {
                 "merge_shape_cache": {"merge_groups": None},
                 "retire_shape_cache": {"superseded_ids": False},
@@ -2751,13 +2756,26 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
         assert worker.drain_org("stream-test", 1, 300) == (
             1
             if replay
-            in {"commit_failure", "clock_cache", "embedding_outage", "seal_replay"}
+            in {
+                "commit_failure",
+                "clock_cache",
+                "embedding_outage",
+                "seal_replay",
+                "stats_cache",
+            }
             else 0
         )
     expected = (
         2
         if replay
-        in {"clean", "commit_failure", "clock_cache", "embedding_outage", "seal_replay"}
+        in {
+            "clean",
+            "commit_failure",
+            "clock_cache",
+            "embedding_outage",
+            "seal_replay",
+            "stats_cache",
+        }
         else 1
     )
     rows = storage.get_user_playbooks(user_id="u", include_embedding=True)
@@ -2780,6 +2798,7 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
         "clock_cache",
         "embedding_outage",
         "seal_replay",
+        "stats_cache",
     }:
         # Commit and its durable effects are separate worker turns.
         token_bill.assert_not_called()
@@ -2832,6 +2851,7 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
     assert len(storage.get_user_interaction("u")) == 3
     generative.assert_not_called()
     expansion.assert_not_called()
+    assert dispatch.call_count == int(expected == 2)
 
 
 def test_http_ack_is_durable_and_backlog_does_not_skip(pipeline, monkeypatch):

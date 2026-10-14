@@ -481,6 +481,14 @@ class WindowExecutor:
                 coordinator.require_full_source_coverage()
                 if is_source_quoted_window(coordinator):
                     validate_source_quoted_plan(coordinator, service, plan)
+                    # Projection has one logical run and no model-authored
+                    # output. Cached operational metadata is not authority.
+                    service._last_extractor_run_stats = {
+                        "total": 1,
+                        "failed": 0,
+                        "timed_out": 0,
+                    }
+                    service._last_model_provenance = None
                     if plan is not None and plan.write_plan is not None:
                         # Cached timestamps are not authority for the creation
                         # clock. Assign it at the fenced persistence boundary.
