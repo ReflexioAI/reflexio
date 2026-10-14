@@ -1,6 +1,8 @@
 """Exercise the same public compression interface as both runtime callers."""
 
 import json
+from collections import UserDict
+from types import MappingProxyType
 
 import pytest
 
@@ -13,7 +15,10 @@ from reflexio.server.services.input_compression import (
     OmissionCounts,
     compress_input,
     compression_tokens,
+    plan_compression_input,
 )
+
+pytestmark = pytest.mark.unit
 
 SCOPE = {"org_id": "org-a", "project_id": "project-a", "user_id": "alice"}
 
@@ -694,3 +699,154 @@ def test_selected_fields_keep_original_tool_order_and_contiguous_fragments():
     )
     packet = _materialize(choice, available, 4096, packet_tokens)
     assert packet.evidence == sources
+
+
+# Planning must be usable before a durable parent or provider attempt exists.
+def plan(sources, **kwargs):
+    options = {
+        "scope": SCOPE,
+        "policy": "extraction",
+        "model_contract": "fixture-model-v1",
+        "budget": CompressionBudget(output_tokens=1024, section_tokens=1200),
+    }
+    options.update(kwargs)
+    return plan_compression_input(sources, **options)
+
+
+def test_separate_plan_executes_identical_requests_and_replays_saved_choices():
+    originals = [source(text="approval required. " + "diagnostic " * 1700)]
+    prepared = plan(originals)
+    assert not prepared.passthrough and prepared.sections > 1
+    assert len(prepared.section_input_tokens) == prepared.sections
+    assert all(0 < cost <= 32768 for cost in prepared.section_input_tokens)
+    assert len(set(prepared.section_digests)) == prepared.sections
+    assert len(prepared.witness) == 64
+    observed = []
+    cache = {}
+
+    def complete(call):
+        observed.append((call.key, call.messages))
+        return selected(call)
+
+    result = prepared.execute(complete=complete, save=cache.__setitem__)
+    assert result.sections == prepared.sections
+    assert result.source_digest == prepared.source_digest
+    assert result.calls == len(observed)
+
+    def forbidden(_call):
+        pytest.fail("Prepared and direct execution must share every cache key")
+
+    replay = run(originals, complete=forbidden, load=cache.get)
+    assert replay.packet == result.packet
+    assert replay.calls == 0 and replay.cache_hits == result.calls
+    direct_calls = []
+
+    def direct(call):
+        direct_calls.append((call.key, call.messages))
+        return selected(call)
+
+    assert run(originals, complete=direct).packet == result.packet
+    assert direct_calls == observed
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"scope": {**SCOPE, "project_id": "another-project"}},
+        {"policy": "offline_tuning"},
+        {"model_contract": "another-model"},
+        {"output_contract": "another-renderer"},
+        {"response_schema": {"type": "object", "properties": {}}},
+        {"budget": CompressionBudget(output_tokens=1025, section_tokens=1200)},
+        {"budget": CompressionBudget(output_tokens=1024, section_tokens=1201)},
+        {
+            "budget": CompressionBudget(
+                output_tokens=1024, max_calls=127, section_tokens=1200
+            )
+        },
+    ],
+)
+def test_plan_witness_binds_task_contract_even_when_geometry_stays_equal(change):
+    originals = [source(text="approval required. " + "diagnostic " * 650)]
+    before = plan(originals)
+    assert before.witness == plan(originals).witness
+    assert before.witness != plan(originals, **change).witness
+    changed = [originals[0].model_copy(update={"text": originals[0].text + " changed"})]
+    assert before.source_digest != plan(changed).source_digest
+
+
+def test_plan_snapshots_scope_source_container_and_nested_schema_before_admission():
+    originals = [source(text="approval required. " + "diagnostic " * 650)]
+    scope = dict(SCOPE)
+    schema = {"type": "object", "properties": {"points": {"type": "array"}}}
+    before = plan(originals, scope=scope, response_schema=schema)
+    witness = before.witness
+    scope["org_id"] = "wrong-org"
+    originals.clear()
+    schema["properties"]["points"]["type"] = "string"
+    cache = {}
+    result = before.execute(complete=selected, save=cache.__setitem__)
+    assert result.covered_source_ids == ("i1:content",)
+    assert before.witness == witness
+    replay = plan(
+        [source(text="approval required. " + "diagnostic " * 650)],
+        response_schema={"type": "object", "properties": {"points": {"type": "array"}}},
+    ).execute(
+        complete=lambda _call: pytest.fail("Caller mutation must not alter cache keys"),
+        load=cache.get,
+    )
+    assert replay.packet == result.packet
+    assert replay.calls == 0
+
+
+def test_passthrough_plan_has_no_selection_sections_and_is_contract_bound():
+    before = plan([source()])
+    assert before.passthrough and before.sections == 0
+    assert before.section_input_tokens == ()
+    assert before.witness != plan([source()], model_contract="another").witness
+    result = before.execute(
+        complete=lambda _call: pytest.fail("No provider for passthrough"),
+        load=lambda _key: pytest.fail("No checkpoint for passthrough"),
+    )
+    assert result.packet.evidence == [source()]
+    # A result consumer must not mutate the plan's later passthrough result.
+    result.packet.evidence.clear()
+    assert before.execute(complete=selected).packet.evidence == [source()]
+
+
+def test_source_section_and_call_limits_reject_during_planning():
+    originals = [source(text="diagnostic " * 3000)]
+    with pytest.raises(CompressionError, match="source section budget"):
+        plan(
+            originals,
+            budget=CompressionBudget(
+                output_tokens=1024, max_sections=1, section_tokens=1200
+            ),
+        )
+    with pytest.raises(CompressionError, match="call budget"):
+        plan(
+            originals,
+            budget=CompressionBudget(
+                output_tokens=1024, max_calls=1, section_tokens=1200
+            ),
+        )
+
+
+@pytest.mark.parametrize("mapping", [MappingProxyType, UserDict])
+def test_plan_preserves_schema_mapping_api_and_direct_cache_replay(mapping):
+    originals = [source(text="approval required. " + "diagnostic " * 650)]
+    schema = {"type": "object", "properties": {"points": {"type": "array"}}}
+    prepared = plan(originals, response_schema=mapping(schema))
+    assert prepared.witness == plan(originals, response_schema=schema).witness
+    cache = {}
+    result = prepared.execute(complete=selected, save=cache.__setitem__)
+    replay = run(
+        originals,
+        response_schema=mapping(schema),
+        complete=lambda _call: pytest.fail(
+            "Mapping schema must preserve cache identity"
+        ),
+        load=cache.get,
+    )
+    assert replay.calls == 0 and replay.cache_hits == result.calls
+    assert replay.packet == result.packet
