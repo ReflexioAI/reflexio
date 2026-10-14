@@ -95,7 +95,7 @@ def _response(action, *, revise=False):
     }
 
 
-@pytest.fixture(params=["1.51.0", "1.52.0", "1.53.0"])
+@pytest.fixture(params=["1.51.0", "1.52.0", "1.53.0", "1.54.0"])
 def protected_native(monkeypatch, request):
     """Real coordinator/client/parser; only provider transport and storage are fake."""
     for name in provider_env_vars():
@@ -249,7 +249,11 @@ def test_protected_native_single_preserves_actual_raw_and_publication_policy(
     assert messages[1]["content"] == EVIDENCE_SCOPE_POLICY
     assert original["rationale"] in messages[-1]["content"]
     assert "protected_source_origins" in messages[-1]["content"]
-    assert fixture.requests[0]["temperature"] == 0
+    version = fixture.reviewer.request_context.prompt_manager.get_active_version(
+        "playbook_candidate_review"
+    )
+    assert fixture.requests[0]["temperature"] == (1 if version == "1.54.0" else 0)
+    assert fixture.requests[0].get("top_p") == (0.95 if version == "1.54.0" else None)
     if survivors:
         assert survivors[0].content == original["content"]
         assert survivors[0].rationale == original["rationale"]

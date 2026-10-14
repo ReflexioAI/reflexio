@@ -188,7 +188,10 @@ def project(
         originals
     ):
         raise ValueError("Exact candidate accounting required")
-    source_subquotes = json.loads(data["profile"]).get("prompt_version") == "1.53.0"
+    source_subquotes = json.loads(data["profile"]).get("prompt_version") in {
+        "1.53.0",
+        "1.54.0",
+    }
     public = PlaybookCandidateReviewOutput(
         decisions=[
             _project_decision(decision, data, source_subquotes=source_subquotes)
@@ -472,6 +475,16 @@ _DISPATCH_FIELDS = (
 )
 
 
+def _sampling_settings(reviewer: PlaybookCandidateReviewer) -> dict[str, float]:
+    """Version-bound experiment settings; never mutate the shared client config."""
+    version = reviewer.request_context.prompt_manager.get_active_version(
+        reviewer.PROMPT_ID
+    )
+    if version == "1.54.0":
+        return {"temperature": 1.0, "top_p": 0.95}
+    return {"temperature": 0.0, "top_p": reviewer.client.config.top_p}
+
+
 def _dispatch_settings(
     reviewer: PlaybookCandidateReviewer,
     model: str,
@@ -487,10 +500,13 @@ def _dispatch_settings(
         seed = int(env_str("REFLEXIO_LLM_SEED", "42"))
     except ValueError:
         seed = 42
+    sampling = _sampling_settings(reviewer)
     expected: dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "temperature": 1.0 if client._is_temperature_restricted_model(model) else 0.0,
+        "temperature": 1.0
+        if client._is_temperature_restricted_model(model)
+        else sampling["temperature"],
         "seed": seed,
     }
     cap = (
@@ -502,8 +518,8 @@ def _dispatch_settings(
         cap = default_max_tokens_for_model(model)
     if cap:
         expected["max_tokens"] = cap
-    if client.config.top_p != 1.0:
-        expected["top_p"] = client.config.top_p
+    if sampling["top_p"] != 1.0:
+        expected["top_p"] = sampling["top_p"]
     if reviewer.reasoning_effort is not None:
         expected["extra_body"] = {
             "reasoning_effort": reviewer.reasoning_effort,
@@ -687,6 +703,7 @@ def review_native(
         # Whitelist nonsecret inference identity. Never dump APIKeyConfig or
         # credential values into prompts, caches, logs or repair messages.
         model = client._resolve_primary_model(None, ModelRole.GENERATION)
+        sampling = _sampling_settings(reviewer)
         profile = json.dumps(
             {
                 "prompt_version": prompt_version,
@@ -700,13 +717,15 @@ def review_native(
                 "hard_timeout_grace": client._hard_timeout_grace_seconds(),
                 "configured_max_tokens": client.config.max_tokens,
                 "max_tokens": reviewer.max_tokens,
-                "requested_temperature": 0,
+                "requested_temperature": sampling["temperature"],
                 "effective_temperatures": {
-                    name: 1.0 if client._is_temperature_restricted_model(name) else 0.0
+                    name: 1.0
+                    if client._is_temperature_restricted_model(name)
+                    else sampling["temperature"]
                     for name in client._resolve_ladder(model_role=ModelRole.GENERATION)
                 },
                 "ladder": client._resolve_ladder(model_role=ModelRole.GENERATION),
-                "top_p": client.config.top_p,
+                "top_p": sampling["top_p"],
                 "reasoning_effort": reviewer.reasoning_effort,
                 "policy": reviewer.request_context.prompt_manager.render_prompt(
                     reviewer.PROMPT_ID, {}
@@ -895,15 +914,18 @@ def review_native(
             return (str(error),)
         return ()
 
+    sampling = _sampling_settings(reviewer)
     options: dict[str, Any] = {
         "model_role": ModelRole.GENERATION,
         "max_retries": 0,
-        "temperature": 0,
+        "temperature": sampling["temperature"],
         "response_format": SurvivorReviewOutput,
         "parse_structured_output": True,
         "structured_output_validator": validate,
         "provider_request_guard": admission,
     }
+    if sampling["top_p"] != 1.0:
+        options["top_p"] = sampling["top_p"]
     if reviewer.max_tokens is not None:
         options["max_tokens"] = reviewer.max_tokens
     if reviewer.reasoning_effort is not None:

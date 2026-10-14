@@ -190,7 +190,7 @@ def _decide(reviewer: PlaybookCandidateReviewer, sources, candidate):
     )
 
 
-@pytest.mark.parametrize("version", ["1.51.0", "1.52.0", "1.53.0"])
+@pytest.mark.parametrize("version", ["1.51.0", "1.52.0", "1.53.0", "1.54.0"])
 def test_actual_tool_supply_repair_preserves_core_and_uses_neutral_assignment(
     monkeypatch,
     version,
@@ -224,8 +224,16 @@ def test_actual_tool_supply_repair_preserves_core_and_uses_neutral_assignment(
     assert "same complete truthful" in feedback
     assert "highest original defect" in feedback
     assert "do not discard" in feedback
-    assert all(request["temperature"] == 0 for request in requests)
+    assert all(
+        request["temperature"] == (1 if version == "1.54.0" else 0)
+        for request in requests
+    )
+    assert all(
+        request.get("top_p") == (0.95 if version == "1.54.0" else None)
+        for request in requests
+    )
     assert reviewer.client.config.temperature == 0.7
+    assert reviewer.client.config.top_p == 1
     assert isinstance(outcome.native_output, SurvivorReviewOutput)
     assert outcome.native_output is parsed[-1]
     assert outcome.native_output.model_dump(mode="json") == correct
@@ -250,7 +258,7 @@ def test_actual_tool_supply_repair_preserves_core_and_uses_neutral_assignment(
     assert PromptManager().get_active_version("playbook_candidate_review") == "1.3.0"
 
 
-@pytest.mark.parametrize("version", ["1.51.0", "1.52.0", "1.53.0"])
+@pytest.mark.parametrize("version", ["1.51.0", "1.52.0", "1.53.0", "1.54.0"])
 @pytest.mark.parametrize(
     "premise_kind", ["task_assignment", "user_instruction", "prerequisite"]
 )
@@ -293,10 +301,10 @@ def test_literal_premise_subquote_preserves_raw_source_and_saved_fields(
 
     outcome = _decide(reviewer, sources, candidate)
 
-    assert len(requests) == (1 if version == "1.53.0" else 2)
+    assert len(requests) == (1 if version in {"1.53.0", "1.54.0"} else 2)
     assert outcome.native_output is not None
     assert outcome.native_output.model_dump(mode="json") == (
-        raw if version == "1.53.0" else exact
+        raw if version in {"1.53.0", "1.54.0"} else exact
     )
     survivor = reviewer.apply_decisions(candidates=[candidate], outcome=outcome)[0]
     assert survivor.content == _ACTION
@@ -419,12 +427,22 @@ def test_native_outcome_corruption_is_refused_before_application(
 
 @pytest.mark.parametrize(
     "field",
-    ["temperature", "max_tokens", "response_format", "messages", "appended_message"],
+    [
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "response_format",
+        "messages",
+        "appended_message",
+    ],
 )
+@pytest.mark.parametrize("version", ["1.51.0", "1.54.0"])
 def test_chained_guard_cannot_change_bound_dispatch_before_transport(
-    monkeypatch, field
+    monkeypatch, field, version
 ):
-    reviewer, requests = _actual_reviewer(monkeypatch, [_assignment_response()])
+    reviewer, requests = _actual_reviewer(
+        monkeypatch, [_assignment_response()], version=version
+    )
     reviewer.client.config.fallback_models = ["gpt-4o"]
     guard_calls = []
 
@@ -432,6 +450,8 @@ def test_chained_guard_cannot_change_bound_dispatch_before_transport(
         guard_calls.append(params["model"])
         if field == "temperature":
             params[field] = 0.8
+        elif field == "top_p":
+            params[field] = 0.5
         elif field == "max_tokens":
             params[field] = 123
         elif field == "response_format":
@@ -479,7 +499,7 @@ def test_same_version_policy_drift_after_transport_is_not_repaired_or_fallen_bac
     assert len(requests) == 1
 
 
-@pytest.mark.parametrize("version", ["1.51.0", "1.52.0", "1.53.0"])
+@pytest.mark.parametrize("version", ["1.51.0", "1.52.0", "1.53.0", "1.54.0"])
 def test_native_version_change_after_transport_stops_without_repair_or_fallback(
     monkeypatch, version
 ):
@@ -506,10 +526,15 @@ def test_native_version_change_after_transport_stops_without_repair_or_fallback(
     assert len(requests) == 1
 
 
-def test_configured_cross_strategy_fallback_preserves_native_review(monkeypatch):
+@pytest.mark.parametrize("version", ["1.51.0", "1.54.0"])
+def test_configured_cross_strategy_fallback_preserves_native_review(
+    monkeypatch, version
+):
     correct = _assignment_response()
     reviewer, requests = _actual_reviewer(
-        monkeypatch, [ConnectionError("Synthetic primary unavailable"), correct]
+        monkeypatch,
+        [ConnectionError("Synthetic primary unavailable"), correct],
+        version=version,
     )
     reviewer.client.config.fallback_models = ["gpt-4o"]
     sources, candidate = _source_and_candidate()
@@ -521,10 +546,21 @@ def test_configured_cross_strategy_fallback_preserves_native_review(monkeypatch)
     ]
     assert requests[0]["response_format"]["type"] == "json_object"
     assert requests[1]["response_format"]["type"] == "json_schema"
-    assert all(request["temperature"] == 0 for request in requests)
+    assert all(
+        request["temperature"] == (1 if version == "1.54.0" else 0)
+        for request in requests
+    )
     assert outcome.native_output is not None
     assert outcome.native_output.model_dump(mode="json") == correct
     assert outcome.validated_projection_sha256
     survivor = reviewer.apply_decisions(candidates=[candidate], outcome=outcome)[0]
     assert survivor.content == _ACTION
     assert survivor.source_interaction_ids == [1]
+
+
+def test_sampling_experiment_keeps_rendered_policy_identical():
+    previous = PromptManager(version_override={"playbook_candidate_review": "1.53.0"})
+    experiment = PromptManager(version_override={"playbook_candidate_review": "1.54.0"})
+    assert previous.render_prompt(
+        "playbook_candidate_review", {}
+    ) == experiment.render_prompt("playbook_candidate_review", {})

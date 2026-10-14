@@ -364,3 +364,5 @@ their original content, trigger, rationale and generation provenance. Ordinary
 non-overflow review continues to support revisions. A fully covered window may
 complete with no new learnings when every draft is unsupported or already covered
 by existing rules; original inputs and existing learning constraints stay intact.
+
+Inactive v1.54 keeps v1.53 policy/schema and tests per-call temperature 1 / top_p 0.95; default and shared client configuration are unchanged.

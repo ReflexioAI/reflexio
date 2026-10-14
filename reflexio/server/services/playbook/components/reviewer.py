@@ -950,6 +950,7 @@ class PlaybookCandidateReviewer:
             "1.51.0",
             "1.52.0",
             "1.53.0",
+            "1.54.0",
         }:
             from reflexio.server.services.playbook.components.reviewer_native import (
                 review_native,
