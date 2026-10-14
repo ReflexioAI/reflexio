@@ -315,6 +315,13 @@ class LiteLLMClient(TextGenerationMixin, EmbeddingMixin, StructuredOutputMixin):
         if kwargs.get("fallback_models") is None:
             kwargs.pop("fallback_models", None)
         params = self._build_completion_params(messages=[], **kwargs)[0]
+        return self._completion_request_contract_from_params(params)
+
+    @staticmethod
+    def _completion_request_contract_from_params(
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        """One normalization for the public probe and internal transport guards."""
         contract = {
             key: params.get(key)
             for key in (

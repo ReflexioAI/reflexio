@@ -11,13 +11,17 @@ from reflexio.models.api_schema.common import ToolUsed
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import Interaction, Request
 from reflexio.server.llm import ProviderRequestGuardError
+from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.token_accounting import RunTokenCapture, run_token_capture
 from reflexio.server.services.extraction.compression import compress_extraction_window
 from reflexio.server.services.input_compression import (
     CompressionBudget,
     EvidenceSource,
 )
-from reflexio.server.services.input_compression_llm import compress_with_client
+from reflexio.server.services.input_compression_llm import (
+    compress_with_client,
+    plan_with_client,
+)
 
 
 def client(monkeypatch, callback=None) -> Any:
@@ -31,12 +35,21 @@ def client(monkeypatch, callback=None) -> Any:
         {
             "model": fake.config.model,
             "max_tokens": kwargs["max_tokens"],
+            "messages": kwargs["messages"],
+            **({"extra_body": kwargs["extra_body"]} if "extra_body" in kwargs else {}),
         },
         None,
         False,
         0,
         [],
     )
+
+    fake.get_completion_request_contract = lambda **kwargs: (
+        LiteLLMClient._completion_request_contract_from_params(
+            fake._build_completion_params(messages=[], **kwargs)[0]
+        )
+    )
+    fake.get_completion_model_ladder = lambda **_kwargs: (fake.config.model,)
 
     def generate(messages, **kwargs):
         schema = kwargs["response_format"].model_json_schema()
@@ -333,6 +346,8 @@ def test_cache_identity_tracks_actual_seed_sampling_and_endpoint(monkeypatch):
         {
             "model": fake.config.model,
             "max_tokens": kwargs["max_tokens"],
+            "messages": kwargs["messages"],
+            **({"extra_body": kwargs["extra_body"]} if "extra_body" in kwargs else {}),
             **state,
         },
         None,
@@ -353,7 +368,10 @@ def test_cache_identity_tracks_actual_seed_sampling_and_endpoint(monkeypatch):
         "user_id": "alice",
         "budget": CompressionBudget(output_tokens=1024),
         "client": fake,
-        "context_limits": {},
+        "context_limits": {
+            "minimax/MiniMax-M3@https://endpoint.example/v1": 512000,
+            "minimax/MiniMax-M3@https://other.example/v1": 512000,
+        },
         "load": load,
     }
     original = group()
@@ -836,3 +854,258 @@ def test_cached_result_cannot_escape_a_revoked_lease(monkeypatch):
             },
         )
     fake.generate_chat_response.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ["minimax/MiniMax-M3", "gpt-4o-mini", "gpt-5.4-mini"])
+def test_native_preparation_prices_actual_requests_without_dispatch_or_usage(
+    monkeypatch,
+    model,
+):
+    import reflexio.server.services.input_compression_llm as native
+
+    actual_client = LiteLLMClient(LiteLLMConfig(model=model, max_tokens=8192))
+    transport = Mock(side_effect=AssertionError("No provider in planning"))
+    monkeypatch.setattr(actual_client, "_completion_with_hard_timeout", transport)
+    checks = []
+    check_budget = native.check_request_input_budget
+
+    def check(params, **kwargs):
+        checks.append(params)
+        return check_budget(params, **kwargs)
+
+    monkeypatch.setattr(native, "check_request_input_budget", check)
+    parent = RunTokenCapture()
+    token = run_token_capture.set(parent)
+    try:
+        prepared = plan_with_client(
+            [
+                EvidenceSource(
+                    source_id="source",
+                    request_id="request",
+                    interaction_id=1,
+                    field="content",
+                    speaker="User",
+                    source_order=1,
+                    text="approval required for staging. " + "diagnostic " * 1700,
+                )
+            ],
+            scope={"org_id": "org", "project_id": "project", "user_id": "alice"},
+            policy="extraction",
+            budget=CompressionBudget(output_tokens=1024, section_tokens=1200),
+            client=actual_client,
+            context_limits={actual_client.config.model: 512000},
+        )
+        assert prepared.compression.sections > 1
+        assert len(checks) == prepared.compression.sections
+        assert all(
+            p.get("max_completion_tokens", p.get("max_tokens")) == 8192 for p in checks
+        )
+        if model == "minimax/MiniMax-M3":
+            assert all(
+                p["extra_body"]["thinking"] == {"type": "disabled"} for p in checks
+            )
+        assert all(p["messages"] for p in checks)
+        assert run_token_capture.get() is parent and parent.completions == 0
+        assert "approval" not in repr(prepared)
+    finally:
+        run_token_capture.reset(token)
+    transport.assert_not_called()
+
+
+@pytest.mark.unit
+def test_native_preparation_overflow_refuses_before_provider_and_cache(monkeypatch):
+    from reflexio.server.llm.input_budget import InputBudgetExceededError
+
+    actual_client = LiteLLMClient(
+        LiteLLMConfig(model="minimax/MiniMax-M3", max_tokens=8192)
+    )
+    transport = Mock(side_effect=AssertionError("Over-budget input cannot dispatch"))
+    monkeypatch.setattr(actual_client, "_completion_with_hard_timeout", transport)
+    with pytest.raises(InputBudgetExceededError):
+        plan_with_client(
+            [
+                EvidenceSource(
+                    source_id="source",
+                    request_id="request",
+                    interaction_id=1,
+                    field="content",
+                    speaker="User",
+                    source_order=1,
+                    text="diagnostic " * 1700,
+                )
+            ],
+            scope={"org_id": "org", "project_id": "project", "user_id": "alice"},
+            policy="extraction",
+            budget=CompressionBudget(output_tokens=1024),
+            client=actual_client,
+            context_limits={actual_client.config.model: 8192},
+        )
+    transport.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("drift", ["model", "seed", "policy", "prompt"])
+def test_native_plan_rejects_contract_drift_before_cached_selection(monkeypatch, drift):
+    fake = client(monkeypatch)
+    state = {}
+    original_builder = fake._build_completion_params
+
+    def builder(**kwargs):
+        result = original_builder(**kwargs)
+        return ({**result[0], **state}, *result[1:])
+
+    fake._build_completion_params = builder
+    prepared = plan_with_client(
+        [
+            EvidenceSource(
+                source_id="source",
+                request_id="request",
+                interaction_id=1,
+                field="content",
+                speaker="User",
+                source_order=1,
+                text="approval " + "diagnostic " * 1700,
+            )
+        ],
+        scope={"org_id": "org", "project_id": "project", "user_id": "alice"},
+        policy="extraction",
+        budget=CompressionBudget(output_tokens=1024),
+        client=fake,
+        context_limits={fake.config.model: 512000},
+    )
+    if drift == "model":
+        fake.config.model = "different"
+    elif drift == "seed":
+        state["seed"] = 99
+    elif drift == "policy":
+        state["frequency_penalty"] = 0.5
+    else:
+        # Message augmentation is excluded from the policy descriptor but
+        # included in the native leaf witness.
+        def augment(**kwargs):
+            result = builder(**kwargs)
+            return (
+                {
+                    **result[0],
+                    "messages": [
+                        *result[0]["messages"],
+                        {"role": "system", "content": "changed"},
+                    ],
+                },
+                *result[1:],
+            )
+
+        fake._build_completion_params = augment
+    before = Mock()
+    load = Mock()
+    with pytest.raises(ProviderRequestGuardError, match="changed"):
+        prepared.execute(before_call=before, load=load)
+    before.assert_not_called()
+    load.assert_not_called()
+    fake.generate_chat_response.assert_not_called()
+
+
+@pytest.mark.unit
+def test_actual_native_repair_overflow_stops_before_second_transport(monkeypatch):
+    import litellm
+
+    from reflexio.server.llm.input_budget import InputBudgetExceededError
+
+    actual_client = LiteLLMClient(
+        LiteLLMConfig(model="minimax/MiniMax-M3", max_tokens=8192, fallback_models=[])
+    )
+    requests = []
+
+    def count(*, messages=None, **_kwargs):
+        # Initial requests fit. A real parse correction adds its own messages.
+        return 40000 if messages and len(messages) > 2 else 100
+
+    monkeypatch.setattr("reflexio.server.llm.input_budget.litellm.token_counter", count)
+
+    def transport(params, _timeout):
+        requests.append(params)
+        return litellm.ModelResponse(
+            choices=[
+                {
+                    "message": {"role": "assistant", "content": "not valid JSON"},
+                    "finish_reason": "stop",
+                }
+            ],
+            usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+        )
+
+    monkeypatch.setattr(actual_client, "_completion_with_hard_timeout", transport)
+    prepared = plan_with_client(
+        [
+            EvidenceSource(
+                source_id="source",
+                request_id="request",
+                interaction_id=1,
+                field="content",
+                speaker="User",
+                source_order=1,
+                text="diagnostic " * 1700,
+            )
+        ],
+        scope={"org_id": "org", "project_id": "project", "user_id": "alice"},
+        policy="extraction",
+        budget=CompressionBudget(output_tokens=1024),
+        client=actual_client,
+        context_limits={actual_client.config.model: 512000},
+    )
+    before = Mock()
+    with pytest.raises(InputBudgetExceededError):
+        prepared.execute(before_call=before)
+    assert len(requests) == before.call_count == 1
+
+
+@pytest.mark.unit
+def test_native_prepared_cache_replay_preserves_keys_usage_and_parent_capture(
+    monkeypatch,
+):
+    fake = client(monkeypatch)
+    contexts = {fake.config.model: 512000}
+    options = {
+        "scope": {"org_id": "org", "project_id": "project", "user_id": "alice"},
+        "policy": "extraction",
+        "budget": CompressionBudget(output_tokens=1024),
+        "client": fake,
+        "context_limits": contexts,
+    }
+    sources = [
+        EvidenceSource(
+            source_id="source",
+            request_id="request",
+            interaction_id=1,
+            field="content",
+            speaker="User",
+            source_order=1,
+            text="approval " + "diagnostic " * 1700,
+        )
+    ]
+    prepared = plan_with_client(sources, **options)
+    contexts.clear()  # A caller's later edit cannot change admitted capacity.
+    cache = {}
+    before = Mock()
+    parent = RunTokenCapture()
+    token = run_token_capture.set(parent)
+    try:
+        result = prepared.execute(before_call=before, save=cache.__setitem__)
+        assert result.provider_attempts == before.call_count > 0
+        assert parent.completions == result.provider_attempts
+        paid_prompt_tokens = parent.totals.prompt_tokens
+        fake.generate_chat_response.reset_mock()
+        before.reset_mock()
+        replay = prepared.execute(before_call=before, load=cache.get)
+        assert replay.packet == result.packet
+        assert replay.cache_hits == result.calls and replay.calls == 0
+        assert replay.provider_attempts == 0
+        assert replay.provider_input_tokens == replay.provider_output_tokens == 0
+        assert parent.completions == result.provider_attempts
+        assert parent.totals.prompt_tokens == paid_prompt_tokens
+        assert run_token_capture.get() is parent
+        before.assert_not_called()
+        fake.generate_chat_response.assert_not_called()
+    finally:
+        run_token_capture.reset(token)

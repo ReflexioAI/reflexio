@@ -850,3 +850,35 @@ def test_plan_preserves_schema_mapping_api_and_direct_cache_replay(mapping):
     )
     assert replay.calls == 0 and replay.cache_hits == result.calls
     assert replay.packet == result.packet
+
+
+@pytest.mark.parametrize("large", [False, True])
+def test_plan_request_checker_receives_exact_fresh_leaf_messages(large):
+    originals = [
+        source(text="approval required. " + "diagnostic " * (1700 if large else 1))
+    ]
+    prepared = plan(originals)
+    checked = []
+
+    def check(messages):
+        checked.append(json.loads(json.dumps(messages)))
+        messages.clear()
+
+    witness = prepared.witness
+    prepared.check_requests(check)
+    assert len(checked) == prepared.sections
+    fresh = []
+    prepared.check_requests(fresh.append)
+    assert fresh == checked and prepared.witness == witness
+    actual = []
+
+    def complete(call):
+        actual.append(call.messages)
+        return selected(call)
+
+    result = prepared.execute(complete=complete)
+    assert actual[: prepared.sections] == checked
+    if not large:
+        assert prepared.passthrough and not checked and not actual
+    else:
+        assert prepared.sections > 1 and result.sections == len(checked)
