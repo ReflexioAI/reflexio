@@ -24,6 +24,9 @@ _REQUEST_COUNT = 0
 def _read_rss_mb() -> float | None:
     """Return the current process's resident set size in MiB, or None.
 
+    Called on the event loop by ``/healthz``; on Linux psutil reads
+    ``/proc/self/stat`` and ``/proc/self/statm`` (procfs, no disk I/O).
+
     Returns:
         float | None: RSS in MiB; None when psutil is unavailable.
     """
@@ -72,8 +75,15 @@ def install(app: FastAPI) -> None:
         return await call_next(request)
 
     @app.get("/healthz")
-    def healthz() -> dict[str, Any]:
-        """Return per-worker process metrics for liveness/observability."""
+    async def healthz() -> dict[str, Any]:
+        """Return per-worker process metrics for liveness/observability.
+
+        ``async`` on purpose: this is the container liveness probe, and a sync
+        handler runs on the AnyIO threadpool, where it queues behind every
+        handler blocked on a stalled database. The probe then times out and
+        the orchestrator kills a process that is merely waiting. The body is
+        loop-safe: module globals plus a tiny ``/proc`` read for RSS.
+        """
         return {
             "pid": os.getpid(),
             "uptime_sec": time.monotonic() - _STARTED_AT,
