@@ -57,12 +57,19 @@ def root() -> dict[str, str]:
     }
 
 
+# Decorators apply bottom-up: ``/health`` registers first, keeping its place.
+@router.get("/health/ready", response_model=None)
 @router.get("/health", response_model=None)
 async def health_check(
     response: Response,
     readiness: ReadinessResponse = Depends(default_readiness),
 ) -> dict:
-    """Return host readiness without performing dependency I/O."""
+    """Return host readiness without performing dependency I/O.
+
+    Served at ``/health/ready``. ``/health`` is a deprecated alias with the
+    identical behaviour (200 ready / 503 not ready), kept because load
+    balancers and uptime checks still probe it.
+    """
     response.status_code = 200 if readiness.status == "healthy" else 503
     response.headers["Cache-Control"] = "no-store"
     return readiness.model_dump(

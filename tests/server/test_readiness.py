@@ -26,3 +26,22 @@ def test_health_is_app_scoped_and_standalone_shape_is_preserved():
             response.json()["checks"]["database"]["reason"] == "dependency_unavailable"
         )
         assert oss.get("/health").status_code == 200
+
+
+def test_health_ready_mirrors_health_in_both_states():
+    """``/health/ready`` IS the readiness handler; ``/health`` is its alias."""
+    standalone, enterprise = FastAPI(), FastAPI()
+    for app in (standalone, enterprise):
+        app.include_router(router)
+    enterprise.state.readiness_provider = lambda: ReadinessResponse(
+        status="unhealthy",
+        checks={
+            "database": ReadinessCheck(status="failed", reason="dependency_unavailable")
+        },
+    )
+    with TestClient(standalone) as oss, TestClient(enterprise) as hosted:
+        for client, status in ((oss, 200), (hosted, 503)):
+            alias, ready = client.get("/health"), client.get("/health/ready")
+            assert ready.status_code == alias.status_code == status
+            assert ready.json() == alias.json()
+            assert ready.headers["Cache-Control"] == "no-store"

@@ -122,10 +122,16 @@ def backstop_for(path: str, wait_for_response: bool) -> float:
 
 SUSPICIOUS_USER_AGENTS = ["bot", "crawler", "spider", "scraper", "curl", "wget"]
 # Probe paths exempt from every user-agent check (empty AND suspicious UAs such
-# as curl). ``/livez`` is the dependency-free liveness probe that container
-# health checks run with ``curl``; ``/healthz`` is its predecessor, kept for
-# compatibility; ``/health`` is the readiness probe.
-ALLOWED_EMPTY_UA_PATHS = ["/health", "/healthz", "/livez", "/"]
+# as curl, which health checks run). ``/health/live`` is liveness and
+# ``/health/ready`` readiness; ``/healthz`` and ``/health`` are their deprecated
+# aliases.
+ALLOWED_EMPTY_UA_PATHS = [
+    "/health",
+    "/health/live",
+    "/health/ready",
+    "/healthz",
+    "/",
+]
 DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024
 
 

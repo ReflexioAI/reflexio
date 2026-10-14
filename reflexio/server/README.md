@@ -129,14 +129,14 @@ Compose the shared HTTP API, resolve request dependencies, and coordinate durabl
 | `request_context.py` | RequestContext (bundles org_id, storage, configurator, prompt_manager) |
 | `publisher_api.py` | Publishing interactions plus direct create/update/delete helpers for profiles, playbooks, requests, sessions, and clear-data operations |
 | `account_api.py` | Account/config identity helpers used by `/api/whoami` and related account surfaces |
-| `health_api.py` | `/livez` (liveness), `/healthz` (process metrics) and `/healthz/eval` health checks |
+| `health_api.py` | `/health/live` (liveness), `/healthz` (deprecated alias) and `/healthz/eval` health checks |
 | `pending_tool_call_api.py` | Pending tool-call and human-clarification routes for resumable extraction |
 | `stall_state_api.py` | Stall-state read/update routes |
 | `precondition_checks.py` | Request validation |
 
 **Key Endpoints**:
 
-- **Health/version**: `GET /`, `GET /health`, `GET /livez`, `GET /healthz`, `GET /healthz/eval`, `GET /meta/version`
+- **Health/version**: `GET /`, `GET /health/live`, `GET /health/ready`, `GET /health` and `GET /healthz` (deprecated aliases), `GET /healthz/eval`, `GET /meta/version`
 - **Identity/config**: `GET /api/whoami`, `GET /api/my_config`, `GET /api/get_config`, `POST /api/set_config`, `POST /api/update_config`
 - **Provenance**: `POST /api/get_learning_provenance`
 - **Publish/direct writes**: `POST /api/publish_interaction`, `POST /api/add_user_profile`, `POST /api/add_user_playbook`, `POST /api/add_agent_playbook`
@@ -781,9 +781,19 @@ Standalone `GET /health` keeps its existing healthy response. Application hosts
 can set `app.state.readiness_provider` to a callable returning `ReadinessResponse`
 from `models/api_schema/readiness.py`; the route reads that cached snapshot and
 returns 503 for unhealthy hosts. The provider performs no dependency I/O during
-a health request. `/livez` is process liveness: async, dependency-free and
-I/O-free, so container health checks should probe it rather than `/health`.
-`/healthz` (per-process metrics) stays available for compatibility.
+a health request.
+
+| Path | Meaning | Status |
+| --- | --- | --- |
+| `GET /health/live` | Liveness: the process is up and its event loop is serving. Async, no I/O, always 200 while alive. | current |
+| `GET /health/ready` | Readiness: the cached snapshot above; 200 ready, 503 not ready, `Cache-Control: no-store`. | current |
+| `GET /health` | Same handler as `/health/ready`. | deprecated alias |
+| `GET /healthz` | Liveness with per-process metrics (pid, uptime, request count, RSS). | deprecated alias |
+
+Anything that kills or replaces a process on a failed check (a container
+health check, or a load balancer whose failures make the orchestrator replace
+tasks) must probe `/health/live`; probing readiness there turns a dependency
+blip into replaced processes. Routing and uptime decisions use `/health/ready`.
 
 Hosts can raise `ReadinessUnavailableError` for temporarily unqualified vector
 operations. Resumable extraction keeps these runs queued without spending the

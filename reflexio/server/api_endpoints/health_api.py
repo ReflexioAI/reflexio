@@ -1,7 +1,7 @@
 """Health-check endpoints and per-process metrics.
 
-Exposes ``GET /livez`` (dependency-free liveness for container health checks)
-and ``GET /healthz`` returning a small JSON payload useful for verifying
+Exposes ``GET /health/live`` (liveness: the process is up and serving) and
+``GET /healthz`` (a deprecated alias kept for compatibility) returning a small JSON payload useful for verifying
 worker recycling (each worker has its own PID + request count). The middleware
 that increments ``request_count`` is per-process — counts are NOT synchronized
 across workers, which is intentional: it lets operators see load distribution
@@ -63,7 +63,7 @@ def _liveness_from_tick(last_tick_monotonic: float | None) -> str:
 
 
 def install(app: FastAPI) -> None:
-    """Install the /healthz, /livez and /healthz/eval routes and request-count middleware.
+    """Install the liveness routes, /healthz/eval and request-count middleware.
 
     Args:
         app (FastAPI): The FastAPI application to attach to.
@@ -77,12 +77,12 @@ def install(app: FastAPI) -> None:
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
-        """Return per-worker process metrics for observability.
+        """Deprecated alias for liveness; use ``/health/live``.
 
-        ``async`` so it answers while the AnyIO threadpool is saturated: older
-        deployments probe it for liveness, and ``/livez`` falls back to it on
-        images that predate ``/livez``. The body is loop-safe: module globals
-        plus a tiny ``/proc`` read for RSS.
+        Kept, unchanged, for existing callers: it returns per-worker process
+        metrics. ``async`` so it answers while the AnyIO threadpool is
+        saturated; the body is loop-safe (module globals plus a tiny ``/proc``
+        read for RSS).
         """
         return {
             "pid": os.getpid(),
@@ -91,15 +91,15 @@ def install(app: FastAPI) -> None:
             "rss_mb": _read_rss_mb(),
         }
 
-    @app.get("/livez")
-    async def livez() -> dict[str, str]:
+    @app.get("/health/live")
+    async def health_live() -> dict[str, str]:
         """Liveness: the process is up and its event loop is serving.
 
-        The container health check probes this. It is dependency-free on
-        purpose: ``/health`` is readiness and returns 503 while a dependency is
-        degraded, and an orchestrator kills a task whose liveness check fails.
-        ``async`` and I/O-free, so it does not queue on the AnyIO threadpool
-        behind handlers blocked on a stalled database.
+        Dependency-free on purpose. ``/health/ready`` is readiness and returns
+        503 while a dependency is degraded; an orchestrator that kills on a
+        failed check must probe this instead, or a database blip gets healthy
+        processes replaced. ``async`` and I/O-free, so it does not queue on the
+        AnyIO threadpool behind handlers blocked on a stalled database.
         """
         return {"status": "alive"}
 
