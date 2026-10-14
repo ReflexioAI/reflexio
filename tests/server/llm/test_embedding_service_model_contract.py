@@ -7,6 +7,12 @@ from reflexio.server.llm import embedding_service
 from reflexio.server.llm.embedding_service import create_embedding_app
 
 
+@pytest.fixture(autouse=True)
+def isolated_daemon_model(monkeypatch):
+    """Each test represents a separate daemon process with its own model."""
+    monkeypatch.setattr(embedding_service, "_ACTIVE_MODEL", None)
+
+
 @pytest.mark.parametrize("query_only", [False, True])
 def test_factory_exposes_pinned_identity_and_actual_workload(monkeypatch, query_only):
     monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "false")
