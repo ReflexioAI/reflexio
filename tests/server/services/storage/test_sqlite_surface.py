@@ -1,7 +1,7 @@
 """Surface guard: SQLiteStorage public methods vs BaseStorage ABC.
 
 Asserts that SQLiteStorage exposes the full BaseStorage public interface plus
-only the explicitly-allowed RetentionMixin extras.  This is the OSS-side
+only the explicitly-allowed retention and aggregation-preparation extras.  This is the OSS-side
 drop-a-method tripwire for the playbook decomposition.
 """
 
@@ -45,6 +45,15 @@ _RETENTION_MIXIN_METHODS: frozenset[str] = frozenset(
     }
 )
 
+# The aggregator discovers these paired optional hooks on the concrete backend.
+# Keeping them outside the ABC preserves legacy backend behavior and avoids
+# advertising prepared persistence on a backend that still computes during save.
+_AGGREGATION_PREPARATION_METHODS: frozenset[str] = frozenset(
+    {"prepare_agent_playbooks_for_save", "save_prepared_agent_playbooks"}
+)
+_ALLOWED_EXTRAS = _RETENTION_MIXIN_METHODS | _AGGREGATION_PREPARATION_METHODS
+
+
 _HELPER_METHODS: frozenset[str] = frozenset({"close", "handle_exceptions"})
 
 
@@ -59,27 +68,27 @@ def _public_methods(cls: type) -> frozenset[str]:
 
 
 def test_sqlite_surface_matches_base_abc() -> None:
-    """SQLiteStorage public surface == BaseStorage ABC + RetentionMixin allowlist.
+    """SQLiteStorage public surface == ABC plus explicit optional capabilities.
 
     Fails if any method is dropped from or added to SQLiteStorage without a
-    matching update to BaseStorage.  The allowlist captures the retention
-    helpers that are intentionally on SQLiteStorage but not on the ABC.
+    matching update to BaseStorage.  The allowlist captures capabilities intentionally implemented by SQLite
+    without requiring them on legacy backend subclasses.
     """
     sqlite_methods = _public_methods(SQLiteStorage)
     base_methods = _public_methods(BaseStorage)
 
     # Membership guard: fail if a retention-allowlisted method is dropped from
     # SQLiteStorage (the subtraction check below stays green in that case).
-    assert _RETENTION_MIXIN_METHODS.issubset(sqlite_methods), (
-        f"Retention allowlist contains methods absent from SQLiteStorage: "
-        f"{_RETENTION_MIXIN_METHODS - sqlite_methods}"
+    assert _ALLOWED_EXTRAS.issubset(sqlite_methods), (
+        f"Optional capability allowlist contains methods absent from SQLiteStorage: "
+        f"{_ALLOWED_EXTRAS - sqlite_methods}"
     )
 
-    assert sqlite_methods - _RETENTION_MIXIN_METHODS == base_methods, (
+    assert sqlite_methods - _ALLOWED_EXTRAS == base_methods, (
         f"SQLiteStorage method delta vs BaseStorage ABC "
-        f"(retention allowlist={_RETENTION_MIXIN_METHODS}):\n"
+        f"(optional capabilities={_ALLOWED_EXTRAS}):\n"
         f"  extra sqlite (not in allowlist): "
-        f"{sqlite_methods - base_methods - _RETENTION_MIXIN_METHODS}\n"
+        f"{sqlite_methods - base_methods - _ALLOWED_EXTRAS}\n"
         f"  extra base (missing in sqlite): {base_methods - sqlite_methods}"
     )
 

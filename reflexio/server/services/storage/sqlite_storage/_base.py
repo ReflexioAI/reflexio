@@ -1020,9 +1020,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             try:
                 return func(*args, **kwargs)
-            except StorageError:
-                raise
             except Exception as e:
+                args[0]._rollback_owned_transaction()
+                if isinstance(e, StorageError):
+                    raise
                 import traceback
 
                 stack_trace = traceback.format_exc()
@@ -1143,6 +1144,12 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         """True when the caller is NOT inside a commit_scope (owns its BEGIN/commit)."""
         return self._scope_depth == 0
 
+    def _rollback_owned_transaction(self) -> None:
+        """Release a failed standalone write without undoing an outer scope."""
+        with self._lock:
+            if self._own_transaction():
+                self.conn.rollback()
+
     @contextlib.contextmanager
     def commit_scope(self) -> Generator[None, None, None]:
         """Group writes into one atomic commit; defer FTS/vec index ops.
@@ -1172,7 +1179,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 ops, self._deferred_index_ops = self._deferred_index_ops, []
                 for kind, args in ops:
                     self._flush_index_op(kind, args)  # self-commits — fine post-commit
-            except Exception:
+            except BaseException:
                 self.conn.rollback()
                 self._deferred_index_ops = []
                 raise
@@ -3194,10 +3201,14 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self, sql: str, params: tuple[Any, ...] | list[Any] = ()
     ) -> sqlite3.Cursor:
         with self._lock:
-            cur = self.conn.execute(sql, params)
-            if self._own_transaction():
-                self.conn.commit()
-            return cur
+            try:
+                cur = self.conn.execute(sql, params)
+                if self._own_transaction():
+                    self.conn.commit()
+                return cur
+            except BaseException:
+                self._rollback_owned_transaction()
+                raise
 
     def _fetchone(
         self, sql: str, params: tuple[Any, ...] | list[Any] = ()
