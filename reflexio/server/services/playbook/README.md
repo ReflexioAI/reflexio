@@ -395,3 +395,9 @@ values before commit, so cached metadata cannot skip the derived scheduler hando
 One-chunk protocol work retains accept-unchanged/discard-revision review, and
 ordinary non-overflow review still supports revisions. Fully scanned windows may
 complete with zero new rows; originals and existing learnings remain intact.
+
+Automatic consolidation requests an internal, default-off source-quoted exclusion
+before storage candidate limits (SQLite and enterprise PostgreSQL retrieval).
+Ordinary user search still returns these original instructions. Source-projection
+create lineage names every original interaction ID; cached plans missing that
+lineage fail closed without rewriting saved events or resetting the attempt budget.

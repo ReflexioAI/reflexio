@@ -2536,6 +2536,8 @@ def payload(request_id, count=10, user_id="u", force=False):
         "clock_cache",
         "embedding_outage",
         "missing_cache",
+        "empty_lineage_cache",
+        "replaced_lineage_cache",
         "null_cache",
         "version_cache",
         "token_cache",
@@ -2702,6 +2704,10 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
                 assert row["outcome"] is None
             if replay == "missing_cache":
                 del outcome["write_plan"]["lineage_contexts"]
+            if replay in {"empty_lineage_cache", "replaced_lineage_cache"}:
+                outcome["write_plan"]["lineage_contexts"][0]["source_ids"] = (
+                    [] if replay == "empty_lineage_cache" else ["unrelated-source"]
+                )
             if replay == "null_cache":
                 outcome["write_plan"]["new_playbooks"] = None
             outcome_mutations = {
@@ -2791,6 +2797,16 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
         assert new.embedding and new.expanded_terms is None
         assert started_at <= new.created_at <= int(time.time())
         assert "User corrected" not in new.notes
+        events = storage.get_lineage_events(
+            entity_type="user_playbook", entity_id=str(new.user_playbook_id)
+        )
+        assert len(events) == 1
+        assert events[0].op == "create" and events[0].prov_relation == "wasGeneratedBy"
+        assert events[0].source_ids == [
+            str(value) for value in new.source_interaction_ids
+        ]
+        assert len(events[0].source_ids) == 1
+        assert events[0].request_id == new.request_id
     if replay in {
         "clean",
         "empty",
@@ -2834,10 +2850,15 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
         ] == count_input_tokens(
             "\n".join(item["content"] for item in body["interaction_data_list"])
         )
+        lineage_before_replay = storage.get_lineage_events(entity_type="user_playbook")
         worker.drain_org("stream-test", 1, 300)  # May claim one final empty turn.
         assert len(storage.get_user_playbooks(user_id="u")) == expected
         token_bill.assert_called_once()
         learning_bill.assert_called_once()
+        assert (
+            storage.get_lineage_events(entity_type="user_playbook")
+            == lineage_before_replay
+        )
     else:
         status = client.get(
             "/api/learning_status", params={"request_id": "source-quote"}

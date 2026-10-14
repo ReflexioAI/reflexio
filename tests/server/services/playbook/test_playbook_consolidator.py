@@ -316,6 +316,7 @@ class TestRetrieveExistingPlaybooks:
         storage._get_embedding.return_value = [0.1, 0.2, 0.3]
         storage.search_user_playbooks.return_value = [copied, ordinary]
         assert mock_consolidator.retrieve_existing_playbooks([candidate]) == [ordinary]
+        assert storage.search_user_playbooks.call_args.args[1].exclude_source_quoted
 
     def test_audited_prefetched_inputs_also_exclude_copied_instructions(
         self, mock_consolidator, monkeypatch

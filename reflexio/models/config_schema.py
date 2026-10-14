@@ -188,6 +188,8 @@ class SearchOptions:
     rrf_k: int = field(default=60)
     vector_weight: float = field(default=1.0)
     fts_weight: float = field(default=1.0)
+    # Automatic consolidation excludes verbatim recovery rows before top-k.
+    exclude_source_quoted: bool = field(default=False)
 
 
 class StorageConfigTest(IntEnum):

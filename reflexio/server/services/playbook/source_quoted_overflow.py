@@ -360,8 +360,9 @@ def compute_source_quoted_plan(
                     op_kind="create",
                     actor="source_projection",
                     request_id=receipt["request_id"],
+                    source_ids=[str(value) for value in row.source_interaction_ids],
                 )
-                for _ in rows
+                for row in rows
             ],
         )
         if rows
@@ -421,8 +422,9 @@ def validate_source_quoted_plan(
                         op_kind="create",
                         actor="source_projection",
                         request_id=expected["request_id"],
+                        source_ids=[str(value) for value in row.source_interaction_ids],
                     )
-                    for _ in rows
+                    for row in rows
                 ]
             )
         )

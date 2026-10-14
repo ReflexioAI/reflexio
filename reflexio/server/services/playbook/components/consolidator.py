@@ -708,7 +708,9 @@ class PlaybookConsolidator(BaseDeduplicator):
                     threshold=self._dedup_config.search_threshold,
                     top_k=self._dedup_config.search_top_k,
                 )
-                search_options = SearchOptions(query_embedding=embeddings[i])
+                search_options = SearchOptions(
+                    query_embedding=embeddings[i], exclude_source_quoted=True
+                )
                 results = storage.search_user_playbooks(  # type: ignore[reportOptionalMemberAccess]
                     search_request, search_options
                 )
