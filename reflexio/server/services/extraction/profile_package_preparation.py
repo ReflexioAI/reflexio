@@ -368,7 +368,10 @@ def prepare_profile_package(
         "templates": templates,
         "prior_context": prior,
         "tools": tools,
-        "pending_tool_config": pending_tool_config.model_dump(mode="json")
+        "pending_tool_config": {
+            **pending_tool_config.model_dump(mode="json", exclude={"hmac_secrets"}),
+            "hmac_secrets_digest": _digest(pending_tool_config.hmac_secrets),
+        }
         if pending_tools_active and pending_tool_config is not None
         else None,
         "consumer": consumer,

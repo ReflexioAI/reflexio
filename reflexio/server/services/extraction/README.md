@@ -441,6 +441,9 @@ Preparation freezes template identities, selected existing-profile context,
 actual pending-tool specs/configuration, original output schemas, native full
 ladders and generation-contract hashes. Potentially credential-bearing route
 descriptors and context-limit keys are hashed, not copied into the snapshot.
+Pending-tool signing secrets are also excluded; only their configuration digest
+is retained. A future runtime must obtain actual secrets from live approved
+configuration rather than reconstructing credentials from this private snapshot.
 The real request builder runs inside a temporary dispatch-refusing extraction
 guard, preserving native output-reservation/model-policy order and restoring
 the enclosing guard on both success and failure. No provider or quota callback

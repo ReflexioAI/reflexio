@@ -220,7 +220,10 @@ def test_fixed_native_request_overflow_refuses_before_provider(monkeypatch):
     wire.assert_not_called()
 
 
-def test_custom_route_credentials_are_not_in_preparation_snapshot(monkeypatch):
+@pytest.mark.parametrize("pending_active", [False, True])
+def test_custom_route_credentials_are_not_in_preparation_snapshot(
+    monkeypatch, pending_active
+):
     route = "https://example.invalid/v1?token=private-route-secret"
     client = LiteLLMClient(
         LiteLLMConfig(
@@ -238,12 +241,52 @@ def test_custom_route_credentials_are_not_in_preparation_snapshot(monkeypatch):
         )
     )
     prepared, _ = preparation(
-        monkeypatch, client=client, context_limits={f"openai/private@{route}": 60000}
+        monkeypatch,
+        client=client,
+        context_limits={f"openai/private@{route}": 60000},
+        pending_tools_active=pending_active,
+        pending_tool_config=PendingToolCallConfig(
+            hmac_secrets=["configured-hmac-secret"]
+        ),
     )
     snapshot = canonical_json(prepared.snapshot)
     assert "private-route-secret" not in snapshot
     assert "private-api-key" not in snapshot
+    assert "configured-hmac-secret" not in snapshot
+    if pending_active:
+        assert "hmac_secrets" not in prepared.snapshot["pending_tool_config"]
+        assert (
+            len(prepared.snapshot["pending_tool_config"]["hmac_secrets_digest"]) == 64
+        )
+    else:
+        assert prepared.snapshot["pending_tool_config"] is None
     assert prepared.snapshot["consumer"]["ladders"]["agent"] == ["openai/private"]
+
+
+def test_signing_secret_rotation_changes_only_its_frozen_digest(monkeypatch):
+    original = group()
+    options = {"groups": [original], "pending_tools_active": True}
+    first, _ = preparation(
+        monkeypatch,
+        **options,
+        pending_tool_config=PendingToolCallConfig(
+            hmac_secrets=["first-signing-secret"]
+        ),
+    )
+    second, _ = preparation(
+        monkeypatch,
+        **options,
+        pending_tool_config=PendingToolCallConfig(
+            hmac_secrets=["rotated-signing-secret", "first-signing-secret"]
+        ),
+    )
+    assert first.agent_messages("source") == second.agent_messages("source")
+    before, after = first.snapshot, second.snapshot
+    assert before["pending_tool_config"].pop("hmac_secrets_digest") != after[
+        "pending_tool_config"
+    ].pop("hmac_secrets_digest")
+    assert before == after
+    assert first.contract_digest != second.contract_digest
 
 
 @pytest.mark.parametrize(
