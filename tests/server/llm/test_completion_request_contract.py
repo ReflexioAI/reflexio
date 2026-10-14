@@ -32,6 +32,8 @@ KEYS = (
         {"max_tokens": 1024, "temperature": 0},
         {"model_role": ModelRole.EXTRACTION_AGENT},
         {"max_tokens": None},
+        {"fallback_models": None},
+        {"fallback_models": []},
     ],
 )
 def test_contract_matches_actual_builder_and_preserves_none_keys(
@@ -54,7 +56,12 @@ def test_contract_matches_actual_builder_and_preserves_none_keys(
             ),
         )
     )
-    params = client._build_completion_params(messages=[], **overrides)[0]
+    forwarded = Mock(return_value=object())
+    monkeypatch.setattr(client, "_make_request", forwarded)
+    client.generate_chat_response_with_provenance([], **overrides)
+    params = client._build_completion_params(messages=[], **forwarded.call_args.kwargs)[
+        0
+    ]
     identity = client.get_completion_request_contract(**overrides)
     assert identity == {key: params.get(key) for key in KEYS}
     assert tuple(identity) == KEYS
@@ -138,11 +145,16 @@ def test_public_ladder_uses_actual_deduped_resolver_without_dispatch(
     )
     assert client.get_completion_model_ladder() == ("gpt-4o-mini", "gpt-4o")
     options = {"fallback_models": override}
+    forwarded = Mock(return_value=object())
+    monkeypatch.setattr(client, "_make_request", forwarded)
+    client.generate_chat_response_with_provenance([], **options)
+    effective = forwarded.call_args.kwargs
+    assert ("fallback_models" in effective) is (override is not None)
     assert client.get_completion_model_ladder(**options) == tuple(
-        client._resolve_ladder(**options)
+        client._resolve_ladder(**effective)
     )
     assert client.get_completion_model_ladder(**options) == (
-        ("gpt-4o-mini", "gpt-4o") if override else ("gpt-4o-mini",)
+        ("gpt-4o-mini",) if override == [] else ("gpt-4o-mini", "gpt-4o")
     )
     dispatch.assert_not_called()
 

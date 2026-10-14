@@ -295,11 +295,14 @@ class LiteLLMClient(TextGenerationMixin, EmbeddingMixin, StructuredOutputMixin):
 
         Accepts the same per-call generation overrides (including model_role,
         max_tokens and temperature); messages are intentionally an empty probe.
-        Forward overrides unchanged, including explicit None values. Fixed keys
-        and absent values are stable for internal admission comparison/hashing.
+        Generation overrides preserve explicit None values; fallback_models=None
+        uses configured fallbacks, as in public chat generation. Fixed keys and
+        absent values are stable for internal admission comparison/hashing.
         API keys, messages and observability metadata are excluded, but route
         URLs can contain credentials: do not log or expose this descriptor.
         """
+        if kwargs.get("fallback_models") is None:
+            kwargs.pop("fallback_models", None)
         params = self._build_completion_params(messages=[], **kwargs)[0]
         return {
             key: params.get(key)
@@ -321,10 +324,12 @@ class LiteLLMClient(TextGenerationMixin, EmbeddingMixin, StructuredOutputMixin):
         """Resolve the ordered transport ladder without provider dispatch.
 
         Forward the same effective per-call overrides used for generation,
-        including model, model_role and fallback_models. Explicit None/empty
-        fallback overrides retain the resolver's semantics. This describes
+        including model, model_role and fallback_models. As in public chat
+        generation, None uses configured fallbacks and [] disables them. This describes
         distinct network rungs, not retries or structured repair attempts.
         """
+        if kwargs.get("fallback_models") is None:
+            kwargs.pop("fallback_models", None)
         return tuple(self._resolve_ladder(**kwargs))
 
     def get_config(self) -> LiteLLMConfig:

@@ -227,7 +227,9 @@ Key files:
 - `get_completion_model_ladder()` returns an immutable ordered tuple from the
   native generation resolver, applying role precedence, custom endpoint pinning
   and fallback deduplication. Pass the same effective overrides as generation;
-  its length counts distinct transport rungs, not repair/retry attempts. Both
+  `fallback_models=None` uses configured fallbacks, while `[]` disables them,
+  matching public chat generation. Its length counts transport rungs, not
+  repair/retry attempts. Both
   descriptors resolve configuration only and never call providers.
 - **Structured Outputs**: Supports Pydantic models via `response_format` parameter
 - **Structured-output repair**: `generate_chat_response(..., response_format=..., structured_output_validator=...)` opts a call into bounded corrective repair. The validator receives the parsed Pydantic object and returns semantic errors; an empty list means valid. Opted-in calls repair malformed, blank, and semantically invalid outputs with one same-model corrective follow-up. If that still fails and `REFLEXIO_LLM_FALLBACK_MODELS` has an eligible network fallback, one final corrective turn is sent to the first eligible fallback model. Exhaustion raises `StructuredOutputRepairError` with the latest raw response and validation errors for programmatic handling; `parsed_output` is the most recent attempt that parsed at all, which may be an earlier attempt when the final response fails parsing — do not treat it as metadata of the latest raw response. Exception text does not include raw output.
