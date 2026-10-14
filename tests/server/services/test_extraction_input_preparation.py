@@ -295,3 +295,129 @@ def test_v3_origin_preserves_request_source_independently_of_transcript_role(pro
         )
         <= 8192
     )
+
+
+@pytest.mark.parametrize(
+    ("overlap", "attribution", "chunk_hash"),
+    [
+        (
+            False,
+            False,
+            "d4c8a9913217ae6a87d2526fede57e0d053d92777db8f3b73d929c99e895ee71",
+        ),
+        (
+            False,
+            True,
+            "ef219464d9378c552e9480845571176c49a89f9cd76c63cb97b784511e6badb3",
+        ),
+        (
+            True,
+            False,
+            "346bf4f5460dbab7643be06862e264168a3fbff84c8d4b9af01addb3d4c1180b",
+        ),
+        (
+            True,
+            True,
+            "83bdd0e156e389b0e839e0c4227b1800f4b91171fc9c0a5bc32579336097eece",
+        ),
+    ],
+)
+def test_legacy_journal_source_and_chunk_bytes_survive_collection_refactor(
+    overlap, attribution, chunk_hash
+):
+    """Golden values were computed from pre-refactor OSS5e903cfe."""
+    import hashlib
+
+    from reflexio.models.api_schema.service_schemas import ToolUsed
+
+    group = RequestInteractionDataModel(
+        session_id="s",
+        request=Request(
+            user_id="u",
+            request_id="r",
+            session_id="s",
+            source="coding_agent",
+            created_at=0,
+        ),
+        interactions=[
+            Interaction(
+                user_id="u",
+                request_id="r",
+                interaction_id=1,
+                role="User",
+                created_at=0,
+                content="汉字 🦊 approval\n" * 700,
+                shadow_content="shadow\n",
+                expert_content="expert",
+                user_action_description="action",
+                tools_used=[
+                    ToolUsed(tool_name="test", tool_data={"a": 'quoted\\"\n' * 100})
+                ],
+            ),
+            Interaction(
+                user_id="u",
+                request_id="r",
+                interaction_id=2,
+                role="Assistant",
+                created_at=0,
+                content="",
+            ),
+        ],
+    )
+    result = prepare_extraction_input(
+        [group],
+        user_id="u",
+        require_overlap=overlap,
+        include_request_source=attribution,
+        chunk_tokens=3000,
+    )
+    assert (
+        result.source_digest
+        == "3a043992bbcc26084ac6f1b5f359488ccaf23874bbf768bc3b4482705c173cbe"
+    )
+    assert (
+        hashlib.sha256("".join(c.text for c in result.chunks).encode()).hexdigest()
+        == chunk_hash
+    )
+
+
+def test_legacy_chunk_rejection_does_not_hash_later_interactions(monkeypatch):
+    from reflexio.server.services.extraction import input_preparation as module
+
+    group = RequestInteractionDataModel(
+        session_id="s",
+        request=Request(user_id="u", request_id="r", session_id="s"),
+        interactions=[
+            Interaction(
+                user_id="u",
+                request_id="r",
+                interaction_id=1,
+                role="User",
+                content="long output " * 5000,
+            ),
+            Interaction(
+                user_id="u",
+                request_id="r",
+                interaction_id=2,
+                role="Assistant",
+                content="Later source must not be serialized.",
+            ),
+        ],
+    )
+    original = module.source_witness_bytes
+    seen = []
+
+    def witness(request, interaction):
+        seen.append(interaction.interaction_id)
+        assert interaction.interaction_id == 1
+        return original(request, interaction)
+
+    monkeypatch.setattr(module, "source_witness_bytes", witness)
+    with pytest.raises(module.ExtractionInputBudgetExceededError):
+        module.prepare_extraction_input(
+            [group], user_id="u", chunk_tokens=512, span_tokens=128, max_chunks=1
+        )
+    assert seen == [1]
+    with pytest.raises(module.ExtractionInputBudgetExceededError, match="byte limit"):
+        module.collect_extraction_sources([group], user_id="u", max_source_bytes=10)
+    assert seen == [1, 1]

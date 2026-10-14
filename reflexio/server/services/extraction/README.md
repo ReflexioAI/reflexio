@@ -22,7 +22,8 @@ information, and resumes outside the request path.
 | `recovery.py` | Content-free inspection and strict preview manifests for explicitly selected saved-output recovery. Never opens the scheduler gate. |
 | `resume_worker.py` | Resumes paused runs, rebuilds request context, and records retry state. Finalization uses an immutable run-keyed receipt so learning writes and retry billing reuse the same persisted IDs. |
 | `outcome.py` | Provides the generic extraction outcome wrapper used by callers. |
-| `input_preparation.py` | Builds bounded, lossless text chunks with original field/character spans before legacy clipping. |
+| `input_preparation.py` | Ownership-checked field collection and bounded, lossless legacy chunks with original field/character spans. The new collector does not impose legacy chunk geometry. |
+| `compression.py` | Qualification adapter for the shared compressor; restores original range references and checks window authority before and after preparation. Does not select a production worker protocol. |
 | `protected_record.py` | Accumulates source-verified quotations for cross-chunk context; capacity failure never silently removes an earlier correction. |
 | `protected_pass.py` | Builds that context with checkpointed source-validated model passes; keeps scoped approvals and reported versus observed outcomes distinct. Bounded repair feedback identifies invalid quotation entries without disclosing source text; inner-JSON escaping and exact spelling remain source invariants. |
 | `overflow_coordinator.py` | Owns scoped provider admission, monotonic durable attempt reservations, immutable step receipts and historical observed usage. Never publishes child learnings. |
@@ -199,3 +200,58 @@ Native overflow requests without a configured output cap explicitly request the
 model's advertised output maximum before admission. Configured caps are preserved;
 custom endpoints require their own positive request/client cap and context
 capacity declaration. Other calls retain their original provider defaults.
+
+## Shared input compression (qualification protocol)
+
+`reflexio.server.services.input_compression` implements bounded, source-backed
+hierarchical compression with fixed `extraction` and `offline_tuning` policies.
+`extraction.compression.compress_extraction_window` prepares every original text
+field through the existing ownership-checked input preparation, including tool
+payloads. It returns an evidence package, never a learning or write plan.
+Its result's `source_digest` is the canonical complete-window witness, including
+empty interactions; the core compressor's internal DTO digest only binds caches.
+When all original conversation-content fields together occupy at most half the
+actual output budget, the window adapter preserves them unchanged. Tool evidence
+uses the remaining space; every intermediate and final measurement includes
+these preserved fields. Their witness also binds cached selections. This avoids
+making short instructions, approvals and assistant qualifications compete with
+thousands of tool results. It does not establish human authorship from a role,
+or guarantee preservation when conversation content itself is too large.
+
+Inputs already fitting the caller's output renderer bypass model work. Larger
+inputs are split at Unicode character boundaries, independently compressed in
+bounded sections and combined in chronological pairs. A fitting union avoids
+another model call. Intermediate products must fit the next request; the root
+retains the full final output budget. Source reading and calls remain capped.
+
+Model prompts hoist shared source origins and use short evidence IDs. Exact
+duplicate text may reference its first displayed occurrence, without merging
+source identities or chronology. The server copies selected original spans and
+restores full references; input-origin metadata remains server-owned.
+The guarded LLM seam requests only brief labels and evidence-reference groups,
+never generated factual descriptions, summaries, unresolved-status claims or
+omission claims. The host supplies fixed navigation text and measured omission
+metadata. Preserved conversation fields have their own host-created group.
+Every cached selection is revalidated against the current visible source and
+the caller's actual output renderer. Cache identities bind scope, source,
+policy/schema, effective model route/generation settings and rendering contract.
+
+`input_compression_llm.compress_with_client` checks actual provider requests,
+including repairs, preserves the parent token capture and scoped durable guard,
+and distinguishes observed provider usage from proxy token estimates. The new
+complete-input target is 32,768 tokens with the existing 20% margin and output
+reservation. This does not silently change the old overflow guard's 65,536-token
+default or upgrade an admitted extraction journal.
+
+These are separately callable qualification adapters, not a new default worker
+protocol. Existing extraction publication, source-quoted recovery branches,
+cursor/billing effects and human continuations are not switched by importing
+them. A successful source scan and exact citations do not prove semantic recall.
+Wiring new admissions requires downstream extraction qualification and a new
+versioned journal contract; old admitted runs must retain their original policy.
+
+Whole-point packing retains all citations of an accepted point together and
+reports omitted points rather than repeatedly asking the provider to count its
+copied quotations. This is a bounded partial result, not proof of semantic
+completeness: a model can still place counterevidence in a separate dropped
+point. Exact-source and downstream quality qualification remain required.
