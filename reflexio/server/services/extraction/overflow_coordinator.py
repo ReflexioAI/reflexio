@@ -309,6 +309,13 @@ class OverflowCoordinator:
         return True
 
     @property
+    def package_protocol(self) -> dict[str, Any]:
+        """Return the frozen package descriptor without exposing mutable state."""
+        if self._manifest["version"] != 2:
+            raise InputBudgetConfigurationError("Extraction is not package protocol")
+        return copy.deepcopy(self._manifest["input_protocol"])
+
+    @property
     def checkpoint(self) -> dict[str, Any]:
         with self._lock:
             return copy.deepcopy(self._manifest.get("checkpoint", {}))
