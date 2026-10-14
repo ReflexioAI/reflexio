@@ -436,6 +436,8 @@ answer witnesses. It writes no journal and grants no authority: admission and
 publication must still validate answer lifetime and source/lease ownership.
 `prepare_profile_package` rejects a capture from a different seed or retrieval
 policy rather than repeating lookup after compression.
+Its required `source` argument is the actual service/run trigger, including
+None for a rerun; it must not be inferred from the newest original request.
 
 Preparation freezes template identities, selected existing-profile context,
 actual pending-tool specs/configuration, original output schemas, native full

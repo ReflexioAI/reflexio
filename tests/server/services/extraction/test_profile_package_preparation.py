@@ -127,6 +127,7 @@ def preparation(monkeypatch, **overrides: Any):
             "org_id": "org",
             "project_id": "project",
             "user_id": "alice",
+            "source": original.request.source,
             "client": client,
             "context_limits": {model: 131072},
             "prompt_manager": PromptManager(),
@@ -451,8 +452,9 @@ def test_resolved_fallbacks_reserve_stage_caps_and_smaller_context_lowers_ceilin
     }
 
 
+@pytest.mark.parametrize("trigger_source", ["coding_agent", "historical_source", None])
 def test_captured_full_prior_suffix_is_priced_and_never_looked_up_again(
-    monkeypatch, prior_storage
+    monkeypatch, prior_storage, trigger_source
 ):
     from reflexio.server.services.extraction.prior_answer_search import (
         capture_prior_knowledge_context,
@@ -461,11 +463,17 @@ def test_captured_full_prior_suffix_is_priced_and_never_looked_up_again(
     prior_tests._capture_record(prior_storage)
     original = group()
     original.interactions[0].content = "Production requires separate approval."
+    older = original.model_copy(deep=True)
+    older.request.request_id = "older-request"
+    older.request.source = "historical_source"
+    older.interactions[0].request_id = "older-request"
+    older.interactions[0].interaction_id = 2
+    groups = [older, original]
     config = ProfileExtractorConfig(extraction_definition_prompt="Stable preferences")
     tools_config = PendingToolCallConfig()
     seed = profile_package_original_seed(
         prompt_manager=PromptManager(),
-        groups=[original],
+        groups=groups,
         existing_profiles=[],
         agent_context="Agent context",
         extractor_config=config,
@@ -476,7 +484,7 @@ def test_captured_full_prior_suffix_is_priced_and_never_looked_up_again(
         org_id="org_1",
         extractor_kind="profile",
         extractor_config=config,
-        source=original.request.source,
+        source=trigger_source,
         agent_version=None,
         similarity_threshold=tools_config.for_tool(
             "attach_pending_info_request"
@@ -489,8 +497,9 @@ def test_captured_full_prior_suffix_is_priced_and_never_looked_up_again(
     )
     prepared, _ = preparation(
         monkeypatch,
-        groups=[original],
+        groups=groups,
         org_id="org_1",
+        source=trigger_source,
         extractor_config=config,
         prior_context=captured,
         pending_tools_active=True,
@@ -506,9 +515,20 @@ def test_captured_full_prior_suffix_is_priced_and_never_looked_up_again(
     with pytest.raises(InputBudgetConfigurationError, match="lookup contract"):
         preparation(
             monkeypatch,
-            groups=[original],
+            groups=groups,
             org_id="org_1",
+            source=trigger_source,
             agent_context="different context",
+            prior_context=captured,
+            pending_tools_active=True,
+            pending_tool_config=tools_config,
+        )
+    with pytest.raises(InputBudgetConfigurationError, match="lookup contract"):
+        preparation(
+            monkeypatch,
+            groups=groups,
+            org_id="org_1",
+            source="wrong-trigger",
             prior_context=captured,
             pending_tools_active=True,
             pending_tool_config=tools_config,

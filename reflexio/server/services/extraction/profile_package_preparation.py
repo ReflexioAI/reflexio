@@ -202,6 +202,7 @@ def prepare_profile_package(
     org_id: str,
     project_id: str,
     user_id: str,
+    source: str | None,
     client: LiteLLMClient,
     context_limits: Mapping[str, int],
     prompt_manager: PromptManager,
@@ -218,7 +219,9 @@ def prepare_profile_package(
     """Price full gate/agent input across native ladders before compression.
 
     ``gate_enabled`` and ``pending_tools_active`` are the caller's already
-    resolved feature/configuration decisions. Existing-profile selection belongs
+    resolved feature/configuration decisions. ``source`` is the actual run's
+    triggering source, including None for reruns, not the newest original row.
+    Existing-profile selection belongs
     to the caller; pass the same selected context as the actual extractor.
     Dedup's dynamic NEW/OLD prompt must still be frozen and checked at dispatch.
     This is preparation, not a complete consumer/runtime qualification.
@@ -251,7 +254,7 @@ def prepare_profile_package(
         query = build_knowledge_need_query(
             extractor_kind="profile",
             extractor_config=config,
-            source=groups[-1].request.source if groups else None,
+            source=source,
             agent_version=None,
             messages=profile_package_original_seed(
                 prompt_manager=prompt_manager,
@@ -362,6 +365,7 @@ def prepare_profile_package(
         "org_id": org_id,
         "project_id": project_id,
         "user_id": user_id,
+        "source": source,
         "extractor_config": config.model_dump(mode="json"),
         "context_profiles": [profile.model_dump(mode="json") for profile in profiles],
         "agent_context": agent_context,
