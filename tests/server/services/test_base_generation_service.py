@@ -732,27 +732,6 @@ class TestRun:
 
 
 # ===============================
-# Helper: Mock Operation State Storage
-# ===============================
-
-
-def create_mock_operation_state_storage():
-    """Create a mock storage that tracks operation state properly."""
-    state_store = {}
-
-    def get_operation_state(service_name):
-        return state_store.get(service_name)
-
-    def upsert_operation_state(service_name, state):
-        state_store[service_name] = {"operation_state": state}
-
-    def update_operation_state(service_name, state):
-        state_store[service_name] = {"operation_state": state}
-
-    return get_operation_state, upsert_operation_state, update_operation_state
-
-
-# ===============================
 # Test: run_rerun()
 # ===============================
 
@@ -768,11 +747,7 @@ class TestRunRerun:
             extractor_configs=[MockExtractorConfig(extractor_name="extractor1")],
         )
 
-        # Set up mock storage that tracks state properly
-        get_state, upsert_state, update_state = create_mock_operation_state_storage()
-        service.storage.get_operation_state = get_state
-        service.storage.upsert_operation_state = upsert_state
-        service.storage.update_operation_state = update_state
+        # Exercise the real isolated SQLite atomic progress store.
 
         request = MagicMock()
         request.interactions = [
@@ -823,8 +798,6 @@ class TestRunRerun:
             extractor_configs=[MockExtractorConfig(extractor_name="extractor1")],
         )
 
-        service.storage.get_operation_state = MagicMock(return_value=None)
-
         request = MagicMock()
         request.interactions = []
 
@@ -841,11 +814,7 @@ class TestRunRerun:
             extractor_configs=[MockExtractorConfig(extractor_name="extractor1")],
         )
 
-        # Set up mock storage that tracks state properly
-        get_state, upsert_state, update_state = create_mock_operation_state_storage()
-        service.storage.get_operation_state = get_state
-        service.storage.upsert_operation_state = upsert_state
-        service.storage.update_operation_state = update_state
+        # Exercise the real isolated SQLite atomic progress store.
 
         request = MagicMock()
         request.interactions = [
@@ -1123,11 +1092,7 @@ class TestErrorHandling:
             extractor_configs=[MockExtractorConfig(extractor_name="extractor1")],
         )
 
-        # Set up mock storage that tracks state properly
-        get_state, upsert_state, update_state = create_mock_operation_state_storage()
-        service.storage.get_operation_state = get_state
-        service.storage.upsert_operation_state = upsert_state
-        service.storage.update_operation_state = update_state
+        # Exercise the real isolated SQLite atomic progress store.
 
         request = MagicMock()
         request.interactions = [
@@ -1585,32 +1550,17 @@ class TestCancellationInBatch:
             extractor_configs=[MockExtractorConfig(extractor_name="extractor1")],
         )
 
-        # Set up mock storage that tracks operation state and simulates cancellation
-        # via a separate cancellation key (matching the new implementation)
-        state_store = {}
-        cancellation_key = "test_generation::test_org::cancellation"
+        original_run = service.run
+        processed = 0
 
-        def get_state(key):
-            return state_store.get(key)
+        def run_and_cancel(request):
+            nonlocal processed
+            original_run(request)
+            processed += 1
+            if processed == 1:
+                assert service._create_state_manager().request_cancellation()
 
-        def upsert_state(key, state):
-            state_store[key] = {"operation_state": state}
-
-        def update_state(key, state):
-            # After processing user1, simulate cancellation being requested
-            # by writing to the separate cancellation key
-            if (
-                state.get("current_user_id") is None
-                and len(state.get("processed_user_ids", [])) >= 1
-            ):
-                state_store[cancellation_key] = {
-                    "operation_state": {"cancellation_requested": True}
-                }
-            state_store[key] = {"operation_state": state}
-
-        service.storage.get_operation_state = get_state
-        service.storage.upsert_operation_state = upsert_state
-        service.storage.update_operation_state = update_state
+        service.run = run_and_cancel
 
         request = MagicMock()
         request.interactions = [
@@ -1633,27 +1583,10 @@ class TestCancellationInBatch:
             extractor_configs=[MockExtractorConfig(extractor_name="extractor1")],
         )
 
-        # Set up initial state as CANCELLED
-        state_store = {}
-        progress_key = "test_generation::test_org::progress"
-        state_store[progress_key] = {
-            "operation_state": {
-                "status": "cancelled",
-            }
-        }
-
-        def get_state(key):
-            return state_store.get(key)
-
-        def upsert_state(key, state):
-            state_store[key] = {"operation_state": state}
-
-        def update_state(key, state):
-            state_store[key] = {"operation_state": state}
-
-        service.storage.get_operation_state = get_state
-        service.storage.upsert_operation_state = upsert_state
-        service.storage.update_operation_state = update_state
+        # Persist prior cancellation through the actual isolated storage contract.
+        service.storage.upsert_operation_state(
+            "test_generation::test_org::progress", {"status": "cancelled"}
+        )
 
         request = MagicMock()
         request.interactions = [
@@ -1672,10 +1605,7 @@ class TestCancellationInBatch:
             extractor_configs=[MockExtractorConfig(extractor_name="extractor1")],
         )
 
-        get_state, upsert_state, update_state = create_mock_operation_state_storage()
-        service.storage.get_operation_state = get_state
-        service.storage.upsert_operation_state = upsert_state
-        service.storage.update_operation_state = update_state
+        # Exercise the real isolated SQLite atomic progress store.
 
         request = MagicMock()
         request.interactions = [

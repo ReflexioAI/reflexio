@@ -31,6 +31,7 @@ class OperationMixin:
     _fetchone: Any
     _fetchall: Any
     _current_timestamp: Any
+    commit_scope: Any
 
     # ------------------------------------------------------------------
     # Operation State methods
@@ -281,7 +282,8 @@ class OperationMixin:
         stale_lock_seconds: int = 300,
         payload: dict | None = None,
     ) -> dict:
-        with self._lock:
+        # BEGIN IMMEDIATE also serializes separate storage instances/processes.
+        with self.commit_scope():
             row = self._fetchone(
                 "SELECT operation_state, updated_at FROM _operation_state WHERE service_name = ?",
                 (state_key,),

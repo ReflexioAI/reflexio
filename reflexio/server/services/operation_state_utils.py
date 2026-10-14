@@ -16,6 +16,7 @@ from typing import Any
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import Interaction, OperationStatus
+from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.storage_base import BaseStorage
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ class OperationStateManager:
         self.org_id = org_id
         self.service_name = service_name
         self._simple_lock_token: str | None = None
+        self.operation_id: str | None = None
 
     # ── Key Builders (private) ──
 
@@ -64,7 +66,8 @@ class OperationStateManager:
         Returns:
             str: Key in format '{service_name}::{org_id}::cancellation'
         """
-        return f"{self.service_name}::{self.org_id}::cancellation"
+        suffix = f"::{self.operation_id}" if self.operation_id else ""
+        return f"{self.service_name}::{self.org_id}::cancellation{suffix}"
 
     def _lock_key(self, scope_id: str | None = None) -> str:
         """Build concurrency lock key.
@@ -123,6 +126,77 @@ class OperationStateManager:
     # ── Use Case 1: Progress Tracking ──
     # (Batch operations: rerun + manual)
 
+    def claim_progress(self, request_params: dict) -> bool:
+        """Reserve one batch before acknowledgement, using the existing atomic claim.
+
+        Rejected claim tokens are contention markers, as with acquire_simple_lock;
+        this progress slot never drains them. Owned writes discard the markers.
+        """
+        if self.operation_id is not None:
+            state = self.get_progress()
+            return bool(
+                state
+                and state.get("current_request_id") == self.operation_id
+                and state.get("status") == OperationStatus.IN_PROGRESS.value
+            )
+        self.operation_id = str(uuid.uuid4())
+        try:
+            result = self.storage.try_acquire_in_progress_lock(
+                self._progress_key(),
+                self.operation_id,
+                stale_lock_seconds=BATCH_STALE_PROGRESS_SECONDS,
+            )
+        except StorageError as error:
+            cause = error.__cause__
+            diagnostic = getattr(cause, "diag", None)
+            # A cold PostgreSQL slot can race in the existing RPC's initial INSERT.
+            # Retry this claim once after its transaction unwinds, never generation
+            # or an RPC inside an already-aborted outer transaction.
+            if (
+                getattr(cause, "pgcode", None) != "23505"
+                or getattr(diagnostic, "table_name", None) != "_operation_state"
+                or getattr(diagnostic, "constraint_name", None)
+                != "_operation_state_pkey"
+                or getattr(self.storage, "_scope_conn", None) is not None
+                or not self.get_progress()
+            ):
+                raise
+            result = self.storage.try_acquire_in_progress_lock(
+                self._progress_key(),
+                self.operation_id,
+                stale_lock_seconds=BATCH_STALE_PROGRESS_SECONDS,
+            )
+        if not result.get("acquired"):
+            return False
+        self.initialize_progress(total_users=0, request_params=request_params)
+        return True
+
+    def _write_progress(self, state: dict) -> None:
+        """Condition replacements on the admitted owner, including terminal writes."""
+        if self.operation_id is not None:
+            if state.get("current_request_id") != self.operation_id:
+                raise RuntimeError("Generation attempt no longer owns progress")
+            state["in_progress"] = (
+                state.get("status") == OperationStatus.IN_PROGRESS.value
+            )
+            state["pending_request_queue"] = []
+            # This storage primitive conditionally replaces the supplied state;
+            # it does not force in_progress=False, so it also fences progress writes.
+            if not self.storage.clear_in_progress_lock_if_owner(
+                self._progress_key(),
+                self.operation_id,
+                state,
+            ):
+                raise RuntimeError("Generation attempt no longer owns progress")
+        elif state.get("current_request_id"):
+            raise RuntimeError("Cannot overwrite another generation attempt")
+        else:
+            self.storage.update_operation_state(self._progress_key(), state)
+
+    def _clear_attempt_cancellation(self) -> None:
+        if self.operation_id is not None:
+            self.storage.delete_operation_state(self._cancellation_key())
+
     def check_in_progress(self) -> str | None:
         """Check if there's an existing in-progress operation.
 
@@ -138,7 +212,15 @@ class OperationStateManager:
             existing_state = existing_state_entry.get(
                 "operation_state", existing_state_entry
             )
-            if existing_state.get("status") == OperationStatus.IN_PROGRESS.value:
+            if (
+                self.operation_id is not None
+                and existing_state.get("current_request_id") == self.operation_id
+                and existing_state.get("status") == OperationStatus.IN_PROGRESS.value
+            ):
+                return None
+            if existing_state.get(
+                "status"
+            ) == OperationStatus.IN_PROGRESS.value or existing_state.get("in_progress"):
                 # Check if the operation is stale
                 started_at = existing_state.get("started_at")
                 if started_at is None:
@@ -163,7 +245,14 @@ class OperationStateManager:
                         f"Auto-recovered: operation was stuck IN_PROGRESS for {elapsed}s "
                         f"(threshold: {BATCH_STALE_PROGRESS_SECONDS}s)"
                     )
-                    self.storage.update_operation_state(key, existing_state)
+                    owner = existing_state.get("current_request_id")
+                    if owner:
+                        existing_state["in_progress"] = False
+                        self.storage.clear_in_progress_lock_if_owner(
+                            key, owner, existing_state
+                        )
+                    else:
+                        self.storage.update_operation_state(key, existing_state)
                     return None
 
                 return (
@@ -185,6 +274,18 @@ class OperationStateManager:
             request_params: Original request parameters for reference
             extra_stats: Optional additional stats fields to include
         """
+        if self.operation_id is not None:
+            existing = self.get_progress()
+            if not existing or existing.get("current_request_id") != self.operation_id:
+                raise RuntimeError("Generation attempt no longer owns progress")
+            if "stats" in existing:
+                existing["total_users"] = total_users
+                existing["request_params"] = {
+                    **request_params,
+                    "operation_id": self.operation_id,
+                }
+                self._write_progress(existing)
+                return
         stats = {
             "total_interactions_processed": 0,
             "total_generated": 0,
@@ -209,13 +310,23 @@ class OperationStateManager:
             "error_message": None,
             "progress_percentage": 0.0,
         }
-        self.storage.upsert_operation_state(key, initial_state)
+        if self.operation_id is not None:
+            # Reset before exposing IN_PROGRESS, so admission-time cancellation
+            # cannot be cleared after it has been accepted.
+            self.storage.upsert_operation_state(
+                self._cancellation_key(), {"cancellation_requested": False}
+            )
+            initial_state["current_request_id"] = self.operation_id
+            initial_state["request_params"]["operation_id"] = self.operation_id
+            self._write_progress(initial_state)
+        else:
+            self.storage.upsert_operation_state(key, initial_state)
 
-        # Clear any stale cancellation flag from a previous operation
-        cancel_key = self._cancellation_key()
-        self.storage.upsert_operation_state(
-            cancel_key, {"cancellation_requested": False}
-        )
+        # Legacy managers do not have an attempt-scoped cancellation row.
+        if self.operation_id is None:
+            self.storage.upsert_operation_state(
+                self._cancellation_key(), {"cancellation_requested": False}
+            )
 
     def set_current_item(self, item_id: str) -> None:
         """Set the current item being processed.
@@ -229,7 +340,7 @@ class OperationStateManager:
             state_entry.get("operation_state", state_entry) if state_entry else {}
         )
         current_state["current_user_id"] = item_id
-        self.storage.update_operation_state(key, current_state)
+        self._write_progress(current_state)
 
     def update_progress(
         self,
@@ -269,7 +380,7 @@ class OperationStateManager:
             current_state["processed_users"] / total_users
         ) * 100
 
-        self.storage.update_operation_state(key, current_state)
+        self._write_progress(current_state)
 
     def finalize_progress(self, total_processed: int, total_generated: int = 0) -> None:
         """Finalize statistics without hiding failed users or cancellation.
@@ -299,7 +410,8 @@ class OperationStateManager:
             final_state["progress_percentage"] = 100.0
         final_state["stats"]["total_interactions_processed"] = total_processed
         final_state["stats"]["total_generated"] = total_generated
-        self.storage.update_operation_state(key, final_state)
+        self._write_progress(final_state)
+        self._clear_attempt_cancellation()
 
     def mark_progress_failed(self, error_message: str) -> None:
         """Mark operation as FAILED with error message.
@@ -315,7 +427,8 @@ class OperationStateManager:
                 failed_state["status"] = OperationStatus.FAILED.value
                 failed_state["completed_at"] = int(datetime.now(UTC).timestamp())
                 failed_state["error_message"] = error_message
-                self.storage.update_operation_state(key, failed_state)
+                self._write_progress(failed_state)
+                self._clear_attempt_cancellation()
         except Exception:  # noqa: S110
             pass  # Ignore errors updating state during exception handling
 
@@ -352,10 +465,24 @@ class OperationStateManager:
             return False
 
         # Write cancellation flag to a separate row to avoid race conditions
+        owner = state.get("current_request_id")
+        if self.operation_id is not None and owner != self.operation_id:
+            return False
         cancel_key = self._cancellation_key()
+        if owner and self.operation_id is None:
+            cancel_key += f"::{owner}"
         self.storage.upsert_operation_state(
             cancel_key, {"cancellation_requested": True}
         )
+        if owner:
+            current = self.get_progress()
+            if (
+                not current
+                or current.get("current_request_id") != owner
+                or current.get("status") != OperationStatus.IN_PROGRESS.value
+            ):
+                self.storage.delete_operation_state(cancel_key)
+                return False
         logger.info(
             "Cancellation requested for %s (org=%s)", self.service_name, self.org_id
         )
@@ -392,7 +519,7 @@ class OperationStateManager:
         state = state_entry.get("operation_state", state_entry)
         state["status"] = OperationStatus.CANCELLED.value
         state["completed_at"] = int(datetime.now(UTC).timestamp())
-        self.storage.update_operation_state(key, state)
+        self._write_progress(state)
 
         # Clear the separate cancellation flag
         cancel_key = self._cancellation_key()

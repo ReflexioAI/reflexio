@@ -83,6 +83,8 @@ class BatchProgressMixin(Generic[TRequest]):  # noqa: UP046
         try:
             # Initialize progress. Kept inside the try so a raise here still
             # resets _is_batch_mode via the finally (no leak into the next op).
+            if not state_manager.claim_progress(request_params):
+                raise RuntimeError("Another generation attempt is already in progress")
             state_manager.initialize_progress(
                 total_users=total_users,
                 request_params=request_params,
@@ -265,6 +267,9 @@ class BatchProgressMixin(Generic[TRequest]):  # noqa: UP046
             A response object with success status, message, and count
         """
         state_manager = self._create_state_manager()
+        admitted_id = getattr(request, "_operation_id", None)
+        if isinstance(admitted_id, str):
+            state_manager.operation_id = admitted_id
 
         try:
             # 1. Check for existing in-progress operation
@@ -272,9 +277,20 @@ class BatchProgressMixin(Generic[TRequest]):  # noqa: UP046
             if error:
                 return self._create_rerun_response(False, error, 0)
 
+            # Claim before selection/preparation so early failures have their own status.
+            if not state_manager.claim_progress(
+                self._build_rerun_request_params(request)
+            ):
+                return self._create_rerun_response(
+                    False, "Another generation attempt is already in progress", 0
+                )
+
             # 2. Get user IDs to process
             user_ids = self._get_rerun_user_ids(request)
             if not user_ids:
+                state_manager.mark_progress_failed(
+                    "No interactions found matching the specified filters"
+                )
                 return self._create_rerun_response(
                     False, "No interactions found matching the specified filters", 0
                 )

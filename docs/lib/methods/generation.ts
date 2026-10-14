@@ -7,7 +7,7 @@ export const generationMethods: MethodDef[] = [
     displayName: "Rerun Profile Generation",
     group: "generation",
     description:
-      "Rerun profile generation for users. Uses ALL interactions and outputs PENDING status profiles. With wait_for_response=True, partial failures or cancellation return success=False and retain valid pending output. Polling failures do not confirm completion.",
+      "Rerun profile generation for users. Uses ALL interactions and outputs PENDING status profiles. With wait_for_response=True, partial failures or cancellation return success=False and retain valid pending output. Polling failures do not confirm completion. The server must return an attempt ID; upgrade legacy servers before using synchronous SDK regeneration.",
     httpMethod: "POST",
     endpoint: "/api/rerun_profile_generation",
     requestStyle: "json_body",
@@ -84,7 +84,7 @@ export const generationMethods: MethodDef[] = [
     displayName: "Rerun Playbook Generation",
     group: "generation",
     description:
-      "Rerun user playbook generation for an agent version. Uses ALL interactions and outputs PENDING status user playbooks. Aggregation into agent playbooks is a separate step. With wait_for_response=True, partial failures or cancellation return success=False and retain valid pending output. Polling failures do not confirm completion.",
+      "Rerun user playbook generation for an agent version. Uses ALL interactions and outputs PENDING status user playbooks. Aggregation into agent playbooks is a separate step. With wait_for_response=True, partial failures or cancellation return success=False and retain valid pending output. Polling failures do not confirm completion. The server must return an attempt ID; upgrade legacy servers before using synchronous SDK regeneration.",
     httpMethod: "POST",
     endpoint: "/api/rerun_playbook_generation",
     requestStyle: "json_body",

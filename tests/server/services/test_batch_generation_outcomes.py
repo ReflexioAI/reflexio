@@ -19,15 +19,34 @@ class BatchService(BatchProgressMixin[dict]):
         self.generated = []
         self.rows = {}
         storage = MagicMock()
+        self.mock_storage = storage
         storage.get_operation_state.side_effect = lambda key: deepcopy(
             self.rows.get(key)
         )
         storage.upsert_operation_state.side_effect = self._save_state
         storage.update_operation_state.side_effect = self._save_state
+        storage.try_acquire_in_progress_lock.side_effect = self._claim
+        storage.clear_in_progress_lock_if_owner.side_effect = self._replace_owned
+        storage.delete_operation_state.side_effect = lambda key: self.rows.pop(
+            key, None
+        )
         self.manager = OperationStateManager(storage, "batch-org", "batch-test")
 
     def _save_state(self, key, state):
         self.rows[key] = deepcopy(state)
+
+    def _claim(self, key, request_id, **_kwargs):
+        current = self.rows.get(key, {})
+        if current.get("in_progress") or current.get("status") == "in_progress":
+            return {"acquired": False}
+        self.rows[key] = {"current_request_id": request_id, "in_progress": True}
+        return {"acquired": True}
+
+    def _replace_owned(self, key, request_id, state):
+        if self.rows.get(key, {}).get("current_request_id") != request_id:
+            return False
+        self._save_state(key, state)
+        return True
 
     def _get_base_service_name(self):
         return "batch-test"
@@ -127,3 +146,39 @@ def test_progress_write_failure_cannot_count_user_as_success(monkeypatch):
     assert service.generated == ["a", "a"]
     assert response["count"] == 2
     assert state["stats"]["total_generated"] == 2
+
+
+@pytest.mark.parametrize(
+    "failure", ["cold_collision", "other_table", "in_scope", "other_code"]
+)
+def test_only_cold_operation_slot_collision_retries_claim(failure):
+    from types import SimpleNamespace
+
+    from reflexio.server.services.storage.error import StorageError
+
+    service = BatchService()
+    key = service.manager._progress_key()
+    service.rows[key] = {"current_request_id": "winner", "in_progress": True}
+
+    class DatabaseCollisionError(RuntimeError):
+        pgcode: str
+        diag: SimpleNamespace
+
+    cause = DatabaseCollisionError("database collision")
+    cause.pgcode = "40001" if failure == "other_code" else "23505"
+    cause.diag = SimpleNamespace(
+        table_name="other" if failure == "other_table" else "_operation_state",
+        constraint_name="_operation_state_pkey",
+    )
+    error = StorageError("claim failed")
+    error.__cause__ = cause
+    storage = service.mock_storage
+    storage._scope_conn = object() if failure == "in_scope" else None
+    storage.try_acquire_in_progress_lock.side_effect = [error, {"acquired": False}]
+    if failure == "cold_collision":
+        assert not service.manager.claim_progress({})
+        assert storage.try_acquire_in_progress_lock.call_count == 2
+    else:
+        with pytest.raises(StorageError, match="claim failed"):
+            service.manager.claim_progress({})
+        assert storage.try_acquire_in_progress_lock.call_count == 1

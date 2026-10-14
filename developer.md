@@ -683,3 +683,13 @@ Batch progress is `failed` if any selected user fails. Cancellation remains
 generated counts. A successful batch may legitimately produce zero records.
 A synchronous SDK polling error reports `success=False`: acceptance does not
 prove completion. Generated counts represent records, rather than processed users.
+
+Synchronous regeneration requires a server that assigns an attempt ID at admission.
+Deploy the matching server before rolling out SDK 0.2.32 clients using `--wait`.
+Older servers return a service label instead; the SDK reports non-success rather
+than treating an unrelated completion as its own. Admission is atomic; a busy
+service rejects another rerun without starting it. Selection/no-work/preparation
+failures are recorded against the admitted attempt. Cancellation requested during
+selection survives batch initialization; stale workers cannot replace newer progress.
+Exact attempt IDs tolerate client/server clock skew and remain in final SDK responses.
+Asynchronous submission remains fire-and-forget.

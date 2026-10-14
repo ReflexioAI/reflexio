@@ -30,8 +30,23 @@ def test_failed_batch_over_real_http_stops_cli_promotion(
     context.org_id = "batch-http"
     context.storage = storage
     service = PlaybookGenerationService(llm_client=MagicMock(), request_context=context)
-    monkeypatch.setattr(
-        service, "_get_rerun_user_ids", lambda _request: ["failed", "valid"]
+    release_generation = threading.Event()
+
+    def select_users(_request):
+        assert release_generation.wait(timeout=10)
+        return ["failed", "valid"]
+
+    monkeypatch.setattr(service, "_get_rerun_user_ids", select_users)
+    storage.upsert_operation_state(
+        "playbook_generation::batch-http::progress",
+        {
+            "service_name": "playbook_generation",
+            "status": "completed",
+            "started_at": int(time.time()),
+            "processed_users": 2,
+            "request_params": {"operation_id": "previous-attempt"},
+            "stats": {"total_generated": 99},
+        },
     )
     monkeypatch.setattr(service, "_pre_process_rerun", lambda _request: None)
 
@@ -55,6 +70,7 @@ def test_failed_batch_over_real_http_stops_cli_promotion(
     promotions = []
     facade = MagicMock(request_context=context, _is_storage_configured=lambda: True)
     facade._get_storage.return_value = storage
+    facade.get_storage.return_value = storage
     facade.rerun_playbook_generation = service.run_rerun
     facade.get_operation_status = lambda request: OperationsMixin.get_operation_status(
         facade, request
@@ -63,6 +79,38 @@ def test_failed_batch_over_real_http_stops_cli_promotion(
     monkeypatch.setattr(
         "reflexio.server.cache.reflexio_cache.get_reflexio", lambda **_kwargs: facade
     )
+    make_request = ReflexioClient._make_request
+    observed_pending = []
+
+    def observe_status(client, method, path, **kwargs):
+        response = make_request(client, method, path, **kwargs)
+        if path == "/api/get_operation_status":
+            state = response.get("operation_status")
+            if state and state["status"] == "in_progress":
+                assert state["request_params"]["operation_id"] != "previous-attempt"
+                if not observed_pending:
+                    # A second HTTP admission must reject immediately while selection is paused.
+                    busy = make_request(
+                        client,
+                        "POST",
+                        "/api/rerun_playbook_generation",
+                        json={
+                            "agent_version": "v1",
+                            "_operation_id": "previous-attempt",
+                        },
+                    )
+                    assert busy["success"] is False
+                    current = service._create_state_manager().get_progress()
+                    assert current is not None
+                    assert (
+                        current["request_params"]["operation_id"]
+                        == state["request_params"]["operation_id"]
+                    )
+                observed_pending.append(state)
+                release_generation.set()
+        return response
+
+    monkeypatch.setattr(ReflexioClient, "_make_request", observe_status)
     poll = ReflexioClient._poll_operation_status
 
     def bounded_poll(client, *args, **kwargs):
@@ -98,6 +146,7 @@ def test_failed_batch_over_real_http_stops_cli_promotion(
         assert "regeneration complete" not in result.output
         if json_mode:
             assert json.loads(result.output)["ok"] is False
+        assert observed_pending, "Client must wait for its admitted attempt"
         assert not promotions
         state = service._create_state_manager().get_progress()
         assert state is not None
@@ -110,6 +159,7 @@ def test_failed_batch_over_real_http_stops_cli_promotion(
         assert len(pending) == 1
         assert pending[0].user_id == "valid"
     finally:
+        release_generation.set()
         server.should_exit = True
         thread.join(timeout=10)
         listener.close()

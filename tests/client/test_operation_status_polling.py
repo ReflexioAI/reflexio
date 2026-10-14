@@ -54,7 +54,9 @@ def test_waiting_generation_preserves_actual_generated_count(monkeypatch, kind, 
 
     client = ReflexioClient.__new__(ReflexioClient)
     monkeypatch.setattr(
-        client, "_make_request", lambda *_args, **_kwargs: {"success": True}
+        client,
+        "_make_request",
+        lambda *_args, **_kwargs: {"success": True, "operation_id": "attempt-test"},
     )
     result = GetOperationStatusResponse(
         success=True,
@@ -66,9 +68,12 @@ def test_waiting_generation_preserves_actual_generated_count(monkeypatch, kind, 
             stats={"total_generated": 3},
         ),
     )
-    monkeypatch.setattr(
-        client, "_poll_operation_status", lambda *_args, **_kwargs: result
-    )
+
+    def poll_expected_attempt(_service_name, **kwargs):
+        assert kwargs["operation_id"] == "attempt-test"
+        return result
+
+    monkeypatch.setattr(client, "_poll_operation_status", poll_expected_attempt)
     request = (
         RerunProfileGenerationRequest()
         if kind == "profile"
@@ -76,6 +81,7 @@ def test_waiting_generation_preserves_actual_generated_count(monkeypatch, kind, 
     )
     response = getattr(client, f"_rerun_{kind}_generation_sync")(request)
     assert response.success is (status == "completed")
+    assert response.operation_id == "attempt-test"
     assert (
         getattr(
             response,
@@ -97,7 +103,9 @@ def test_polling_error_cannot_be_mistaken_for_completion(monkeypatch, kind, erro
 
     client = ReflexioClient.__new__(ReflexioClient)
     monkeypatch.setattr(
-        client, "_make_request", lambda *_args, **_kwargs: {"success": True}
+        client,
+        "_make_request",
+        lambda *_args, **_kwargs: {"success": True, "operation_id": "attempt-test"},
     )
 
     def fail(*_args, **_kwargs):
@@ -112,3 +120,93 @@ def test_polling_error_cannot_be_mistaken_for_completion(monkeypatch, kind, erro
     response = getattr(client, f"_rerun_{kind}_generation_sync")(request)
     assert response.success is False
     assert "check generation status before retrying" in response.msg
+    assert response.operation_id == "attempt-test"
+
+
+@pytest.mark.parametrize("terminal", ["completed", "failed", "cancelled"])
+def test_exact_attempt_ignores_prior_completion_and_clock_skew(monkeypatch, terminal):
+    client = ReflexioClient.__new__(ReflexioClient)
+    responses = iter(
+        [
+            {
+                "success": True,
+                "operation_status": {
+                    "service_name": "playbook_generation",
+                    "status": "completed",
+                    "started_at": 100,
+                    "request_params": {"operation_id": "old"},
+                    "stats": {"total_generated": 99},
+                },
+            },
+            {
+                "success": True,
+                "operation_status": {
+                    "service_name": "playbook_generation",
+                    "status": terminal,
+                    "started_at": 1,
+                    "request_params": {"operation_id": "mine"},
+                    "stats": {"total_generated": 3},
+                },
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        client, "_make_request", lambda *_args, **_kwargs: next(responses)
+    )
+    response = client._poll_operation_status(
+        "playbook_generation",
+        poll_interval=0,
+        max_wait=0.1,
+        min_started_at=100,
+        operation_id="mine",
+    )
+    assert response.operation_status is not None
+    assert response.operation_status.status == OperationStatus(terminal)
+    assert response.operation_status.stats["total_generated"] == 3
+
+
+def test_mismatched_attempt_never_confirms_completion(monkeypatch):
+    client = ReflexioClient.__new__(ReflexioClient)
+    monkeypatch.setattr(
+        client,
+        "_make_request",
+        lambda *_args, **_kwargs: {
+            "success": True,
+            "operation_status": {
+                "service_name": "playbook_generation",
+                "status": "completed",
+                "started_at": 100,
+                "request_params": {"operation_id": "other"},
+            },
+        },
+    )
+    with pytest.raises(TimeoutError):
+        client._poll_operation_status(
+            "playbook_generation", poll_interval=0.01, max_wait=0, operation_id="mine"
+        )
+
+
+@pytest.mark.parametrize("kind", ["profile", "playbook"])
+def test_legacy_server_cannot_confirm_an_attempt(monkeypatch, kind):
+    from reflexio.models.api_schema.service_schemas import (
+        RerunPlaybookGenerationRequest,
+        RerunProfileGenerationRequest,
+    )
+
+    client = ReflexioClient.__new__(ReflexioClient)
+    monkeypatch.setattr(
+        client, "_make_request", lambda *_args, **_kwargs: {"success": True}
+    )
+
+    def unexpected_poll(*_args, **_kwargs):
+        pytest.fail("Legacy service label is not an attempt ID")
+
+    monkeypatch.setattr(client, "_poll_operation_status", unexpected_poll)
+    request = (
+        RerunProfileGenerationRequest()
+        if kind == "profile"
+        else RerunPlaybookGenerationRequest(agent_version="v1")
+    )
+    response = getattr(client, f"_rerun_{kind}_generation_sync")(request)
+    assert response.success is False
+    assert "upgrade the server" in response.msg

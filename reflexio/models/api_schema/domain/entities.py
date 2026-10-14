@@ -2092,6 +2092,7 @@ class RunPlaybookAggregationResponse(BaseModel):
 
 
 class RerunProfileGenerationRequest(BaseModel):
+    _operation_id: str | None = PrivateAttr(default=None)
     user_id: str | None = None
     start_time: datetime | None = None
     end_time: datetime | None = None
@@ -2162,6 +2163,7 @@ class ManualPlaybookGenerationResponse(BaseModel):
 
 
 class RerunPlaybookGenerationRequest(BaseModel):
+    _operation_id: str | None = PrivateAttr(default=None)
     agent_version: str = DEFAULT_AGENT_VERSION
     start_time: datetime | None = None
     end_time: datetime | None = None

@@ -74,6 +74,7 @@ from reflexio.server.auth import (
 from reflexio.server.cache import reflexio_cache
 from reflexio.server.rate_limit import limiter
 from reflexio.server.routes._common import _run_limited_api
+from reflexio.server.services.operation_state_utils import OperationStateManager
 from reflexio.server.services.playbook.aggregation_scheduler import (
     ensure_local_playbook_aggregation_scheduler,
 )
@@ -551,10 +552,20 @@ def rerun_playbook_generation_endpoint(
 
     # Run the long-running task in the background to avoid proxy timeout
     # Client polls get_operation_status for progress
+    manager = OperationStateManager(
+        reflexio.get_storage(), org_id, "playbook_generation"
+    )
+    if not manager.claim_progress(payload.model_dump(mode="json")):
+        return RerunPlaybookGenerationResponse(
+            success=False, msg="Another generation attempt is already in progress"
+        )
+    payload._operation_id = manager.operation_id
     background_tasks.add_task(reflexio.rerun_playbook_generation, payload)
 
     return RerunPlaybookGenerationResponse(
-        success=True, msg="Playbook generation started"
+        success=True,
+        msg="Playbook generation started",
+        operation_id=manager.operation_id or "",
     )
 
 
