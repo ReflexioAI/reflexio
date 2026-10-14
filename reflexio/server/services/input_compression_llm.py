@@ -110,7 +110,9 @@ def compress_with_client(
     Durable callers supply their lease check in before_call and quota in the
     scoped provider guard, plus authorized checkpoint load/save functions.
     """
-    output_reservation = max(client.config.max_tokens or 8192, budget.output_tokens)
+    # The provider emits IDs, while the host copies original passages. Their
+    # rendered packet budget must never raise the configured completion cap.
+    output_reservation = client.config.max_tokens or 8192
     # Reuse the actual request builder; it owns custom-route precedence, seed,
     # top_p and provider-specific output keys. Never fingerprint API keys.
     probe = client._build_completion_params(

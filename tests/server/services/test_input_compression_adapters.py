@@ -94,6 +94,38 @@ def group(user_id="alice"):
     )
 
 
+def test_large_rendered_packet_never_raises_configured_provider_output_cap(monkeypatch):
+    from reflexio.server.services.input_compression import packet_tokens
+
+    dispatched_caps = []
+    fake = client(
+        monkeypatch,
+        callback=lambda params, _kwargs: dispatched_caps.append(params["max_tokens"]),
+    )
+    result = compress_with_client(
+        [
+            EvidenceSource(
+                source_id="source",
+                request_id="request",
+                interaction_id=1,
+                field="content",
+                speaker="User",
+                source_order=1,
+                text="approval " + "log " * 3000,
+            )
+        ],
+        scope={"org_id": "org", "project_id": "project", "user_id": "alice"},
+        policy="extraction",
+        budget=CompressionBudget(output_tokens=32768),
+        client=fake,
+        context_limits={fake.config.model: 512000},
+        measure_output=lambda packet: packet_tokens(packet) * 16,
+    )
+    assert result.provider_attempts and dispatched_caps
+    assert set(dispatched_caps) == {8192}
+    assert 8192 < result.output_tokens <= 32768
+
+
 def test_window_adapter_keeps_original_and_parent_billing_capture(monkeypatch):
     fake = client(monkeypatch)
     original = group()
