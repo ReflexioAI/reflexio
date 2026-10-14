@@ -227,6 +227,50 @@ def test_preparation_prices_actual_full_native_requests_and_is_provider_free(
     wire.assert_not_called()
 
 
+@pytest.mark.parametrize("repetitions", [1, 5000])
+def test_original_lookup_seed_matches_existing_extractor_before_overflow_policy(
+    repetitions,
+):
+    from reflexio.server.services.extraction.prior_answer_search import (
+        build_knowledge_need_query,
+    )
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        construct_profile_extraction_messages_from_sessions,
+    )
+
+    original = group()
+    original.interactions[0].content = "Preserve approval conditions. " * repetitions
+    config = ProfileExtractorConfig(
+        extraction_definition_prompt=" Stable preferences ", context_prompt=" Context "
+    )
+    manager = PromptManager()
+    native = construct_profile_extraction_messages_from_sessions(
+        prompt_manager=manager,
+        request_interaction_data_models=[original],
+        existing_profiles=[],
+        agent_context_prompt="Agent context",
+        context_prompt=(config.context_prompt or "").strip(),
+        extraction_definition_prompt=config.extraction_definition_prompt.strip(),
+    )
+    seed = profile_package_original_seed(
+        prompt_manager=manager,
+        groups=[original],
+        existing_profiles=[],
+        agent_context="Agent context",
+        extractor_config=config,
+    )
+    assert seed == native
+    query_options = {
+        "extractor_kind": "profile",
+        "extractor_config": config,
+        "source": original.request.source,
+        "agent_version": None,
+    }
+    assert build_knowledge_need_query(messages=seed, **query_options) == (
+        build_knowledge_need_query(messages=native, **query_options)
+    )
+
+
 def test_pending_tools_are_real_and_counted_with_the_actual_schema(monkeypatch):
     plain, _ = preparation(monkeypatch, gate_enabled=False)
     prepared, client = preparation(
