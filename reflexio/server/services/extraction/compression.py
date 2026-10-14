@@ -197,6 +197,8 @@ def plan_extraction_window(
         > budget.output_tokens
     ):
         preserved = []
+    if measure_output(with_original_content(EvidencePacket())) > budget.output_tokens:
+        raise CompressionError("Fixed extraction consumer prompt exceeds output budget")
     preserved_ids = {source.source_id for source in preserved}
 
     # Cache choices depend on the space occupied by preserved originals, even

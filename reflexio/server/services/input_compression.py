@@ -714,8 +714,10 @@ def plan_compression_input(
             lambda _check: None,
         )
     fragments = _fragments(sources)
-    if not fragments:
-        raise CompressionError("Source metadata alone exceeds the output budget")
+    if not fragments or measure_output(EvidencePacket()) > budget.output_tokens:
+        raise CompressionError(
+            "Source metadata or fixed consumer rendering exceeds the output budget"
+        )
     by_id = {s.source_id: s for s in fragments}
     if len(by_id) != len(fragments):
         raise CompressionError("Compression fragment identity collision")

@@ -373,6 +373,9 @@ actual output reservation within its model capacity. `measure_request_input_toke
 uses the same complete-input counter and 20% margin as native admission, but
 returns oversized counts so packing can remove whole groups. Actual dispatch
 still needs the rejecting admission guard on every continuation and repair.
+If the fixed rendering cannot fit even with no selected evidence, planning
+refuses before native section preparation or provider work; the shared core
+enforces the same rule for other consumer renderers.
 An optional inexpensive `estimate_output` only sizes advisory source menus;
 exact measurement remains authoritative. Both callbacks must be pure, frozen
 and named by the rendering contract. Planning time and execution time are counted

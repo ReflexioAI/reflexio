@@ -302,3 +302,33 @@ def test_complete_native_profile_requests_supply_window_cost(monkeypatch):
     # These are the real initial templates; runtime must additionally freeze and
     # price its tools/schema/prior answers and guard each actual continuation.
     transport.assert_not_called()
+
+
+@pytest.mark.parametrize("short_conversation", [True, False])
+def test_fixed_consumer_cost_refuses_before_native_planning(
+    monkeypatch, short_conversation
+):
+    fake = client(monkeypatch)
+    original = group()
+    if short_conversation:
+        original.interactions[0].content = "Production needs separate approval."
+    native = Mock(
+        side_effect=AssertionError("Impossible consumer budget must fail first")
+    )
+    monkeypatch.setattr(
+        "reflexio.server.services.extraction.compression.plan_with_client", native
+    )
+    with pytest.raises(CompressionError, match="Fixed extraction consumer prompt"):
+        plan_extraction_window(
+            [original],
+            org_id="org",
+            project_id="project",
+            user_id="alice",
+            budget=CompressionBudget(output_tokens=4096),
+            client=fake,
+            context_limits={},
+            measure_output=lambda packet: 9000 + packet_tokens(packet),
+            output_contract="complete-consumer-input-v1",
+        )
+    native.assert_not_called()
+    fake.generate_chat_response.assert_not_called()
