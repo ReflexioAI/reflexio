@@ -10,6 +10,9 @@ loading or inference failures fail the test rather than silently skipping it.
 from __future__ import annotations
 
 import concurrent.futures as cf
+from functools import wraps
+from typing import Any
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -111,16 +114,17 @@ def test_native_nomic_encodes_long_input(real_embedder: NomicEmbedder) -> None:
     assert 2048 < token_count < model.max_seq_length == 8192
     forward_lengths: list[int] = []
 
-    def observe_forward(_module: object, _args: tuple, kwargs: dict) -> None:
-        forward_lengths.append(int(kwargs["input_ids"].shape[-1]))
+    auto_model = model[0].auto_model
+    original_forward = auto_model.forward
 
-    hook = model[0].auto_model.register_forward_pre_hook(
-        observe_forward, with_kwargs=True
-    )
-    try:
+    @wraps(original_forward)
+    def observe_forward(*args: object, **kwargs: Any) -> Any:
+        forward_lengths.append(int(kwargs["input_ids"].shape[-1]))
+        return original_forward(*args, **kwargs)
+
+    # Sentence Transformers can call forward directly, bypassing nn.Module hooks.
+    with patch.object(auto_model, "forward", observe_forward):
         vectors = np.asarray(real_embedder.embed([text]))
-    finally:
-        hook.remove()
     assert forward_lengths == [token_count]
 
     assert vectors.shape == (1, 512)

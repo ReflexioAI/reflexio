@@ -6,9 +6,11 @@ import json
 import math
 import os
 import sys
+from functools import wraps
 from importlib.metadata import distribution, version
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import reflexio
 from reflexio.server.llm.providers import nomic_embedding_provider
@@ -57,13 +59,16 @@ def main() -> None:
     texts = ["search_query: dates", "search_document: explicit milestones", long_text]
     forward_lengths: list[int] = []
 
-    def observe_forward(_module: object, _args: tuple, kwargs: dict[str, Any]) -> None:
-        forward_lengths.append(int(kwargs["input_ids"].shape[-1]))
+    auto_model = model[0].auto_model
+    original_forward = auto_model.forward
 
-    hook = model[0].auto_model.register_forward_pre_hook(
-        observe_forward, with_kwargs=True
-    )
-    try:
+    @wraps(original_forward)
+    def observe_forward(*args: object, **kwargs: Any) -> Any:
+        forward_lengths.append(int(kwargs["input_ids"].shape[-1]))
+        return original_forward(*args, **kwargs)
+
+    # Sentence Transformers can call forward directly, bypassing nn.Module hooks.
+    with patch.object(auto_model, "forward", observe_forward):
         # Encode separately to avoid padding the short probes to the long input.
         for text in texts:
             vectors = embedder.embed([text])
@@ -76,8 +81,6 @@ def main() -> None:
                 sum(value * value for value in vector), 1, abs_tol=1e-4
             ):
                 raise RuntimeError("Embedding is not normalized")
-    finally:
-        hook.remove()
     if len(forward_lengths) != len(texts) or forward_lengths[-1] != tokens:
         raise RuntimeError("Long probe was truncated before model inference")
     print(
