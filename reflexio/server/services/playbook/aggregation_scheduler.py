@@ -224,6 +224,10 @@ class AggregationLeaseHeartbeat:
             report_background_success(self._failure_scope)
             self.claim = renewed
             self._renewed_at = attempt_started
+            # A recovered error must not become the cause of a later, unrelated
+            # loss (fence taken, hung renewal): `require_live` chains it, and a
+            # stale transient cause would downgrade that loss's classification.
+            self._renewal_error = None
             interval = AGGREGATION_RENEWAL_INTERVAL_SECONDS
 
     def stop(self) -> None:

@@ -435,6 +435,26 @@ def test_heartbeat_reports_a_taken_fence_as_lease_lost(
     assert background_work._streaks[scope] == streak_before
 
 
+def test_recovered_renewal_error_is_not_the_cause_of_a_later_loss() -> None:
+    claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
+    storage = MagicMock()
+    # failure -> recovery -> fence taken: the loss must not chain the
+    # recovered error, or its classification would follow a stale cause.
+    storage.renew_playbook_aggregation_claim.side_effect = [
+        RuntimeError("db blip"),
+        claim,
+        None,
+    ]
+    clock = _FakeClock()
+    heartbeat = _heartbeat(storage, clock)
+
+    _drive(heartbeat, clock)
+
+    with pytest.raises(RuntimeError, match="lease was lost") as lost:
+        heartbeat.require_live()
+    assert lost.value.__cause__ is None
+
+
 def test_require_live_fails_when_a_renewal_hangs_past_the_deadline() -> None:
     storage = MagicMock()
     clock = _FakeClock()
