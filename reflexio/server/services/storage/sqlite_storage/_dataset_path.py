@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 LEGACY_DB_FILENAME = "reflexio.db"
 
 IDENTITY_CLAIM_TABLE = "_dataset_identity"
+_IDENTITY_CLAIM_DEFINITION = (
+    f"{IDENTITY_CLAIM_TABLE} ("
+    " k INTEGER PRIMARY KEY CHECK (k = 1),"
+    " org_id TEXT NOT NULL,"
+    " claimed_at TEXT NOT NULL)"
+)
 
 # Tables carrying an ``org_id`` column. Read only to decide whether an unclaimed
 # legacy file plausibly belongs to the opening identity; a tie-breaker, not a
@@ -224,26 +230,20 @@ def claim_or_read_identity(path: Path, org_id: str) -> str:
     """
     conn = sqlite3.connect(path)
     try:
-        if _table_exists(conn, IDENTITY_CLAIM_TABLE):
-            columns = conn.execute(
-                f"PRAGMA table_info({IDENTITY_CLAIM_TABLE})"
-            ).fetchall()
-            primary_key = {column[1]: column[5] for column in columns if column[5]}
-            if primary_key == {"k": 1} and {"k", "org_id", "claimed_at"} == {
-                column[1] for column in columns
-            }:
-                row = conn.execute(
-                    f"SELECT org_id FROM {IDENTITY_CLAIM_TABLE} WHERE k = 1"
-                ).fetchone()
-                if row is not None:
-                    return str(row[0])
+        # Only the unchanged app-created schema can bypass claim-time validation.
+        # Custom constraints, indexes or triggers retain the original write path.
+        schema = conn.execute(
+            "SELECT type, sql FROM sqlite_master WHERE tbl_name = ?",
+            (IDENTITY_CLAIM_TABLE,),
+        ).fetchall()
+        if schema == [("table", f"CREATE TABLE {_IDENTITY_CLAIM_DEFINITION}")]:
+            row = conn.execute(
+                f"SELECT org_id FROM {IDENTITY_CLAIM_TABLE} WHERE k = 1"
+            ).fetchone()
+            if row is not None:
+                return str(row[0])
         conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
-            f"CREATE TABLE IF NOT EXISTS {IDENTITY_CLAIM_TABLE} ("
-            " k INTEGER PRIMARY KEY CHECK (k = 1),"
-            " org_id TEXT NOT NULL,"
-            " claimed_at TEXT NOT NULL)"
-        )
+        conn.execute(f"CREATE TABLE IF NOT EXISTS {_IDENTITY_CLAIM_DEFINITION}")
         conn.execute(
             f"INSERT INTO {IDENTITY_CLAIM_TABLE} (k, org_id, claimed_at)"
             " VALUES (1, ?, ?) ON CONFLICT(k) DO NOTHING",

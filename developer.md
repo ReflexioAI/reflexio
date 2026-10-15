@@ -375,6 +375,8 @@ SQLite dataset ownership checks read an established owner without taking a write
 lock, so another connection's write transaction does not block that lookup in
 WAL mode. First claims still use an atomic write transaction across processes;
 foreign owners and legacy erasure barriers retain their existing rejection rules.
+The read path requires the unchanged application-created ownership schema;
+custom definitions, indexes or triggers retain the original claim validation.
 
 SQLite deferred index failures raise `PostCommitStorageError` after the primary
 commit; publish preserves the admitted request and reports deferred follow-up.
