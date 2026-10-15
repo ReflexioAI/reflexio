@@ -361,6 +361,58 @@ def test_lease_heartbeat_loses_the_lease_at_once_when_the_fence_is_taken() -> No
     assert lost.value.__cause__ is None
 
 
+def _progress_records(caplog: Any) -> list[tuple[str, str, logging.LogRecord]]:
+    """(state, reason, record) for each heartbeat progress report, in order."""
+    out = []
+    for record in caplog.records:
+        message = record.getMessage()
+        if "event=playbook_aggregation_progress" not in message:
+            continue
+        fields = dict(part.split("=", 1) for part in message.split() if "=" in part)
+        out.append((fields["state"], fields["reason"], record))
+    return out
+
+
+def test_heartbeat_labels_retries_and_the_give_up_truthfully(caplog) -> None:
+    storage = MagicMock()
+    errors = [RuntimeError(f"db down {i}") for i in range(1000)]
+    storage.renew_playbook_aggregation_claim.side_effect = errors
+    caplog.set_level(logging.WARNING, logger=aggregation_scheduler.logger.name)
+    clock = _FakeClock()
+    heartbeat = _heartbeat(storage, clock)
+
+    _drive(heartbeat, clock)
+
+    calls = storage.renew_playbook_aggregation_claim.call_count
+    reports = _progress_records(caplog)
+    # One report per failed attempt: every attempt but the last is a retry
+    # while the lease is still trusted; the last is the single give-up.
+    assert len(reports) == calls
+    assert [(state, reason) for state, reason, _ in reports[:-1]] == [
+        ("renewal_retrying", "renewal_failed")
+    ] * (calls - 1)
+    state, reason, give_up = reports[-1]
+    assert (state, reason) == ("lease_lost", "renewal_deadline_exceeded")
+    assert give_up.exc_info is not None
+    logged = give_up.exc_info[1]
+    assert logged is not None
+    assert logged.__cause__ is errors[calls - 1]
+
+
+def test_heartbeat_reports_a_taken_fence_as_lease_lost(caplog) -> None:
+    storage = MagicMock()
+    storage.renew_playbook_aggregation_claim.return_value = None
+    caplog.set_level(logging.WARNING, logger=aggregation_scheduler.logger.name)
+    clock = _FakeClock()
+    heartbeat = _heartbeat(storage, clock)
+
+    _drive(heartbeat, clock)
+
+    assert [(state, reason) for state, reason, _ in _progress_records(caplog)] == [
+        ("lease_lost", "fence_taken")
+    ]
+
+
 def test_require_live_fails_when_a_renewal_hangs_past_the_deadline() -> None:
     storage = MagicMock()
     clock = _FakeClock()

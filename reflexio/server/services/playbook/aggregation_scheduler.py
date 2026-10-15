@@ -166,6 +166,18 @@ class AggregationLeaseHeartbeat:
             - AGGREGATION_LEASE_SAFETY_MARGIN_SECONDS
         )
 
+    def _report(self, exc: BaseException, state: str, reason: str) -> None:
+        report_background_failure(
+            logger,
+            "playbook_aggregation_progress",
+            exc,
+            scope=self._failure_scope,
+            state=state,
+            agent_version=self.claim.agent_version,
+            fence=self.claim.fence,
+            reason=reason,
+        )
+
     @background_work()
     def _run(self) -> None:
         interval = AGGREGATION_RENEWAL_INTERVAL_SECONDS
@@ -176,27 +188,29 @@ class AggregationLeaseHeartbeat:
                     self.claim, lease_seconds=AGGREGATION_LEASE_SECONDS
                 )
             except Exception as exc:
-                report_background_failure(
-                    logger,
-                    "playbook_aggregation_progress",
-                    exc,
-                    scope=self._failure_scope,
-                    state="lease_lost",
-                    agent_version=self.claim.agent_version,
-                    fence=self.claim.fence,
-                    reason="renewal_failed",
-                )
                 self._renewal_error = exc
                 remaining = self._trusted_until() - self._clock()
                 if remaining <= 0:
+                    lost = RuntimeError(
+                        "playbook aggregation lease renewal deadline exceeded"
+                    )
+                    lost.__cause__ = exc
+                    self._report(lost, "lease_lost", "renewal_deadline_exceeded")
                     self._lost.set()
                     return
-                # Keep the run going and retry soon; never sleep past the
-                # point where the lease stops being trusted.
+                # The lease is still trusted: report the blip truthfully (the
+                # run continues), retry soon, and never sleep past the point
+                # where the lease stops being trusted.
+                self._report(exc, "renewal_retrying", "renewal_failed")
                 interval = min(AGGREGATION_RENEWAL_RETRY_SECONDS, remaining)
                 continue
             if renewed is None:
                 # The fence was taken by another worker: no retry can help.
+                self._report(
+                    RuntimeError("playbook aggregation fence was taken"),
+                    "lease_lost",
+                    "fence_taken",
+                )
                 self._lost.set()
                 return
             report_background_success(self._failure_scope)
