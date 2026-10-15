@@ -352,6 +352,43 @@ def test_overflow_extractor_future_does_not_abort_an_admitted_turn(monkeypatch):
     assert client.config.timeout == 300
 
 
+@pytest.mark.parametrize("fallback_models", [[], ["fallback/b"]])
+def test_extractor_llm_calls_end_before_the_extractor_timeout(fallback_models):
+    """The extractor's LLM walks are bounded to finish before its outer timeout,
+    so the outer timeout is a backstop rather than the thing that stops them."""
+    import time
+
+    from reflexio.server.llm.call_deadline import llm_call_deadline
+    from reflexio.server.services.base_generation._extraction_lifecycle import (
+        EXTRACTOR_LLM_DEADLINE_MARGIN_SECONDS,
+    )
+
+    seen: list[float | None] = []
+
+    class _DeadlineProbe:
+        def run(self):
+            seen.append(llm_call_deadline.get())
+            return ["done"]
+
+    client = LiteLLMClient(
+        LiteLLMConfig(model="gpt-4o-mini", fallback_models=fallback_models)
+    )
+    service = _CharService(client, _request_context(MagicMock()), results_by_user={})
+    service.service_config = _CharRequest(user_id="u", request_id="r")
+    service._create_extractor = lambda *_: _DeadlineProbe()  # type: ignore[method-assign]
+    timeout = service._extractor_timeout_seconds()
+
+    before = time.monotonic()
+    assert service._execute_extractor(service._load_extractor_config(), "u") == ["done"]
+    after = time.monotonic()
+
+    assert len(seen) == 1 and seen[0] is not None
+    budget = timeout - EXTRACTOR_LLM_DEADLINE_MARGIN_SECONDS
+    assert before + budget <= seen[0] <= after + budget
+    # Installed only inside the worker's copied context, never leaked here.
+    assert llm_call_deadline.get() is None
+
+
 # ---------------------------------------------------------------------------
 # Test 1: billing drain-ordering + terminal-emitter + double-bill + no-swallow.
 # ---------------------------------------------------------------------------

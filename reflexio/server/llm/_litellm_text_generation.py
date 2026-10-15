@@ -69,6 +69,7 @@ from reflexio.server.llm._provider_concurrency import (
     ProviderCapSaturatedError,
     provider_slot,
 )
+from reflexio.server.llm.call_deadline import llm_call_deadline
 from reflexio.server.llm.image_utils import (
     SUPPORTED_IMAGE_MIME_TYPES,
     ImageEncodingError,
@@ -1595,6 +1596,15 @@ class TextGenerationMixin:
         # One deadline for the whole walk, shared by every turn below. Set when
         # the walk starts; `_prepare_turn` reads it at call time.
         walk_deadline = time.monotonic() + _LADDER_WALL_CLOCK_BUDGET_SECONDS
+        walk_bound = f"{_LADDER_WALL_CLOCK_BUDGET_SECONDS:.0f}s"
+        # A caller with its own cutoff (the generation service's per-extractor
+        # timeout, `call_deadline.llm_deadline`) shortens the walk, so the walk
+        # stops itself -- no new rung or repair turn, and a running turn's kill
+        # bound clamped -- before that caller abandons it mid-call.
+        caller_deadline = llm_call_deadline.get()
+        if caller_deadline is not None and caller_deadline < walk_deadline:
+            walk_deadline = caller_deadline
+            walk_bound = "caller deadline"
 
         def _clamp_to_walk(
             turn_params: dict[str, Any], hard_timeout: float
@@ -1603,7 +1613,7 @@ class TextGenerationMixin:
             remaining = walk_deadline - time.monotonic()
             if remaining < _LADDER_MIN_TURN_SECONDS:
                 raise LadderBudgetExhaustedError(
-                    f"LLM ladder budget exhausted ({_LADDER_WALL_CLOCK_BUDGET_SECONDS:.0f}s) "
+                    f"LLM ladder budget exhausted ({walk_bound}) "
                     f"while waiting to dispatch {turn_params.get('model')}"
                 )
             if hard_timeout <= remaining:
@@ -1647,7 +1657,7 @@ class TextGenerationMixin:
                 # LiteLLMClientError propagates out of the rung to the walker,
                 # which treats it as that rung's final failure.
                 raise LadderBudgetExhaustedError(
-                    f"LLM ladder budget exhausted ({_LADDER_WALL_CLOCK_BUDGET_SECONDS:.0f}s): "
+                    f"LLM ladder budget exhausted ({walk_bound}): "
                     f"{remaining:.1f}s left, not attempting {params.get('model')}"
                 )
             if per_attempt + grace > remaining:
@@ -2264,11 +2274,12 @@ class TextGenerationMixin:
                     # with rungs left. Handled below as the final failure.
                     self.logger.warning(
                         "event=llm_ladder_budget_exhausted model=%s rungs_left=%d "
-                        "seconds_left=%.1f budget_seconds=%.0f",
+                        "seconds_left=%.1f budget_seconds=%.0f bound=%s",
                         rung,
                         len(ladder) - index - 1,
                         left,
                         _LADDER_WALL_CLOCK_BUDGET_SECONDS,
+                        walk_bound,
                     )
                 # Final rung failed. Preserve the typed repair error (callers keep
                 # the latest parse) and already-wrapped client errors as-is; wrap a

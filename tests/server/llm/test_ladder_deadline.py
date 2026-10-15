@@ -11,13 +11,16 @@ from __future__ import annotations
 
 import logging
 import time as real_time
+from contextlib import nullcontext
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic import BaseModel
 
 from reflexio.server.llm import _litellm_text_generation as ttg
+from reflexio.server.llm.call_deadline import llm_deadline
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
@@ -216,3 +219,100 @@ def test_a_provider_slot_wait_is_charged_to_the_budget(
         assert sent == [pytest.approx(dispatched_hard)]
     # The slot wait itself is bounded by what the walk had left.
     assert waits == [pytest.approx(100.0 - ttg._LADDER_MIN_TURN_SECONDS)]
+
+
+class _Answer(BaseModel):
+    value: str
+
+
+def _repair_walk(
+    monkeypatch, *, first_burns: float, caller_seconds: float | None
+) -> tuple[list[dict[str, float]], Any, float | None]:
+    """One rung, a validator that rejects the first answer, so a repair turn follows.
+
+    Returns each dispatched call's start time and kill bound, the outcome, and
+    the caller's absolute deadline (None when no caller deadline is installed).
+    """
+    clock = _Clock()
+    monkeypatch.setattr(
+        ttg,
+        "time",
+        SimpleNamespace(
+            monotonic=clock.monotonic,
+            perf_counter=real_time.perf_counter,
+            sleep=real_time.sleep,
+            time=real_time.time,
+        ),
+    )
+    monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
+    client = LiteLLMClient(LiteLLMConfig(model="primary/a", timeout=120))
+    calls: list[dict[str, float]] = []
+
+    def _fake(params, hard_timeout):
+        calls.append({"start": clock.now, "hard": hard_timeout})
+        if len(calls) == 1:
+            clock.now += first_burns
+            return _response('{"value": "bad"}')
+        clock.now += 1
+        return _response('{"value": "good"}')
+
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", _fake)
+
+    def _validator(output: BaseModel) -> list[str]:
+        return [] if getattr(output, "value", None) == "good" else ["not good"]
+
+    deadline = None if caller_seconds is None else clock.now + caller_seconds
+    try:
+        with llm_deadline(deadline) if deadline is not None else nullcontext():
+            outcome: Any = client.generate_chat_response(
+                _MESSAGES,
+                response_format=_Answer,
+                structured_output_validator=_validator,
+            )
+    except LiteLLMClientError as exc:
+        outcome = exc
+    return calls, outcome, deadline
+
+
+def test_without_a_caller_deadline_the_repair_turn_gets_its_full_timeout(
+    monkeypatch,
+) -> None:
+    calls, outcome, _ = _repair_walk(monkeypatch, first_burns=125, caller_seconds=None)
+    assert isinstance(outcome, _Answer)
+    assert [c["hard"] for c in calls] == [pytest.approx(125), pytest.approx(125)]
+
+
+def test_a_repair_turn_is_clamped_to_end_by_the_caller_deadline(monkeypatch) -> None:
+    calls, outcome, deadline = _repair_walk(
+        monkeypatch, first_burns=125, caller_seconds=170
+    )
+    assert isinstance(outcome, _Answer)
+    assert len(calls) == 2
+    assert calls[1]["hard"] == pytest.approx(45)
+    assert deadline is not None
+    assert all(c["start"] + c["hard"] <= deadline + 1e-9 for c in calls)
+
+
+def test_no_repair_turn_is_started_once_the_caller_deadline_is_too_close(
+    monkeypatch,
+) -> None:
+    """A slow first attempt leaves too little before the extractor's cutoff for
+    a repair turn: the walk stops itself and makes no further model call."""
+    calls, outcome, deadline = _repair_walk(
+        monkeypatch, first_burns=125, caller_seconds=130
+    )
+    assert isinstance(outcome, LiteLLMClientError)
+    assert len(calls) == 1
+    assert deadline is not None
+    assert calls[0]["start"] + calls[0]["hard"] <= deadline + 1e-9
+
+
+def test_nested_deadlines_only_tighten() -> None:
+    from reflexio.server.llm.call_deadline import llm_call_deadline
+
+    with llm_deadline(100.0):
+        with llm_deadline(200.0):
+            assert llm_call_deadline.get() == 100.0
+        with llm_deadline(50.0):
+            assert llm_call_deadline.get() == 50.0
+    assert llm_call_deadline.get() is None
