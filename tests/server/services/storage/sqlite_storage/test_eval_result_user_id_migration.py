@@ -12,6 +12,8 @@ before ``_DDL``.
 """
 
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 
@@ -134,3 +136,39 @@ def test_evaluation_index_migration_repairs_missing_or_stale_index(tmp_path, sta
         ]
     finally:
         store.conn.close()
+
+
+def test_concurrent_evaluation_index_upgrades_tolerate_another_creator(tmp_path):
+    db_path = str(tmp_path / "concurrent.db")
+    seed = sqlite3.connect(db_path)
+    try:
+        seed.execute(
+            "CREATE TABLE agent_success_evaluation_result "
+            "(user_id TEXT, session_id TEXT, evaluation_name TEXT, "
+            "agent_version TEXT, created_at INTEGER)"
+        )
+    finally:
+        seed.close()
+    barrier = Barrier(2)
+
+    class CoordinatedConnection(sqlite3.Connection):
+        def execute(self, sql, parameters=(), /):
+            cursor = super().execute(sql, parameters)
+            if sql.startswith("DROP INDEX"):
+                # Both connections saw a missing index and dropped it before
+                # either creates it, reproducing separate-worker startup.
+                barrier.wait(timeout=5)
+            return cursor
+
+    def migrate(_index):
+        connection = sqlite3.connect(db_path, factory=CoordinatedConnection)
+        connection.row_factory = sqlite3.Row
+        storage = SQLiteStorage.__new__(SQLiteStorage)
+        storage.conn = connection
+        try:
+            storage._migrate_eval_result_user_id()
+        finally:
+            connection.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert list(pool.map(migrate, range(2))) == [None, None]

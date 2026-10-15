@@ -3110,7 +3110,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         ):
             return
         self.conn.execute("DROP INDEX IF EXISTS idx_eval_identity_created_at_desc")
-        self.conn.execute(index_sql)
+        self.conn.execute(
+            index_sql.replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", 1)
+        )
         self.conn.commit()
 
     def _migrate_shadow_comparison_verdicts(self) -> None:

@@ -233,6 +233,8 @@ def _ddl_is_current(conn: sqlite3.Connection, ddl: str) -> bool:
             in_transaction = False
             continue
         if match := re.fullmatch(r"DROP TRIGGER IF EXISTS (\w+)", sql):
+            if ("trigger", match[1]) in expected:
+                return False
             dropped.add(match[1])
             continue
         match = re.match(

@@ -612,6 +612,37 @@ def test_current_aggregation_schema_does_not_hide_invalid_migration_sql(
         store.conn.close()
 
 
+def test_aggregation_initialization_does_not_skip_drop_after_create(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path)
+    name = "capture_playbook_aggregation_hard_delete"
+    try:
+        definition = store.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", (name,)
+        ).fetchone()[0]
+        definition = definition.replace(
+            "CREATE TRIGGER ", "CREATE TRIGGER IF NOT EXISTS ", 1
+        )
+        # This batch intentionally removes a trigger. An unordered collection
+        # of CREATE definitions must not hide its final DROP.
+        monkeypatch.setattr(
+            _aggregation,
+            "AGGREGATION_TRIGGER_DDL",
+            f"BEGIN IMMEDIATE;\n{definition};\nDROP TRIGGER IF EXISTS {name};\nCOMMIT;\n",
+        )
+        init_playbook_aggregation_tables(store.conn)
+        assert (
+            store.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND name=?",
+                (name,),
+            ).fetchone()
+            is None
+        )
+    finally:
+        store.conn.close()
+
+
 def test_aggregation_trigger_replacement_is_atomic_across_connections(tmp_path) -> None:
     store = _store(tmp_path)
     # Exercise a real upgrade. The old definitions retain the same fences but
