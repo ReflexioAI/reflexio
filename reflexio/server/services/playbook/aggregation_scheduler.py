@@ -206,9 +206,17 @@ class AggregationLeaseHeartbeat:
                 continue
             if renewed is None:
                 # The fence was taken by another worker: no retry can help.
-                self._report(
-                    RuntimeError("playbook aggregation fence was taken"),
+                # WARNING, not report_background_failure: the run's own
+                # `require_live` error is already reported at ERROR by its
+                # caller, so an ERROR here would double-report one event. Not
+                # a renewal failure either, so the streak is left alone.
+                logger.warning(
+                    "event=%s scope=%s state=%s agent_version=%s fence=%s reason=%s",
+                    "playbook_aggregation_progress",
+                    self._failure_scope,
                     "lease_lost",
+                    self.claim.agent_version,
+                    self.claim.fence,
                     "fence_taken",
                 )
                 self._lost.set()

@@ -399,7 +399,20 @@ def test_heartbeat_labels_retries_and_the_give_up_truthfully(caplog) -> None:
     assert logged.__cause__ is errors[calls - 1]
 
 
-def test_heartbeat_reports_a_taken_fence_as_lease_lost(caplog) -> None:
+def test_heartbeat_reports_a_taken_fence_as_lease_lost(
+    caplog, transient_failure_classifier
+) -> None:
+    from reflexio.server import background_work
+
+    scope = "playbook-aggregation-heartbeat:org-1:None:v1"
+    background_work.report_background_failure(
+        aggregation_scheduler.logger,
+        "playbook_aggregation_progress",
+        transient_failure_classifier("dropped"),
+        scope=scope,
+    )
+    streak_before = background_work._streaks[scope]
+    caplog.clear()
     storage = MagicMock()
     storage.renew_playbook_aggregation_claim.return_value = None
     caplog.set_level(logging.WARNING, logger=aggregation_scheduler.logger.name)
@@ -408,9 +421,18 @@ def test_heartbeat_reports_a_taken_fence_as_lease_lost(caplog) -> None:
 
     _drive(heartbeat, clock)
 
-    assert [(state, reason) for state, reason, _ in _progress_records(caplog)] == [
+    reports = _progress_records(caplog)
+    assert [(state, reason) for state, reason, _ in reports] == [
         ("lease_lost", "fence_taken")
     ]
+    # WARNING, not ERROR: the caller already reports the run's own
+    # `require_live` error at ERROR, so this must not double-report it.
+    (_, _, record) = reports[0]
+    assert record.levelno == logging.WARNING
+    assert record.exc_info is None
+    assert f"scope={scope} " in record.getMessage()
+    # Not a renewal failure: the streak is neither extended nor ended.
+    assert background_work._streaks[scope] == streak_before
 
 
 def test_require_live_fails_when_a_renewal_hangs_past_the_deadline() -> None:
