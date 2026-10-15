@@ -541,10 +541,10 @@ class ProfileExtractor:
         if not isinstance(result.output, StructuredProfilesOutput):
             if self.service_config.extraction_window_id is not None:
                 raise RuntimeError(
-                    f"Profile extraction did not finish: {result.finished_reason}"
+                    f"Profile extraction did not finish: {result.failure_label}"
                 )
             logger.warning(
-                "Profile extraction did not finish: %s", result.finished_reason
+                "Profile extraction did not finish: %s", result.failure_label
             )
             return []
         return [p.model_dump() for p in (result.output.profiles or [])]

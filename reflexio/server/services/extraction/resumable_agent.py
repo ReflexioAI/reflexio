@@ -19,7 +19,13 @@ from reflexio.server.llm.input_budget import (
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
-from reflexio.server.llm.tools import Tool, ToolLoopTrace, ToolRegistry, run_tool_loop
+from reflexio.server.llm.tools import (
+    Tool,
+    ToolLoopTrace,
+    ToolRegistry,
+    format_failure_label,
+    run_tool_loop,
+)
 from reflexio.server.services.extraction.agent_run_records import (
     build_extractor_agent_run_record,
 )
@@ -96,6 +102,18 @@ class AgentRunResult:
     trace: ToolLoopTrace
     finished_reason: str
     model_provenance: ModelProvenance | None = None
+    # Cause of a finished_reason == "error" run (class name and kind only; see
+    # ToolLoopResult.error_type). Carried so the extractor's failure message
+    # names the cause instead of a bare "error".
+    error_type: str | None = None
+    error_detail: str | None = None
+
+    @property
+    def failure_label(self) -> str:
+        """``finished_reason`` plus the error cause, safe for messages and logs."""
+        return format_failure_label(
+            self.finished_reason, self.error_type, self.error_detail
+        )
 
 
 def encode_committed_output(
@@ -738,7 +756,9 @@ class ResumableExtractionAgent:
             if result.pending_tool_call_ids:
                 raise OverflowSuspendedError("Extraction child awaits human/tool input")
             if result.finished_reason != "max_steps":
-                raise RuntimeError("Overflow extraction child did not finish")
+                raise RuntimeError(
+                    f"Overflow extraction child did not finish: {result.failure_label}"
+                )
             current_messages = result.messages
         else:
             raise InputBudgetExceededError(
@@ -935,7 +955,7 @@ class ResumableExtractionAgent:
                 },
             )
         else:
-            last_error = f"Extraction agent did not finish: {result.finished_reason}"
+            last_error = f"Extraction agent did not finish: {result.failure_label}"
             self.storage.update_agent_run_status(
                 run.id,
                 AgentRunStatus.FAILED,
@@ -947,13 +967,15 @@ class ResumableExtractionAgent:
             logger.warning(
                 "event=extraction_agent_failed org_id=%s user_id=%s "
                 "extractor_kind=%s run_id=%s request_id=%s "
-                "finished_reason=%s has_output=%s",
+                "finished_reason=%s error_type=%s error_detail=%s has_output=%s",
                 run.binding.org_id,
                 run.binding.user_id,
                 run.binding.extractor_kind,
                 run.id,
                 run.binding.request_id,
                 result.finished_reason,
+                result.error_type,
+                result.error_detail,
                 output is not None,
             )
             _record_agent_usage_event(
@@ -961,7 +983,11 @@ class ResumableExtractionAgent:
                 event_name="extraction_agent_failed",
                 outcome="failed",
                 error_kind=result.finished_reason,
-                metadata={"has_output": output is not None},
+                metadata={
+                    "has_output": output is not None,
+                    "error_type": result.error_type,
+                    "error_detail": result.error_detail,
+                },
             )
 
         return AgentRunResult(
@@ -972,4 +998,6 @@ class ResumableExtractionAgent:
             trace=result.trace,
             finished_reason=result.finished_reason,
             model_provenance=result.provenance,
+            error_type=result.error_type,
+            error_detail=result.error_detail,
         )

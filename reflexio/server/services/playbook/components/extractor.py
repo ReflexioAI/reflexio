@@ -717,7 +717,7 @@ class PlaybookExtractor:
         ):
             logger.warning(
                 "Playbook extraction did not finish: %s",
-                result.finished_reason,
+                result.failure_label,
             )
             if (
                 self.service_config.extraction_window_id is not None
@@ -725,7 +725,7 @@ class PlaybookExtractor:
             ):
                 raise RuntimeError(
                     "Playbook extraction failed without structured output: "
-                    f"{result.finished_reason}"
+                    f"{result.failure_label}"
                 )
             return []
         if coordinator is not None and coordinator.carried_source_spans is not None:

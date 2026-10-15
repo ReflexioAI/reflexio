@@ -43,6 +43,14 @@ from reflexio.server.services.storage.storage_base import AgentRunStatus, BaseSt
 
 logger = logging.getLogger(__name__)
 
+# An automatic extraction window that fails is retried by the durable worker
+# (``retry_extraction``) with backoff ``min(300, 2 ** min(attempts - 1, 9))`` s,
+# indefinitely. A single failed attempt is therefore not actionable: it is
+# logged at WARNING, and only the attempt that reaches the 300 s backoff cap --
+# attempt 10, about 8.5 minutes of consecutive failures -- and every one after
+# it is logged at ERROR, so a window that keeps failing still pages.
+WINDOW_FAILURE_ERROR_ATTEMPT = 10
+
 TExtractorConfig = TypeVar("TExtractorConfig")
 TGenerationServiceConfig = TypeVar("TGenerationServiceConfig")
 
@@ -71,6 +79,7 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
     _window_extractor_timeout_seconds: int
     _last_bookmark_advance: ExtractorBookmarkAdvance | None
     _last_model_provenance: ModelProvenance | None
+    _window_prior_attempts: int | None
 
     if TYPE_CHECKING:
         # Abstract on the base ABC (stays there per SINK-2); declared here type-only so
@@ -99,6 +108,22 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
             configured_bound,
             getattr(self, "_window_extractor_timeout_seconds", 0),
         )
+
+    def _extractor_failure_log_level(self) -> int:
+        """ERROR unless this is an early attempt of a retried extraction window.
+
+        Outside an automatic window (manual / synchronous runs) nothing retries
+        the failure, and a window whose attempt count is unknown is treated the
+        same way: both stay at ERROR.
+        """
+        if getattr(self, "_window_id", None) is None:
+            return logging.ERROR
+        prior_attempts = getattr(self, "_window_prior_attempts", None)
+        if prior_attempts is None:
+            return logging.ERROR
+        if prior_attempts + 1 >= WINDOW_FAILURE_ERROR_ATTEMPT:
+            return logging.ERROR
+        return logging.WARNING
 
     def _execute_extractor(
         self,
@@ -171,7 +196,7 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
                 f"Extractor timed out after {timeout_seconds} seconds "
                 f"for {self._get_service_name()} identifier={identifier}"
             )
-            logger.error(error_msg)
+            logger.log(self._extractor_failure_log_level(), error_msg)
             self._fail_active_extraction_runs(
                 extractor_kind=get_extractor_name(extractor_config),
                 last_error=error_msg,
@@ -187,7 +212,7 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
                 f"Extractor failed for {self._get_service_name()} "
                 f"identifier={identifier}: {exc} (type={type(exc).__name__})"
             )
-            logger.error(error_msg)
+            logger.log(self._extractor_failure_log_level(), error_msg)
             raise ExtractorExecutionError(error_msg) from exc
         finally:
             if executor is not None:

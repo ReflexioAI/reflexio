@@ -200,6 +200,71 @@ class ToolLoopResult(BaseModel):
     # Runtime-only attribution for the final accepted LLM turn. Persistence is
     # explicit at the lineage boundary; this must not leak into API payloads.
     provenance: ModelProvenance | None = Field(default=None, exclude=True)
+    # Set when finished_reason == "error": WHY the loop failed, as low-cardinality
+    # identifiers only (an exception class name and an enum-like kind), never the
+    # exception message -- callers put these into error messages that reach
+    # Sentry and durable ``last_error`` columns, where tenant text must not go.
+    error_type: str | None = None
+    error_detail: str | None = None
+
+    @property
+    def failure_label(self) -> str:
+        """``finished_reason`` plus the error cause, e.g. ``error (TimeoutError/transient)``."""
+        return format_failure_label(
+            self.finished_reason, self.error_type, self.error_detail
+        )
+
+
+def format_failure_label(
+    finished_reason: str, error_type: str | None, error_detail: str | None
+) -> str:
+    """Render a terminator reason with its cause for messages and logs.
+
+    Sentry groups an error by its message, so a bare ``error`` folds every
+    cause into one issue. Appending the class name and kind splits them while
+    keeping the label free of tenant text.
+
+    Args:
+        finished_reason (str): The tool-loop terminator reason.
+        error_type (str | None): Exception class name, when the loop errored.
+        error_detail (str | None): Failure kind or transience class.
+
+    Returns:
+        str: ``finished_reason`` alone, or ``"<reason> (<type>/<detail>)"``.
+    """
+    if error_type is None:
+        return finished_reason
+    if error_detail is None:
+        return f"{finished_reason} ({error_type})"
+    return f"{finished_reason} ({error_type}/{error_detail})"
+
+
+def describe_tool_loop_error(error: BaseException) -> tuple[str, str]:
+    """Classify a tool-loop failure by type only, never by message text.
+
+    Args:
+        error (BaseException): The exception that ended the loop.
+
+    Returns:
+        tuple[str, str]: The exception class name, and its detail: the
+        ``failure_kind`` of a structured-output repair failure (``parse`` /
+        ``semantic`` / ``refusal``), else ``transient`` for a timeout,
+        connection, rate-limit or overload failure (including an exhausted
+        ladder wall-clock budget), else ``non_transient``.
+    """
+    from reflexio.server.llm._litellm_text_generation import (
+        LadderBudgetExhaustedError,
+        _is_expected_transient_llm_error,
+    )
+    from reflexio.server.llm._litellm_types import StructuredOutputRepairError
+
+    if isinstance(error, StructuredOutputRepairError):
+        return type(error).__name__, error.failure_kind
+    if isinstance(
+        error, LadderBudgetExhaustedError
+    ) or _is_expected_transient_llm_error(error):
+        return type(error).__name__, "transient"
+    return type(error).__name__, "non_transient"
 
 
 # Models we know support function calling per vendor docs but that litellm's
@@ -501,7 +566,13 @@ def _log_tool_loop_error(error: Exception) -> None:
         # These are admission, lease and suspension decisions, not model errors.
         raise error
     if isinstance(error, LiteLLMClientError):
-        logger.warning("event=tool_loop_llm_error error=%s", error)
+        error_type, error_detail = describe_tool_loop_error(error)
+        logger.warning(
+            "event=tool_loop_llm_error error_type=%s error_detail=%s error=%s",
+            error_type,
+            error_detail,
+            error,
+        )
     else:
         logger.exception("Tool loop raised an unexpected exception")
 
@@ -828,6 +899,7 @@ def run_tool_loop(
     except Exception as error:
         _log_tool_loop_error(error)
         trace.finished = False
+        error_type, error_detail = describe_tool_loop_error(error)
         return ToolLoopResult(
             ctx=ctx,
             trace=trace,
@@ -835,6 +907,8 @@ def run_tool_loop(
             messages=local_msgs,
             pending_tool_call_ids=pending_tool_call_ids,
             max_steps_remaining=0,
+            error_type=error_type,
+            error_detail=error_detail,
         )
 
     return ToolLoopResult(

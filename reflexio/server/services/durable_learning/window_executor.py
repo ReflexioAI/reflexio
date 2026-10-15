@@ -139,7 +139,9 @@ class WindowExecutor:
         groups: list[RequestInteractionDataModel],
         window: Window,
     ) -> tuple[Any, Any, Any]:
-        service.set_extraction_window(groups, config, window.window_id)
+        service.set_extraction_window(
+            groups, config, window.window_id, prior_attempts=window.attempts
+        )
         service._window_skip_should_run = window.policy.get(
             "skip_should_run_check", False
         )

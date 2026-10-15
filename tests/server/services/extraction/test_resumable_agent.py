@@ -8,7 +8,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from reflexio.models.config_schema import PendingToolCallConfig
-from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.llm.litellm_client import (
+    LiteLLMClient,
+    LiteLLMConfig,
+    StructuredOutputRepairError,
+)
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.extraction.pending_tool_call_dispatch import (
     PendingToolCallToolContext,
@@ -280,7 +284,55 @@ def test_resumable_agent_marks_run_failed_on_loop_error(monkeypatch, storage):
     assert stored is not None
     assert stored.status == AgentRunStatus.FAILED
     assert stored.committed_output is None
-    assert stored.last_error == "Extraction agent did not finish: error"
+    assert stored.last_error == (
+        "Extraction agent did not finish: error (RuntimeError/non_transient)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_label"),
+    [
+        (
+            StructuredOutputRepairError(
+                "Structured output repair exhausted",
+                failure_kind="semantic",
+                model="minimax/MiniMax-M3",
+                raw_content="tenant content",
+            ),
+            "error (StructuredOutputRepairError/semantic)",
+        ),
+        (
+            TimeoutError("tenant content"),
+            "error (TimeoutError/transient)",
+        ),
+    ],
+)
+def test_resumable_agent_failure_names_cause_without_tenant_text(
+    monkeypatch, storage, error, expected_label
+):
+    """The failure the extractor raises must say WHY, by class and kind only."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
+    monkeypatch.setattr(
+        client,
+        "generate_chat_response_with_provenance",
+        MagicMock(side_effect=error),
+    )
+    agent = ResumableExtractionAgent(client=client, storage=storage)
+
+    result = agent.start(
+        run=_agent_run("run_cause", extractor_kind="playbook"),
+        messages=[{"role": "user", "content": "extract playbooks"}],
+        output_schema=StructuredPlaybookList,
+    )
+
+    assert result.finished_reason == "error"
+    assert result.failure_label == expected_label
+    stored = storage.get_agent_run("run_cause")
+    assert stored is not None
+    assert stored.last_error == f"Extraction agent did not finish: {expected_label}"
+    assert "tenant" not in stored.last_error
 
 
 def test_resumable_agent_uses_auto_tool_choice_with_extra_tools(

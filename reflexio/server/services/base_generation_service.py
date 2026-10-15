@@ -596,15 +596,23 @@ class BaseGenerationService(
         interactions: list[RequestInteractionDataModel],
         extractor_config: TExtractorConfig,
         window_id: str,
+        *,
+        prior_attempts: int | None = None,
     ) -> None:
         """Pin one immutable input window for gate, extraction and billing.
 
         Automatic scheduling owns eligibility; legacy timestamp bookmarks and
         source narrowing must not select a different slice after admission.
+
+        ``prior_attempts`` is the number of failed attempts the durable cursor
+        already recorded for this window. It only decides how loudly an
+        extractor failure is logged (``_extractor_failure_log_level``); None
+        means unknown and keeps the failure at ERROR.
         """
         self._window_interactions = interactions
         self._window_extractor_config = extractor_config
         self._window_id = window_id
+        self._window_prior_attempts = prior_attempts
 
     def compute_generation(self, request: TRequest) -> GenerationComputePlan | None:
         """Compute half of one generation run — NO learning DB write, NO fence.

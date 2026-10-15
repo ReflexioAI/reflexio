@@ -937,7 +937,7 @@ class ExtractionResumeWorker:
         )
         if not isinstance(result.output, StructuredProfilesOutput):
             raise ResumeWorkerError(
-                f"Profile resume did not finish: {result.finished_reason}"
+                f"Profile resume did not finish: {result.failure_label}"
             )
         raw_profiles = [
             profile.model_dump() for profile in result.output.profiles or []
@@ -1064,7 +1064,7 @@ class ExtractionResumeWorker:
             | StructuredExtractedPlaybookList,
         ):
             raise ResumeWorkerError(
-                f"Playbook resume did not finish: {result.finished_reason}"
+                f"Playbook resume did not finish: {result.failure_label}"
             )
         if contract.strict:
             items = extractor._process_structured_response_list(

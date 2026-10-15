@@ -6,11 +6,13 @@ discriminated union (4 kinds: ``unify``, ``reject_new``, ``differentiate``,
 ``test_playbook_consolidator_integration.py``.
 """
 
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from reflexio.models.api_schema.service_schemas import UserPlaybook
+from reflexio.server.error_reporting import configure_error_reporter
 from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.llm.litellm_client import (
     LiteLLMClientError,
@@ -755,6 +757,134 @@ class TestDeduplicate:
             mock_consolidator.deduplicate(
                 results=[[first, second]], request_id="req1", agent_version="v1"
             )
+
+
+class _RecordingReporter:
+    """Captures the tags active while the consolidator reports its failure."""
+
+    def __init__(self) -> None:
+        self.context_tags: list[dict[str, str]] = []
+
+    @contextmanager
+    def error_tags(self, tags):
+        self.context_tags.append(dict(tags))
+        yield
+
+    def set_error_tags(self, tags) -> None:  # pragma: no cover - unused
+        pass
+
+    def capture_anomaly(self, message, *, level, tags) -> None:  # pragma: no cover
+        pass
+
+
+@pytest.fixture
+def recording_reporter():
+    reporter = _RecordingReporter()
+    configure_error_reporter(reporter)
+    yield reporter
+    configure_error_reporter(None)
+
+
+class TestIdentifyDuplicatesFailureTags:
+    """An exhausted repair must say which deterministic check kept failing."""
+
+    def _identify_duplicates_tags(self, reporter):
+        tags = [
+            t for t in reporter.context_tags if t.get("op") == "identify_duplicates"
+        ]
+        assert len(tags) == 1
+        return tags[0]
+
+    def test_overlap_failure_is_tagged(self, mock_consolidator, recording_reporter):
+        existing = _make_user_playbook(
+            10,
+            user_playbook_id=500,
+            content="Lead recurring analysis reports with a compact table",
+            source_interaction_ids=[10],
+            source_span="lead with a compact table",
+            reader_angle="preference",
+        )
+        candidate = _make_user_playbook(
+            0,
+            content="Lead recurring analysis reports with a compact table",
+            source_interaction_ids=[10],
+            source_span="lead with a compact table",
+            reader_angle="preference",
+        )
+        mock_consolidator.client.get_embeddings.return_value = [[0.1]]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = [
+            existing,
+            existing.model_copy(update={"user_playbook_id": 501}),
+        ]
+        independent = PlaybookConsolidationOutput(
+            decisions=[IndependentDecision(new_id="NEW-0")]
+        )
+        mock_consolidator.client.generate_chat_response.side_effect = (
+            _shared_repair_side_effect(independent, independent)
+        )
+
+        with (
+            patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
+            pytest.raises(StructuredOutputRepairError),
+        ):
+            mock_consolidator.deduplicate(
+                results=[[candidate]], request_id="req-overlap", agent_version="v1"
+            )
+
+        tags = self._identify_duplicates_tags(recording_reporter)
+        assert tags["error_type"] == "StructuredOutputRepairError"
+        assert tags["failure_kind"] == "semantic"
+        assert tags["failed_check"] == "overlap"
+
+    def test_coverage_failure_is_tagged(self, mock_consolidator, recording_reporter):
+        new_0 = _make_user_playbook(
+            0, content="alpha beta", source_interaction_ids=[10]
+        )
+        new_1 = _make_user_playbook(
+            1, content="gamma delta", source_interaction_ids=[11]
+        )
+        mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
+        missing_new_1 = PlaybookConsolidationOutput(
+            decisions=[IndependentDecision(new_id="NEW-0")]
+        )
+        mock_consolidator.client.generate_chat_response.side_effect = (
+            _shared_repair_side_effect(missing_new_1, missing_new_1)
+        )
+
+        with (
+            patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
+            pytest.raises(StructuredOutputRepairError),
+        ):
+            mock_consolidator.deduplicate(
+                results=[[new_0, new_1]], request_id="req-cover", agent_version="v1"
+            )
+
+        tags = self._identify_duplicates_tags(recording_reporter)
+        assert tags["failure_kind"] == "semantic"
+        assert tags["failed_check"] == "coverage"
+
+    def test_transport_failure_has_no_check_tag(
+        self, mock_consolidator, recording_reporter
+    ):
+        mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
+        mock_consolidator.client.generate_chat_response.side_effect = TimeoutError()
+
+        with (
+            patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
+            pytest.raises(TimeoutError),
+        ):
+            mock_consolidator.deduplicate(
+                results=[[_make_user_playbook(0), _make_user_playbook(1)]],
+                request_id="req-timeout",
+                agent_version="v1",
+            )
+
+        tags = self._identify_duplicates_tags(recording_reporter)
+        assert tags["error_type"] == "TimeoutError"
+        assert "failure_kind" not in tags
+        assert "failed_check" not in tags
 
 
 # ===============================

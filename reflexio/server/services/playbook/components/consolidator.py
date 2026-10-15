@@ -567,6 +567,10 @@ class PlaybookConsolidator(BaseDeduplicator):
         super().__init__(request_context, llm_client)
         self._dedup_config = dedup_config or DeduplicationConfig()
         self.model_provenance: ModelProvenance | None = None
+        # Which deterministic check last rejected a consolidation attempt
+        # (see ``_consolidation_decisions``); reported on the failure event so
+        # an exhausted repair says whether coverage or overlap kept failing.
+        self.last_failed_check: str | None = None
         self.consolidated_output_indices: set[int] = set()
         self.lineage_sources_by_output_index: dict[int, list[str]] = {}
 
@@ -908,14 +912,19 @@ class PlaybookConsolidator(BaseDeduplicator):
             [{"role": "user", "content": prompt}],
         )
 
+        self.last_failed_check = None
+
         def _validate_output(output: BaseModel) -> list[str]:
             if not isinstance(output, PlaybookConsolidationOutput):
+                self.last_failed_check = "output_type"
                 return [f"Unexpected output type: {type(output).__name__}."]
             errors = validate_consolidation_output(new_playbooks, output)
+            failed_check = "coverage"
             if not errors:
                 errors = self._find_suspicious_under_consumed_new_rows(
                     new_playbooks, output
                 )
+                failed_check = "under_consumption"
             if not errors:
                 try:
                     preview_rows, preview_archive_ids, _ = (
@@ -929,6 +938,7 @@ class PlaybookConsolidator(BaseDeduplicator):
                     )
                 except (KeyError, TypeError, ValueError) as exc:
                     errors = [f"Decisions cannot be applied: {exc}"]
+                    failed_check = "apply"
                 else:
                     untouched_existing = [
                         existing
@@ -939,6 +949,8 @@ class PlaybookConsolidator(BaseDeduplicator):
                         preview_rows,
                         untouched_existing,
                     )
+                    failed_check = "overlap"
+            self.last_failed_check = failed_check if errors else None
             if errors:
                 return [
                     *errors,
@@ -1141,6 +1153,11 @@ class PlaybookConsolidator(BaseDeduplicator):
                 new_playbooks, existing_playbooks
             )
         except Exception as e:
+            # Low-cardinality causes only: the repair ladder's failure kind and
+            # the deterministic check that rejected the last attempt (validation
+            # error text can quote tenant content, so it is never attached).
+            failure_kind = getattr(e, "failure_kind", None)
+            failed_check = getattr(self, "last_failed_check", None)
             with error_tags(
                 subsystem="playbook_consolidator",
                 op="identify_duplicates",
@@ -1149,8 +1166,17 @@ class PlaybookConsolidator(BaseDeduplicator):
                 request_id=generation_request_id,
                 agent_version=agent_version,
                 error_type=type(e).__name__,
+                failure_kind=failure_kind,
+                failed_check=failed_check,
             ):
-                logger.exception("Failed to identify duplicates")
+                logger.exception(
+                    "Failed to identify duplicates",
+                    extra={
+                        "error_type": type(e).__name__,
+                        "failure_kind": failure_kind,
+                        "failed_check": failed_check,
+                    },
+                )
             raise
 
         if not dedup_output.decisions:
