@@ -1347,6 +1347,18 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
     def _migrate_playbook_diagnosis(self) -> None:
         """Add diagnostic evidence without changing optimizer jobs or old results."""
         with self._lock:
+            columns = {
+                row["name"]
+                for row in self.conn.execute(
+                    "PRAGMA table_info(retrieved_learning_evaluation)"
+                )
+            }
+            if {
+                "diagnosis",
+                "evaluated_playbook_digest",
+                "diagnosis_evidence_complete",
+            } <= columns:
+                return
             # The initialization locks are process-local. Lock the database
             # before inspecting columns so concurrent workers cannot both ALTER.
             self.conn.execute("BEGIN IMMEDIATE")
@@ -1540,51 +1552,59 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 if emb:
                     self._vec_upsert(vec_table, r["rid"], emb)
 
+    def _session_outcomes_schema_is_canonical(self) -> bool:
+        table_info = self.conn.execute("PRAGMA table_info(session_outcomes)").fetchall()
+        columns = {str(row["name"]): row for row in table_info}
+        table = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'session_outcomes'"
+        ).fetchone()
+        table_sql = (table["sql"] if table is not None else "") or ""
+        identity_columns = {
+            "outcome_id",
+            "outcome_revision",
+            "outcome_contract_digest",
+            "finalized_trajectory_digest",
+        }
+        expected_columns = identity_columns | {
+            "user_id",
+            "session_id",
+            "outcome",
+            "occurred_at",
+            "source",
+            "label",
+            "value",
+            "metadata",
+            "governance_subject_ref",
+            "created_at",
+        }
+        subject_column = columns.get("governance_subject_ref")
+        has_empty_subject_default = subject_column is not None and subject_column[
+            "dflt_value"
+        ] in ("''", '""')
+        return (
+            expected_columns.issubset(columns)
+            and "'unknown'" in table_sql
+            and subject_column is not None
+            and int(subject_column["notnull"]) == 1
+            and not has_empty_subject_default
+        )
+
     def _migrate_session_outcomes_schema(self) -> None:
         """Rebuild legacy outcome rows with immutable v1 finalization identities."""
         with self._lock:
+            if (
+                self._session_outcomes_schema_is_canonical()
+                and self.conn.execute(
+                    "SELECT 1 FROM session_outcomes WHERE governance_subject_ref IS NULL "
+                    "OR trim(governance_subject_ref) = '' LIMIT 1"
+                ).fetchone()
+                is None
+            ):
+                return
             self.conn.execute("BEGIN IMMEDIATE")
             try:
-                table_info = self.conn.execute(
-                    "PRAGMA table_info(session_outcomes)"
-                ).fetchall()
-                columns = {str(row["name"]): row for row in table_info}
-                table = self.conn.execute(
-                    "SELECT sql FROM sqlite_master WHERE type = 'table' "
-                    "AND name = 'session_outcomes'"
-                ).fetchone()
-                table_sql = (table["sql"] if table is not None else "") or ""
-                identity_columns = {
-                    "outcome_id",
-                    "outcome_revision",
-                    "outcome_contract_digest",
-                    "finalized_trajectory_digest",
-                }
-                expected_columns = identity_columns | {
-                    "user_id",
-                    "session_id",
-                    "outcome",
-                    "occurred_at",
-                    "source",
-                    "label",
-                    "value",
-                    "metadata",
-                    "governance_subject_ref",
-                    "created_at",
-                }
-                subject_column = columns.get("governance_subject_ref")
-                has_empty_subject_default = (
-                    subject_column is not None
-                    and subject_column["dflt_value"] in ("''", '""')
-                )
-                schema_is_canonical = (
-                    expected_columns.issubset(columns)
-                    and "'unknown'" in table_sql
-                    and subject_column is not None
-                    and int(subject_column["notnull"]) == 1
-                    and not has_empty_subject_default
-                )
-                if schema_is_canonical:
+                if self._session_outcomes_schema_is_canonical():
                     rows_missing_subject_ref = self.conn.execute(
                         """SELECT user_id, session_id FROM session_outcomes
                            WHERE governance_subject_ref IS NULL
@@ -1605,6 +1625,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     self.conn.commit()
                     return
 
+                columns = {
+                    row["name"]
+                    for row in self.conn.execute("PRAGMA table_info(session_outcomes)")
+                }
                 self.conn.execute(
                     "ALTER TABLE session_outcomes RENAME TO session_outcomes_legacy"
                 )
@@ -2300,6 +2324,47 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         }
         if "optimizer_kind" not in columns:
             return
+        index_statements = (
+            """CREATE UNIQUE INDEX IF NOT EXISTS uq_poj_active_discovery
+               ON playbook_optimization_jobs(optimizer_kind, discovery_key)
+               WHERE status IN ('pending', 'running')
+                 AND discovery_key IS NOT NULL""",
+            """CREATE UNIQUE INDEX IF NOT EXISTS uq_poj_active_attempt
+               ON playbook_optimization_jobs(optimizer_kind, attempt_key)
+               WHERE status IN ('pending', 'running')
+                 AND attempt_key IS NOT NULL""",
+            """CREATE UNIQUE INDEX IF NOT EXISTS uq_poj_active_target
+               ON playbook_optimization_jobs(optimizer_kind, target_kind, target_id)
+               WHERE status IN ('pending', 'running')""",
+        )
+        # The constraint rebuild emits equivalent declarations with different
+        # whitespace. These three statements have no whitespace inside their
+        # quoted literals, so whitespace folding cannot change an accepted value.
+        expected_indexes = {
+            statement.split()[6]: " ".join(
+                statement.replace(" IF NOT EXISTS", "", 1).split()
+            )
+            for statement in index_statements
+        }
+        current_indexes = dict(
+            self.conn.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type = 'index' "
+                "AND name IN ('uq_poj_active_discovery', 'uq_poj_active_attempt', 'uq_poj_active_target')"
+            ).fetchall()
+        )
+        current_indexes = {
+            name: " ".join(sql.split()) for name, sql in current_indexes.items()
+        }
+        if (
+            current_indexes == expected_indexes
+            and self.conn.execute(
+                "SELECT 1 FROM playbook_optimization_jobs WHERE optimizer_kind IS NULL "
+                "OR (optimizer_kind IN ('offline_tuner_legacy', 'optimizer_legacy_unknown') "
+                "AND status IN ('pending', 'running')) LIMIT 1"
+            ).fetchone()
+            is None
+        ):
+            return
         for index_name in (
             "uq_poj_active_discovery",
             "uq_poj_active_attempt",
@@ -2430,23 +2495,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
               AND status IN ('pending', 'running')
             """
         )
-        self.conn.execute(
-            """CREATE UNIQUE INDEX IF NOT EXISTS uq_poj_active_discovery
-               ON playbook_optimization_jobs(optimizer_kind, discovery_key)
-               WHERE status IN ('pending', 'running')
-                 AND discovery_key IS NOT NULL"""
-        )
-        self.conn.execute(
-            """CREATE UNIQUE INDEX IF NOT EXISTS uq_poj_active_attempt
-               ON playbook_optimization_jobs(optimizer_kind, attempt_key)
-               WHERE status IN ('pending', 'running')
-                 AND attempt_key IS NOT NULL"""
-        )
-        self.conn.execute(
-            """CREATE UNIQUE INDEX IF NOT EXISTS uq_poj_active_target
-               ON playbook_optimization_jobs(optimizer_kind, target_kind, target_id)
-               WHERE status IN ('pending', 'running')"""
-        )
+        for statement in index_statements:
+            self.conn.execute(statement)
         self.conn.commit()
 
     def _enforce_playbook_optimization_job_constraints(self) -> None:

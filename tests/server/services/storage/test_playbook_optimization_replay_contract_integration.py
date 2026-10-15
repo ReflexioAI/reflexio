@@ -1331,6 +1331,30 @@ def test_legacy_optimizer_rows_are_classified_mutually_exclusively(
     assert rows[5]["status"] == "skipped"
 
 
+def test_constraint_rebuilt_optimizer_indexes_do_not_require_writer(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "rebuilt-current-indexes.db"
+    _create_legacy_optimizer_schema(db_path)
+    store = SQLiteStorage(org_id="legacy-classification", db_path=str(db_path))
+    writer = sqlite3.connect(db_path)
+    try:
+        # Exercise the actual constraint rebuild, whose equivalent index SQL
+        # uses different whitespace from the classifier's creation statements.
+        index_sql = store.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='uq_poj_active_discovery'"
+        ).fetchone()[0]
+        assert "WHERE status IN ('pending', 'running') AND discovery_key" in index_sql
+        store.conn.execute("PRAGMA busy_timeout=100")
+        writer.execute("BEGIN IMMEDIATE")
+        store._classify_legacy_playbook_optimization_jobs()
+        assert not store.conn.in_transaction
+    finally:
+        writer.rollback()
+        writer.close()
+        store.conn.close()
+
+
 def test_legacy_duplicate_active_gepa_jobs_are_deterministically_retired(
     tmp_path: Path,
 ) -> None:
