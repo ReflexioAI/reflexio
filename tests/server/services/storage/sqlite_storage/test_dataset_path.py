@@ -295,6 +295,26 @@ def test_malformed_existing_owner_cannot_bypass_claim_validation(
         resolve_sqlite_db_path(tmp_path, "acme")
 
 
+def test_additional_required_identity_column_keeps_claim_validation(
+    tmp_path: Path,
+) -> None:
+    db = derive_db_path(tmp_path, "acme")
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "CREATE TABLE _dataset_identity (k INTEGER PRIMARY KEY, "
+            "org_id TEXT NOT NULL, claimed_at TEXT NOT NULL, required TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO _dataset_identity VALUES (1, 'acme', 'claimed', 'present')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    with pytest.raises(sqlite3.IntegrityError, match="required"):
+        resolve_sqlite_db_path(tmp_path, "acme")
+
+
 def test_concurrent_claims_across_processes_agree_on_one_winner(tmp_path: Path) -> None:
     """The in-process initialization lock is a ``threading.Lock``.
 

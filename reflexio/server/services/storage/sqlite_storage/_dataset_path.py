@@ -229,7 +229,7 @@ def claim_or_read_identity(path: Path, org_id: str) -> str:
                 f"PRAGMA table_info({IDENTITY_CLAIM_TABLE})"
             ).fetchall()
             primary_key = {column[1]: column[5] for column in columns if column[5]}
-            if primary_key == {"k": 1} and {"k", "org_id", "claimed_at"} <= {
+            if primary_key == {"k": 1} and {"k", "org_id", "claimed_at"} == {
                 column[1] for column in columns
             }:
                 row = conn.execute(
