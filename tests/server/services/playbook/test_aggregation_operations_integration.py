@@ -62,6 +62,16 @@ def test_trigger_replacement_keeps_concurrent_erasure_fenced(storage):
     operation = storage.submit_playbook_aggregation_operation("during-init", "v1")
     claim = claim_operation(storage, operation)
     reopened = SQLiteStorage(org_id=storage.org_id, db_path=storage.db_path)
+    # Preserve the previous fence while making its stored definition stale.
+    name = "cancel_erased_aggregation_operations"
+    definition = reopened.conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", (name,)
+    ).fetchone()[0]
+    reopened.conn.execute(f"DROP TRIGGER {name}")
+    reopened.conn.execute(
+        definition.replace("BEGIN\n", "BEGIN\n-- previous revision\n", 1)
+    )
+    reopened.conn.commit()
     paused = Event()
     resume = Event()
     timed_out = Event()

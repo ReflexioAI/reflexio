@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from typing import Any
@@ -204,10 +205,76 @@ COMMIT;
 """
 
 
+def _ddl_is_current(conn: sqlite3.Connection, ddl: str) -> bool:
+    """Recognize exact current schema without replaying its write transactions.
+
+    SQLite determines statement boundaries, including complete trigger bodies.
+    Unsupported or incomplete SQL retains the original execution path. Equivalent
+    legacy definitions also retain that path; this is not a SQL normalizer.
+    """
+    expected: dict[tuple[str, str], str] = {}
+    dropped: set[str] = set()
+    in_transaction = False
+    statement = ""
+    for line in ddl.splitlines(keepends=True):
+        statement += line
+        if not sqlite3.complete_statement(statement):
+            continue
+        sql = statement.strip().removesuffix(";")
+        statement = ""
+        if sql == "BEGIN IMMEDIATE":
+            if in_transaction:
+                return False
+            in_transaction = True
+            continue
+        if sql == "COMMIT":
+            if not in_transaction:
+                return False
+            in_transaction = False
+            continue
+        if match := re.fullmatch(r"DROP TRIGGER IF EXISTS (\w+)", sql):
+            if ("trigger", match[1]) in expected:
+                return False
+            dropped.add(match[1])
+            continue
+        match = re.match(
+            r"CREATE (?:UNIQUE )?(TABLE|INDEX|TRIGGER) (IF NOT EXISTS )?(\w+)\b",
+            sql,
+        )
+        if match is None:
+            return False
+        if match[2]:
+            sql = sql[: match.start(2)] + sql[match.end(2) :]
+        key = (match[1].lower(), match[3])
+        if key in expected:
+            return False
+        expected[key] = sql
+    if (
+        statement.strip()
+        or in_transaction
+        or not expected
+        or dropped - {name for kind, name in expected if kind == "trigger"}
+    ):
+        return False
+    names = [name for _, name in expected]
+    placeholders = ",".join("?" for _ in names)
+    actual = {
+        (row[0], row[1]): row[2]
+        for row in conn.execute(
+            f"SELECT type, name, sql FROM sqlite_master WHERE name IN ({placeholders})",  # noqa: S608
+            names,
+        )
+    }
+    return actual == expected
+
+
 def init_playbook_aggregation_tables(conn: sqlite3.Connection) -> None:
     try:
-        conn.executescript(AGGREGATION_DDL + AGGREGATION_OPERATIONS_DDL)
-        conn.executescript(AGGREGATION_TRIGGER_DDL)
+        operations_ddl = AGGREGATION_DDL + AGGREGATION_OPERATIONS_DDL
+        if not _ddl_is_current(conn, operations_ddl):
+            conn.executescript(operations_ddl)
+        if not _ddl_is_current(conn, AGGREGATION_TRIGGER_DDL):
+            conn.executescript(AGGREGATION_TRIGGER_DDL)
     except Exception:
         conn.rollback()
         raise
