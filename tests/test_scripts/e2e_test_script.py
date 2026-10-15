@@ -27,6 +27,7 @@ logger.addHandler(console_handler)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 import os
+from pathlib import Path
 
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 
@@ -69,7 +70,8 @@ def sample_publish_playbook(am: Reflexio):
 
 
 if __name__ == "__main__":
-    agentic_mem = Reflexio("3", "/Users/yilu/repos/reflexio/data")
+    # <repo-root>/data: this script lives at tests/test_scripts/.
+    agentic_mem = Reflexio("3", str(Path(__file__).resolve().parents[2] / "data"))
 
     config = Config(
         storage_config=agentic_mem.request_context.configurator.config.storage_config,
