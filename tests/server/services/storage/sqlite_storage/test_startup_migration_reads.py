@@ -31,8 +31,8 @@ def test_current_migration_reads_under_independent_writer(tmp_path, migration):
 
 
 @pytest.mark.parametrize("index", ["discovery", "attempt", "target"])
-@pytest.mark.parametrize("stale", [False, True])
-def test_optimizer_classification_repairs_noncurrent_index(tmp_path, index, stale):
+@pytest.mark.parametrize("mode", ["missing", "nonunique", "changed_predicate"])
+def test_optimizer_classification_repairs_noncurrent_index(tmp_path, index, mode):
     store = SQLiteStorage(org_id="0", db_path=str(tmp_path / "repair.db"))
     name = f"uq_poj_active_{index}"
     try:
@@ -40,19 +40,20 @@ def test_optimizer_classification_repairs_noncurrent_index(tmp_path, index, stal
             "SELECT sql FROM sqlite_master WHERE name = ?", (name,)
         ).fetchone()[0]
         store.conn.execute(f"DROP INDEX {name}")
-        if stale:
+        if mode == "nonunique":
             # Same name, but a nonunique index offers no duplicate protection.
             store.conn.execute(
                 f"CREATE INDEX {name} ON playbook_optimization_jobs(job_id)"
             )
+        elif mode == "changed_predicate":
+            # Whitespace inside a quoted status changes the filter's meaning.
+            store.conn.execute(original.replace("'pending'", "' pending'"))
         store.conn.commit()
         store._classify_legacy_playbook_optimization_jobs()
-        assert (
-            store.conn.execute(
-                "SELECT sql FROM sqlite_master WHERE name = ?", (name,)
-            ).fetchone()[0]
-            == original
-        )
+        repaired = store.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = ?", (name,)
+        ).fetchone()[0]
+        assert " ".join(repaired.split()) == " ".join(original.split())
     finally:
         store.conn.close()
 

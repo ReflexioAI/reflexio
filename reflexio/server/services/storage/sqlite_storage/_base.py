@@ -2337,8 +2337,13 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                ON playbook_optimization_jobs(optimizer_kind, target_kind, target_id)
                WHERE status IN ('pending', 'running')""",
         )
+        # The constraint rebuild emits equivalent declarations with different
+        # whitespace. These three statements have no whitespace inside their
+        # quoted literals, so whitespace folding cannot change an accepted value.
         expected_indexes = {
-            statement.split()[6]: statement.replace(" IF NOT EXISTS", "", 1)
+            statement.split()[6]: " ".join(
+                statement.replace(" IF NOT EXISTS", "", 1).split()
+            )
             for statement in index_statements
         }
         current_indexes = dict(
@@ -2347,6 +2352,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 "AND name IN ('uq_poj_active_discovery', 'uq_poj_active_attempt', 'uq_poj_active_target')"
             ).fetchall()
         )
+        current_indexes = {
+            name: " ".join(sql.split()) for name, sql in current_indexes.items()
+        }
         if (
             current_indexes == expected_indexes
             and self.conn.execute(

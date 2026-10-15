@@ -384,7 +384,8 @@ current evaluation index skip their write work. Missing or changed definitions
 retain the original upgrade and rollback paths, including atomic erasure-trigger
 replacement. Other migrations still run; this is not a database initialization
 cache. Equivalent legacy aggregation definitions may retain the slower path.
-Current optimizer indexes are also retained when no legacy jobs need repair.
+Current optimizer indexes are also retained when no legacy jobs need repair;
+their comparison accepts whitespace differences emitted by the constraint rebuild.
 Current session-outcome and playbook-diagnosis migrations inspect before taking
 a writer lock, then recheck under the lock if an upgrade or subject repair is
 needed. These checks preserve legacy classification, duplicate retirement,
