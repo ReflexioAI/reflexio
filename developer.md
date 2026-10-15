@@ -378,6 +378,13 @@ foreign owners and legacy erasure barriers retain their existing rejection rules
 The read path requires the unchanged application-created ownership schema;
 custom definitions, indexes or triggers retain the original claim validation.
 
+SQLite initialization reads the current evaluation-index and aggregation schema
+before replaying those migrations. Exact current aggregation definitions and the
+current evaluation index skip their write work. Missing or changed definitions
+retain the original upgrade and rollback paths, including atomic erasure-trigger
+replacement. Other migrations still run; this is not a database initialization
+cache. Equivalent legacy aggregation definitions may retain the slower path.
+
 SQLite deferred index failures raise `PostCommitStorageError` after the primary
 commit; publish preserves the admitted request and reports deferred follow-up.
 Extraction-runner and evaluation scheduling failures are contained independently

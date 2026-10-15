@@ -13,6 +13,8 @@ before ``_DDL``.
 
 import sqlite3
 
+import pytest
+
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 # Pre-``user_id`` schema for the eval-result table (and its old index, which did
@@ -91,3 +93,44 @@ def test_migrate_is_idempotent_on_legacy_eval_table(tmp_path):
 
     assert "user_id" in _eval_columns(db_path)
     assert "tags" in _eval_columns(db_path)
+
+
+def test_current_evaluation_index_migration_does_not_wait_for_writer(tmp_path):
+    db_path = str(tmp_path / "current.db")
+    writer = SQLiteStorage(org_id="0", db_path=db_path)
+    reader = SQLiteStorage(org_id="0", db_path=db_path)
+    try:
+        with writer.commit_scope():
+            reader._migrate_eval_result_user_id()
+    finally:
+        reader.conn.close()
+        writer.conn.close()
+
+
+@pytest.mark.parametrize("stale", [False, True])
+def test_evaluation_index_migration_repairs_missing_or_stale_index(tmp_path, stale):
+    store = SQLiteStorage(org_id="0", db_path=str(tmp_path / "repair.db"))
+    try:
+        store.conn.execute("DROP INDEX idx_eval_identity_created_at_desc")
+        if stale:
+            store.conn.execute(
+                "CREATE INDEX idx_eval_identity_created_at_desc "
+                "ON agent_success_evaluation_result(session_id, created_at)"
+            )
+        store.conn.commit()
+        store._migrate_eval_result_user_id()
+        assert [
+            (row[2], row[3])
+            for row in store.conn.execute(
+                "PRAGMA index_xinfo(idx_eval_identity_created_at_desc)"
+            )
+            if row[5]
+        ] == [
+            ("user_id", 0),
+            ("session_id", 0),
+            ("evaluation_name", 0),
+            ("agent_version", 0),
+            ("created_at", 1),
+        ]
+    finally:
+        store.conn.close()

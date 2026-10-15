@@ -557,8 +557,77 @@ def test_aggregation_schema_init_does_not_rebuild_pending_index(tmp_path) -> Non
     assert "WHERE processed_at IS NULL" in index_sql
 
 
+def test_current_aggregation_initialization_does_not_wait_for_writer(tmp_path) -> None:
+    store = _store(tmp_path)
+    reader = sqlite3.connect(store.db_path)
+    try:
+        with store.commit_scope():
+            init_playbook_aggregation_tables(reader)
+    finally:
+        reader.close()
+        store.conn.close()
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        "DROP TABLE playbook_aggregation_operations",
+        "DROP INDEX idx_aggregation_operation_active",
+        "DROP TRIGGER cancel_erased_aggregation_operations",
+    ],
+)
+def test_aggregation_initialization_repairs_missing_schema(
+    tmp_path, definition
+) -> None:
+    store = _store(tmp_path)
+    try:
+        store.conn.execute(definition)
+        store.conn.commit()
+        init_playbook_aggregation_tables(store.conn)
+        assert store.submit_playbook_aggregation_operation("after-repair", "v1")
+        assert store.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='idx_aggregation_operation_active'"
+        ).fetchone()
+        assert store.conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE name='cancel_erased_aggregation_operations'"
+        ).fetchone()
+    finally:
+        store.conn.close()
+
+
+def test_current_aggregation_schema_does_not_hide_invalid_migration_sql(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path)
+    broken = _aggregation.AGGREGATION_TRIGGER_DDL.replace(
+        "COMMIT;", "THIS IS NOT VALID SQL;\nCOMMIT;"
+    )
+    monkeypatch.setattr(_aggregation, "AGGREGATION_TRIGGER_DDL", broken)
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            init_playbook_aggregation_tables(store.conn)
+        assert not store.conn.in_transaction
+    finally:
+        store.conn.close()
+
+
 def test_aggregation_trigger_replacement_is_atomic_across_connections(tmp_path) -> None:
     store = _store(tmp_path)
+    # Exercise a real upgrade. The old definitions retain the same fences but
+    # differ from the current SQL, so the no-op path must not handle this test.
+    for name in (
+        "cancel_erased_aggregation_operations",
+        "capture_playbook_aggregation_hard_delete",
+    ):
+        definition = store.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", (name,)
+        ).fetchone()[0]
+        store.conn.execute(f"DROP TRIGGER {name}")  # noqa: S608
+        store.conn.execute(
+            definition.replace("BEGIN\n", "BEGIN\n-- previous revision\n", 1)
+        )
+    store.conn.commit()
     observer = sqlite3.connect(store.db_path)
     observed: list[tuple[str, str | None]] = []
 

@@ -3093,12 +3093,24 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 "ADD COLUMN user_id TEXT NOT NULL DEFAULT ''"
             )
             logger.info("Added user_id column to agent_success_evaluation_result")
-        self.conn.execute("DROP INDEX IF EXISTS idx_eval_identity_created_at_desc")
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_eval_identity_created_at_desc "
+        index_sql = (
+            "CREATE INDEX idx_eval_identity_created_at_desc "
             "ON agent_success_evaluation_result"
             "(user_id, session_id, evaluation_name, agent_version, created_at DESC)"
         )
+        existing = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name=? "
+            "AND tbl_name='agent_success_evaluation_result'",
+            ("idx_eval_identity_created_at_desc",),
+        ).fetchone()
+        # This declaration contains identifiers only; whitespace and keyword case
+        # do not change its meaning. Other definitions retain actual replacement.
+        if existing and " ".join(existing[0].split()).casefold() == (
+            " ".join(index_sql.split()).casefold()
+        ):
+            return
+        self.conn.execute("DROP INDEX IF EXISTS idx_eval_identity_created_at_desc")
+        self.conn.execute(index_sql)
         self.conn.commit()
 
     def _migrate_shadow_comparison_verdicts(self) -> None:
