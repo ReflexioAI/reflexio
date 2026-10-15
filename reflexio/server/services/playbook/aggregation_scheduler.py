@@ -36,6 +36,17 @@ logger = logging.getLogger("reflexio.server.services.playbook.aggregation_schedu
 
 _POLL_SECONDS = 10.0
 AGGREGATION_LEASE_SECONDS = 300
+# Normal heartbeat cadence: three renewal attempts per lease.
+AGGREGATION_RENEWAL_INTERVAL_SECONDS = AGGREGATION_LEASE_SECONDS / 3
+# After a failed renewal, retry on this shorter cadence instead of waiting a
+# full renewal interval: a transient blip should cost seconds, not a run.
+AGGREGATION_RENEWAL_RETRY_SECONDS = 10.0
+# The lease stops being trusted this long BEFORE it would expire on the server,
+# measured from the last renewal that succeeded. 30 s is three retry intervals:
+# enough slack for the run to notice at its next `require_live` checkpoint and
+# stop, for monotonic-vs-database clock skew, and for a slow in-flight effect,
+# while still leaving ~270 s of a 300 s lease to ride out a database blip.
+AGGREGATION_LEASE_SAFETY_MARGIN_SECONDS = 30.0
 AGGREGATION_RETRY_SECONDS = 60
 AGGREGATION_BACKLOG_RETRY_SECONDS = 1
 AGGREGATION_INVALIDATION_BATCH_SIZE = 100
@@ -83,6 +94,30 @@ class _FinalizationReportedError(Exception):
 
 
 class AggregationLeaseHeartbeat:
+    """Keep a playbook aggregation lease renewed while a run is in progress.
+
+    A renewal that raises (a stalled or dropped connection) does NOT end the
+    run: it is reported and retried every ``AGGREGATION_RENEWAL_RETRY_SECONDS``
+    until a renewal succeeds or the lease can no longer be trusted. That is
+    safe because every effect is fenced at effect time by
+    ``validate_playbook_aggregation_claim`` -- a run that outlives its lease
+    on the server cannot commit -- so the heartbeat only has to decide when
+    to tell the run to stop early. The lease is lost when:
+
+    - a renewal returns ``None``: another worker took the fence (immediate);
+    - no renewal has succeeded for ``AGGREGATION_LEASE_SECONDS -
+      AGGREGATION_LEASE_SAFETY_MARGIN_SECONDS``: the server-side lease may be
+      about to expire.
+
+    Args:
+        storage (Any): Storage exposing ``renew_playbook_aggregation_claim``.
+        claim (PlaybookAggregationClaim): The freshly acquired claim.
+        org_id (str): Organization owning the lease (failure scope).
+        project_id (str | None): Project owning the lease (failure scope).
+        clock (Callable[[], float] | None): Monotonic clock; defaults to
+            ``time.monotonic``. Injectable for tests.
+    """
+
     def __init__(
         self,
         storage: Any,
@@ -90,6 +125,7 @@ class AggregationLeaseHeartbeat:
         *,
         org_id: str,
         project_id: str | None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self.storage = storage
         self.claim = claim
@@ -102,6 +138,12 @@ class AggregationLeaseHeartbeat:
             f"playbook-aggregation-heartbeat:{org_id}:{project_id}:"
             f"{claim.agent_version}"
         )
+        self._clock = clock if clock is not None else time.monotonic
+        # The claim was acquired just before construction, so its lease runs
+        # from (no earlier than) now. Updated to the START of each successful
+        # renewal attempt: the server stamps the new expiry no earlier than
+        # that, so measuring from the attempt start never overstates the lease.
+        self._renewed_at = self._clock()
         self._stop = threading.Event()
         self._lost = threading.Event()
         # Why renewal failed, chained onto `require_live`'s error so the
@@ -117,9 +159,18 @@ class AggregationLeaseHeartbeat:
         )
         self._thread.start()
 
+    def _trusted_until(self) -> float:
+        return (
+            self._renewed_at
+            + AGGREGATION_LEASE_SECONDS
+            - AGGREGATION_LEASE_SAFETY_MARGIN_SECONDS
+        )
+
     @background_work()
     def _run(self) -> None:
-        while not self._stop.wait(AGGREGATION_LEASE_SECONDS / 3):
+        interval = AGGREGATION_RENEWAL_INTERVAL_SECONDS
+        while not self._stop.wait(interval):
+            attempt_started = self._clock()
             try:
                 renewed = self.storage.renew_playbook_aggregation_claim(
                     self.claim, lease_seconds=AGGREGATION_LEASE_SECONDS
@@ -136,13 +187,22 @@ class AggregationLeaseHeartbeat:
                     reason="renewal_failed",
                 )
                 self._renewal_error = exc
-                self._lost.set()
-                return
+                remaining = self._trusted_until() - self._clock()
+                if remaining <= 0:
+                    self._lost.set()
+                    return
+                # Keep the run going and retry soon; never sleep past the
+                # point where the lease stops being trusted.
+                interval = min(AGGREGATION_RENEWAL_RETRY_SECONDS, remaining)
+                continue
             if renewed is None:
+                # The fence was taken by another worker: no retry can help.
                 self._lost.set()
                 return
             report_background_success(self._failure_scope)
             self.claim = renewed
+            self._renewed_at = attempt_started
+            interval = AGGREGATION_RENEWAL_INTERVAL_SECONDS
 
     def stop(self) -> None:
         self._stop.set()
@@ -150,7 +210,10 @@ class AggregationLeaseHeartbeat:
             self._thread.join(timeout=5)
 
     def require_live(self) -> None:
-        if self._lost.is_set():
+        # The deadline is checked here as well as on the heartbeat thread: a
+        # renewal call that hangs (rather than raises) would otherwise leave
+        # the run trusting a lease that is about to expire.
+        if self._lost.is_set() or self._clock() >= self._trusted_until():
             raise RuntimeError(
                 "playbook aggregation lease was lost"
             ) from self._renewal_error
