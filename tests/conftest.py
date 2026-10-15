@@ -80,6 +80,7 @@ os.environ["LOCAL_STORAGE_PATH"] = str(_REFLEXIO_TEST_HOME / ".reflexio" / "data
 os.environ.setdefault("REFLEXIO_DURABLE_LEARNING_POLL_SECONDS", "0.05")
 import reflexio.server as _test_server  # noqa: E402
 from reflexio.server.extensions import reset_services  # noqa: E402
+from reflexio.server.llm.token_accounting import run_token_capture  # noqa: E402
 
 _test_server.LOCAL_STORAGE_PATH = os.environ["LOCAL_STORAGE_PATH"]
 
@@ -267,7 +268,14 @@ def _reset_runtime_services() -> Iterator[None]:
     for var in _OSS_TEST_POLLUTING_ENV_VARS:
         os.environ.pop(var, None)
     reset_services()
+    # `begin_run_token_capture()` installs a fresh capture per generation run
+    # and never uninstalls it (see its docstring), so a test that calls
+    # `service.run()` on the pytest thread leaves its capture as the ambient
+    # value for whichever test xdist schedules next on that worker. Each test
+    # starts outside any generation run, as production code outside a run does.
+    run_token_capture.set(None)
     yield
+    run_token_capture.set(None)
     reset_services()
     # Local schedulers capture a test's context and storage. Stop them before
     # the next test; otherwise they keep polling deleted SQLite directories
