@@ -66,7 +66,8 @@ def init_stall_state_table(conn: sqlite3.Connection) -> None:
     """
     with conn:
         conn.execute(_CREATE_SQL)
-        conn.execute(_SEED_SQL)
+        if conn.execute("SELECT 1 FROM stall_state WHERE id = 1").fetchone() is None:
+            conn.execute(_SEED_SQL)
 
 
 def get_stall_state(conn: sqlite3.Connection) -> StallState:

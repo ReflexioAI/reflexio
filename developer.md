@@ -384,6 +384,12 @@ current evaluation index skip their write work. Missing or changed definitions
 retain the original upgrade and rollback paths, including atomic erasure-trigger
 replacement. Other migrations still run; this is not a database initialization
 cache. Equivalent legacy aggregation definitions may retain the slower path.
+Current optimizer indexes are also retained when no legacy jobs need repair.
+Current session-outcome and playbook-diagnosis migrations inspect before taking
+a writer lock, then recheck under the lock if an upgrade or subject repair is
+needed. These checks preserve legacy classification, duplicate retirement,
+governance subject backfills and serialized column upgrades. The stall-state
+singleton is seeded only when absent, without resetting an existing stall.
 
 SQLite deferred index failures raise `PostCommitStorageError` after the primary
 commit; publish preserves the admitted request and reports deferred follow-up.
