@@ -1,7 +1,7 @@
 """Source-input metering counts complete primary fields, independent of dispatch."""
 
 import json
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
@@ -15,6 +15,9 @@ from reflexio.server.services.extraction.input_preparation import (
     PreparedExtractionInput,
     SourceSpan,
     repartition_extraction_input,
+)
+from reflexio.server.services.extraction.overflow_coordinator import (
+    OverflowCoordinator,
 )
 
 
@@ -66,6 +69,12 @@ def _fixture(kind) -> tuple[Any, ...]:
         kind=kind, window_id="w", user_id="u", manifest=[{"request_id": "r"}]
     )
     coordinator = SimpleNamespace(require_prepared=Mock(return_value=prepared))
+    # Bind the production counter, not a stub: #657 moved the field rejoin out
+    # of ``_billing_snapshot`` into ``OverflowCoordinator.billing_input_text``,
+    # so this is the code whose count these tests pin.
+    coordinator.billing_input_text = MethodType(
+        OverflowCoordinator.billing_input_text, coordinator
+    )
     return (
         executor,
         window,

@@ -305,8 +305,10 @@ def test_should_run_skip_emits_no_learning_billing(tmp_path, monkeypatch):
     The ops gate event still fires, carrying the specific skip reason
     (``skip_cheap_<reason>`` here, not the generic ``should_skip``). We:
     - Clear MOCK_LLM_RESPONSE so the pre-extraction gate is not bypassed.
-    - Set stride_size=1 and seed a short interaction so the stride check passes
-      but the cheap pre-filter rejects the batch (all_user_turns_too_short).
+    - Set stride_size=1 and seed a bare slash-command turn so the stride check
+      passes but the cheap pre-filter rejects the batch (all_slash_commands).
+      Short turns no longer qualify: #659 removed the length rule so short
+      messages reach the LLM usefulness check.
     """
     monkeypatch.delenv("MOCK_LLM_RESPONSE", raising=False)
 
@@ -317,8 +319,8 @@ def test_should_run_skip_emits_no_learning_billing(tmp_path, monkeypatch):
             storage = SQLiteStorage(
                 org_id=_ORG_ID, db_path=str(tmp_path / "reflexio.db")
             )
-            # Seed a very short interaction (< 30 chars) that the cheap pre-filter
-            # rejects as "all_user_turns_too_short".
+            # Seed a bare slash-command dispatch that the cheap pre-filter
+            # rejects as "all_slash_commands".
             storage.add_request(
                 Request(
                     request_id=_REQUEST_ID,
@@ -335,7 +337,7 @@ def test_should_run_skip_emits_no_learning_billing(tmp_path, monkeypatch):
                     request_id=_REQUEST_ID,
                     created_at=1_000,
                     role="User",
-                    content="hi",  # << 30 chars → all_user_turns_too_short
+                    content="/commit",  # bare slash command → all_slash_commands
                 )
             )
 
@@ -392,10 +394,10 @@ def test_should_run_skip_emits_no_learning_billing(tmp_path, monkeypatch):
     # to make trustworthy. Assert the count, not just the presence.
     gate_events = [e for e in events if e.event_name == "generation_gate_evaluated"]
     assert len(gate_events) == 1, f"expected exactly one gate event, got: {gate_events}"
-    # The exact reason, not a prefix: this fixture's turns are all under the
-    # minimum length, and a prefix check would pass for any cheap-filter reason
+    # The exact reason, not a prefix: this fixture's turns are all bare slash
+    # commands, and a prefix check would pass for any cheap-filter reason
     # -- including one the fixture never exercises.
-    assert gate_events[0].outcome == "skip_cheap_all_user_turns_too_short", (
+    assert gate_events[0].outcome == "skip_cheap_all_slash_commands", (
         f"expected the specific cheap-filter reason, got: {gate_events[0].outcome}"
     )
 

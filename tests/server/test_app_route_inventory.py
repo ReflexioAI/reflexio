@@ -132,6 +132,15 @@ FULL_ROUTES = [
         ("default_get_org_id", "default_billing_gate.<locals>._noop"),
     ),
     (
+        "/api/finalize_session",
+        ("POST",),
+        "FinalizeSessionResponse",
+        None,
+        (),
+        "finalize_session",
+        ("default_get_org_id", "default_billing_gate.<locals>._noop"),
+    ),
+    (
         "/api/session_outcome",
         ("POST",),
         "SetSessionOutcomeResponse",
