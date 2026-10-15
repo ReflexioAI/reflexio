@@ -210,3 +210,54 @@ def test_legacy_server_cannot_confirm_an_attempt(monkeypatch, kind):
     response = getattr(client, f"_rerun_{kind}_generation_sync")(request)
     assert response.success is False
     assert "upgrade the server" in response.msg
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("kind", ["profile", "playbook"])
+@pytest.mark.parametrize("count", [None, 0, 3])
+def test_completed_attempt_distinguishes_unknown_from_zero_count(
+    monkeypatch, kind, count
+):
+    from reflexio.models.api_schema.service_schemas import (
+        RerunPlaybookGenerationRequest,
+        RerunProfileGenerationRequest,
+    )
+
+    client = ReflexioClient.__new__(ReflexioClient)
+    calls = []
+
+    def respond(method, path, **_kwargs):
+        calls.append((method, path))
+        if method == "POST":
+            return {"success": True, "operation_id": "completed-attempt"}
+        return {
+            "success": True,
+            "operation_status": {
+                "service_name": f"{kind}_generation",
+                "status": "completed",
+                "started_at": 1,
+                "request_params": {"operation_id": "completed-attempt"},
+                "processed_users": 1,
+                "stats": {} if count is None else {"total_generated": count},
+            },
+        }
+
+    monkeypatch.setattr(client, "_make_request", respond)
+    request = (
+        RerunProfileGenerationRequest()
+        if kind == "profile"
+        else RerunPlaybookGenerationRequest(agent_version="v1")
+    )
+    result = getattr(client, f"_rerun_{kind}_generation_sync")(request)
+    assert result.success is True
+    assert result.operation_id == "completed-attempt"
+    assert (
+        getattr(
+            result, "profiles_generated" if kind == "profile" else "playbooks_generated"
+        )
+        == count
+    )
+    assert calls == [
+        ("POST", f"/api/rerun_{kind}_generation"),
+        ("GET", "/api/get_operation_status"),
+    ]

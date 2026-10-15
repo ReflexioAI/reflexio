@@ -733,7 +733,11 @@ a false admission failure. An accepted publish with deferred extraction remains 
 learning completion are separate states.
 
 `user-profiles regenerate --wait` and `user-playbooks regenerate --wait` report
-success only after generation and promotion both succeed. Failed or canceled
+success after generation completes and any nonempty output is promoted. A
+successful zero-output attempt skips automatic promotion and reports zero
+promoted records; it does not change existing rows through promotion. Explicit
+upgrade commands retain their existing no-pending behavior. An omitted generated
+count stays unknown (`None`) in the SDK and does not trigger the zero-output skip. Failed or canceled
 batches exit nonzero in text and `--json` modes, leave valid pending output stored,
 and skip automatic promotion. A promotion failure also exits nonzero. Inspect
 operation status and pending records before retrying; regeneration can delete

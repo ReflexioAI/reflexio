@@ -232,6 +232,11 @@ uv run reflexio user-profiles delete <profile-id>
 uv run reflexio user-profiles delete-all
 ```
 
+For `user-profiles regenerate --wait` and `user-playbooks regenerate --wait`,
+a successfully completed attempt that generates zero records reports success
+without automatic promotion. Positive output is promoted before reporting success.
+Generation and promotion failures still exit nonzero in text and JSON modes.
+
 ## Agent playbooks
 
 
