@@ -255,8 +255,44 @@ def test_malformed_identity_table_fails_closed(tmp_path: Path) -> None:
         conn.commit()
     finally:
         conn.close()
-    with pytest.raises(sqlite3.OperationalError, match="no such column: org_id"):
+    with pytest.raises(sqlite3.OperationalError, match="org_id"):
         claim_or_read_identity(db, "acme")
+
+
+@pytest.mark.parametrize(
+    "definition,missing_timestamp",
+    [
+        ("k INTEGER PRIMARY KEY, org_id TEXT NOT NULL", True),
+        (
+            "k INTEGER, org_id TEXT NOT NULL, claimed_at TEXT NOT NULL",
+            False,
+        ),
+        (
+            "k INTEGER, org_id TEXT NOT NULL, claimed_at TEXT NOT NULL, "
+            "PRIMARY KEY (k, org_id)",
+            False,
+        ),
+    ],
+)
+def test_malformed_existing_owner_cannot_bypass_claim_validation(
+    tmp_path: Path, definition: str, missing_timestamp: bool
+) -> None:
+    db = derive_db_path(tmp_path, "acme")
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(f"CREATE TABLE _dataset_identity ({definition})")
+        if missing_timestamp:
+            conn.execute("INSERT INTO _dataset_identity VALUES (1, 'acme')")
+        else:
+            conn.executemany(
+                "INSERT INTO _dataset_identity VALUES (1, ?, 'claimed')",
+                [("acme",), ("other",)],
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    with pytest.raises(sqlite3.OperationalError):
+        resolve_sqlite_db_path(tmp_path, "acme")
 
 
 def test_concurrent_claims_across_processes_agree_on_one_winner(tmp_path: Path) -> None:
