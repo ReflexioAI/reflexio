@@ -371,6 +371,13 @@ When working in a git worktree, services must run on different ports to avoid co
 
 ### Storage requirements for publishing
 
+SQLite dataset ownership checks read an established owner without taking a writer
+lock, so another connection's write transaction does not block that lookup in
+WAL mode. First claims still use an atomic write transaction across processes;
+foreign owners and legacy erasure barriers retain their existing rejection rules.
+The read path requires the unchanged application-created ownership schema;
+custom definitions, indexes or triggers retain the original claim validation.
+
 SQLite deferred index failures raise `PostCommitStorageError` after the primary
 commit; publish preserves the admitted request and reports deferred follow-up.
 Extraction-runner and evaluation scheduling failures are contained independently

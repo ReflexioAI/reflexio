@@ -197,6 +197,156 @@ def _claim_in_subprocess(args: tuple[str, str]) -> str:
     return claim_or_read_identity(Path(path), org_id)
 
 
+@pytest.mark.parametrize("requested_owner", ["acme", "other"])
+def test_established_identity_is_read_while_another_connection_writes(
+    tmp_path: Path, requested_owner: str
+) -> None:
+    """An active writer must not block ownership checks or change their answer."""
+    db = derive_db_path(tmp_path, "acme")
+    assert claim_or_read_identity(db, "acme") == "acme"
+    writer = sqlite3.connect(db)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("CREATE TABLE uncommitted_work (value TEXT)")
+        assert claim_or_read_identity(db, requested_owner) == "acme"
+        assert resolve_sqlite_db_path(tmp_path, "acme") == str(db)
+    finally:
+        writer.rollback()
+        writer.close()
+
+
+def test_existing_foreign_identity_is_rejected_while_a_writer_is_active(
+    tmp_path: Path,
+) -> None:
+    db = derive_db_path(tmp_path, "acme")
+    assert claim_or_read_identity(db, "other") == "other"
+    writer = sqlite3.connect(db)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("BEGIN IMMEDIATE")
+        with pytest.raises(DatasetIdentityError):
+            resolve_sqlite_db_path(tmp_path, "acme")
+    finally:
+        writer.rollback()
+        writer.close()
+
+
+def test_empty_identity_table_is_claimed(tmp_path: Path) -> None:
+    db = tmp_path / "empty-claim.db"
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "CREATE TABLE _dataset_identity "
+            "(k INTEGER PRIMARY KEY, org_id TEXT NOT NULL, claimed_at TEXT NOT NULL)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    assert claim_or_read_identity(db, "acme") == "acme"
+    assert claim_or_read_identity(db, "other") == "acme"
+
+
+def test_malformed_identity_table_fails_closed(tmp_path: Path) -> None:
+    db = tmp_path / "malformed-claim.db"
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute("CREATE TABLE _dataset_identity (k INTEGER PRIMARY KEY)")
+        conn.commit()
+    finally:
+        conn.close()
+    with pytest.raises(sqlite3.OperationalError, match="org_id"):
+        claim_or_read_identity(db, "acme")
+
+
+@pytest.mark.parametrize(
+    "definition,missing_timestamp",
+    [
+        ("k INTEGER PRIMARY KEY, org_id TEXT NOT NULL", True),
+        (
+            "k INTEGER, org_id TEXT NOT NULL, claimed_at TEXT NOT NULL",
+            False,
+        ),
+        (
+            "k INTEGER, org_id TEXT NOT NULL, claimed_at TEXT NOT NULL, "
+            "PRIMARY KEY (k, org_id)",
+            False,
+        ),
+    ],
+)
+def test_malformed_existing_owner_cannot_bypass_claim_validation(
+    tmp_path: Path, definition: str, missing_timestamp: bool
+) -> None:
+    db = derive_db_path(tmp_path, "acme")
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(f"CREATE TABLE _dataset_identity ({definition})")
+        if missing_timestamp:
+            conn.execute("INSERT INTO _dataset_identity VALUES (1, 'acme')")
+        else:
+            conn.executemany(
+                "INSERT INTO _dataset_identity VALUES (1, ?, 'claimed')",
+                [("acme",), ("other",)],
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    with pytest.raises(sqlite3.OperationalError):
+        resolve_sqlite_db_path(tmp_path, "acme")
+
+
+def test_additional_required_identity_column_keeps_claim_validation(
+    tmp_path: Path,
+) -> None:
+    db = derive_db_path(tmp_path, "acme")
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "CREATE TABLE _dataset_identity (k INTEGER PRIMARY KEY, "
+            "org_id TEXT NOT NULL, claimed_at TEXT NOT NULL, required TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO _dataset_identity VALUES (1, 'acme', 'claimed', 'present')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    with pytest.raises(sqlite3.IntegrityError, match="required"):
+        resolve_sqlite_db_path(tmp_path, "acme")
+
+
+def test_custom_identity_constraint_keeps_claim_validation(tmp_path: Path) -> None:
+    db = derive_db_path(tmp_path, "acme")
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "CREATE TABLE _dataset_identity (k INTEGER PRIMARY KEY CHECK (k = 1), "
+            "org_id TEXT NOT NULL, claimed_at TEXT NOT NULL CHECK (claimed_at='seed'))"
+        )
+        conn.execute("INSERT INTO _dataset_identity VALUES (1, 'acme', 'seed')")
+        conn.commit()
+    finally:
+        conn.close()
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+        resolve_sqlite_db_path(tmp_path, "acme")
+
+
+def test_custom_identity_trigger_keeps_claim_validation(tmp_path: Path) -> None:
+    db = derive_db_path(tmp_path, "acme")
+    assert claim_or_read_identity(db, "acme") == "acme"
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "CREATE TRIGGER identity_insert_guard BEFORE INSERT ON _dataset_identity "
+            "BEGIN SELECT RAISE(ABORT, 'claim blocked'); END"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    with pytest.raises(sqlite3.IntegrityError, match="claim blocked"):
+        resolve_sqlite_db_path(tmp_path, "acme")
+
+
 def test_concurrent_claims_across_processes_agree_on_one_winner(tmp_path: Path) -> None:
     """The in-process initialization lock is a ``threading.Lock``.
 
