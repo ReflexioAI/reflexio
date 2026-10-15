@@ -24,6 +24,7 @@ verbatim from the former monolithic ``base_generation_service.py``.
 
 import contextvars
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import UTC, datetime, timedelta
@@ -34,6 +35,7 @@ from reflexio.server.llm._litellm_types import (
     ModelProvenance,
     ProviderRequestGuardError,
 )
+from reflexio.server.llm.call_deadline import llm_deadline
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.token_accounting import RunTokenTotals
 from reflexio.server.services.deferred_learning_plan import ExtractorBookmarkAdvance
@@ -50,6 +52,18 @@ logger = logging.getLogger(__name__)
 # attempt 10, about 8.5 minutes of consecutive failures -- and every one after
 # it is logged at ERROR, so a window that keeps failing still pages.
 WINDOW_FAILURE_ERROR_ATTEMPT = 10
+
+# The extractor's LLM calls are bounded to end this long before the outer
+# extractor timeout fires, leaving time for the tool loop to return, the agent
+# run to record its failure and the extractor to raise. The outer timeout stays
+# as a backstop for anything that is not an LLM ladder walk.
+EXTRACTOR_LLM_DEADLINE_MARGIN_SECONDS = 10
+
+
+def _run_with_llm_deadline(run: Any, deadline: float) -> Any:
+    with llm_deadline(deadline):
+        return run()
+
 
 TExtractorConfig = TypeVar("TExtractorConfig")
 TGenerationServiceConfig = TypeVar("TGenerationServiceConfig")
@@ -163,7 +177,20 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
             executor = ThreadPoolExecutor(max_workers=1)
             # Copy context so correlation ID propagates to worker thread
             ctx = contextvars.copy_context()
-            future = executor.submit(ctx.run, extractor.run)  # type: ignore[reportAttributeAccessIssue]
+            # Every ladder walk inside the extractor stops before this point, so
+            # a slow model is not abandoned mid-call by the timeout below and
+            # an orphaned worker cannot start new model calls after it.
+            llm_deadline_at = (
+                time.monotonic()
+                + timeout_seconds
+                - EXTRACTOR_LLM_DEADLINE_MARGIN_SECONDS
+            )
+            future = executor.submit(
+                ctx.run,
+                _run_with_llm_deadline,
+                extractor.run,  # type: ignore[reportAttributeAccessIssue]
+                llm_deadline_at,
+            )
             result = future.result(timeout=timeout_seconds)
             if isinstance(result, ExtractionOutcome):
                 if result.run_id:
