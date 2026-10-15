@@ -11,7 +11,7 @@ import hashlib
 import json
 import uuid
 from contextlib import AbstractContextManager
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
@@ -110,6 +110,12 @@ class Window:
     skip_aggregation: bool
     outcome: dict[str, Any] | None = None
     invalidated: bool = False
+    # Failed attempts already recorded on this window's cursor when it was
+    # handed out (``extraction_cursors.attempts``; ``retry_extraction`` bumps
+    # it). Read-only context for logging severity -- it is not persisted on
+    # the window row, so ``from_row`` leaves it 0 and ``prepare_extraction``
+    # stamps it from the cursor.
+    attempts: int = 0
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> Window:
@@ -590,7 +596,10 @@ class ExtractionStreamStore:
                         f"SELECT * FROM {db.table('extraction_windows')} WHERE window_id=?",
                         (cursor["window_id"],),
                     )
-                    return Window.from_row(rows[0])
+                    return replace(
+                        Window.from_row(rows[0]),
+                        attempts=int(cursor["attempts"] or 0),
+                    )
                 deadlines: list[float] = []
                 window, _ = self._select(
                     db, user_id, cursor["kind"], cursor, deadlines=deadlines
@@ -620,7 +629,7 @@ class ExtractionStreamStore:
                     f"UPDATE {db.table('extraction_cursors')} SET window_id=? WHERE user_id=? AND kind=? AND project_id=?",
                     (window.window_id, user_id, window.kind, window.project_id),
                 )
-                return window
+                return replace(window, attempts=int(cursor["attempts"] or 0))
             # Same row lock as ingestion: publication either precedes this
             # inspection or follows this update and sets due_at=0 again.
             db.query(

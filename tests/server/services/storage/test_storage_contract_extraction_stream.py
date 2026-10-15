@@ -132,6 +132,21 @@ def test_sibling_cursor_survives_retries_and_other_users_claim(storage):
     assert [w.user_id for w in windows] == ["v"]
 
 
+def test_prepared_window_carries_its_cursor_attempt_count(storage):
+    publish(storage, 10)
+    user, token = storage.claim_extraction("worker", 300)
+    window = storage.prepare_extraction(user, token)
+    assert window.attempts == 0
+    for expected in (1, 2):
+        storage.retry_extraction(window, token, "ProviderUnavailable")
+        with storage._stream_sql() as db:
+            db.query("UPDATE extraction_cursors SET retry_at=0")
+        user, token = storage.claim_extraction("worker", 300)
+        window = storage.prepare_extraction(user, token)
+        assert window.attempts == expected
+    storage.complete_extraction(window, token, {})
+
+
 @pytest.mark.parametrize(
     "reason", ["input_budget_exceeded", "input_budget_configuration_error"]
 )

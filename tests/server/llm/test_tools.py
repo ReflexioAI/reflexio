@@ -6,11 +6,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
+from reflexio.server.llm._litellm_text_generation import LadderBudgetExhaustedError
 from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
     LiteLLMConfig,
+    StructuredOutputRepairError,
     ToolCallingChatResponse,
 )
 from reflexio.server.llm.model_defaults import ModelRole
@@ -21,6 +23,7 @@ from reflexio.server.llm.tools import (
     ToolLoopResult,  # noqa: F401
     ToolLoopTrace,  # noqa: F401
     ToolRegistry,
+    format_failure_label,
     run_tool_loop,
 )
 
@@ -691,6 +694,72 @@ def test_run_tool_loop_logs_llm_client_error_as_warning(
     ]
     assert any("tool_loop_llm_error" in r.getMessage() for r in tool_loop_records)
     assert all(r.levelno < logging.ERROR for r in tool_loop_records)
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_type", "expected_detail"),
+    [
+        (
+            StructuredOutputRepairError(
+                "Structured output repair exhausted",
+                failure_kind="semantic",
+                model="minimax/MiniMax-M3",
+            ),
+            "StructuredOutputRepairError",
+            "semantic",
+        ),
+        (TimeoutError("tenant text must not leak"), "TimeoutError", "transient"),
+        (
+            LadderBudgetExhaustedError("LLM ladder budget exhausted (600s)"),
+            "LadderBudgetExhaustedError",
+            "transient",
+        ),
+        (
+            LiteLLMClientError(
+                "litellm.completion failed in isolated worker: RateLimitError: x",
+                upstream_error_type="RateLimitError",
+            ),
+            "LiteLLMClientError",
+            "transient",
+        ),
+        (ValueError("tenant text must not leak"), "ValueError", "non_transient"),
+    ],
+)
+def test_run_tool_loop_error_result_names_the_cause(
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    expected_type: str,
+    expected_detail: str,
+) -> None:
+    """An errored loop carries the cause as class name + kind, never message text."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
+
+    def boom(**_kwargs):
+        raise error
+
+    monkeypatch.setattr(client, "generate_chat_response_with_provenance", boom)
+
+    result = run_tool_loop(
+        client=client,
+        messages=[{"role": "user", "content": "go"}],
+        registry=ToolRegistry([]),
+        model_role=ModelRole.EXTRACTION_AGENT,
+        max_steps=2,
+        ctx=LoopCtx(),
+        finish_tool_name="finish",
+    )
+
+    assert result.finished_reason == "error"
+    assert (result.error_type, result.error_detail) == (expected_type, expected_detail)
+    assert result.failure_label == f"error ({expected_type}/{expected_detail})"
+    assert "tenant" not in result.failure_label
+
+
+def test_failure_label_is_bare_reason_without_a_cause() -> None:
+    assert format_failure_label("max_steps", None, None) == "max_steps"
+    assert format_failure_label("error", "KeyError", None) == "error (KeyError)"
 
 
 # ---------------- log_label (llm_io.log) integration ---------------- #

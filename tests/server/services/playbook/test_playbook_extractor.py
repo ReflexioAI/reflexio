@@ -31,7 +31,11 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.llm.litellm_client import (
+    LiteLLMClient,
+    LiteLLMConfig,
+    StructuredOutputRepairError,
+)
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
 from reflexio.server.services.playbook.components.extractor import (
     PlaybookExtractor,
@@ -1291,6 +1295,58 @@ class TestStructuredPlaybookExtraction:
             ),
         ):
             extractor.extract_playbook_entries(sample_request_interaction_models)
+
+    @pytest.mark.parametrize(
+        ("error", "expected_cause"),
+        [
+            (
+                StructuredOutputRepairError(
+                    "Structured output repair exhausted",
+                    failure_kind="semantic",
+                    model="minimax/MiniMax-M3",
+                    raw_content="tenant content",
+                ),
+                "(StructuredOutputRepairError/semantic)",
+            ),
+            (TimeoutError("tenant content"), "(TimeoutError/transient)"),
+        ],
+    )
+    def test_model_client_failure_message_names_the_cause(
+        self,
+        monkeypatch,
+        request_context,
+        sqlite_storage,
+        extractor_config,
+        service_config,
+        sample_request_interaction_models,
+        error,
+        expected_cause,
+    ):
+        """Sentry groups by this message: it must name the cause, never tenant text."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+        extractor = self._make_extractor(
+            request_context, sqlite_storage, extractor_config, service_config
+        )
+        monkeypatch.setattr(
+            extractor.client,
+            "generate_chat_response_with_provenance",
+            MagicMock(side_effect=error),
+        )
+
+        with (
+            patch(
+                "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
+                return_value=True,
+            ),
+            patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
+            pytest.raises(RuntimeError) as raised,
+        ):
+            extractor.extract_playbook_entries(sample_request_interaction_models)
+
+        assert str(raised.value) == (
+            f"Playbook extraction failed without structured output: error {expected_cause}"
+        )
 
 
 # ===============================

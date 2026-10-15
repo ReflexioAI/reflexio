@@ -1,5 +1,6 @@
 """Real HTTP/storage/executor boundaries with controlled external model calls."""
 
+import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -3666,6 +3667,54 @@ def test_transient_failures_retry_beyond_three_attempts(pipeline, monkeypatch):
             db.query("UPDATE extraction_cursors SET retry_at=0")
     assert len(attempts) == 5
     assert storage.extraction_status("u", "retry")["status"] == "done"
+
+
+def test_retried_window_extractor_failure_pages_only_at_backoff_cap(
+    pipeline, monkeypatch, caplog
+):
+    """Each failed attempt of a retried window is a WARNING until the attempt
+    whose backoff reaches the 300 s cap; from then on it is an ERROR."""
+    from reflexio.server.services.base_generation._extraction_lifecycle import (
+        WINDOW_FAILURE_ERROR_ATTEMPT,
+    )
+
+    engine, worker, client = pipeline
+    assert client.post("/api/publish_interaction", json=payload("pages")).json()[
+        "success"
+    ]
+
+    class _FailingExtractor:
+        def run(self):
+            raise RuntimeError("provider temporarily unavailable")
+
+    monkeypatch.setattr(
+        ProfileGenerationService, "_should_run_before_extraction", lambda *_: True
+    )
+    monkeypatch.setattr(
+        ProfileGenerationService,
+        "_create_extractor",
+        lambda *_: _FailingExtractor(),
+    )
+    storage = engine.get_storage()
+    with caplog.at_level(
+        logging.WARNING,
+        logger="reflexio.server.services.base_generation._extraction_lifecycle",
+    ):
+        for _ in range(WINDOW_FAILURE_ERROR_ATTEMPT + 1):
+            worker.drain_org("stream-test", 1, 300)
+            with storage._stream_sql() as db:
+                db.query("UPDATE extraction_cursors SET retry_at=0")
+
+    levels = [
+        record.levelno
+        for record in caplog.records
+        if record.getMessage().startswith("Extractor failed for")
+    ]
+    assert (
+        levels
+        == [logging.WARNING] * (WINDOW_FAILURE_ERROR_ATTEMPT - 1) + [logging.ERROR] * 2
+    )
+    assert storage.extraction_status("u", "pages")["status"] == "pending"
 
 
 def test_worker_heartbeat_keeps_long_window_exclusive(pipeline, monkeypatch):
