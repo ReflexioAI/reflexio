@@ -2621,7 +2621,7 @@ class ReflexioClient:
                     operation_id=initial.operation_id,
                     success=True,
                     msg="Profile generation completed",
-                    profiles_generated=op.stats.get("total_generated", 0),
+                    profiles_generated=op.stats.get("total_generated"),
                 )
             if op and op.status == OperationStatus.FAILED:
                 return RerunProfileGenerationResponse(
@@ -2686,6 +2686,8 @@ class ReflexioClient:
 
         Returns:
             Optional[RerunProfileGenerationResponse]: Response containing success status, message, profiles_generated count, and operation_id if wait_for_response=True, None otherwise.
+                For a completed operation, a missing generated-count statistic
+                remains None, rather than zero.
         """
         req = self._build_request(
             request,
@@ -2840,7 +2842,7 @@ class ReflexioClient:
                     operation_id=initial.operation_id,
                     success=True,
                     msg="Playbook generation completed",
-                    playbooks_generated=op.stats.get("total_generated", 0),
+                    playbooks_generated=op.stats.get("total_generated"),
                 )
             if op and op.status == OperationStatus.FAILED:
                 return RerunPlaybookGenerationResponse(
@@ -2903,6 +2905,8 @@ class ReflexioClient:
 
         Returns:
             Optional[RerunPlaybookGenerationResponse]: Response containing success status, message, playbooks_generated count, and operation_id if wait_for_response=True, None otherwise.
+                For a completed operation, a missing generated-count statistic
+                remains None, rather than zero.
         """
         req = self._build_request(
             request,

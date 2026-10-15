@@ -355,7 +355,8 @@ def regenerate(
     # Failed or canceled generation retains pending output for inspection.
     raise_if_failed(resp, default="Generation did not complete")
     promoted = 0
-    if wait:
+    # Only an explicit zero skips promotion; unknown counts retain prior behavior.
+    if wait and (resp is None or resp.playbooks_generated != 0):
         try:
             upgrade_resp = client.upgrade_user_playbooks(agent_version=resolved_version)
         except Exception as exc:

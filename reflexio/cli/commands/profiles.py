@@ -290,7 +290,8 @@ def regenerate(
     # Failed or canceled generation retains pending output for inspection.
     raise_if_failed(resp, default="Generation did not complete")
     promoted = 0
-    if wait:
+    # Only an explicit zero skips promotion; unknown counts retain prior behavior.
+    if wait and (resp is None or resp.profiles_generated != 0):
         try:
             upgrade_resp = client.upgrade_profiles(user_id=user_id)
         except Exception as exc:
