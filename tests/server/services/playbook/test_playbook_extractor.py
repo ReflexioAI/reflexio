@@ -1322,7 +1322,7 @@ class TestStructuredPlaybookExtraction:
         error,
         expected_cause,
     ):
-        """Sentry groups by this message: it must name the cause, never tenant text."""
+        """Error reports group by this message: it must name the cause, never tenant text."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
         monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
         extractor = self._make_extractor(

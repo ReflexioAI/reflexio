@@ -203,7 +203,7 @@ class ToolLoopResult(BaseModel):
     # Set when finished_reason == "error": WHY the loop failed, as low-cardinality
     # identifiers only (an exception class name and an enum-like kind), never the
     # exception message -- callers put these into error messages that reach
-    # Sentry and durable ``last_error`` columns, where tenant text must not go.
+    # error reports and durable ``last_error`` columns, where tenant text must not go.
     error_type: str | None = None
     error_detail: str | None = None
 
@@ -220,7 +220,7 @@ def format_failure_label(
 ) -> str:
     """Render a terminator reason with its cause for messages and logs.
 
-    Sentry groups an error by its message, so a bare ``error`` folds every
+    Error trackers group an error by its message, so a bare ``error`` folds every
     cause into one issue. Appending the class name and kind splits them while
     keeping the label free of tenant text.
 
