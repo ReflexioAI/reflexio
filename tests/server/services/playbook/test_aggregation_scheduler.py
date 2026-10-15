@@ -217,19 +217,289 @@ def test_scheduler_throttles_idle_repair_scans(monkeypatch) -> None:
     assert storage.claim_due_playbook_aggregation.call_count == 3
 
 
-def test_lease_heartbeat_marks_renewal_exception_as_lost() -> None:
+class _FakeClock:
+    """Monotonic clock advanced only by the heartbeat's own waits."""
+
+    def __init__(self, now: float = 1000.0) -> None:
+        self.now = now
+        self.waits: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _drive(
+    heartbeat: aggregation_scheduler.AggregationLeaseHeartbeat,
+    clock: _FakeClock,
+    *,
+    max_waits: int = 1000,
+) -> None:
+    """Run the heartbeat loop inline; each wait advances the fake clock.
+
+    The loop is stopped (wait returns True) after ``max_waits`` waits, so a
+    heartbeat that never gives up cannot hang the test.
+    """
+
+    def wait(timeout: float) -> bool:
+        clock.waits.append(timeout)
+        if len(clock.waits) > max_waits:
+            return True
+        clock.now += timeout
+        return False
+
+    heartbeat._stop.wait = MagicMock(side_effect=wait)
+    heartbeat._run()
+
+
+def _heartbeat(
+    storage: Any, clock: _FakeClock, *, project_id: str | None = None
+) -> aggregation_scheduler.AggregationLeaseHeartbeat:
+    return aggregation_scheduler.AggregationLeaseHeartbeat(
+        storage,
+        PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000),
+        org_id="org-1",
+        project_id=project_id,
+        clock=clock,
+    )
+
+
+def test_lease_heartbeat_survives_one_failed_renewal() -> None:
+    renewed = PlaybookAggregationClaim("v1", "owner", 7, 3, 20_000)
+    storage = MagicMock()
+    storage.renew_playbook_aggregation_claim.side_effect = [
+        RuntimeError("db blip"),
+        renewed,
+    ]
+    clock = _FakeClock()
+    heartbeat = _heartbeat(storage, clock)
+
+    _drive(heartbeat, clock, max_waits=2)
+
+    heartbeat.require_live()
+    assert heartbeat.claim is renewed
+    assert clock.waits == [
+        aggregation_scheduler.AGGREGATION_RENEWAL_INTERVAL_SECONDS,
+        aggregation_scheduler.AGGREGATION_RENEWAL_RETRY_SECONDS,
+        aggregation_scheduler.AGGREGATION_RENEWAL_INTERVAL_SECONDS,
+    ]
+
+
+def test_lease_heartbeat_success_resets_the_deadline() -> None:
+    storage = MagicMock()
     claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
+    # Fail for most of a lease, recover once, then fail again: the deadline is
+    # measured from the recovery, so the run survives well past start + lease.
+    storage.renew_playbook_aggregation_claim.side_effect = [
+        *[RuntimeError("db blip")] * 10,
+        claim,
+        *[RuntimeError("db blip")] * 10,
+    ]
+    clock = _FakeClock()
+    heartbeat = _heartbeat(storage, clock)
+
+    _drive(heartbeat, clock, max_waits=21)
+
+    assert clock.now - 1000.0 > aggregation_scheduler.AGGREGATION_LEASE_SECONDS
+    heartbeat.require_live()
+
+
+def test_lease_heartbeat_gives_up_once_the_lease_is_untrusted() -> None:
+    storage = MagicMock()
+    errors = [RuntimeError(f"db down {i}") for i in range(1000)]
+    storage.renew_playbook_aggregation_claim.side_effect = errors
+    clock = _FakeClock()
+    heartbeat = _heartbeat(storage, clock)
+
+    _drive(heartbeat, clock)
+
+    deadline = (
+        1000.0
+        + aggregation_scheduler.AGGREGATION_LEASE_SECONDS
+        - aggregation_scheduler.AGGREGATION_LEASE_SAFETY_MARGIN_SECONDS
+    )
+    # It stopped by itself, exactly at the deadline and not after it.
+    assert len(clock.waits) < 1000
+    assert clock.now == deadline
+    calls = storage.renew_playbook_aggregation_claim.call_count
+    with pytest.raises(RuntimeError, match="lease was lost") as lost:
+        heartbeat.require_live()
+    assert lost.value.__cause__ is errors[calls - 1]
+
+
+def test_lease_heartbeat_does_not_give_up_one_retry_early() -> None:
     storage = MagicMock()
     storage.renew_playbook_aggregation_claim.side_effect = RuntimeError("db down")
-    heartbeat = aggregation_scheduler.AggregationLeaseHeartbeat(
-        storage, claim, org_id="org-1", project_id=None
+    clock = _FakeClock()
+    heartbeat = _heartbeat(storage, clock)
+    deadline = (
+        1000.0
+        + aggregation_scheduler.AGGREGATION_LEASE_SECONDS
+        - aggregation_scheduler.AGGREGATION_LEASE_SAFETY_MARGIN_SECONDS
     )
-    heartbeat._stop.wait = MagicMock(return_value=False)
+    # Stop the loop just before the deadline: still live.
+    retries = int(
+        (deadline - 1000.0 - aggregation_scheduler.AGGREGATION_RENEWAL_INTERVAL_SECONDS)
+        // aggregation_scheduler.AGGREGATION_RENEWAL_RETRY_SECONDS
+    )
+    _drive(heartbeat, clock, max_waits=retries)
 
-    heartbeat._run()
+    assert clock.now < deadline
+    heartbeat.require_live()
+
+
+def test_lease_heartbeat_loses_the_lease_at_once_when_the_fence_is_taken() -> None:
+    storage = MagicMock()
+    storage.renew_playbook_aggregation_claim.return_value = None
+    clock = _FakeClock()
+    heartbeat = _heartbeat(storage, clock)
+
+    _drive(heartbeat, clock)
+
+    assert storage.renew_playbook_aggregation_claim.call_count == 1
+    with pytest.raises(RuntimeError, match="lease was lost") as lost:
+        heartbeat.require_live()
+    assert lost.value.__cause__ is None
+
+
+def _progress_records(caplog: Any) -> list[tuple[str, str, logging.LogRecord]]:
+    """(state, reason, record) for each heartbeat progress report, in order."""
+    out = []
+    for record in caplog.records:
+        message = record.getMessage()
+        if "event=playbook_aggregation_progress" not in message:
+            continue
+        fields = dict(part.split("=", 1) for part in message.split() if "=" in part)
+        out.append((fields["state"], fields["reason"], record))
+    return out
+
+
+def test_heartbeat_labels_retries_and_the_give_up_truthfully(caplog) -> None:
+    storage = MagicMock()
+    errors = [RuntimeError(f"db down {i}") for i in range(1000)]
+    storage.renew_playbook_aggregation_claim.side_effect = errors
+    caplog.set_level(logging.WARNING, logger=aggregation_scheduler.logger.name)
+    clock = _FakeClock()
+    heartbeat = _heartbeat(storage, clock)
+
+    _drive(heartbeat, clock)
+
+    calls = storage.renew_playbook_aggregation_claim.call_count
+    reports = _progress_records(caplog)
+    # One report per failed attempt: every attempt but the last is a retry
+    # while the lease is still trusted; the last is the single give-up.
+    assert len(reports) == calls
+    assert [(state, reason) for state, reason, _ in reports[:-1]] == [
+        ("renewal_retrying", "renewal_failed")
+    ] * (calls - 1)
+    state, reason, give_up = reports[-1]
+    assert (state, reason) == ("lease_lost", "renewal_deadline_exceeded")
+    assert give_up.exc_info is not None
+    logged = give_up.exc_info[1]
+    assert logged is not None
+    assert logged.__cause__ is errors[calls - 1]
+
+
+def test_heartbeat_reports_a_taken_fence_as_lease_lost(
+    caplog, transient_failure_classifier
+) -> None:
+    from reflexio.server import background_work
+
+    scope = "playbook-aggregation-heartbeat:org-1:None:v1"
+    background_work.report_background_failure(
+        aggregation_scheduler.logger,
+        "playbook_aggregation_progress",
+        transient_failure_classifier("dropped"),
+        scope=scope,
+    )
+    streak_before = background_work._streaks[scope]
+    caplog.clear()
+    storage = MagicMock()
+    storage.renew_playbook_aggregation_claim.return_value = None
+    caplog.set_level(logging.WARNING, logger=aggregation_scheduler.logger.name)
+    clock = _FakeClock()
+    heartbeat = _heartbeat(storage, clock)
+
+    _drive(heartbeat, clock)
+
+    reports = _progress_records(caplog)
+    assert [(state, reason) for state, reason, _ in reports] == [
+        ("lease_lost", "fence_taken")
+    ]
+    # WARNING, not ERROR: the caller already reports the run's own
+    # `require_live` error at ERROR, so this must not double-report it.
+    (_, _, record) = reports[0]
+    assert record.levelno == logging.WARNING
+    assert record.exc_info is None
+    assert f"scope={scope} " in record.getMessage()
+    # Not a renewal failure: the streak is neither extended nor ended.
+    assert background_work._streaks[scope] == streak_before
+
+
+def test_recovered_renewal_error_is_not_the_cause_of_a_later_loss() -> None:
+    claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
+    storage = MagicMock()
+    # failure -> recovery -> fence taken: the loss must not chain the
+    # recovered error, or its classification would follow a stale cause.
+    storage.renew_playbook_aggregation_claim.side_effect = [
+        RuntimeError("db blip"),
+        claim,
+        None,
+    ]
+    clock = _FakeClock()
+    heartbeat = _heartbeat(storage, clock)
+
+    _drive(heartbeat, clock)
+
+    with pytest.raises(RuntimeError, match="lease was lost") as lost:
+        heartbeat.require_live()
+    assert lost.value.__cause__ is None
+
+
+def test_require_live_fails_when_a_renewal_hangs_past_the_deadline() -> None:
+    storage = MagicMock()
+    clock = _FakeClock()
+    heartbeat = _heartbeat(storage, clock)
+    # No renewal ever completes (e.g. a call blocked on a stalled socket).
+    clock.now += (
+        aggregation_scheduler.AGGREGATION_LEASE_SECONDS
+        - aggregation_scheduler.AGGREGATION_LEASE_SAFETY_MARGIN_SECONDS
+    )
 
     with pytest.raises(RuntimeError, match="lease was lost"):
         heartbeat.require_live()
+
+
+def test_lease_heartbeat_stops_promptly_in_the_retry_cadence(monkeypatch) -> None:
+    import threading
+
+    monkeypatch.setattr(
+        aggregation_scheduler, "AGGREGATION_RENEWAL_INTERVAL_SECONDS", 0.01
+    )
+    failed = threading.Event()
+
+    def renew(*_args: Any, **_kwargs: Any) -> Any:
+        failed.set()
+        raise RuntimeError("db down")
+
+    storage = MagicMock()
+    storage.renew_playbook_aggregation_claim.side_effect = renew
+    heartbeat = aggregation_scheduler.AggregationLeaseHeartbeat(
+        storage,
+        PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000),
+        org_id="org-1",
+        project_id=None,
+    )
+    heartbeat.start()
+    assert failed.wait(timeout=5)
+    assert heartbeat._thread is not None
+
+    started = time.monotonic()
+    heartbeat.stop()
+
+    # The thread was parked in a 10 s retry wait; stop() must cut it short.
+    assert time.monotonic() - started < 2
+    assert not heartbeat._thread.is_alive()
+    heartbeat.require_live()
 
 
 @pytest.mark.parametrize(
@@ -726,47 +996,41 @@ def test_transient_org_failure_is_a_warning_and_still_backs_off(
 
 
 def test_lease_lost_to_a_dropped_connection_stays_transient(
-    monkeypatch, caplog, transient_failure_classifier
+    caplog, transient_failure_classifier
 ) -> None:
     from reflexio.server.background_work import is_transient_failure
 
-    claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
     storage = MagicMock()
     storage.renew_playbook_aggregation_claim.side_effect = transient_failure_classifier(
         "SSL connection has been closed unexpectedly"
     )
-    monkeypatch.setattr(aggregation_scheduler, "AGGREGATION_LEASE_SECONDS", 0.03)
     caplog.set_level(logging.WARNING, logger=aggregation_scheduler.logger.name)
-    heartbeat = aggregation_scheduler.AggregationLeaseHeartbeat(
-        storage, claim, org_id="org-1", project_id=None
-    )
-    heartbeat.start()
-    assert heartbeat._thread is not None
-    heartbeat._thread.join(timeout=5)
+    clock = _FakeClock()
+    heartbeat = _heartbeat(storage, clock)
+
+    _drive(heartbeat, clock)
 
     with pytest.raises(RuntimeError, match="lease was lost") as lost:
         heartbeat.require_live()
 
     assert is_transient_failure(lost.value)
     renewals = [r for r in caplog.records if "renewal_failed" in r.getMessage()]
-    assert [r.levelno for r in renewals] == [logging.WARNING]
+    assert renewals
+    assert {r.levelno for r in renewals} == {logging.WARNING}
 
 
 def test_heartbeat_scope_names_the_org_project_and_version(
     caplog, transient_failure_classifier
 ) -> None:
-    claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
     storage = MagicMock()
     storage.renew_playbook_aggregation_claim.side_effect = transient_failure_classifier(
         "SSL connection has been closed unexpectedly"
     )
     caplog.set_level(logging.WARNING, logger=aggregation_scheduler.logger.name)
-    heartbeat = aggregation_scheduler.AggregationLeaseHeartbeat(
-        storage, claim, org_id="org-1", project_id="proj-a"
-    )
-    heartbeat._stop.wait = MagicMock(return_value=False)
+    clock = _FakeClock()
+    heartbeat = _heartbeat(storage, clock, project_id="proj-a")
 
-    heartbeat._run()
+    _drive(heartbeat, clock, max_waits=1)
 
     (record,) = [r for r in caplog.records if "renewal_failed" in r.getMessage()]
     assert "scope=playbook-aggregation-heartbeat:org-1:proj-a:v1 " in (
