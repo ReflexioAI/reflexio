@@ -335,6 +335,7 @@ def append_prior_knowledge_context(
     extractor_config: Any,
     source: str | None,
     agent_version: str | None,
+    extractor_config_identity: str | None = None,
     limit: int = 8,
     similarity_threshold: float = 0.0,
     exclude_pending_tool_call_ids: set[str] | None = None,
@@ -353,7 +354,11 @@ def append_prior_knowledge_context(
                 "messages": messages,
                 "org_id": org_id,
                 "extractor_kind": extractor_kind,
-                "config": str(extractor_config),
+                "config": (
+                    str(extractor_config)
+                    if extractor_config_identity is None
+                    else extractor_config_identity
+                ),
                 "source": source,
                 "agent_version": agent_version,
                 "limit": limit,

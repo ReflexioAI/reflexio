@@ -2,11 +2,17 @@
 
 import copy
 import json
+from typing import Any
+from unittest.mock import Mock
 
 import litellm
 import pytest
+from pydantic import create_model
 
-from reflexio.models.config_schema import UserPlaybookExtractorConfig
+from reflexio.models.config_schema import (
+    PendingToolCallConfig,
+    UserPlaybookExtractorConfig,
+)
 from reflexio.server.llm.input_budget import InputBudgetConfigurationError
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.durable_learning import window_executor
@@ -129,7 +135,7 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
         }
     ]
 
-    def run_child():
+    def run_child(extractor_config=config):
         with (
             admitted.provider_scope(),
             present_extraction_chunk(prepared, chunk, ProtectedRecord()),
@@ -143,7 +149,7 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
                 agent_version=request.agent_version,
                 source=request.source,
                 request_interaction_data_models=service.service_config.window_interactions,
-                extractor_config=config,
+                extractor_config=extractor_config,
                 service_config=service.service_config,
                 agent_context=admitted.agent_context,
                 messages=messages,
@@ -163,9 +169,37 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
     monkeypatch.setattr(
         resumable_agent, "matches_frozen_extractor_binding", child_compatible
     )
-    result = run_child()
+    pending = PendingToolCallConfig(enabled=True)
+    monkeypatch.setattr(resumable_agent, "pending_tool_calls_enabled", lambda _: True)
+    monkeypatch.setattr(resumable_agent, "_pending_tool_call_config", lambda _: pending)
+    lookup = Mock(return_value=[])
+    monkeypatch.setattr(
+        "reflexio.server.services.extraction.prior_answer_search.find_prior_answer_matches",
+        lookup,
+    )
+    # The retired schema declared extractor_name first. A subclass would append
+    # it last and manufacture the wrong historical str(config) cache identity.
+    legacy_fields: dict[str, Any] = {
+        "extractor_name": (str, "historical-playbook-label"),
+        **{
+            name: (field.annotation, copy.deepcopy(field))
+            for name, field in UserPlaybookExtractorConfig.model_fields.items()
+        },
+    }
+    legacy_type = create_model("LegacyPlaybookExtractorConfig", **legacy_fields)
+    legacy_config = legacy_type.model_validate(snapshot["extractor_config"])
+    assert str(legacy_config) == (
+        f"extractor_name='historical-playbook-label' {config}"
+    )
+    result = run_child(legacy_config)
     assert result.output == StructuredPlaybookList(playbooks=[])
+    assert lookup.call_count == 1
+    frozen_prior = copy.deepcopy(admitted.checkpoint["prior_contexts"])
+    assert list(frozen_prior.values()) == [[]]
+    lookup.side_effect = AssertionError("fresh lookup must not replace frozen absence")
     assert run_child().output == result.output
+    assert lookup.call_count == 1
+    assert admitted.checkpoint["prior_contexts"] == frozen_prior
     assert len(calls) == 1
     saved = storage.get_agent_run(parent.id)
     assert saved.binding.extractor_config_hash == original_hash
