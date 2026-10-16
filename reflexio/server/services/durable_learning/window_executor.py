@@ -27,6 +27,7 @@ from reflexio.server.services.durable_learning.window_codec import (
 )
 from reflexio.server.services.extraction.agent_run_records import (
     build_extractor_agent_run_record,
+    matches_frozen_extractor_binding,
     source_interaction_digest,
 )
 from reflexio.server.services.extraction.input_preparation import (
@@ -304,7 +305,9 @@ class WindowExecutor:
             if known is not None
             else self.context.configurator.get_agent_context(),
         )
-        if known is not None and known.binding != expected_run.binding:
+        if known is not None and not matches_frozen_extractor_binding(
+            known, expected_run, window.policy["extractor"]
+        ):
             raise InputBudgetConfigurationError(
                 "Extraction coordinator parent binding changed"
             )

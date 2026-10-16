@@ -28,6 +28,7 @@ from reflexio.server.llm.tools import (
 )
 from reflexio.server.services.extraction.agent_run_records import (
     build_extractor_agent_run_record,
+    matches_frozen_extractor_binding,
 )
 from reflexio.server.services.extraction.pending_tool_call_dispatch import (
     PendingToolCallToolContext,
@@ -575,7 +576,9 @@ class ResumableExtractionAgent:
         if (
             run.id != f"window:{coordinator.window.window_id}"
             or existing is None
-            or existing.binding != run.binding
+            or not matches_frozen_extractor_binding(
+                existing, run, coordinator.window.policy["extractor"]
+            )
         ):
             raise RuntimeError("Overflow extraction child parent binding changed")
         checkpoint = coordinator.checkpoint

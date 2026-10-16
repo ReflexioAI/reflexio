@@ -88,6 +88,28 @@ def setup(pipeline, monkeypatch, *, gate=True, profiles=True):
     return engine, storage, window, token, client, calls
 
 
+def freeze_pre_retirement_name(storage, window):
+    from reflexio.server.services.storage.storage_base import build_scope_hash
+
+    parent = storage.get_agent_run(f"window:{window.window_id}")
+    snapshot = copy.deepcopy(parent.generation_request_snapshot)
+    snapshot["extractor_config"]["extractor_name"] = "historical-profile-label"
+    original_hash = build_scope_hash(snapshot["extractor_config"])
+    policy = copy.deepcopy(window.policy)
+    policy["extractor"] = copy.deepcopy(snapshot["extractor_config"])
+    # Simulate a pre-retirement release's persisted state, not a new admission.
+    with storage.conn:
+        storage.conn.execute(
+            "UPDATE _agent_runs SET extractor_config_hash=?,generation_request_snapshot=? WHERE id=?",
+            (original_hash, json.dumps(snapshot), parent.id),
+        )
+        storage.conn.execute(
+            "UPDATE extraction_windows SET policy=? WHERE window_id=?",
+            (json.dumps(policy), window.window_id),
+        )
+    return parent.id, snapshot, original_hash
+
+
 @pytest.mark.parametrize(
     ("gate", "profiles", "expected"),
     [(True, True, 1), (True, False, 0), (False, True, 0)],
@@ -193,6 +215,62 @@ def test_restart_preserves_candidates_and_paid_calls(pipeline, monkeypatch, boun
     assert rows[0].expiration_timestamp == frozen[0]["expiration_timestamp"]
     assert len(calls) == 3
     assert len(storage.pending_extraction_effects()) == 1
+
+
+def test_retired_name_resume_keeps_frozen_profile_candidates_and_paid_calls(
+    pipeline, monkeypatch
+):
+    from reflexio.server.services.durable_learning import profile_package_executor
+    from reflexio.server.services.storage.storage_base import AgentRunStatus
+
+    engine, storage, window, token, client, calls = setup(pipeline, monkeypatch)
+    executor = ProfilePackageWindowExecutor(engine.request_context, client)
+    complete = storage.update_agent_run_status
+
+    def interrupt(*args, **kwargs):
+        if args[1] == AgentRunStatus.AGENT_COMPLETED:
+            raise RuntimeError("pause before parent completion")
+        return complete(*args, **kwargs)
+
+    monkeypatch.setattr(storage, "update_agent_run_status", interrupt)
+    with pytest.raises(RuntimeError, match="pause before parent completion"):
+        executor.execute(window, token)
+    monkeypatch.setattr(storage, "update_agent_run_status", complete)
+    parent_id, snapshot, original_hash = freeze_pre_retirement_name(storage, window)
+    resumed = storage.prepare_extraction("u", token)
+    compatible = profile_package_executor.matches_frozen_extractor_binding
+    monkeypatch.setattr(
+        profile_package_executor,
+        "matches_frozen_extractor_binding",
+        lambda prior, expected, _: prior.binding == expected.binding,
+    )
+    with pytest.raises(InputBudgetConfigurationError, match="admission changed"):
+        executor.execute(resumed, token)
+    assert len(calls) == 3
+    assert storage.get_user_profile("u") == []
+    monkeypatch.setattr(
+        profile_package_executor, "matches_frozen_extractor_binding", compatible
+    )
+    executor.execute(resumed, token)
+    saved = storage.get_agent_run(parent_id)
+    assert saved.binding.extractor_config_hash == original_hash
+    assert (
+        saved.generation_request_snapshot["extractor_config"]
+        == snapshot["extractor_config"]
+    )
+    assert (
+        saved.generation_request_snapshot["overflow"]["attempts"]
+        == snapshot["overflow"]["attempts"]
+    )
+    candidates = snapshot["overflow"]["checkpoint"]["profile_package_candidates"]
+    rows = storage.get_user_profile("u")
+    assert len(rows) == 1
+    assert rows[0].profile_id == candidates[0]["profile_id"]
+    assert rows[0].last_modified_timestamp == candidates[0]["last_modified_timestamp"]
+    assert rows[0].expiration_timestamp == candidates[0]["expiration_timestamp"]
+    assert len(calls) == 3
+    assert len(storage.pending_extraction_effects()) == 1
+    assert storage.extraction_status("u", "package-parent")["status"] == "done"
 
 
 @pytest.mark.parametrize("failure", ["invalid_first_parsed", "transport"])

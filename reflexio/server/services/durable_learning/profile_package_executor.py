@@ -25,6 +25,7 @@ from reflexio.server.services.durable_learning.window_codec import encode_plan
 from reflexio.server.services.durable_learning.window_executor import WindowExecutor
 from reflexio.server.services.extraction.agent_run_records import (
     build_extractor_agent_run_record,
+    matches_frozen_extractor_binding,
 )
 from reflexio.server.services.extraction.overflow_coordinator import (
     OverflowCoordinator,
@@ -273,7 +274,9 @@ class ProfilePackageWindowExecutor(WindowExecutor):
             agent_context=context,
         )
         if known is not None and (
-            known.binding != expected.binding
+            not matches_frozen_extractor_binding(
+                known, expected, window.policy["extractor"]
+            )
             or manifest is None
             or manifest["input_protocol"] != descriptor
         ):

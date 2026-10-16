@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 from typing import Any
 
 from pydantic import BaseModel
@@ -47,6 +47,46 @@ def source_interaction_digest(interaction: Interaction) -> str:
     """Hash the captured source, excluding derived storage-only values."""
     return build_scope_hash(
         interaction.model_dump(mode="json", exclude={"embedding", "token_count"})
+    )
+
+
+def matches_frozen_extractor_binding(
+    prior: AgentRunRecord, expected: AgentRunRecord, frozen_config: dict[str, Any]
+) -> bool:
+    """Accept only exact bindings or removal of the retired extractor label.
+
+    The compatibility case requires the immutable window policy and saved run
+    snapshot to witness the original hash. It never rewrites historical state.
+    Ad-hoc resumes without a frozen window policy must keep their strict check.
+    """
+    if build_scope_hash(asdict(prior.binding)) == build_scope_hash(
+        asdict(expected.binding)
+    ):
+        return True
+    if prior.binding.extractor_kind not in {"profile", "playbook"}:
+        return False
+    saved = prior.generation_request_snapshot.get("extractor_config")
+    current = expected.generation_request_snapshot.get("extractor_config")
+    if not isinstance(saved, dict) or not isinstance(current, dict):
+        return False
+    if "extractor_name" not in saved:
+        return False
+    original_hash = prior.binding.extractor_config_hash
+    if (
+        build_scope_hash(saved) != original_hash
+        or build_scope_hash(frozen_config) != original_hash
+    ):
+        return False
+    normalized = {key: value for key, value in saved.items() if key != "extractor_name"}
+    current_hash = build_scope_hash(current)
+    if (
+        build_scope_hash(normalized) != current_hash
+        or expected.binding.extractor_config_hash != current_hash
+    ):
+        return False
+    compatible = replace(expected.binding, extractor_config_hash=original_hash)
+    return build_scope_hash(asdict(prior.binding)) == build_scope_hash(
+        asdict(compatible)
     )
 
 
