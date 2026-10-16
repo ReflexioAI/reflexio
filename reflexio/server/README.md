@@ -832,6 +832,11 @@ remain `profile`, `playbook`, and `agent_success`; historical result names are
 unchanged. `models/config_schema.py::strip_retired_config_fields` shares this
 cleanup with enterprise saves and raw stored-payload upgrades.
 
+Nomic inference startup belongs to `llm/embedding_service.py`'s lifespan, which
+calls `NomicEmbedder` directly for warmup and requests. Its former opt-in
+registration/prewarm helpers and `REFLEXIO_EMBEDDING_DAEMON` marker are retired;
+API workers continue to route local-model requests through HTTP.
+
 Customized retired housekeeping settings raise `HousekeepingMigrationError` from
 stored-config preflight. Local-file loading and CLI storage discovery propagate
 it rather than resetting the rest of the configuration to defaults. This preserves

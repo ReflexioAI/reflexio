@@ -181,3 +181,27 @@ def test_micro_batches_requests_for_registered_encoder(
     assert all(not thread.is_alive() for thread in threads)
     assert len(encode_calls) == 1
     assert set(encode_calls[0]) == {"first", "second"}
+
+
+@pytest.mark.parametrize("old_marker", [None, "1"])
+def test_service_owns_nomic_lifecycle_without_registration_marker(
+    monkeypatch, old_marker
+):
+    from fastapi.testclient import TestClient
+
+    if old_marker is None:
+        monkeypatch.delenv("REFLEXIO_EMBEDDING_DAEMON", raising=False)
+    else:
+        monkeypatch.setenv("REFLEXIO_EMBEDDING_DAEMON", old_marker)
+    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "false")
+    model = _ConcurrencyModel(hold=0)
+    _reset_service_state(monkeypatch, model)
+    app = es.create_embedding_app(default_model=es.NOMIC_TEXT_MODEL)
+    with TestClient(app) as client:
+        assert client.get("/health").status_code == 200
+        response = client.post(
+            "/v1/embeddings", json={"model": es.NOMIC_TEXT_MODEL, "input": ["hello"]}
+        )
+        assert response.status_code == 200
+        assert len(response.json()["data"][0]["embedding"]) == 512
+        assert model.calls >= 2  # Startup warmup and the HTTP request both encode.
