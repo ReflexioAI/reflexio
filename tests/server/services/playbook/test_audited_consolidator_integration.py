@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -17,6 +18,9 @@ from reflexio.models.api_schema.domain.enums import Status
 from reflexio.models.config_schema import DeduplicationConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.services.extraction.agent_run_records import (
+    source_interaction_digest,
+)
 from reflexio.server.services.extraction.input_preparation import SourceSpan
 from reflexio.server.services.extraction.overflow_coordinator import (
     OverflowCoordinator,
@@ -27,6 +31,8 @@ from reflexio.server.services.extraction.overflow_presentation import (
     current_overflow_presentation,
 )
 from reflexio.server.services.extraction.protected_record import ProtectedRecord
+from reflexio.server.services.playbook import input_capture
+from reflexio.server.services.playbook.components import reconciliation
 from reflexio.server.services.playbook.components.consolidator import (
     PlaybookConsolidator,
 )
@@ -128,6 +134,161 @@ def response(answer):
         ],
         usage={"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
     )
+
+
+@pytest.mark.parametrize(
+    "mode", ["disabled", "untargeted", "selected", "failed", "factory_failed"]
+)
+def test_exact_input_capture_is_lazy_detached_and_fail_open(
+    consolidator, storage, monkeypatch, caplog, mode
+):
+    interaction_id = source(storage, expert=True)
+    incumbent = row(ids=[interaction_id], persisted_id=123)
+    candidate = row(ids=[interaction_id])
+    ref = {"session_id": "evidence", "turn": interaction_id}
+    snapshots = []
+    calls = []
+    original_builder = input_capture.build_consolidator_input_snapshot
+    build_count = 0
+
+    def build(**kwargs):
+        nonlocal build_count
+        build_count += 1
+        if mode == "factory_failed":
+            raise RuntimeError("private source text must stay out of logs")
+        return original_builder(**kwargs)
+
+    monkeypatch.setattr(
+        "reflexio.server.services.playbook.components.reconciliation."
+        "build_consolidator_input_snapshot",
+        build,
+    )
+
+    def observe(**kwargs):
+        assert kwargs["storage"] is storage
+        assert kwargs["user_id"] == "owner"
+        assert kwargs["generation_request_id"] == "generation"
+        assert calls == []  # Selection precedes the method and audit outcomes.
+        if mode == "untargeted":
+            return
+        snapshot = kwargs["snapshot_factory"]()
+        snapshots.append(snapshot)
+        detached = snapshot.as_dict()
+        detached["source_witnesses"].clear()
+        decoded = json.loads(detached["payload_json"])
+        decoded["new"][0]["content"] = "observer mutation must stay detached"
+        if mode == "failed":
+            raise RuntimeError("private source text and credential must not appear")
+
+    monkeypatch.setattr(
+        input_capture,
+        "get_service",
+        lambda _key: None if mode == "disabled" else SimpleNamespace(observe=observe),
+    )
+    answers = iter(
+        [
+            {
+                "decisions": [
+                    {
+                        "kind": "remove",
+                        "new_ids": ["NEW-0"],
+                        "existing_ids": [],
+                        "reason": "Existing advice already covers the candidate.",
+                        "evidence_refs": [ref],
+                    }
+                ]
+            },
+            {"findings": []},
+        ]
+    )
+
+    def complete(params, _timeout):
+        calls.append(params)
+        return response(next(answers))
+
+    with patch.object(
+        consolidator.client, "_completion_with_hard_timeout", side_effect=complete
+    ):
+        result = consolidator.deduplicate(
+            [[candidate]],
+            generation_request_id="generation",
+            agent_version="v1",
+            user_id="owner",
+            existing_playbooks=[incumbent],
+        )
+    assert result == ([], [], [])
+    assert len(calls) == 2
+    assert build_count == (1 if mode in {"selected", "failed", "factory_failed"} else 0)
+    method_text = calls[0]["messages"][1]["content"]
+    assert json.loads(method_text)["new"][0]["content"] == candidate.content
+    if snapshots:
+        snapshot = snapshots[0]
+        assert snapshot.payload_json == method_text
+        assert (
+            snapshot.payload_sha256
+            == hashlib.sha256(method_text.encode("utf-8")).hexdigest()
+        )
+        original = storage.get_interactions_by_ids([interaction_id])[0]
+        assert snapshot.as_dict()["source_witnesses"] == [
+            {
+                "interaction_id": interaction_id,
+                "request_id": original.request_id,
+                "digest": source_interaction_digest(original),
+            }
+        ]
+        assert snapshot.as_dict()["existing_playbook_witnesses"] == [
+            {
+                "user_playbook_id": 123,
+                "trigger": incumbent.trigger,
+                "content": incumbent.content,
+                "rationale": incumbent.rationale,
+                "source_interaction_ids": incumbent.source_interaction_ids,
+            }
+        ]
+        assert set(snapshot.as_dict()["identity"]) == {
+            "agent_version",
+            "model_name",
+            "runtime_sha256",
+        }
+        assert (
+            snapshot.runtime_sha256
+            == hashlib.sha256(Path(reconciliation.__file__).read_bytes()).hexdigest()
+        )
+        assert snapshot.model_name == consolidator.model_name
+    assert "private source text" not in caplog.text
+    if mode in {"failed", "factory_failed"}:
+        assert "event=consolidator_input_capture_failed" in caplog.text
+
+
+def test_input_is_captured_before_failed_audited_decision(
+    consolidator, storage, monkeypatch
+):
+    interaction_id = source(storage)
+    snapshots = []
+
+    def observe(**kwargs):
+        snapshots.append(kwargs["snapshot_factory"]())
+
+    def fail(_engine, payload, _references):
+        assert snapshots[0].payload_json == json.dumps(payload, ensure_ascii=False)
+        raise AuditedConsolidationAbstainedError("scripted decision failure")
+
+    monkeypatch.setattr(
+        input_capture, "get_service", lambda _key: SimpleNamespace(observe=observe)
+    )
+    monkeypatch.setattr(
+        "reflexio.server.services.playbook.components.reconciliation._run_audited",
+        fail,
+    )
+    with pytest.raises(AuditedConsolidationAbstainedError):
+        consolidator.deduplicate(
+            [[row(ids=[interaction_id])]],
+            generation_request_id="generation",
+            agent_version="v1",
+            user_id="owner",
+            existing_playbooks=[row(ids=[interaction_id], persisted_id=123)],
+        )
+    assert len(snapshots) == 1
 
 
 @pytest.fixture

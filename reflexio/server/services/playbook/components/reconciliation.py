@@ -34,6 +34,10 @@ from reflexio.server.services.extraction.protected_record import (
     ProtectedRecord,
     ProtectedRecordUpdate,
 )
+from reflexio.server.services.playbook.input_capture import (
+    build_consolidator_input_snapshot,
+    observe_consolidator_input,
+)
 from reflexio.server.services.playbook.playbook_evidence import (
     contains_call_local_turn_ref,
     resolve_verbatim_source_span,
@@ -924,6 +928,21 @@ def reconcile_playbooks(
     }
     engine = Reconciler(consolidator.client, consolidator.model_name)
     try:
+        observe_consolidator_input(
+            storage=storage,
+            user_id=user_id,
+            generation_request_id=generation_request_id,
+            snapshot_factory=lambda: build_consolidator_input_snapshot(
+                payload=payload,
+                interactions=interactions,
+                existing_rows=existing_rows,
+                user_id=user_id,
+                agent_version=agent_version,
+                generation_request_id=generation_request_id,
+                model_name=consolidator.model_name,
+                runtime_path=__file__,
+            ),
+        )
         batch = _run_audited(engine, payload, references)
     finally:
         consolidator.model_provenance = engine.provenance
