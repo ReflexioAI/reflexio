@@ -218,7 +218,19 @@ def _render_publish_result(
 
     profiles_added = getattr(result, "profiles_added", None)
     playbooks_added = getattr(result, "playbooks_added", None)
-    if profiles_added is not None or playbooks_added is not None:
+    learning_status = getattr(result, "learning_status", None)
+    if learning_status == "deferred":
+        # The counts on a deferred response were read at admission, before
+        # extraction ran, so they are zero by construction. Printing them as
+        # "0 profile(s) added" reads as a silent extraction failure while the
+        # work is still running in the background.
+        reason = getattr(result, "learning_reason", None)
+        suffix = f" ({reason})" if reason else ""
+        print_info(
+            f"  Extraction: deferred{suffix}; it continues in the background. "
+            "Check results with 'reflexio user-profiles list'."
+        )
+    elif profiles_added is not None or playbooks_added is not None:
         parts: list[str] = []
         if profiles_added is not None:
             parts.append(f"{profiles_added} profile(s) added")
