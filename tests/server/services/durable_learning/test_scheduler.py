@@ -85,7 +85,7 @@ def test_library_recovers_persisted_backlog_without_new_publish(tmp_path, monkey
     monkeypatch.setattr(
         ProfileGenerationService, "_should_run_before_extraction", lambda *_: False
     )
-    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_POLL_SECONDS", ".05")
+    monkeypatch.setattr("reflexio.durable_learning_policy.DISCOVERY_POLL_SECONDS", 0.05)
     # A new facade opens the existing DB and discovers its work at construction.
     second = Reflexio(org_id=org, storage_base_dir=str(tmp_path), configurator=config)
     try:
@@ -132,3 +132,23 @@ def test_transient_discovery_failure_is_a_warning(caplog, transient_failure_clas
     scheduler._org_ids_provider = lambda: []
     scheduler._run_once()
     assert background_work._streaks == {}
+
+
+def test_scheduler_uses_shared_production_policy_for_poll_and_claim(monkeypatch):
+    from reflexio import durable_learning_policy
+
+    monkeypatch.setattr(durable_learning_policy, "DISCOVERY_POLL_SECONDS", 2.0)
+    monkeypatch.setattr(
+        "reflexio.server.services.durable_learning.scheduler.worker_count", lambda: 1
+    )
+    scheduler = DurableLearningScheduler(
+        request_context_factory=_unused_context, org_ids_provider=lambda: ["org"]
+    )
+    admitted = []
+    monkeypatch.setattr(
+        scheduler._worker,
+        "start_org",
+        lambda org, lease: admitted.append((org, lease)) or True,
+    )
+    assert scheduler._run_once() == 2.0
+    assert admitted == [("org", 300)]

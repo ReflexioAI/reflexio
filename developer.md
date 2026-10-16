@@ -802,3 +802,14 @@ The overflow call factory reuses these messages rather than appending a second
 instruction. Unprepared extraction keeps its turn-reference contract. Strict
 source visibility validation, bounded corrective repair, and evidence-carrier
 limits are unchanged.
+
+### Durable extraction timing
+
+`reflexio/durable_learning_policy.py` owns background discovery cadence (2 seconds)
+and renewable user-claim duration (300 seconds). Library/server scheduling and
+enterprise failure reporting share that policy. `REFLEXIO_DURABLE_LEARNING_POLL_SECONDS`
+and `REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS` are retired: unset/blank or former
+default values remain accepted as ignored compatibility inputs; custom or invalid
+values fail startup. Remove those entries before upgrading a deployment that
+customized them. Worker capacity remains independently configurable through
+`REFLEXIO_PUBLISH_LEARNING_WORKERS`; claim fencing and heartbeat renewal are unchanged.
