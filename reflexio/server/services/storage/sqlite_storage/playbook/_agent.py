@@ -4,6 +4,7 @@ import json
 import logging
 import sqlite3
 import uuid
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -175,7 +176,14 @@ class AgentPlaybookStoreMixin:
     def prepare_agent_playbooks_for_save(
         self, agent_playbooks: list[AgentPlaybook]
     ) -> None:
-        """Resolve model calls before the aggregator acquires its writer scope."""
+        """Resolve model calls before the aggregator acquires its writer scope.
+
+        ``_get_embedding`` returns ``[]`` when the embedding provider is
+        unavailable, which ordinary saves accept. Record each playbook this
+        method prepared so ``save_prepared_agent_playbooks`` can tell that
+        degraded-but-prepared case from input that was never prepared.
+        """
+        prepared = self._prepared_agent_playbooks()
         for ap in agent_playbooks:
             text = embedding_text(ap)
             if text and self._should_expand_documents():
@@ -190,6 +198,21 @@ class AgentPlaybookStoreMixin:
             else:
                 ap.embedding = []
                 ap.expanded_terms = None
+            prepared[id(ap)] = ap
+
+    def _prepared_agent_playbooks(
+        self,
+    ) -> "weakref.WeakValueDictionary[int, AgentPlaybook]":
+        """Return the playbooks prepared by this storage, keyed by identity.
+
+        Weak values drop an entry once its playbook is collected, so a reused
+        ``id()`` can never match a different, unprepared object.
+        """
+        registry = self.__dict__.get("_prepared_agent_playbook_registry")
+        if registry is None:
+            registry = weakref.WeakValueDictionary()
+            self.__dict__["_prepared_agent_playbook_registry"] = registry
+        return registry
 
     def save_prepared_agent_playbooks(
         self,
@@ -197,11 +220,16 @@ class AgentPlaybookStoreMixin:
         *,
         lineage_contexts: list[LineageContext],
     ) -> list[AgentPlaybook]:
-        """Join the caller's fenced transaction without repeating model calls."""
+        """Join the caller's fenced transaction without repeating model calls.
+
+        A playbook with embedding text must carry an embedding, unless this
+        storage prepared it while the embedding provider was unavailable.
+        """
+        prepared = self._prepared_agent_playbooks()
         for ap in agent_playbooks:
             if not embedding_text(ap):
                 continue
-            if not ap.embedding:
+            if not ap.embedding and prepared.get(id(ap)) is not ap:
                 raise ValueError("prepared agent playbook has no embedding")
         return self.save_agent_playbooks(
             agent_playbooks,
