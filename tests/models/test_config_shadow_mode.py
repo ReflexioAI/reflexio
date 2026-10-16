@@ -1,22 +1,27 @@
-"""Verify Config carries the shadow_mode_enabled toggle and round-trips correctly."""
+"""Retired no-op stays readable without widening the current write schema."""
 
-from reflexio.models.config_schema import Config, StorageConfigSQLite
+import pytest
+from pydantic import ValidationError
 
-
-def test_shadow_mode_enabled_defaults_to_false() -> None:
-    """New orgs are not opted into shadow mode by default."""
-    config = Config(storage_config=StorageConfigSQLite())
-    assert config.shadow_mode_enabled is False
+from reflexio.models.config_schema import Config, validate_stored_config
 
 
-def test_shadow_mode_enabled_can_be_set_via_constructor() -> None:
-    """Explicit True flips the toggle on."""
-    config = Config(storage_config=StorageConfigSQLite(), shadow_mode_enabled=True)
-    assert config.shadow_mode_enabled is True
+@pytest.mark.parametrize("value", [True, False])
+def test_retired_shadow_input_is_accepted_but_not_serialized(value: bool) -> None:
+    payload = {
+        "storage_config": {"type": "sqlite"},
+        "shadow_mode_enabled": value,
+        "agent_context_prompt": "keep me",
+    }
+    for config in (Config.model_validate(payload), validate_stored_config(payload)):
+        assert config.agent_context_prompt == "keep me"
+        assert "shadow_mode_enabled" not in config.model_dump()
+    assert payload["shadow_mode_enabled"] is value
+    assert "shadow_mode_enabled" not in Config.model_json_schema()["properties"]
 
 
-def test_shadow_mode_enabled_serializes_via_model_dump() -> None:
-    """model_dump includes the new field so set_config/get_config round-trip it."""
-    config = Config(storage_config=StorageConfigSQLite(), shadow_mode_enabled=True)
-    dumped = config.model_dump()
-    assert dumped["shadow_mode_enabled"] is True
+def test_retired_input_does_not_allow_arbitrary_unknown_keys() -> None:
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        Config.model_validate(
+            {"storage_config": None, "shadow_mode_enabled": True, "typo_config": True}
+        )

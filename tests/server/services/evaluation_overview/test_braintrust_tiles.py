@@ -56,7 +56,7 @@ def test_service_returns_empty_braintrust_tiles_with_no_imported_scores() -> Non
     storage.org_id = "org_t"
     storage.get_agent_success_evaluation_results.return_value = []
     storage.get_imported_scores.return_value = []
-    config = Config(storage_config=StorageConfigSQLite(), shadow_mode_enabled=False)
+    config = Config(storage_config=StorageConfigSQLite())
 
     svc = EvaluationOverviewService(storage=storage, config=config)
     response = svc.run(GetEvaluationOverviewRequest(from_ts=0, to_ts=int(time.time())))
@@ -86,7 +86,7 @@ def test_service_emits_braintrust_tiles_with_delta() -> None:
         ]
 
     storage.get_imported_scores.side_effect = get_imported_scores_router
-    config = Config(storage_config=StorageConfigSQLite(), shadow_mode_enabled=False)
+    config = Config(storage_config=StorageConfigSQLite())
 
     svc = EvaluationOverviewService(storage=storage, config=config)
     response = svc.run(GetEvaluationOverviewRequest(from_ts=1_000_000, to_ts=2_000_000))

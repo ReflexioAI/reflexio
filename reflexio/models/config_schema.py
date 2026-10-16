@@ -960,11 +960,6 @@ class Config(BaseModel):
     skip_should_run_check: bool = False
     # Enable storage-time document expansion for improved FTS recall
     enable_document_expansion: bool = False
-    # Whether this org has opted into shadow-mode runs. Drives /healthz/eval
-    # liveness derivation and the /api/get_evaluation_overview hero state
-    # machine. When True, each publish optionally schedules a parallel
-    # "without Reflexio" generation for side-by-side comparison.
-    shadow_mode_enabled: bool = False
     eval_sample_n_per_stratum: int = Field(
         default=200,
         gt=0,
@@ -1002,6 +997,14 @@ class Config(BaseModel):
         so rows missing these columns fall back to defaults instead of
         failing validation.
         """
+        if isinstance(data, dict):
+            # Retired no-op: accept old SDK/stored payloads without advertising
+            # or persisting it. All other unknown API keys remain forbidden.
+            data = {
+                key: value
+                for key, value in data.items()
+                if key != "shadow_mode_enabled"
+            }
         data = _migrate_dict(data, _CONFIG_FIELD_MIGRATION)
         if isinstance(data, dict):
             for key in (

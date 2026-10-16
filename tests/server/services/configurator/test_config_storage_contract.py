@@ -225,3 +225,28 @@ class TestConfigStorageContract:
 
         assert second is not None
         assert second != first
+
+
+def test_legacy_shadow_file_load_patch_save_roundtrip(tmp_path: Path) -> None:
+    storage = LocalFileConfigStorage(org_id="legacy-org", base_dir=str(tmp_path))
+    path = Path(storage.config_file)
+    path.parent.mkdir(parents=True)
+    original = {
+        "storage_config": {"type": "sqlite"},
+        "shadow_mode_enabled": True,
+        "agent_context_prompt": "customer prompt",
+        "window_size": 23,
+        "stride_size": 7,
+    }
+    path.write_text(json.dumps(original))
+    loaded = storage.load_config()
+    assert loaded.agent_context_prompt == "customer prompt"
+    assert loaded.window_size == 23
+    assert loaded.stride_size == 7
+    loaded.enable_document_expansion = True
+    storage.save_config(loaded)
+    saved = json.loads(path.read_text())
+    assert "shadow_mode_enabled" not in saved
+    assert saved["window_size"] == 23
+    assert saved["stride_size"] == 7
+    assert storage.load_config().enable_document_expansion is True
