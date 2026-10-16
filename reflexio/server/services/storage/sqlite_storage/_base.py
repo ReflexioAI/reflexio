@@ -140,7 +140,7 @@ def _through_prefix_predicate(req_alias: str) -> str:
     trajectory digest and the outcome prefix precondition), so they cannot
     disagree about which requests a verdict covered.
 
-    The cutover is looked up by id inside the same session and compared on its
+    The cutover is looked up by id inside the same user/session and compared on its
     CURRENT row as ``(created_at, request_id)``, so ``request_id`` breaks a
     same-timestamp tie. A cutover that is not in the session matches nothing,
     which fails closed. The fragment binds exactly one ``?``: the cutover id.
@@ -155,6 +155,7 @@ def _through_prefix_predicate(req_alias: str) -> str:
         "EXISTS (SELECT 1 FROM requests AS cut"
         " WHERE cut.request_id = ?"
         f" AND cut.session_id = {req_alias}.session_id"
+        f" AND cut.user_id = {req_alias}.user_id"
         f" AND ({req_alias}.created_at, {req_alias}.request_id)"
         " <= (cut.created_at, cut.request_id))"
     )
