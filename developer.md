@@ -821,3 +821,11 @@ and `governance_retention.audit_events_delete_batch_limit` settings accept only
 legacy defaults (86400 and 500) during migration and are absent from canonical
 configuration. Custom values fail validation; review them before upgrading.
 Retention ages, grace windows and explicit holds remain supported.
+
+### Session outcome cutovers
+
+SQLite cutover membership matches both user and session. Transactional stores
+may mark `SessionJudgmentInputs.requests_ordered` to preserve database ordering
+before public timestamps are converted to whole seconds. The internal
+`OutcomePrefixPrecondition.verdict_settled_at` accepts fractional epoch seconds;
+public outcome timestamps keep their existing integer representation.

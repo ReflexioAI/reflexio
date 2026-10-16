@@ -336,3 +336,30 @@ def test_snapshot_reload_records_skip_without_starting_paid_evaluation(
     service_cls.assert_not_called()
     assert health.get_status()["skip_counts"][reason.value] == 1
     assert sum(health.get_status()["skip_counts"].values()) == 1
+
+
+def test_database_order_survives_lossy_second_conversion():
+    from reflexio.server.services.storage.storage_base._requests import (
+        SessionJudgmentInputs,
+    )
+
+    old = _now() - 10_000
+
+    class OrderedStorage:
+        def get_requests_by_session(self, *_args, **_kwargs):
+            return [_request("z-earlier", old), _request("a-later", old)]
+
+        def load_session_judgment_inputs(self, *_args, **_kwargs):
+            return SessionJudgmentInputs(
+                self.get_requests_by_session(),
+                [_interaction(1, "z-earlier", old), _interaction(2, "a-later", old)],
+                requests_ordered=True,
+            )
+
+    _, [judged] = _run(OrderedStorage(), through_request_id="a-later")
+    assert [
+        item.request.request_id for item in judged.request_interaction_data_models
+    ] == [
+        "z-earlier",
+        "a-later",
+    ]
