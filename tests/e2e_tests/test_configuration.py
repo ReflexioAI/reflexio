@@ -14,6 +14,7 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
+from reflexio.server.services.extractor_config_utils import get_extractor_name
 from tests.server.test_utils import skip_in_precommit, skip_low_priority
 
 pytestmark = pytest.mark.e2e
@@ -52,26 +53,30 @@ def test_set_config_end_to_end(
     # Create a new configuration
     new_config = Config(
         storage_config=sqlite_storage_config,
-        profile_extractor_config=ProfileExtractorConfig(
-            extractor_name="test_config_extractor",
-            context_prompt="""
+        profile_extractor_config=ProfileExtractorConfig.model_validate(
+            {
+                "extractor_name": "test_config_extractor",
+                "context_prompt": """
             Test configuration: Extract key information from conversations.
             """,
-            extraction_definition_prompt="""
+                "extraction_definition_prompt": """
             Test profile content definition.
             """,
-            tagging_definition_prompt="""
+                "tagging_definition_prompt": """
             Test metadata definition.
             """,
+            }
         ),
-        user_playbook_extractor_config=PlaybookConfig(
-            extractor_name="test_config_playbook",
-            extraction_definition_prompt="""
+        user_playbook_extractor_config=PlaybookConfig.model_validate(
+            {
+                "extractor_name": "test_config_playbook",
+                "extraction_definition_prompt": """
             Test playbook definition for configuration test.
             """,
-            aggregation_config=PlaybookAggregatorConfig(
-                min_cluster_size=3,
-            ),
+                "aggregation_config": PlaybookAggregatorConfig(
+                    min_cluster_size=3,
+                ),
+            }
         ),
     )
 
@@ -93,8 +98,7 @@ def test_set_config_end_to_end(
     )
     assert current_config.user_playbook_extractor_config is not None
     assert (
-        current_config.user_playbook_extractor_config.extractor_name
-        == "test_config_playbook"
+        get_extractor_name(current_config.user_playbook_extractor_config) == "playbook"
     )
     assert (
         current_config.user_playbook_extractor_config.aggregation_config.min_cluster_size
@@ -133,8 +137,7 @@ def test_set_config_end_to_end(
     )
     assert updated_config.user_playbook_extractor_config is not None
     assert (
-        updated_config.user_playbook_extractor_config.extractor_name
-        == "dict_test_playbook"
+        get_extractor_name(updated_config.user_playbook_extractor_config) == "playbook"
     )
     assert (
         updated_config.user_playbook_extractor_config.aggregation_config.min_cluster_size
@@ -185,18 +188,22 @@ def test_get_config_end_to_end(
     # Step 2: Set a specific configuration
     new_config = Config(
         storage_config=sqlite_storage_config,
-        profile_extractor_config=ProfileExtractorConfig(
-            extractor_name="get_config_test_extractor",
-            context_prompt="Get config test: Extract key information.",
-            extraction_definition_prompt="Get config test profile content.",
-            tagging_definition_prompt="Get config test metadata.",
+        profile_extractor_config=ProfileExtractorConfig.model_validate(
+            {
+                "extractor_name": "get_config_test_extractor",
+                "context_prompt": "Get config test: Extract key information.",
+                "extraction_definition_prompt": "Get config test profile content.",
+                "tagging_definition_prompt": "Get config test metadata.",
+            }
         ),
-        user_playbook_extractor_config=PlaybookConfig(
-            extractor_name="get_config_test_playbook",
-            extraction_definition_prompt="Get config test playbook definition.",
-            aggregation_config=PlaybookAggregatorConfig(
-                min_cluster_size=10,
-            ),
+        user_playbook_extractor_config=PlaybookConfig.model_validate(
+            {
+                "extractor_name": "get_config_test_playbook",
+                "extraction_definition_prompt": "Get config test playbook definition.",
+                "aggregation_config": PlaybookAggregatorConfig(
+                    min_cluster_size=10,
+                ),
+            }
         ),
     )
 
@@ -217,8 +224,8 @@ def test_get_config_end_to_end(
     # Verify agent playbook config
     assert retrieved_config.user_playbook_extractor_config is not None
     assert (
-        retrieved_config.user_playbook_extractor_config.extractor_name
-        == "get_config_test_playbook"
+        get_extractor_name(retrieved_config.user_playbook_extractor_config)
+        == "playbook"
     )
     assert (
         retrieved_config.user_playbook_extractor_config.aggregation_config.min_cluster_size

@@ -960,13 +960,15 @@ class TestUpdateConfigRoute:
         db_path = str(Path(tempfile.gettempdir()) / "existing.db")
         return Config(
             storage_config=StorageConfigSQLite(db_path=db_path),
-            user_playbook_extractor_config=UserPlaybookExtractorConfig(
-                extractor_name="default_playbook_extractor",
-                extraction_definition_prompt="extract feedback",
-                aggregation_config=PlaybookAggregatorConfig(
-                    min_cluster_size=2,
-                    clustering_similarity=0.45,
-                ),
+            user_playbook_extractor_config=UserPlaybookExtractorConfig.model_validate(
+                {
+                    "extractor_name": "default_playbook_extractor",
+                    "extraction_definition_prompt": "extract feedback",
+                    "aggregation_config": PlaybookAggregatorConfig(
+                        min_cluster_size=2,
+                        clustering_similarity=0.45,
+                    ),
+                }
             ),
         )
 
@@ -1015,9 +1017,11 @@ class TestUpdateConfigRoute:
         merged = mock_reflexio.set_config.call_args.args[0]
         assert isinstance(merged, Config)
         assert merged.profile_extractor_config is not None
-        assert merged.profile_extractor_config.extractor_name == "profile"
+        assert "extractor_name" not in merged.profile_extractor_config.model_dump()
         assert merged.user_playbook_extractor_config is not None
-        assert merged.user_playbook_extractor_config.extractor_name == "playbook"
+        assert (
+            "extractor_name" not in merged.user_playbook_extractor_config.model_dump()
+        )
 
     def test_null_extractor_configs_disable_existing_extractors(
         self, client, patched_reflexio, mock_reflexio

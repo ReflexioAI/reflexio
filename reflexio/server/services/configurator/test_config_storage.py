@@ -130,11 +130,31 @@ def test_load_config_upgrades_legacy_list_shape():
         loaded = storage.load_config()
 
         assert loaded.profile_extractor_config is not None
-        assert loaded.profile_extractor_config.extractor_name == "legacy_profile"
+        assert "extractor_name" not in loaded.profile_extractor_config.model_dump()
+        assert (
+            loaded.profile_extractor_config.extraction_definition_prompt
+            == "Extract legacy profile data."
+        )
         assert loaded.user_playbook_extractor_config is not None
-        assert loaded.user_playbook_extractor_config.extractor_name == "legacy_playbook"
+        assert (
+            "extractor_name" not in loaded.user_playbook_extractor_config.model_dump()
+        )
+        assert (
+            loaded.user_playbook_extractor_config.extraction_definition_prompt
+            == "Extract legacy playbook rules."
+        )
         assert loaded.agent_success_config is not None
-        assert loaded.agent_success_config.evaluation_name == "legacy_success"
+        assert "evaluation_name" not in loaded.agent_success_config.model_dump()
+        assert (
+            loaded.agent_success_config.success_definition_prompt
+            == "Evaluate legacy agent success."
+        )
+        storage.save_config(loaded)
+        saved = json.loads(Path(storage.config_file).read_text(encoding="utf-8"))
+        assert "extractor_name" not in saved["profile_extractor_config"]
+        assert "extractor_name" not in saved["user_playbook_extractor_config"]
+        assert "evaluation_name" not in saved["agent_success_config"]
+        assert storage.load_config() == loaded
 
 
 def test_load_config_removes_retired_reflection_key_and_preserves_settings():

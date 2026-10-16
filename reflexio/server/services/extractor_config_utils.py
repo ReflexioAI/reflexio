@@ -20,7 +20,8 @@ def get_extractor_name(config: object) -> str:
     """
     Get the display name for an extractor config.
 
-    Checks extractor_name, playbook_name, and evaluation_name attributes in order.
+    Typed extractor configs use fixed singleton identities. For other objects,
+    checks extractor_name, playbook_name, and evaluation_name attributes in order.
 
     Args:
         config: Extractor configuration object (e.g., ProfileExtractorConfig, PlaybookConfig, AgentSuccessConfig)
