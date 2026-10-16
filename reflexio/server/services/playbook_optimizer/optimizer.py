@@ -397,7 +397,7 @@ class PlaybookOptimizer:
             frontier_type="instance",
             batch_sampler="epoch_shuffled",
             reflection_minibatch_size=config.reflection_minibatch_size,
-            use_merge=config.use_merge,
+            use_merge=config.max_merge_invocations > 0,
             max_merge_invocations=config.max_merge_invocations,
             max_metric_calls=config.max_metric_calls,
             stop_callbacks=[ScoreThresholdStopper(config.early_stop_score)],
@@ -1092,7 +1092,7 @@ def _gepa_publication_authority(
         "gepa_engine_identity": _gepa_engine_identity(),
         "merge_settings": {
             "max_merge_invocations": config.max_merge_invocations,
-            "use_merge": config.use_merge,
+            "use_merge": config.max_merge_invocations > 0,
         },
         "model_identity": {
             "default_lm": llm_client.config.model,
