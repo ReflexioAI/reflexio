@@ -160,6 +160,7 @@ def make_ask_human_prediction_provider(
             agent_context_prompt=case.agent_context_prompt,
             extraction_definition_prompt=case.extraction_definition_prompt,
             tool_can_use=tool_can_use,
+            citation_instruction="",  # This eval explicitly retains the legacy output schema.
         )
         extractor_config = (
             request_context.configurator.get_config().user_playbook_extractor_config

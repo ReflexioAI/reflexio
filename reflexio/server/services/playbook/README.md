@@ -419,3 +419,28 @@ retained. Cached final ordinary write plans can normalize notes without model
 work, vector changes, or regenerating proposals. Existing stored accidental marker collisions cannot be distinguished
 retroactively from genuine source rows by their notes alone; this prospective
 reservation does not backfill or rewrite historical rows.
+
+### Extraction citation contract
+
+`playbook_evidence.PlaybookExtractionContract` selects the output schema and
+validator and supplies the citation instruction consumed by ordinary/expert message
+constructors. Fresh, overflow-chunk and resumed calls pass that selected instruction;
+an adopted stored schema determines its own instruction. Generic same-model repair
+inherits the same request contract and retains its existing attempt bound.
+
+Ordinary unprepared inputs use visible `T#` IDs. Prepared inputs use exact
+`i<id>:<field>:<start>:<end>` evidence IDs; these cannot be replaced by a coarse turn
+alias when a turn contains several fields or excerpts. Strict quoted-evidence
+contracts instead require the provided `turn_ref` plus an exact original quotation.
+Legacy schema names/shapes and expert prompt activation remain unchanged. Preferences
+cite only User-originated evidence; corrections may also cite prior agent behavior.
+No role, ownership, source-span or carrier-capacity validation is relaxed.
+
+Ordinary prompt patches 4.6.1/1.5.1 use representation-neutral citation wording;
+shared schema descriptions no longer assume turn-only references. Historical prompt
+content stays unchanged; only superseded activation flags are disabled. Explicit
+historical/custom prompt pins retain their own
+wording; default-template updates do not silently rewrite those pins. Request tests
+inspect both the complete serialized schema and messages on initial/repair calls,
+not just presence of a prepared-source reminder. Scripted responses establish
+contract mechanics, not live-model accuracy or compressor superiority.

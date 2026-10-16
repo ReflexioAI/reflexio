@@ -347,8 +347,8 @@ class TestPromptManager:
         normalized_context = " ".join(context.split())
         normalized_main = " ".join(main.split())
 
-        assert manager.get_active_version("playbook_extraction_context") == "4.6.0"
-        assert manager.get_active_version("playbook_extraction_main") == "1.5.0"
+        assert manager.get_active_version("playbook_extraction_context") == "4.6.1"
+        assert manager.get_active_version("playbook_extraction_main") == "1.5.1"
         for required in (
             "Category 1 — Correction SOPs",
             "Category 2 — Success Path Recipes",
@@ -362,7 +362,7 @@ class TestPromptManager:
             "Exact duplicate work",
             "Satisfied conditional authorization",
             "Apply grounding clause by clause",
-            "evidence_refs",
+            "selected output schema",
             "bounded ask-once-and-act sequence is itself a successful",
             "outside the visible interaction window",
             "Intervening user or UI events",
@@ -370,7 +370,7 @@ class TestPromptManager:
             "cannot independently establish a user correction",
             "not an unstated conventional checklist",
             "Repeated bare-failure handling",
-            "The `evidence_refs` list is the only place for turn references",
+            "Put citations only in the evidence fields required by the selected schema",
             "do not discard it as routine clean execution",
             "a grounded Success Path Recipe is mandatory",
             "not reusable user guidance",

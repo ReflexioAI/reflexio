@@ -521,6 +521,8 @@ class PlaybookExtractor:
             if self.config.extraction_definition_prompt
             else ""
         )
+        coordinator = current_overflow_coordinator.get()
+        stored_schema = _adopted_playbook_schema(coordinator)
         contract = build_playbook_extraction_contract(
             prompt_manager,
             expert=expert_mode,
@@ -536,6 +538,9 @@ class PlaybookExtractor:
                 agent_context_prompt=self.agent_context,
                 extraction_definition_prompt=playbook_definition,
                 prompt_context=prompt_context,
+                citation_instruction=contract.citation_instruction(
+                    schema=stored_schema
+                ),
             )
         else:
             messages = construct_playbook_extraction_messages_from_sessions(
@@ -545,11 +550,12 @@ class PlaybookExtractor:
                 extraction_definition_prompt=playbook_definition,
                 tool_can_use=tool_can_use_str,
                 prompt_context=prompt_context,
+                citation_instruction=contract.citation_instruction(
+                    schema=stored_schema
+                ),
             )
         log_llm_messages(logger, "Playbook extraction", messages)
 
-        coordinator = current_overflow_coordinator.get()
-        stored_schema = _adopted_playbook_schema(coordinator)
         adopted_output = stored_schema is not None
         legacy_output = stored_schema is StructuredPlaybookList
         if coordinator is not None and not adopted_output:
@@ -647,6 +653,9 @@ class PlaybookExtractor:
                     agent_context_prompt=pinned_context,
                     extraction_definition_prompt=playbook_definition,
                     prompt_context=visible,
+                    citation_instruction=chunk_contract.citation_instruction(
+                        schema=stored_schema
+                    ),
                 )
             else:
                 chunk_messages = construct_playbook_extraction_messages_from_sessions(
@@ -656,6 +665,9 @@ class PlaybookExtractor:
                     extraction_definition_prompt=playbook_definition,
                     tool_can_use=tool_can_use_str,
                     prompt_context=visible,
+                    citation_instruction=chunk_contract.citation_instruction(
+                        schema=stored_schema
+                    ),
                 )
             return OverflowExtractionCall(
                 chunk_messages,
@@ -676,7 +688,7 @@ class PlaybookExtractor:
             service_config=self.service_config,
             agent_context=self.agent_context,
             messages=messages,
-            output_schema=contract.schema,
+            output_schema=stored_schema or contract.schema,
             log_label="Playbook extraction",
             # Opt strict normal extraction into the client's one bounded
             # corrective repair turn. The validator only fires when the whole
