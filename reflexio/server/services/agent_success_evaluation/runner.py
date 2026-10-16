@@ -255,7 +255,11 @@ def run_group_evaluation(
 
     # Build RequestInteractionDataModel list in (created_at, request_id) order:
     # the same order SQL uses, so a same-second tie resolves identically here.
-    requests_sorted = sorted(requests, key=lambda r: (r.created_at, r.request_id))
+    requests_sorted = (
+        requests
+        if inputs.requests_ordered
+        else sorted(requests, key=lambda r: (r.created_at, r.request_id))
+    )
     # The stamp. With a cutover it is the cutover itself -- by the SQL
     # predicate it is the prefix's maximum, and storage may hold sub-second
     # timestamps that an epoch-second sort here cannot order. Without one it

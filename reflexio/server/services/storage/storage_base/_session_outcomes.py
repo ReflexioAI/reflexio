@@ -55,11 +55,11 @@ class OutcomePrefixPrecondition:
     a prefix that no longer exists, and the write answers ``prefix_moved``.
 
     Attributes:
-        verdict_settled_at (int): Epoch seconds the verdict was settled at.
+        verdict_settled_at (float): Epoch seconds, preserving sub-second precision.
         interaction_count (int): Interactions the judge saw in the prefix.
     """
 
-    verdict_settled_at: int
+    verdict_settled_at: float
     interaction_count: int
 
 

@@ -18,6 +18,8 @@ class SessionJudgmentInputs:
     interactions: list[Interaction]
     visibility_snapshot: str | None = None
     gc_epoch: int | None = None
+    # Transactional stores can order before lossy public epoch conversion.
+    requests_ordered: bool = False
 
 
 class RequestMixin:

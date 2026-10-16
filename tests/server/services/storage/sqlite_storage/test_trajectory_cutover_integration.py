@@ -351,3 +351,20 @@ def test_upgraded_database_gains_cutover_columns(tmp_path) -> None:
         "trajectory_through_request_id",
         "trajectory_interaction_count",
     } <= columns("agent_success_evaluation_result")
+
+
+def test_another_users_cutover_cannot_scope_this_users_session(storage):
+    _add_request(storage, "alice-request", T0)
+    storage.add_request(
+        Request(
+            request_id="bob-cutover",
+            user_id="bob",
+            session_id=SESSION,
+            source="published",
+            created_at=T0 + 1,
+        )
+    )
+    assert (
+        storage.get_requests_by_session(USER, SESSION, through_request_id="bob-cutover")
+        == []
+    )
