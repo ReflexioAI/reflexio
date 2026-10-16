@@ -383,11 +383,12 @@ class QualificationAuthorityRef:
     discovery_component_identity_digest: str
     discovery_qualification_suite_digest: str
     discovery_qualification_result_digest: str
-    held_out_component_identity_digest: str
-    held_out_qualification_suite_digest: str
-    held_out_qualification_result_digest: str
+    held_out_component_identity_digest: str | None
+    held_out_qualification_suite_digest: str | None
+    held_out_qualification_result_digest: str | None
     candidate_generator_identity_digest: str
     candidate_generator_authorization_digest: str
+    policy_id: str = "adverse-veto-coverage-75-v1"
 
     def __post_init__(self) -> None:
         if type(self.epoch) is not int or self.epoch <= 0:
@@ -397,13 +398,23 @@ class QualificationAuthorityRef:
             "discovery_component_identity_digest",
             "discovery_qualification_suite_digest",
             "discovery_qualification_result_digest",
-            "held_out_component_identity_digest",
-            "held_out_qualification_suite_digest",
-            "held_out_qualification_result_digest",
             "candidate_generator_identity_digest",
             "candidate_generator_authorization_digest",
         ):
             _require_digest(f"qualification authority {field}", getattr(self, field))
+        held_out = (
+            self.held_out_component_identity_digest,
+            self.held_out_qualification_suite_digest,
+            self.held_out_qualification_result_digest,
+        )
+        if self.policy_id == "evidence-grounded-exact-edit-v1":
+            if any(value is not None for value in held_out):
+                raise ValueError("rule-evidence authority has no held-out component")
+        elif self.policy_id == "adverse-veto-coverage-75-v1":
+            for value in held_out:
+                _require_digest("qualification authority held-out identity", value)
+        else:
+            raise ValueError("unsupported qualification authority policy")
 
 
 def _validated_full_version_snapshot(
