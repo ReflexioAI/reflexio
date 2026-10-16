@@ -819,3 +819,10 @@ Database environment aliases resolve through `reflexio/config_env.py`, shared wi
 CLI bootstrap. A nonblank `DATA_DB_URL` wins; backend-specific legacy names remain
 accepted when it is absent. The retired `shadow_mode_enabled` configuration input
 is accepted as a no-op and omitted from serialization.
+
+Extractor configuration names (`extractor_name`, legacy `playbook_name` /
+`feedback_name`, and `evaluation_name`) are also retired no-ops: older payloads
+remain readable, but schemas and canonical saves omit them. Runtime identities
+remain `profile`, `playbook`, and `agent_success`; historical result names are
+unchanged. `models/config_schema.py::strip_retired_config_fields` shares this
+cleanup with enterprise saves and raw stored-payload upgrades.

@@ -87,10 +87,12 @@ def _playbook_run(
 def _aggregation_enabled_config() -> Config:
     return Config(
         storage_config=StorageConfigSQLite(),
-        user_playbook_extractor_config=PlaybookConfig(
-            extractor_name="test_playbook",
-            extraction_definition_prompt="test",
-            aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
+        user_playbook_extractor_config=PlaybookConfig.model_validate(
+            {
+                "extractor_name": "test_playbook",
+                "extraction_definition_prompt": "test",
+                "aggregation_config": PlaybookAggregatorConfig(min_cluster_size=2),
+            }
         ),
     )
 
@@ -277,12 +279,14 @@ def test_generate_playbook(mock_chat_completion):
         )
 
         # Set up playbook config with window_size
-        playbook_config = PlaybookConfig(
-            extractor_name="test_playbook",
-            extraction_definition_prompt="test",
-            aggregation_config=PlaybookAggregatorConfig(
-                min_cluster_size=2,
-            ),
+        playbook_config = PlaybookConfig.model_validate(
+            {
+                "extractor_name": "test_playbook",
+                "extraction_definition_prompt": "test",
+                "aggregation_config": PlaybookAggregatorConfig(
+                    min_cluster_size=2,
+                ),
+            }
         )
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
@@ -329,12 +333,14 @@ def test_empty_interactions(mock_chat_completion):
         )
 
         # Set up playbook config
-        playbook_config = PlaybookConfig(
-            extractor_name="test_playbook",
-            extraction_definition_prompt="test",
-            aggregation_config=PlaybookAggregatorConfig(
-                min_cluster_size=2,
-            ),
+        playbook_config = PlaybookConfig.model_validate(
+            {
+                "extractor_name": "test_playbook",
+                "extraction_definition_prompt": "test",
+                "aggregation_config": PlaybookAggregatorConfig(
+                    min_cluster_size=2,
+                ),
+            }
         )
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
@@ -423,12 +429,14 @@ def test_error_handling(mock_chat_completion):
         )
 
         # Set up playbook config
-        playbook_config = PlaybookConfig(
-            extractor_name="test_playbook",
-            extraction_definition_prompt="test",
-            aggregation_config=PlaybookAggregatorConfig(
-                min_cluster_size=2,
-            ),
+        playbook_config = PlaybookConfig.model_validate(
+            {
+                "extractor_name": "test_playbook",
+                "extraction_definition_prompt": "test",
+                "aggregation_config": PlaybookAggregatorConfig(
+                    min_cluster_size=2,
+                ),
+            }
         )
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
@@ -676,6 +684,7 @@ def test_resolve_write_plan_honors_reject_all_consolidation():
         )
 
         assert not is_source_quoted_playbook(candidate)
+        assert candidate.notes is not None
         assert candidate.notes.endswith('{"policy":"source-quoted-playbooks-v1"}')
         assert consolidator_class.return_value.deduplicate.call_args.args[0] == [
             [candidate]
@@ -696,9 +705,11 @@ def test_resolve_write_plan_reviews_grounded_normal_candidates_before_consolidat
             source="test_source",
             auto_run=False,
         )
-        playbook_config = PlaybookConfig(
-            extractor_name="test_playbook",
-            extraction_definition_prompt="Review grounded lessons",
+        playbook_config = PlaybookConfig.model_validate(
+            {
+                "extractor_name": "test_playbook",
+                "extraction_definition_prompt": "Review grounded lessons",
+            }
         )
         service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
@@ -870,9 +881,11 @@ def test_resolve_write_plan_fails_closed_for_strict_candidate_without_evidence()
         )
         service.configurator.set_config_by_name(
             "user_playbook_extractor_config",
-            PlaybookConfig(
-                extractor_name="test_playbook",
-                extraction_definition_prompt="Review grounded lessons",
+            PlaybookConfig.model_validate(
+                {
+                    "extractor_name": "test_playbook",
+                    "extraction_definition_prompt": "Review grounded lessons",
+                }
             ),
         )
         request = Request(
@@ -944,12 +957,14 @@ def test_run_manual_regular_no_window_size(mock_chat_completion):
         )
 
         # Set up playbook config WITHOUT window size
-        playbook_config = PlaybookConfig(
-            extractor_name="test_playbook",
-            extraction_definition_prompt="test",
-            aggregation_config=PlaybookAggregatorConfig(
-                min_cluster_size=2,
-            ),
+        playbook_config = PlaybookConfig.model_validate(
+            {
+                "extractor_name": "test_playbook",
+                "extraction_definition_prompt": "test",
+                "aggregation_config": PlaybookAggregatorConfig(
+                    min_cluster_size=2,
+                ),
+            }
         )
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
@@ -1002,12 +1017,14 @@ def test_run_manual_regular_no_interactions(mock_chat_completion):
         )
 
         # Set up playbook config WITH window size
-        playbook_config = PlaybookConfig(
-            extractor_name="test_playbook",
-            extraction_definition_prompt="test",
-            aggregation_config=PlaybookAggregatorConfig(
-                min_cluster_size=2,
-            ),
+        playbook_config = PlaybookConfig.model_validate(
+            {
+                "extractor_name": "test_playbook",
+                "extraction_definition_prompt": "test",
+                "aggregation_config": PlaybookAggregatorConfig(
+                    min_cluster_size=2,
+                ),
+            }
         )
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
@@ -1045,12 +1062,14 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
         )
 
         # Set up playbook config WITH window size
-        playbook_config = PlaybookConfig(
-            extractor_name="test_playbook",
-            extraction_definition_prompt="test",
-            aggregation_config=PlaybookAggregatorConfig(
-                min_cluster_size=2,
-            ),
+        playbook_config = PlaybookConfig.model_validate(
+            {
+                "extractor_name": "test_playbook",
+                "extraction_definition_prompt": "test",
+                "aggregation_config": PlaybookAggregatorConfig(
+                    min_cluster_size=2,
+                ),
+            }
         )
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
@@ -1106,12 +1125,14 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
         )
 
         # Set up playbook config WITH window size
-        playbook_config = PlaybookConfig(
-            extractor_name="test_playbook",
-            extraction_definition_prompt="test",
-            aggregation_config=PlaybookAggregatorConfig(
-                min_cluster_size=2,
-            ),
+        playbook_config = PlaybookConfig.model_validate(
+            {
+                "extractor_name": "test_playbook",
+                "extraction_definition_prompt": "test",
+                "aggregation_config": PlaybookAggregatorConfig(
+                    min_cluster_size=2,
+                ),
+            }
         )
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
@@ -1194,12 +1215,14 @@ def test_run_manual_regular_output_pending_status_false(mock_chat_completion):
         )
 
         # Set up playbook config WITH window size
-        playbook_config = PlaybookConfig(
-            extractor_name="test_playbook",
-            extraction_definition_prompt="test",
-            aggregation_config=PlaybookAggregatorConfig(
-                min_cluster_size=2,
-            ),
+        playbook_config = PlaybookConfig.model_validate(
+            {
+                "extractor_name": "test_playbook",
+                "extraction_definition_prompt": "test",
+                "aggregation_config": PlaybookAggregatorConfig(
+                    min_cluster_size=2,
+                ),
+            }
         )
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
@@ -1495,12 +1518,14 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
             return_value=([session_id], [])
         )
 
-        extractor_config = PlaybookConfig(
-            extractor_name="api_playbook",
-            extraction_definition_prompt="extract api-related playbook",
-            request_sources_enabled=["api"],
-            window_size_override=120,
-            aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
+        extractor_config = PlaybookConfig.model_validate(
+            {
+                "extractor_name": "api_playbook",
+                "extraction_definition_prompt": "extract api-related playbook",
+                "request_sources_enabled": ["api"],
+                "window_size_override": 120,
+                "aggregation_config": PlaybookAggregatorConfig(min_cluster_size=2),
+            }
         )
 
         (
@@ -1509,7 +1534,7 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
         ) = service._collect_scoped_interactions_for_precheck(extractor_config)
 
         assert len(scoped_groups) == 1
-        assert scoped_config.extractor_name == "api_playbook"
+        assert "extractor_name" not in scoped_config.model_dump()
         _storage(service).get_last_k_interactions_grouped.assert_called_once()
         _, kwargs = _storage(service).get_last_k_interactions_grouped.call_args
         assert kwargs["k"] == 120

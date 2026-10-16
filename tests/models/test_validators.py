@@ -281,44 +281,54 @@ class TestPromptInjectionMitigation:
 
     def test_strips_null_bytes(self):
         """NULL bytes (\x00) are stripped from prompt fields."""
-        config = ProfileExtractorConfig(
-            extractor_name="test",
-            extraction_definition_prompt="Extract\x00preferences",
+        config = ProfileExtractorConfig.model_validate(
+            {
+                "extractor_name": "test",
+                "extraction_definition_prompt": "Extract\x00preferences",
+            }
         )
         assert "\x00" not in config.extraction_definition_prompt
         assert config.extraction_definition_prompt == "Extractpreferences"
 
     def test_strips_escape_sequences(self):
         """Escape sequences (\x1b) are stripped from prompt fields."""
-        config = ProfileExtractorConfig(
-            extractor_name="test",
-            extraction_definition_prompt="Hello\x1b[31mRED\x1b[0m",
+        config = ProfileExtractorConfig.model_validate(
+            {
+                "extractor_name": "test",
+                "extraction_definition_prompt": "Hello\x1b[31mRED\x1b[0m",
+            }
         )
         assert "\x1b" not in config.extraction_definition_prompt
 
     def test_preserves_tabs_and_newlines(self):
         """Tabs and newlines are legitimate and preserved."""
         prompt = "Step 1:\tDo this\nStep 2:\tDo that"
-        config = ProfileExtractorConfig(
-            extractor_name="test",
-            extraction_definition_prompt=prompt,
+        config = ProfileExtractorConfig.model_validate(
+            {
+                "extractor_name": "test",
+                "extraction_definition_prompt": prompt,
+            }
         )
         assert "\t" in config.extraction_definition_prompt
         assert "\n" in config.extraction_definition_prompt
 
     def test_strips_bell_character(self):
         """Bell character (\x07) is stripped."""
-        config = PlaybookConfig(
-            extractor_name="test",
-            extraction_definition_prompt="Alert\x07user",
+        config = PlaybookConfig.model_validate(
+            {
+                "extractor_name": "test",
+                "extraction_definition_prompt": "Alert\x07user",
+            }
         )
         assert "\x07" not in config.extraction_definition_prompt
 
     def test_agent_success_prompt_sanitized(self):
         """AgentSuccessConfig.success_definition_prompt is also sanitized."""
-        config = AgentSuccessConfig(
-            evaluation_name="test",
-            success_definition_prompt="Check\x00success\x1b[0m",
+        config = AgentSuccessConfig.model_validate(
+            {
+                "evaluation_name": "test",
+                "success_definition_prompt": "Check\x00success\x1b[0m",
+            }
         )
         assert "\x00" not in config.success_definition_prompt
         assert "\x1b" not in config.success_definition_prompt
@@ -488,10 +498,12 @@ class TestNumericConstraints:
     def test_sampling_rate_range(self):
         """sampling_rate must be 0.0-1.0."""
         with pytest.raises(ValidationError):
-            AgentSuccessConfig(
-                evaluation_name="test",
-                success_definition_prompt="Check success",
-                sampling_rate=1.5,
+            AgentSuccessConfig.model_validate(
+                {
+                    "evaluation_name": "test",
+                    "success_definition_prompt": "Check success",
+                    "sampling_rate": 1.5,
+                }
             )
 
     @pytest.mark.parametrize("rate", [-0.1, 1.1])
@@ -557,22 +569,28 @@ class TestNumericConstraints:
     def test_window_override_must_be_positive(self):
         """Batch size/interval overrides must be > 0 when set."""
         with pytest.raises(ValidationError):
-            ProfileExtractorConfig(
-                extractor_name="test",
-                extraction_definition_prompt="test",
-                window_size_override=0,
+            ProfileExtractorConfig.model_validate(
+                {
+                    "extractor_name": "test",
+                    "extraction_definition_prompt": "test",
+                    "window_size_override": 0,
+                }
             )
         with pytest.raises(ValidationError):
-            ProfileExtractorConfig(
-                extractor_name="test",
-                extraction_definition_prompt="test",
-                stride_size_override=-1,
+            ProfileExtractorConfig.model_validate(
+                {
+                    "extractor_name": "test",
+                    "extraction_definition_prompt": "test",
+                    "stride_size_override": -1,
+                }
             )
         # None is allowed (use global setting)
-        config = ProfileExtractorConfig(
-            extractor_name="test",
-            extraction_definition_prompt="test",
-            window_size_override=None,
+        config = ProfileExtractorConfig.model_validate(
+            {
+                "extractor_name": "test",
+                "extraction_definition_prompt": "test",
+                "window_size_override": None,
+            }
         )
         assert config.window_size_override is None
 
@@ -751,8 +769,10 @@ class TestCrossFieldValidators:
 
         assert config.profile_extractor_config is not None
         assert config.user_playbook_extractor_config is not None
-        assert config.profile_extractor_config.extractor_name is None
-        assert config.user_playbook_extractor_config.extractor_name is None
+        assert "extractor_name" not in config.profile_extractor_config.model_dump()
+        assert (
+            "extractor_name" not in config.user_playbook_extractor_config.model_dump()
+        )
         assert isinstance(config.pending_tool_call_config, PendingToolCallConfig)
         assert config.pending_tool_call_config.enabled is False
 
@@ -835,13 +855,17 @@ class TestCrossFieldValidators:
 
     def test_config_accepts_singular_extractor_fields(self):
         """Config: singular extractor fields validate and serialize."""
-        profile_config = ProfileExtractorConfig(
-            extractor_name="profile_one",
-            extraction_definition_prompt="profile facts",
+        profile_config = ProfileExtractorConfig.model_validate(
+            {
+                "extractor_name": "profile_one",
+                "extraction_definition_prompt": "profile facts",
+            }
         )
-        playbook_config = PlaybookConfig(
-            extractor_name="playbook_one",
-            extraction_definition_prompt="playbook rules",
+        playbook_config = PlaybookConfig.model_validate(
+            {
+                "extractor_name": "playbook_one",
+                "extraction_definition_prompt": "playbook rules",
+            }
         )
 
         config = Config(
@@ -853,16 +877,16 @@ class TestCrossFieldValidators:
         dumped = config.model_dump()
         assert config.profile_extractor_config == profile_config
         assert config.user_playbook_extractor_config == playbook_config
-        assert dumped["profile_extractor_config"]["extractor_name"] == "profile_one"
-        assert (
-            dumped["user_playbook_extractor_config"]["extractor_name"] == "playbook_one"
-        )
+        assert "extractor_name" not in dumped["profile_extractor_config"]
+        assert "extractor_name" not in dumped["user_playbook_extractor_config"]
 
     def test_config_accepts_singular_agent_success_config(self):
         """Config: singular agent success config validates and serializes."""
-        success_config = AgentSuccessConfig(
-            evaluation_name="success_one",
-            success_definition_prompt="task completed",
+        success_config = AgentSuccessConfig.model_validate(
+            {
+                "evaluation_name": "success_one",
+                "success_definition_prompt": "task completed",
+            }
         )
 
         config = Config(
@@ -872,7 +896,7 @@ class TestCrossFieldValidators:
 
         dumped = config.model_dump()
         assert config.agent_success_config == success_config
-        assert dumped["agent_success_config"]["evaluation_name"] == "success_one"
+        assert "evaluation_name" not in dumped["agent_success_config"]
 
     def test_playbook_optimizer_accepts_webhook_backend(self):
         """PlaybookOptimizerConfig: webhook-only assistant backend is valid."""

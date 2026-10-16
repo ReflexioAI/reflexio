@@ -180,31 +180,37 @@ def reflexio_instance(
         stride_size=_E2E_STRIDE_SIZE,
         # Single configured profile extractor (the list-valued field is retired and
         # the Config constructor would ignore it, dropping tagging_definition_prompt).
-        profile_extractor_config=ProfileExtractorConfig(
-            extractor_name="test_profile_extractor",
-            context_prompt="""
+        profile_extractor_config=ProfileExtractorConfig.model_validate(
+            {
+                "extractor_name": "test_profile_extractor",
+                "context_prompt": """
 Conversation between sales agent and user, extract any information from the interaction if contains any information listed under definition
 """,
-            extraction_definition_prompt=_CUSTOMER_SUPPORT_PROFILE_DEFINITION,
-            tagging_definition_prompt="""
+                "extraction_definition_prompt": _CUSTOMER_SUPPORT_PROFILE_DEFINITION,
+                "tagging_definition_prompt": """
 choice of ['basic_info', 'conversation_intent']
 """,
+            }
         ),
-        user_playbook_extractor_config=PlaybookConfig(
-            extractor_name="test_playbook",
-            extraction_definition_prompt="""
+        user_playbook_extractor_config=PlaybookConfig.model_validate(
+            {
+                "extractor_name": "test_playbook",
+                "extraction_definition_prompt": """
 playbook should be something user told you to do differently in the next session. something sales rep did that makes user not satisfied.
 playbook content is what agent should do differently in the next session based on the conversation history and be actionable as much as possible.
 for example:
 if user mentions "I don't like the way you talked to me", summarize conversation history and playbook content should be what is the way agent talk which is not preferred by user.
 """,
-            aggregation_config=PlaybookAggregatorConfig(
-                min_cluster_size=3,
-            ),
+                "aggregation_config": PlaybookAggregatorConfig(
+                    min_cluster_size=3,
+                ),
+            }
         ),
-        agent_success_config=AgentSuccessConfig(
-            evaluation_name="test_agent_success",
-            success_definition_prompt="sales agent is responding to user apporperately",
+        agent_success_config=AgentSuccessConfig.model_validate(
+            {
+                "evaluation_name": "test_agent_success",
+                "success_definition_prompt": "sales agent is responding to user apporperately",
+            }
         ),
         tool_can_use=[
             ToolUseConfig(
@@ -230,15 +236,17 @@ def reflexio_instance_profile_only(
         agent_context_prompt="this is a sales agent",
         window_size=_CUSTOMER_SUPPORT_WINDOW_SIZE,
         user_playbook_extractor_config=None,
-        profile_extractor_config=ProfileExtractorConfig(
-            extractor_name="test_profile_extractor",
-            context_prompt="""
+        profile_extractor_config=ProfileExtractorConfig.model_validate(
+            {
+                "extractor_name": "test_profile_extractor",
+                "context_prompt": """
 Conversation between sales agent and user, extract any information from the interaction if contains any information listed under definition
 """,
-            extraction_definition_prompt=_CUSTOMER_SUPPORT_PROFILE_DEFINITION,
-            tagging_definition_prompt="""
+                "extraction_definition_prompt": _CUSTOMER_SUPPORT_PROFILE_DEFINITION,
+                "tagging_definition_prompt": """
 choice of ['basic_info', 'conversation_intent']
 """,
+            }
         ),
     )
     configurator = DefaultConfigurator(org_id=test_org_id, config=config)
@@ -261,20 +269,22 @@ def reflexio_instance_lifestyle_profile(
         agent_context_prompt="this is a personal assistant that learns about the user over time",
         stride_size=_E2E_STRIDE_SIZE,
         skip_should_run_check=True,
-        profile_extractor_config=ProfileExtractorConfig(
-            extractor_name="lifestyle_extractor",
-            context_prompt="""
+        profile_extractor_config=ProfileExtractorConfig.model_validate(
+            {
+                "extractor_name": "lifestyle_extractor",
+                "context_prompt": """
 Extract enduring facts about the user's lifestyle, habits, preferences, and personal context
 from the conversation. Focus on things that describe who the user is and how they live.
 """,
-            extraction_definition_prompt="""
+                "extraction_definition_prompt": """
 dietary habits and preferences (e.g., "vegetarian", "loves beef"),
 location and living situation (e.g., "lives in Austin"),
 hobbies and interests, work style, health conditions
 """,
-            tagging_definition_prompt="""
+                "tagging_definition_prompt": """
 choice of ['diet', 'location', 'hobby', 'work', 'health']
 """,
+            }
         ),
     )
     configurator = DefaultConfigurator(org_id=test_org_id, config=config)
@@ -328,17 +338,19 @@ def reflexio_instance_playbook_only(
         agent_context_prompt="this is a sales agent",
         stride_size=_E2E_STRIDE_SIZE,
         skip_should_run_check=True,
-        user_playbook_extractor_config=PlaybookConfig(
-            extractor_name="test_playbook",
-            extraction_definition_prompt="""
+        user_playbook_extractor_config=PlaybookConfig.model_validate(
+            {
+                "extractor_name": "test_playbook",
+                "extraction_definition_prompt": """
 playbook should be something user told you to do differently in the next session. something sales rep did that makes user not satisfied.
 playbook content is what agent should do differently in the next session based on the conversation history and be actionable as much as possible.
 for example:
 if user mentions "I don't like the way you talked to me", summarize conversation history and playbook content should be what is the way agent talk which is not preferred by user.
 """,
-            aggregation_config=PlaybookAggregatorConfig(
-                min_cluster_size=3,
-            ),
+                "aggregation_config": PlaybookAggregatorConfig(
+                    min_cluster_size=3,
+                ),
+            }
         ),
     )
     configurator = DefaultConfigurator(org_id=test_org_id, config=config)
@@ -355,9 +367,11 @@ def reflexio_instance_agent_success_only(
         skip_should_run_check=True,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
-        agent_success_config=AgentSuccessConfig(
-            evaluation_name="test_agent_success",
-            success_definition_prompt="sales agent is responding to user apporperately",
+        agent_success_config=AgentSuccessConfig.model_validate(
+            {
+                "evaluation_name": "test_agent_success",
+                "success_definition_prompt": "sales agent is responding to user apporperately",
+            }
         ),
         tool_can_use=[
             ToolUseConfig(
@@ -426,10 +440,7 @@ def _get_playbook_names(instance: Reflexio) -> list[str]:
 
     playbook_config = config.user_playbook_extractor_config
     if playbook_config:
-        names = {SINGLETON_USER_PLAYBOOK_NAME}
-        if playbook_config.extractor_name:
-            names.add(playbook_config.extractor_name)
-        return list(names)
+        return [SINGLETON_USER_PLAYBOOK_NAME]
 
     return [SINGLETON_USER_PLAYBOOK_NAME]
 
@@ -512,12 +523,14 @@ def reflexio_instance_playbook_source_filtering(
         # multi-extractor model was retired; one extractor's
         # request_sources_enabled filter is still honored, so this exercises
         # source gating (runs for "api", skipped for everything else).
-        user_playbook_extractor_config=PlaybookConfig(
-            extractor_name="filtered_playbook",
-            extraction_definition_prompt="""
+        user_playbook_extractor_config=PlaybookConfig.model_validate(
+            {
+                "extractor_name": "filtered_playbook",
+                "extraction_definition_prompt": """
 playbook should be something user told you to do differently in the next session.
 """,
-            request_sources_enabled=["api"],
+                "request_sources_enabled": ["api"],
+            }
         ),
     )
     configurator = DefaultConfigurator(org_id=test_org_id, config=config)
@@ -548,18 +561,20 @@ def reflexio_instance_manual_profile(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         window_size=10,  # Required for manual generation
-        profile_extractor_config=ProfileExtractorConfig(
-            extractor_name="manual_trigger_extractor",
-            context_prompt="""
+        profile_extractor_config=ProfileExtractorConfig.model_validate(
+            {
+                "extractor_name": "manual_trigger_extractor",
+                "context_prompt": """
 Conversation between sales agent and user, extract any information from the interaction if contains any information listed under definition
 """,
-            extraction_definition_prompt="""
+                "extraction_definition_prompt": """
 name, age, intent of the conversations
 """,
-            tagging_definition_prompt="""
+                "tagging_definition_prompt": """
 choice of ['basic_info', 'conversation_intent']
 """,
-            manual_trigger=True,  # Required for manual generation
+                "manual_trigger": True,  # Required for manual generation
+            }
         ),
     )
     configurator = DefaultConfigurator(org_id=test_org_id, config=config)
@@ -589,12 +604,14 @@ def reflexio_instance_manual_playbook(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         window_size=10,  # Required for manual generation
-        user_playbook_extractor_config=PlaybookConfig(
-            extractor_name="manual_trigger_playbook",
-            extraction_definition_prompt="""
+        user_playbook_extractor_config=PlaybookConfig.model_validate(
+            {
+                "extractor_name": "manual_trigger_playbook",
+                "extraction_definition_prompt": """
 playbook should be something user told you to do differently in the next session. something sales rep did that makes user not satisfied.
 playbook content is what agent should do differently in the next session based on the conversation history and be actionable as much as possible.
 """,
+            }
         ),
     )
     configurator = DefaultConfigurator(org_id=test_org_id, config=config)
@@ -626,11 +643,13 @@ def reflexio_instance_multiple_profile_extractors(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         window_size=20,
-        profile_extractor_config=ProfileExtractorConfig(
-            extractor_name="extractor_basic_info",
-            context_prompt="Extract basic information about the user.",
-            extraction_definition_prompt="name, company, role",
-            tagging_definition_prompt="choice of ['basic_info']",
+        profile_extractor_config=ProfileExtractorConfig.model_validate(
+            {
+                "extractor_name": "extractor_basic_info",
+                "context_prompt": "Extract basic information about the user.",
+                "extraction_definition_prompt": "name, company, role",
+                "tagging_definition_prompt": "choice of ['basic_info']",
+            }
         ),
     )
     configurator = DefaultConfigurator(org_id=test_org_id, config=config)
@@ -665,10 +684,12 @@ def reflexio_instance_multiple_playbook_extractors(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         window_size=20,
-        user_playbook_extractor_config=PlaybookConfig(
-            extractor_name="general_playbook",
-            extraction_definition_prompt="Extract general playbook from all sources.",
-            request_sources_enabled=None,  # All sources
+        user_playbook_extractor_config=PlaybookConfig.model_validate(
+            {
+                "extractor_name": "general_playbook",
+                "extraction_definition_prompt": "Extract general playbook from all sources.",
+                "request_sources_enabled": None,  # All sources
+            }
         ),
     )
     configurator = DefaultConfigurator(org_id=test_org_id, config=config)

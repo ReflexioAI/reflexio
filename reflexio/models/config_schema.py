@@ -144,6 +144,41 @@ def normalize_legacy_config_shape(data: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
+    """Drop retired no-ops without changing legacy shapes or opaque metadata.
+
+    Copy changed dictionaries so ordinary saves and raw tuner-reset upgrades
+    can share this cleanup without mutating a caller's saved configuration.
+    """
+    payload = dict(data)
+    payload.pop("shadow_mode_enabled", None)
+    names = {
+        "profile_extractor_config": {"extractor_name"},
+        "user_playbook_extractor_config": {
+            "extractor_name",
+            "playbook_name",
+            "feedback_name",
+        },
+        "agent_success_config": {"evaluation_name"},
+    }
+    for config_field, current in (
+        *((name, name) for name in names),
+        *_LEGACY_SINGLE_CONFIG_FIELDS,
+    ):
+        value = payload.get(config_field)
+        retired = names[current]
+        if isinstance(value, dict):
+            payload[config_field] = {k: v for k, v in value.items() if k not in retired}
+        elif isinstance(value, list):
+            payload[config_field] = [
+                {k: v for k, v in item.items() if k not in retired}
+                if isinstance(item, dict)
+                else item
+                for item in value
+            ]
+    return payload
+
+
 class _ExtractorWindowOverrideCompatMixin:
     @property
     def batch_size_override(self) -> int | None:
@@ -474,9 +509,6 @@ DEFAULT_AGENT_SUCCESS_DEFINITION_PROMPT = (
 
 
 class ProfileExtractorConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
-    # Deprecated: kept for back-compat with stored configs. Extraction is singleton
-    # (one profile extractor per org), so the name is accepted but ignored.
-    extractor_name: NonEmptyStr | None = None
     extraction_definition_prompt: SanitizedNonEmptyStr
     context_prompt: str | None = None
     tagging_definition_prompt: str | None = None
@@ -521,9 +553,6 @@ class PlaybookAggregatorConfig(BaseModel):
 
 
 class UserPlaybookExtractorConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
-    # Deprecated: kept for back-compat with stored configs. Extraction is singleton
-    # (one playbook extractor per org), so the name is accepted but ignored.
-    extractor_name: NonEmptyStr | None = None
     extraction_definition_prompt: SanitizedNonEmptyStr
     context_prompt: str | None = None
     tagging_definition_prompt: str | None = None
@@ -564,9 +593,6 @@ class ToolUseConfig(BaseModel):
 
 # define what success looks like for agent
 class AgentSuccessConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
-    # Deprecated: kept for back-compat with stored configs. Evaluation is singleton
-    # (one agent-success evaluator per org), so the name is accepted but ignored.
-    evaluation_name: NonEmptyStr | None = None
     success_definition_prompt: SanitizedNonEmptyStr
     tagging_definition_prompt: str | None = None
     request_sources_enabled: list[str] | None = (
@@ -610,7 +636,6 @@ class AgentSuccessConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
 
 def _default_agent_success_config() -> AgentSuccessConfig:
     return AgentSuccessConfig(
-        evaluation_name=SINGLETON_AGENT_SUCCESS_EVALUATION_NAME,
         success_definition_prompt=DEFAULT_AGENT_SUCCESS_DEFINITION_PROMPT,
         sampling_rate=DEFAULT_AGENT_SUCCESS_SAMPLING_RATE,
     )
@@ -998,13 +1023,9 @@ class Config(BaseModel):
         failing validation.
         """
         if isinstance(data, dict):
-            # Retired no-op: accept old SDK/stored payloads without advertising
+            # Retired no-ops: accept old SDK/stored payloads without advertising
             # or persisting it. All other unknown API keys remain forbidden.
-            data = {
-                key: value
-                for key, value in data.items()
-                if key != "shadow_mode_enabled"
-            }
+            data = strip_retired_config_fields(data)
         data = _migrate_dict(data, _CONFIG_FIELD_MIGRATION)
         if isinstance(data, dict):
             for key in (

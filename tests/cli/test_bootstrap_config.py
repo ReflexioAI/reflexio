@@ -177,9 +177,11 @@ class TestSaveAndLoadStorage:
         storage_obj = LocalFileConfigStorage("test-org", base_dir=str(tmp_path))
         config = Config(
             storage_config=StorageConfigSQLite(),
-            profile_extractor_config=ProfileExtractorConfig(
-                extractor_name="custom_extractor",
-                extraction_definition_prompt="Custom prompt for testing",
+            profile_extractor_config=ProfileExtractorConfig.model_validate(
+                {
+                    "extractor_name": "custom_extractor",
+                    "extraction_definition_prompt": "Custom prompt for testing",
+                }
             ),
             agent_context_prompt="test context",
         )
@@ -193,7 +195,7 @@ class TestSaveAndLoadStorage:
         reloaded = storage_obj.load_config()
         assert reloaded.agent_context_prompt == "test context"
         assert reloaded.profile_extractor_config is not None
-        assert reloaded.profile_extractor_config.extractor_name == "custom_extractor"
+        assert "extractor_name" not in reloaded.profile_extractor_config.model_dump()
         assert (
             load_storage_from_config(org_id="test-org", base_dir=str(tmp_path))
             == "postgres"
