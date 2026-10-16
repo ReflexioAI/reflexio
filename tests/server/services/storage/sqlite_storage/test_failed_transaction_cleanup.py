@@ -224,6 +224,87 @@ def test_prepared_save_rejects_missing_embedding_before_writes(storage):
     assert not storage.conn.in_transaction
 
 
+def _degrade_embeddings(storage, monkeypatch):
+    """Make the real ``_get_embedding`` hit its provider-unavailable fallback."""
+    from reflexio.server.llm.providers.embedding_service_provider import (
+        EmbeddingUnavailableError,
+    )
+
+    def unavailable(*_args, **_kwargs):
+        raise EmbeddingUnavailableError("embedding service down")
+
+    monkeypatch.setattr(storage.llm_client, "get_embedding", unavailable)
+    monkeypatch.setattr(storage, "_should_expand_documents", lambda: False)
+
+
+def test_prepared_save_accepts_playbook_prepared_while_embeddings_unavailable(
+    storage, monkeypatch
+):
+    """Regression: aggregation failed on SQLite whenever embeddings were down.
+
+    ``_get_embedding`` deliberately degrades to ``[]`` when the provider is
+    unavailable, which ordinary saves accept. The prepared-save guard must
+    reject only input that was never prepared, not a prepared playbook whose
+    provider was unreachable.
+    """
+    from reflexio.models.api_schema.domain.entities import AgentPlaybook, LineageContext
+
+    _degrade_embeddings(storage, monkeypatch)
+    playbook = AgentPlaybook(
+        agent_version="v1",
+        content="Run migrations first.",
+        trigger="Deploying",
+    )
+    storage.prepare_agent_playbooks_for_save([playbook])
+    assert playbook.embedding == []
+    monkeypatch.setattr(
+        storage.llm_client,
+        "get_embedding",
+        lambda *_a, **_k: pytest.fail("Model call inside persistence"),
+    )
+    with storage.commit_scope():
+        saved = storage.save_prepared_agent_playbooks(
+            [playbook],
+            lineage_contexts=[
+                LineageContext(op_kind="aggregate", request_id="run", source_ids=["1"])
+            ],
+        )
+    stored = storage.get_agent_playbooks_by_ids(
+        [saved[0].agent_playbook_id], include_embedding=True
+    )
+    assert [p.content for p in stored] == ["Run migrations first."]
+    assert not stored[0].embedding
+    assert (
+        len(
+            storage.get_lineage_events(
+                entity_type="agent_playbook", entity_id=str(saved[0].agent_playbook_id)
+            )
+        )
+        == 1
+    )
+
+
+def test_prepared_save_still_rejects_unprepared_playbook_beside_prepared_one(
+    storage, monkeypatch
+):
+    from reflexio.models.api_schema.domain.entities import AgentPlaybook, LineageContext
+
+    _degrade_embeddings(storage, monkeypatch)
+    prepared = AgentPlaybook(agent_version="v1", content="Prepared.", trigger="t")
+    storage.prepare_agent_playbooks_for_save([prepared])
+    unprepared = AgentPlaybook(agent_version="v1", content="Unprepared.", trigger="t")
+    with pytest.raises(ValueError, match="prepared agent playbook has no embedding"):
+        storage.save_prepared_agent_playbooks(
+            [prepared, unprepared],
+            lineage_contexts=[
+                LineageContext(op_kind="aggregate", request_id="run"),
+                LineageContext(op_kind="aggregate", request_id="run"),
+            ],
+        )
+    assert storage.get_agent_playbooks() == []
+    assert not storage.conn.in_transaction
+
+
 def test_rollback_failure_preserves_original_write_error(storage, monkeypatch):
     class BrokenRollback:
         def execute(self, *_args):
