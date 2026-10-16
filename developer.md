@@ -779,3 +779,15 @@ failures are recorded against the admitted attempt. Cancellation requested durin
 selection survives batch initialization; stale workers cannot replace newer progress.
 Exact attempt IDs tolerate client/server clock skew and remain in final SDK responses.
 Asynchronous submission remains fire-and-forget.
+
+### Prepared playbook evidence references
+
+Prepared playbook extraction uses exact visible source-span references such as
+`i7:content:0:32`; a turn label such as `T1` can refer to several fragments and
+cannot substitute for a span reference. Shared ordinary and expert message
+construction includes the existing prepared-source citation instruction whenever
+an overflow presentation is active, including direct and resumed construction.
+The overflow call factory reuses these messages rather than appending a second
+instruction. Unprepared extraction keeps its turn-reference contract. Strict
+source visibility validation, bounded corrective repair, and evidence-carrier
+limits are unchanged.
