@@ -13,6 +13,7 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 - **Playbook Aggregator**: `components/aggregator.py` - Matches same-version cluster centroids, clusters residuals, and generates agent playbooks
 - **Aggregation Scheduler**: `aggregation_scheduler.py` - Claims fenced per-version work and runs one bounded aggregation unit
 - **Playbook Consolidator**: `components/consolidator.py` - Reconciles reviewed candidates against existing storage with evidence-aware accounting and overlap guards
+- **Optional Input Observer**: `input_capture.py` - Lazy, detached pre-decision snapshots for an explicitly installed research provider; absent providers add no serialization or model calls, and observer failures leave reconciliation running
 
 ## Supporting Files
 
