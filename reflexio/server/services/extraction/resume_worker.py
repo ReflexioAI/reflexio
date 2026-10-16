@@ -1023,6 +1023,7 @@ class ExtractionResumeWorker:
                 agent_context_prompt=agent_context,
                 extraction_definition_prompt=playbook_definition,
                 prompt_context=prompt_context,
+                citation_instruction=contract.citation_instruction(),
             )
         else:
             root_config = self.request_context.configurator.get_config()
@@ -1041,6 +1042,7 @@ class ExtractionResumeWorker:
                 extraction_definition_prompt=playbook_definition,
                 tool_can_use=tool_can_use,
                 prompt_context=prompt_context,
+                citation_instruction=contract.citation_instruction(),
             )
         result = self._resume_agent(
             run=run,

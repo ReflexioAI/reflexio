@@ -537,3 +537,10 @@ produces no learning or source-input charge, while its actual model usage remain
 in the existing strict token outbox. Processing receipts prove processing, not
 semantic recall. Live quality qualification and default worker selection remain
 separate gates.
+
+Playbook request construction uses the shared `PlaybookExtractionContract` citation
+instruction with its selected schema and validator. `resume_worker` passes the
+stored schema selection through to message construction; overflow calls use the
+actual adopted schema where present. Exact-span and quoted-evidence modes remain
+distinct, while the existing structured repair inherits the same contract. See
+[`playbook/README.md`](../playbook/README.md#extraction-citation-contract).
