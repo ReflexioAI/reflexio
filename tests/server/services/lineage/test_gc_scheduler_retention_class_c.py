@@ -368,12 +368,9 @@ def test_a_success_after_failures_resets_the_retry_budget():
         assert sched._run_once() == gc_scheduler._FAILED_TICK_RETRY_SECONDS
 
 
-def test_a_configured_interval_shorter_than_the_retry_is_not_lengthened():
-    """`poll_interval_seconds` may be as low as 1; "retry sooner" must not slow it.
-
-    Returning the flat 300s constant here would delay lineage GC and every
-    registered global sweep relative to the operator's chosen cadence.
-    """
+def test_internal_interval_shorter_than_retry_is_not_lengthened(monkeypatch):
+    """A future shorter owned cadence must not be delayed by the fast retry."""
+    monkeypatch.setattr(gc_scheduler, "DAILY_SWEEP_SECONDS", 60)
     sched = _tick_scheduler()
     sched.request_context_factory = lambda _org: types.SimpleNamespace(  # type: ignore[assignment]
         storage=types.SimpleNamespace(),

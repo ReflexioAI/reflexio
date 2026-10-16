@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from reflexio.cli.paths import reflexio_home
+from reflexio.housekeeping_policy import HousekeepingMigrationError
 from reflexio.models.config_schema import (
     Config,
     PlaybookConfig,
@@ -115,6 +116,8 @@ class LocalFileConfigStorage(ConfigStorage):
                             self.config_file,
                         )
                 return config
+        except HousekeepingMigrationError:
+            raise
         except Exception:
             logger.exception(
                 "Failed to load config from %s; falling back to default config.",

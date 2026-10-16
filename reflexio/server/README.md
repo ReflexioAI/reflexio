@@ -826,3 +826,8 @@ remain readable, but schemas and canonical saves omit them. Runtime identities
 remain `profile`, `playbook`, and `agent_success`; historical result names are
 unchanged. `models/config_schema.py::strip_retired_config_fields` shares this
 cleanup with enterprise saves and raw stored-payload upgrades.
+
+Customized retired housekeeping settings raise `HousekeepingMigrationError` from
+stored-config preflight. Local-file loading and CLI storage discovery propagate
+it rather than resetting the rest of the configuration to defaults. This preserves
+retention holds while an operator performs the required migration.

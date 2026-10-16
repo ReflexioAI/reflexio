@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
+from reflexio.housekeeping_policy import DAILY_SWEEP_SECONDS
 from reflexio.lib.reflexio_lib import Reflexio
 from reflexio.server import publish_timing
 from reflexio.server.api_endpoints import publisher_api
@@ -139,10 +140,7 @@ def test_http_persists_without_sweeping_then_scheduler_enforces_caps(
     )
     # Real discovery, project loop and deletion, not a stubbed sweep callback.
     interval = scheduler._run_once()
-    assert (
-        interval
-        == reflexio.request_context.configurator.get_config().lineage_gc.poll_interval_seconds
-    )
+    assert interval == DAILY_SWEEP_SECONDS
     assert storage.count_retention_target_rows("requests") == 2
 
 

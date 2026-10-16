@@ -470,8 +470,8 @@ is reset on exit and does not suppress independent embedded calls in other threa
 Server row caps are enforced by `LineageGCScheduler` under each project's scope
 and application credential. Positive caps start the scheduler independently of
 other GC feature flags. It attempts a tick at startup when elected leader, then
-waits `lineage_gc.poll_interval_seconds` after a successful tick (default 86400,
-24 hours). Failed ticks receive bounded retries at up to 300-second intervals.
+waits the code-owned daily housekeeping cadence after a successful tick (86400
+seconds, 24 hours). Failed ticks receive bounded retries at up to 300-second intervals.
 The sweep still protects unfinished extraction inputs, overlap context and
 retention holds; caps may be exceeded between sweeps. Publishing acknowledges
 the durable admission transaction and does not wait for this housekeeping.
@@ -813,3 +813,11 @@ default values remain accepted as ignored compatibility inputs; custom or invali
 values fail startup. Remove those entries before upgrading a deployment that
 customized them. Worker capacity remains independently configurable through
 `REFLEXIO_PUBLISH_LEARNING_WORKERS`; claim fencing and heartbeat renewal are unchanged.
+
+
+Housekeeping timing and governance deletion batches live in
+`reflexio/housekeeping_policy.py`. The former `lineage_gc.poll_interval_seconds`
+and `governance_retention.audit_events_delete_batch_limit` settings accept only
+legacy defaults (86400 and 500) during migration and are absent from canonical
+configuration. Custom values fail validation; review them before upgrading.
+Retention ages, grace windows and explicit holds remain supported.

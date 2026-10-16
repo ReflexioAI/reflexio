@@ -579,11 +579,12 @@ def test_oss_dead_knob_warns_when_retention_enabled_without_enterprise(
     # Pin the configurator class to DefaultConfigurator (OSS context).
     monkeypatch.setattr(_conf_mod, "_configurator_class", DefaultConfigurator)
 
-    # Use lineage_gc_enabled=False so maybe_start_lineage_gc returns None without
-    # spawning a daemon thread — the dead-knob warning fires before the enabled gate.
+    # The warning fires before the feature-enabled gate.
     cfg = _config(lineage_gc_enabled=False, audit_events_retention_enabled=True)
     ctx = _ctx(org_id="org1", storage=_mock_storage(), cfg=cfg)
 
+    # Warning-only test: row caps may independently enable the scheduler.
+    monkeypatch.setattr(LineageGCScheduler, "start", lambda _self: None)
     with caplog.at_level(logging.WARNING):
         maybe_start_lineage_gc(lambda _org: ctx, bootstrap_org_id="org1")  # type: ignore[arg-type]
 
@@ -606,11 +607,12 @@ def test_oss_dead_knob_does_not_warn_when_not_oss(monkeypatch, caplog):
 
     monkeypatch.setattr(_conf_mod, "_configurator_class", _FakeEnterpriseConfigurator)
 
-    # Use lineage_gc_enabled=False so no daemon thread is spawned — the warning
-    # check runs before the enabled gate.
+    # The warning check runs before the feature-enabled gate.
     cfg = _config(lineage_gc_enabled=False, audit_events_retention_enabled=True)
     ctx = _ctx(org_id="org1", storage=_mock_storage(), cfg=cfg)
 
+    # Warning-only test: row caps may independently enable the scheduler.
+    monkeypatch.setattr(LineageGCScheduler, "start", lambda _self: None)
     with caplog.at_level(logging.WARNING):
         maybe_start_lineage_gc(lambda _org: ctx, bootstrap_org_id="org1")  # type: ignore[arg-type]
 
@@ -629,11 +631,12 @@ def test_oss_dead_knob_does_not_warn_when_retention_disabled(monkeypatch, caplog
 
     monkeypatch.setattr(_conf_mod, "_configurator_class", DefaultConfigurator)
 
-    # Use lineage_gc_enabled=False so no daemon thread is spawned — the warning
-    # check runs before the enabled gate.
+    # The warning check runs before the feature-enabled gate.
     cfg = _config(lineage_gc_enabled=False, audit_events_retention_enabled=False)
     ctx = _ctx(org_id="org1", storage=_mock_storage(), cfg=cfg)
 
+    # Warning-only test: row caps may independently enable the scheduler.
+    monkeypatch.setattr(LineageGCScheduler, "start", lambda _self: None)
     with caplog.at_level(logging.WARNING):
         maybe_start_lineage_gc(lambda _org: ctx, bootstrap_org_id="org1")  # type: ignore[arg-type]
 
@@ -655,6 +658,8 @@ def test_oss_dead_knob_warns_even_when_lineage_gc_disabled(monkeypatch, caplog):
     cfg = _config(lineage_gc_enabled=False, audit_events_retention_enabled=True)
     ctx = _ctx(org_id="org1", storage=_mock_storage(), cfg=cfg)
 
+    # Warning-only test: row caps may independently enable the scheduler.
+    monkeypatch.setattr(LineageGCScheduler, "start", lambda _self: None)
     with caplog.at_level(logging.WARNING):
         maybe_start_lineage_gc(lambda _org: ctx, bootstrap_org_id="org1")  # type: ignore[arg-type]
 
@@ -672,54 +677,10 @@ def test_oss_dead_knob_warns_even_when_lineage_gc_disabled(monkeypatch, caplog):
 # ---------------------------------------------------------------------------
 
 
-def test_run_loop_clamps_non_positive_poll_interval():
-    """_run_loop must pass at least _MIN_POLL_SECONDS to _wake_event.wait.
-
-    Even though config validation now rejects non-positive values, the scheduler
-    defends itself at runtime: if a zero or negative interval somehow reaches
-    _run_loop, it is clamped to _MIN_POLL_SECONDS to prevent a hot-loop.
-    """
-    wait_calls: list[float] = []
-
-    # Patch _wake_event.wait to capture the timeout and then immediately stop
-    # the loop on the first call.
-    sched = _scheduler()
-
-    original_wait = sched._wake_event.wait
-
-    def capturing_wait(timeout: float) -> bool:
-        wait_calls.append(timeout)
-        sched._stop_event.set()  # stop after one iteration
-        return original_wait(0)  # return immediately
-
-    sched._wake_event.wait = capturing_wait  # type: ignore[method-assign]
-
-    # Directly monkey-patch _run_loop's poll_interval by making the config
-    # return 0 for poll_interval_seconds.
-    zero_cfg = SimpleNamespace(
-        lineage_gc=SimpleNamespace(
-            poll_interval_seconds=0,
-            tombstone_grace_window_days=90,
-        )
-    )
-    zero_ctx = SimpleNamespace(
-        org_id="org_bootstrap",
-        storage=MagicMock(),
-        configurator=SimpleNamespace(get_config=MagicMock(return_value=zero_cfg)),
-    )
-    sched.request_context_factory = lambda _: zero_ctx  # type: ignore[assignment]
-
-    sched._run_loop()
-
-    assert wait_calls, "wait was never called"
-    assert all(t >= _MIN_POLL_SECONDS for t in wait_calls), (
-        f"Non-positive poll interval was not clamped: got {wait_calls}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Per-org sweep seam — register_per_org_sweep / clear_per_org_sweeps
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("interval", [0, -1])
+def test_healthy_interval_clamps_non_positive_cadence(interval):
+    """An internal zero cadence cannot create an unbounded hot loop."""
+    assert gc_scheduler._healthy_interval(interval) >= _MIN_POLL_SECONDS
 
 
 def test_gc_tick_runs_registered_per_org_sweep_gated_live():

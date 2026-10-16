@@ -6,6 +6,8 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
+from reflexio.housekeeping_policy import strip_legacy_housekeeping_fields
+
 from .api_schema.validators import (
     NonEmptyStr,
     SafeHttpUrl,
@@ -150,7 +152,7 @@ def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
     Copy changed dictionaries so ordinary saves and raw tuner-reset upgrades
     can share this cleanup without mutating a caller's saved configuration.
     """
-    payload = dict(data)
+    payload = strip_legacy_housekeeping_fields(data)
     payload.pop("shadow_mode_enabled", None)
     names = {
         "profile_extractor_config": {"extractor_name"},
@@ -763,9 +765,16 @@ class LineageGCConfig(BaseModel):
     indefinitely (e.g. for an extended audit window or rollback standby period).
     """
 
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     enabled: bool = True
     tombstone_grace_window_days: int = Field(default=90, gt=0)
-    poll_interval_seconds: int = Field(default=86400, gt=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_execution_settings(cls, data: Any) -> Any:
+        """Accept former defaults, reject custom execution policy inputs."""
+        return strip_legacy_housekeeping_fields({"lineage_gc": data})["lineage_gc"]
 
 
 class ExpiryReclamationConfig(BaseModel):
@@ -791,9 +800,18 @@ class GovernanceRetentionConfig(BaseModel):
     server logs a startup warning when retention is enabled.
     """
 
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     audit_events_retention_enabled: bool = False
     audit_events_retention_days: int = Field(default=365, gt=0)
-    audit_events_delete_batch_limit: int = Field(default=500, gt=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_execution_settings(cls, data: Any) -> Any:
+        """Accept former defaults, reject custom execution policy inputs."""
+        return strip_legacy_housekeeping_fields({"governance_retention": data})[
+            "governance_retention"
+        ]
 
 
 @dataclass(frozen=True)
@@ -923,7 +941,7 @@ def _default_user_playbook_extractor_config() -> UserPlaybookExtractorConfig:
 
 
 class Config(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     # define where user configuration is stored at
     storage_config: StorageConfig
@@ -1130,7 +1148,10 @@ def validate_stored_config(data: dict[str, Any]) -> Config:
     API writes intentionally construct ``Config`` directly and therefore keep
     the model's strict ``extra="forbid"`` behavior.
     """
-    normalized = normalize_legacy_config_shape(data)
+    # Run retirement preflight outside Pydantic so its typed migration error
+    # survives; otherwise ValueError is wrapped and mistaken for recoverable
+    # schema drift by storage loaders.
+    normalized = strip_retired_config_fields(normalize_legacy_config_shape(data))
     # Validate storage_config on its own, strictly, BEFORE the lenient pass
     # below. ``extra="ignore"`` cascades into nested models, so it overrides each
     # StorageConfig member's ``extra="forbid"`` -- without this pre-check a
