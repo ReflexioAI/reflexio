@@ -6,6 +6,8 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
+from reflexio.housekeeping_policy import strip_legacy_housekeeping_fields
+
 from .api_schema.validators import (
     NonEmptyStr,
     SafeHttpUrl,
@@ -150,7 +152,7 @@ def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
     Copy changed dictionaries so ordinary saves and raw tuner-reset upgrades
     can share this cleanup without mutating a caller's saved configuration.
     """
-    payload = dict(data)
+    payload = strip_legacy_housekeeping_fields(data)
     payload.pop("shadow_mode_enabled", None)
     names = {
         "profile_extractor_config": {"extractor_name"},
@@ -765,7 +767,12 @@ class LineageGCConfig(BaseModel):
 
     enabled: bool = True
     tombstone_grace_window_days: int = Field(default=90, gt=0)
-    poll_interval_seconds: int = Field(default=86400, gt=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_execution_settings(cls, data: Any) -> Any:
+        """Accept former defaults, reject custom execution policy inputs."""
+        return strip_legacy_housekeeping_fields({"lineage_gc": data})["lineage_gc"]
 
 
 class ExpiryReclamationConfig(BaseModel):
@@ -793,7 +800,14 @@ class GovernanceRetentionConfig(BaseModel):
 
     audit_events_retention_enabled: bool = False
     audit_events_retention_days: int = Field(default=365, gt=0)
-    audit_events_delete_batch_limit: int = Field(default=500, gt=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_execution_settings(cls, data: Any) -> Any:
+        """Accept former defaults, reject custom execution policy inputs."""
+        return strip_legacy_housekeeping_fields({"governance_retention": data})[
+            "governance_retention"
+        ]
 
 
 @dataclass(frozen=True)

@@ -14,7 +14,7 @@ def test_lineage_gc_config_defaults():
     cfg = LineageGCConfig()
     assert cfg.enabled is True
     assert cfg.tombstone_grace_window_days == 90
-    assert cfg.poll_interval_seconds == 86400
+    assert "poll_interval_seconds" not in cfg.model_dump()
 
 
 def test_config_has_lineage_gc_default():
@@ -36,9 +36,8 @@ def test_lineage_gc_can_be_explicitly_disabled():
 
 
 def test_lineage_gc_fields_can_be_overridden():
-    cfg = LineageGCConfig(tombstone_grace_window_days=30, poll_interval_seconds=3600)
+    cfg = LineageGCConfig(tombstone_grace_window_days=30)
     assert cfg.tombstone_grace_window_days == 30
-    assert cfg.poll_interval_seconds == 3600
 
 
 def test_lineage_gc_null_falls_back_to_default():
@@ -65,10 +64,9 @@ def test_lineage_gc_rejects_non_positive_grace_window(days: int):
 @pytest.mark.parametrize("interval", [0, -1, -86400])
 def test_lineage_gc_rejects_non_positive_poll_interval(interval: int):
     with pytest.raises(ValidationError):
-        LineageGCConfig(poll_interval_seconds=interval)
+        LineageGCConfig.model_validate({"poll_interval_seconds": interval})
 
 
 def test_lineage_gc_accepts_minimum_valid_values():
-    cfg = LineageGCConfig(tombstone_grace_window_days=1, poll_interval_seconds=1)
+    cfg = LineageGCConfig(tombstone_grace_window_days=1)
     assert cfg.tombstone_grace_window_days == 1
-    assert cfg.poll_interval_seconds == 1

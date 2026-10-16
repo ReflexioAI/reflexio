@@ -24,7 +24,7 @@ times out again on the next tick, escalated as
 in the background; a failure it records after its own tick ended is ignored
 rather than charged to the tick then running.
 
-Note: the poll interval is always taken from ``lineage_gc.poll_interval_seconds``
+Note: healthy sweeps use the code-owned daily housekeeping cadence
 even when only ``expiry_reclamation`` or ``governance_retention`` is enabled;
 all sweep classes share that cadence.
 """
@@ -36,6 +36,7 @@ import threading
 import time
 from collections.abc import Callable
 
+from reflexio.housekeeping_policy import DAILY_SWEEP_SECONDS
 from reflexio.models.config_schema import Config
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.auth import DEFAULT_ORG_ID
@@ -57,14 +58,14 @@ from reflexio.server.work_scope import WorkScope, WorkScopeError, bind_work_scop
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_POLL_INTERVAL_SECONDS = 86400
+_DEFAULT_POLL_INTERVAL_SECONDS = DAILY_SWEEP_SECONDS
 _MIN_POLL_SECONDS = 1
 _BOOTSTRAP_RETRY_INTERVAL_SECONDS = 5
 _ORG_SWEEP_TIMEOUT_SECONDS = 60.0
 _DEFAULT_ORG_FANOUT_WORKERS = 8
 
 # How soon to tick again after a tick in which work FAILED, rather than waiting
-# the full `poll_interval_seconds` (86400s by default).
+# the full code-owned daily interval (86400s).
 #
 # Measured on staging, 2026-09-24: 18 of 18 orgs failed one tick with PostgREST
 # `PGRST002: Could not query the database for the schema cache. Retrying.` The
@@ -167,7 +168,7 @@ def set_leader_gate(gate: LeaderGate | None) -> None:
 
 
 # Injection seam: enterprise aligns the healthy cadence to a fixed daily slot.
-# None (OSS default) keeps "poll_interval_seconds after the tick ended", which
+# None (OSS default) keeps "a daily interval after the tick ended", which
 # drifts the start time later by each tick's duration.
 _healthy_interval_provider_hook: Callable[[float], float] | None = None
 
@@ -177,7 +178,7 @@ def set_healthy_interval_provider(
 ) -> None:
     """Register how long to wait after a healthy (or retries-exhausted) tick.
 
-    The provider receives the configured ``poll_interval_seconds`` and returns
+    The provider receives the code-owned healthy cadence and returns
     the seconds to wait, e.g. the time until the next daily UTC slot, so the
     sweep starts at the same wall-clock time every day instead of drifting by
     each tick's duration. The failed-tick fast retry is never affected.
@@ -860,10 +861,8 @@ class LineageGCScheduler(ThreadedScheduler):
             return _healthy_interval(poll_interval)
 
         self._consecutive_failed_ticks += 1
-        # `min`, not the constant: `poll_interval_seconds` may legitimately be
-        # configured below 300 (the schema permits 1), and a "retry sooner" path
-        # that returned 300 there would SLOW the scheduler -- for lineage GC and
-        # every registered global sweep too, not just retention.
+        # Keep retries no slower than the healthy cadence if the owned policy
+        # is calibrated below the retry constant in the future.
         fast = min(_FAILED_TICK_RETRY_SECONDS, poll_interval)
         if self._consecutive_failed_ticks > _MAX_CONSECUTIVE_FAST_RETRIES:
             # ERROR, not WARNING: every fast retry failed, so this is a
@@ -908,7 +907,7 @@ class LineageGCScheduler(ThreadedScheduler):
                 self.bootstrap_org_id = org_ids[0]
             bootstrap_ctx = self.request_context_factory(self.bootstrap_org_id)
             cfg = bootstrap_ctx.configurator.get_config()
-            poll_interval = cfg.lineage_gc.poll_interval_seconds
+            poll_interval = DAILY_SWEEP_SECONDS
             org_ids = self._discover_org_ids(bootstrap_ctx)
             self._gc_tick(org_ids, max_workers=self._org_fanout_workers(bootstrap_ctx))
             self._run_global_sweeps(cfg)
@@ -957,7 +956,7 @@ def maybe_start_lineage_gc(
     4. **DPO sign-off**: obtain sign-off on the PII-lifetime and audit-depth
        implications before enabling in any deployment that processes personal data.
 
-    Note: the poll cadence is always controlled by ``lineage_gc.poll_interval_seconds``
+    Note: healthy sweeps use the code-owned daily housekeeping cadence
     even when only ``expiry_reclamation`` is enabled; Class B shares that interval.
 
     Args:

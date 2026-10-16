@@ -71,7 +71,7 @@ _DAY = 86400
 
 
 def _ctx(org_id: str):
-    config = SimpleNamespace(lineage_gc=LineageGCConfig(poll_interval_seconds=_DAY))
+    config = SimpleNamespace(lineage_gc=LineageGCConfig())
     return SimpleNamespace(
         org_id=org_id,
         storage=None,
