@@ -6,6 +6,10 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
+from reflexio.config_env import (
+    DEFAULT_STORAGE_POOL_ACQUIRE_TIMEOUT,
+    DEFAULT_STORAGE_POOL_SIZE,
+)
 from reflexio.housekeeping_policy import strip_legacy_housekeeping_fields
 
 from .api_schema.validators import (
@@ -299,10 +303,12 @@ class StorageConfigPostgres(BaseModel):
     storage_type: Literal["postgres"] = Field(default="postgres", alias="type")
     db_url: NonEmptyStr
     schema_name: str | None = Field(default=None, alias="schema")
-    pool_size: int = Field(default=10, ge=1)
+    pool_size: int = Field(default=DEFAULT_STORAGE_POOL_SIZE, ge=1)
     # Seconds a query waits for a free pooled connection before failing. Bounds the
     # back-pressure applied when concurrent queries exceed pool_size.
-    pool_acquire_timeout: float = Field(default=30.0, gt=0)
+    pool_acquire_timeout: float = Field(
+        default=DEFAULT_STORAGE_POOL_ACQUIRE_TIMEOUT, gt=0
+    )
     read_db_url: NonEmptyStr | None = None
     read_pool_size: int | None = Field(default=None, ge=1)
     read_pool_acquire_timeout: float | None = Field(default=None, gt=0)
