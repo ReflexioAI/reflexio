@@ -249,6 +249,7 @@ def test_exact_input_capture_is_lazy_detached_and_fail_open(
             "agent_version",
             "model_name",
             "runtime_sha256",
+            "policy_sha256",
         }
         assert (
             snapshot.runtime_sha256

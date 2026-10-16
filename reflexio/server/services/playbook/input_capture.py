@@ -52,6 +52,7 @@ class ConsolidatorInputSnapshot:
     agent_version: str
     model_name: str | None
     runtime_sha256: str
+    policy_sha256: str
 
     def as_dict(self) -> dict[str, Any]:
         """Return a detached persistence envelope with whitelisted identities."""
@@ -72,6 +73,7 @@ class ConsolidatorInputSnapshot:
                 "agent_version": self.agent_version,
                 "model_name": self.model_name,
                 "runtime_sha256": self.runtime_sha256,
+                "policy_sha256": self.policy_sha256,
             },
         }
 
@@ -133,6 +135,12 @@ def build_consolidator_input_snapshot(
         for session in payload["sessions"]
         for message in session["messages"]
     }
+    policy = {
+        name: (
+            Path(runtime_path).with_name("reconciliation_prompts") / f"{name}.md"
+        ).read_text()
+        for name in ("reconcile-method", "reconcile-audit", "reconcile-revise")
+    }
     return ConsolidatorInputSnapshot(
         generation_request_id=generation_request_id,
         user_id=user_id,
@@ -159,4 +167,7 @@ def build_consolidator_input_snapshot(
         agent_version=agent_version,
         model_name=model_name,
         runtime_sha256=hashlib.sha256(Path(runtime_path).read_bytes()).hexdigest(),
+        policy_sha256=hashlib.sha256(
+            json.dumps(policy, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest(),
     )
