@@ -479,7 +479,19 @@ def _aggregate_operation(
                 "Check its status before submitting another request.",
             )
         time.sleep(min(_AGGREGATION_POLL_SECONDS, remaining))
-        operation = client.get_playbook_aggregation_operation(operation_id)
+        try:
+            operation = client.get_playbook_aggregation_operation(operation_id)
+        except requests.RequestException as exc:
+            reason = (
+                f"HTTP {exc.response.status_code}"
+                if exc.response is not None
+                else type(exc).__name__
+            )
+            raise CliError(
+                message=f"Status check failed for aggregation {operation_id} ({reason}).",
+                hint="The admitted operation may still be running. "
+                "Check its status before submitting another request.",
+            ) from exc
 
 
 @app.command()

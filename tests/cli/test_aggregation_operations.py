@@ -232,3 +232,28 @@ def test_completed_noop_is_a_real_success(runner, app, mock_client):
     assert result.exit_code == 0, result.output
     assert "Skipped: no_user_playbooks" in result.output
     mock_client.get_playbook_aggregation_operation.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["rate_limit", "timeout"])
+def test_poll_error_keeps_admitted_operation_id_without_resubmission(
+    runner, app, mock_client, failure
+):
+    mock_client.submit_playbook_aggregation.return_value = receipt()
+    if failure == "rate_limit":
+        response = requests.Response()
+        response.status_code = 429
+        error = requests.HTTPError(response=response)
+    else:
+        error = requests.Timeout("sensitive transport detail")
+    mock_client.get_playbook_aggregation_operation.side_effect = error
+    result = runner.invoke(
+        app,
+        ["--json", "agent-playbooks", "aggregate", "--agent-version", "v1", "--wait"],
+    )
+    assert result.exit_code != 0
+    assert "Status check failed for aggregation operation" in result.output
+    assert "may still be running" in result.output
+    assert "sensitive transport detail" not in result.output
+    assert not result.stdout
+    mock_client.submit_playbook_aggregation.assert_called_once()
+    mock_client.get_playbook_aggregation_operation.assert_called_once_with("operation")
