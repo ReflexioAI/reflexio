@@ -438,15 +438,29 @@ def _aggregate_operation(
         operation = client.submit_playbook_aggregation(
             request_id=request_id, agent_version=version
         )
-    except requests.HTTPError as exc:
-        if exc.response is not None and exc.response.status_code in (404, 503):
+    except requests.RequestException as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        if status == 404:
             raise CliError(
-                message="Durable aggregation could not be admitted "
-                f"(HTTP {exc.response.status_code}).",
+                message=f"Durable aggregation could not be admitted (HTTP {status}).",
                 hint="Check server health and durable aggregation support. "
                 f"Request ID: {request_id}",
             ) from exc
-        raise
+        if (
+            isinstance(exc, requests.HTTPError)
+            and status is not None
+            and status < 500
+            and status != 408
+        ):
+            raise
+        raise CliError(
+            message=f"Aggregation admission is uncertain. Request ID: {request_id}",
+            hint="Check server health and durable aggregation support. "
+            "Do not rerun the CLI with a new request ID. Recover the existing "
+            "receipt through the SDK using "
+            f"submit_playbook_aggregation(request_id={request_id!r}, "
+            f"agent_version={version!r}), then check that operation's status.",
+        ) from exc
     operation_id = operation.operation_id
     deadline = time.monotonic() + _AGGREGATION_WAIT_SECONDS
     while True:

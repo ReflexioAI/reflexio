@@ -172,7 +172,7 @@ def test_timeout_preserves_operation_identity_without_resubmitting(
     mock_client.get_playbook_aggregation_operation.assert_called_once_with("operation")
 
 
-@pytest.mark.parametrize("status", [404, 503])
+@pytest.mark.parametrize("status", [404])
 def test_unsupported_api_is_actionable_and_never_uses_legacy_post(
     runner, app, mock_client, status
 ):
@@ -257,3 +257,32 @@ def test_poll_error_keeps_admitted_operation_id_without_resubmission(
     assert not result.stdout
     mock_client.submit_playbook_aggregation.assert_called_once()
     mock_client.get_playbook_aggregation_operation.assert_called_once_with("operation")
+
+
+@pytest.mark.parametrize(
+    "failure", [requests.ReadTimeout, requests.ConnectionError, 408, 500, 502, 503, 504]
+)
+def test_uncertain_submission_preserves_reusable_request_identity(
+    runner, app, mock_client, failure
+):
+    if isinstance(failure, int):
+        response = requests.Response()
+        response.status_code = failure
+        error = requests.HTTPError("sensitive detail", response=response)
+    else:
+        error = failure("sensitive detail")
+    mock_client.submit_playbook_aggregation.side_effect = error
+    result = runner.invoke(
+        app,
+        ["--json", "agent-playbooks", "aggregate", "--agent-version", "v1", "--wait"],
+    )
+    assert result.exit_code != 0
+    assert "admission is uncertain" in result.output
+    assert "request_id='request'" in result.output
+    assert "agent_version='v1'" in result.output
+    assert "Do not rerun the CLI" in result.output
+    assert "sensitive detail" not in result.output
+    assert not result.stdout
+    mock_client.submit_playbook_aggregation.assert_called_once()
+    mock_client.get_playbook_aggregation_operation.assert_not_called()
+    mock_client.run_playbook_aggregation.assert_not_called()

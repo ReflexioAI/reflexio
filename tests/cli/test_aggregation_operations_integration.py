@@ -30,8 +30,9 @@ from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 pytestmark = pytest.mark.integration
 
 
+@pytest.mark.parametrize("lose_response", [False, True])
 def test_cli_waits_for_its_queued_operation_behind_busy_aggregation(
-    tmp_path, monkeypatch, runner, app
+    tmp_path, monkeypatch, runner, app, lose_response
 ):
     org = "busy-cli"
     config = DefaultConfigurator(org_id=org, base_dir=str(tmp_path))
@@ -136,6 +137,17 @@ def test_cli_waits_for_its_queued_operation_behind_busy_aggregation(
         assert busy.status_code == 503
         assert busy.json()["detail"] == "aggregation concurrency limit reached"
         worker.start()
+        submit = sdk.submit_playbook_aggregation
+        admitted = []
+
+        def lose_committed_response(**kwargs):
+            admitted.append(submit(**kwargs))
+            raise requests.ReadTimeout("response lost after commit")
+
+        if lose_response:
+            monkeypatch.setattr(
+                sdk, "submit_playbook_aggregation", lose_committed_response
+            )
         result = runner.invoke(
             app,
             [
@@ -147,17 +159,29 @@ def test_cli_waits_for_its_queued_operation_behind_busy_aggregation(
                 "--wait",
             ],
         )
-        assert result.exit_code == 0, result.output
+        if lose_response:
+            assert result.exit_code != 0 and not result.stdout
+            assert len(admitted) == 1
+            original = admitted[0]
+            assert original.request_id in result.output
+            assert "admission is uncertain" in result.output
+            assert "submit_playbook_aggregation" in result.output
+            recovered = submit(request_id=original.request_id, agent_version="v1")
+            assert recovered.operation_id == original.operation_id
+            assert recovered.request_id == original.request_id
+            sdk.get_playbook_aggregation_operation(recovered.operation_id)
+            operation_id = recovered.operation_id
+        else:
+            assert result.exit_code == 0, result.output
+            output = json.loads(result.stdout)
+            assert output["data"]["success"] and output["meta"]["status"] == "succeeded"
+            operation_id = output["meta"]["operation_id"]
         worker.join(timeout=10)
         assert not failures, failures
         assert not worker.is_alive()
-        output = json.loads(result.stdout)
-        receipt = storage.get_playbook_aggregation_operation(
-            output["meta"]["operation_id"]
-        )
+        receipt = storage.get_playbook_aggregation_operation(operation_id)
         assert receipt is not None and receipt.status == "succeeded"
         assert receipt.result is not None and receipt.result.playbooks_generated == 0
-        assert output["data"]["success"] and output["meta"]["status"] == "succeeded"
         assert (
             storage.conn.execute(
                 "SELECT COUNT(*) FROM playbook_aggregation_operations"

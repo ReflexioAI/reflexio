@@ -263,6 +263,11 @@ or `GET /api/playbook_aggregation_operations/{operation_id}`, to check it before
 submitting another request. JSON mode preserves `data.success` and `data.message`
 and adds operation/request IDs, agent version and status in `meta`.
 
+If a submission loses its response or returns a server error, admission is uncertain. The error includes
+its request ID and an SDK recovery call: repeat `submit_playbook_aggregation`
+with that exact request ID and agent version to retrieve the same receipt, then
+check its operation status. Do not rerun the CLI with a fresh request identity.
+
 The server/storage must support durable aggregation. Unsupported endpoints fail
 with an actionable error; the CLI does not replay the legacy aggregation POST.
 `--playbook-name` remains accepted for compatibility; aggregation is per agent
