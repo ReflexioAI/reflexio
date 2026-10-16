@@ -1,4 +1,4 @@
-"""Paired reason-code evaluation using frozen local cases and the real reviewer.
+"""Baseline or paired evaluation using frozen local cases and the real reviewer.
 
 No database access. Cases and settings are identical for both prompt versions.
 Errors are recorded separately and make the command fail. Never infer production
@@ -8,6 +8,7 @@ quality from the synthetic cases alone; see developer.md for the rollout gate.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -165,6 +166,8 @@ def evaluate(
     candidate_version: str = "1.4.0",
     max_tokens: int | None = None,
     reasoning_effort: Literal["high", "none"] | None = None,
+    stop_on_incomplete: bool = False,
+    baseline_only: bool = False,
 ) -> dict:
     if checkpoint is not None:
         _require_private_artifact_support()
@@ -200,11 +203,12 @@ def evaluate(
         raise ValueError(
             "reasoning profile is qualified for the GLM-5.2 experiment only"
         )
+    versions = ("1.3.0",) if baseline_only else ("1.3.0", candidate_version)
     prompt_identities = {
         version: PromptManager(
             version_override={"playbook_candidate_review": version}
         ).get_prompt_template_identity("playbook_candidate_review")
-        for version in ("1.3.0", candidate_version)
+        for version in versions
     }
     prepared = {case.id: prepare_case(case) for case in cases}
     rows = []
@@ -212,6 +216,7 @@ def evaluate(
     calls = []
     measurement_errors = []
     settings = {"max_tokens": max_tokens, "reasoning_effort": reasoning_effort}
+    stopped_early = False
     case_hash = hashlib.sha256(
         json.dumps(
             [case.model_dump(mode="json") for case in cases], sort_keys=True
@@ -227,28 +232,36 @@ def evaluate(
                         "complete": False,
                         "model": client.config.model,
                         "cases_sha256": case_hash,
-                        "candidate_version": candidate_version,
+                        "candidate_version": None
+                        if baseline_only
+                        else candidate_version,
+                        "baseline_only": baseline_only,
                         "prompt_identities": prompt_identities,
                         "rows": rows,
                         "errors": errors,
                         "calls": calls,
                         "inference_settings": settings,
                         "measurement_errors": measurement_errors,
+                        "stop_on_incomplete": stop_on_incomplete,
                     },
                     indent=2,
                 ),
             )
 
+    if checkpoint is not None:
+        # A new trial owns its checkpoint; never resume or replace prior evidence.
+        descriptor = os.open(checkpoint, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(descriptor)
+        save_progress()
+
+    pair_ordinal = 0
     for case in cases:
-        sessions, candidates, existing = prepared[case.id]
         for repeat in range(repeats):
             # Alternate order to reduce time/order effects; no arm-specific model settings.
-            versions = (
-                ("1.3.0", candidate_version)
-                if repeat % 2 == 0
-                else (candidate_version, "1.3.0")
-            )
-            for version in versions:
+            ordered_versions = versions if pair_ordinal % 2 == 0 else versions[::-1]
+            pair_ordinal += 1
+            for version in ordered_versions:
+                sessions, candidates, existing = copy.deepcopy(prepared[case.id])
                 context = cast(
                     RequestContext,
                     SimpleNamespace(
@@ -269,6 +282,9 @@ def evaluate(
                     reasoning_effort=reasoning_effort,
                     provider_request_guard=metrics.guard,
                 )
+                result = None
+                applied = None
+                failed = False
                 try:
                     with metrics:
                         result = reviewer.decide(
@@ -279,7 +295,11 @@ def evaluate(
                             playbook_definition="Reusable user guidance",
                             tool_context="",
                         )
+                        applied = reviewer.apply_decisions(
+                            candidates=candidates, outcome=result
+                        )
                 except Exception as exc:
+                    failed = True
                     errors.append(
                         {
                             "case": case.id,
@@ -288,17 +308,36 @@ def evaluate(
                             "error_type": type(exc).__name__,
                         }
                     )
-                    continue
                 finally:
+                    observation_complete = bool(
+                        metrics.data["observation_complete"]
+                        and metrics.data["estimated_cost_complete"]
+                    )
                     calls.append(
                         {
                             "case": case.id,
                             "repeat": repeat,
                             "version": version,
+                            "measurement_complete": (
+                                not failed
+                                and observation_complete
+                                and result is not None
+                                and applied is not None
+                            ),
+                            "public_output": (
+                                result.output.model_dump(mode="json")
+                                if result is not None
+                                else None
+                            ),
+                            "applied_survivors": (
+                                [item.model_dump(mode="json") for item in applied]
+                                if applied is not None
+                                else None
+                            ),
                             **metrics.data,
                         }
                     )
-                    if not metrics.data["observation_complete"]:
+                    if not observation_complete:
                         measurement_errors.append(
                             {
                                 "case": case.id,
@@ -308,6 +347,11 @@ def evaluate(
                             }
                         )
                     save_progress()
+                if stop_on_incomplete and (failed or not observation_complete):
+                    stopped_early = True
+                    break
+                if failed or result is None:
+                    continue
                 expected = {
                     f"C{index}": candidate
                     for index, candidate in enumerate(case.candidates, 1)
@@ -349,38 +393,60 @@ def evaluate(
                     f"{case.id} repeat={repeat + 1} version={version} processed={len(result.output.decisions)}",
                     flush=True,
                 )
+            if stopped_early:
+                break
+        if stopped_early:
+            break
+    return {
+        "complete": not stopped_early,
+        "model": client.config.model,
+        "temperature": client.config.temperature,
+        "cases_sha256": case_hash,
+        "candidate_version": None if baseline_only else candidate_version,
+        "baseline_only": baseline_only,
+        "prompt_identities": prompt_identities,
+        "repeats": repeats,
+        "summary": _summarize(cases, repeats, versions, rows, errors),
+        "rows": rows,
+        "errors": errors,
+        "calls": calls,
+        "inference_settings": settings,
+        "measurement_errors": measurement_errors,
+        "stop_on_incomplete": stop_on_incomplete,
+        "planned_calls": len(cases) * repeats * len(versions),
+        "attempted_calls": len(calls),
+        "unbegun_calls": len(cases) * repeats * len(versions) - len(calls),
+    }
+
+
+def _summarize(
+    cases: list[Case],
+    repeats: int,
+    versions: tuple[str, ...],
+    rows: list[dict],
+    errors: list[dict],
+) -> dict:
     summary = {}
     expected_count = sum(len(case.candidates) for case in cases) * repeats
-    for version in ("1.3.0", candidate_version):
+    code_expected = (
+        sum(
+            candidate.reason_code is not None
+            for case in cases
+            for candidate in case.candidates
+        )
+        * repeats
+    )
+    for version in versions:
         arm = [row for row in rows if row["version"] == version]
         summary[version] = {
             "expected": expected_count,
             "processed": len(arm),
             "decision_correct": sum(row["decision_correct"] for row in arm),
             "code_correct": sum(row["code_correct"] is True for row in arm),
-            "code_expected": sum(
-                candidate.reason_code is not None
-                for case in cases
-                for candidate in case.candidates
-            )
-            * repeats,
+            "code_expected": code_expected,
             "errors": sum(error["version"] == version for error in errors),
         }
-    return {
-        "complete": True,
-        "model": client.config.model,
-        "temperature": client.config.temperature,
-        "cases_sha256": case_hash,
-        "candidate_version": candidate_version,
-        "prompt_identities": prompt_identities,
-        "repeats": repeats,
-        "summary": summary,
-        "rows": rows,
-        "errors": errors,
-        "calls": calls,
-        "inference_settings": settings,
-        "measurement_errors": measurement_errors,
-    }
+    return summary
 
 
 def main() -> int:
@@ -392,7 +458,8 @@ def main() -> int:
         required=True,
         help="Assert the automatically resolved generation model; does not select a model",
     )
-    parser.add_argument(
+    arms = parser.add_mutually_exclusive_group()
+    arms.add_argument(
         "--candidate-version",
         choices=(
             "1.4.0",
@@ -414,6 +481,11 @@ def main() -> int:
             "1.20.0",
         ),
         default="1.4.0",
+    )
+    arms.add_argument(
+        "--baseline-only",
+        action="store_true",
+        help="Characterize v1.3.0 without selecting or calling a candidate",
     )
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--max-tokens", type=int)
@@ -450,6 +522,8 @@ def main() -> int:
         candidate_version=args.candidate_version,
         max_tokens=args.max_tokens,
         reasoning_effort=args.reasoning_effort,
+        stop_on_incomplete=True,
+        baseline_only=args.baseline_only,
     )
     _write_private_text(args.out, json.dumps(report, indent=2))
     print(json.dumps(report["summary"], indent=2))

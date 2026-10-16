@@ -1,0 +1,230 @@
+[
+  {
+    "id": "internal-status-revisable",
+    "provenance": "Synthetic taxonomy/control case; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For future reports, show totals before individual entries."
+      },
+      {
+        "role": "Agent",
+        "content": "Report generated successfully."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "Show totals before individual entries because generation success proves the user prefers that order.",
+        "trigger": "When preparing a report",
+        "rationale": "Derived from the cited turns.",
+        "evidence": [
+          1,
+          2
+        ],
+        "decision": "revise",
+        "reason_code": "internal_status"
+      }
+    ],
+    "existing": [],
+    "domain": "reporting",
+    "split": "development"
+  },
+  {
+    "id": "speculative-revisable",
+    "provenance": "Synthetic taxonomy/control case; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For future reports, show totals first."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "Show totals first, then email the report to the legal team every Friday.",
+        "trigger": "When preparing reports",
+        "rationale": "Derived from the cited turns.",
+        "evidence": [
+          1
+        ],
+        "decision": "revise",
+        "reason_code": "speculative"
+      }
+    ],
+    "existing": [],
+    "domain": "reporting",
+    "split": "development"
+  },
+  {
+    "id": "positive-supported-procedure",
+    "provenance": "Synthetic v1.5 boundary control; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For future uploads, if an upload fails, retry it once. If that retry fails too, report the failure to me."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "When an upload fails, retry once; if that retry fails, report the failure to the user.",
+        "trigger": "When an upload fails",
+        "rationale": "The user explicitly requested this guidance for future tasks.",
+        "evidence": [
+          1
+        ],
+        "decision": "accept",
+        "reason_code": "grounded_useful"
+      }
+    ],
+    "existing": [],
+    "domain": "upload_retry",
+    "split": "development"
+  },
+  {
+    "id": "positive-supported-delivery",
+    "provenance": "Synthetic v1.5 boundary control; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For future weekly reports, show totals first, then email the finished report to the legal team every Friday."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "For weekly reports, show totals first, then email the finished report to the legal team every Friday.",
+        "trigger": "When preparing a weekly report",
+        "rationale": "The user explicitly requested this guidance for future tasks.",
+        "evidence": [
+          1
+        ],
+        "decision": "accept",
+        "reason_code": "grounded_useful"
+      }
+    ],
+    "existing": [],
+    "domain": "reporting",
+    "split": "development"
+  },
+  {
+    "id": "absence-over-unsupported",
+    "provenance": "Synthetic taxonomy/control case; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "Please make a chart."
+      },
+      {
+        "role": "Agent",
+        "content": "I will make the chart."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "When asked to make a chart, deliver it rather than produce nothing as happened here.",
+        "trigger": "When asked to make a chart",
+        "rationale": "Derived from the cited turns.",
+        "evidence": [
+          1,
+          2
+        ],
+        "decision": "reject",
+        "reason_code": "absence_inference"
+      }
+    ],
+    "existing": [],
+    "domain": "visualization",
+    "split": "development"
+  },
+  {
+    "id": "positive-code-review-preference",
+    "provenance": "Synthetic taxonomy/control case; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "In future code reviews, list blocking defects first."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "List blocking defects first in code reviews.",
+        "trigger": "When reviewing code",
+        "rationale": "The user explicitly requested this reusable code-review order.",
+        "evidence": [
+          1
+        ],
+        "decision": "accept",
+        "reason_code": "grounded_useful"
+      }
+    ],
+    "existing": [],
+    "domain": "code_review",
+    "split": "development"
+  },
+  {
+    "id": "future-scope-overgeneralization",
+    "provenance": "Synthetic reset development control; paired future-useful instruction with an explicit scope boundary. Not customer or holdout data.",
+    "agent_context": "The assistant prepares reports and remembers reusable user instructions.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For future weekly billing reports, show totals first. This instruction applies only to weekly billing reports, not other reports."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "For all reports, show totals first.",
+        "trigger": "When preparing any report",
+        "rationale": "The user requested totals first for future weekly billing reports.",
+        "evidence": [
+          1
+        ],
+        "decision": "revise",
+        "reason_code": null,
+        "preserve": [
+          "Weekly billing reports only; totals before other report details."
+        ],
+        "remove": [
+          "Application to reports outside the weekly billing scope."
+        ]
+      }
+    ],
+    "existing": [],
+    "domain": "reporting",
+    "split": "development"
+  },
+  {
+    "id": "future-scope-healthy",
+    "provenance": "Synthetic reset development control; paired future-useful instruction with an explicit scope boundary. Not customer or holdout data.",
+    "agent_context": "The assistant prepares reports and remembers reusable user instructions.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For future weekly billing reports, show totals first. This instruction applies only to weekly billing reports, not other reports."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "For weekly billing reports, show totals first.",
+        "trigger": "When preparing a weekly billing report",
+        "rationale": "The user requested totals first for future weekly billing reports.",
+        "evidence": [
+          1
+        ],
+        "decision": "accept",
+        "reason_code": "grounded_useful",
+        "preserve": [
+          "Weekly billing reports only; totals before other report details."
+        ],
+        "remove": []
+      }
+    ],
+    "existing": [],
+    "domain": "reporting",
+    "split": "development"
+  }
+]
