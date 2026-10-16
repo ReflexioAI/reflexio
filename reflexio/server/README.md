@@ -816,7 +816,12 @@ other storage adapters must explicitly support nullable identities before
 callers rely on it there.
 
 Database environment aliases resolve through `reflexio/config_env.py`, shared with
-CLI bootstrap. A nonblank `DATA_DB_URL` wins; backend-specific legacy names remain
+CLI bootstrap. The same lightweight module owns native PostgreSQL pool defaults
+for CLI persistence and enterprise bootstrap/workers: 10 writer connections,
+30-second acquire wait, and optional reader overrides inheriting the writer.
+Blank means unset; invalid capacities and non-finite/non-positive waits fail.
+`REFLEXIO_STORAGE_POOL_SIZE` is independent of the native Postgres default.
+A nonblank `DATA_DB_URL` wins; backend-specific legacy names remain
 accepted when it is absent. The retired `shadow_mode_enabled` configuration input
 is accepted as a no-op and omitted from serialization.
 
@@ -826,6 +831,11 @@ remain readable, but schemas and canonical saves omit them. Runtime identities
 remain `profile`, `playbook`, and `agent_success`; historical result names are
 unchanged. `models/config_schema.py::strip_retired_config_fields` shares this
 cleanup with enterprise saves and raw stored-payload upgrades.
+
+Nomic inference startup belongs to `llm/embedding_service.py`'s lifespan, which
+calls `NomicEmbedder` directly for warmup and requests. Its former opt-in
+registration/prewarm helpers and `REFLEXIO_EMBEDDING_DAEMON` marker are retired;
+API workers continue to route local-model requests through HTTP.
 
 Customized retired housekeeping settings raise `HousekeepingMigrationError` from
 stored-config preflight. Local-file loading and CLI storage discovery propagate

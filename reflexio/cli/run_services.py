@@ -282,7 +282,6 @@ def build_embedding_service(
             "--port",
             str(ports["embedding"]),
         ],
-        env={"REFLEXIO_EMBEDDING_DAEMON": "1"},
     )
 
 

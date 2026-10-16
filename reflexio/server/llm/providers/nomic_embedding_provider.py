@@ -7,13 +7,13 @@ Performs comparably to OpenAI's ``text-embedding-3-small`` on MTEB
 retrieval at a fraction of the latency cost when run locally on CPU or
 Apple Silicon.
 
-Activation
-----------
+Lifecycle
+---------
 
-- Set ``CLAUDE_SMART_USE_LOCAL_EMBEDDING=1`` in the process environment.
-- Pass model name ``local/nomic-embed-v1.5`` (or ``local/nomic-embed-text-v1.5``)
-  to :func:`LiteLLMClient.get_embedding`/``get_embeddings``.
-- Requires the ``sentence-transformers`` pip dependency.
+The inference service calls ``NomicEmbedder.get().embed(...)`` directly and
+owns startup warmup and readiness. API workers route local Nomic requests over
+HTTP; they do not register or prewarm an in-process fallback. Requires the
+``sentence-transformers`` dependency in the inference service.
 
 Storage compatibility
 ---------------------
@@ -27,20 +27,16 @@ comparable. Quality on retrieval tasks at 512 dim is ~95% of the full
 
 from __future__ import annotations
 
-import importlib.util
 import logging
 import math
 import os
 import threading
 from typing import Any
 
-from reflexio.server.env_utils import env_truthy, positive_int_env
+from reflexio.server.env_utils import positive_int_env
 
 _LOGGER = logging.getLogger(__name__)
 
-_ENV_ENABLE = "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
-_ENV_PROVIDER = "REFLEXIO_EMBEDDING_PROVIDER"
-_ENV_DAEMON = "REFLEXIO_EMBEDDING_DAEMON"
 _MODEL_KEYS = {"local/nomic-embed-v1.5", "local/nomic-embed-text-v1.5"}
 _HF_MODEL_NAME = "nomic-ai/nomic-embed-text-v1.5"
 
@@ -66,7 +62,7 @@ _ENV_BATCH_SIZE = "REFLEXIO_EMBED_BATCH_SIZE"
 # D7 (Phase 2 prep): optionally pin torch intra-op thread count so the embedder
 # does not oversubscribe CPU under bounded concurrency. Unset (the default) =
 # leave torch untouched, i.e. zero behaviour change. Applies at Nomic model load
-# (both the in-process fallback and the shared daemon run NomicEmbedder). Note the
+# (the inference service owns NomicEmbedder). Note the
 # ONNX/MiniLM LocalEmbedder path uses onnxruntime, not torch, so this knob does
 # not affect it.
 _ENV_TORCH_THREADS = "REFLEXIO_EMBED_TORCH_THREADS"
@@ -260,73 +256,6 @@ def _embedding_dimension(model: Any) -> int:
     return int(dimension)  # type: ignore[arg-type]
 
 
-_REGISTERED = False
-
-
-def register_if_enabled() -> bool:
-    """Make the Nomic embedder available when env + deps allow it.
-
-    Idempotent. Returns ``True`` when the embedder is usable after this
-    call. Routing happens via prefix-match on the model name in
-    ``LiteLLMClient.get_embedding(s)``.
-
-    Eagerly pre-warms the model in a daemon thread so the first request
-    doesn't pay the ~30 s cold-start cost. The thread is fire-and-forget;
-    callers either land mid-load (and block briefly) or after-load (and
-    proceed immediately).
-    """
-    global _REGISTERED
-    if _REGISTERED:
-        return True
-    if not env_truthy(os.environ.get(_ENV_ENABLE, "")):
-        return False
-    provider = os.environ.get(_ENV_PROVIDER, "").strip().lower()
-    if provider in {"local_service", "internal_service", "off"}:
-        _LOGGER.info(
-            "Nomic in-process prewarm skipped because %s=%s",
-            _ENV_PROVIDER,
-            provider,
-        )
-        return False
-    if not provider and not env_truthy(os.environ.get(_ENV_DAEMON, "")):
-        _LOGGER.info(
-            "Nomic in-process prewarm skipped; %s=1 now defaults to the "
-            "shared embedding service.",
-            _ENV_ENABLE,
-        )
-        return False
-    if importlib.util.find_spec("sentence_transformers") is None:
-        _LOGGER.warning(
-            "%s=1 set but `sentence-transformers` not installed; the Nomic "
-            "local embedder will not be available.",
-            _ENV_ENABLE,
-        )
-        return False
-    _REGISTERED = True
-    _LOGGER.info(
-        "Nomic local embedding provider enabled (models=%s)", sorted(_MODEL_KEYS)
-    )
-
-    def _prewarm() -> None:
-        """Background load + dummy inference so the first real request is fast."""
-        try:
-            embedder = NomicEmbedder.get()
-            embedder.embed(["warmup"])
-            _LOGGER.info("Nomic embedder pre-warmed")
-        except Exception:  # noqa: BLE001
-            _LOGGER.exception(
-                "Nomic embedder pre-warm failed; first call will pay the cost"
-            )
-
-    threading.Thread(target=_prewarm, daemon=True, name="nomic-prewarm").start()
-    return True
-
-
-def is_enabled() -> bool:
-    """Return True after a successful :func:`register_if_enabled`."""
-    return _REGISTERED
-
-
 def is_nomic_model(model: str) -> bool:
     """Predicate used by ``LiteLLMClient`` to route by model name.
 
@@ -342,7 +271,5 @@ def is_nomic_model(model: str) -> bool:
 __all__ = [
     "NomicEmbedder",
     "NomicEmbedderError",
-    "is_enabled",
     "is_nomic_model",
-    "register_if_enabled",
 ]

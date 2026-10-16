@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import typer
 
-from reflexio.config_env import resolve_data_db_url
+from reflexio.config_env import resolve_data_db_url, resolve_postgres_pool_defaults
 from reflexio.housekeeping_policy import HousekeepingMigrationError
 
 from .paths import reflexio_home
@@ -180,39 +181,15 @@ def save_storage_to_config(
         case "postgres":
             db_url = os.environ.get("DATA_DB_URL", "").strip()
             schema = os.environ.get("REFLEXIO_POSTGRES_SCHEMA", "").strip()
-            pool_size_raw = os.environ.get("REFLEXIO_POSTGRES_POOL_SIZE", "").strip()
-            pool_size = int(pool_size_raw) if pool_size_raw.isdigit() else 10
-            if pool_size < 1:
-                logger.warning(
-                    "Invalid REFLEXIO_POSTGRES_POOL_SIZE=%r (must be >= 1); using default",
-                    pool_size_raw,
-                )
-                pool_size = 10
-            timeout_raw = os.environ.get(
-                "REFLEXIO_POSTGRES_POOL_ACQUIRE_TIMEOUT", ""
-            ).strip()
             postgres_kwargs: dict[str, Any] = {
                 "db_url": db_url,
                 "schema": schema or None,
-                "pool_size": pool_size,
+                "read_db_url": os.environ.get(
+                    "REFLEXIO_POSTGRES_READ_DB_URL", ""
+                ).strip()
+                or None,
+                **asdict(resolve_postgres_pool_defaults(os.environ)),
             }
-            if timeout_raw:
-                try:
-                    timeout = float(timeout_raw)
-                except ValueError:
-                    logger.warning(
-                        "Invalid REFLEXIO_POSTGRES_POOL_ACQUIRE_TIMEOUT=%r; using default",
-                        timeout_raw,
-                    )
-                else:
-                    if timeout > 0:
-                        postgres_kwargs["pool_acquire_timeout"] = timeout
-                    else:
-                        logger.warning(
-                            "Invalid REFLEXIO_POSTGRES_POOL_ACQUIRE_TIMEOUT=%r "
-                            "(must be > 0); using default",
-                            timeout_raw,
-                        )
             if db_url:
                 config.storage_config = StorageConfigPostgres(**postgres_kwargs)
             else:
