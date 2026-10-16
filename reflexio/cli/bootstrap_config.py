@@ -13,6 +13,7 @@ from typing import Any
 import typer
 
 from reflexio.config_env import resolve_data_db_url
+from reflexio.housekeeping_policy import HousekeepingMigrationError
 
 from .paths import reflexio_home
 
@@ -115,6 +116,8 @@ def load_storage_from_config(
 
         storage = LocalFileConfigStorage(org_id, base_dir=base_dir)
         config = storage.load_config()
+    except HousekeepingMigrationError:
+        raise
     except Exception:
         logger.debug("Failed to load config from %s", config_path, exc_info=True)
         return None

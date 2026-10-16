@@ -15,6 +15,10 @@ _RETIRED_FIELDS = (
 )
 
 
+class HousekeepingMigrationError(ValueError):
+    """A stored custom policy must be migrated, never replaced with defaults."""
+
+
 def housekeeping_config_conflicts(payload: dict[str, Any]) -> list[str]:
     """Return only paths with custom legacy values, never configuration values."""
     conflicts = []
@@ -35,7 +39,7 @@ def strip_legacy_housekeeping_fields(payload: dict[str, Any]) -> dict[str, Any]:
     """Discard former defaults without mutating input; reject custom tuning."""
     conflicts = housekeeping_config_conflicts(payload)
     if conflicts:
-        raise ValueError(
+        raise HousekeepingMigrationError(
             "Retired housekeeping settings require explicit migration: "
             + ", ".join(conflicts)
             + ". Remove these fields to adopt code-owned daily sweeps and "

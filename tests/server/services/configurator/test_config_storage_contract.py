@@ -250,3 +250,43 @@ def test_legacy_shadow_file_load_patch_save_roundtrip(tmp_path: Path) -> None:
     assert saved["window_size"] == 23
     assert saved["stride_size"] == 7
     assert storage.load_config().enable_document_expansion is True
+
+
+@pytest.mark.parametrize(
+    "section,field",
+    [
+        ("lineage_gc", "poll_interval_seconds"),
+        ("governance_retention", "audit_events_delete_batch_limit"),
+    ],
+)
+def test_retired_custom_policy_propagates_without_resetting_file(
+    tmp_path, section, field
+):
+    from reflexio.cli.bootstrap_config import (
+        load_storage_from_config,
+        save_storage_to_config,
+    )
+    from reflexio.housekeeping_policy import HousekeepingMigrationError
+
+    storage = _make_local_file_storage(str(tmp_path))
+    payload = {
+        "storage_config": {"type": "sqlite"},
+        "lineage_gc": {"enabled": False},
+        "agent_context_prompt": "preserve me",
+    }
+    payload.setdefault(section, {})[field] = "private-custom-policy"
+    path = Path(storage.config_file)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(payload))
+    before = path.read_bytes()
+    for load in (
+        storage.load_config,
+        lambda: load_storage_from_config("test-org", base_dir=str(tmp_path)),
+        lambda: save_storage_to_config("sqlite", "test-org", base_dir=str(tmp_path)),
+    ):
+        with pytest.raises(
+            HousekeepingMigrationError, match=f"{section}.{field}"
+        ) as error:
+            load()
+        assert "private-custom-policy" not in str(error.value)
+        assert path.read_bytes() == before

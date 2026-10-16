@@ -1148,7 +1148,10 @@ def validate_stored_config(data: dict[str, Any]) -> Config:
     API writes intentionally construct ``Config`` directly and therefore keep
     the model's strict ``extra="forbid"`` behavior.
     """
-    normalized = normalize_legacy_config_shape(data)
+    # Run retirement preflight outside Pydantic so its typed migration error
+    # survives; otherwise ValueError is wrapped and mistaken for recoverable
+    # schema drift by storage loaders.
+    normalized = strip_retired_config_fields(normalize_legacy_config_shape(data))
     # Validate storage_config on its own, strictly, BEFORE the lenient pass
     # below. ``extra="ignore"`` cascades into nested models, so it overrides each
     # StorageConfig member's ``extra="forbid"`` -- without this pre-check a
