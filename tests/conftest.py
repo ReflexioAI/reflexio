@@ -77,7 +77,6 @@ os.environ["LOCAL_STORAGE_PATH"] = str(_REFLEXIO_TEST_HOME / ".reflexio" / "data
 # extraction still has to run, and its correctness is what the tests assert.
 # `setdefault`, so an explicit value still wins for anyone testing the real
 # interval.
-os.environ.setdefault("REFLEXIO_DURABLE_LEARNING_POLL_SECONDS", "0.05")
 import reflexio.server as _test_server  # noqa: E402
 from reflexio.server.extensions import reset_services  # noqa: E402
 from reflexio.server.llm.token_accounting import run_token_capture  # noqa: E402
@@ -230,6 +229,12 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 def pytest_unconfigure(config):
     cleanup_llm_mock(config)
+
+
+@pytest.fixture(autouse=True)
+def _fast_discovery_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Speed internal scheduler ticks without reviving a retired public knob."""
+    monkeypatch.setattr("reflexio.durable_learning_policy.DISCOVERY_POLL_SECONDS", 0.05)
 
 
 @pytest.fixture(autouse=True)

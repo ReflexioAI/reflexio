@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable, Iterable
 
+from reflexio import durable_learning_policy
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.background_work import (
     report_background_failure,
     report_background_success,
 )
-from reflexio.server.env_utils import env_str
 from reflexio.server.scheduling import ThreadedScheduler
 from reflexio.server.services.durable_learning.worker import (
     DurableLearningWorker,
@@ -28,17 +29,14 @@ class DurableLearningScheduler(ThreadedScheduler):
         org_ids_provider: Callable[[], Iterable[str]],
         instance_id: str | None = None,
     ):
+        durable_learning_policy.validate_discovery_timing_env(os.environ)
         super().__init__(thread_name="reflexio-durable-learning-scheduler")
         self._worker = DurableLearningWorker(
             request_context_factory, instance_id=instance_id
         )
         self._org_ids_provider = org_ids_provider
-        self._poll = max(
-            0.01, float(env_str("REFLEXIO_DURABLE_LEARNING_POLL_SECONDS", "2.0"))
-        )
-        self._lease = max(
-            3, int(env_str("REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS", "300"))
-        )
+        self._poll = durable_learning_policy.DISCOVERY_POLL_SECONDS
+        self._lease = durable_learning_policy.CLAIM_LEASE_SECONDS
         self._last_org: str | None = None
 
     def _run_once(self) -> float:
