@@ -866,9 +866,11 @@ def test_optimizer_runs_single_window_when_commit_threshold_is_one(tmp_path):
     assert jobs[0]["status"] == "completed"
 
 
-def test_run_gepa_reuses_trainset_for_single_window_validation(tmp_path):
+@pytest.mark.parametrize("merge_limit", [0, 5, 9])
+def test_run_gepa_reuses_trainset_for_single_window_validation(tmp_path, merge_limit):
     storage = _sqlite_storage(tmp_path)
     config = PlaybookOptimizerConfig(
+        max_merge_invocations=merge_limit,
         enabled=True,
         optimize_agent_playbooks=True,
         webhook_url="https://assistant.example.test/rollout",
@@ -888,6 +890,8 @@ def test_run_gepa_reuses_trainset_for_single_window_validation(tmp_path):
         optimizer._run_gepa(config, "seed", [window], [window], adapter)  # noqa: SLF001
 
     _, kwargs = gepa_optimize.call_args
+    assert kwargs["use_merge"] is (merge_limit > 0)
+    assert kwargs["max_merge_invocations"] == merge_limit
     assert kwargs["trainset"] == [window]
     assert kwargs["valset"] is None
     assert kwargs["cache_evaluation"] is True

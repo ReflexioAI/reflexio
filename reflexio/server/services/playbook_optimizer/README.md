@@ -23,3 +23,9 @@ The scheduler invokes `optimizer.py`, which resolves source scenarios, runs assi
 
 
 Do not introduce a `components/` package without a separate design that proves the dependency direction is clearer after the move.
+
+Merge admission has one configuration input: `max_merge_invocations`. Zero
+means disabled; positive values bound GEPA merges. The schema normalizes legacy
+`use_merge=false` to zero before raw upgrade pruning and canonical saves. GEPA's
+boolean and recorded merge identity are derived from the budget; saved job
+authority remains immutable; durable publication uses its recorded snapshot.

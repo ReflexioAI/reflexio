@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
@@ -17,6 +17,26 @@ from .api_schema.validators import (
     SafeHttpUrl,
     SanitizedNonEmptyStr,
 )
+
+DEFAULT_MAX_MERGE_INVOCATIONS = 5
+_LEGACY_MERGE_ENABLED = TypeAdapter(bool)
+_LEGACY_MERGE_LIMIT = TypeAdapter(Annotated[int, Field(ge=0)])
+
+
+def _normalize_optimizer_merge_policy(data: Any) -> Any:
+    """Accept the former switch without keeping a second merge control."""
+    if not isinstance(data, dict) or "use_merge" not in data:
+        return data
+    enabled = _LEGACY_MERGE_ENABLED.validate_python(data["use_merge"])
+    # Validate even an inactive limit; retirement must not hide malformed input.
+    limit = _LEGACY_MERGE_LIMIT.validate_python(
+        data.get("max_merge_invocations", DEFAULT_MAX_MERGE_INVOCATIONS)
+    )
+    normalized = dict(data)
+    normalized.pop("use_merge")
+    normalized["max_merge_invocations"] = limit if enabled else 0
+    return normalized
+
 
 # Embedding vector dimensions. Changing this requires a DB migration and re-embedding,
 # so it is intentionally a constant rather than a configurable setting.
@@ -157,6 +177,10 @@ def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
     can share this cleanup without mutating a caller's saved configuration.
     """
     payload = strip_legacy_housekeeping_fields(data)
+    if "playbook_optimizer_config" in payload:
+        payload["playbook_optimizer_config"] = _normalize_optimizer_merge_policy(
+            payload["playbook_optimizer_config"]
+        )
     payload.pop("shadow_mode_enabled", None)
     names = {
         "profile_extractor_config": {"extractor_name"},
@@ -693,8 +717,8 @@ class PlaybookOptimizerConfig(BaseModel):
     min_commit_windows: int = Field(default=2, gt=0)
     min_commit_score: float = Field(default=0.75, ge=0.0, le=1.0)
     min_commit_likert: int = Field(default=4, ge=1, le=5)
-    use_merge: bool = True
-    max_merge_invocations: int = Field(default=5, ge=0)
+    # One budget owns both merge admission and its limit; zero disables merging.
+    max_merge_invocations: int = Field(default=DEFAULT_MAX_MERGE_INVOCATIONS, ge=0)
     reflection_model: str | None = None
 
     # --- assistant backend: webhook ---------------------------------------
@@ -718,6 +742,11 @@ class PlaybookOptimizerConfig(BaseModel):
     scheduler_jitter_seconds: float = Field(default=1.0, ge=0.0)
     cooldown_after_aborts_seconds: int = Field(default=3600, ge=0)
     abort_cooldown_threshold: int = Field(default=2, ge=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_merge_policy(cls, data: Any) -> Any:
+        return _normalize_optimizer_merge_policy(data)
 
     @model_validator(mode="after")
     def check_single_assistant_backend(self) -> Self:

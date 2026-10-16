@@ -426,7 +426,6 @@ def test_gepa_user_job_creation_freezes_complete_sanitized_authority(tmp_path):
     config.playbook_optimizer_config.early_stop_score = 0.1 + 0.2
     config.playbook_optimizer_config.reflection_minibatch_size = 3
     config.playbook_optimizer_config.max_validation_windows = 1
-    config.playbook_optimizer_config.use_merge = False
     config.playbook_optimizer_config.max_merge_invocations = 0
     config.playbook_optimizer_config.reflection_model = "judge-model"
     config.playbook_optimizer_config.webhook_auth_header = "Bearer secret"
