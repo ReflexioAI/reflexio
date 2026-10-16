@@ -88,28 +88,6 @@ def setup(pipeline, monkeypatch, *, gate=True, profiles=True):
     return engine, storage, window, token, client, calls
 
 
-def freeze_pre_retirement_name(storage, window):
-    from reflexio.server.services.storage.storage_base import build_scope_hash
-
-    parent = storage.get_agent_run(f"window:{window.window_id}")
-    snapshot = copy.deepcopy(parent.generation_request_snapshot)
-    snapshot["extractor_config"]["extractor_name"] = "historical-profile-label"
-    original_hash = build_scope_hash(snapshot["extractor_config"])
-    policy = copy.deepcopy(window.policy)
-    policy["extractor"] = copy.deepcopy(snapshot["extractor_config"])
-    # Simulate a pre-retirement release's persisted state, not a new admission.
-    with storage.conn:
-        storage.conn.execute(
-            "UPDATE _agent_runs SET extractor_config_hash=?,generation_request_snapshot=? WHERE id=?",
-            (original_hash, json.dumps(snapshot), parent.id),
-        )
-        storage.conn.execute(
-            "UPDATE extraction_windows SET policy=? WHERE window_id=?",
-            (json.dumps(policy), window.window_id),
-        )
-    return parent.id, snapshot, original_hash
-
-
 @pytest.mark.parametrize(
     ("gate", "profiles", "expected"),
     [(True, True, 1), (True, False, 0), (False, True, 0)],
@@ -220,10 +198,27 @@ def test_restart_preserves_candidates_and_paid_calls(pipeline, monkeypatch, boun
 def test_retired_name_resume_keeps_frozen_profile_candidates_and_paid_calls(
     pipeline, monkeypatch
 ):
-    from reflexio.server.services.durable_learning import profile_package_executor
+    from reflexio.models.config_schema import ProfileExtractorConfig
+    from reflexio.server.services.durable_learning import window_executor
     from reflexio.server.services.storage.storage_base import AgentRunStatus
 
+    class LegacyProfileExtractorConfig(ProfileExtractorConfig):
+        extractor_name: str = "historical-profile-label"
+
     engine, storage, window, token, client, calls = setup(pipeline, monkeypatch)
+    # Use the former schema before admission so native contracts, compression
+    # witnesses and the parent snapshot all contain the historical field.
+    policy = copy.deepcopy(window.policy)
+    policy["extractor"]["extractor_name"] = "historical-profile-label"
+    with storage.conn:
+        storage.conn.execute(
+            "UPDATE extraction_windows SET policy=? WHERE window_id=?",
+            (json.dumps(policy), window.window_id),
+        )
+    window = storage.prepare_extraction("u", token)
+    monkeypatch.setattr(
+        window_executor, "ProfileExtractorConfig", LegacyProfileExtractorConfig
+    )
     executor = ProfilePackageWindowExecutor(engine.request_context, client)
     complete = storage.update_agent_run_status
 
@@ -236,21 +231,21 @@ def test_retired_name_resume_keeps_frozen_profile_candidates_and_paid_calls(
     with pytest.raises(RuntimeError, match="pause before parent completion"):
         executor.execute(window, token)
     monkeypatch.setattr(storage, "update_agent_run_status", complete)
-    parent_id, snapshot, original_hash = freeze_pre_retirement_name(storage, window)
-    resumed = storage.prepare_extraction("u", token)
-    compatible = profile_package_executor.matches_frozen_extractor_binding
-    monkeypatch.setattr(
-        profile_package_executor,
-        "matches_frozen_extractor_binding",
-        lambda prior, expected, _: prior.binding == expected.binding,
+    parent = storage.get_agent_run(f"window:{window.window_id}")
+    parent_id = parent.id
+    snapshot = copy.deepcopy(parent.generation_request_snapshot)
+    original_hash = parent.binding.extractor_config_hash
+    assert snapshot["extractor_config"]["extractor_name"] == "historical-profile-label"
+    assert (
+        snapshot["profile_package_preparation"]["extractor_config"]["extractor_name"]
+        == "historical-profile-label"
     )
-    with pytest.raises(InputBudgetConfigurationError, match="admission changed"):
-        executor.execute(resumed, token)
     assert len(calls) == 3
     assert storage.get_user_profile("u") == []
     monkeypatch.setattr(
-        profile_package_executor, "matches_frozen_extractor_binding", compatible
+        window_executor, "ProfileExtractorConfig", ProfileExtractorConfig
     )
+    resumed = storage.prepare_extraction("u", token)
     executor.execute(resumed, token)
     saved = storage.get_agent_run(parent_id)
     assert saved.binding.extractor_config_hash == original_hash
@@ -261,6 +256,14 @@ def test_retired_name_resume_keeps_frozen_profile_candidates_and_paid_calls(
     assert (
         saved.generation_request_snapshot["overflow"]["attempts"]
         == snapshot["overflow"]["attempts"]
+    )
+    assert (
+        saved.generation_request_snapshot["profile_package_preparation"]
+        == snapshot["profile_package_preparation"]
+    )
+    assert (
+        saved.generation_request_snapshot["overflow"]["input_protocol"]
+        == snapshot["overflow"]["input_protocol"]
     )
     candidates = snapshot["overflow"]["checkpoint"]["profile_package_candidates"]
     rows = storage.get_user_profile("u")

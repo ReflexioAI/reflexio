@@ -193,6 +193,21 @@ class ProfilePackagePreparation:
         )
 
 
+def _extractor_snapshot(
+    config: ProfileExtractorConfig, frozen: dict[str, Any] | None
+) -> dict[str, Any]:
+    current = config.model_dump(mode="json")
+    if frozen is None:
+        return current
+    # Reproduce the admitted contract without changing the validated config
+    # used for native requests. The caller also verifies parent/window hashes.
+    effective = dict(frozen)
+    effective.pop("extractor_name", None)
+    if canonical_json(effective) != canonical_json(current):
+        raise InputBudgetConfigurationError("Frozen profile configuration changed")
+    return copy.deepcopy(frozen)
+
+
 def prepare_profile_package(
     groups: list[RequestInteractionDataModel],
     *,
@@ -212,6 +227,7 @@ def prepare_profile_package(
     prior_context: CapturedPriorKnowledge | None = None,
     pending_tools_active: bool = False,
     pending_tool_config: PendingToolCallConfig | None = None,
+    frozen_extractor_config: dict[str, Any] | None = None,
 ) -> ProfilePackagePreparation:
     """Price full gate/agent input across native ladders before compression.
 
@@ -225,6 +241,7 @@ def prepare_profile_package(
     """
     context_limits = dict(context_limits)
     config = extractor_config.model_copy(deep=True)
+    config_snapshot = _extractor_snapshot(config, frozen_extractor_config)
     profiles = [profile.model_copy(deep=True) for profile in existing_profiles]
     if any(profile.user_id != user_id for profile in profiles):
         raise InputBudgetConfigurationError("Profile context owner changed")
@@ -365,7 +382,7 @@ def prepare_profile_package(
         "project_id": project_id,
         "user_id": user_id,
         "source": source,
-        "extractor_config": config.model_dump(mode="json"),
+        "extractor_config": config_snapshot,
         "context_profiles": [profile.model_dump(mode="json") for profile in profiles],
         "agent_context": agent_context,
         "templates": templates,
