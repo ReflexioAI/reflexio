@@ -293,7 +293,7 @@ Key components:
 | `site_var_manager.py` | SiteVarManager (singleton) - loads JSON/TXT configs |
 | `feature_flags.py` | Per-org feature gating (`is_feature_enabled()`, `get_all_feature_flags()`) |
 
-**Feature Flags**: Config in `site_var_sources/feature_flags.json`. Each flag has global `enabled` toggle and per-org `enabled_org_ids` allowlist. Unknown flags default to enabled (fail-open). Current flags: `resumable_extraction_agent`, `lineage_dual_read_diff`.
+**Feature Flags**: Config in `site_var_sources/feature_flags.json`. Each flag has global `enabled` toggle and per-org `enabled_org_ids` allowlist. Unknown flags default to enabled (fail-open). Current flags: `resumable_extraction_agent`.
 
 Access: `SiteVarManager().get_site_var(key)` for raw values, `feature_flags.is_feature_enabled(org_id, name)` for flag checks
 
@@ -814,3 +814,8 @@ session, and agent-version filtering. Normal evaluations use the configured
 singleton evaluator identity. This compatibility guarantee is SQLite-specific;
 other storage adapters must explicitly support nullable identities before
 callers rely on it there.
+
+Database environment aliases resolve through `reflexio/config_env.py`, shared with
+CLI bootstrap. A nonblank `DATA_DB_URL` wins; backend-specific legacy names remain
+accepted when it is absent. The retired `shadow_mode_enabled` configuration input
+is accepted as a no-op and omitted from serialization.

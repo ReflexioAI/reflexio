@@ -12,6 +12,8 @@ from typing import Any
 
 import typer
 
+from reflexio.config_env import resolve_data_db_url
+
 from .paths import reflexio_home
 
 logger = logging.getLogger(__name__)
@@ -40,9 +42,7 @@ _TYPE_TO_BACKEND: dict[type, str] = {}  # populated on first use
 
 def _data_db_url_from_env() -> str:
     """Resolve the canonical data DB URL, accepting the legacy alias."""
-    return os.environ.get("DATA_DB_URL", "") or os.environ.get(
-        "DATA_SUPABASE_DB_URL", ""
-    )
+    return resolve_data_db_url(os.environ)
 
 
 def _ensure_type_map() -> dict[type, str]:

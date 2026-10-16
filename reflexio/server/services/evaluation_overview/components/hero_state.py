@@ -35,7 +35,7 @@ def compute_hero_state(
     """Return the hero state for the current org and time window.
 
     Args:
-        shadow_enabled (bool): Value of `Config.shadow_mode_enabled`.
+        shadow_enabled (bool): Whether shadow comparisons are available (currently false).
         days_since_first_eval (int | None): Wall-clock days since the first
             ever evaluated session for this org. None when no results exist.
         n_shadow_in_window (int): Count of evaluation results that have a

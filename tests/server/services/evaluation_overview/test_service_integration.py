@@ -74,7 +74,7 @@ def test_service_returns_full_response_with_shadow_enabled_and_data() -> None:
             _eval_result(result_id=3, session_id="s3", is_success=False, corrections=3),
         ]
     )
-    config = Config(storage_config=StorageConfigSQLite(), shadow_mode_enabled=True)
+    config = Config(storage_config=StorageConfigSQLite())
 
     svc = EvaluationOverviewService(storage=storage, config=config)
     response = svc.run(GetEvaluationOverviewRequest(from_ts=0, to_ts=int(time.time())))
@@ -112,7 +112,7 @@ def test_service_hero_shadow_fields_always_null_after_direct_grade_removal() -> 
 
 def test_service_returns_empty_state_when_no_results() -> None:
     storage = _storage_with_results([])
-    config = Config(storage_config=StorageConfigSQLite(), shadow_mode_enabled=False)
+    config = Config(storage_config=StorageConfigSQLite())
 
     svc = EvaluationOverviewService(storage=storage, config=config)
     response = svc.run(GetEvaluationOverviewRequest(from_ts=0, to_ts=int(time.time())))

@@ -1765,7 +1765,7 @@ class ReflexioClient:
 
         Unlike :meth:`set_config`, this does NOT round-trip the payload
         through ``Config(**...)`` client-side, so partial updates like
-        ``{"shadow_mode_enabled": true}`` succeed without needing
+        ``{"enable_document_expansion": true}`` succeed without needing
         the caller to also re-send required fields like ``storage_config``.
         The server fetches the existing config and shallow-merges
         atomically — there is no client-side read-modify-write race.

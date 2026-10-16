@@ -736,6 +736,23 @@ class TestUpdateConfigRoute:
         # Cache invalidated on success.
         mock_invalidate.assert_called_once_with(org_id="test-org")
 
+    def test_retired_shadow_patch_preserves_live_customizations(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        existing = self._existing_config()
+        existing.agent_context_prompt = "customer customization"
+        self._wire_mock(mock_reflexio, existing)
+        response = client.post(
+            "/api/update_config",
+            json={"shadow_mode_enabled": True, "enable_document_expansion": True},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["success"] is True
+        saved = mock_reflexio.set_config.call_args.args[0].model_dump()
+        assert "shadow_mode_enabled" not in saved
+        assert saved["agent_context_prompt"] == "customer customization"
+        assert saved["enable_document_expansion"] is True
+
     def test_rejects_direct_experiment_lifecycle_mutation(
         self, client, patched_reflexio, mock_reflexio
     ):

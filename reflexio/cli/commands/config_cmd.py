@@ -329,7 +329,7 @@ def update_config(
             error_type="validation",
             message="Must provide one of --data, --file, or one or more --field",
             hint=(
-                "Examples: --data '{\"shadow_mode_enabled\":true}'  |  "
+                "Examples: --data '{\"enable_document_expansion\":true}'  |  "
                 "--file partial.json  |  --field skip_should_run_check=true"
             ),
             exit_code=EXIT_VALIDATION,

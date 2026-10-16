@@ -2,9 +2,5 @@
     "resumable_extraction_agent": {
         "enabled": true,
         "enabled_org_ids": []
-    },
-    "lineage_dual_read_diff": {
-        "enabled": true,
-        "enabled_org_ids": []
     }
 }
