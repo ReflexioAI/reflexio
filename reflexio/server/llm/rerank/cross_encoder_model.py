@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from reflexio.server.llm.rerank.common import (
@@ -141,4 +142,51 @@ class CrossEncoderRunner:
         return True
 
 
-__all__ = ["CrossEncoderRunner"]
+@dataclass(frozen=True)
+class RerankWork:
+    """Query-bound scoring with optional planning under CPU worker ownership."""
+
+    runner: CrossEncoderRunner
+    query: str
+
+    def __call__(self, documents: list[str]) -> list[float]:
+        return self.runner.score_pairs(self.query, documents)
+
+    def select_chunk_size(self, documents: list[str]) -> int:
+        """Inspect at most sixteen pairs; preserve the original padding groups.
+
+        The scheduler invokes this on its model-owning thread. Four-document
+        turns remain the fallback, including older supported model runtimes.
+        """
+        if len(documents) <= 4:
+            return 4
+        model = self.runner._get_model()
+        preprocess = getattr(model, "preprocess", None)
+        if not callable(preprocess):
+            return 4
+        try:
+            with self.runner._predict_lock:
+                features: Any = preprocess(
+                    [(self.query, doc) for doc in documents[:16]]
+                )
+            lengths = [int(n) for n in features["attention_mask"].sum(dim=1).tolist()]
+        except Exception as exc:  # noqa: BLE001
+            message = (
+                f"Failed to plan cross-encoder model {self.runner.model_name!r}: {exc}"
+            )
+            self.runner._set_readiness(ready=False, error=message)
+            raise CrossEncoderUnavailableError(message) from exc
+        for size in (16, 8):
+            group = lengths[:size]
+            if len(group) <= 4 or len(group) * max(group) > 1024:
+                continue
+            original_padding = sum(
+                len(group[i : i + 4]) * max(group[i : i + 4])
+                for i in range(0, len(group), 4)
+            )
+            if len(group) * max(group) == original_padding:
+                return size
+        return 4
+
+
+__all__ = ["CrossEncoderRunner", "RerankWork"]
