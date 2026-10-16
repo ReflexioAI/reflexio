@@ -103,3 +103,39 @@ def test_accepted_deferred_publish_is_success(runner, app, mock_client, json_mod
     else:
         assert "Published (alice)" in result.output
         assert "Queued" in result.output
+
+
+@pytest.mark.parametrize("reason", ["wait_timeout", None])
+def test_deferred_learning_does_not_report_zero_counts(
+    runner, app, mock_client, reason
+):
+    """Admission-time zero counts on a deferred publish are not extraction results."""
+    mock_client.publish_interaction.return_value = PublishUserInteractionResponse(
+        success=True,
+        request_id="r-1",
+        profiles_added=0,
+        playbooks_added=0,
+        learning_status="deferred",
+        learning_reason=reason,
+    )
+    result = runner.invoke(app, ["publish", "--wait", "--data", json.dumps(_payload())])
+    assert result.exit_code == 0, result.output
+    assert "profile(s) added" not in result.output
+    assert "Extraction: deferred" in result.output
+    if reason:
+        assert f"deferred ({reason})" in result.output
+
+
+def test_completed_learning_reports_counts(runner, app, mock_client):
+    mock_client.publish_interaction.return_value = PublishUserInteractionResponse(
+        success=True,
+        request_id="r-1",
+        profiles_added=3,
+        playbooks_added=2,
+        learning_status="done",
+        learning_reason="covered",
+    )
+    result = runner.invoke(app, ["publish", "--wait", "--data", json.dumps(_payload())])
+    assert result.exit_code == 0, result.output
+    assert "Extraction: 3 profile(s) added, 2 playbook(s) added" in result.output
+    assert "deferred" not in result.output
