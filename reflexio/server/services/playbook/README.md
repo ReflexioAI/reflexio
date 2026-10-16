@@ -438,7 +438,8 @@ No role, ownership, source-span or carrier-capacity validation is relaxed.
 
 Ordinary prompt patches 4.6.1/1.5.1 use representation-neutral citation wording;
 shared schema descriptions no longer assume turn-only references. Historical prompt
-files remain unchanged. Explicit historical/custom prompt pins retain their own
+content stays unchanged; only superseded activation flags are disabled. Explicit
+historical/custom prompt pins retain their own
 wording; default-template updates do not silently rewrite those pins. Request tests
 inspect both the complete serialized schema and messages on initial/repair calls,
 not just presence of a prepared-source reminder. Scripted responses establish

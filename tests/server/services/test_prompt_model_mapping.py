@@ -30,8 +30,8 @@ _PROMPT_BANK_DIR = (
 # holds the expected mock response for this prompt's structured output.
 # None means the prompt does not produce structured output relevant to mocking.
 PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
-    "playbook_extraction_main": ("v1.5.0", "playbook_extraction"),
-    "playbook_extraction_context": ("v4.6.0", None),
+    "playbook_extraction_main": ("v1.5.1", "playbook_extraction"),
+    "playbook_extraction_context": ("v4.6.1", None),
     "playbook_candidate_review": ("v1.3.0", None),
     "playbook_should_generate": ("v3.0.0", "boolean_evaluation"),
     "playbook_should_generate_expert": ("v1.0.0", "boolean_evaluation"),
