@@ -521,10 +521,9 @@ def create_app(  # noqa: C901
                     org_id_provider=resume_org_ids_provider,
                     start_gate=resume_start_gate,
                 )
-                # Register the missing-vector backfill sweep (opt-in via
-                # REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED) BEFORE starting the GC
-                # scheduler, so its per-org hook is visible when maybe_start_lineage_gc
-                # evaluates its start conditions. No-op when the flag is off.
+                # Register bounded missing-vector repair BEFORE starting the GC
+                # scheduler so its per-org hook participates in start conditions.
+                # A zero REFLEXIO_MISSING_VECTOR_BACKFILL_CAP skips registration.
                 install_missing_vector_backfill_sweep()
                 gc_scheduler = maybe_start_lineage_gc(
                     lambda org_id: RequestContext(org_id=org_id),

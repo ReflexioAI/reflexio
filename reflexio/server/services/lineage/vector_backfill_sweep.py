@@ -16,18 +16,17 @@ Design:
 - **Bounded**: re-embeds at most ``REFLEXIO_MISSING_VECTOR_BACKFILL_CAP``
   interactions per org per tick (prior art warns unbounded backfills flood
   logs / embedding cost — see ``llm/_litellm_embedding.py``).
-- **On by default**: registered unless ``REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED``
-  is explicitly falsey. It was opt-in originally so that a deployment which had
-  not asked for it was byte-for-byte unchanged; that turned out to be the wrong
-  default, because the hole it repairs is opened silently by the ingest path and
-  is permanent while nothing sweeps. An operator who wants the old behaviour
-  sets the flag to ``false``. The flag is re-read every tick, so a live disable
-  is honoured without a restart.
+- **One effective budget**: ``REFLEXIO_MISSING_VECTOR_BACKFILL_CAP`` defaults
+  to 200; zero disables registration and execution. A positive budget bounds
+  each org/tick. The retired enable flag is only a compatibility alias: falsey
+  resolves to zero, while true/unset delegates to the budget. A legacy explicit
+  disable wins over a positive cap. Existing negative/unparseable caps retain
+  their fallback to 200. Zero formerly fell back too; it now disables repair.
+  Registered hooks re-read the effective budget each tick. A startup disabled
+  by a zero budget does not install this hook; reenabling then needs a restart.
 
   Registering any per-org hook starts the shared ``LineageGCScheduler`` even
-  when no bootstrap-org flag is set, so this default also starts that loop where
-  it previously would not have. Other sweep classes keep their own config gates
-  and do not begin running as a result -- only this hook does.
+  when no bootstrap-org flag is set. Other sweeps retain their own config gates.
 - **Fail-safe**: the storage layer catches ``EmbeddingUnavailableError`` and
   returns 0 (work left for the next tick); this closure additionally captures
   any unexpected error as an anomaly and returns the count so far, so one org's
@@ -56,8 +55,11 @@ _installed = False
 def _resolve_cap() -> int:
     """Return the per-org per-tick backfill cap from the environment.
 
-    Falls back to :data:`_DEFAULT_CAP` when unset, blank, or unparseable/<= 0.
+    Zero disables repair. The legacy falsey enable alias resolves to zero.
+    Unset, blank, negative or unparseable caps retain the default of 200.
     """
+    if not env_truthy(env_str(ENABLE_ENV_VAR, "true")):
+        return 0
     raw = env_str(CAP_ENV_VAR, str(_DEFAULT_CAP))
     try:
         cap = int(raw)
@@ -68,14 +70,14 @@ def _resolve_cap() -> int:
             _DEFAULT_CAP,
         )
         return _DEFAULT_CAP
-    return cap if cap > 0 else _DEFAULT_CAP
+    return cap if cap >= 0 else _DEFAULT_CAP
 
 
 def missing_vector_backfill_sweep(org_id: str, _now: int) -> int:
     """Re-embed a bounded batch of vector-less interactions for one org.
 
-    Registered with the OSS ``register_per_org_sweep`` seam. Reads the enable
-    flag and cap each tick so live config changes are honoured. Absorbs its own
+    Registered with the OSS ``register_per_org_sweep`` seam. Resolves the budget
+    each tick so live config changes are honoured. Absorbs its own
     errors (returns instead of raising) and therefore emits its own anomaly.
 
     Args:
@@ -86,7 +88,8 @@ def missing_vector_backfill_sweep(org_id: str, _now: int) -> int:
     Returns:
         int: Number of interactions whose vector was backfilled (0 on skip/error).
     """
-    if not env_truthy(env_str(ENABLE_ENV_VAR, "true")):
+    cap = _resolve_cap()
+    if cap == 0:
         return 0
 
     # Imported lazily so importing this module never drags in the request stack.
@@ -97,7 +100,7 @@ def missing_vector_backfill_sweep(org_id: str, _now: int) -> int:
         ctx = RequestContext(org_id=org_id)
         if ctx.storage is None:
             return 0
-        backfilled = ctx.storage.backfill_missing_interaction_vectors(_resolve_cap())
+        backfilled = ctx.storage.backfill_missing_interaction_vectors(cap)
         if backfilled:
             logger.info(
                 "event=missing_vector_backfill_tick org_id=%s backfilled=%d",
@@ -116,11 +119,8 @@ def missing_vector_backfill_sweep(org_id: str, _now: int) -> int:
 def install_missing_vector_backfill_sweep() -> None:
     """Register the backfill sweep on the OSS lineage GC scheduler unless disabled.
 
-    Registers unless ``REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED`` is explicitly
-    falsey. Because a registered per-org hook is itself a scheduler start
-    condition, this means the shared ``LineageGCScheduler`` now starts even when
-    no bootstrap-org flag is set. That is intended: the durability hole this
-    repairs is permanent while nothing sweeps.
+    A positive effective budget registers the hook, which itself is a shared
+    scheduler start condition. Zero does not register it or start the loop.
 
     Idempotent: a second call in the same process is a no-op. Non-fatal: a
     registration failure logs and skips rather than aborting app startup.
@@ -131,7 +131,8 @@ def install_missing_vector_backfill_sweep() -> None:
     global _installed  # noqa: PLW0603
     if _installed:
         return
-    if not env_truthy(env_str(ENABLE_ENV_VAR, "true")):
+    cap = _resolve_cap()
+    if cap == 0:
         return
     try:
         from reflexio.server.services.lineage.gc_scheduler import (
@@ -140,9 +141,7 @@ def install_missing_vector_backfill_sweep() -> None:
 
         register_per_org_sweep(missing_vector_backfill_sweep)
         _installed = True
-        logger.info(
-            "event=missing_vector_backfill_sweep_registered cap=%d", _resolve_cap()
-        )
+        logger.info("event=missing_vector_backfill_sweep_registered cap=%d", cap)
     except Exception:
         from reflexio.server.error_reporting import capture_anomaly
 
