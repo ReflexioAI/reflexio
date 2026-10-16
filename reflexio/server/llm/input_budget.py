@@ -26,6 +26,10 @@ extraction_usage_observer: ContextVar[
 extraction_request_identity: ContextVar[dict[str, Any] | None] = ContextVar(
     "extraction_request_identity", default=None
 )
+# Only audited reconciliation opts in around its physical provider calls.
+extraction_use_model_capacity: ContextVar[bool] = ContextVar(
+    "extraction_use_model_capacity", default=False
+)
 
 
 class InputBudgetConfigurationError(ProviderRequestGuardError):
@@ -132,15 +136,20 @@ def request_input_capacity(
     params: Mapping[str, Any],
     *,
     context_limits: Mapping[str, int],
-    prompt_target: int = 65536,
+    prompt_target: int | None = 65536,
 ) -> int:
     """Return the input ceiling after the actual native output reservation.
 
     This is provider-free and does not count messages. Pure consumer preparation
     uses the same capacity rules as dispatch; custom routes need declarations.
+    A None target uses only verified model headroom after output reservation.
     """
     model = params.get("model")
-    if not isinstance(model, str) or not model or prompt_target <= 0:
+    if (
+        not isinstance(model, str)
+        or not model
+        or (prompt_target is not None and prompt_target <= 0)
+    ):
         raise InputBudgetConfigurationError("Missing effective model or prompt target")
     api_base = params.get("api_base") or params.get("base_url")
     key = f"{model}@{api_base}" if api_base else model
@@ -164,14 +173,15 @@ def request_input_capacity(
     output_tokens = params.get("max_completion_tokens", params.get("max_tokens"))
     if type(output_tokens) is not int or output_tokens <= 0:
         raise InputBudgetConfigurationError("Effective output reservation is required")
-    return min(prompt_target, context_limit - output_tokens)
+    capacity = context_limit - output_tokens
+    return capacity if prompt_target is None else min(prompt_target, capacity)
 
 
 def check_request_input_budget(
     params: Mapping[str, Any],
     *,
     context_limits: Mapping[str, int],
-    prompt_target: int = 65536,
+    prompt_target: int | None = 65536,
 ) -> int:
     """Check each actual built request, including repairs and fallback rungs."""
     capacity = request_input_capacity(
@@ -200,7 +210,11 @@ def extraction_request_guard(
         _parse_structured_output: bool,
     ) -> None:
         check_request_input_budget(
-            params, context_limits=context_limits, prompt_target=prompt_target
+            params,
+            context_limits=context_limits,
+            prompt_target=None
+            if extraction_use_model_capacity.get()
+            else prompt_target,
         )
         try:
             reserve_attempt()

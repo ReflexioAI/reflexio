@@ -18,11 +18,14 @@ from tests.server.services.test_durable_window_pipeline import payload
 from tests.server.services.test_durable_window_pipeline import pipeline as pipeline
 
 
-@pytest.mark.parametrize("mode", ["recover", "policy_changed", "capacity"])
+@pytest.mark.parametrize(
+    "mode", ["recover", "policy_changed", "capacity", "operator_capacity"]
+)
 def test_corrected_context_declaration_resumes_only_the_original_contract(
     pipeline, monkeypatch, mode
 ):
     engine, worker, http = pipeline
+    capacity_mode = mode in {"capacity", "operator_capacity"}
     storage = engine.get_storage()
     with storage._stream_sql(read_only=True) as db:
         started = db.now()
@@ -54,7 +57,7 @@ def test_corrected_context_declaration_resumes_only_the_original_contract(
     )
     monkeypatch.setenv(
         "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
-        json.dumps({declaration_key: 512} if mode == "capacity" else {}),
+        json.dumps({declaration_key: 512} if capacity_mode else {}),
     )
     # A custom endpoint must supply its output cap explicitly; this test isolates
     # correction of context declarations, not the separate missing-output gate.
@@ -127,9 +130,7 @@ def test_corrected_context_declaration_resumes_only_the_original_contract(
     assert worker.drain_org(storage.org_id, 1, 300) == 0
     assert dispatched == [] and storage.count_all_profiles() == 0
     reason = (
-        "input_budget_exceeded"
-        if mode == "capacity"
-        else "input_budget_configuration_error"
+        "input_budget_exceeded" if capacity_mode else "input_budget_configuration_error"
     )
     assert storage.extraction_status("u", "declaration-recovery") == {
         "status": "failed",
@@ -143,7 +144,7 @@ def test_corrected_context_declaration_resumes_only_the_original_contract(
     assert cursor["attempts"] == 1
     assert (
         math.isinf(cursor["retry_at"])
-        if mode == "capacity"
+        if capacity_mode
         else cursor["retry_at"] == started + 1
     )
     run_id = f"window:{cursor['window_id']}"
@@ -172,6 +173,19 @@ def test_corrected_context_declaration_resumes_only_the_original_contract(
         storage.get_agent_run(run_id).generation_request_snapshot["overflow"]
         == manifest
     )
+    if mode == "operator_capacity":
+        from reflexio.server.services.extraction.input_recovery import (
+            apply_input_budget_recovery,
+            plan_input_budget_recovery,
+        )
+
+        receipt = plan_input_budget_recovery(storage, cursor["window_id"])
+        assert receipt["recoverable"]
+        apply_input_budget_recovery(storage, receipt)
+        assert (
+            storage.get_agent_run(run_id).generation_request_snapshot["overflow"]
+            == manifest
+        )
     elapsed[0] = 2.0
     result = worker.drain_org(storage.org_id, 1, 300)
     after = storage.get_agent_run(run_id)
@@ -179,7 +193,7 @@ def test_corrected_context_declaration_resumes_only_the_original_contract(
     assert frozen["source_digest"] == manifest["source_digest"]
     assert frozen["chunk_digests"] == manifest["chunk_digests"]
     assert frozen["attempt_limit"] == manifest["attempt_limit"] == 128
-    if mode == "recover":
+    if mode in {"recover", "operator_capacity"}:
         assert result == 1 and storage.count_all_profiles() == 1
         assert complete.call_count == 1
         assert len(dispatched) == len(frozen["attempts"]) == 2
@@ -211,7 +225,7 @@ def test_corrected_context_declaration_resumes_only_the_original_contract(
             )[0]
         assert (
             math.isinf(held["retry_at"])
-            if mode == "capacity"
+            if capacity_mode
             else held["retry_at"] == started + 4
         )
-        assert held["attempts"] == (1 if mode == "capacity" else 2)
+        assert held["attempts"] == (1 if capacity_mode else 2)

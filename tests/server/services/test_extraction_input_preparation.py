@@ -421,3 +421,39 @@ def test_legacy_chunk_rejection_does_not_hash_later_interactions(monkeypatch):
     with pytest.raises(module.ExtractionInputBudgetExceededError, match="byte limit"):
         module.collect_extraction_sources([group], user_id="u", max_source_bytes=10)
     assert seen == [1, 1]
+
+
+def test_initial_packing_can_enlarge_chunks_without_changing_originals(monkeypatch):
+    import reflexio.server.services.extraction.input_preparation as module
+
+    original = module.prepare_extraction_input
+
+    # Use two slots to exercise the real boundary with a small deterministic input.
+    def prepare(*args, **kwargs):
+        return original(*args, **kwargs, max_chunks=2)
+
+    monkeypatch.setattr(module, "prepare_extraction_input", prepare)
+    sessions = [source("original constraint " * 12000)]
+    frozen = sessions[0].model_dump(mode="json")
+    with pytest.raises(module.ExtractionChunkLimitExceededError):
+        prepare(
+            sessions,
+            user_id="u",
+            chunk_tokens=10000,
+            require_overlap=True,
+            include_request_source=True,
+        )
+    packed, geometry = module.prepare_initial_extraction_input(sessions, user_id="u")
+    assert geometry == 20000
+    assert len(packed.chunks) <= 2
+    assert sessions[0].model_dump(mode="json") == frozen
+    assert (
+        "".join(span.text for chunk in packed.chunks for span in chunk.spans)
+        == sessions[0].interactions[0].content
+    )
+    assert (
+        packed.source_digest
+        == module.collect_extraction_sources(
+            sessions, user_id="u", include_request_source=True
+        ).source_digest
+    )
