@@ -80,3 +80,29 @@ def test_cleanup_preserves_policy_holds_and_opaque_metadata_without_mutating():
     assert cfg.lineage_gc.tombstone_grace_window_days == 120
     assert cfg.governance_retention.audit_events_retention_enabled is False
     assert cfg.governance_retention.audit_events_retention_days == 30
+
+
+@pytest.mark.parametrize(
+    "model,payload",
+    [
+        (LineageGCConfig, {"poll_interval_seconds": "private-legacy-value"}),
+        (
+            GovernanceRetentionConfig,
+            {"audit_events_delete_batch_limit": "private-legacy-value"},
+        ),
+        (
+            Config,
+            {
+                "storage_config": None,
+                "agent_context_prompt": "private-context",
+                "lineage_gc": {"poll_interval_seconds": "private-legacy-value"},
+            },
+        ),
+    ],
+)
+def test_migration_error_text_does_not_echo_config_values(model, payload):
+    with pytest.raises(ValidationError) as exc:
+        model.model_validate(payload)
+    assert "explicit migration" in str(exc.value)
+    assert "private-legacy-value" not in str(exc.value)
+    assert "private-context" not in str(exc.value)

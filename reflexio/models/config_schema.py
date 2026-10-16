@@ -765,6 +765,8 @@ class LineageGCConfig(BaseModel):
     indefinitely (e.g. for an extended audit window or rollback standby period).
     """
 
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     enabled: bool = True
     tombstone_grace_window_days: int = Field(default=90, gt=0)
 
@@ -797,6 +799,8 @@ class GovernanceRetentionConfig(BaseModel):
     but inert (the OSS lineage scheduler does not reclaim audit events) and the
     server logs a startup warning when retention is enabled.
     """
+
+    model_config = ConfigDict(hide_input_in_errors=True)
 
     audit_events_retention_enabled: bool = False
     audit_events_retention_days: int = Field(default=365, gt=0)
@@ -937,7 +941,7 @@ def _default_user_playbook_extractor_config() -> UserPlaybookExtractorConfig:
 
 
 class Config(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     # define where user configuration is stored at
     storage_config: StorageConfig
