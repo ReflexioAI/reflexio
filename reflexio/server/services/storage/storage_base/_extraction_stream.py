@@ -788,6 +788,93 @@ class ExtractionStreamStore:
                 (self.org_id, window.user_id),
             )
 
+    def recover_extraction_input_budget(
+        self,
+        window: Window,
+        token: str,
+        *,
+        expected_revision: int,
+        source_digest: str,
+        expected_attempts: int,
+        expected_input_protocol: dict[str, Any] | None = None,
+    ) -> None:
+        """Operator-only re-arm of a qualified held parent, without quota reset.
+
+        The caller must hold the ordinary user lease. Inspect
+        the saved state first; absent parents have unknown history and cannot be
+        recovered through this path. No automatic worker calls this operation.
+        """
+        with self.commit_scope(), self._stream_sql() as db:
+            # Reuses the canonical project, active-window, parent and revision
+            # checks. Missing/cancelled/expired parents cannot become fresh runs.
+            _, _, manifest = self._load_locked_extraction_overflow(
+                db,
+                window,
+                token,
+                expected_revision=expected_revision,
+                source_digest=source_digest,
+                expected_input_protocol=expected_input_protocol,
+            )
+            if not db.query(
+                f"SELECT id FROM {db.table('_agent_runs')} "
+                "WHERE id=? AND org_id=? AND user_id=? AND status='failed'",
+                (f"window:{window.window_id}", self.org_id, window.user_id),
+            ):
+                raise OverflowCheckpointConflictError(
+                    "Recovery parent is no longer failed"
+                )
+            rows = db.query(
+                f"SELECT window_id,user_id,kind,project_id,predecessor,end_seq,manifest,policy,"
+                f"force,skip_aggregation,outcome,invalidated FROM {db.table('extraction_windows')} "
+                "WHERE window_id=? AND user_id=? AND project_id=?" + db.lock(),
+                (window.window_id, window.user_id, window.project_id),
+            )
+            if Window.from_row(rows[0]) != replace(window, attempts=0):
+                raise OverflowCheckpointConflictError("Recovery window changed")
+            if len(manifest["attempts"]) >= manifest["attempt_limit"]:
+                raise OverflowAttemptBudgetExceededError(
+                    "Recovery has no remaining quota"
+                )
+            self.validate_extraction_source_digest(window, source_digest)
+            self.validate_extraction_historical_playbooks(
+                window, manifest["checkpoint"].get("historical_playbooks", {})
+            )
+            if window.kind == "profile":
+                self.validate_extraction_historical_profiles(
+                    window, manifest["checkpoint"].get("historical_profiles", {})
+                )
+            self.validate_extraction_answers(
+                manifest["checkpoint"].get("answer_witnesses", {})
+            )
+            self.validate_extraction_answer_dependencies(
+                window, manifest["checkpoint"].get("answer_dependencies", {})
+            )
+            now = db.now()
+            updated = db.query(
+                f"UPDATE {db.table('extraction_cursors')} SET retry_at=? "
+                "WHERE user_id=? AND kind=? AND project_id=? AND window_id=? "
+                "AND attempts=? AND retry_at=? AND last_error='input_budget_exceeded' "
+                "RETURNING window_id",
+                (
+                    now,
+                    window.user_id,
+                    window.kind,
+                    window.project_id,
+                    window.window_id,
+                    expected_attempts,
+                    float("inf"),
+                ),
+            )
+            if not updated:
+                raise OverflowCheckpointConflictError(
+                    "Recovery hold changed or was already re-armed"
+                )
+            db.query(
+                f"UPDATE {db.table('learning_work')} SET due_at=? "
+                "WHERE org_id=? AND user_id=? AND lease_token=?",
+                (now, self.org_id, window.user_id, token),
+            )
+
     def suspend_extraction(self, window: Window, token: str) -> None:
         """Yield saved work without advancing coverage or counting a failure."""
         with self._stream_sql() as db:

@@ -20,7 +20,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.llm._litellm_types import ModelProvenance, completion_metadata
-from reflexio.server.llm.input_budget import extraction_provider_guard
+from reflexio.server.llm.input_budget import (
+    extraction_provider_guard,
+    extraction_use_model_capacity,
+)
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     ProviderRequestGuardError,
@@ -357,6 +360,7 @@ class Reconciler:
                 checkpoint["audited_conversation"] = state.model_dump(mode="json")
                 self.coordinator.save_checkpoint(checkpoint)
             guard_token = extraction_provider_guard.set(self.provider_guard)
+            capacity_token = extraction_use_model_capacity.set(True)
             try:
                 completion = self.client.generate_chat_response_with_provenance(
                     messages=messages,
@@ -371,6 +375,7 @@ class Reconciler:
                     ),
                 )
             finally:
+                extraction_use_model_capacity.reset(capacity_token)
                 extraction_provider_guard.reset(guard_token)
             self.provenance = completion.provenance
             value = completion.value

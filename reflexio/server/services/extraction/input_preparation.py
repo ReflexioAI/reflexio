@@ -21,6 +21,10 @@ class ExtractionInputBudgetExceededError(RuntimeError):
     """Complete source coverage cannot fit the bounded extraction work plan."""
 
 
+class ExtractionChunkLimitExceededError(ExtractionInputBudgetExceededError):
+    """Complete sources need more than the allowed number of chunks."""
+
+
 def source_witness_bytes(request: Request, interaction: Interaction) -> bytes:
     """Canonical source witness shared with final transaction validation."""
     return json.dumps(
@@ -370,6 +374,38 @@ def collect_extraction_sources(
     return ExtractionSources(source_hash.hexdigest(), tuple(spans))
 
 
+def prepare_initial_extraction_input(
+    sessions: list[RequestInteractionDataModel], *, user_id: str
+) -> tuple[PreparedExtractionInput, int]:
+    """Pack unadmitted sources before freezing geometry or spending quota.
+
+    A larger chunk changes no original text or source witness. Complete provider
+    admission and the durable attempt ceiling still apply at every dispatch.
+    """
+    try:
+        return (
+            prepare_extraction_input(
+                sessions,
+                user_id=user_id,
+                chunk_tokens=10000,
+                require_overlap=True,
+                include_request_source=True,
+            ),
+            10000,
+        )
+    except ExtractionChunkLimitExceededError:
+        return (
+            prepare_extraction_input(
+                sessions,
+                user_id=user_id,
+                chunk_tokens=20000,
+                require_overlap=True,
+                include_request_source=True,
+            ),
+            20000,
+        )
+
+
 def prepare_extraction_input(
     sessions: list[RequestInteractionDataModel],
     *,
@@ -472,7 +508,7 @@ def prepare_extraction_input(
                 current_origins.clear()
                 cost = evidence_cost + origin_cost
             if len(chunks) >= max_chunks:
-                raise ExtractionInputBudgetExceededError(
+                raise ExtractionChunkLimitExceededError(
                     "Complete evidence exceeds chunk limit"
                 )
             current.append(span)

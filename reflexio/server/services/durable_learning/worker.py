@@ -291,6 +291,13 @@ class DurableLearningWorker:
             return "suspended"
         reason = _input_budget_failure_reason(exc)
         if reason is not None:
+            logger.warning(
+                "Extraction input held kind=%s reason=%s error=%s at=%s",
+                window.kind,
+                reason,
+                type(exc).__name__,
+                exception_locator(exc),
+            )
             storage.fail_extraction_input_budget(window, token, reason)
             record_health("worker.input_budget_failures", reason=reason)
             return "input_budget_failure"

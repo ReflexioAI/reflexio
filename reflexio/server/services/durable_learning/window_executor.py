@@ -30,7 +30,9 @@ from reflexio.server.services.extraction.agent_run_records import (
     source_interaction_digest,
 )
 from reflexio.server.services.extraction.input_preparation import (
+    PreparedExtractionInput,
     prepare_extraction_input,
+    prepare_initial_extraction_input,
     repartition_extraction_input,
 )
 from reflexio.server.services.extraction.overflow_coordinator import (
@@ -197,6 +199,37 @@ class WindowExecutor:
         except OverflowCheckpointConflictError as exc:
             raise InputBudgetConfigurationError(str(exc)) from exc
 
+    @staticmethod
+    def _prepare_coordinator_sources(
+        groups: list[RequestInteractionDataModel],
+        user_id: str,
+        known: AgentRunRecord | None,
+        manifest: dict[str, Any] | None,
+    ) -> tuple[PreparedExtractionInput, int, int]:
+        # Freeze this geometry before any provider work. Existing checkpoints
+        # retain their original partition and cannot reclaim consumed slots.
+        chunk_tokens = manifest.get("input_chunk_tokens", 8192) if manifest else 10000
+        if type(chunk_tokens) is not int or chunk_tokens not in {8192, 10000, 20000}:
+            raise InputBudgetConfigurationError("Extraction partition changed")
+        preparation_version = manifest.get("preparation_version", 1) if manifest else 3
+        if type(preparation_version) is not int or preparation_version not in {1, 2, 3}:
+            raise InputBudgetConfigurationError(
+                "Unknown extraction preparation version"
+            )
+        if known is None:
+            prepared, chunk_tokens = prepare_initial_extraction_input(
+                groups, user_id=user_id
+            )
+        else:
+            prepared = prepare_extraction_input(
+                groups,
+                user_id=user_id,
+                chunk_tokens=chunk_tokens,
+                require_overlap=preparation_version >= 2,
+                include_request_source=preparation_version == 3,
+            )
+        return prepared, chunk_tokens, preparation_version
+
     def _coordinator(
         self,
         window: Window,
@@ -221,22 +254,8 @@ class WindowExecutor:
                     "Failed legacy extraction needs explicit recovery; historical quota is unknown"
                 )
             return None
-        # Freeze this geometry before any provider work. Existing checkpoints
-        # retain their original partition and cannot reclaim consumed slots.
-        chunk_tokens = manifest.get("input_chunk_tokens", 8192) if manifest else 10000
-        if type(chunk_tokens) is not int or chunk_tokens not in {8192, 10000}:
-            raise InputBudgetConfigurationError("Extraction partition changed")
-        preparation_version = manifest.get("preparation_version", 1) if manifest else 3
-        if type(preparation_version) is not int or preparation_version not in {1, 2, 3}:
-            raise InputBudgetConfigurationError(
-                "Unknown extraction preparation version"
-            )
-        prepared = prepare_extraction_input(
-            groups,
-            user_id=window.user_id,
-            chunk_tokens=chunk_tokens,
-            require_overlap=preparation_version >= 2,
-            include_request_source=preparation_version == 3,
+        prepared, chunk_tokens, preparation_version = self._prepare_coordinator_sources(
+            groups, window.user_id, known, manifest
         )
         if not prepared.chunks:
             if manifest is not None:

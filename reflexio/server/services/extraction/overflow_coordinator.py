@@ -31,6 +31,7 @@ from reflexio.server.llm.input_budget import (
     extraction_provider_guard,
     extraction_request_identity,
     extraction_usage_observer,
+    extraction_use_model_capacity,
 )
 from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_tokens
 from reflexio.server.llm.tools import ToolLoopTrace
@@ -650,7 +651,11 @@ class OverflowCoordinator:
         _ladder: tuple[str, ...],
         _structured: bool,
     ) -> None:
-        check_request_input_budget(params, context_limits=self.context_limits)
+        check_request_input_budget(
+            params,
+            context_limits=self.context_limits,
+            prompt_target=None if extraction_use_model_capacity.get() else 65536,
+        )
         fingerprint = self._request_fingerprint(params)
         if (
             self.checkpoint.get("repartition", {}).get("rejected_request_fingerprint")

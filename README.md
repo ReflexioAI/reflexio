@@ -228,6 +228,11 @@ session.publish_interaction(
 
 By default, Reflexio queues profile and playbook extraction in the background;
 the configured models and extraction gates determine which artifacts are produced.
+Large textual windows preserve original sources and freeze their chunk plan before
+provider work. Audited playbook reconciliation may use verified model input
+headroom beyond the ordinary extraction target; output reservations, safety margin
+and durable call limits still apply. Held capacity failures require explicit
+operator recovery with the original journal, rather than fresh automatic quota.
 
 ## Features
 
