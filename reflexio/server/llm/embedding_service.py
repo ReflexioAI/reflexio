@@ -30,7 +30,10 @@ from reflexio.server.llm.rerank.common import (
     CrossEncoderUnavailableError,
     reranker_enabled,
 )
-from reflexio.server.llm.rerank.cross_encoder_model import CrossEncoderRunner
+from reflexio.server.llm.rerank.cross_encoder_model import (
+    CrossEncoderRunner,
+    RerankWork,
+)
 
 logger = logging.getLogger(__name__)
 # The standalone inference service is operator-facing infrastructure. Keep its
@@ -492,7 +495,7 @@ def create_embedding_app(
                 scores = await _until_disconnected(
                     http_request,
                     inference_submit(
-                        lambda chunk: runner.score_pairs(request.query, chunk),
+                        RerankWork(runner, request.query),
                         request.documents,
                         request.priority,
                         request.timeout_ms,
