@@ -75,6 +75,29 @@ def _authority() -> QualificationAuthorityRef:
     )
 
 
+def test_rule_evidence_authority_has_only_its_two_actual_components() -> None:
+    authority = replace(
+        _authority(),
+        policy_id="evidence-grounded-exact-edit-v1",
+        held_out_component_identity_digest=None,
+        held_out_qualification_suite_digest=None,
+        held_out_qualification_result_digest=None,
+    )
+    assert authority.held_out_component_identity_digest is None
+    with pytest.raises(ValueError, match="no held-out component"):
+        replace(authority, held_out_component_identity_digest="a" * 64)
+
+
+def test_legacy_authority_cannot_omit_its_real_held_out_qualification() -> None:
+    with pytest.raises(ValueError, match="lowercase SHA-256"):
+        replace(_authority(), held_out_qualification_result_digest=None)
+
+
+def test_unknown_authority_policy_is_not_publication_permission() -> None:
+    with pytest.raises(ValueError, match="unsupported qualification authority policy"):
+        replace(_authority(), policy_id="unknown-policy")
+
+
 def _projection() -> PublicationSearchProjection:
     canonical = _canonical(
         {

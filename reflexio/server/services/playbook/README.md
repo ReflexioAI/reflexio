@@ -14,6 +14,7 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 - **Aggregation Scheduler**: `aggregation_scheduler.py` - Claims fenced per-version work and runs one bounded aggregation unit
 - **Playbook Consolidator**: `components/consolidator.py` - Reconciles reviewed candidates against existing storage with evidence-aware accounting and overlap guards
 - **Optional Input Observer**: `input_capture.py` - Lazy, detached pre-decision snapshots for an explicitly installed research provider; absent providers add no serialization or model calls, and observer failures leave reconciliation running
+- **Rule Evidence Preview**: `rule_evidence.run_rule_evidence` - Standalone four-dimensional diagnosis and one exact-clause repair, using a caller-supplied LLM invocation; returns a proposal or abstention and has no storage/publication authority
 
 ## Supporting Files
 
@@ -23,6 +24,7 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 | `playbook_service_constants.py` | Prompt IDs for all playbook operations |
 | `playbook_service_utils.py` | Request dataclasses, Pydantic output schemas, message construction utilities |
 | `playbook_evidence.py` | Strict evidence validation, call-local reference checks, and persisted provenance helpers |
+| `rule_evidence/` | Owned/version-matched source schemas, packaged judge/tuner prompts, compact diagnostics and indexed exact-clause repair; see [usage](rule_evidence/README.md) |
 | `components/overflow_consolidation.py` | Bounded metadata proposals, exact historical quotations, and semantic verification before overflow consolidation applies original rows |
 | `components/overflow_evidence.py` | Canonical historical row fingerprints checked under final commit locks |
 | `source_quoted_overflow.py` | Multi-chunk recovery: original User-message copying, bounded publication, immutable source-policy receipt and cached-plan validation |
