@@ -31,6 +31,7 @@ only-include = [
 [tool.hatch.build.targets.sdist.force-include]
 "../reflexio/__init__.py" = "reflexio/__init__.py"
 "../reflexio/defaults.py" = "reflexio/defaults.py"
+"../reflexio/housekeeping_policy.py" = "reflexio/housekeeping_policy.py"
 "../reflexio/client" = "reflexio/client"
 "../reflexio/models" = "reflexio/models"
 "../reflexio/integrations" = "reflexio/integrations"
@@ -39,6 +40,7 @@ only-include = [
 [tool.hatch.build.targets.wheel.force-include]
 "reflexio/__init__.py" = "reflexio/__init__.py"
 "reflexio/defaults.py" = "reflexio/defaults.py"
+"reflexio/housekeeping_policy.py" = "reflexio/housekeeping_policy.py"
 "reflexio/client" = "reflexio/client"
 "reflexio/models" = "reflexio/models"
 "reflexio/integrations" = "reflexio/integrations"
