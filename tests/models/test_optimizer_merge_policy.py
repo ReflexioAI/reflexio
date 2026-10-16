@@ -132,3 +132,23 @@ def test_real_gepa_merge_admission_matches_legacy_policy(enabled, limit):
     canonical.schedule_if_needed()
     assert legacy.merges_due == canonical.merges_due
     evaluator.assert_not_called()
+
+
+def test_optimizer_normalization_keeps_housekeeping_migration_safeguards():
+    from reflexio.housekeeping_policy import (
+        DAILY_SWEEP_SECONDS,
+        HousekeepingMigrationError,
+    )
+
+    payload = {
+        "lineage_gc": {"enabled": False, "poll_interval_seconds": DAILY_SWEEP_SECONDS},
+        "playbook_optimizer_config": {"use_merge": False, "max_merge_invocations": 9},
+    }
+    original = deepcopy(payload)
+    normalized = strip_retired_config_fields(payload)
+    assert payload == original
+    assert normalized["lineage_gc"] == {"enabled": False}
+    assert normalized["playbook_optimizer_config"] == {"max_merge_invocations": 0}
+    payload["lineage_gc"]["poll_interval_seconds"] = 7
+    with pytest.raises(HousekeepingMigrationError):
+        strip_retired_config_fields(payload)
