@@ -8,6 +8,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from reflexio.server.env_utils import env_str
+
 DEFAULT_ROW_RETENTION_LIMIT = 250_000
 ROW_RETENTION_DELETE_FRACTION = 0.20
 OPEN_WORLD_EVIDENCE_RETENTION_WINDOW_SECONDS = 14 * 24 * 60 * 60
@@ -292,20 +294,65 @@ RETENTION_CASCADES: dict[str, tuple[CascadeRef, ...]] = {
 }
 
 
-def get_row_retention_limits() -> dict[str, int]:
-    """Return per-target row limits from env with code defaults.
+class RetentionConfigurationError(ValueError):
+    """Retention cannot safely reinterpret an invalid or retired policy input."""
 
-    ``REFLEXIO_ROW_LIMIT_<TARGET>`` takes precedence for targets without a
-    ``fixed_row_limit``. Fixed targets explicitly reject that override path.
-    ``INTERACTION_CLEANUP_THRESHOLD`` remains the legacy override for
-    interactions when the new variable is not present.
+
+def _operational_row_limit() -> tuple[int, bool]:
+    raw = env_str("REFLEXIO_OPERATIONAL_ROW_LIMIT")
+    if not raw:
+        return DEFAULT_ROW_RETENTION_LIMIT, False
+    try:
+        limit = int(raw)
+    except ValueError:
+        limit = -1
+    if limit < 0:
+        raise RetentionConfigurationError(
+            "REFLEXIO_OPERATIONAL_ROW_LIMIT must be a nonnegative integer; "
+            "zero disables operational cap cleanup"
+        )
+    return limit, True
+
+
+def _validate_retired_operational_limit(
+    env_name: str, limit: int, explicit: bool
+) -> None:
+    raw = env_str(env_name)
+    if not raw:
+        return
+    try:
+        legacy = int(raw)
+    except ValueError:
+        legacy = None
+    if legacy == DEFAULT_ROW_RETENTION_LIMIT or (explicit and legacy == limit):
+        return
+    raise RetentionConfigurationError(
+        f"{env_name} is retired; operational tables share REFLEXIO_OPERATIONAL_ROW_LIMIT. "
+        "Review all operational targets before selecting a shared cap and removing "
+        "the legacy override; no retention pass can run with conflicting caps."
+    )
+
+
+def get_row_retention_limits() -> dict[str, int]:
+    """Resolve and validate all caps before a sweep can delete anything.
+
+    Customer targets retain their independent ``REFLEXIO_ROW_LIMIT_<TARGET>``
+    controls. Other non-fixed targets share ``REFLEXIO_OPERATIONAL_ROW_LIMIT``.
+    Legacy operational overrides cannot silently change the shared policy.
+    Fixed targets retain their code-owned limits. Interactions still accept
+    ``INTERACTION_CLEANUP_THRESHOLD`` when their canonical override is absent.
     """
+    operational_limit, explicit = _operational_row_limit()
     limits: dict[str, int] = {}
     for target in RETENTION_TARGETS:
         if target.fixed_row_limit is not None:
             limits[target.name] = target.fixed_row_limit
             continue
         env_name = f"REFLEXIO_ROW_LIMIT_{target.name.upper()}"
+        if not target.customer_data:
+            _validate_retired_operational_limit(env_name, operational_limit, explicit)
+            limits[target.name] = operational_limit
+            continue
         default = DEFAULT_ROW_RETENTION_LIMIT
         if target.name == "interactions":
             default = _get_int_env("INTERACTION_CLEANUP_THRESHOLD", default)
