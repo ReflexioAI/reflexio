@@ -64,3 +64,24 @@ def test_load_reflexio_env_auto_creates_at_override(monkeypatch, tmp_path):
 
     assert created == override
     assert override.exists()  # parent dir + file created at the override location
+
+
+def test_generated_env_uses_only_canonical_backfill_budget(monkeypatch, tmp_path):
+    """An off-by-default preset can be enabled by changing its one budget."""
+    from dotenv import dotenv_values
+
+    from reflexio.server.services.lineage import vector_backfill_sweep as vbs
+
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "user" / ".env"
+    monkeypatch.setenv(_ENV, str(target))
+    monkeypatch.setattr(env_loader, "_load_dotenv_pruned", lambda *_, **__: None)
+    assert env_loader.load_reflexio_env() == target
+    values = dotenv_values(target)
+    assert vbs.ENABLE_ENV_VAR not in values
+    assert values[vbs.CAP_ENV_VAR] == "0"
+    monkeypatch.delenv(vbs.ENABLE_ENV_VAR, raising=False)
+    monkeypatch.setenv(vbs.CAP_ENV_VAR, values[vbs.CAP_ENV_VAR])
+    assert vbs._resolve_cap() == 0
+    monkeypatch.setenv(vbs.CAP_ENV_VAR, "2")
+    assert vbs._resolve_cap() == 2

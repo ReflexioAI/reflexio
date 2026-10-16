@@ -179,7 +179,6 @@ def test_operation_limiter_can_suppress_publish_timeout_log(monkeypatch, caplog)
 
 def test_publish_hardware_capacity_snapshot_reports_hardware_guidance(monkeypatch):
     monkeypatch.setenv("REFLEXIO_PUBLISH_CONCURRENCY_LIMIT", "7")
-    monkeypatch.setenv("REFLEXIO_PUBLISH_CONCURRENCY_TIMEOUT_SECONDS", "2.5")
     monkeypatch.setattr(operation_limiter_module.os, "cpu_count", lambda: 64)
     monkeypatch.setattr(operation_limiter_module, "_cgroup_cpu_count", lambda: None)
     monkeypatch.setattr(
@@ -209,7 +208,6 @@ def test_publish_hardware_capacity_snapshot_reports_hardware_guidance(monkeypatc
     snapshot = publish_hardware_capacity_snapshot()
 
     assert snapshot["configured_publish_limit"] == 7
-    assert snapshot["publish_timeout_seconds"] == 2.5
     assert snapshot["estimated_threads_per_publish"] == 3
     assert snapshot["hardware_guidance_publish_limit"] == 30
     assert snapshot["effective_cpu_count"] == 64
@@ -408,3 +406,17 @@ def test_search_limiter_expiry_after_acquire_releases_without_retrieval(monkeypa
         state.semaphore.release()
     finally:
         search_runtime._scope.reset(token)
+
+
+@pytest.mark.parametrize("retired_value", ["0", "999", "invalid"])
+def test_retired_publish_timeout_cannot_change_legacy_wait(monkeypatch, retired_value):
+    monkeypatch.setenv("REFLEXIO_PUBLISH_CONCURRENCY_TIMEOUT_SECONDS", retired_value)
+    assert operation_limiter_module._timeout_for("publish") == 5.0
+    assert "publish_timeout_seconds" not in publish_hardware_capacity_snapshot()
+
+
+def test_search_and_aggregation_keep_independent_waits(monkeypatch):
+    monkeypatch.setenv("REFLEXIO_SEARCH_CONCURRENCY_TIMEOUT_SECONDS", "0.25")
+    monkeypatch.setenv("REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS", "1.5")
+    assert operation_limiter_module._timeout_for("search") == 0.25
+    assert operation_limiter_module._timeout_for("aggregation") == 1.5

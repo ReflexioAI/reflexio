@@ -356,3 +356,94 @@ def test_sweep_enabled_backfills_via_storage(tmp_path, worker_id, monkeypatch) -
     # Cap=2 => two per tick; the sweep threads the env cap through to storage.
     assert vbs.missing_vector_backfill_sweep(s.org_id, 0) == 2
     assert len(s.iter_interactions_missing_vectors(100)) == 3
+
+
+@pytest.mark.parametrize(
+    ("flag", "raw_cap", "expected"),
+    [
+        (None, None, 200),
+        (None, "", 200),
+        ("", " ", 200),
+        (None, "0", 0),
+        ("true", "0", 0),
+        (None, "2", 2),
+        ("false", "2", 0),
+        ("0", "2", 0),
+        ("true", "2", 2),
+        (None, "-1", 200),
+        (None, "invalid", 200),
+    ],
+)
+def test_backfill_effective_budget(monkeypatch, flag, raw_cap, expected):
+    """Legacy disables win; canonical zero disables and positive budgets bound work."""
+    from reflexio.server.services.lineage import vector_backfill_sweep as vbs
+
+    for name, value in ((vbs.ENABLE_ENV_VAR, flag), (vbs.CAP_ENV_VAR, raw_cap)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    assert vbs._resolve_cap() == expected
+
+
+def test_registered_backfill_budget_can_disable_and_resume(
+    tmp_path, worker_id, monkeypatch
+):
+    """Real repair through the sweep stops at zero and resumes with a bounded batch."""
+    from reflexio.server.services.lineage import vector_backfill_sweep as vbs
+
+    storage = _store(tmp_path, worker_id)
+    _install_working_embedder(storage)
+    _seed_missing_vector_interactions(storage, "budget-user", 5)
+    monkeypatch.delenv(vbs.ENABLE_ENV_VAR, raising=False)
+    context_factory = MagicMock(return_value=MagicMock(storage=storage))
+    monkeypatch.setattr(
+        "reflexio.server.api_endpoints.request_context.RequestContext", context_factory
+    )
+    monkeypatch.setenv(vbs.CAP_ENV_VAR, "0")
+    assert vbs.missing_vector_backfill_sweep(storage.org_id, 0) == 0
+    context_factory.assert_not_called()
+    assert len(storage.iter_interactions_missing_vectors(100)) == 5
+    monkeypatch.setenv(vbs.CAP_ENV_VAR, "2")
+    assert vbs.missing_vector_backfill_sweep(storage.org_id, 0) == 2
+    assert len(storage.iter_interactions_missing_vectors(100)) == 3
+    monkeypatch.setenv(vbs.ENABLE_ENV_VAR, "false")
+    assert vbs.missing_vector_backfill_sweep(storage.org_id, 0) == 0
+    monkeypatch.delenv(vbs.ENABLE_ENV_VAR)
+    assert vbs.missing_vector_backfill_sweep(storage.org_id, 0) == 2
+    assert vbs.missing_vector_backfill_sweep(storage.org_id, 0) == 1
+    assert vbs.missing_vector_backfill_sweep(storage.org_id, 0) == 0
+
+
+@pytest.mark.parametrize(
+    ("flag", "cap", "registered"),
+    [
+        (None, None, True),
+        (None, "0", False),
+        ("true", "0", False),
+        ("false", "2", False),
+        (None, "2", True),
+    ],
+)
+def test_backfill_registration_uses_effective_budget(
+    monkeypatch, flag, cap, registered
+):
+    from reflexio.server.services.lineage import gc_scheduler
+    from reflexio.server.services.lineage import vector_backfill_sweep as vbs
+
+    monkeypatch.setattr(vbs, "_installed", False)
+    if cap is None:
+        monkeypatch.delenv(vbs.CAP_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(vbs.CAP_ENV_VAR, cap)
+    if flag is None:
+        monkeypatch.delenv(vbs.ENABLE_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(vbs.ENABLE_ENV_VAR, flag)
+    register = MagicMock()
+    monkeypatch.setattr(gc_scheduler, "register_per_org_sweep", register)
+    vbs.install_missing_vector_backfill_sweep()
+    vbs.install_missing_vector_backfill_sweep()
+    assert register.call_count == int(registered)
+    if registered:
+        register.assert_called_once_with(vbs.missing_vector_backfill_sweep)

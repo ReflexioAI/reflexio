@@ -28,7 +28,6 @@ _DEFAULT_LIMITS: dict[OperationName, int] = {
 }
 _DEFAULT_TIMEOUT_SECONDS: dict[OperationName, float] = {
     "search": 2.0,
-    "publish": 5.0,
     "aggregation": 1.0,
 }
 _ESTIMATED_THREADS_PER_PUBLISH = 3
@@ -68,6 +67,10 @@ def operation_limit_value(operation: OperationName) -> int:
 
 
 def _timeout_for(operation: OperationName) -> float:
+    # Publish admission owns its request deadline. Keep the old helper's default
+    # for call compatibility without advertising an ineffective environment knob.
+    if operation == "publish":
+        return 5.0
     raw = os.getenv(_env_key(operation, "TIMEOUT_SECONDS"), "").strip()
     if raw:
         try:
@@ -319,7 +322,6 @@ def publish_hardware_capacity_snapshot() -> dict[str, int | str | float | None]:
     hardware_guidance = min(guidance_candidates) if guidance_candidates else None
     return {
         "configured_publish_limit": _limit_for("publish"),
-        "publish_timeout_seconds": _timeout_for("publish"),
         "hardware_guidance_publish_limit": hardware_guidance,
         "estimated_threads_per_publish": _ESTIMATED_THREADS_PER_PUBLISH,
         "effective_cpu_count": effective_cpu_count,
