@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Annotated
+from uuid import uuid4
 
+import requests
 import typer
 
 from reflexio.cli.errors import (
@@ -14,6 +17,10 @@ from reflexio.cli.errors import (
 )
 
 if TYPE_CHECKING:
+    from reflexio import ReflexioClient
+    from reflexio.models.api_schema.aggregation_operations import (
+        PlaybookAggregationOperation,
+    )
     from reflexio.models.api_schema.service_schemas import PlaybookStatus
 from reflexio.cli.output import (
     pagination_meta,
@@ -418,6 +425,63 @@ def delete_all(
         print_info("All agent playbooks deleted")
 
 
+_AGGREGATION_WAIT_SECONDS = 600.0
+_AGGREGATION_POLL_SECONDS = 3.0
+
+
+def _aggregate_operation(
+    client: ReflexioClient, version: str, *, wait: bool
+) -> PlaybookAggregationOperation:
+    request_id = str(uuid4())
+    print_info(f"Submitting aggregation request {request_id} for {version}")
+    try:
+        operation = client.submit_playbook_aggregation(
+            request_id=request_id, agent_version=version
+        )
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code in (404, 503):
+            raise CliError(
+                message="Durable aggregation could not be admitted "
+                f"(HTTP {exc.response.status_code}).",
+                hint="Check server health and durable aggregation support. "
+                f"Request ID: {request_id}",
+            ) from exc
+        raise
+    operation_id = operation.operation_id
+    deadline = time.monotonic() + _AGGREGATION_WAIT_SECONDS
+    while True:
+        if (
+            not operation_id
+            or operation.operation_id != operation_id
+            or operation.request_id != request_id
+            or operation.agent_version != version
+        ):
+            raise CliError(
+                message="Aggregation returned a mismatched operation identity."
+            )
+        if operation.status == "failed":
+            raise CliError(
+                message=f"Aggregation {operation_id} failed: {operation.error or 'unknown error'}"
+            )
+        if operation.status == "succeeded":
+            if operation.result is None:
+                raise CliError(
+                    message=f"Aggregation {operation_id} succeeded without a result."
+                )
+            return operation
+        if not wait:
+            return operation
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise CliError(
+                message=f"Timed out waiting for aggregation {operation_id}.",
+                hint="The admitted operation may still be running. "
+                "Check its status before submitting another request.",
+            )
+        time.sleep(min(_AGGREGATION_POLL_SECONDS, remaining))
+        operation = client.get_playbook_aggregation_operation(operation_id)
+
+
 @app.command()
 @handle_errors
 def aggregate(
@@ -482,22 +546,28 @@ def aggregate(
         print_info(
             f"Aggregating user playbooks for '{playbook_name}' (agent_version={version})..."
         )
-        resp = client.run_playbook_aggregation(
-            agent_version=version,
-            playbook_name=playbook_name,
-            wait_for_response=wait,
-        )
-
-        if json_mode:
-            render(resp, json_mode=True)
+        operation = _aggregate_operation(client, version, wait=wait)
+        if operation.result is not None and operation.status == "succeeded":
+            result = operation.result
+            message = (
+                f"Skipped: {result.skipped}"
+                if result.skipped
+                else f"Processed {result.user_playbooks_processed} user playbooks, "
+                f"found {result.clusters_found} clusters, "
+                f"generated {result.playbooks_generated} agent playbooks"
+            )
         else:
-            success = getattr(resp, "success", None)
-            message = getattr(resp, "message", "")
-            if success is False:
-                print_info(f"  Failed: {message}")
-            elif message:
-                print_info(f"  {message}")
-            elif wait:
-                print_info("  Done")
-            else:
-                print_info("  Started")
+            message = f"Aggregation admitted ({operation.status})"
+        if json_mode:
+            render(
+                {"success": True, "message": message},
+                json_mode=True,
+                meta={
+                    "operation_id": operation.operation_id,
+                    "request_id": operation.request_id,
+                    "agent_version": operation.agent_version,
+                    "status": operation.status,
+                },
+            )
+        else:
+            print_info(f"  {message} (operation {operation.operation_id})")
