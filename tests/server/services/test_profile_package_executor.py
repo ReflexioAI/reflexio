@@ -195,6 +195,87 @@ def test_restart_preserves_candidates_and_paid_calls(pipeline, monkeypatch, boun
     assert len(storage.pending_extraction_effects()) == 1
 
 
+def test_retired_name_resume_keeps_frozen_profile_candidates_and_paid_calls(
+    pipeline, monkeypatch
+):
+    from reflexio.models.config_schema import ProfileExtractorConfig
+    from reflexio.server.services.durable_learning import window_executor
+    from reflexio.server.services.storage.storage_base import AgentRunStatus
+
+    class LegacyProfileExtractorConfig(ProfileExtractorConfig):
+        extractor_name: str = "historical-profile-label"
+
+    engine, storage, window, token, client, calls = setup(pipeline, monkeypatch)
+    # Use the former schema before admission so native contracts, compression
+    # witnesses and the parent snapshot all contain the historical field.
+    policy = copy.deepcopy(window.policy)
+    policy["extractor"]["extractor_name"] = "historical-profile-label"
+    with storage.conn:
+        storage.conn.execute(
+            "UPDATE extraction_windows SET policy=? WHERE window_id=?",
+            (json.dumps(policy), window.window_id),
+        )
+    window = storage.prepare_extraction("u", token)
+    monkeypatch.setattr(
+        window_executor, "ProfileExtractorConfig", LegacyProfileExtractorConfig
+    )
+    executor = ProfilePackageWindowExecutor(engine.request_context, client)
+    complete = storage.update_agent_run_status
+
+    def interrupt(*args, **kwargs):
+        if args[1] == AgentRunStatus.AGENT_COMPLETED:
+            raise RuntimeError("pause before parent completion")
+        return complete(*args, **kwargs)
+
+    monkeypatch.setattr(storage, "update_agent_run_status", interrupt)
+    with pytest.raises(RuntimeError, match="pause before parent completion"):
+        executor.execute(window, token)
+    monkeypatch.setattr(storage, "update_agent_run_status", complete)
+    parent = storage.get_agent_run(f"window:{window.window_id}")
+    parent_id = parent.id
+    snapshot = copy.deepcopy(parent.generation_request_snapshot)
+    original_hash = parent.binding.extractor_config_hash
+    assert snapshot["extractor_config"]["extractor_name"] == "historical-profile-label"
+    assert (
+        snapshot["profile_package_preparation"]["extractor_config"]["extractor_name"]
+        == "historical-profile-label"
+    )
+    assert len(calls) == 3
+    assert storage.get_user_profile("u") == []
+    monkeypatch.setattr(
+        window_executor, "ProfileExtractorConfig", ProfileExtractorConfig
+    )
+    resumed = storage.prepare_extraction("u", token)
+    executor.execute(resumed, token)
+    saved = storage.get_agent_run(parent_id)
+    assert saved.binding.extractor_config_hash == original_hash
+    assert (
+        saved.generation_request_snapshot["extractor_config"]
+        == snapshot["extractor_config"]
+    )
+    assert (
+        saved.generation_request_snapshot["overflow"]["attempts"]
+        == snapshot["overflow"]["attempts"]
+    )
+    assert (
+        saved.generation_request_snapshot["profile_package_preparation"]
+        == snapshot["profile_package_preparation"]
+    )
+    assert (
+        saved.generation_request_snapshot["overflow"]["input_protocol"]
+        == snapshot["overflow"]["input_protocol"]
+    )
+    candidates = snapshot["overflow"]["checkpoint"]["profile_package_candidates"]
+    rows = storage.get_user_profile("u")
+    assert len(rows) == 1
+    assert rows[0].profile_id == candidates[0]["profile_id"]
+    assert rows[0].last_modified_timestamp == candidates[0]["last_modified_timestamp"]
+    assert rows[0].expiration_timestamp == candidates[0]["expiration_timestamp"]
+    assert len(calls) == 3
+    assert len(storage.pending_extraction_effects()) == 1
+    assert storage.extraction_status("u", "package-parent")["status"] == "done"
+
+
 @pytest.mark.parametrize("failure", ["invalid_first_parsed", "transport"])
 def test_native_dedup_host_fallback_is_durable(pipeline, monkeypatch, failure):
     engine, storage, window, token, client, calls = setup(pipeline, monkeypatch)

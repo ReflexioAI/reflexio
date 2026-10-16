@@ -25,6 +25,7 @@ from reflexio.server.services.durable_learning.window_codec import encode_plan
 from reflexio.server.services.durable_learning.window_executor import WindowExecutor
 from reflexio.server.services.extraction.agent_run_records import (
     build_extractor_agent_run_record,
+    matches_frozen_extractor_binding,
 )
 from reflexio.server.services.extraction.overflow_coordinator import (
     OverflowCoordinator,
@@ -219,6 +220,22 @@ class ProfilePackageWindowExecutor(WindowExecutor):
             )
             dedup_model = native.model_name
             template = manager.get_prompt_template_identity(native._get_prompt_id())
+        expected = build_extractor_agent_run_record(
+            org_id=self.storage.org_id,
+            extractor_kind="profile",
+            user_id=window.user_id,
+            generation_request_id=request.request_id,
+            agent_version=None,
+            source=request.source,
+            request_interaction_data_models=groups,
+            extractor_config=config,
+            service_config=service.service_config,
+            agent_context=context,
+        )
+        if known is not None and not matches_frozen_extractor_binding(
+            known, expected, window.policy["extractor"]
+        ):
+            raise InputBudgetConfigurationError("Profile package admission changed")
         preparation = prepare_profile_package(
             groups,
             org_id=self.storage.org_id,
@@ -237,6 +254,9 @@ class ProfilePackageWindowExecutor(WindowExecutor):
             prior_context=prior,
             pending_tools_active=tools_active,
             pending_tool_config=pending,
+            frozen_extractor_config=(
+                known.generation_request_snapshot["extractor_config"] if known else None
+            ),
         )
         if snapshot is not None and preparation.snapshot != snapshot:
             raise InputBudgetConfigurationError("Frozen profile preparation changed")
@@ -260,22 +280,8 @@ class ProfilePackageWindowExecutor(WindowExecutor):
             "consumer": preparation.snapshot["consumer"],
             "stage_caps": preparation.snapshot["stage_caps"],
         }
-        expected = build_extractor_agent_run_record(
-            org_id=self.storage.org_id,
-            extractor_kind="profile",
-            user_id=window.user_id,
-            generation_request_id=request.request_id,
-            agent_version=None,
-            source=request.source,
-            request_interaction_data_models=groups,
-            extractor_config=config,
-            service_config=service.service_config,
-            agent_context=context,
-        )
         if known is not None and (
-            known.binding != expected.binding
-            or manifest is None
-            or manifest["input_protocol"] != descriptor
+            manifest is None or manifest["input_protocol"] != descriptor
         ):
             raise InputBudgetConfigurationError("Profile package admission changed")
         with self.storage.commit_scope():

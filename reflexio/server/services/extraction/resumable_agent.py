@@ -28,6 +28,7 @@ from reflexio.server.llm.tools import (
 )
 from reflexio.server.services.extraction.agent_run_records import (
     build_extractor_agent_run_record,
+    matches_frozen_extractor_binding,
 )
 from reflexio.server.services.extraction.pending_tool_call_dispatch import (
     PendingToolCallToolContext,
@@ -248,6 +249,21 @@ def create_pending_info_tools_for_extractor_kind(extractor_kind: str) -> list[To
     return [create_ask_human_tool(), attach_tool]
 
 
+def _require_overflow_parent(
+    storage: BaseStorage, coordinator: OverflowCoordinator, run: AgentRunRecord
+) -> AgentRunRecord:
+    existing = storage.get_agent_run(run.id)
+    if (
+        run.id != f"window:{coordinator.window.window_id}"
+        or existing is None
+        or not matches_frozen_extractor_binding(
+            existing, run, coordinator.window.policy["extractor"]
+        )
+    ):
+        raise RuntimeError("Overflow extraction child parent binding changed")
+    return existing
+
+
 def run_resumable_extraction_agent(
     *,
     request_context: RequestContext,
@@ -340,12 +356,27 @@ def run_resumable_extraction_agent(
     extra_tools: list[Tool] = []
     extra_tool_context = None
     if pending_tools_active and pending_config is not None:
+        config_identity = None
+        if coordinator is not None:
+            parent = _require_overflow_parent(storage, coordinator, run)
+            if (
+                parent.binding.extractor_config_hash
+                != run.binding.extractor_config_hash
+            ):
+                # Before retirement the ignored label was the FIRST model field.
+                # Preserve its v1 lookup identity only after the frozen proof;
+                # queries and prompts still use the validated current config.
+                frozen = parent.generation_request_snapshot["extractor_config"]
+                config_identity = (
+                    f"extractor_name={frozen['extractor_name']!r} {extractor_config}"
+                )
         messages = append_prior_knowledge_context(
             messages=messages,
             storage=storage,
             org_id=request_context.org_id,
             extractor_kind=extractor_kind,
             extractor_config=extractor_config,
+            extractor_config_identity=config_identity,
             source=source,
             agent_version=agent_version,
             similarity_threshold=pending_config.for_tool(
@@ -571,13 +602,7 @@ class ResumableExtractionAgent:
             raise InputBudgetConfigurationError(
                 "Extraction template omits prepared source"
             )
-        existing = self.storage.get_agent_run(run.id)
-        if (
-            run.id != f"window:{coordinator.window.window_id}"
-            or existing is None
-            or existing.binding != run.binding
-        ):
-            raise RuntimeError("Overflow extraction child parent binding changed")
+        _require_overflow_parent(self.storage, coordinator, run)
         checkpoint = coordinator.checkpoint
         selected_schema = checkpoint.get("output_schema_name")
         if selected_schema is not None and selected_schema != output_schema.__name__:
