@@ -369,6 +369,17 @@ When working in a git worktree, services must run on different ports to avoid co
 | Docs frontend won't start | Run `npm --prefix docs install` first |
 | Import errors after pull | Run `uv sync` to update dependencies |
 
+### CLI aggregation operations
+
+`agent-playbooks aggregate` uses the existing durable submit/status APIs rather
+than competing for immediate admission to the legacy aggregation endpoint. Only
+one request is submitted per selected agent version. `--wait` follows its exact
+operation/request/agent identity and reports success only from a committed
+successful receipt with a result. Failure, mismatched identity, missing result
+or polling deadline is a nonzero CLI outcome. Admission without `--wait` is
+reported separately from completion. See [CLI usage](reflexio/cli/README.md#agent-playbooks)
+for operation status, timeout and JSON output behavior.
+
 ### Storage requirements for publishing
 
 SQLite dataset ownership checks read an established owner without taking a writer

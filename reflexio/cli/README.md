@@ -244,10 +244,34 @@ Generation and promotion failures still exit nonzero in text and JSON modes.
 uv run reflexio agent-playbooks list --agent-version v1
 uv run reflexio agent-playbooks search "error handling"
 uv run reflexio agent-playbooks aggregate --agent-version v1
+uv run reflexio agent-playbooks aggregate --agent-version v1 --wait
 uv run reflexio agent-playbooks update-status <playbook-id> --status approved
 uv run reflexio agent-playbooks regenerate --agent-version v1
 uv run reflexio agent-playbooks delete <playbook-id>
 ```
+
+Aggregation uses the server's durable operation API. Without `--wait`, success
+means the server admitted the request; it prints the operation ID and current
+status. With `--wait`, the CLI polls that same operation for up to ten minutes
+of polling, and succeeds only after its committed status is `succeeded` and a
+result is present. Existing aggregation work can keep a new request queued.
+Each HTTP call retains the SDK request timeout.
+
+A failed operation or expired wait exits nonzero. A timeout does not cancel
+admitted work: use `get_playbook_aggregation_operation(operation_id)` on the SDK,
+or `GET /api/playbook_aggregation_operations/{operation_id}`, to check it before
+submitting another request. JSON mode preserves `data.success` and `data.message`
+and adds operation/request IDs, agent version and status in `meta`.
+
+If a submission loses its response or returns a server error, admission is uncertain. The error includes
+its request ID and an SDK recovery call: repeat `submit_playbook_aggregation`
+with that exact request ID and agent version to retrieve the same receipt, then
+check its operation status. Do not rerun the CLI with a fresh request identity.
+
+The server/storage must support durable aggregation. Unsupported endpoints fail
+with an actionable error; the CLI does not replay the legacy aggregation POST.
+`--playbook-name` remains accepted for compatibility; aggregation is per agent
+version. The SDK's legacy `run_playbook_aggregation` method remains available.
 
 ## User playbooks
 
