@@ -662,6 +662,11 @@ Pre-computed embeddings passed to storage methods via `query_embedding` paramete
 | `retention.py`, `retention_mixin.py` | Data retention and cleanup helpers |
 | `constants.py`, `error.py` | Storage constants and shared errors |
 
+SQLite bootstrap executes the base schema in one explicit transaction, avoiding
+a durable commit per CREATE statement. A base-schema failure rolls back that
+transaction so startup can retry; legacy upgrade ordering and later migration
+helpers retain their own boundaries. WAL and synchronization settings are unchanged.
+
 **Pattern**: **NEVER import storage implementations directly** - Always use `request_context.storage`
 
 **Key Methods**:
