@@ -150,8 +150,9 @@ def test_resolved_mapping_isolated_from_process_settings_and_test_flag(monkeypat
 
 
 @pytest.mark.parametrize("environment", ["development", "production", "staging", "qa"])
+@pytest.mark.parametrize("initial_mode", [None, "platfrom"])
 def test_existing_local_sqlite_erasure_barrier_survives_environment_label(
-    tmp_path, monkeypatch, environment
+    tmp_path, monkeypatch, environment, initial_mode
 ):
     import sqlite3
     from contextlib import closing
@@ -170,6 +171,12 @@ def test_existing_local_sqlite_erasure_barrier_survives_environment_label(
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("ENVIRONMENT", environment)
+    if initial_mode:
+        monkeypatch.setenv("DEPLOYMENT_MODE", initial_mode)
+        with pytest.raises(ConfigurationMigrationError, match="DEPLOYMENT_MODE"):
+            get_governance_ref_secret()
+        # Explicit local adoption keeps the legacy epoch, rather than picking a key.
+        monkeypatch.setenv("DEPLOYMENT_MODE", "local")
     database = tmp_path / "existing.sqlite"
     # Pinned legacy HMAC, independent of the upgraded resolver/default constant.
     previous_ref = "subref_v1_59dcb8a7c57eb69a4e4213c0236418c5"
@@ -207,4 +214,27 @@ def test_explicit_adoption_preserves_existing_secret_and_hmac_epoch(monkeypatch)
     assert (
         governance_subject_ref("org", "user", get_governance_ref_secret(env=env))
         == previous_ref
+    )
+
+
+@pytest.mark.parametrize("mode", ["platfrom", "self-host", "opaque-mode-value"])
+@pytest.mark.parametrize("secret", [None, "existing-private-secret"])
+@pytest.mark.parametrize("test_mode", ["true", "false"])
+def test_unknown_mode_requires_adoption_without_rotating_secret(
+    monkeypatch, mode, secret, test_mode
+):
+    monkeypatch.setenv("REFLEXIO_TEST_MODE", test_mode)
+    env = {"DEPLOYMENT_MODE": mode}
+    if secret:
+        env["REFLEXIO_GOVERNANCE_REF_SECRET"] = secret
+    with pytest.raises(
+        ConfigurationMigrationError, match="DEPLOYMENT_MODE.*local"
+    ) as error:
+        get_governance_ref_secret(env=env)
+    assert mode not in str(error.value)
+    if secret:
+        assert secret not in str(error.value)
+    env["DEPLOYMENT_MODE"] = "local"
+    assert get_governance_ref_secret(env=env) == (
+        secret or "reflexio-local-governance-ref-secret"
     )
