@@ -332,3 +332,35 @@ class TestPublishWarnings:
         be re-sent on every subsequent hook, forever.
         """
         assert self._publish_with_response(response, caplog) is True
+
+
+@pytest.mark.parametrize("adopt", [False, True])
+def test_optimizer_defaults_preserve_agent_adoption_veto(adopt):
+    from reflexio.models.config_schema import Config, PlaybookOptimizerConfig
+
+    config = Config(
+        storage_config=None,
+        playbook_optimizer_config=PlaybookOptimizerConfig(
+            auto_update_pending_agent_playbooks=adopt,
+            user_playbooks_enabled=True,
+        ),
+    )
+    client = MagicMock()
+    client.get_config.return_value = config
+    adapter = Adapter()
+    with patch.object(adapter, "_get_client", return_value=client):
+        assert (
+            adapter.apply_optimizer_defaults(script_path="/tmp/optimizer-assistant")
+            is True
+        )
+        assert (
+            adapter.apply_optimizer_defaults(script_path="/tmp/optimizer-assistant")
+            is True
+        )
+    opt = config.playbook_optimizer_config
+    assert opt.enabled is True
+    assert opt.optimize_agent_playbooks is True
+    assert opt.auto_update_pending_agent_playbooks is adopt
+    assert opt.allows_target("agent_playbook") is adopt
+    assert opt.user_playbooks_enabled is False
+    client.set_config.assert_called_once_with(config)

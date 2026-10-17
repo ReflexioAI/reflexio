@@ -128,9 +128,7 @@ class PlaybookOptimizer:
         the incumbent in favour of a successor playbook.
         """
         config = self._config()
-        if not self._enabled_for_target(config, target) or not _can_adopt_winner(
-            target, config
-        ):
+        if not config.allows_target(target.kind):
             return "skipped"
         if target.kind == "user_playbook":
             recovered = self._recover_gepa_user_playbook_publication(target)
@@ -449,15 +447,6 @@ class PlaybookOptimizer:
             )
         return None
 
-    def _enabled_for_target(
-        self, config: PlaybookOptimizerConfig, target: PlaybookOptimizationTarget
-    ) -> bool:
-        if not config.enabled:
-            return False
-        if target.kind == "agent_playbook":
-            return config.optimize_agent_playbooks
-        return config.optimize_user_playbooks
-
     def _load_incumbent(
         self, target: PlaybookOptimizationTarget
     ) -> AgentPlaybook | None:
@@ -488,7 +477,7 @@ class PlaybookOptimizer:
     ) -> list:
         if target.kind == "agent_playbook":
             return self.resolver.for_agent_playbook(target.target_id)
-        if not config.optimize_user_playbooks:
+        if not config.user_playbooks_enabled:
             return []
         return self.resolver.for_user_playbook(target.target_id)
 
@@ -762,7 +751,7 @@ class PlaybookOptimizer:
         config: PlaybookOptimizerConfig,
         run_request_id: str,
     ) -> int | None:
-        # The optimize() entrypoint already gates on _can_adopt_winner before
+        # The optimize() entrypoint already checks target eligibility before
         # creating the job, but check again so this stays correct if called
         # from elsewhere.
         if not _can_adopt_winner(target, config):
@@ -816,7 +805,7 @@ def _can_adopt_winner(
 ) -> bool:
     if target.kind == "agent_playbook":
         return config.auto_update_pending_agent_playbooks
-    return config.auto_update_user_playbooks
+    return config.user_playbooks_enabled
 
 
 def _append_optimizer_metadata(existing: str, predecessor_id: int) -> str:

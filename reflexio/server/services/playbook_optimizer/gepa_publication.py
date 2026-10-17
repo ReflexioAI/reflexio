@@ -55,7 +55,7 @@ def gepa_adoption_authority_from_config(
     return {
         "adoption_policy": {
             "auto_update_user_playbooks": (
-                config.auto_update_user_playbooks
+                config.user_playbooks_enabled
                 if adoption_enabled is None
                 else adoption_enabled
             ),

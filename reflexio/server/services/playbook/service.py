@@ -982,11 +982,7 @@ class PlaybookGenerationService(
         self, saved_playbooks: list[UserPlaybook]
     ) -> None:
         config = self.configurator.get_config().playbook_optimizer_config
-        if (
-            not config.enabled
-            or not config.optimize_user_playbooks
-            or not saved_playbooks
-        ):
+        if config.allows_target("user_playbook") is not True or not saved_playbooks:
             return
         from reflexio.server.services.playbook_optimizer import (
             PlaybookOptimizationScheduler,

@@ -160,9 +160,8 @@ class Adapter:
 
             desired = {
                 "enabled": True,
-                "optimize_user_playbooks": False,
+                "user_playbooks_enabled": False,
                 "optimize_agent_playbooks": True,
-                "auto_update_user_playbooks": True,
                 "min_commit_windows": 1,
                 "max_metric_calls": 15,
                 "assistant_script_path": script_path,

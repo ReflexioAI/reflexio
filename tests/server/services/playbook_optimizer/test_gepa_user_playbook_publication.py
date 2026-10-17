@@ -72,8 +72,7 @@ def _optimizer_config(tmp_path) -> Config:
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
         playbook_optimizer_config=PlaybookOptimizerConfig(
             enabled=True,
-            optimize_user_playbooks=True,
-            auto_update_user_playbooks=True,
+            user_playbooks_enabled=True,
             webhook_url="https://assistant.example.test/rollout",
             min_commit_windows=1,
             min_commit_score=0.5,
@@ -1184,7 +1183,7 @@ def test_gepa_publication_uses_frozen_adoption_policy_when_live_config_drifts(
         config.playbook_optimizer_config.min_commit_score = 1.0
         config.playbook_optimizer_config.min_commit_likert = 5
         config.playbook_optimizer_config.min_commit_windows = 2
-        config.playbook_optimizer_config.auto_update_user_playbooks = False
+        config.playbook_optimizer_config.user_playbooks_enabled = False
         return prepared
 
     with patch.object(
@@ -1533,7 +1532,7 @@ def test_gepa_live_publishing_lease_excludes_duplicate_worker(tmp_path):
 
 @pytest.mark.parametrize(
     "kill_switch",
-    ["enabled", "optimize_user_playbooks", "auto_update_user_playbooks"],
+    ["enabled", "user_playbooks_enabled"],
 )
 def test_gepa_recovery_respects_live_kill_switches(tmp_path, kill_switch):
     storage = _storage(tmp_path)

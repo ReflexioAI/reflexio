@@ -396,8 +396,10 @@ What happens, in order, when a playbook is scheduled and the optimizer is enable
 | 9b | User-playbook publication | Builds a fixed decision proof and search projection, stages them durably, then atomically replaces the current user playbook with exactly one successor. The compact proof binds each full durable evaluation through a canonical digest rather than duplicating rollout documents. |
 | 10 | User-playbook recovery | A later enabled run may reclaim an expired publication lease and finish from the staged bytes. Incumbent changes produce `incumbent_changed`; retries do not rerun GEPA or regenerate the projection. |
 
-User-playbook recovery and new runs both require `enabled`,
-`optimize_user_playbooks`, and `auto_update_user_playbooks`.
+User-playbook recovery and new runs both require `enabled` and
+`user_playbooks_enabled`. The two legacy user switches normalize to their
+conjunction, preserving both former false defaults. Prepared publication
+authority retains its recorded policy independently of later config changes.
 
 ---
 

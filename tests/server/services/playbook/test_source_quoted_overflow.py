@@ -319,8 +319,7 @@ def test_source_quoted_playbooks_are_not_automatically_enqueued_for_optimization
         get_config=lambda: SimpleNamespace(
             playbook_optimizer_config=PlaybookOptimizerConfig(
                 enabled=True,
-                optimize_user_playbooks=True,
-                auto_update_user_playbooks=True,
+                user_playbooks_enabled=True,
             )
         )
     )
@@ -360,4 +359,5 @@ def test_ordinary_notes_reserve_policy_without_losing_text_or_growing(notes):
     assert not is_source_quoted_playbook(row)
     assert ordinary_playbook_notes(preserved) == preserved
     if notes is not None:
+        assert preserved is not None
         assert preserved.endswith(notes)

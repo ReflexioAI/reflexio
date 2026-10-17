@@ -2355,11 +2355,7 @@ class PlaybookAggregator:
         self, saved_playbooks: Sequence[AgentPlaybook | None]
     ) -> None:
         config = self.configurator.get_config().playbook_optimizer_config
-        if (
-            getattr(config, "enabled", False) is not True
-            or getattr(config, "optimize_agent_playbooks", False) is not True
-            or not saved_playbooks
-        ):
+        if config.allows_target("agent_playbook") is not True or not saved_playbooks:
             return
         from reflexio.server.services.playbook_optimizer import (
             PlaybookOptimizationScheduler,
