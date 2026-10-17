@@ -848,3 +848,10 @@ claims. Workers, selected recovery, recovery inspection and enterprise discovery
 use the same lifetime. Default-valued legacy timing fields are stripped before
 validation or raw upgrade pruning; customized fields require explicit adoption.
 Do not reintroduce a bootstrap org's timing as fleet scheduler policy.
+
+Agent-success evaluation consumes the full source-filtered session (or an explicit
+cutover prefix). Its former window/stride overrides and four historical aliases
+are accepted only as ignored input and removed by
+`models/config_schema.py::strip_retired_config_fields` before raw upgrades.
+Do not expose extraction window controls for this evaluator. Profile/playbook
+window and stride overrides remain active and independent.

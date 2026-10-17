@@ -1123,7 +1123,7 @@ class TestBackwardCompatibility:
         assert config.stride_size_override == 5
 
     def test_success_config_old_override_names(self):
-        """AgentSuccessConfig: old extraction_window_*_override names still work."""
+        """AgentSuccessConfig: old extraction-window inputs remain readable but ignored."""
         config = AgentSuccessConfig.model_validate(
             {
                 "evaluation_name": "test",
@@ -1132,11 +1132,12 @@ class TestBackwardCompatibility:
                 "extraction_window_stride_override": 15,
             }
         )
-        assert config.window_size_override == 40
-        assert config.stride_size_override == 15
+        assert config.success_definition_prompt == "test"
+        assert "window_size_override" not in config.model_dump()
+        assert "stride_size_override" not in config.model_dump()
 
     def test_success_config_current_legacy_override_names(self):
-        """AgentSuccessConfig: batch_*_override names still work."""
+        """AgentSuccessConfig: old batch-window inputs remain readable but ignored."""
         config = AgentSuccessConfig.model_validate(
             {
                 "evaluation_name": "test",
@@ -1145,8 +1146,9 @@ class TestBackwardCompatibility:
                 "batch_interval_override": 15,
             }
         )
-        assert config.window_size_override == 40
-        assert config.stride_size_override == 15
+        assert config.success_definition_prompt == "test"
+        assert "window_size_override" not in config.model_dump()
+        assert "stride_size_override" not in config.model_dump()
 
     def test_aggregator_config_old_field_names(self):
         """PlaybookAggregatorConfig: old field names still work via AliasChoices."""
