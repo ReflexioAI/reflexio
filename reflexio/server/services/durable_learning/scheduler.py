@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Callable, Iterable
 
 from reflexio import durable_learning_policy
@@ -29,14 +28,14 @@ class DurableLearningScheduler(ThreadedScheduler):
         org_ids_provider: Callable[[], Iterable[str]],
         instance_id: str | None = None,
     ):
-        durable_learning_policy.validate_discovery_timing_env(os.environ)
+        timing = durable_learning_policy.resolve_discovery_timing()
         super().__init__(thread_name="reflexio-durable-learning-scheduler")
         self._worker = DurableLearningWorker(
             request_context_factory, instance_id=instance_id
         )
         self._org_ids_provider = org_ids_provider
-        self._poll = durable_learning_policy.DISCOVERY_POLL_SECONDS
-        self._lease = durable_learning_policy.CLAIM_LEASE_SECONDS
+        self._poll = timing.poll_seconds
+        self._lease = timing.lease_seconds
         self._last_org: str | None = None
 
     def _run_once(self) -> float:

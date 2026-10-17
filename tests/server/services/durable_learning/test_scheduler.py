@@ -2,6 +2,8 @@
 
 import time
 
+import pytest
+
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.services.durable_learning.scheduler import DurableLearningScheduler
 
@@ -85,7 +87,17 @@ def test_library_recovers_persisted_backlog_without_new_publish(tmp_path, monkey
     monkeypatch.setattr(
         ProfileGenerationService, "_should_run_before_extraction", lambda *_: False
     )
-    monkeypatch.setattr("reflexio.durable_learning_policy.DISCOVERY_POLL_SECONDS", 0.05)
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_POLL_SECONDS", "0.05")
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS", "45")
+    storage_type = type(first.get_storage())
+    claim = storage_type.claim_extraction
+    leases = []
+
+    def observe_claim(storage, owner, lease_seconds):
+        leases.append(lease_seconds)
+        return claim(storage, owner, lease_seconds)
+
+    monkeypatch.setattr(storage_type, "claim_extraction", observe_claim)
     # A new facade opens the existing DB and discovers its work at construction.
     second = Reflexio(org_id=org, storage_base_dir=str(tmp_path), configurator=config)
     try:
@@ -96,6 +108,7 @@ def test_library_recovers_persisted_backlog_without_new_publish(tmp_path, monkey
         ):
             time.sleep(0.02)
         assert second.get_storage().extraction_status("u", "r")["status"] == "done"
+        assert leases and set(leases) == {45}
     finally:
         with local._lock:
             scheduler = local._schedulers.pop(str(tmp_path), None)
@@ -135,9 +148,8 @@ def test_transient_discovery_failure_is_a_warning(caplog, transient_failure_clas
 
 
 def test_scheduler_uses_shared_production_policy_for_poll_and_claim(monkeypatch):
-    from reflexio import durable_learning_policy
-
-    monkeypatch.setattr(durable_learning_policy, "DISCOVERY_POLL_SECONDS", 2.0)
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_POLL_SECONDS", "7.5")
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS", "45")
     monkeypatch.setattr(
         "reflexio.server.services.durable_learning.scheduler.worker_count", lambda: 1
     )
@@ -150,5 +162,19 @@ def test_scheduler_uses_shared_production_policy_for_poll_and_claim(monkeypatch)
         "start_org",
         lambda org, lease: admitted.append((org, lease)) or True,
     )
-    assert scheduler._run_once() == 2.0
-    assert admitted == [("org", 300)]
+    assert scheduler._run_once() == 7.5
+    assert admitted == [("org", 45)]
+
+
+def test_invalid_policy_fails_before_constructing_a_worker(monkeypatch):
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS", "1.5")
+    monkeypatch.setattr(
+        "reflexio.server.services.durable_learning.scheduler.DurableLearningWorker",
+        lambda *_args, **_kwargs: pytest.fail(
+            "worker created before policy validation"
+        ),
+    )
+    with pytest.raises(ValueError, match="LEASE_SECONDS"):
+        DurableLearningScheduler(
+            request_context_factory=_unused_context, org_ids_provider=lambda: []
+        )

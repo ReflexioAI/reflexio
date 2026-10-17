@@ -1,49 +1,66 @@
-"""Code-owned durable learning timing, shared by library and enterprise schedulers.
+"""Validated durable learning timing, shared by library and enterprise schedulers.
 
-This module stays independent of server imports so startup can validate legacy
-inputs before constructing workers or importing the application stack.
+This module stays independent of server imports so startup can validate the
+resolved deployment inputs before constructing workers or importing the stack.
 """
 
 import math
 import os
 import threading
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 DISCOVERY_POLL_SECONDS = 2.0
 CLAIM_LEASE_SECONDS = 300
 
 
-def validate_discovery_timing_env(env: Mapping[str, str]) -> None:
-    """Reject retired custom timing overrides; tolerate blank or old defaults.
+# The heartbeat waits lease/3; storage persists epoch + lease as signed int64.
+MAX_DISCOVERY_LEASE_SECONDS = min(((1 << 63) - 1) // 2, int(threading.TIMEOUT_MAX) * 3)
 
-    The accepted numbers describe the retired contract, not tunable policy.
-    Never silently reinterpret a nondefault deployment override as our default.
+
+@dataclass(frozen=True)
+class DiscoveryTiming:
+    poll_seconds: float
+    lease_seconds: int
+
+
+def resolve_discovery_timing(env: Mapping[str, str] | None = None) -> DiscoveryTiming:
+    """Resolve independent pickup/load and crash-recovery policies once.
+
+    The supplied mapping is authoritative, including an empty mapping. Defaults
+    remain 2/300; every consumer uses the same validation and blank handling.
     """
-    legacy = (
-        (
-            "REFLEXIO_DURABLE_LEARNING_POLL_SECONDS",
-            env.get("REFLEXIO_DURABLE_LEARNING_POLL_SECONDS", ""),
-            2.0,
-        ),
-        (
-            "REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS",
-            env.get("REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS", ""),
-            300.0,
-        ),
-    )
-    for name, raw, old_default in legacy:
-        if not raw.strip():
-            continue
-        try:
-            matches_default = float(raw) == old_default
-        except ValueError:
-            matches_default = False
-        if not matches_default:
-            raise ValueError(
-                f"{name} is retired; remove it from your environment. "
-                "Durable extraction now owns its discovery timing; custom "
-                "poll intervals and claim durations are no longer supported."
-            )
+    environment = os.environ if env is None else env
+    poll_raw = environment.get("REFLEXIO_DURABLE_LEARNING_POLL_SECONDS", "").strip()
+    lease_raw = environment.get("REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS", "").strip()
+    try:
+        poll = float(poll_raw) if poll_raw else float(DISCOVERY_POLL_SECONDS)
+    except ValueError:
+        poll = 0.0
+    if not math.isfinite(poll) or not 0 < poll <= threading.TIMEOUT_MAX:
+        raise ValueError(
+            "REFLEXIO_DURABLE_LEARNING_POLL_SECONDS must be finite, positive "
+            "and no greater than threading.TIMEOUT_MAX."
+        )
+    try:
+        lease = float(lease_raw) if lease_raw else float(CLAIM_LEASE_SECONDS)
+    except ValueError:
+        lease = 0.0
+    if (
+        not math.isfinite(lease)
+        or not 1 <= lease <= MAX_DISCOVERY_LEASE_SECONDS
+        or not lease.is_integer()
+    ):
+        raise ValueError(
+            "REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS must be a positive integer "
+            "within the signed-64-bit epoch and heartbeat wait range."
+        )
+    return DiscoveryTiming(poll_seconds=poll, lease_seconds=int(lease))
+
+
+def validate_discovery_timing_env(env: Mapping[str, str]) -> None:
+    """Validate the resolved deployment mapping before constructing workers."""
+    resolve_discovery_timing(env)
 
 
 AGGREGATION_MIN_INTERVAL_SECONDS = 3600

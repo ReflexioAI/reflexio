@@ -1,4 +1,4 @@
-"""Retiring discovery overrides cannot silently change a custom deployment."""
+"""Independent discovery and aggregation timing retain real operator control."""
 
 import os
 import subprocess
@@ -20,12 +20,32 @@ from reflexio.durable_learning_policy import validate_discovery_timing_env
         },
         {
             "REFLEXIO_DURABLE_LEARNING_POLL_SECONDS": " 2 ",
-            "REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS": "300",
+            "REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS": "300.0",
         },
     ],
 )
-def test_retired_defaults_are_accepted_without_becoming_overrides(env):
-    validate_discovery_timing_env(env)
+def test_discovery_defaults_and_blank_inputs_preserve_two_second_poll_and_lease(env):
+    from reflexio.durable_learning_policy import resolve_discovery_timing
+
+    timing = resolve_discovery_timing(env)
+    assert (timing.poll_seconds, timing.lease_seconds) == (2.0, 300)
+
+
+@pytest.mark.parametrize("poll,lease", [("0.05", "1"), ("10", "60"), ("7200", "900")])
+def test_custom_policies_are_independent_and_mapping_authoritative(
+    monkeypatch, poll, lease
+):
+    from reflexio.durable_learning_policy import resolve_discovery_timing
+
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_POLL_SECONDS", "invalid-ambient")
+    env = {
+        "REFLEXIO_DURABLE_LEARNING_POLL_SECONDS": poll,
+        "REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS": lease,
+    }
+    timing = resolve_discovery_timing(env)
+    assert (timing.poll_seconds, timing.lease_seconds) == (float(poll), int(lease))
+    assert resolve_discovery_timing({}).poll_seconds == 2.0
+    assert env["REFLEXIO_DURABLE_LEARNING_POLL_SECONDS"] == poll
 
 
 @pytest.mark.parametrize(
@@ -35,29 +55,72 @@ def test_retired_defaults_are_accepted_without_becoming_overrides(env):
         "REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS",
     ],
 )
-@pytest.mark.parametrize("value", ["0", "-1", "0.05", "10", "nan", "inf", "invalid"])
-def test_custom_or_invalid_retired_timing_requires_migration(key, value):
-    with pytest.raises(ValueError, match=key):
+@pytest.mark.parametrize(
+    "value", ["0", "-1", "nan", "inf", "private-invalid-input", "1e100"]
+)
+def test_invalid_discovery_timing_fails_with_value_free_errors(key, value):
+    with pytest.raises(ValueError, match=key) as error:
         validate_discovery_timing_env({key: value})
+    assert "private-invalid-input" not in str(error.value)
 
 
-def test_server_import_rejects_custom_timing_before_workers_start(tmp_path):
+@pytest.mark.parametrize("value", ["0.05", "1.5"])
+def test_claim_duration_requires_an_integral_number_of_seconds(value):
+    with pytest.raises(ValueError, match="LEASE_SECONDS"):
+        validate_discovery_timing_env(
+            {"REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS": value}
+        )
+
+
+def test_discovery_wait_and_epoch_boundaries_are_enforced():
+    from reflexio.durable_learning_policy import (
+        MAX_DISCOVERY_LEASE_SECONDS,
+        resolve_discovery_timing,
+    )
+
+    timing = resolve_discovery_timing(
+        {
+            "REFLEXIO_DURABLE_LEARNING_POLL_SECONDS": str(threading.TIMEOUT_MAX),
+            "REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS": str(MAX_DISCOVERY_LEASE_SECONDS),
+        }
+    )
+    assert timing.lease_seconds / 3 <= threading.TIMEOUT_MAX
+    with pytest.raises(ValueError, match="LEASE_SECONDS"):
+        resolve_discovery_timing(
+            {
+                "REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS": str(
+                    MAX_DISCOVERY_LEASE_SECONDS + 1
+                )
+            }
+        )
+    with pytest.raises(ValueError, match="POLL_SECONDS"):
+        resolve_discovery_timing(
+            {"REFLEXIO_DURABLE_LEARNING_POLL_SECONDS": str(threading.TIMEOUT_MAX * 2)}
+        )
+
+
+@pytest.mark.parametrize(
+    "value,accepted", [("10", True), ("private-invalid-input", False)]
+)
+def test_server_import_validates_policy_before_workers_start(tmp_path, value, accepted):
     env = {
         **os.environ,
-        "REFLEXIO_DURABLE_LEARNING_POLL_SECONDS": "10",
+        "REFLEXIO_DURABLE_LEARNING_POLL_SECONDS": value,
+        "REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS": "900",
+        "REFLEXIO_LOG_DIR": str(tmp_path),
         "LOCAL_STORAGE_PATH": str(tmp_path),
     }
-    result = subprocess.run(  # noqa: S603 - fixed interpreter and literal import, no shell/input code.
+    result = subprocess.run(  # noqa: S603 - fixed interpreter and literal import; no shell.
         [sys.executable, "-c", "import reflexio.server"],
         env=env,
         text=True,
         capture_output=True,
         timeout=30,
     )
-    assert result.returncode != 0
-    assert (
-        "REFLEXIO_DURABLE_LEARNING_POLL_SECONDS is retired; remove it" in result.stderr
-    )
+    assert (result.returncode == 0) is accepted, result.stderr
+    if not accepted:
+        assert "REFLEXIO_DURABLE_LEARNING_POLL_SECONDS" in result.stderr
+        assert "private-invalid-input" not in result.stderr
 
 
 _AGGREGATION_TIMING_KEYS = (
