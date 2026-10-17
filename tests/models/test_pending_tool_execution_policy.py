@@ -1,0 +1,106 @@
+"""Retired pending-tool execution tuning must never silently change a saved claim policy."""
+
+import json
+from copy import deepcopy
+from pathlib import Path
+
+import pytest
+
+from reflexio.cli.bootstrap_config import load_storage_from_config
+from reflexio.models.config_schema import (
+    PendingToolCallConfig,
+    strip_retired_config_fields,
+)
+from reflexio.server.services.configurator.local_file_config_storage import (
+    LocalFileConfigStorage,
+)
+
+LEGACY_DEFAULTS = {
+    "resume_poll_interval_seconds": 5.0,
+    "resume_claim_ttl_seconds": 600,
+}
+
+
+@pytest.mark.parametrize("strings", [False, True])
+def test_defaults_canonicalize_without_mutating_input(strings):
+    legacy = {k: str(v) if strings else v for k, v in LEGACY_DEFAULTS.items()}
+    payload = {"pending_tool_call_config": {**legacy, "enabled": False}}
+    original = deepcopy(payload)
+    normalized = strip_retired_config_fields(payload)
+    assert normalized == {"pending_tool_call_config": {"enabled": False}}
+    policy = PendingToolCallConfig.model_validate(payload["pending_tool_call_config"])
+    for key in LEGACY_DEFAULTS:
+        assert key not in policy.model_dump()
+        assert key not in policy.model_json_schema()["properties"]
+    assert payload == original
+
+
+@pytest.mark.parametrize("key", LEGACY_DEFAULTS)
+@pytest.mark.parametrize("value", [0, 3, None, "invalid", -1, 1.5])
+def test_custom_or_invalid_policy_is_rejected_even_when_disabled(key, value):
+    legacy = {"enabled": False, key: value}
+    with pytest.raises(ValueError, match=key):
+        PendingToolCallConfig.model_validate(legacy)
+    with pytest.raises(ValueError, match=key):
+        strip_retired_config_fields({"pending_tool_call_config": legacy})
+
+
+def test_local_saved_default_policy_is_canonicalized(tmp_path):
+    storage = LocalFileConfigStorage("pending-defaults", base_dir=str(tmp_path))
+    path = Path(storage.config_file)
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "storage_config": {"type": "sqlite"},
+                "pending_tool_call_config": LEGACY_DEFAULTS,
+            }
+        )
+    )
+    for _ in range(2):
+        assert not storage.load_config().pending_tool_call_config.enabled
+    saved = json.loads(path.read_text())["pending_tool_call_config"]
+    assert not set(LEGACY_DEFAULTS).intersection(saved)
+
+
+def test_custom_saved_policy_is_not_rewritten(tmp_path):
+    storage = LocalFileConfigStorage("pending-custom", base_dir=str(tmp_path))
+    path = Path(storage.config_file)
+    path.parent.mkdir(parents=True)
+    original = json.dumps(
+        {
+            "storage_config": {"type": "sqlite"},
+            "pending_tool_call_config": {"resume_claim_ttl_seconds": 60},
+        }
+    )
+    path.write_text(original)
+    with pytest.raises(ValueError, match="resume_claim_ttl_seconds"):
+        storage.load_config()
+    assert path.read_text() == original
+
+    with pytest.raises(ValueError, match="resume_claim_ttl_seconds"):
+        load_storage_from_config(org_id="pending-custom", base_dir=str(tmp_path))
+    assert path.read_text() == original
+
+
+def test_file_and_cli_propagate_new_migration_error_families(tmp_path):
+    from unittest.mock import patch
+
+    from reflexio.config_migration import ConfigurationMigrationError
+
+    storage = LocalFileConfigStorage("future-policy", base_dir=str(tmp_path))
+    path = Path(storage.config_file)
+    path.parent.mkdir(parents=True)
+    before = json.dumps({"storage_config": {"type": "sqlite"}})
+    path.write_text(before)
+    with patch(
+        "reflexio.server.services.configurator.local_file_config_storage.validate_stored_config",
+        side_effect=ConfigurationMigrationError("new policy family"),
+    ):
+        for load in (
+            storage.load_config,
+            lambda: load_storage_from_config("future-policy", base_dir=str(tmp_path)),
+        ):
+            with pytest.raises(ConfigurationMigrationError, match="new policy family"):
+                load()
+            assert path.read_text() == before

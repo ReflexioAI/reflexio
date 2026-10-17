@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import Interaction, Request
 from reflexio.models.config_schema import PlaybookConfig, ProfileExtractorConfig
+from reflexio.pending_tool_policy import RESUME_CLAIM_TTL_SECONDS
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm._litellm_types import ModelProvenance
@@ -349,18 +350,19 @@ class ExtractionResumeWorker:
         consult nor need a bound project. Everything downstream of a claim
         writes project-scoped tenant tables and does.
         """
-        config = self.request_context.configurator.get_config()
-        pending_config = config.pending_tool_call_config
+        # Validate saved policies before claiming work; migration errors must
+        # never leave a run claimed under an unaccepted policy.
+        self.request_context.configurator.get_config()
         finalization_retry = self.storage.claim_finalization_failed_agent_run(
             org_id=self.request_context.org_id,
             worker_id=self.worker_id,
-            claim_ttl_seconds=pending_config.resume_claim_ttl_seconds,
+            claim_ttl_seconds=RESUME_CLAIM_TTL_SECONDS,
         )
 
         run = finalization_retry or self.storage.claim_ready_agent_run(
             org_id=self.request_context.org_id,
             worker_id=self.worker_id,
-            claim_ttl_seconds=pending_config.resume_claim_ttl_seconds,
+            claim_ttl_seconds=RESUME_CLAIM_TTL_SECONDS,
         )
         if run is None:
             return None
@@ -382,16 +384,13 @@ class ExtractionResumeWorker:
             if run is None:
                 raise RecoveryRefusedError("run_not_found")
             validate_selection(self.request_context, run, selection)
-            config = (
-                self.request_context.configurator.get_config().pending_tool_call_config
-            )
             claimed = self.storage.claim_agent_run_for_recovery(
                 run_id=run.id,
                 org_id=selection.org_id,
                 worker_id=self.worker_id,
                 expected_updated_at=selection.updated_at,
                 operation_id=operation_id,
-                claim_ttl_seconds=config.resume_claim_ttl_seconds,
+                claim_ttl_seconds=RESUME_CLAIM_TTL_SECONDS,
             )
             if claimed is None:
                 raise RecoveryRefusedError("claim_conflict")
@@ -461,9 +460,7 @@ class ExtractionResumeWorker:
                 with user_extraction_lease(
                     self.storage,
                     run.binding.user_id or "",
-                    max_wait_seconds=min(
-                        5.0, pending_config.resume_claim_ttl_seconds / 2
-                    ),
+                    max_wait_seconds=min(5.0, RESUME_CLAIM_TTL_SECONDS / 2),
                 ):
                     latest = self.storage.get_agent_run(run.id)
                     if (

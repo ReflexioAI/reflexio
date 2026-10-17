@@ -312,7 +312,6 @@ def _live_resumable_config(marker: str) -> tuple[dict[str, Any], str, str]:
                 "pending_ttl_seconds": 3600,
                 "dedup_cache_seconds": 60,
                 "prior_answer_valid_seconds": 3600,
-                "resume_poll_interval_seconds": 1.0,
                 "tool_overrides": {
                     "ask_human": {
                         "pending_ttl_seconds": 3600,

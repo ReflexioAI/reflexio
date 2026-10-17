@@ -255,6 +255,11 @@ def test_legacy_shadow_file_load_patch_save_roundtrip(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "section,field",
     [
+        ("pending_tool_call_config", "resume_poll_interval_seconds"),
+        ("pending_tool_call_config", "resume_claim_ttl_seconds"),
+        ("playbook_optimizer_config", "scheduler_jitter_seconds"),
+        ("playbook_optimizer_config", "abort_cooldown_threshold"),
+        ("playbook_optimizer_config", "cooldown_after_aborts_seconds"),
         ("lineage_gc", "poll_interval_seconds"),
         ("governance_retention", "audit_events_delete_batch_limit"),
     ],
@@ -266,7 +271,7 @@ def test_retired_custom_policy_propagates_without_resetting_file(
         load_storage_from_config,
         save_storage_to_config,
     )
-    from reflexio.housekeeping_policy import HousekeepingMigrationError
+    from reflexio.config_migration import ConfigurationMigrationError
 
     storage = _make_local_file_storage(str(tmp_path))
     payload = {
@@ -284,9 +289,7 @@ def test_retired_custom_policy_propagates_without_resetting_file(
         lambda: load_storage_from_config("test-org", base_dir=str(tmp_path)),
         lambda: save_storage_to_config("sqlite", "test-org", base_dir=str(tmp_path)),
     ):
-        with pytest.raises(
-            HousekeepingMigrationError, match=f"{section}.{field}"
-        ) as error:
+        with pytest.raises(ConfigurationMigrationError, match=field) as error:
             load()
         assert "private-custom-policy" not in str(error.value)
         assert path.read_bytes() == before

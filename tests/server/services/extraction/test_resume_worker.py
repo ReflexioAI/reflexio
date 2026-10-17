@@ -6,6 +6,7 @@ import threading
 from collections import Counter
 from collections.abc import Callable
 from contextlib import ExitStack
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -2238,3 +2239,56 @@ def test_readiness_finalization_classification_never_exhausts_retry_budget():
         )
         == AgentRunStatus.FINALIZATION_FAILED
     )
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        AgentRunStatus.RESUMING,
+        AgentRunStatus.FINALIZING,
+        AgentRunStatus.AGENT_COMPLETED,
+    ],
+)
+@pytest.mark.parametrize("age_seconds,expected_claim", [(590, False), (610, True)])
+def test_owned_claim_lifetime_preserves_live_work_and_recovers_stale_work(
+    storage, request_context, monkeypatch, status, age_seconds, expected_claim
+):
+    if status == AgentRunStatus.RESUMING:
+        _seed_ready_run(storage)
+    else:
+        run = _finalizing_run(
+            run_id="run_1", extractor_kind="profile", request_id="request_1"
+        )
+        run = replace(run, committed_output={"profiles": []})
+        storage.create_agent_run(run)
+    old = (datetime.now(UTC) - timedelta(seconds=age_seconds)).isoformat()
+    storage.conn.execute(
+        "UPDATE _agent_runs SET status=?,claimed_by='previous',claimed_at=?,updated_at=? WHERE id=?",
+        (status.value, old, old, "run_1"),
+    )
+    storage.conn.commit()
+    worker = ExtractionResumeWorker(
+        request_context=request_context, worker_id="new-owner"
+    )
+    monkeypatch.setattr(worker, "_execute_claimed_run", lambda run, **_kw: run)
+    result = worker.run_once()
+    assert (result is not None) is expected_claim
+    saved = storage.get_agent_run("run_1")
+    assert saved is not None
+    assert saved.claimed_by == ("new-owner" if expected_claim else "previous")
+
+
+def test_policy_migration_error_prevents_claiming_work(request_context, storage):
+    from reflexio.config_migration import ConfigurationMigrationError
+
+    request_context.configurator.get_config.side_effect = ConfigurationMigrationError(
+        "migration required"
+    )
+    with (
+        patch.object(storage, "claim_ready_agent_run") as ready,
+        patch.object(storage, "claim_finalization_failed_agent_run") as finalize,
+        pytest.raises(ConfigurationMigrationError),
+    ):
+        ExtractionResumeWorker(request_context=request_context).run_once()
+    ready.assert_not_called()
+    finalize.assert_not_called()

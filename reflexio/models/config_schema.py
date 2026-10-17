@@ -17,7 +17,9 @@ from reflexio.config_env import (
     DEFAULT_STORAGE_POOL_ACQUIRE_TIMEOUT,
     DEFAULT_STORAGE_POOL_SIZE,
 )
+from reflexio.config_migration import ConfigurationMigrationError
 from reflexio.housekeeping_policy import strip_legacy_housekeeping_fields
+from reflexio.pending_tool_policy import strip_legacy_pending_tool_timing
 
 from .api_schema.validators import (
     NonEmptyStr,
@@ -38,7 +40,7 @@ _LEGACY_SCHEDULER_FLOAT = TypeAdapter(float)
 _LEGACY_SCHEDULER_INT = TypeAdapter(int)
 
 
-class OptimizerSchedulingMigrationError(ValueError):
+class OptimizerSchedulingMigrationError(ConfigurationMigrationError):
     """Saved scheduler tuning requires explicit adoption of the owned policy."""
 
 
@@ -222,12 +224,16 @@ def normalize_legacy_config_shape(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
-    """Drop retired no-ops without changing legacy shapes or opaque metadata.
+    """Normalize retired settings without losing custom policies or opaque metadata.
 
     Copy changed dictionaries so ordinary saves and raw tuner-reset upgrades
     can share this cleanup without mutating a caller's saved configuration.
     """
     payload = strip_legacy_housekeeping_fields(data)
+    if "pending_tool_call_config" in payload:
+        payload["pending_tool_call_config"] = strip_legacy_pending_tool_timing(
+            payload["pending_tool_call_config"]
+        )
     if "playbook_optimizer_config" in payload:
         payload["playbook_optimizer_config"] = _normalize_optimizer_policy(
             payload["playbook_optimizer_config"]
@@ -935,14 +941,17 @@ class PendingToolCallConfig(BaseModel):
     dedup_cache_seconds: int = Field(default=300, gt=0)
     prior_answer_valid_seconds: int = Field(default=2_592_000, gt=0)
     similarity_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
-    resume_poll_interval_seconds: float = Field(default=5.0, gt=0)
-    resume_claim_ttl_seconds: int = Field(default=600, gt=0)
     max_resume_attempts: int = Field(default=3, ge=0)
     max_finalization_attempts: int = Field(default=3, ge=0)
     hmac_secrets: list[str] = Field(default_factory=list)
     tool_overrides: dict[str, PendingToolCallToolOverrideConfig] = Field(
         default_factory=dict
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_execution_timing(cls, data: Any) -> Any:
+        return strip_legacy_pending_tool_timing(data)
 
     def for_tool(self, tool_name: str) -> EffectivePendingToolCallConfig:
         """Return base settings with an optional exact tool-name override."""
