@@ -1,6 +1,7 @@
 """Saved output survives an extraction-contract upgrade without regeneration."""
 
 import copy
+import hashlib
 import json
 from typing import Any
 from unittest.mock import Mock
@@ -38,6 +39,21 @@ from tests.server.services.test_overflow_recovery_state import (
 
 pytestmark = pytest.mark.integration
 historical_pipeline = imported_pipeline
+
+
+def test_archived_schema_matches_pre673_contract_fingerprint():
+    from reflexio.server.services.playbook._historical_reference_contract import (
+        StructuredReferencedExtractedPlaybookList as HistoricalOutput,
+    )
+
+    # Independently verified against the actual schema at de08892d^ (#673).
+    encoded = json.dumps(
+        HistoricalOutput.model_json_schema(), sort_keys=True, separators=(",", ":")
+    )
+    assert hashlib.sha256(encoded.encode()).hexdigest() == (
+        "aa63bc1af1539b0517cd7d96a7dfc638aaa9267ae28c1b7089b4624013c7757d"
+    )
+
 
 # Independent fixture of the pre-#673 prepared instruction, not the live resolver.
 OLD_INSTRUCTION = (
