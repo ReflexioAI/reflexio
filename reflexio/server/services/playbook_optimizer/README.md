@@ -36,3 +36,14 @@ means disabled; positive values bound GEPA merges. The schema normalizes legacy
 `use_merge=false` to zero before raw upgrade pruning and canonical saves. GEPA's
 boolean and recorded merge identity are derived from the budget; saved job
 authority remains immutable; durable publication uses its recorded snapshot.
+
+## Scheduling policy
+
+Production enqueue paths use the scheduler's code-owned defaults: up to one
+second of jitter and a one-hour target-scoped cooldown after two consecutive
+aborts. Completed/skipped outcomes reset the counter. The scheduler's internal
+arguments remain available for focused tests; org configuration does not set
+them. Default-valued legacy scheduler fields are stripped before typed validation
+or raw upgrade pruning. Custom/malformed fields raise
+`OptimizerSchedulingMigrationError`; storage adapters and CLI bootstrap must
+propagate it rather than loading defaults or overwriting saved configuration.

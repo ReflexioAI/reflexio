@@ -11,6 +11,7 @@ from reflexio.cli.paths import reflexio_home
 from reflexio.housekeeping_policy import HousekeepingMigrationError
 from reflexio.models.config_schema import (
     Config,
+    OptimizerSchedulingMigrationError,
     PlaybookConfig,
     ProfileExtractorConfig,
     StorageConfigSQLite,
@@ -116,7 +117,7 @@ class LocalFileConfigStorage(ConfigStorage):
                             self.config_file,
                         )
                 return config
-        except HousekeepingMigrationError:
+        except (HousekeepingMigrationError, OptimizerSchedulingMigrationError):
             raise
         except Exception:
             logger.exception(
