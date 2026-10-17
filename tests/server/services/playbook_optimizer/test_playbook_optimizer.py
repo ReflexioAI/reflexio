@@ -652,8 +652,7 @@ def test_optimizer_skips_when_validation_windows_cannot_satisfy_commit_threshold
             PlaybookOptimizationTarget(kind="user_playbook", target_id=1),
             PlaybookOptimizerConfig(
                 enabled=True,
-                optimize_user_playbooks=True,
-                auto_update_user_playbooks=False,
+                user_playbooks_enabled=False,
                 webhook_url="https://assistant.example.test/rollout",
             ),
         ),

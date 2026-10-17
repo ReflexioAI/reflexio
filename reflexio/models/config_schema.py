@@ -19,22 +19,34 @@ from .api_schema.validators import (
 )
 
 DEFAULT_MAX_MERGE_INVOCATIONS = 5
-_LEGACY_MERGE_ENABLED = TypeAdapter(bool)
+_LEGACY_OPTIMIZER_BOOL = TypeAdapter(bool)
 _LEGACY_MERGE_LIMIT = TypeAdapter(Annotated[int, Field(ge=0)])
 
 
-def _normalize_optimizer_merge_policy(data: Any) -> Any:
-    """Accept the former switch without keeping a second merge control."""
-    if not isinstance(data, dict) or "use_merge" not in data:
+def _normalize_optimizer_policy(data: Any) -> Any:
+    """Canonicalize retired controls without enabling previously disabled work."""
+    if not isinstance(data, dict):
         return data
-    enabled = _LEGACY_MERGE_ENABLED.validate_python(data["use_merge"])
-    # Validate even an inactive limit; retirement must not hide malformed input.
-    limit = _LEGACY_MERGE_LIMIT.validate_python(
-        data.get("max_merge_invocations", DEFAULT_MAX_MERGE_INVOCATIONS)
-    )
     normalized = dict(data)
-    normalized.pop("use_merge")
-    normalized["max_merge_invocations"] = limit if enabled else 0
+    legacy_user_keys = ("optimize_user_playbooks", "auto_update_user_playbooks")
+    if any(key in data for key in legacy_user_keys):
+        # Validate both: even an inactive policy must not hide malformed input.
+        optimize = _LEGACY_OPTIMIZER_BOOL.validate_python(
+            data.get(legacy_user_keys[0], False)
+        )
+        adopt = _LEGACY_OPTIMIZER_BOOL.validate_python(
+            data.get(legacy_user_keys[1], False)
+        )
+        normalized.setdefault("user_playbooks_enabled", optimize and adopt)
+        for key in legacy_user_keys:
+            normalized.pop(key, None)
+    if "use_merge" in data:
+        enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(data["use_merge"])
+        limit = _LEGACY_MERGE_LIMIT.validate_python(
+            data.get("max_merge_invocations", DEFAULT_MAX_MERGE_INVOCATIONS)
+        )
+        normalized.pop("use_merge")
+        normalized["max_merge_invocations"] = limit if enabled else 0
     return normalized
 
 
@@ -178,7 +190,7 @@ def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
     """
     payload = strip_legacy_housekeeping_fields(data)
     if "playbook_optimizer_config" in payload:
-        payload["playbook_optimizer_config"] = _normalize_optimizer_merge_policy(
+        payload["playbook_optimizer_config"] = _normalize_optimizer_policy(
             payload["playbook_optimizer_config"]
         )
     payload.pop("shadow_mode_enabled", None)
@@ -704,9 +716,8 @@ class PlaybookOptimizerConfig(BaseModel):
     # --- gating ------------------------------------------------------------
     enabled: bool = False
     optimize_agent_playbooks: bool = False
-    optimize_user_playbooks: bool = False
+    user_playbooks_enabled: bool = False
     auto_update_pending_agent_playbooks: bool = True
-    auto_update_user_playbooks: bool = False
 
     # --- GEPA budget -------------------------------------------------------
     max_metric_calls: int = Field(default=20, gt=0)
@@ -745,8 +756,19 @@ class PlaybookOptimizerConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def normalize_merge_policy(cls, data: Any) -> Any:
-        return _normalize_optimizer_merge_policy(data)
+    def normalize_policy(cls, data: Any) -> Any:
+        return _normalize_optimizer_policy(data)
+
+    def allows_target(self, kind: Literal["agent_playbook", "user_playbook"]) -> bool:
+        """Admit only targets with an enabled optimization and adoption path."""
+        if not self.enabled:
+            return False
+        if kind == "agent_playbook":
+            return (
+                self.optimize_agent_playbooks
+                and self.auto_update_pending_agent_playbooks
+            )
+        return self.user_playbooks_enabled
 
     @model_validator(mode="after")
     def check_single_assistant_backend(self) -> Self:
