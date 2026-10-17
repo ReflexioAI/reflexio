@@ -1303,7 +1303,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                         f"ADD COLUMN {column} {column_type}"
                     )
             cur = self.conn.cursor()
-            cur.executescript(_DDL)
+            # executescript does not open a transaction: otherwise each schema
+            # statement commits separately. Roll back the whole base DDL on error.
+            with self.conn:
+                cur.executescript("BEGIN;\n" + _DDL + "\nCOMMIT;")
             init_subject_write_barrier_table(self.conn)
             init_playbook_aggregation_tables(self.conn)
             self.conn.commit()
