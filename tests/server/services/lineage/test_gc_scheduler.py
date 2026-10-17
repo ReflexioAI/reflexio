@@ -70,6 +70,14 @@ def _scheduler(*, bootstrap_org_id: str = "org_bootstrap", factory=None):
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_sweep_hooks(monkeypatch):
+    """App startup elsewhere must not change this module's start conditions."""
+    monkeypatch.setattr(gc_scheduler, "_per_org_sweep_hooks", [])
+    monkeypatch.setattr(gc_scheduler, "_global_sweep_hooks", [])
+    monkeypatch.setattr(gc_scheduler, "_always_global_sweep_hooks", [])
+
+
 @pytest.fixture
 def gc_scheduler_factory():
     """Return a factory building a ``LineageGCScheduler`` with a stubbed sweep.
