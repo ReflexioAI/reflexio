@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from reflexio.models.config_schema import (
+    DeduplicationConfig,
     ProfileExtractorConfig,
     UserPlaybookExtractorConfig,
 )
@@ -30,6 +31,8 @@ def _records(
     current = config_type(
         extraction_definition_prompt="Preserve explicit safeguards"
     ).model_dump(mode="json")
+    if kind == "playbook":
+        current["deduplication_config"] = DeduplicationConfig().model_dump(mode="json")
     frozen = {**deepcopy(current), "extractor_name": "historical-label"}
     binding = AgentBinding(
         org_id="org-1",
@@ -241,4 +244,62 @@ def test_incomplete_witness_does_not_enable_compatibility(invalid: str) -> None:
         prior.generation_request_snapshot["extractor_config"] = []
     else:
         expected.generation_request_snapshot["extractor_config"] = []
+    assert not matches_frozen_extractor_binding(prior, expected, frozen)
+
+
+@pytest.mark.parametrize("retired_label", [False, True])
+def test_missing_dedup_strategy_means_only_legacy(retired_label: bool) -> None:
+    prior, expected, frozen = _records()
+    frozen["deduplication_config"].pop("strategy")
+    if not retired_label:
+        frozen.pop("extractor_name")
+    prior = replace(
+        prior,
+        binding=replace(prior.binding, extractor_config_hash=build_scope_hash(frozen)),
+        generation_request_snapshot={"extractor_config": deepcopy(frozen)},
+    )
+    original = deepcopy((prior, expected, frozen))
+    assert matches_frozen_extractor_binding(prior, expected, frozen)
+    assert (prior, expected, frozen) == original
+
+    current = expected.generation_request_snapshot["extractor_config"]
+    current["deduplication_config"]["strategy"] = "audited"
+    expected = replace(
+        expected,
+        binding=replace(
+            expected.binding, extractor_config_hash=build_scope_hash(current)
+        ),
+    )
+    assert not matches_frozen_extractor_binding(prior, expected, frozen)
+
+
+@pytest.mark.parametrize(
+    "change", ["unknown", "threshold", "null_strategy", "removed_strategy"]
+)
+def test_nested_dedup_policy_changes_are_not_schema_compatibility(change: str) -> None:
+    prior, expected, frozen = _records()
+    if change == "unknown":
+        frozen["deduplication_config"]["retired_unknown"] = "must retain"
+    elif change == "threshold":
+        frozen["deduplication_config"]["search_threshold"] = 0.9
+    elif change == "null_strategy":
+        frozen["deduplication_config"]["strategy"] = None
+    else:
+        expected.generation_request_snapshot["extractor_config"][
+            "deduplication_config"
+        ].pop("strategy")
+        expected = replace(
+            expected,
+            binding=replace(
+                expected.binding,
+                extractor_config_hash=build_scope_hash(
+                    expected.generation_request_snapshot["extractor_config"]
+                ),
+            ),
+        )
+    prior = replace(
+        prior,
+        binding=replace(prior.binding, extractor_config_hash=build_scope_hash(frozen)),
+        generation_request_snapshot={"extractor_config": deepcopy(frozen)},
+    )
     assert not matches_frozen_extractor_binding(prior, expected, frozen)

@@ -201,8 +201,11 @@ def _extractor_snapshot(
         return current
     # Reproduce the admitted contract without changing the validated config
     # used for native requests. The caller also verifies parent/window hashes.
-    effective = dict(frozen)
-    effective.pop("extractor_name", None)
+    from reflexio.server.services.extraction.agent_run_records import (
+        effective_frozen_extractor_config,
+    )
+
+    effective = effective_frozen_extractor_config(frozen)
     if canonical_json(effective) != canonical_json(current):
         raise InputBudgetConfigurationError("Frozen profile configuration changed")
     return copy.deepcopy(frozen)

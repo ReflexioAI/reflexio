@@ -28,6 +28,7 @@ from reflexio.server.llm.tools import (
 )
 from reflexio.server.services.extraction.agent_run_records import (
     build_extractor_agent_run_record,
+    frozen_extractor_config_identity,
     matches_frozen_extractor_binding,
 )
 from reflexio.server.services.extraction.pending_tool_call_dispatch import (
@@ -363,12 +364,11 @@ def run_resumable_extraction_agent(
                 parent.binding.extractor_config_hash
                 != run.binding.extractor_config_hash
             ):
-                # Before retirement the ignored label was the FIRST model field.
-                # Preserve its v1 lookup identity only after the frozen proof;
+                # Preserve the v1 lookup identity only after the frozen proof;
                 # queries and prompts still use the validated current config.
                 frozen = parent.generation_request_snapshot["extractor_config"]
-                config_identity = (
-                    f"extractor_name={frozen['extractor_name']!r} {extractor_config}"
+                config_identity = frozen_extractor_config_identity(
+                    extractor_config, frozen
                 )
         messages = append_prior_knowledge_context(
             messages=messages,
@@ -397,6 +397,9 @@ def run_resumable_extraction_agent(
 
     return ResumableExtractionAgent(client=client, storage=storage).start(
         run=run,
+        frozen_extractor_config=getattr(
+            service_config, "frozen_extractor_config", None
+        ),
         messages=messages,
         output_schema=output_schema,
         extra_tools=extra_tools,
@@ -474,6 +477,7 @@ class ResumableExtractionAgent:
         self,
         *,
         run: AgentRunRecord,
+        frozen_extractor_config: dict[str, Any] | None = None,
         messages: list[dict[str, Any]],
         output_schema: type[BaseModel],
         extra_tools: list[Tool] | None = None,
@@ -515,7 +519,30 @@ class ResumableExtractionAgent:
         )
         if existing is not None:
             if existing.binding != run.binding:
-                raise RuntimeError("Extraction window agent binding changed")
+                if (
+                    frozen_extractor_config is None
+                    or not matches_frozen_extractor_binding(
+                        existing, run, frozen_extractor_config
+                    )
+                ):
+                    prior_fields = asdict(existing.binding)
+                    current_fields = asdict(run.binding)
+                    logging.getLogger("reflexio.ops").warning(
+                        "event=extraction_binding_rejected run_id=%s changed_fields=%s",
+                        existing.id,
+                        ",".join(
+                            name
+                            for name in prior_fields
+                            if prior_fields[name] != current_fields[name]
+                        ),
+                    )
+                    raise RuntimeError("Extraction window agent binding changed")
+                logging.getLogger("reflexio.ops").info(
+                    "event=extraction_binding_schema_compatible run_id=%s", existing.id
+                )
+            # Keep the admitted hash, snapshots, remaining budget and pending
+            # dependencies for both cache replay and failed/running continuation.
+            run = existing
             if existing.committed_output is not None:
                 payload, provenance = decode_committed_output(existing.committed_output)
                 return AgentRunResult(

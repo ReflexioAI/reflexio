@@ -501,6 +501,14 @@ reopening resumes durable deadlines without another publish.
 Provider fallback remains enabled. Existing extracted data is preserved, and
 interactions stored before stream admission are not automatically replayed.
 
+Upgrade retries preserve admitted extraction windows, original configuration hashes,
+snapshots and saved output. Ordinary and overflow retries accept only two known
+behavior-preserving configuration changes: removal of the ignored `extractor_name`
+and an absent `deduplication_config.strategy` becoming `"legacy"`. Compatibility
+requires both the saved run and frozen window policy to prove the original hash;
+changed prompts, identities, unknown removed fields and `"audited"` strategy remain
+rejected. No cursor reset or deletion of pending work is needed for these upgrades.
+
 Overflow extraction meters source input using the complete original primary
 fields once, rejoining their pieces before canonical `cl100k_base` tokenization.
 Neighbor context, evidence framing and repeated model calls do not multiply this
