@@ -96,8 +96,6 @@ export interface AgentSuccessConfig {
   success_definition_prompt: string;
   tagging_definition_prompt: string | null;
   sampling_rate: number;
-  window_size_override: number | null;
-  stride_size_override: number | null;
 }
 
 export interface ToolUseConfig {
@@ -189,8 +187,6 @@ export function defaultAgentSuccess(): AgentSuccessConfig {
     success_definition_prompt: "",
     tagging_definition_prompt: null,
     sampling_rate: 1.0,
-    window_size_override: null,
-    stride_size_override: null,
   };
 }
 
@@ -283,7 +279,9 @@ export function serializeConfig(config: ReflexioConfig): unknown {
   ): AgentSuccessConfig | null => {
     if (!agentSuccess) return null;
     return {
-      ...agentSuccess,
+      evaluation_name: agentSuccess.evaluation_name,
+      success_definition_prompt: agentSuccess.success_definition_prompt,
+      sampling_rate: agentSuccess.sampling_rate,
       tagging_definition_prompt: clean(
         agentSuccess.tagging_definition_prompt,
       ),
