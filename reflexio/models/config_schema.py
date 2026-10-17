@@ -4,7 +4,14 @@ from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 
 from reflexio.config_env import (
     DEFAULT_STORAGE_POOL_ACQUIRE_TIMEOUT,
@@ -21,6 +28,18 @@ from .api_schema.validators import (
 DEFAULT_MAX_MERGE_INVOCATIONS = 5
 _LEGACY_OPTIMIZER_BOOL = TypeAdapter(bool)
 _LEGACY_MERGE_LIMIT = TypeAdapter(Annotated[int, Field(ge=0)])
+# Frozen compatibility defaults, independent of future scheduler calibration.
+_LEGACY_SCHEDULER_DEFAULTS = {
+    "scheduler_jitter_seconds": 1.0,
+    "abort_cooldown_threshold": 2,
+    "cooldown_after_aborts_seconds": 3600,
+}
+_LEGACY_SCHEDULER_FLOAT = TypeAdapter(float)
+_LEGACY_SCHEDULER_INT = TypeAdapter(int)
+
+
+class OptimizerSchedulingMigrationError(ValueError):
+    """Saved scheduler tuning requires explicit adoption of the owned policy."""
 
 
 def _normalize_optimizer_policy(data: Any) -> Any:
@@ -28,6 +47,26 @@ def _normalize_optimizer_policy(data: Any) -> Any:
     if not isinstance(data, dict):
         return data
     normalized = dict(data)
+    for key, old_default in _LEGACY_SCHEDULER_DEFAULTS.items():
+        if key not in data:
+            continue
+        adapter = (
+            _LEGACY_SCHEDULER_FLOAT
+            if key == "scheduler_jitter_seconds"
+            else _LEGACY_SCHEDULER_INT
+        )
+        try:
+            matches = adapter.validate_python(data[key]) == old_default
+        except ValidationError:
+            matches = False
+        if not matches:
+            raise OptimizerSchedulingMigrationError(
+                f"Retired optimizer setting {key} requires explicit migration. "
+                "Remove this field to adopt code-owned scheduling: up to one "
+                "second of jitter and a one-hour cooldown after two aborts. "
+                "Keep the previous release if that policy is unsuitable."
+            )
+        normalized.pop(key)
     legacy_user_keys = ("optimize_user_playbooks", "auto_update_user_playbooks")
     if any(key in data for key in legacy_user_keys):
         # Validate both: even an inactive policy must not hide malformed input.
@@ -748,11 +787,6 @@ class PlaybookOptimizerConfig(BaseModel):
     # See playbook_optimizer/assistant_webhook.py::LocalScriptAssistant.
     assistant_script_path: str | None = None
     assistant_script_args: list[str] = Field(default_factory=list)
-
-    # --- scheduler --------------------------------------------------------
-    scheduler_jitter_seconds: float = Field(default=1.0, ge=0.0)
-    cooldown_after_aborts_seconds: int = Field(default=3600, ge=0)
-    abort_cooldown_threshold: int = Field(default=2, ge=1)
 
     @model_validator(mode="before")
     @classmethod

@@ -1012,9 +1012,6 @@ class PlaybookGenerationService(
                 callback=lambda target=target: PlaybookOptimizer(
                     self.request_context, self.client
                 ).optimize(target),
-                jitter_seconds=config.scheduler_jitter_seconds,
-                abort_cooldown_threshold=config.abort_cooldown_threshold,
-                cooldown_after_aborts_seconds=config.cooldown_after_aborts_seconds,
             )
 
     def _get_extractor_state_service_name(self) -> str:

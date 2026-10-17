@@ -1460,6 +1460,41 @@ def test_scheduler_applies_abort_cooldown():
     assert scheduler._scheduled == {}  # noqa: SLF001
 
 
+def test_default_scheduler_policy_cools_down_and_recovers(monkeypatch):
+    scheduler = PlaybookOptimizationScheduler.__new__(PlaybookOptimizationScheduler)
+    scheduler._scheduled = {}  # noqa: SLF001
+    scheduler._heap = []  # noqa: SLF001
+    scheduler._mutex = threading.Lock()  # noqa: SLF001
+    scheduler._wake_event = threading.Event()  # noqa: SLF001
+    scheduler._abort_counts = {}  # noqa: SLF001
+    now = [100.25]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    target = PlaybookOptimizationTarget(kind="agent_playbook", target_id=1)
+    key = ("policy-org", None, "agent_playbook", 1)
+
+    for _ in range(2):
+        scheduler.enqueue(
+            org_id="policy-org", target=target, callback=lambda: "aborted"
+        )
+        fire_at, callback, threshold, cooldown = scheduler._scheduled.pop(key)  # noqa: SLF001
+        assert now[0] <= fire_at < now[0] + 1
+        assert threshold == 2
+        assert cooldown == 3600
+        scheduler._run_callback(key, callback, threshold, cooldown)  # noqa: SLF001
+
+    scheduler.enqueue(org_id="policy-org", target=target, callback=lambda: "completed")
+    assert key not in scheduler._scheduled  # noqa: SLF001
+    # The failure cooldown is scoped to the target and org, not a global stop.
+    scheduler.enqueue(org_id="other-org", target=target, callback=lambda: "completed")
+    assert ("other-org", None, "agent_playbook", 1) in scheduler._scheduled  # noqa: SLF001
+    now[0] += 3599
+    scheduler.enqueue(org_id="policy-org", target=target, callback=lambda: "completed")
+    assert key not in scheduler._scheduled  # noqa: SLF001
+    now[0] += 1
+    scheduler.enqueue(org_id="policy-org", target=target, callback=lambda: "completed")
+    assert key in scheduler._scheduled  # noqa: SLF001
+
+
 def test_scheduler_fires_callback_through_executor() -> None:
     """Fire-path coverage: enqueue on a real scheduler and confirm the
     callback actually runs through the real ``submit_callback`` /
