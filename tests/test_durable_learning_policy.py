@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -173,3 +174,40 @@ def test_aggregation_validation_uses_supplied_mapping(monkeypatch):
     validate_aggregation_timing_env(env)
     assert aggregation_min_interval_seconds(env) == 29
     assert aggregation_admission_wait_seconds(env) == 0
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS", str(1 << 63)),
+        ("REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS", str(1 << 62)),
+        ("REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS", "1e20"),
+        (
+            "REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS",
+            str(threading.TIMEOUT_MAX * 2),
+        ),
+    ],
+)
+def test_aggregation_settings_reject_consumer_overflow(key, value):
+    from reflexio.durable_learning_policy import validate_aggregation_timing_env
+
+    with pytest.raises(ValueError, match=key):
+        validate_aggregation_timing_env({key: value})
+
+
+def test_aggregation_consumer_range_boundaries_are_accepted():
+    from reflexio.durable_learning_policy import (
+        MAX_AGGREGATION_INTERVAL_SECONDS,
+        validate_aggregation_timing_env,
+    )
+
+    validate_aggregation_timing_env(
+        {
+            "REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS": str(
+                MAX_AGGREGATION_INTERVAL_SECONDS
+            ),
+            "REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS": str(
+                threading.TIMEOUT_MAX
+            ),
+        }
+    )

@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import reflexio
+from reflexio.durable_learning_policy import MAX_AGGREGATION_INTERVAL_SECONDS
 from reflexio.models.api_schema.domain.entities import LineageContext
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
@@ -410,7 +411,7 @@ def test_successful_bounded_run_with_backlog_is_due_again_immediately(
     assert continuation.agent_version == "v1"
 
 
-@pytest.mark.parametrize("interval", [17, 3600])
+@pytest.mark.parametrize("interval", [17, 3600, MAX_AGGREGATION_INTERVAL_SECONDS])
 def test_new_signal_preserves_idle_version_configured_window(
     tmp_path, monkeypatch, interval
 ) -> None:

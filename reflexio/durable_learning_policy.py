@@ -6,6 +6,7 @@ inputs before constructing workers or importing the application stack.
 
 import math
 import os
+import threading
 from collections.abc import Mapping
 
 DISCOVERY_POLL_SECONDS = 2.0
@@ -47,6 +48,9 @@ def validate_discovery_timing_env(env: Mapping[str, str]) -> None:
 
 AGGREGATION_MIN_INTERVAL_SECONDS = 3600
 AGGREGATION_ADMISSION_WAIT_SECONDS = 1.0
+# Both backends persist epoch + delay as signed 64-bit integers. Reserve half
+# the range for the epoch rather than accepting an unbindable/overflowing delay.
+MAX_AGGREGATION_INTERVAL_SECONDS = ((1 << 63) - 1) // 2
 
 
 def aggregation_min_interval_seconds(env: Mapping[str, str] | None = None) -> int:
@@ -57,9 +61,10 @@ def aggregation_min_interval_seconds(env: Mapping[str, str] | None = None) -> in
         value = int(raw) if raw else AGGREGATION_MIN_INTERVAL_SECONDS
     except ValueError:
         value = 0
-    if value < 1:
+    if not 1 <= value <= MAX_AGGREGATION_INTERVAL_SECONDS:
         raise ValueError(
-            "REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS must be a positive integer."
+            "REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS must be a positive integer "
+            "within the signed-64-bit scheduling range."
         )
     return value
 
@@ -74,9 +79,10 @@ def aggregation_admission_wait_seconds(env: Mapping[str, str] | None = None) -> 
         value = float(raw) if raw else AGGREGATION_ADMISSION_WAIT_SECONDS
     except ValueError:
         value = -1.0
-    if not math.isfinite(value) or value < 0:
+    if not math.isfinite(value) or not 0 <= value <= threading.TIMEOUT_MAX:
         raise ValueError(
-            "REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS must be finite and nonnegative."
+            "REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS must be finite, "
+            "nonnegative and no greater than threading.TIMEOUT_MAX."
         )
     return value
 

@@ -465,8 +465,9 @@ Key files:
 `REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS` selects the drained-cycle delay
 (default 3600 positive integer seconds); `REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS`
 selects the finite nonnegative slot wait (default 1 second; zero means immediate
-admission only). Valid custom values are supported; malformed values fail before
-startup. Capacity, backlog and retry policies remain separate.
+admission only). Signed-64-bit epoch headroom bounds the interval;
+`threading.TIMEOUT_MAX` bounds the wait. Valid custom values are supported;
+malformed or out-of-range values fail before startup. Capacity, backlog and retry policies remain separate.
 
 **Tool Analysis**: PlaybookExtractor reads `tool_can_use` from root `Config` and passes it to prompts for tool usage analysis and blocking issue detection.
 
