@@ -17,7 +17,10 @@ from reflexio.config_env import (
     DEFAULT_STORAGE_POOL_ACQUIRE_TIMEOUT,
     DEFAULT_STORAGE_POOL_SIZE,
 )
-from reflexio.config_migration import ConfigurationMigrationError
+from reflexio.config_migration import (
+    ConfigurationMigrationError,
+    StoredConfigurationError,
+)
 from reflexio.housekeeping_policy import strip_legacy_housekeeping_fields
 from reflexio.pending_tool_policy import strip_legacy_pending_tool_timing
 
@@ -1240,23 +1243,43 @@ def validate_stored_config(data: dict[str, Any]) -> Config:
     Persisted JSON can contain fields that were valid when it was written but
     have since been deleted. Ignore only those unknown fields while retaining
     normal validation for recognized values. Missing fields continue to use
-    their current schema defaults.
+    their current schema defaults. Invalid recognized values raise a sanitized
+    StoredConfigurationError so loaders cannot replace saved policy with defaults.
 
     API writes intentionally construct ``Config`` directly and therefore keep
     the model's strict ``extra="forbid"`` behavior.
     """
-    # Run retirement preflight outside Pydantic so its typed migration error
-    # survives; otherwise ValueError is wrapped and mistaken for recoverable
-    # schema drift by storage loaders.
-    normalized = strip_retired_config_fields(normalize_legacy_config_shape(data))
-    # Validate storage_config on its own, strictly, BEFORE the lenient pass
-    # below. ``extra="ignore"`` cascades into nested models, so it overrides each
-    # StorageConfig member's ``extra="forbid"`` -- without this pre-check a
-    # Supabase config that lost its ``db_url`` validates as SQLite here and the
-    # org is silently rerouted to a local file. Schema-evolution leniency is
-    # meant for Config's own retired fields, not for reinterpreting which
-    # storage backend an org is on.
-    storage_config = normalized.get("storage_config")
-    if isinstance(storage_config, dict):
-        _STORAGE_CONFIG_ADAPTER.validate_python(storage_config)
-    return Config.model_validate(normalized, extra="ignore")
+    try:
+        # Normalize before Pydantic model construction so typed migration errors
+        # remain intact. Pydantic failures from legacy conversion need the same
+        # fail-closed boundary as failures in the resulting current schema.
+        normalized = strip_retired_config_fields(normalize_legacy_config_shape(data))
+        # extra="ignore" cascades into nested models; validate storage strictly
+        # first so a malformed remote config cannot become a local backend.
+        storage_config = normalized.get("storage_config")
+        if isinstance(storage_config, dict):
+            _STORAGE_CONFIG_ADAPTER.validate_python(storage_config)
+        return Config.model_validate(normalized, extra="ignore")
+    except ValidationError as exc:
+        # Report declared field names only: locations can also contain supplied
+        # dictionary keys, and the original exception can contain credentials.
+        schema = Config.model_json_schema()
+        declared = set(schema["properties"])
+        for definition in schema.get("$defs", {}).values():
+            declared.update(definition.get("properties", {}))
+        paths = sorted(
+            {
+                ".".join(
+                    part
+                    for part in error["loc"]
+                    if isinstance(part, str) and part in declared
+                )
+                or "configuration"
+                for error in exc.errors(include_input=False, include_context=False)
+            }
+        )
+        raise StoredConfigurationError(
+            "Stored configuration failed validation at "
+            + ", ".join(paths[:10])
+            + ". Correct the saved values before continuing."
+        ) from None

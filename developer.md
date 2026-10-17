@@ -803,6 +803,19 @@ instruction. Unprepared extraction keeps its turn-reference contract. Strict
 source visibility validation, bounded corrective repair, and evidence-carrier
 limits are unchanged.
 
+### Stored configuration validation
+
+Persisted reads use `validate_stored_config`: removed unknown fields are ignored
+and missing fields use schema defaults, but invalid recognized values raise
+`StoredConfigurationError` from `reflexio.config_migration`. Existing
+`ConfigurationMigrationError` subclasses remain within this family. Local-file
+loading and CLI storage discovery propagate these errors rather than creating or
+writing a default policy. Correct the saved configuration before retrying.
+Errors and adapter logs name only declared schema fields; supplied values and
+dynamic dictionary keys are omitted. API writes still use ordinary Pydantic
+validation. Missing-file, unreadable JSON/decryption and explicit legacy-disk
+handling are separate existing contracts, not changed by this validation rule.
+
 ### Durable extraction timing
 
 `reflexio/durable_learning_policy.py` resolves background discovery timing once
