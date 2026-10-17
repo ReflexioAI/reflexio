@@ -855,3 +855,13 @@ are accepted only as ignored input and removed by
 `models/config_schema.py::strip_retired_config_fields` before raw upgrades.
 Do not expose extraction window controls for this evaluator. Profile/playbook
 window and stride overrides remain active and independent.
+
+Governance secret policy derives from `DEPLOYMENT_MODE`: platform/self-host
+require an explicit secret, while unmanaged OSS local/no-auth mode retains its
+existing fallback. Operational environment labels never rotate local HMAC
+identity. `REFLEXIO_ENV` is retired: blank/former `development` is ignored; custom
+values require explicit policy adoption while preserving the existing secret.
+`get_governance_ref_secret(env=...)` validates enterprise startup's resolved
+mapping too; only the actual process enables the existing test escape hatch.
+Secret rotation requires separate qualified migration of persisted references
+and erasure barriers, not a configuration-selector cleanup.

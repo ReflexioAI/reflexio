@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
+from reflexio.config_migration import ConfigurationMigrationError
 from reflexio.server.env_utils import env_str, env_truthy
 from reflexio.server.services.governance.subject_refs import (
     actor_ref,
@@ -9,25 +12,42 @@ from reflexio.server.services.governance.subject_refs import (
 
 LOCAL_GOVERNANCE_REF_SECRET = "reflexio-local-governance-ref-secret"  # noqa: S105
 _PRODUCTION_DEPLOYMENT_MODES = {"platform", "self_host"}
-_PRODUCTION_ENVS = {"production", "staging"}
+_LOCAL_DEPLOYMENT_MODES = {"", "local"}
 
 
-def _is_local_dev_or_test() -> bool:
-    deployment_mode = env_str("DEPLOYMENT_MODE").lower()
-    reflexio_env = env_str("REFLEXIO_ENV", "development").lower()
+def _is_local_dev_or_test(env: Mapping[str, str] | None = None) -> bool:
+    deployment_mode = env_str("DEPLOYMENT_MODE", env=env).lower()
+    if deployment_mode not in _LOCAL_DEPLOYMENT_MODES | _PRODUCTION_DEPLOYMENT_MODES:
+        raise ConfigurationMigrationError(
+            "DEPLOYMENT_MODE is unsupported; unset it or use local to retain "
+            "local governance identity, or select platform/self_host for hosting. "
+            "Preserve REFLEXIO_GOVERNANCE_REF_SECRET; this is not a secret rotation."
+        )
+    # The escape hatch describes the running test process, never a target mapping.
     if env_truthy(env_str("REFLEXIO_TEST_MODE")):
         return True
-    return (
-        deployment_mode not in _PRODUCTION_DEPLOYMENT_MODES
-        and reflexio_env not in _PRODUCTION_ENVS
-    )
+    return deployment_mode in _LOCAL_DEPLOYMENT_MODES
 
 
-def get_governance_ref_secret() -> str:
-    secret = env_str("REFLEXIO_GOVERNANCE_REF_SECRET")
+def get_governance_ref_secret(*, env: Mapping[str, str] | None = None) -> str:
+    """Resolve the secret for runtime or startup using one deployment policy.
+
+    An explicit mapping is authoritative for deployment settings; test mode is
+    always read from the actual process. Custom retired settings require explicit
+    migration even when a secret or test escape hatch is present.
+    """
+    legacy = env_str("REFLEXIO_ENV", env=env).lower()
+    if legacy and legacy != "development":
+        raise ConfigurationMigrationError(
+            "REFLEXIO_ENV is retired; remove it to adopt deployment-mode "
+            "governance policy from DEPLOYMENT_MODE. Preserve the existing "
+            "REFLEXIO_GOVERNANCE_REF_SECRET; this is not a secret rotation."
+        )
+    local_or_test = _is_local_dev_or_test(env)
+    secret = env_str("REFLEXIO_GOVERNANCE_REF_SECRET", env=env)
     if secret:
         return secret
-    if _is_local_dev_or_test():
+    if local_or_test:
         return LOCAL_GOVERNANCE_REF_SECRET
     raise RuntimeError("REFLEXIO_GOVERNANCE_REF_SECRET is required")
 
