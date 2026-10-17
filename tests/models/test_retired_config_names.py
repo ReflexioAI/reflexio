@@ -52,8 +52,12 @@ def test_retired_names_are_input_only(model, field, prompt, identity):
     assert field not in config.model_dump()
     assert field not in model.model_json_schema()["properties"]
     assert getattr(config, prompt) == "Keep customer instructions"
-    assert config.window_size_override == 23
-    assert config.stride_size_override == 7
+    if model is AgentSuccessConfig:
+        assert "window_size_override" not in config.model_dump()
+        assert "stride_size_override" not in config.model_dump()
+    else:
+        assert config.window_size_override == 23
+        assert config.stride_size_override == 7
     assert get_extractor_name(config) == identity
 
 

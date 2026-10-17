@@ -67,7 +67,6 @@ def request_context(temp_storage_dir):
 def extractor_config():
     """Create an agent success config."""
     return AgentSuccessConfig(
-        evaluation_name="task_completion",
         success_definition_prompt="Evaluate if task was completed",
     )
 
@@ -193,7 +192,6 @@ class TestRun:
     ):
         """Sampling is handled before evaluator invocation, not inside run()."""
         config = AgentSuccessConfig(
-            evaluation_name="task_completion",
             success_definition_prompt="Evaluate if task was completed",
             sampling_rate=0.0,
         )
@@ -288,7 +286,6 @@ class TestSourceFiltering:
 
         # Config that only accepts 'api' source
         config = AgentSuccessConfig(
-            evaluation_name="task_completion",
             success_definition_prompt="Evaluate if task was completed",
             request_sources_enabled=["api"],
         )
@@ -328,7 +325,6 @@ class TestCountUserTurns:
     @pytest.fixture
     def evaluator(self, mock_llm_client, request_context):
         config = AgentSuccessConfig(
-            evaluation_name="test",
             success_definition_prompt="test",
         )
         service_config = AgentSuccessGenerationServiceConfig(
@@ -502,3 +498,57 @@ class TestCorrectionCount:
         assert result.trajectory_interaction_count == 4
         assert result.trajectory_visibility_snapshot == "12:15:13"
         assert result.trajectory_gc_epoch == 7
+
+
+@pytest.mark.parametrize(
+    "legacy",
+    [
+        {},
+        {"window_size_override": 1, "stride_size_override": 1},
+        {"batch_size_override": 99, "batch_interval_override": 77},
+    ],
+)
+def test_session_evaluation_keeps_all_input_despite_legacy_windows(
+    request_context, mock_llm_client, service_config, legacy
+):
+    import json
+
+    first = service_config.request_interaction_data_models[0]
+    long_session = RequestInteractionDataModel(
+        request=first.request,
+        session_id=first.session_id,
+        interactions=[
+            Interaction(
+                interaction_id=100 + index,
+                user_id="user1",
+                request_id="req1",
+                created_at=1000 + index,
+                content=f"SESSION EVIDENCE {index}",
+                role="user",
+            )
+            for index in range(12)
+        ],
+    )
+    service_config.request_interaction_data_models = [long_session]
+    config = AgentSuccessConfig.model_validate(
+        {
+            "success_definition_prompt": "Judge the full session.",
+            "request_sources_enabled": ["api"],
+            **legacy,
+        }
+    )
+    evaluator = AgentSuccessEvaluator(
+        request_context=request_context,
+        llm_client=mock_llm_client,
+        extractor_config=config,
+        service_config=service_config,
+        agent_context="Test agent",
+    )
+    result = evaluator.run()
+    assert len(result) == 1
+    messages = json.dumps(
+        mock_llm_client.generate_chat_response.call_args.kwargs["messages"]
+    )
+    for model in service_config.request_interaction_data_models:
+        for interaction in model.interactions:
+            assert interaction.content in messages

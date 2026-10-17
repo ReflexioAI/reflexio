@@ -27,6 +27,39 @@ function load(relative, imports = {}) {
   });
   return exports;
 }
+
+// The interactive configurator must not advertise or re-send evaluation windows.
+const configSchema = load("config-schema.ts");
+const evaluation = configSchema.defaultAgentSuccess();
+for (const key of ["window_size_override", "stride_size_override"]) {
+  assert.equal(key in evaluation, false);
+}
+const config = configSchema.defaultConfig();
+config.agent_success_config = {
+  ...evaluation,
+  success_definition_prompt: "Keep the session rubric.",
+  sampling_rate: 0.25,
+  evaluation_only_sampling_rate: 0.75,
+  retrieved_learning_sampling_rate: 0.5,
+  request_sources_enabled: ["api"],
+  window_size_override: 23,
+  stride_size_override: 7,
+  batch_size_override: 99,
+};
+config.profile_extractor_config = configSchema.defaultProfileExtractor();
+config.profile_extractor_config.extraction_definition_prompt = "Keep";
+config.profile_extractor_config.window_size_override = 23;
+const serialized = configSchema.serializeConfig(config);
+for (const key of ["window_size_override", "stride_size_override", "batch_size_override"]) {
+  assert.equal(key in serialized.agent_success_config, false);
+}
+assert.equal(serialized.agent_success_config.success_definition_prompt, "Keep the session rubric.");
+assert.equal(serialized.agent_success_config.sampling_rate, 0.25);
+assert.equal(serialized.agent_success_config.evaluation_only_sampling_rate, 0.75);
+assert.equal(serialized.agent_success_config.retrieved_learning_sampling_rate, 0.5);
+assert.equal(serialized.agent_success_config.request_sources_enabled[0], "api");
+assert.equal(serialized.profile_extractor_config.window_size_override, 23);
+
 const { generatePythonCode } = load("execution/code-generator.ts");
 const { initialParams } = load("execution/default-params.ts");
 const { unifiedSearchMethods } = load("methods/unified-search.ts");

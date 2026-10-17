@@ -246,7 +246,12 @@ def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
             "playbook_name",
             "feedback_name",
         },
-        "agent_success_config": {"evaluation_name"},
+        "agent_success_config": {
+            "evaluation_name",
+            "window_size_override",
+            "stride_size_override",
+            *_EXTRACTOR_OVERRIDE_MIGRATION,
+        },
     }
     for config_field, current in (
         *((name, name) for name in names),
@@ -681,7 +686,7 @@ class ToolUseConfig(BaseModel):
 
 
 # define what success looks like for agent
-class AgentSuccessConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
+class AgentSuccessConfig(BaseModel):
     success_definition_prompt: SanitizedNonEmptyStr
     tagging_definition_prompt: str | None = None
     request_sources_enabled: list[str] | None = (
@@ -714,13 +719,15 @@ class AgentSuccessConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
             " session-success judge."
         ),
     )
-    window_size_override: int | None = Field(default=None, gt=0)
-    stride_size_override: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="before")
     @classmethod
-    def _migrate_field_names(cls, data: Any) -> Any:
-        return _migrate_dict(data, _EXTRACTOR_OVERRIDE_MIGRATION)
+    def discard_retired_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            return strip_retired_config_fields({"agent_success_config": data})[
+                "agent_success_config"
+            ]
+        return data
 
 
 def _default_agent_success_config() -> AgentSuccessConfig:

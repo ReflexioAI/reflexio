@@ -96,8 +96,6 @@ export interface AgentSuccessConfig {
   success_definition_prompt: string;
   tagging_definition_prompt: string | null;
   sampling_rate: number;
-  window_size_override: number | null;
-  stride_size_override: number | null;
 }
 
 export interface ToolUseConfig {
@@ -189,8 +187,6 @@ export function defaultAgentSuccess(): AgentSuccessConfig {
     success_definition_prompt: "",
     tagging_definition_prompt: null,
     sampling_rate: 1.0,
-    window_size_override: null,
-    stride_size_override: null,
   };
 }
 
@@ -282,8 +278,19 @@ export function serializeConfig(config: ReflexioConfig): unknown {
     agentSuccess: AgentSuccessConfig | null,
   ): AgentSuccessConfig | null => {
     if (!agentSuccess) return null;
+    const current: AgentSuccessConfig & Record<string, unknown> = { ...agentSuccess };
+    for (const key of [
+      "window_size_override",
+      "stride_size_override",
+      "batch_size_override",
+      "batch_interval_override",
+      "extraction_window_size_override",
+      "extraction_window_stride_override",
+    ]) {
+      delete current[key];
+    }
     return {
-      ...agentSuccess,
+      ...current,
       tagging_definition_prompt: clean(
         agentSuccess.tagging_definition_prompt,
       ),
