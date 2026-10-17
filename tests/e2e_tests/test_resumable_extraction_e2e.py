@@ -446,7 +446,7 @@ def test_live_resumable_config_uses_playbook_extractor_for_ask_human():
 
     assert config_patch["profile_extractor_config"] is None
     playbook_config = config_patch["user_playbook_extractor_config"]
-    assert "extractor_name" not in playbook_config
+    assert playbook_config["extractor_name"] == SINGLETON_USER_PLAYBOOK_NAME
     assert "call ask_human" in playbook_config["extraction_definition_prompt"]
     assert question_text in playbook_config["extraction_definition_prompt"]
 
