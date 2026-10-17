@@ -13,10 +13,16 @@ Description: Global configuration manager for site-wide variables and per-org fe
 ## Purpose
 
 
-1. **Global settings** - Model names, embedding models, and retrieval defaults
+1. **Global settings** - Text model names and retrieval defaults
 2. **Feature flags** - Per-org feature gating (global enable or per-org allowlist)
 3. **Dual storage** - File-based with optional Redis caching
 4. **Auto-fallback** - Redis → File system graceful degradation
+
+Embedding model selection belongs to `LLMConfig.embedding_model_name`; without
+an override, OSS uses `local/minilm-l6-v2`. The former
+`llm_model_setting.embedding_model_name` sitevar was ignored and is no longer
+advertised. Existing copies containing that key remain harmless. Generation,
+evaluation, should-run and pre-retrieval model sitevars remain supported.
 
 ## Feature Flags
 
