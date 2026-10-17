@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from reflexio.config_migration import ConfigurationMigrationError
 from reflexio.server.services.governance.config import (
     get_governance_ref_secret,
     governance_actor_ref,
@@ -39,7 +40,7 @@ def test_secret_defaults_only_in_local_dev_or_test(
     monkeypatch.delenv("REFLEXIO_GOVERNANCE_REF_SECRET", raising=False)
     monkeypatch.delenv("DEPLOYMENT_MODE", raising=False)
     monkeypatch.delenv("REFLEXIO_TEST_MODE", raising=False)
-    monkeypatch.setenv("REFLEXIO_ENV", "development")
+    monkeypatch.setenv("ENVIRONMENT", "development")
 
     assert get_governance_ref_secret() == "reflexio-local-governance-ref-secret"
 
@@ -49,7 +50,7 @@ def test_secret_defaults_in_test_mode_even_for_platform_production(
 ) -> None:
     monkeypatch.delenv("REFLEXIO_GOVERNANCE_REF_SECRET", raising=False)
     monkeypatch.setenv("DEPLOYMENT_MODE", "platform")
-    monkeypatch.setenv("REFLEXIO_ENV", "production")
+    monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("REFLEXIO_TEST_MODE", "true")
 
     assert get_governance_ref_secret() == "reflexio-local-governance-ref-secret"
@@ -60,7 +61,7 @@ def test_secret_fails_closed_in_platform_production(
 ) -> None:
     monkeypatch.delenv("REFLEXIO_GOVERNANCE_REF_SECRET", raising=False)
     monkeypatch.setenv("DEPLOYMENT_MODE", "platform")
-    monkeypatch.setenv("REFLEXIO_ENV", "production")
+    monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.delenv("REFLEXIO_TEST_MODE", raising=False)
 
     with pytest.raises(RuntimeError, match="REFLEXIO_GOVERNANCE_REF_SECRET"):
@@ -68,9 +69,74 @@ def test_secret_fails_closed_in_platform_production(
 
 
 def test_blank_secret_is_treated_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("REFLEXIO_TEST_MODE", raising=False)
     monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "   ")
     monkeypatch.setenv("DEPLOYMENT_MODE", "self_host")
-    monkeypatch.setenv("REFLEXIO_ENV", "production")
+    monkeypatch.setenv("ENVIRONMENT", "production")
 
     with pytest.raises(RuntimeError, match="REFLEXIO_GOVERNANCE_REF_SECRET"):
         get_governance_ref_secret()
+
+
+@pytest.mark.parametrize("environment", ["production", " Prod ", "staging"])
+def test_operational_environment_protects_oss_governance(monkeypatch, environment):
+    monkeypatch.delenv("DEPLOYMENT_MODE", raising=False)
+    monkeypatch.delenv("REFLEXIO_TEST_MODE", raising=False)
+    monkeypatch.delenv("REFLEXIO_GOVERNANCE_REF_SECRET", raising=False)
+    monkeypatch.setenv("REFLEXIO_ENV", "development")
+    monkeypatch.setenv("ENVIRONMENT", environment)
+    with pytest.raises(RuntimeError, match="REFLEXIO_GOVERNANCE_REF_SECRET"):
+        get_governance_ref_secret()
+
+
+@pytest.mark.parametrize(
+    "legacy", ["production", "staging", "test", "unprinted-legacy-value"]
+)
+@pytest.mark.parametrize("test_mode", ["true", "false"])
+def test_custom_legacy_environment_requires_explicit_migration(
+    monkeypatch, legacy, test_mode
+):
+    monkeypatch.setenv("REFLEXIO_TEST_MODE", test_mode)
+    monkeypatch.setenv("REFLEXIO_ENV", legacy)
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "unprinted-governance-secret")
+    with pytest.raises(
+        ConfigurationMigrationError, match="REFLEXIO_ENV.*ENVIRONMENT"
+    ) as error:
+        get_governance_ref_secret()
+    assert legacy not in str(error.value)
+    assert "unprinted-governance-secret" not in str(error.value)
+
+
+@pytest.mark.parametrize("legacy", ["", "  ", "development", " Development "])
+def test_former_default_does_not_select_an_environment(monkeypatch, legacy):
+    monkeypatch.delenv("REFLEXIO_TEST_MODE", raising=False)
+    monkeypatch.setenv("REFLEXIO_ENV", legacy)
+    assert (
+        get_governance_ref_secret(env={"REFLEXIO_ENV": legacy})
+        == "reflexio-local-governance-ref-secret"
+    )
+    with pytest.raises(RuntimeError, match="REFLEXIO_GOVERNANCE_REF_SECRET"):
+        get_governance_ref_secret(
+            env={"REFLEXIO_ENV": legacy, "ENVIRONMENT": "staging"}
+        )
+
+
+def test_resolved_mapping_isolated_from_process_settings_and_test_flag(monkeypatch):
+    monkeypatch.setenv("DEPLOYMENT_MODE", "platform")
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("REFLEXIO_ENV", "unrelated-process-legacy")
+    monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "process-secret")
+    monkeypatch.delenv("REFLEXIO_TEST_MODE", raising=False)
+    assert get_governance_ref_secret(env={}) == "reflexio-local-governance-ref-secret"
+    deployment = {"DEPLOYMENT_MODE": "self_host", "REFLEXIO_TEST_MODE": "true"}
+    before = deployment.copy()
+    with pytest.raises(RuntimeError, match="REFLEXIO_GOVERNANCE_REF_SECRET"):
+        get_governance_ref_secret(env=deployment)
+    assert deployment == before
+    assert (
+        get_governance_ref_secret(
+            env={**deployment, "REFLEXIO_GOVERNANCE_REF_SECRET": "mapped-secret"}
+        )
+        == "mapped-secret"
+    )
