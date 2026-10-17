@@ -8,10 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from reflexio.cli.paths import reflexio_home
-from reflexio.housekeeping_policy import HousekeepingMigrationError
+from reflexio.config_migration import ConfigurationMigrationError
 from reflexio.models.config_schema import (
     Config,
-    OptimizerSchedulingMigrationError,
     PlaybookConfig,
     ProfileExtractorConfig,
     StorageConfigSQLite,
@@ -117,7 +116,7 @@ class LocalFileConfigStorage(ConfigStorage):
                             self.config_file,
                         )
                 return config
-        except (HousekeepingMigrationError, OptimizerSchedulingMigrationError):
+        except ConfigurationMigrationError:
             raise
         except Exception:
             logger.exception(

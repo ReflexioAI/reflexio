@@ -837,7 +837,14 @@ calls `NomicEmbedder` directly for warmup and requests. Its former opt-in
 registration/prewarm helpers and `REFLEXIO_EMBEDDING_DAEMON` marker are retired;
 API workers continue to route local-model requests through HTTP.
 
-Customized retired housekeeping settings raise `HousekeepingMigrationError` from
-stored-config preflight. Local-file loading and CLI storage discovery propagate
-it rather than resetting the rest of the configuration to defaults. This preserves
-retention holds while an operator performs the required migration.
+`reflexio/config_migration.py::ConfigurationMigrationError` is the shared
+fail-closed error base for explicit stored-policy migrations. Housekeeping,
+optimizer scheduling and pending-tool timing retain specific subclasses.
+Local-file loading, CLI bootstrap and enterprise adapters propagate this base
+rather than resetting unrelated settings to defaults.
+
+`reflexio/pending_tool_policy.py` owns five-second resume polling and 600-second
+claims. Workers, selected recovery, recovery inspection and enterprise discovery
+use the same lifetime. Default-valued legacy timing fields are stripped before
+validation or raw upgrade pruning; customized fields require explicit adoption.
+Do not reintroduce a bootstrap org's timing as fleet scheduler policy.

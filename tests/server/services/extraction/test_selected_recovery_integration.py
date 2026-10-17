@@ -509,3 +509,18 @@ def test_selected_committed_receipt_survives_source_erasure_after_claim(context)
         result = worker.recover_selected(selection, operation_id="op")
     assert result.status == AgentRunStatus.FINALIZED
     assert len(events) == 1 and events[0].event_key == "learn:profile:committed-result"
+
+
+@pytest.mark.parametrize("age_seconds,blocked", [(590, True), (610, False)])
+def test_selected_recovery_uses_owned_claim_lifetime(context, age_seconds, blocked):
+    run = seed(context)
+    now = datetime.now(UTC)
+    old = (now - timedelta(seconds=age_seconds)).isoformat()
+    context.storage.conn.execute(
+        "UPDATE _agent_runs SET updated_at=? WHERE id=?", (old, run.id)
+    )
+    context.storage.conn.commit()
+    current = context.storage.get_agent_run(run.id)
+    assert current is not None
+    report = inspect_run(context, current, now=now)
+    assert ("publish_finalization_may_be_active" in report["blockers"]) is blocked

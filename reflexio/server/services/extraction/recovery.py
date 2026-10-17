@@ -14,6 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from reflexio.pending_tool_policy import RESUME_CLAIM_TTL_SECONDS
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.services.extraction.agent_run_records import (
     source_interaction_digest,
@@ -172,7 +173,7 @@ def inspect_run(
         raise RecoveryRefusedError("organization_mismatch")
     current = now or datetime.now(UTC)
     config = context.configurator.get_config()
-    ttl = config.pending_tool_call_config.resume_claim_ttl_seconds
+    ttl = RESUME_CLAIM_TTL_SECONDS
     stale = current - timedelta(seconds=ttl)
     facts = context.storage.get_agent_run_recovery_facts(run.id)
     if not facts:

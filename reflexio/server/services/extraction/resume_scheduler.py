@@ -16,6 +16,7 @@ import weakref
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+from reflexio.pending_tool_policy import RESUME_POLL_SECONDS
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.auth import DEFAULT_ORG_ID
 from reflexio.server.background_work import (
@@ -32,7 +33,6 @@ from reflexio.server.services.extraction.resume_worker import ExtractionResumeWo
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_POLL_INTERVAL_SECONDS = 5.0
 _live_schedulers: weakref.WeakSet[ExtractionResumeScheduler] = weakref.WeakSet()
 _live_lock = threading.Lock()
 
@@ -213,7 +213,7 @@ class ExtractionResumeScheduler(ThreadedScheduler):
             report_background_success(f"extraction-resume:{org_id}")
 
     def _run_once(self) -> float:
-        poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
+        poll_interval = RESUME_POLL_SECONDS
         try:
             provider_org_ids = self._discover_provider_org_ids()
             if self.org_id_provider is not None and provider_org_ids is not None:
@@ -221,13 +221,10 @@ class ExtractionResumeScheduler(ThreadedScheduler):
                     # Not a success: the context and config resolution this
                     # streak counts failures of was never attempted.
                     return poll_interval
-                # Resolve config through an org that the provider proved is
-                # actionable on this tick. The previous bootstrap may have
-                # been deleted or moved and must not gate future discovery.
+                # Remember a discovered org only for provider-failure fallback.
+                # Resolve each context inside _drain_org so a broken first org
+                # cannot prevent healthy orgs from being processed.
                 self.bootstrap_org_id = provider_org_ids[0]
-            bootstrap_ctx = self.request_context_factory(self.bootstrap_org_id)
-            config = bootstrap_ctx.configurator.get_config()
-            poll_interval = config.pending_tool_call_config.resume_poll_interval_seconds
             # Orgs discovery PROVED hold resumable work, as opposed to orgs we
             # merely visit. Only the former may be described as stalled.
             known_work: set[str] = set()
@@ -239,8 +236,10 @@ class ExtractionResumeScheduler(ThreadedScheduler):
                 # preserve the last known bootstrap as a one-org fallback.
                 # It is a fallback, NOT a discovery result -- the provider
                 # failed, so nothing here proves this org has work.
+                bootstrap_ctx = self.request_context_factory(self.bootstrap_org_id)
                 org_ids = [bootstrap_ctx.org_id]
             else:
+                bootstrap_ctx = self.request_context_factory(self.bootstrap_org_id)
                 org_ids, known_work = self._discover_local_org_ids(bootstrap_ctx)
             for org_id in org_ids:
                 if self._stop_event.is_set():

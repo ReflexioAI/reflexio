@@ -13,13 +13,10 @@ from reflexio.server.auth import DEFAULT_ORG_ID
 from reflexio.server.services.extraction import resume_scheduler
 
 
-def _request_context(
-    org_id: str = "org_1", *, poll_interval: float = 0.01, storage=None
-):
+def _request_context(org_id: str = "org_1", *, storage=None):
     config = SimpleNamespace(
         pending_tool_call_config=PendingToolCallConfig(
             enabled=True,
-            resume_poll_interval_seconds=poll_interval,
         )
     )
     return SimpleNamespace(
@@ -105,9 +102,9 @@ def test_resume_scheduler_recovers_when_first_org_appears(monkeypatch):
     assert factory_calls == []
 
     org_ids[:] = ["org_1"]
-    assert scheduler._run_once() == 0.01
+    assert scheduler._run_once() == 5.0
     assert scheduler.bootstrap_org_id == "org_1"
-    assert factory_calls == ["org_1", "org_1"]
+    assert factory_calls == ["org_1"]
 
 
 def test_resume_scheduler_drains_all_orgs_and_stops_cleanly(monkeypatch):
@@ -197,7 +194,7 @@ def test_resume_scheduler_stale_bootstrap_cannot_block_future_discovery(monkeypa
 
     assert provider.call_count == 2
     assert drained == ["org_2", "org_3"]
-    assert factory_calls == ["org_2", "org_2", "org_3", "org_3"]
+    assert factory_calls == ["org_2", "org_3"]
     assert scheduler.bootstrap_org_id == "org_3"
 
 
@@ -475,3 +472,50 @@ def test_start_gate_holds_the_first_sweep_with_no_storage_call(monkeypatch):
         assert drained.wait(timeout=1.0), "first sweep never ran once open"
     finally:
         scheduler.stop(timeout_seconds=1.0)
+
+
+def test_fleet_polling_does_not_read_one_orgs_timing():
+    context = _request_context()
+    context.configurator.get_config.side_effect = AssertionError(
+        "no bootstrap policy read"
+    )
+    scheduler = resume_scheduler.ExtractionResumeScheduler(
+        request_context_factory=cast(
+            Callable[[str], RequestContext], lambda _org: context
+        ),
+        bootstrap_org_id="org_1",
+        org_id_provider=lambda: ["org_1", "org_2"],
+    )
+    with patch.object(scheduler, "_drain_org") as drain:
+        assert scheduler._run_once() == 5.0
+    assert drain.call_count == 2
+    context.configurator.get_config.assert_not_called()
+
+
+def test_first_org_context_failure_cannot_block_other_discovered_orgs(monkeypatch):
+    drained: list[str] = []
+
+    def factory(org_id):
+        if org_id == "broken":
+            raise RuntimeError("organization configuration unavailable")
+        return _request_context(org_id)
+
+    class Worker:
+        def __init__(self, *, request_context):
+            self.context = request_context
+
+        def drain(self, *, max_runs):
+            drained.append(self.context.org_id)
+            return 0
+
+    monkeypatch.setattr(
+        resume_scheduler, "pending_tool_calls_enabled", lambda _ctx: True
+    )
+    monkeypatch.setattr(resume_scheduler, "ExtractionResumeWorker", Worker)
+    scheduler = resume_scheduler.ExtractionResumeScheduler(
+        request_context_factory=cast(Callable[[str], RequestContext], factory),
+        bootstrap_org_id="broken",
+        org_id_provider=lambda: ["broken", "healthy"],
+    )
+    assert scheduler._run_once() == 5.0
+    assert drained == ["healthy"]

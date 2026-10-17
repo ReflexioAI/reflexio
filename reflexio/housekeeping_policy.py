@@ -5,6 +5,8 @@ No server imports: configuration parsing and image bootstrap use this module.
 
 from typing import Any
 
+from reflexio.config_migration import ConfigurationMigrationError
+
 DAILY_SWEEP_SECONDS = 86_400
 AUDIT_DELETE_BATCH_LIMIT = 500
 
@@ -15,7 +17,7 @@ _RETIRED_FIELDS = (
 )
 
 
-class HousekeepingMigrationError(ValueError):
+class HousekeepingMigrationError(ConfigurationMigrationError):
     """A stored custom policy must be migrated, never replaced with defaults."""
 
 
