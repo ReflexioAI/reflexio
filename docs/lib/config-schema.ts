@@ -278,10 +278,19 @@ export function serializeConfig(config: ReflexioConfig): unknown {
     agentSuccess: AgentSuccessConfig | null,
   ): AgentSuccessConfig | null => {
     if (!agentSuccess) return null;
+    const current: AgentSuccessConfig & Record<string, unknown> = { ...agentSuccess };
+    for (const key of [
+      "window_size_override",
+      "stride_size_override",
+      "batch_size_override",
+      "batch_interval_override",
+      "extraction_window_size_override",
+      "extraction_window_stride_override",
+    ]) {
+      delete current[key];
+    }
     return {
-      evaluation_name: agentSuccess.evaluation_name,
-      success_definition_prompt: agentSuccess.success_definition_prompt,
-      sampling_rate: agentSuccess.sampling_rate,
+      ...current,
       tagging_definition_prompt: clean(
         agentSuccess.tagging_definition_prompt,
       ),
