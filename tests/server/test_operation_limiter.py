@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 from contextlib import contextmanager
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import status
@@ -420,3 +421,15 @@ def test_search_wait_is_independent_of_owned_aggregation_wait(monkeypatch):
     monkeypatch.setenv("REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS", "1.0")
     assert operation_limiter_module._timeout_for("search") == 0.25
     assert operation_limiter_module._timeout_for("aggregation") == 1.0
+
+
+@pytest.mark.parametrize("wait", [0, 0.025, 3.5])
+def test_aggregation_configured_wait_reaches_semaphore(monkeypatch, wait):
+    monkeypatch.setenv("REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS", str(wait))
+    state = operation_limiter_module._state_for("configured-wait", "aggregation")
+    semaphore = MagicMock()
+    semaphore.acquire.return_value = False
+    monkeypatch.setattr(state, "semaphore", semaphore)
+    with pytest.raises(TimeoutError), operation_limit("configured-wait", "aggregation"):
+        pytest.fail("busy semaphore admitted work")
+    semaphore.acquire.assert_called_once_with(timeout=wait)

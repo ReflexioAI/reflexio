@@ -11,7 +11,9 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from reflexio.durable_learning_policy import (
-    AGGREGATION_MIN_INTERVAL_SECONDS,
+    aggregation_min_interval_seconds as _aggregation_min_interval_seconds,
+)
+from reflexio.durable_learning_policy import (
     validate_aggregation_timing_env,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
@@ -82,9 +84,9 @@ def _is_unqualified_success(result: dict[str, Any]) -> bool:
 
 
 def aggregation_min_interval_seconds() -> int:
-    """Return code-owned drained-cycle timing after validating retired inputs."""
+    """Return the shared configured drained-cycle interval after validation."""
     validate_aggregation_timing_env(os.environ)
-    return AGGREGATION_MIN_INTERVAL_SECONDS
+    return _aggregation_min_interval_seconds()
 
 
 class _FinalizationReportedError(Exception):

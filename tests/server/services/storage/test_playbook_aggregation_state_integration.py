@@ -383,7 +383,11 @@ def test_failed_finish_cas_rolls_back_owned_sqlite_transaction(
     external.close()
 
 
-def test_successful_bounded_run_with_backlog_is_due_again_immediately(tmp_path) -> None:
+@pytest.mark.parametrize("interval", [17, 3600])
+def test_successful_bounded_run_with_backlog_is_due_again_immediately(
+    tmp_path, monkeypatch, interval
+) -> None:
+    monkeypatch.setenv("REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS", str(interval))
     store = _store(tmp_path)
     _insert_current(store, 1)
     store.schedule_playbook_aggregation("v1")
@@ -406,7 +410,11 @@ def test_successful_bounded_run_with_backlog_is_due_again_immediately(tmp_path) 
     assert continuation.agent_version == "v1"
 
 
-def test_new_signal_preserves_idle_version_hourly_window(tmp_path) -> None:
+@pytest.mark.parametrize("interval", [17, 3600])
+def test_new_signal_preserves_idle_version_configured_window(
+    tmp_path, monkeypatch, interval
+) -> None:
+    monkeypatch.setenv("REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS", str(interval))
     store = _store(tmp_path)
     store.schedule_playbook_aggregation("v1")
     claim = store.claim_due_playbook_aggregation(owner="worker-a", lease_seconds=30)
@@ -424,7 +432,7 @@ def test_new_signal_preserves_idle_version_hourly_window(tmp_path) -> None:
         "SELECT next_attempt_at - last_success_at FROM playbook_aggregation_state "
         "WHERE agent_version='v1'"
     ).fetchone()
-    assert state is not None and state[0] == 3600
+    assert state is not None and state[0] == interval
     store.schedule_playbook_aggregation("v1")
 
     assert (
