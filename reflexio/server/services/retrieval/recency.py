@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from reflexio.server.env_utils import env_str, env_truthy
@@ -56,31 +56,6 @@ class RecencyConfig:
                 minimum=1,
             ),
         )
-
-    def with_overrides(self, values: Mapping[str, object] | None) -> RecencyConfig:
-        if not values:
-            return self
-        updates: dict[str, object] = {}
-        if "recency_enabled" in values:
-            updates["enabled"] = _bool_value(values["recency_enabled"], self.enabled)
-        if "recency_max_penalty_frac" in values:
-            updates["max_penalty_frac"] = _float_value(
-                values["recency_max_penalty_frac"],
-                self.max_penalty_frac,
-                minimum=0.0,
-                maximum=1.0,
-            )
-        if "recency_max_penalty_logit" in values:
-            updates["max_penalty_logit"] = _float_value(
-                values["recency_max_penalty_logit"],
-                self.max_penalty_logit,
-                minimum=0.0,
-            )
-        if "recency_pool_size" in values:
-            updates["pool_size"] = _int_value(
-                values["recency_pool_size"], self.pool_size, minimum=1
-            )
-        return replace(self, **updates)
 
 
 def decay_for_item(
@@ -155,14 +130,6 @@ def _int_env(
     minimum: int,
 ) -> int:
     return _int_value(env_str(name, str(default), env=env), default, minimum=minimum)
-
-
-def _bool_value(value: object, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str) and value.strip():
-        return env_truthy(value)
-    return default
 
 
 def _float_value(

@@ -24,6 +24,12 @@ an override, OSS uses `local/minilm-l6-v2`. The former
 advertised. Existing copies containing that key remain harmless. Generation,
 evaluation, should-run and pre-retrieval model sitevars remain supported.
 
+Recency uses `RecencyConfig.from_env()` and the four existing
+`REFLEXIO_SEARCH_RECENCY_*` variables. `RecencyConfig.with_overrides` has been
+removed; enterprise adapters reject the former `search_settings.recency_*`
+keys with migration instructions. Search mode and vector/FTS weight sitevars
+remain supported.
+
 ## Feature Flags
 
 

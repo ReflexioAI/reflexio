@@ -40,7 +40,7 @@ def test_factor_and_penalty_bounds():
     assert additive_penalty(1.0, 0.2) == 0.0
 
 
-def test_config_from_env_and_site_var_overrides():
+def test_config_from_env_clamps_values():
     cfg = RecencyConfig.from_env(
         env={
             "REFLEXIO_SEARCH_RECENCY_ENABLED": "false",
@@ -48,15 +48,22 @@ def test_config_from_env_and_site_var_overrides():
             "REFLEXIO_SEARCH_RECENCY_MAX_PENALTY_LOGIT": "-1",
             "REFLEXIO_SEARCH_RECENCY_POOL_SIZE": "0",
         }
-    ).with_overrides(
-        {
-            "recency_enabled": True,
-            "recency_max_penalty_frac": 0.25,
-            "recency_max_penalty_logit": 0.4,
-            "recency_pool_size": 40,
+    )
+    assert cfg.enabled is False
+    assert cfg.max_penalty_frac == 1.0
+    assert cfg.max_penalty_logit == 0.0
+    assert cfg.pool_size == 1
+
+
+def test_config_from_env_preserves_custom_policy():
+    cfg = RecencyConfig.from_env(
+        env={
+            "REFLEXIO_SEARCH_RECENCY_ENABLED": "true",
+            "REFLEXIO_SEARCH_RECENCY_MAX_PENALTY_FRAC": "0.25",
+            "REFLEXIO_SEARCH_RECENCY_MAX_PENALTY_LOGIT": "0.4",
+            "REFLEXIO_SEARCH_RECENCY_POOL_SIZE": "40",
         }
     )
-
     assert cfg.enabled is True
     assert cfg.max_penalty_frac == 0.25
     assert cfg.max_penalty_logit == 0.4
