@@ -1104,7 +1104,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self.embedding_model_name = resolve_service_configured_model(
             resolve_model_name(
                 ModelRole.EMBEDDING,
-                site_var_value=site_var.get("embedding_model_name"),
                 config_override=(
                     llm_config.embedding_model_name if llm_config else None
                 ),
