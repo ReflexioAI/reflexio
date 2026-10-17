@@ -127,6 +127,7 @@ _PRESET_VALUES: dict[ExtractionPreset, tuple[int, int]] = {
     ExtractionPreset.LONG_FORM: (25, 10),
     ExtractionPreset.HIGH_VOLUME: (15, 8),
 }
+_LEGACY_EXTRACTION_PRESET = TypeAdapter(ExtractionPreset | None)
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +231,19 @@ def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
     can share this cleanup without mutating a caller's saved configuration.
     """
     payload = strip_legacy_housekeeping_fields(data)
+    if "extraction_preset" in payload:
+        # A preset was an input shortcut, never independent execution policy.
+        # Resolve it before raw upgrades can preserve it as opaque metadata.
+        payload = _migrate_dict(payload, _CONFIG_FIELD_MIGRATION)
+        preset = _LEGACY_EXTRACTION_PRESET.validate_python(
+            payload.pop("extraction_preset")
+        )
+        if preset is not None:
+            for name, value in zip(
+                ("window_size", "stride_size"), _PRESET_VALUES[preset], strict=True
+            ):
+                if payload.get(name) is None:
+                    payload[name] = value
     if "pending_tool_call_config" in payload:
         payload["pending_tool_call_config"] = strip_legacy_pending_tool_timing(
             payload["pending_tool_call_config"]
@@ -1069,8 +1083,6 @@ class Config(BaseModel):
     agent_success_config: AgentSuccessConfig | None = Field(
         default_factory=_default_agent_success_config
     )
-    # extraction preset — selects bundled window_size/stride_size values
-    extraction_preset: ExtractionPreset | None = None
     # extraction parameters
     window_size: int = Field(default=DEFAULT_WINDOW_SIZE, gt=0)
     stride_size: int = Field(default=DEFAULT_STRIDE_SIZE, gt=0)
@@ -1166,28 +1178,6 @@ class Config(BaseModel):
                 if key in data and data[key] is None:
                     del data[key]
         return data
-
-    @model_validator(mode="after")
-    def apply_extraction_preset(self) -> Self:
-        """Apply preset values when window_size/stride_size are at defaults.
-
-        If a preset is selected but the user also explicitly set window_size or
-        stride_size, the explicit values win (checked via model_fields_set).
-        """
-        if self.extraction_preset is None:
-            return self
-
-        preset_values = _PRESET_VALUES.get(self.extraction_preset)
-        if preset_values is None:
-            return self
-
-        preset_window_size, preset_stride_size = preset_values
-        if "window_size" not in self.model_fields_set:
-            self.window_size = preset_window_size
-        if "stride_size" not in self.model_fields_set:
-            self.stride_size = preset_stride_size
-
-        return self
 
     @model_validator(mode="after")
     def check_stride_size_le_window_size(self) -> Self:
