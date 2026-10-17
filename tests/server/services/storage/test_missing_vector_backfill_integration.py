@@ -297,7 +297,7 @@ def test_backfill_text_matches_the_ingest_derivation(
 def test_sweep_runs_unless_explicitly_disabled(
     tmp_path, worker_id, monkeypatch, flag: str | None, expect_run: bool
 ) -> None:
-    """The sweep is on by default; only an explicit falsey value disables it.
+    """With the default budget, only a falsey legacy alias disables the sweep.
 
     Parametrised over unset and explicit-false together because the default is
     the whole point: asserting only the enabled case would still pass if the
@@ -306,6 +306,7 @@ def test_sweep_runs_unless_explicitly_disabled(
     """
     from reflexio.server.services.lineage import vector_backfill_sweep as vbs
 
+    monkeypatch.delenv(vbs.CAP_ENV_VAR, raising=False)
     if flag is None:
         monkeypatch.delenv("REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED", raising=False)
     else:
