@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -36,7 +37,7 @@ def test_retired_defaults_are_accepted_without_becoming_overrides(env):
 )
 @pytest.mark.parametrize("value", ["0", "-1", "0.05", "10", "nan", "inf", "invalid"])
 def test_custom_or_invalid_retired_timing_requires_migration(key, value):
-    with pytest.raises(ValueError, match=f"{key} is retired; remove it"):
+    with pytest.raises(ValueError, match=key):
         validate_discovery_timing_env({key: value})
 
 
@@ -68,7 +69,7 @@ _AGGREGATION_TIMING_KEYS = (
 @pytest.mark.parametrize(
     "values", [{}, {"interval": " ", "wait": ""}, {"interval": "3600", "wait": "1.0"}]
 )
-def test_retired_aggregation_defaults_preserve_execution_policy(monkeypatch, values):
+def test_aggregation_defaults_preserve_execution_policy(monkeypatch, values):
     from reflexio.durable_learning_policy import validate_aggregation_timing_env
     from reflexio.server.operation_limiter import _timeout_for
     from reflexio.server.services.playbook.aggregation_scheduler import (
@@ -87,8 +88,8 @@ def test_retired_aggregation_defaults_preserve_execution_policy(monkeypatch, val
 
 
 @pytest.mark.parametrize("key", _AGGREGATION_TIMING_KEYS)
-@pytest.mark.parametrize("value", ["0", "-1", "123", "nan", "inf", "private-value"])
-def test_custom_aggregation_policy_rejected_before_scheduler_or_admission(
+@pytest.mark.parametrize("value", ["-1", "nan", "inf", "private-value"])
+def test_invalid_aggregation_policy_rejected_before_scheduler_or_admission(
     monkeypatch, key, value
 ):
     from reflexio.durable_learning_policy import validate_aggregation_timing_env
@@ -112,7 +113,7 @@ def test_custom_aggregation_policy_rejected_before_scheduler_or_admission(
         lambda: PlaybookAggregationScheduler(context_provider=lambda: []),
         lambda: operation_limiter._timeout_for("aggregation"),
     ):
-        with pytest.raises(ValueError, match=f"{key} is retired; remove it") as error:
+        with pytest.raises(ValueError, match=key) as error:
             operation()
         if value == "private-value":
             assert value not in str(error.value)
@@ -135,5 +136,78 @@ def test_aggregation_startup_rejects_custom_timing(tmp_path, key):
         timeout=30,
     )
     assert result.returncode != 0
-    assert f"{key} is retired; remove it" in result.stderr
+    assert key in result.stderr
     assert "private-value" not in result.stderr
+
+
+@pytest.mark.parametrize("wait", ["0", "0.025", "3.5"])
+def test_supported_custom_aggregation_timing_reaches_all_runtime_consumers(
+    monkeypatch, wait
+):
+    from reflexio.durable_learning_policy import validate_aggregation_timing_env
+    from reflexio.server.operation_limiter import _timeout_for, operation_limit
+    from reflexio.server.services.playbook.aggregation_scheduler import (
+        aggregation_min_interval_seconds,
+    )
+
+    monkeypatch.setenv("REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS", "17")
+    monkeypatch.setenv("REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS", wait)
+    validate_aggregation_timing_env(dict(os.environ))
+    assert aggregation_min_interval_seconds() == 17
+    assert _timeout_for("aggregation") == float(wait)
+    with operation_limit("custom-policy-org", "aggregation"):
+        pass
+
+
+def test_aggregation_validation_uses_supplied_mapping(monkeypatch):
+    from reflexio.durable_learning_policy import (
+        aggregation_admission_wait_seconds,
+        aggregation_min_interval_seconds,
+        validate_aggregation_timing_env,
+    )
+
+    monkeypatch.setenv("REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS", "private-value")
+    env = {
+        "REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS": "29",
+        "REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS": "0",
+    }
+    validate_aggregation_timing_env(env)
+    assert aggregation_min_interval_seconds(env) == 29
+    assert aggregation_admission_wait_seconds(env) == 0
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS", str(1 << 63)),
+        ("REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS", str(1 << 62)),
+        ("REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS", "1e20"),
+        (
+            "REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS",
+            str(threading.TIMEOUT_MAX * 2),
+        ),
+    ],
+)
+def test_aggregation_settings_reject_consumer_overflow(key, value):
+    from reflexio.durable_learning_policy import validate_aggregation_timing_env
+
+    with pytest.raises(ValueError, match=key):
+        validate_aggregation_timing_env({key: value})
+
+
+def test_aggregation_consumer_range_boundaries_are_accepted():
+    from reflexio.durable_learning_policy import (
+        MAX_AGGREGATION_INTERVAL_SECONDS,
+        validate_aggregation_timing_env,
+    )
+
+    validate_aggregation_timing_env(
+        {
+            "REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS": str(
+                MAX_AGGREGATION_INTERVAL_SECONDS
+            ),
+            "REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS": str(
+                threading.TIMEOUT_MAX
+            ),
+        }
+    )

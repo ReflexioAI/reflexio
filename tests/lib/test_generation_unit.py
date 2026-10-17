@@ -123,10 +123,11 @@ class TestRunPlaybookAggregation:
             mixin.run_playbook_aggregation(agent_version="v1", playbook_name="fb")
 
     @patch("reflexio.server.services.playbook.components.aggregator.PlaybookAggregator")
-    def test_admin_rerun_uses_owned_min_interval(
-        self, mock_agg_cls, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("interval", [17, 3600])
+    def test_admin_rerun_uses_configured_min_interval(
+        self, mock_agg_cls, interval, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS", "3600")
+        monkeypatch.setenv("REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS", str(interval))
         mixin = _make_mixin()
         storage = cast(Any, mixin.request_context.storage)
         storage.supports_incremental_playbook_aggregation = True
@@ -139,14 +140,15 @@ class TestRunPlaybookAggregation:
             "success": True,
             "retry_after_seconds": 60,
             "backlog_retry_after_seconds": 1,
-            "min_interval_seconds": 3600,
+            "min_interval_seconds": interval,
         }
 
     @patch("reflexio.server.services.playbook.components.aggregator.PlaybookAggregator")
-    def test_failed_admin_rerun_uses_owned_min_interval(
-        self, mock_agg_cls, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("interval", [17, 3600])
+    def test_failed_admin_rerun_uses_configured_min_interval(
+        self, mock_agg_cls, interval, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS", "3600")
+        monkeypatch.setenv("REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS", str(interval))
         mixin = _make_mixin()
         storage = cast(Any, mixin.request_context.storage)
         storage.supports_incremental_playbook_aggregation = True
@@ -160,7 +162,7 @@ class TestRunPlaybookAggregation:
             "success": False,
             "retry_after_seconds": 60,
             "backlog_retry_after_seconds": 1,
-            "min_interval_seconds": 3600,
+            "min_interval_seconds": interval,
         }
 
     @patch("reflexio.server.services.playbook.components.aggregator.PlaybookAggregator")

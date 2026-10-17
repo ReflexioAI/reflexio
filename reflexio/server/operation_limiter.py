@@ -15,7 +15,7 @@ from typing import Any, Literal
 from fastapi import HTTPException, status
 
 from reflexio.durable_learning_policy import (
-    AGGREGATION_ADMISSION_WAIT_SECONDS,
+    aggregation_admission_wait_seconds,
     validate_aggregation_timing_env,
 )
 from reflexio.server.tracing import profile_step
@@ -73,7 +73,7 @@ def _timeout_for(operation: OperationName) -> float:
         return 5.0
     if operation == "aggregation":
         validate_aggregation_timing_env(os.environ)
-        return AGGREGATION_ADMISSION_WAIT_SECONDS
+        return aggregation_admission_wait_seconds()
     raw = os.getenv("REFLEXIO_SEARCH_CONCURRENCY_TIMEOUT_SECONDS", "").strip()
     if raw:
         try:
