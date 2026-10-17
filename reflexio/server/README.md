@@ -863,3 +863,5 @@ policy: blank/former `development` is ignored, and custom values require explici
 migration. `get_governance_ref_secret(env=...)` also validates enterprise startup's
 resolved mapping; only the actual process can enable the existing test escape
 hatch. Never duplicate that decision in a startup validator.
+Only unset/blank or explicit `development` permits the local fallback; other
+nonblank labels, including unrecognized values, require a secret.

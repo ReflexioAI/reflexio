@@ -12,7 +12,6 @@ from reflexio.server.services.governance.subject_refs import (
 
 LOCAL_GOVERNANCE_REF_SECRET = "reflexio-local-governance-ref-secret"  # noqa: S105
 _PRODUCTION_DEPLOYMENT_MODES = {"platform", "self_host"}
-_PRODUCTION_ENVS = {"prod", "production", "staging"}
 
 
 def _is_local_dev_or_test(env: Mapping[str, str] | None = None) -> bool:
@@ -23,7 +22,7 @@ def _is_local_dev_or_test(env: Mapping[str, str] | None = None) -> bool:
         return True
     return (
         deployment_mode not in _PRODUCTION_DEPLOYMENT_MODES
-        and environment not in _PRODUCTION_ENVS
+        and environment == "development"
     )
 
 

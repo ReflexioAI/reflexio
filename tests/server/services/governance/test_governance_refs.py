@@ -34,13 +34,15 @@ def test_refs_are_domain_separated_by_org_and_kind() -> None:
     assert actor_ref_jwt_org_a != actor_ref_token_org_a
 
 
+@pytest.mark.parametrize("environment", ["", "  ", "development", " Development "])
 def test_secret_defaults_only_in_local_dev_or_test(
     monkeypatch: pytest.MonkeyPatch,
+    environment: str,
 ) -> None:
     monkeypatch.delenv("REFLEXIO_GOVERNANCE_REF_SECRET", raising=False)
     monkeypatch.delenv("DEPLOYMENT_MODE", raising=False)
     monkeypatch.delenv("REFLEXIO_TEST_MODE", raising=False)
-    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("ENVIRONMENT", environment)
 
     assert get_governance_ref_secret() == "reflexio-local-governance-ref-secret"
 
@@ -78,7 +80,9 @@ def test_blank_secret_is_treated_as_unset(monkeypatch: pytest.MonkeyPatch) -> No
         get_governance_ref_secret()
 
 
-@pytest.mark.parametrize("environment", ["production", " Prod ", "staging"])
+@pytest.mark.parametrize(
+    "environment", ["production", " Prod ", "staging", "prodution", "qa", "dev"]
+)
 def test_operational_environment_protects_oss_governance(monkeypatch, environment):
     monkeypatch.delenv("DEPLOYMENT_MODE", raising=False)
     monkeypatch.delenv("REFLEXIO_TEST_MODE", raising=False)
