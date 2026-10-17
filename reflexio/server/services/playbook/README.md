@@ -125,8 +125,7 @@ earlier decisions.
 
 Normal generation durably schedules bounded incremental aggregation through
 `aggregation_trigger.py`; `aggregation_scheduler.py` claims due work across
-processes. A successful drained run waits at least
-`REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS` (default 3600) before the next
+processes. A successful drained run waits a code-owned 3600 seconds before the next
 scheduled cycle; new durable signals preserve that due time so changes coalesce,
 while a remaining backlog continues in bounded follow-up units. The manual
 `/api/run_playbook_aggregation` route remains a fenced administrative full rerun.

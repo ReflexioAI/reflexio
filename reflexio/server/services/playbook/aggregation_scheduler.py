@@ -10,13 +10,16 @@ import uuid
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from reflexio.durable_learning_policy import (
+    AGGREGATION_MIN_INTERVAL_SECONDS,
+    validate_aggregation_timing_env,
+)
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.background_work import (
     background_work,
     report_background_failure,
     report_background_success,
 )
-from reflexio.server.env_utils import env_str
 from reflexio.server.extensions import get_service
 from reflexio.server.operation_limiter import run_with_operation_limit
 from reflexio.server.scheduling import LeaderGate, ThreadedScheduler
@@ -79,14 +82,9 @@ def _is_unqualified_success(result: dict[str, Any]) -> bool:
 
 
 def aggregation_min_interval_seconds() -> int:
-    raw = env_str("REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS", "3600")
-    try:
-        return max(1, int(raw))
-    except ValueError:
-        logger.warning(
-            "event=playbook_aggregation_invalid_interval value=%r default=3600", raw
-        )
-        return 3600
+    """Return code-owned drained-cycle timing after validating retired inputs."""
+    validate_aggregation_timing_env(os.environ)
+    return AGGREGATION_MIN_INTERVAL_SECONDS
 
 
 class _FinalizationReportedError(Exception):
@@ -267,6 +265,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         worker_id: str | None = None,
         start_gate: Callable[[], bool] | None = None,
     ) -> None:
+        validate_aggregation_timing_env(os.environ)
         super().__init__(
             thread_name="reflexio-playbook-aggregation-scheduler",
             leader_gate=leader_gate,
