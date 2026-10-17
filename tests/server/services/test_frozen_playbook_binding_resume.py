@@ -10,6 +10,7 @@ import pytest
 from pydantic import create_model
 
 from reflexio.models.config_schema import (
+    DeduplicationConfig,
     PendingToolCallConfig,
     UserPlaybookExtractorConfig,
 )
@@ -32,8 +33,9 @@ pipeline = durable.pipeline
 pytestmark = pytest.mark.integration
 
 
+@pytest.mark.parametrize("missing_strategy", [False, True])
 def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
-    pipeline, monkeypatch
+    pipeline, monkeypatch, missing_strategy
 ):
     engine, _, http = pipeline
     configurator = engine.request_context.configurator
@@ -42,7 +44,8 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
             update={
                 "profile_extractor_config": None,
                 "user_playbook_extractor_config": UserPlaybookExtractorConfig(
-                    extraction_definition_prompt="Extract deployment instructions"
+                    extraction_definition_prompt="Extract deployment instructions",
+                    deduplication_config=DeduplicationConfig(),
                 ),
             }
         )
@@ -66,6 +69,8 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
     parent = storage.get_agent_run(f"window:{window.window_id}")
     snapshot = copy.deepcopy(parent.generation_request_snapshot)
     snapshot["extractor_config"]["extractor_name"] = "historical-playbook-label"
+    if missing_strategy:
+        snapshot["extractor_config"]["deduplication_config"].pop("strategy")
     original_hash = build_scope_hash(snapshot["extractor_config"])
     journal = snapshot["overflow"]
     journal["attempts"] = [
@@ -186,10 +191,22 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
             for name, field in UserPlaybookExtractorConfig.model_fields.items()
         },
     }
+    if missing_strategy:
+        dedup_fields: dict[str, Any] = {
+            name: (field.annotation, copy.deepcopy(field))
+            for name, field in DeduplicationConfig.model_fields.items()
+            if name != "strategy"
+        }
+        legacy_dedup = create_model("DeduplicationConfig", **dedup_fields)
+        legacy_fields["deduplication_config"] = (legacy_dedup, legacy_dedup())
     legacy_type = create_model("LegacyPlaybookExtractorConfig", **legacy_fields)
     legacy_config = legacy_type.model_validate(snapshot["extractor_config"])
-    assert str(legacy_config) == (
-        f"extractor_name='historical-playbook-label' {config}"
+    from reflexio.server.services.extraction.agent_run_records import (
+        frozen_extractor_config_identity,
+    )
+
+    assert str(legacy_config) == frozen_extractor_config_identity(
+        config, snapshot["extractor_config"]
     )
     result = run_child(legacy_config)
     assert result.output == StructuredPlaybookList(playbooks=[])

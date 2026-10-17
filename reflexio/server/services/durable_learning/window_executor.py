@@ -143,7 +143,11 @@ class WindowExecutor:
         window: Window,
     ) -> tuple[Any, Any, Any]:
         service.set_extraction_window(
-            groups, config, window.window_id, prior_attempts=window.attempts
+            groups,
+            config,
+            window.window_id,
+            prior_attempts=window.attempts,
+            frozen_extractor_config=window.policy["extractor"],
         )
         service._window_skip_should_run = window.policy.get(
             "skip_should_run_check", False
@@ -151,6 +155,7 @@ class WindowExecutor:
         service.service_config = service._load_generation_service_config(request)
         service.service_config.window_interactions = groups
         service.service_config.extraction_window_id = window.window_id
+        service.service_config.frozen_extractor_config = window.policy["extractor"]
         service._last_precheck_sessions = groups
         return service, request, config
 
@@ -578,6 +583,9 @@ class WindowExecutor:
             )
             self.storage.complete_extraction(window, token, effects)
         record_health("worker.commits")
+        logging.getLogger("reflexio.ops").info(
+            "event=extraction_window_committed window_id=%s", window.window_id
+        )
 
     def _validate_overflow_plan(
         self, coordinator: OverflowCoordinator, service: Any, plan: Any

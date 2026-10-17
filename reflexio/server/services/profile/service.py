@@ -82,6 +82,7 @@ class ProfileGenerationServiceConfig:
     force_extraction: bool = False
     window_interactions: list[RequestInteractionDataModel] | None = None
     extraction_window_id: str | None = None
+    frozen_extractor_config: dict[str, Any] | None = None
 
 
 class ProfileGenerationService(

@@ -598,6 +598,7 @@ class BaseGenerationService(
         window_id: str,
         *,
         prior_attempts: int | None = None,
+        frozen_extractor_config: dict[str, Any] | None = None,
     ) -> None:
         """Pin one immutable input window for gate, extraction and billing.
 
@@ -613,6 +614,7 @@ class BaseGenerationService(
         self._window_extractor_config = extractor_config
         self._window_id = window_id
         self._window_prior_attempts = prior_attempts
+        self._window_frozen_extractor_config = frozen_extractor_config
 
     def compute_generation(self, request: TRequest) -> GenerationComputePlan | None:
         """Compute half of one generation run — NO learning DB write, NO fence.
@@ -954,6 +956,8 @@ class BaseGenerationService(
         if explicit_window is not None:
             self.service_config.window_interactions = explicit_window  # type: ignore[reportAttributeAccessIssue]
             self.service_config.extraction_window_id = self._window_id  # type: ignore[reportAttributeAccessIssue]
+            frozen_config = getattr(self, "_window_frozen_extractor_config", None)
+            self.service_config.frozen_extractor_config = frozen_config  # type: ignore[reportAttributeAccessIssue]
 
         extractor_config = (
             getattr(self, "_window_extractor_config", None)

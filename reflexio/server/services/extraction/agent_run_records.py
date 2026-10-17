@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from copy import deepcopy
 from dataclasses import asdict, is_dataclass, replace
 from typing import Any
 
@@ -50,10 +51,49 @@ def source_interaction_digest(interaction: Interaction) -> str:
     )
 
 
+def effective_frozen_extractor_config(frozen: dict[str, Any]) -> dict[str, Any]:
+    """Apply only the two behavior-preserving deployed schema transitions.
+
+    Do not round-trip this witness through a model: that would silently accept
+    unknown retired fields, changed defaults, or other future schema changes.
+    """
+    effective = deepcopy(frozen)
+    effective.pop("extractor_name", None)
+    dedup = effective.get("deduplication_config")
+    if isinstance(dedup, dict) and "strategy" not in dedup:
+        dedup["strategy"] = "legacy"
+    return effective
+
+
+def frozen_extractor_config_identity(config: BaseModel, frozen: dict[str, Any]) -> str:
+    """Reproduce the legacy v1 prior-answer key after frozen binding validation.
+
+    Pydantic's representation was part of that key. The retired root label was
+    first; the newly added nested strategy must be absent for older admissions.
+    Only the lookup identity uses this representation, never requests or policy.
+    """
+    fields = []
+    if "extractor_name" in frozen:
+        fields.append(f"extractor_name={frozen['extractor_name']!r}")
+    for name, value in config.__repr_args__():
+        if name == "deduplication_config" and isinstance(value, BaseModel):
+            dedup = frozen.get("deduplication_config")
+            if isinstance(dedup, dict) and "strategy" not in dedup:
+                args = ", ".join(
+                    f"{key}={item!r}"
+                    for key, item in value.__repr_args__()
+                    if key != "strategy"
+                )
+                fields.append(f"{name}={type(value).__name__}({args})")
+                continue
+        fields.append(f"{name}={value!r}")
+    return " ".join(fields)
+
+
 def matches_frozen_extractor_binding(
     prior: AgentRunRecord, expected: AgentRunRecord, frozen_config: dict[str, Any]
 ) -> bool:
-    """Accept only exact bindings or removal of the retired extractor label.
+    """Accept exact bindings or the two known inert schema transitions.
 
     The compatibility case requires the immutable window policy and saved run
     snapshot to witness the original hash. It never rewrites historical state.
@@ -69,15 +109,13 @@ def matches_frozen_extractor_binding(
     current = expected.generation_request_snapshot.get("extractor_config")
     if not isinstance(saved, dict) or not isinstance(current, dict):
         return False
-    if "extractor_name" not in saved:
-        return False
     original_hash = prior.binding.extractor_config_hash
     if (
         build_scope_hash(saved) != original_hash
         or build_scope_hash(frozen_config) != original_hash
     ):
         return False
-    normalized = {key: value for key, value in saved.items() if key != "extractor_name"}
+    normalized = effective_frozen_extractor_config(saved)
     current_hash = build_scope_hash(current)
     if (
         build_scope_hash(normalized) != current_hash

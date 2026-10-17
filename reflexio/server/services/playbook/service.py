@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from reflexio.server.env_utils import env_bool
 
@@ -126,6 +126,7 @@ class PlaybookGenerationServiceConfig:
     force_extraction: bool = False
     window_interactions: list[RequestInteractionDataModel] | None = None
     extraction_window_id: str | None = None
+    frozen_extractor_config: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.user_id, str):
