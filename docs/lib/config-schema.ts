@@ -14,6 +14,12 @@ export interface StorageConfigSQLite {
 
 export interface OpenAIConfig {
   api_key: string | null;
+  azure_config?: {
+    api_key: string;
+    endpoint: string;
+    api_version: string;
+    deployment_name?: string | null;
+  } | null;
 }
 
 export interface SimpleKeyConfig {
@@ -193,6 +199,19 @@ export function defaultTool(): ToolUseConfig {
   return { tool_name: "", tool_description: "" };
 }
 
+// Hydration keeps the complete server snapshot while defaults stabilize the UI.
+// The editor renders a subset; its full-config save must retain other policies.
+export function hydrateConfig(raw: unknown): ReflexioConfig {
+  const base = defaultConfig();
+  if (!raw || typeof raw !== "object") return base;
+  const incoming = raw as Partial<ReflexioConfig>;
+  return {
+    ...base,
+    ...incoming,
+    agent_success_config: incoming.agent_success_config ?? null,
+  };
+}
+
 // Strip empty strings → null and empty arrays → null so the server receives
 // a clean payload. The Pydantic model rejects empty strings for `NonEmptyStr`
 // fields, so leaving them in would produce confusing 422s.
@@ -219,11 +238,14 @@ export function serializeConfig(config: ReflexioConfig): unknown {
       const entry = out[provider];
       if (!entry || clean(entry.api_key) === null) out[provider] = null;
     }
-    if (out.openai && clean(out.openai.api_key) === null) out.openai = null;
+    if (out.openai && clean(out.openai.api_key) === null) {
+      out.openai = out.openai.azure_config ? { ...out.openai, api_key: null } : null;
+    }
     if (out.dashscope && clean(out.dashscope.api_key) === null) {
       out.dashscope = null;
     } else if (out.dashscope) {
       out.dashscope = {
+        ...out.dashscope,
         api_key: out.dashscope.api_key,
         api_base: clean(out.dashscope.api_base),
       };
@@ -245,6 +267,7 @@ export function serializeConfig(config: ReflexioConfig): unknown {
   const cleanLlm = (llm: LLMConfig | null): LLMConfig | null => {
     if (!llm) return null;
     const out: LLMConfig = {
+      ...llm,
       should_run_model_name: clean(llm.should_run_model_name),
       generation_model_name: clean(llm.generation_model_name),
       embedding_model_name: clean(llm.embedding_model_name),
@@ -297,9 +320,10 @@ export function serializeConfig(config: ReflexioConfig): unknown {
   };
 
   return {
-    storage_config: config.storage_config
-      ? { db_path: clean(config.storage_config.db_path) }
-      : null,
+    ...config,
+    storage_config: config.storage_config && "db_path" in config.storage_config
+      ? { ...config.storage_config, db_path: clean(config.storage_config.db_path) }
+      : config.storage_config,
     agent_context_prompt: clean(config.agent_context_prompt),
     tool_can_use: config.tool_can_use?.length ? config.tool_can_use : null,
     profile_extractor_config: cleanExtractor(config.profile_extractor_config),

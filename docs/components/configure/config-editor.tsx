@@ -7,6 +7,7 @@ import { useSettings } from "@/hooks/use-settings";
 import {
   type ReflexioConfig,
   defaultConfig,
+  hydrateConfig,
   serializeConfig,
 } from "@/lib/config-schema";
 import {
@@ -28,19 +29,6 @@ type Status =
   | { kind: "saving" }
   | { kind: "error"; message: string }
   | { kind: "success"; message: string };
-
-// Merge server response into our typed defaults. Server may omit optional
-// fields; we rely on defaults so subsequent form renders stay stable.
-function hydrate(raw: unknown): ReflexioConfig {
-  const base = defaultConfig();
-  if (!raw || typeof raw !== "object") return base;
-  const incoming = raw as Partial<ReflexioConfig>;
-  return {
-    ...base,
-    ...incoming,
-    agent_success_config: incoming.agent_success_config ?? null,
-  };
-}
 
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -69,7 +57,7 @@ export function ConfigEditor() {
       const body = await res.text();
       throw new Error(`GET /api/get_config failed (${res.status}): ${body}`);
     }
-    return hydrate(await res.json());
+    return hydrateConfig(await res.json());
   }, [baseUrl, apiKey]);
 
   const load = useCallback(async (signal?: AbortSignal) => {
