@@ -23,6 +23,9 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.services.operation_state_utils import OperationStateManager
+from reflexio.server.services.playbook.aggregation_scheduler import (
+    aggregation_min_interval_seconds,
+)
 from reflexio.server.services.playbook.components.aggregator import (
     AggregationGenerationOutcome,
     AggregationGenerationStatus,
@@ -393,7 +396,7 @@ def test_successful_bounded_run_with_backlog_is_due_again_immediately(tmp_path) 
         success=True,
         retry_after_seconds=60,
         backlog_retry_after_seconds=0,
-        min_interval_seconds=3600,
+        min_interval_seconds=aggregation_min_interval_seconds(),
     )
 
     continuation = store.claim_due_playbook_aggregation(
@@ -413,10 +416,15 @@ def test_new_signal_preserves_idle_version_hourly_window(tmp_path) -> None:
         success=True,
         retry_after_seconds=60,
         backlog_retry_after_seconds=1,
-        min_interval_seconds=3600,
+        min_interval_seconds=aggregation_min_interval_seconds(),
         backlog=PlaybookAggregationBacklog(undisposed=0, residual=0, invalidations=0),
     )
 
+    state = store.conn.execute(
+        "SELECT next_attempt_at - last_success_at FROM playbook_aggregation_state "
+        "WHERE agent_version='v1'"
+    ).fetchone()
+    assert state is not None and state[0] == 3600
     store.schedule_playbook_aggregation("v1")
 
     assert (
@@ -450,7 +458,6 @@ def test_stale_claim_cannot_commit_incremental_effect(
     config = Config(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "state.db")),
         user_playbook_extractor_config=PlaybookConfig(
-            extractor_name="playbook",
             extraction_definition_prompt="test",
             aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
         ),
@@ -1234,7 +1241,6 @@ def test_incremental_run_refreshes_agent_and_centroid_after_match(
     config = Config(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "state.db")),
         user_playbook_extractor_config=PlaybookConfig(
-            extractor_name="playbook",
             extraction_definition_prompt="test",
             aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
         ),
@@ -1653,7 +1659,6 @@ def test_rebuild_dedup_context_excludes_the_invalidated_agent(
     config = Config(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "state.db")),
         user_playbook_extractor_config=PlaybookConfig(
-            extractor_name="playbook",
             extraction_definition_prompt="test",
             aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
         ),
@@ -1735,7 +1740,6 @@ def test_matched_cluster_non_generated_outcomes_preserve_current_agent(
     config = Config(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "state.db")),
         user_playbook_extractor_config=PlaybookConfig(
-            extractor_name="playbook",
             extraction_definition_prompt="test",
             aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
         ),
@@ -1852,7 +1856,6 @@ def test_refresh_fence_loss_does_not_discard_healthy_cluster(
     config = Config(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "state.db")),
         user_playbook_extractor_config=PlaybookConfig(
-            extractor_name="playbook",
             extraction_definition_prompt="test",
             aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
         ),
@@ -1964,7 +1967,6 @@ def test_incremental_run_commits_healthy_clusters_when_one_llm_outcome_fails(
     config = Config(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "state.db")),
         user_playbook_extractor_config=PlaybookConfig(
-            extractor_name="playbook",
             extraction_definition_prompt="test",
             aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
         ),
@@ -2068,7 +2070,6 @@ def test_legacy_fingerprint_is_reembedded_and_adopted_without_regeneration(
     config = Config(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "state.db")),
         user_playbook_extractor_config=PlaybookConfig(
-            extractor_name="playbook",
             extraction_definition_prompt="test",
             aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
         ),
@@ -2191,7 +2192,6 @@ def test_empty_legacy_fingerprint_is_not_activated(vec_store, tmp_path) -> None:
     config = Config(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "state.db")),
         user_playbook_extractor_config=PlaybookConfig(
-            extractor_name="playbook",
             extraction_definition_prompt="test",
             aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
         ),
@@ -2233,7 +2233,6 @@ def test_fenced_full_rerun_rebuilds_typed_cluster_state(
     config = Config(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "state.db")),
         user_playbook_extractor_config=PlaybookConfig(
-            extractor_name="playbook",
             extraction_definition_prompt="test",
             aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
         ),

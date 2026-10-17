@@ -461,6 +461,10 @@ Key files:
 - UserPlaybook write → durable hourly-coalesced signal → PlaybookAggregationScheduler → fixed-page invalidation drain → same-version centroid match → one current-agent-plus-bounded-delta refresh per changed cluster → bounded residual clustering → AgentPlaybook → Storage
 - `POST /api/run_playbook_aggregation` → fenced, capped administrative full rerun
 
+`reflexio.durable_learning_policy` owns the 3600-second drained-cycle delay and
+one-second aggregation slot wait. Custom retired environment timings require
+explicit adoption before startup; capacity, backlog and retry policies stay separate.
+
 **Tool Analysis**: PlaybookExtractor reads `tool_can_use` from root `Config` and passes it to prompts for tool usage analysis and blocking issue detection.
 
 **Rerun Behavior**: Groups interactions by `user_id` for per-user playbook extraction (fetches all users, then processes each user's interactions together)

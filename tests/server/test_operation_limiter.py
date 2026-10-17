@@ -415,8 +415,8 @@ def test_retired_publish_timeout_cannot_change_legacy_wait(monkeypatch, retired_
     assert "publish_timeout_seconds" not in publish_hardware_capacity_snapshot()
 
 
-def test_search_and_aggregation_keep_independent_waits(monkeypatch):
+def test_search_wait_is_independent_of_owned_aggregation_wait(monkeypatch):
     monkeypatch.setenv("REFLEXIO_SEARCH_CONCURRENCY_TIMEOUT_SECONDS", "0.25")
-    monkeypatch.setenv("REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS", "1.5")
+    monkeypatch.setenv("REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS", "1.0")
     assert operation_limiter_module._timeout_for("search") == 0.25
-    assert operation_limiter_module._timeout_for("aggregation") == 1.5
+    assert operation_limiter_module._timeout_for("aggregation") == 1.0

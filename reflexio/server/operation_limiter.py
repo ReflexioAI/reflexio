@@ -14,6 +14,10 @@ from typing import Any, Literal
 
 from fastapi import HTTPException, status
 
+from reflexio.durable_learning_policy import (
+    AGGREGATION_ADMISSION_WAIT_SECONDS,
+    validate_aggregation_timing_env,
+)
 from reflexio.server.tracing import profile_step
 from reflexio.server.usage_metrics import record_usage_event
 
@@ -25,10 +29,6 @@ _DEFAULT_LIMITS: dict[OperationName, int] = {
     "search": 8,
     "publish": 4,
     "aggregation": 1,
-}
-_DEFAULT_TIMEOUT_SECONDS: dict[OperationName, float] = {
-    "search": 2.0,
-    "aggregation": 1.0,
 }
 _ESTIMATED_THREADS_PER_PUBLISH = 3
 _PUBLISH_WAIT_LOG_THRESHOLD_MS = 250
@@ -71,13 +71,16 @@ def _timeout_for(operation: OperationName) -> float:
     # for call compatibility without advertising an ineffective environment knob.
     if operation == "publish":
         return 5.0
-    raw = os.getenv(_env_key(operation, "TIMEOUT_SECONDS"), "").strip()
+    if operation == "aggregation":
+        validate_aggregation_timing_env(os.environ)
+        return AGGREGATION_ADMISSION_WAIT_SECONDS
+    raw = os.getenv("REFLEXIO_SEARCH_CONCURRENCY_TIMEOUT_SECONDS", "").strip()
     if raw:
         try:
             return max(0.0, float(raw))
         except ValueError:
             pass
-    return _DEFAULT_TIMEOUT_SECONDS[operation]
+    return 2.0
 
 
 def _resource_limit_nproc() -> int | str | None:
@@ -413,6 +416,8 @@ def operation_limit(
     log_timeout: bool = True,
 ) -> Any:
     """Acquire the per-org limiter for an operation, recording wait metrics."""
+    if operation == "aggregation":
+        validate_aggregation_timing_env(os.environ)
     state = _state_for(org_id, operation)
     timeout = (
         None
