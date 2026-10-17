@@ -261,7 +261,6 @@ def test_legacy_shadow_file_load_patch_save_roundtrip(tmp_path: Path) -> None:
         ("playbook_optimizer_config", "abort_cooldown_threshold"),
         ("playbook_optimizer_config", "cooldown_after_aborts_seconds"),
         ("lineage_gc", "poll_interval_seconds"),
-        ("governance_retention", "audit_events_delete_batch_limit"),
     ],
 )
 def test_retired_custom_policy_propagates_without_resetting_file(
@@ -295,7 +294,16 @@ def test_retired_custom_policy_propagates_without_resetting_file(
         assert path.read_bytes() == before
 
 
-def test_invalid_recognized_policy_preserves_file_and_blocks_cli_fallback(tmp_path):
+@pytest.mark.parametrize(
+    "invalid_policy",
+    [
+        {"audit_events_retention_days": 0},
+        {"audit_events_delete_batch_limit": 0},
+    ],
+)
+def test_invalid_recognized_policy_preserves_file_and_blocks_cli_fallback(
+    tmp_path, invalid_policy
+):
     from reflexio.cli.bootstrap_config import (
         load_storage_from_config,
         save_storage_to_config,
@@ -307,7 +315,7 @@ def test_invalid_recognized_policy_preserves_file_and_blocks_cli_fallback(tmp_pa
         "storage_config": {"type": "sqlite"},
         "lineage_gc": {"enabled": False},
         "agent_context_prompt": "private-customer-prompt",
-        "governance_retention": {"audit_events_retention_days": 0},
+        "governance_retention": invalid_policy,
     }
     path = Path(storage.config_file)
     path.parent.mkdir(parents=True)
@@ -321,10 +329,15 @@ def test_invalid_recognized_policy_preserves_file_and_blocks_cli_fallback(tmp_pa
         with pytest.raises(StoredConfigurationError, match="governance_retention"):
             load()
         assert path.read_bytes() == original
-    payload["governance_retention"]["audit_events_retention_days"] = 45
+    payload["governance_retention"] = {
+        "audit_events_retention_days": 45,
+        "audit_events_delete_batch_limit": 2,
+    }
     path.write_text(json.dumps(payload))
     cfg = storage.load_config()
     assert cfg.lineage_gc.enabled is False
     assert cfg.governance_retention.audit_events_retention_days == 45
     storage.save_config(cfg)
-    assert storage.load_config().lineage_gc.enabled is False
+    reloaded = storage.load_config()
+    assert reloaded.lineage_gc.enabled is False
+    assert reloaded.governance_retention.audit_events_delete_batch_limit == 2

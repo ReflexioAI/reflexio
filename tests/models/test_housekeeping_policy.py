@@ -20,12 +20,6 @@ from reflexio.models.config_schema import (
     "section,field,default,model",
     [
         ("lineage_gc", "poll_interval_seconds", 86400, LineageGCConfig),
-        (
-            "governance_retention",
-            "audit_events_delete_batch_limit",
-            500,
-            GovernanceRetentionConfig,
-        ),
     ],
 )
 def test_legacy_defaults_are_accepted_but_not_exposed(section, field, default, model):
@@ -41,7 +35,6 @@ def test_legacy_defaults_are_accepted_but_not_exposed(section, field, default, m
     "section,field",
     [
         ("lineage_gc", "poll_interval_seconds"),
-        ("governance_retention", "audit_events_delete_batch_limit"),
     ],
 )
 @pytest.mark.parametrize(
@@ -65,7 +58,7 @@ def test_cleanup_preserves_policy_holds_and_opaque_metadata_without_mutating():
         "governance_retention": {
             "audit_events_retention_enabled": False,
             "audit_events_retention_days": 30,
-            "audit_events_delete_batch_limit": 500,
+            "audit_events_delete_batch_limit": 2000,
         },
         "opaque": {"poll_interval_seconds": 60, "audit_events_delete_batch_limit": 1},
     }
@@ -80,16 +73,13 @@ def test_cleanup_preserves_policy_holds_and_opaque_metadata_without_mutating():
     assert cfg.lineage_gc.tombstone_grace_window_days == 120
     assert cfg.governance_retention.audit_events_retention_enabled is False
     assert cfg.governance_retention.audit_events_retention_days == 30
+    assert cfg.governance_retention.audit_events_delete_batch_limit == 2000
 
 
 @pytest.mark.parametrize(
     "model,payload",
     [
         (LineageGCConfig, {"poll_interval_seconds": "private-legacy-value"}),
-        (
-            GovernanceRetentionConfig,
-            {"audit_events_delete_batch_limit": "private-legacy-value"},
-        ),
         (
             Config,
             {
@@ -106,3 +96,62 @@ def test_migration_error_text_does_not_echo_config_values(model, payload):
     assert "explicit migration" in str(exc.value)
     assert "private-legacy-value" not in str(exc.value)
     assert "private-context" not in str(exc.value)
+
+
+@pytest.mark.parametrize("limit", [1, 2, 500, 2000, (1 << 31) - 1])
+def test_supported_audit_batch_survives_cleanup_and_roundtrip(limit):
+    from reflexio.models.config_schema import validate_stored_config
+
+    payload = {
+        "storage_config": None,
+        "lineage_gc": {"enabled": False},
+        "governance_retention": {
+            "audit_events_retention_enabled": False,
+            "audit_events_retention_days": 45,
+            "audit_events_delete_batch_limit": limit,
+        },
+    }
+    assert housekeeping_config_conflicts(payload) == []
+    assert strip_legacy_housekeeping_fields(payload) == payload
+    cfg = validate_stored_config(payload)
+    assert cfg.governance_retention.audit_events_delete_batch_limit == limit
+    assert cfg.governance_retention.audit_events_retention_enabled is False
+    assert cfg.lineage_gc.enabled is False
+    assert (
+        validate_stored_config(
+            cfg.model_dump(mode="json")
+        ).governance_retention.audit_events_delete_batch_limit
+        == limit
+    )
+
+
+@pytest.mark.parametrize(
+    "limit",
+    [
+        0,
+        -1,
+        1 << 31,
+        2.5,
+        "private-invalid-limit",
+        None,
+        float("inf"),
+        float("nan"),
+        {},
+        [],
+    ],
+)
+def test_invalid_supported_batch_fails_without_disclosing_values(limit):
+    from reflexio.config_migration import StoredConfigurationError
+    from reflexio.models.config_schema import validate_stored_config
+
+    payload = {
+        "storage_config": None,
+        "governance_retention": {"audit_events_delete_batch_limit": limit},
+    }
+    with pytest.raises(StoredConfigurationError, match="governance_retention") as error:
+        validate_stored_config(payload)
+    assert "private-invalid-limit" not in str(error.value)
+
+
+def test_audit_batch_defaults_to_previous_500_rows():
+    assert GovernanceRetentionConfig().audit_events_delete_batch_limit == 500

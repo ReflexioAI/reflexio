@@ -949,13 +949,12 @@ class GovernanceRetentionConfig(BaseModel):
     audit_events_retention_enabled: bool = False
     audit_events_retention_days: int = Field(default=365, gt=0)
 
-    @model_validator(mode="before")
-    @classmethod
-    def discard_legacy_execution_settings(cls, data: Any) -> Any:
-        """Accept former defaults, reject custom execution policy inputs."""
-        return strip_legacy_housekeeping_fields({"governance_retention": data})[
-            "governance_retention"
-        ]
+    audit_events_delete_batch_limit: int = Field(
+        default=500,
+        gt=0,
+        le=(1 << 31) - 1,
+        description="Maximum expired rows deleted per table in one governance sweep.",
+    )
 
 
 @dataclass(frozen=True)

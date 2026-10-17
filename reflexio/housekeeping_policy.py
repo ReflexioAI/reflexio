@@ -1,4 +1,4 @@
-"""Code-owned housekeeping execution and safe legacy configuration preflight.
+"""Housekeeping cadence defaults and safe legacy configuration preflight.
 
 No server imports: configuration parsing and image bootstrap use this module.
 """
@@ -8,13 +8,9 @@ from typing import Any
 from reflexio.config_migration import ConfigurationMigrationError
 
 DAILY_SWEEP_SECONDS = 86_400
-AUDIT_DELETE_BATCH_LIMIT = 500
 
 # Frozen compatibility defaults, independent of future policy calibration.
-_RETIRED_FIELDS = (
-    ("lineage_gc", "poll_interval_seconds", 86_400),
-    ("governance_retention", "audit_events_delete_batch_limit", 500),
-)
+_RETIRED_FIELDS = (("lineage_gc", "poll_interval_seconds", 86_400),)
 
 
 class HousekeepingMigrationError(ConfigurationMigrationError):
@@ -44,8 +40,7 @@ def strip_legacy_housekeeping_fields(payload: dict[str, Any]) -> dict[str, Any]:
         raise HousekeepingMigrationError(
             "Retired housekeeping settings require explicit migration: "
             + ", ".join(conflicts)
-            + ". Remove these fields to adopt code-owned daily sweeps and "
-            "500-row deletion batches per table."
+            + ". Remove these fields to adopt code-owned daily sweeps."
         )
     cleaned = dict(payload)
     for section, field, _ in _RETIRED_FIELDS:
