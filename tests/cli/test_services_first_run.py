@@ -310,3 +310,52 @@ def test_embedding_only_start_skips_first_run_llm_guard(monkeypatch) -> None:
 
     assert called_args is not None
     assert called_args.only == "embedding"
+
+
+@pytest.mark.parametrize("file_environment", [None, "development"])
+def test_shipped_template_wizard_preserves_exported_production(
+    tmp_path, monkeypatch, file_environment
+):
+    import os
+
+    from reflexio.server.services.governance.config import get_governance_ref_secret
+
+    env_path = tmp_path / ".env"
+    template = Path(__file__).resolve().parents[2] / ".env.example"
+    env_path.write_text(template.read_text())
+    if file_environment:
+        with env_path.open("a") as handle:
+            handle.write(f"\nENVIRONMENT={file_environment}\n")
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    for name in (
+        "DEPLOYMENT_MODE",
+        "REFLEXIO_ENV",
+        "REFLEXIO_TEST_MODE",
+        "REFLEXIO_GOVERNANCE_REF_SECRET",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    def write_key(path):
+        with path.open("a") as handle:
+            handle.write("\nOPENAI_API_KEY=wizard-fixture-key\n")
+        return ("OpenAI", "gpt-5.4-mini", "openai")
+
+    with (
+        patch.dict(os.environ),
+        patch(
+            "reflexio.server.llm.model_defaults.detect_available_providers",
+            return_value=[],
+        ),
+        patch("sys.stdin.isatty", return_value=True),
+        patch(
+            "reflexio.cli.commands.setup_cmd._prompt_llm_provider",
+            side_effect=write_key,
+        ),
+        patch("reflexio.cli.commands.setup_cmd._prompt_embedding_provider"),
+    ):
+        _ensure_llm_configured(env_path)
+        assert os.environ["OPENAI_API_KEY"] == "wizard-fixture-key"
+        assert os.environ["ENVIRONMENT"] == "production"
+        with pytest.raises(RuntimeError, match="REFLEXIO_GOVERNANCE_REF_SECRET"):
+            get_governance_ref_secret()
