@@ -24,6 +24,7 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 | `playbook_service_constants.py` | Prompt IDs for all playbook operations |
 | `playbook_service_utils.py` | Request dataclasses, Pydantic output schemas, message construction utilities |
 | `playbook_evidence.py` | Strict evidence validation, call-local reference checks, and persisted provenance helpers |
+| `_historical_reference_contract.py` | Historical citation/schema metadata for exact-fingerprint saved-output replay |
 | `rule_evidence/` | Owned/version-matched source schemas, packaged judge/tuner prompts, compact diagnostics and indexed exact-clause repair; see [usage](rule_evidence/README.md) |
 | `components/overflow_consolidation.py` | Bounded metadata proposals, exact historical quotations, and semantic verification before overflow consolidation applies original rows |
 | `components/overflow_evidence.py` | Canonical historical row fingerprints checked under final commit locks |
@@ -423,6 +424,16 @@ retroactively from genuine source rows by their notes alone; this prospective
 reservation does not backfill or rewrite historical rows.
 
 ### Extraction citation contract
+
+Already-generated referenced overflow outputs can replay the pre-#673 contract:
+templates 4.6.0/1.5.0, their prepared citation instruction and the historical
+`evidence_refs` schema description. `_historical_reference_contract.py` retains
+that metadata while inheriting the current parsers and validators. The extractor
+selects it only for non-expert saved output whose complete policy fingerprint
+matches exactly; current-contract saved output and fresh generation keep the
+current contract. Unknown policy hashes remain blocked. Replay still checks
+frozen sources, complete coverage, carried evidence and candidate attribution;
+it does not reset the saved output, attempt journal, receipts or billing state.
 
 `playbook_evidence.PlaybookExtractionContract` selects the output schema and
 validator and supplies the citation instruction consumed by ordinary/expert message
