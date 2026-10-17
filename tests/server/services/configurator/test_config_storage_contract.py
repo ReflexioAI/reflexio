@@ -318,9 +318,7 @@ def test_invalid_recognized_policy_preserves_file_and_blocks_cli_fallback(tmp_pa
         lambda: load_storage_from_config("test-org", base_dir=str(tmp_path)),
         lambda: save_storage_to_config("sqlite", "test-org", base_dir=str(tmp_path)),
     ):
-        with pytest.raises(
-            StoredConfigurationError, match="audit_events_retention_days"
-        ):
+        with pytest.raises(StoredConfigurationError, match="governance_retention"):
             load()
         assert path.read_bytes() == original
     payload["governance_retention"]["audit_events_retention_days"] = 45

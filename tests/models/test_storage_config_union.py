@@ -270,11 +270,14 @@ def test_round_trip_preserves_the_backend() -> None:
         )
 
 
-def test_stored_policy_error_and_traceback_omit_values_and_dynamic_keys():
+@pytest.mark.parametrize(
+    "private_key",
+    ["private-tool-map-key", "enabled", "model", "db_url", "similarity_threshold"],
+)
+def test_stored_policy_error_and_traceback_omit_values_and_dynamic_keys(private_key):
     import traceback
 
     secret = "private-customer-content"
-    private_key = "private-tool-map-key"
     payload = {
         "storage_config": None,
         "agent_context_prompt": secret,
@@ -287,8 +290,11 @@ def test_stored_policy_error_and_traceback_omit_values_and_dynamic_keys():
     except StoredConfigurationError as exc:
         rendered = "".join(traceback.format_exception(exc))
         assert secret not in rendered
-        assert private_key not in rendered
-        assert "similarity_threshold" in str(exc)
+        assert f".{private_key}." not in str(exc)
+        assert "tool_overrides" not in str(exc)
+        assert "pending_tool_call_config" in str(exc)
+        if private_key == "private-tool-map-key":
+            assert private_key not in rendered
         assert "input_value" not in rendered
     else:
         pytest.fail("invalid recognized saved policy was accepted")

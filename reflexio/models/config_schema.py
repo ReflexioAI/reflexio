@@ -1258,26 +1258,25 @@ def validate_stored_config(data: dict[str, Any]) -> Config:
         # first so a malformed remote config cannot become a local backend.
         storage_config = normalized.get("storage_config")
         if isinstance(storage_config, dict):
-            _STORAGE_CONFIG_ADAPTER.validate_python(storage_config)
+            try:
+                _STORAGE_CONFIG_ADAPTER.validate_python(storage_config)
+            except ValidationError:
+                raise StoredConfigurationError(
+                    "Stored configuration failed validation at storage_config. "
+                    "Correct the saved values before continuing."
+                ) from None
         return Config.model_validate(normalized, extra="ignore")
     except ValidationError as exc:
-        # Report declared field names only: locations can also contain supplied
-        # dictionary keys, and the original exception can contain credentials.
-        schema = Config.model_json_schema()
-        declared = set(schema["properties"])
-        for definition in schema.get("$defs", {}).values():
-            declared.update(definition.get("properties", {}))
+        # Only the first location component is an authoritative Config field.
+        # Nested components can be supplied map keys, even when their spelling
+        # happens to match a property declared elsewhere in the schema.
         paths = sorted(
             {
-                ".".join(
-                    part
-                    for part in error["loc"]
-                    if isinstance(part, str) and part in declared
-                )
-                or "configuration"
+                str(error["loc"][0])
                 for error in exc.errors(include_input=False, include_context=False)
+                if error["loc"] and error["loc"][0] in Config.model_fields
             }
-        )
+        ) or ["configuration"]
         raise StoredConfigurationError(
             "Stored configuration failed validation at "
             + ", ".join(paths[:10])
