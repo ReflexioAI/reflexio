@@ -81,10 +81,13 @@ def test_blank_secret_is_treated_as_unset(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.mark.parametrize(
-    "environment", ["production", " Prod ", "staging", "prodution", "qa", "dev"]
+    "environment", ["development", "production", "staging", "prodution", "qa"]
 )
-def test_operational_environment_protects_oss_governance(monkeypatch, environment):
-    monkeypatch.delenv("DEPLOYMENT_MODE", raising=False)
+@pytest.mark.parametrize("mode", ["platform", "self_host"])
+def test_hosted_modes_require_secret_independently_of_logging_label(
+    monkeypatch, environment, mode
+):
+    monkeypatch.setenv("DEPLOYMENT_MODE", mode)
     monkeypatch.delenv("REFLEXIO_TEST_MODE", raising=False)
     monkeypatch.delenv("REFLEXIO_GOVERNANCE_REF_SECRET", raising=False)
     monkeypatch.setenv("REFLEXIO_ENV", "development")
@@ -105,7 +108,7 @@ def test_custom_legacy_environment_requires_explicit_migration(
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "unprinted-governance-secret")
     with pytest.raises(
-        ConfigurationMigrationError, match="REFLEXIO_ENV.*ENVIRONMENT"
+        ConfigurationMigrationError, match="REFLEXIO_ENV.*deployment-mode"
     ) as error:
         get_governance_ref_secret()
     assert legacy not in str(error.value)
@@ -122,7 +125,7 @@ def test_former_default_does_not_select_an_environment(monkeypatch, legacy):
     )
     with pytest.raises(RuntimeError, match="REFLEXIO_GOVERNANCE_REF_SECRET"):
         get_governance_ref_secret(
-            env={"REFLEXIO_ENV": legacy, "ENVIRONMENT": "staging"}
+            env={"REFLEXIO_ENV": legacy, "DEPLOYMENT_MODE": "self_host"}
         )
 
 
@@ -143,4 +146,65 @@ def test_resolved_mapping_isolated_from_process_settings_and_test_flag(monkeypat
             env={**deployment, "REFLEXIO_GOVERNANCE_REF_SECRET": "mapped-secret"}
         )
         == "mapped-secret"
+    )
+
+
+@pytest.mark.parametrize("environment", ["development", "production", "staging", "qa"])
+def test_existing_local_sqlite_erasure_barrier_survives_environment_label(
+    tmp_path, monkeypatch, environment
+):
+    import sqlite3
+    from contextlib import closing
+
+    from reflexio.server.services.storage.error import SubjectWriteBarrierError
+    from reflexio.server.services.storage.sqlite_storage._subject_write_gate import (
+        SubjectWriteGateMixin,
+        init_subject_write_barrier_table,
+    )
+
+    for name in (
+        "DEPLOYMENT_MODE",
+        "REFLEXIO_TEST_MODE",
+        "REFLEXIO_GOVERNANCE_REF_SECRET",
+        "REFLEXIO_ENV",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ENVIRONMENT", environment)
+    database = tmp_path / "existing.sqlite"
+    # Pinned legacy HMAC, independent of the upgraded resolver/default constant.
+    previous_ref = "subref_v1_59dcb8a7c57eb69a4e4213c0236418c5"
+    with closing(sqlite3.connect(database)) as conn:
+        init_subject_write_barrier_table(conn)
+        conn.execute(
+            "INSERT INTO subject_write_barriers (org_id,subject_ref,purge_id,status,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+            ("org", previous_ref, "previous-purge", "erased", 1, 1),
+        )
+        conn.commit()
+    with closing(sqlite3.connect(database)) as conn:
+        conn.row_factory = sqlite3.Row
+        gate = SubjectWriteGateMixin()
+        gate.conn = conn
+        gate.org_id = "org"
+        current_ref = gate._subject_ref_for_user_id("erased-user")
+        assert current_ref == previous_ref
+        with pytest.raises(SubjectWriteBarrierError, match="previous-purge"):
+            gate._assert_subject_writable_locked(current_ref)
+
+
+def test_explicit_adoption_preserves_existing_secret_and_hmac_epoch(monkeypatch):
+    monkeypatch.delenv("REFLEXIO_TEST_MODE", raising=False)
+    env = {
+        "REFLEXIO_ENV": "production",
+        "REFLEXIO_GOVERNANCE_REF_SECRET": "existing-private-secret",
+    }
+    previous_ref = governance_subject_ref(
+        "org", "user", env["REFLEXIO_GOVERNANCE_REF_SECRET"]
+    )
+    with pytest.raises(ConfigurationMigrationError):
+        get_governance_ref_secret(env=env)
+    env.pop("REFLEXIO_ENV")
+    env["DEPLOYMENT_MODE"] = "self_host"
+    assert (
+        governance_subject_ref("org", "user", get_governance_ref_secret(env=env))
+        == previous_ref
     )

@@ -16,14 +16,10 @@ _PRODUCTION_DEPLOYMENT_MODES = {"platform", "self_host"}
 
 def _is_local_dev_or_test(env: Mapping[str, str] | None = None) -> bool:
     deployment_mode = env_str("DEPLOYMENT_MODE", env=env).lower()
-    environment = env_str("ENVIRONMENT", "development", env=env).lower()
     # The escape hatch describes the running test process, never a target mapping.
     if env_truthy(env_str("REFLEXIO_TEST_MODE")):
         return True
-    return (
-        deployment_mode not in _PRODUCTION_DEPLOYMENT_MODES
-        and environment == "development"
-    )
+    return deployment_mode not in _PRODUCTION_DEPLOYMENT_MODES
 
 
 def get_governance_ref_secret(*, env: Mapping[str, str] | None = None) -> str:
@@ -36,7 +32,9 @@ def get_governance_ref_secret(*, env: Mapping[str, str] | None = None) -> str:
     legacy = env_str("REFLEXIO_ENV", env=env).lower()
     if legacy and legacy != "development":
         raise ConfigurationMigrationError(
-            "REFLEXIO_ENV is retired; set ENVIRONMENT explicitly and remove REFLEXIO_ENV."
+            "REFLEXIO_ENV is retired; remove it to adopt deployment-mode "
+            "governance policy from DEPLOYMENT_MODE. Preserve the existing "
+            "REFLEXIO_GOVERNANCE_REF_SECRET; this is not a secret rotation."
         )
     secret = env_str("REFLEXIO_GOVERNANCE_REF_SECRET", env=env)
     if secret:

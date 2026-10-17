@@ -856,12 +856,12 @@ are accepted only as ignored input and removed by
 Do not expose extraction window controls for this evaluator. Profile/playbook
 window and stride overrides remain active and independent.
 
-Governance uses `ENVIRONMENT` for the same operational environment identity as
-logging. Managed modes and production/staging require an explicit governance
-secret; local development retains its fallback. `REFLEXIO_ENV` no longer selects
-policy: blank/former `development` is ignored, and custom values require explicit
-migration. `get_governance_ref_secret(env=...)` also validates enterprise startup's
-resolved mapping; only the actual process can enable the existing test escape
-hatch. Never duplicate that decision in a startup validator.
-Only unset/blank or explicit `development` permits the local fallback; other
-nonblank labels, including unrecognized values, require a secret.
+Governance secret policy derives from `DEPLOYMENT_MODE`: platform/self-host
+require an explicit secret, while unmanaged OSS local/no-auth mode retains its
+existing fallback. Operational environment labels never rotate local HMAC
+identity. `REFLEXIO_ENV` is retired: blank/former `development` is ignored; custom
+values require explicit policy adoption while preserving the existing secret.
+`get_governance_ref_secret(env=...)` validates enterprise startup's resolved
+mapping too; only the actual process enables the existing test escape hatch.
+Secret rotation requires separate qualified migration of persisted references
+and erasure barriers, not a configuration-selector cleanup.

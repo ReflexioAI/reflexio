@@ -132,12 +132,7 @@ def _ensure_llm_configured(env_path: Path) -> None:
     # the key just entered would never reach the process env. For this OSS local
     # first-run path the file value must win. (The enterprise mode-file path uses
     # override=False in load_reflexio_env_for_mode and is unaffected.)
-    # The wizard never edits operational identity. Keep a nonblank export even
-    # when an existing file contains a development default.
-    exported_environment = os.environ.get("ENVIRONMENT")
     load_dotenv(dotenv_path=env_path, override=True)
-    if exported_environment and exported_environment.strip():
-        os.environ["ENVIRONMENT"] = exported_environment
     typer.echo()
 
 
