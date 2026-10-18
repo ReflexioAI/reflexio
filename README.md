@@ -437,6 +437,11 @@ Client (SDK / CLI / HTTP API)
     └─ UnifiedSearchService      → Profiles + user/agent playbooks
 ```
 
+The import-light [inference launch resolver](reflexio/inference_launch.py) gives
+providers and launchers one endpoint and process-ownership contract. An explicit
+service URL attaches to an existing inference process; otherwise the launcher
+owns a separate child. See [developer.md](developer.md) for migration and runtime details.
+
 See [developer.md](developer.md) for project structure, supported LLM providers, and development setup.
 
 ## Documentation

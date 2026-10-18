@@ -13,6 +13,7 @@ from pathlib import Path
 import reflexio
 from reflexio.cli.env_loader import load_reflexio_env
 from reflexio.cli.utils import ServiceConfig, get_env_port, run_services
+from reflexio.inference_launch import ordinary_inference_launch
 
 logger = logging.getLogger(__name__)
 
@@ -297,13 +298,17 @@ def parse_only_flag(only: str | None, default_services: set[str]) -> set[str]:
     """
     if only:
         return {s.strip() for s in only.split(",")}
-    return default_services
+    return set(default_services)
 
 
 def should_start_local_embedding_service() -> bool:
-    """Return True unless inference is explicitly routed to a remote service."""
-    remote_url = os.environ.get("REFLEXIO_EMBEDDING_SERVICE_URL", "").strip()
-    return not remote_url
+    """Return whether the launcher owns the ordinary colocated child."""
+    return (
+        ordinary_inference_launch(
+            os.environ, default_port=DEFAULT_OSS_PORTS["embedding"]
+        ).mode
+        == "colocated"
+    )
 
 
 def _ensure_nextjs_dependencies(project_dir: Path) -> bool:

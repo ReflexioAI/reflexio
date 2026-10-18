@@ -869,3 +869,21 @@ may mark `SessionJudgmentInputs.requests_ordered` to preserve database ordering
 before public timestamps are converted to whole seconds. The internal
 `OutcomePrefixPrecondition.verdict_settled_at` accepts fractional epoch seconds;
 public outcome timestamps keep their existing integer representation.
+
+
+### Inference endpoint and process ownership
+
+`reflexio.inference_launch` is the import-light shared resolver for provider URLs,
+CLI ordinary-child ownership, and enterprise Docker startup/health gating. An
+explicit `REFLEXIO_EMBEDDING_SERVICE_URL`, including localhost, attaches to a
+caller-owned process. With no URL, the launcher owns the separate inference
+child; API workers never load the local model. The enterprise API-local query
+child retains its independent reserved route.
+
+The legacy daemon hostname and disable-local switch are retired. Custom legacy
+hostname-only routes or disabled ordinary startup without an endpoint raise a
+value-free `ConfigurationMigrationError`; specify the full URL to migrate.
+Hostname-based local-service routes used a 30-second request default, while an
+explicit URL selects the existing 2-second internal-service default. Set
+`REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS` explicitly when preserving that older
+budget. Shadowed legacy settings do not override a canonical URL.
