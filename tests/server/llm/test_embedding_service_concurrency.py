@@ -260,12 +260,15 @@ def test_worker_crash_fails_active_and_queued_callers_and_restarts(monkeypatch):
     original = es._process_micro_batch
     failure = RuntimeError("worker processing failed")
     reported, recovered = threading.Event(), threading.Event()
+    report_entered, report_release = threading.Event(), threading.Event()
     monkeypatch.setattr(background_reporting, "_streaks", {})
     monkeypatch.setattr(background_reporting, "_classifier", lambda exc: exc is failure)
     report_failure = es.report_background_failure
     report_success = es.report_background_success
 
     def observe_failure(*args, **kwargs):
+        report_entered.set()
+        assert report_release.wait(5)
         report_failure(*args, **kwargs)
         reported.set()
 
@@ -302,9 +305,26 @@ def test_worker_crash_fails_active_and_queued_callers_and_restarts(monkeypatch):
             assert len(es._MICRO_BATCH_QUEUE) == 2
         finally:
             release.set()
-        for future in [active, *queued]:
-            with pytest.raises(RuntimeError, match="worker processing failed"):
-                future.result(timeout=3)
+        try:
+            # Existing borrowers must finish even while reporting is blocked.
+            for future in [active, *queued]:
+                with pytest.raises(RuntimeError, match="worker processing failed"):
+                    future.result(timeout=3)
+            assert report_entered.wait(2)
+            during_report = pool.submit(embed, "during-report")
+            deadline = time.monotonic() + 2
+            while not es._MICRO_BATCH_QUEUE and time.monotonic() < deadline:
+                if during_report.done():
+                    break
+                time.sleep(0.001)
+            # No replacement may report recovery before the failure is recorded.
+            assert len(es._MICRO_BATCH_QUEUE) == 1
+            assert es._BATCH_WORKER_RUNNING
+            assert not during_report.done()
+        finally:
+            report_release.set()
+        with pytest.raises(RuntimeError, match="worker processing failed"):
+            during_report.result(timeout=3)
     assert es._MICRO_BATCH_QUEUE == []
     assert reported.wait(2)
     assert background_reporting._streaks["embedding-queue-worker"][0] == 1
@@ -312,6 +332,37 @@ def test_worker_crash_fails_active_and_queued_callers_and_restarts(monkeypatch):
     assert embed("restart") == [[1.0]]
     assert recovered.wait(2)
     assert "embedding-queue-worker" not in background_reporting._streaks
+
+
+def test_failed_reporter_releases_queue_ownership_and_arrivals(monkeypatch):
+    failure = RuntimeError("worker failed")
+    reporter_failure = RuntimeError("reporter failed")
+    active = es._EmbeddingJob("custom/test", ["active"])
+    queued = es._EmbeddingJob("custom/test", ["queued"])
+    arriving = es._EmbeddingJob("custom/test", ["arriving"])
+    monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS", "1")
+    monkeypatch.setattr(es, "_MICRO_BATCH_QUEUE", [active, queued])
+    monkeypatch.setattr(es, "_BATCH_WORKER_RUNNING", True)
+
+    def crash(_jobs):
+        raise failure
+
+    def broken_reporter(*_args, **_kwargs):
+        assert active.done.is_set() and queued.done.is_set()
+        assert es._BATCH_WORKER_RUNNING
+        with es._MICRO_BATCH_LOCK:
+            es._MICRO_BATCH_QUEUE.append(arriving)
+        raise reporter_failure
+
+    monkeypatch.setattr(es, "_process_micro_batch", crash)
+    monkeypatch.setattr(es, "report_background_failure", broken_reporter)
+    with pytest.raises(RuntimeError, match="reporter failed"):
+        es._run_micro_batch_processor()
+    assert es._MICRO_BATCH_QUEUE == []
+    assert not es._BATCH_WORKER_RUNNING
+    for job in (active, queued, arriving):
+        assert job.done.is_set()
+        assert job.error is failure
 
 
 @pytest.mark.parametrize("failure", ["exception", "short-result"])

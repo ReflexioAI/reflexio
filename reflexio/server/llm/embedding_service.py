@@ -530,14 +530,15 @@ def _embed_texts(
     return job.result
 
 
-def _fail_queued_jobs(error: BaseException) -> None:
+def _fail_queued_jobs(error: BaseException, *, release_worker: bool = True) -> None:
     global _BATCH_WORKER_RUNNING
     with _MICRO_BATCH_LOCK:
         for job in _MICRO_BATCH_QUEUE:
             job.error = error
             job.done.set()
         _MICRO_BATCH_QUEUE.clear()
-        _BATCH_WORKER_RUNNING = False
+        if release_worker:
+            _BATCH_WORKER_RUNNING = False
 
 
 def _run_micro_batch_processor() -> None:
@@ -557,13 +558,19 @@ def _run_micro_batch_processor() -> None:
             if not job.done.is_set():
                 job.error = error
                 job.done.set()
-        _fail_queued_jobs(error)
-        report_background_failure(
-            logger,
-            "embedding_queue_worker_failed",
-            error,
-            scope="embedding-queue-worker",
-        )
+        # Release existing borrowers before logging, but keep ownership until
+        # failure reporting finishes so a successor cannot reset the streak first.
+        _fail_queued_jobs(error, release_worker=False)
+        try:
+            report_background_failure(
+                logger,
+                "embedding_queue_worker_failed",
+                error,
+                scope="embedding-queue-worker",
+            )
+        finally:
+            # Also fail arrivals during reporting, even if the reporter raises.
+            _fail_queued_jobs(error)
 
 
 def _take_micro_batch() -> list[_EmbeddingJob]:
