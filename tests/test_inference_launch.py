@@ -67,3 +67,15 @@ def test_query_child_remains_independent_of_ordinary_disable_switch():
     env["REFLEXIO_QUERY_EMBEDDING_SERVICE_URL"] = "http://remote.example"
     with pytest.raises(ConfigurationMigrationError, match="reserved loopback"):
         container_inference_launch(env)
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8093", " http://127.0.0.1:8093/ "])
+def test_query_endpoint_normalization_matches_request_routing(url):
+    plan = container_inference_launch(
+        {
+            "REFLEXIO_API_QUERY_EMBEDDING_ENABLED": "true",
+            "REFLEXIO_QUERY_EMBEDDING_SERVICE_URL": url,
+        }
+    )
+    assert plan.mode == "query"
+    assert plan.health_url == "http://127.0.0.1:8093/health/model"
