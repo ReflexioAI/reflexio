@@ -16,12 +16,14 @@ logger = logging.getLogger(__name__)
 
 class OperationsMixin(ReflexioBase):
     def get_operation_status(
-        self, request: GetOperationStatusRequest | dict
+        self, request: GetOperationStatusRequest | dict, *, recover_stale: bool = True
     ) -> GetOperationStatusResponse:
         """Get the status of an operation.
 
         Args:
             request (Union[GetOperationStatusRequest, dict]): Request containing service_name
+            recover_stale: Preserve legacy age-based recovery for the old route.
+                Read-only attempt observation must pass False.
 
         Returns:
             GetOperationStatusResponse: Response containing operation status info
@@ -54,7 +56,10 @@ class OperationsMixin(ReflexioBase):
 
             # Auto-recover stale IN_PROGRESS operations so the frontend
             # doesn't show "in progress" forever after a crash/restart
-            if operation_state.get("status") == OperationStatus.IN_PROGRESS.value:
+            if (
+                recover_stale
+                and operation_state.get("status") == OperationStatus.IN_PROGRESS.value
+            ):
                 from datetime import UTC, datetime
 
                 from reflexio.server.services.operation_state_utils import (

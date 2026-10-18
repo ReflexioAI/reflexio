@@ -1,7 +1,7 @@
 """System/meta/stats/operations route handlers (extracted from api.py, Tier3 A2)."""
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 if TYPE_CHECKING:
@@ -254,6 +254,26 @@ def get_operation_status_endpoint(
     return reflexio.get_operation_status(request)
 
 
+@router.get(
+    "/api/generation_operations/{service_name}",
+    response_model=GetOperationStatusResponse,
+    response_model_exclude_none=True,
+)
+def get_generation_operation_endpoint(
+    service_name: Literal["profile_generation", "playbook_generation"],
+    org_id: str = Depends(default_get_org_id),
+) -> GetOperationStatusResponse:
+    """Observe current attempt ownership without age-based status recovery.
+
+    A terminal progress label alone does not acknowledge worker completion;
+    finished_operation_id identifies the attempt that finalized its execution.
+    """
+    reflexio = reflexio_cache.get_reflexio(org_id=org_id)
+    return reflexio.get_operation_status(
+        GetOperationStatusRequest(service_name=service_name), recover_stale=False
+    )
+
+
 @router.post(
     "/api/cancel_operation",
     response_model=CancelOperationResponse,
@@ -295,7 +315,7 @@ def cancel_operation_attempt_endpoint(
 
     A distinct route makes old servers reject this request instead of ignoring
     an unknown body field and accidentally performing broad cancellation.
-    Missing, terminal, foreign and replaced attempts cancel nothing.
+    Missing, finalized, foreign and replaced attempts cancel nothing.
     """
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
     return reflexio.cancel_operation(

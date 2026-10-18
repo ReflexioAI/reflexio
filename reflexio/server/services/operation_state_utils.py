@@ -410,6 +410,8 @@ class OperationStateManager:
             final_state["progress_percentage"] = 100.0
         final_state["stats"]["total_interactions_processed"] = total_processed
         final_state["stats"]["total_generated"] = total_generated
+        if self.operation_id is not None:
+            final_state["finished_operation_id"] = self.operation_id
         self._write_progress(final_state)
         self._clear_attempt_cancellation()
 
@@ -427,6 +429,8 @@ class OperationStateManager:
                 failed_state["status"] = OperationStatus.FAILED.value
                 failed_state["completed_at"] = int(datetime.now(UTC).timestamp())
                 failed_state["error_message"] = error_message
+                if self.operation_id is not None:
+                    failed_state["finished_operation_id"] = self.operation_id
                 self._write_progress(failed_state)
                 self._clear_attempt_cancellation()
         except Exception:  # noqa: S110
@@ -461,13 +465,21 @@ class OperationStateManager:
             return False
 
         state = state_entry.get("operation_state", state_entry)
-        if state.get("status") != OperationStatus.IN_PROGRESS.value:
-            return False
-
-        # Write cancellation flag to a separate row to avoid race conditions
         owner = state.get("current_request_id")
-        if self.operation_id is not None and owner != self.operation_id:
+
+        def cancellable(progress: dict) -> bool:
+            if self.operation_id is not None:
+                # Progress recovery can change status without stopping its worker.
+                # Only the admitted owner can acknowledge execution completion.
+                return (
+                    progress.get("current_request_id") == self.operation_id
+                    and progress.get("finished_operation_id") != self.operation_id
+                )
+            return progress.get("status") == OperationStatus.IN_PROGRESS.value
+
+        if not cancellable(state):
             return False
+        # Write cancellation flag to a separate row to avoid race conditions
         cancel_key = self._cancellation_key()
         if owner and self.operation_id is None:
             cancel_key += f"::{owner}"
@@ -479,7 +491,7 @@ class OperationStateManager:
             if (
                 not current
                 or current.get("current_request_id") != owner
-                or current.get("status") != OperationStatus.IN_PROGRESS.value
+                or not cancellable(current)
             ):
                 self.storage.delete_operation_state(cancel_key)
                 return False

@@ -2337,6 +2337,7 @@ class OperationStatusInfo(BaseModel):
     status: OperationStatus
     started_at: int
     completed_at: int | None = None
+    finished_operation_id: str | None = None
     total_users: int = 0
     processed_users: int = 0
     failed_users: int = 0
