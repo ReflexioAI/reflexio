@@ -7,7 +7,7 @@ Top-level entry points exported from this package:
 - ``PlaybookOptimizationScheduler.get_instance()`` — singleton that
   debounces enqueues from upstream services (the aggregator and the
   user-playbook generation service) and dispatches each ``optimize`` call
-  on a worker thread.
+  on a worker thread using an immutable scheduling policy from org configuration.
 - ``PlaybookOptimizationTarget`` — the (kind, target_id) pair both APIs
   consume.
 

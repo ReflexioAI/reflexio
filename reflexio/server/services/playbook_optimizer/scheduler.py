@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from functools import partial
 
+from reflexio.models.config_schema import OptimizerSchedulingPolicy
 from reflexio.server.background_work import (
     report_background_failure,
     report_background_success,
@@ -39,14 +40,14 @@ class PlaybookOptimizationScheduler:
 
     Behaviour:
 
-    - **Debounce** by ``(org_id, target.kind, target.target_id)`` — repeated
+    - **Debounce** by ``(org_id, project_id, target.kind, target.target_id)`` — repeated
       enqueues for the same playbook collapse into one fire.
-    - **Jitter** the fire time by up to ``jitter_seconds`` to spread load
+    - **Jitter** the fire time by up to ``policy.scheduler_jitter_seconds`` to spread load
       across simultaneous saves.
     - **Cooldown** when a callback returns ``"aborted"`` (the assistant
-      backend repeatedly failed). After ``abort_cooldown_threshold``
+      backend repeatedly failed). After ``policy.abort_cooldown_threshold``
       consecutive aborts, further enqueues for the same key are silently
-      dropped for ``cooldown_after_aborts_seconds``. A ``completed`` or
+      dropped for ``policy.cooldown_after_aborts_seconds``. A ``completed`` or
       ``skipped`` outcome resets the counter.
 
     The scheduler is a singleton with a daemon thread; multiple processes
@@ -66,7 +67,7 @@ class PlaybookOptimizationScheduler:
 
     def __init__(self) -> None:
         self._scheduled: dict[
-            ScheduleKey, tuple[float, ScheduledCallback, int, int]
+            ScheduleKey, tuple[float, ScheduledCallback, OptimizerSchedulingPolicy]
         ] = {}
         self._heap: list[tuple[float, ScheduleKey]] = []
         self._mutex = threading.Lock()
@@ -85,10 +86,10 @@ class PlaybookOptimizationScheduler:
         org_id: str,
         target: PlaybookOptimizationTarget,
         callback: ScheduledCallback,
-        jitter_seconds: float = 1.0,
-        abort_cooldown_threshold: int = 2,
-        cooldown_after_aborts_seconds: int = 3600,
+        policy: OptimizerSchedulingPolicy | None = None,
     ) -> None:
+        if policy is None:
+            policy = OptimizerSchedulingPolicy()
         # Resolved on the enqueueing thread: by fire time the scope is gone.
         key: ScheduleKey = (
             org_id,
@@ -97,7 +98,7 @@ class PlaybookOptimizationScheduler:
             target.target_id,
         )
         now = time.monotonic()
-        jitter = (time.monotonic() % 1.0) * jitter_seconds
+        jitter = (time.monotonic() % 1.0) * policy.scheduler_jitter_seconds
         fire_time = now + jitter
         with self._mutex:
             if self._cooldown_remaining_locked(key, now) > 0:
@@ -108,8 +109,7 @@ class PlaybookOptimizationScheduler:
             self._scheduled[key] = (
                 fire_time,
                 callback,
-                abort_cooldown_threshold,
-                cooldown_after_aborts_seconds,
+                policy,
             )
             heapq.heappush(self._heap, (fire_time, key))
         self._wake_event.set()
@@ -134,7 +134,7 @@ class PlaybookOptimizationScheduler:
                         current = self._scheduled.get(key)
                         if current is None or abs(current[0] - fire_time) > 0.001:
                             continue
-                        _, callback, abort_threshold, cooldown_seconds = current
+                        _, callback, policy = current
                         del self._scheduled[key]
                         submit_callback(
                             f"playbook-opt-{key[2]}-{key[3]}",
@@ -142,8 +142,7 @@ class PlaybookOptimizationScheduler:
                                 self._run_callback,
                                 key,
                                 callback,
-                                abort_threshold,
-                                cooldown_seconds,
+                                policy,
                             ),
                         )
                 report_background_success("playbook-optimizer-loop")
@@ -160,14 +159,13 @@ class PlaybookOptimizationScheduler:
         self,
         key: ScheduleKey,
         callback: ScheduledCallback,
-        abort_threshold: int,
-        cooldown_seconds: int,
+        policy: OptimizerSchedulingPolicy,
     ) -> None:
         try:
             with bind_work_scope(WorkScope(org_id=key[0], project_id=key[1])):
                 status = callback()
             if status == "aborted":
-                self._record_abort(key, abort_threshold, cooldown_seconds)
+                self._record_abort(key, policy)
             elif status in {"completed", "skipped"}:
                 self._clear_abort_state(key)
         except WorkScopeError:
@@ -184,10 +182,10 @@ class PlaybookOptimizationScheduler:
                 project_id=key[1],
                 target_kind=key[2],
             )
-            self._record_abort(key, abort_threshold, cooldown_seconds)
+            self._record_abort(key, policy)
         except Exception:
             logger.exception("Playbook optimization callback failed for key=%s", key)
-            self._record_abort(key, abort_threshold, cooldown_seconds)
+            self._record_abort(key, policy)
 
     def _cooldown_remaining_locked(self, key: ScheduleKey, now: float) -> float:
         state = self._abort_counts.get(key)
@@ -203,20 +201,20 @@ class PlaybookOptimizationScheduler:
         return 0.0
 
     def _record_abort(
-        self, key: ScheduleKey, abort_threshold: int, cooldown_seconds: int
+        self, key: ScheduleKey, policy: OptimizerSchedulingPolicy
     ) -> None:
         now = time.monotonic()
         with self._mutex:
             self._cooldown_remaining_locked(key, now)
             count, _ = self._abort_counts.get(key, (0, 0.0))
             count += 1
-            if count >= abort_threshold:
-                cooldown_until = now + cooldown_seconds
+            if count >= policy.abort_cooldown_threshold:
+                cooldown_until = now + policy.cooldown_after_aborts_seconds
                 self._abort_counts[key] = (0, cooldown_until)
                 logger.warning(
                     "Playbook optimization entered abort cooldown for key=%s seconds=%s",
                     key,
-                    cooldown_seconds,
+                    policy.cooldown_after_aborts_seconds,
                 )
             else:
                 self._abort_counts[key] = (count, 0.0)

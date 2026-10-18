@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 from typing import Annotated, Any, Literal, Self
@@ -30,18 +31,27 @@ from .api_schema.validators import (
 DEFAULT_MAX_MERGE_INVOCATIONS = 5
 _LEGACY_OPTIMIZER_BOOL = TypeAdapter(bool)
 _LEGACY_MERGE_LIMIT = TypeAdapter(Annotated[int, Field(ge=0)])
-# Frozen compatibility defaults, independent of future scheduler calibration.
-_LEGACY_SCHEDULER_DEFAULTS = {
-    "scheduler_jitter_seconds": 1.0,
-    "abort_cooldown_threshold": 2,
-    "cooldown_after_aborts_seconds": 3600,
-}
-_LEGACY_SCHEDULER_FLOAT = TypeAdapter(float)
-_LEGACY_SCHEDULER_INT = TypeAdapter(int)
+_SchedulerJitter = Annotated[
+    float, Field(ge=0, le=threading.TIMEOUT_MAX, allow_inf_nan=False)
+]
+_SchedulerThreshold = Annotated[int, Field(ge=1)]
+_SchedulerCooldown = Annotated[int, Field(ge=0, le=threading.TIMEOUT_MAX)]
+
+
+class OptimizerSchedulingPolicy(BaseModel):
+    """Validated, immutable admission-time policy for deferred optimizer work."""
+
+    model_config = ConfigDict(frozen=True, hide_input_in_errors=True)
+    scheduler_jitter_seconds: _SchedulerJitter = 1.0
+    abort_cooldown_threshold: _SchedulerThreshold = 2
+    cooldown_after_aborts_seconds: _SchedulerCooldown = 3600
+
+
+_DEFAULT_OPTIMIZER_SCHEDULING_POLICY = OptimizerSchedulingPolicy()
 
 
 class OptimizerSchedulingMigrationError(ConfigurationMigrationError):
-    """Saved scheduler tuning requires explicit adoption of the owned policy."""
+    """Invalid saved scheduling policy must not trigger a storage-default fallback."""
 
 
 def _normalize_optimizer_policy(data: Any) -> Any:
@@ -49,26 +59,17 @@ def _normalize_optimizer_policy(data: Any) -> Any:
     if not isinstance(data, dict):
         return data
     normalized = dict(data)
-    for key, old_default in _LEGACY_SCHEDULER_DEFAULTS.items():
-        if key not in data:
-            continue
-        adapter = (
-            _LEGACY_SCHEDULER_FLOAT
-            if key == "scheduler_jitter_seconds"
-            else _LEGACY_SCHEDULER_INT
-        )
+    scheduling = {
+        key: data[key] for key in OptimizerSchedulingPolicy.model_fields if key in data
+    }
+    if scheduling:
         try:
-            matches = adapter.validate_python(data[key]) == old_default
-        except ValidationError:
-            matches = False
-        if not matches:
+            OptimizerSchedulingPolicy.model_validate(scheduling)
+        except ValidationError as error:
+            fields = ", ".join(sorted({str(item["loc"][0]) for item in error.errors()}))
             raise OptimizerSchedulingMigrationError(
-                f"Retired optimizer setting {key} requires explicit migration. "
-                "Remove this field to adopt code-owned scheduling: up to one "
-                "second of jitter and a one-hour cooldown after two aborts. "
-                "Keep the previous release if that policy is unsuitable."
-            )
-        normalized.pop(key)
+                f"Invalid optimizer scheduling setting: {fields}"
+            ) from None
     legacy_user_keys = ("optimize_user_playbooks", "auto_update_user_playbooks")
     if any(key in data for key in legacy_user_keys):
         # Validate both: even an inactive policy must not hide malformed input.
@@ -765,6 +766,8 @@ class PlaybookOptimizerConfig(BaseModel):
     below.
     """
 
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     # --- gating ------------------------------------------------------------
     enabled: bool = False
     optimize_agent_playbooks: bool = False
@@ -800,6 +803,25 @@ class PlaybookOptimizerConfig(BaseModel):
     # See playbook_optimizer/assistant_webhook.py::LocalScriptAssistant.
     assistant_script_path: str | None = None
     assistant_script_args: list[str] = Field(default_factory=list)
+
+    # Scheduling and optimizer search budgets have separate owners.
+    scheduler_jitter_seconds: _SchedulerJitter = (
+        _DEFAULT_OPTIMIZER_SCHEDULING_POLICY.scheduler_jitter_seconds
+    )
+    abort_cooldown_threshold: _SchedulerThreshold = (
+        _DEFAULT_OPTIMIZER_SCHEDULING_POLICY.abort_cooldown_threshold
+    )
+    cooldown_after_aborts_seconds: _SchedulerCooldown = (
+        _DEFAULT_OPTIMIZER_SCHEDULING_POLICY.cooldown_after_aborts_seconds
+    )
+
+    @property
+    def scheduling_policy(self) -> OptimizerSchedulingPolicy:
+        return OptimizerSchedulingPolicy(
+            scheduler_jitter_seconds=self.scheduler_jitter_seconds,
+            abort_cooldown_threshold=self.abort_cooldown_threshold,
+            cooldown_after_aborts_seconds=self.cooldown_after_aborts_seconds,
+        )
 
     @model_validator(mode="before")
     @classmethod

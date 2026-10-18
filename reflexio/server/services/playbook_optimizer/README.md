@@ -39,11 +39,16 @@ authority remains immutable; durable publication uses its recorded snapshot.
 
 ## Scheduling policy
 
-Production enqueue paths use the scheduler's code-owned defaults: up to one
-second of jitter and a one-hour target-scoped cooldown after two consecutive
-aborts. Completed/skipped outcomes reset the counter. The scheduler's internal
-arguments remain available for focused tests; org configuration does not set
-them. Default-valued legacy scheduler fields are stripped before typed validation
-or raw upgrade pruning. Custom/malformed fields raise
-`OptimizerSchedulingMigrationError`; storage adapters and CLI bootstrap must
-propagate it rather than loading defaults or overwriting saved configuration.
+Both production enqueue paths resolve `PlaybookOptimizerConfig.scheduling_policy`
+and pass one validated immutable `OptimizerSchedulingPolicy` to the scheduler.
+The original org fields `scheduler_jitter_seconds`, `abort_cooldown_threshold`
+and `cooldown_after_aborts_seconds` remain supported and saved. Defaults are
+1.0 seconds, two aborts and 3600 seconds; zero jitter/cooldown removes that delay.
+A queued callback keeps its enqueue-time policy even when configuration changes.
+Completed/skipped outcomes reset the abort counter. Debounce and failure state
+remain process-local and scoped by org, project and target.
+
+Malformed/nonfinite/unsafe settings raise `OptimizerSchedulingMigrationError`
+before stored-config pruning. Storage adapters and CLI bootstrap must propagate
+that error rather than loading defaults or overwriting saved configuration.
+Valid custom scheduling values are never stripped or replaced with constants.

@@ -2378,6 +2378,7 @@ class PlaybookAggregator:
             scheduler.enqueue(
                 org_id=self.request_context.org_id,
                 target=target,
+                policy=config.scheduling_policy,
                 callback=lambda target=target: PlaybookOptimizer(
                     self.request_context, self.client
                 ).optimize(target),

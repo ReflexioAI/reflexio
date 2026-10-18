@@ -24,6 +24,7 @@ from reflexio.models.api_schema.domain import (
 )
 from reflexio.models.config_schema import (
     Config,
+    OptimizerSchedulingPolicy,
     PlaybookOptimizerConfig,
     StorageConfigSQLite,
 )
@@ -1441,11 +1442,21 @@ def test_scheduler_applies_abort_cooldown():
     scheduler._abort_counts = {}  # noqa: SLF001
     key = ("org", None, "agent_playbook", 1)
 
-    scheduler._record_abort(key, abort_threshold=2, cooldown_seconds=60)  # noqa: SLF001
+    scheduler._record_abort(
+        key,
+        OptimizerSchedulingPolicy(
+            abort_cooldown_threshold=2, cooldown_after_aborts_seconds=60
+        ),
+    )  # noqa: SLF001
     with scheduler._mutex:  # noqa: SLF001
         assert scheduler._cooldown_remaining_locked(key, time.monotonic()) == 0  # noqa: SLF001
 
-    scheduler._record_abort(key, abort_threshold=2, cooldown_seconds=60)  # noqa: SLF001
+    scheduler._record_abort(
+        key,
+        OptimizerSchedulingPolicy(
+            abort_cooldown_threshold=2, cooldown_after_aborts_seconds=60
+        ),
+    )  # noqa: SLF001
     with scheduler._mutex:  # noqa: SLF001
         assert scheduler._cooldown_remaining_locked(key, time.monotonic()) > 0  # noqa: SLF001
 
@@ -1454,8 +1465,9 @@ def test_scheduler_applies_abort_cooldown():
         org_id="org",
         target=target,
         callback=lambda: "completed",
-        abort_cooldown_threshold=2,
-        cooldown_after_aborts_seconds=60,
+        policy=OptimizerSchedulingPolicy(
+            abort_cooldown_threshold=2, cooldown_after_aborts_seconds=60
+        ),
     )
     assert scheduler._scheduled == {}  # noqa: SLF001
 
@@ -1476,11 +1488,11 @@ def test_default_scheduler_policy_cools_down_and_recovers(monkeypatch):
         scheduler.enqueue(
             org_id="policy-org", target=target, callback=lambda: "aborted"
         )
-        fire_at, callback, threshold, cooldown = scheduler._scheduled.pop(key)  # noqa: SLF001
+        fire_at, callback, policy = scheduler._scheduled.pop(key)  # noqa: SLF001
         assert now[0] <= fire_at < now[0] + 1
-        assert threshold == 2
-        assert cooldown == 3600
-        scheduler._run_callback(key, callback, threshold, cooldown)  # noqa: SLF001
+        assert policy.abort_cooldown_threshold == 2
+        assert policy.cooldown_after_aborts_seconds == 3600
+        scheduler._run_callback(key, callback, policy)  # noqa: SLF001
 
     scheduler.enqueue(org_id="policy-org", target=target, callback=lambda: "completed")
     assert key not in scheduler._scheduled  # noqa: SLF001
@@ -1493,6 +1505,99 @@ def test_default_scheduler_policy_cools_down_and_recovers(monkeypatch):
     now[0] += 1
     scheduler.enqueue(org_id="policy-org", target=target, callback=lambda: "completed")
     assert key in scheduler._scheduled  # noqa: SLF001
+
+
+def test_custom_scheduler_policy_controls_jitter_threshold_cooldown_and_reset(
+    monkeypatch,
+):
+    scheduler = PlaybookOptimizationScheduler.__new__(PlaybookOptimizationScheduler)
+    scheduler._scheduled = {}
+    scheduler._heap = []
+    scheduler._mutex = threading.Lock()
+    scheduler._wake_event = threading.Event()
+    scheduler._abort_counts = {}
+    now = [100.25]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    config = PlaybookOptimizerConfig(
+        scheduler_jitter_seconds=4,
+        abort_cooldown_threshold=3,
+        cooldown_after_aborts_seconds=7,
+    )
+    target = PlaybookOptimizationTarget(kind="agent_playbook", target_id=13)
+    key = ("custom-policy", None, "agent_playbook", 13)
+
+    def run(status):
+        scheduler.enqueue(
+            org_id=key[0],
+            target=target,
+            callback=lambda: status,
+            policy=config.scheduling_policy,
+        )
+        fire_at, callback, policy = scheduler._scheduled.pop(key)
+        assert fire_at == now[0] + 1
+        scheduler._run_callback(key, callback, policy)
+
+    run("aborted")
+    run("completed")  # A successful run resets the earlier abort.
+    run("aborted")
+    run("aborted")
+    with scheduler._mutex:
+        assert scheduler._cooldown_remaining_locked(key, now[0]) == 0
+    run("aborted")
+    with scheduler._mutex:
+        assert scheduler._cooldown_remaining_locked(key, now[0]) == 7
+    scheduler.enqueue(
+        org_id=key[0],
+        target=target,
+        callback=lambda: "completed",
+        policy=config.scheduling_policy,
+    )
+    assert key not in scheduler._scheduled
+    now[0] += 7
+    run("completed")
+    assert key not in scheduler._abort_counts
+
+
+def test_real_scheduler_dispatch_keeps_custom_failure_policy(monkeypatch):
+    scheduler = PlaybookOptimizationScheduler()
+    config = PlaybookOptimizerConfig(
+        scheduler_jitter_seconds=0,
+        abort_cooldown_threshold=1,
+        cooldown_after_aborts_seconds=17,
+    )
+    started, release, recorded = threading.Event(), threading.Event(), threading.Event()
+    record_abort = scheduler._record_abort
+
+    def record(key, policy):
+        record_abort(key, policy)
+        recorded.set()
+
+    monkeypatch.setattr(scheduler, "_record_abort", record)
+
+    def callback():
+        started.set()
+        release.wait(timeout=5)
+        return "aborted"
+
+    before = time.monotonic()
+    scheduler.enqueue(
+        org_id="real-custom-policy",
+        target=PlaybookOptimizationTarget(kind="agent_playbook", target_id=61),
+        callback=callback,
+        policy=config.scheduling_policy,
+    )
+    try:
+        assert started.wait(timeout=5), "custom-policy callback never started"
+        config.abort_cooldown_threshold = 99
+        config.cooldown_after_aborts_seconds = 999
+    finally:
+        release.set()
+    assert recorded.wait(timeout=5), "custom-policy callback never recorded its failure"
+    key = ("real-custom-policy", None, "agent_playbook", 61)
+    with scheduler._mutex:
+        count, cooldown_until = scheduler._abort_counts[key]
+    assert count == 0
+    assert before + 17 <= cooldown_until <= time.monotonic() + 17
 
 
 def test_scheduler_fires_callback_through_executor() -> None:
@@ -1516,7 +1621,7 @@ def test_scheduler_fires_callback_through_executor() -> None:
         org_id="org-fire-path",
         target=PlaybookOptimizationTarget(kind="agent_playbook", target_id=99),
         callback=callback,
-        jitter_seconds=0,
+        policy=OptimizerSchedulingPolicy(scheduler_jitter_seconds=0),
     )
 
     assert fired.wait(timeout=5), "scheduled callback never fired"
