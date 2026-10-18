@@ -160,6 +160,7 @@ __all__ = [
     "GetOperationStatusRequest",
     "GetOperationStatusResponse",
     "CancelOperationRequest",
+    "CancelOperationAttemptRequest",
     "CancelOperationResponse",
     "AdminInvalidateCacheRequest",
     "AdminInvalidateCacheResponse",
@@ -2360,6 +2361,10 @@ class GetOperationStatusResponse(BaseModel):
 
 class CancelOperationRequest(BaseModel):
     service_name: str | None = None  # None cancels both services
+
+
+class CancelOperationAttemptRequest(BaseModel):
+    service_name: Literal["profile_generation", "playbook_generation"]
 
 
 class CancelOperationResponse(BaseModel):

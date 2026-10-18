@@ -2,6 +2,7 @@
 
 import logging
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 if TYPE_CHECKING:
     pass
@@ -24,6 +25,7 @@ from reflexio.models.api_schema.retriever_schema import (
 from reflexio.models.api_schema.service_schemas import (
     AdminInvalidateCacheRequest,
     AdminInvalidateCacheResponse,
+    CancelOperationAttemptRequest,
     CancelOperationRequest,
     CancelOperationResponse,
     ClearUserDataRequest,
@@ -275,3 +277,28 @@ def cancel_operation_endpoint(
     """
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
     return reflexio.cancel_operation(payload)
+
+
+@router.post(
+    "/api/cancel_operation/{operation_id}",
+    response_model=CancelOperationResponse,
+    response_model_exclude_none=True,
+)
+@limiter.limit("10/minute")
+def cancel_operation_attempt_endpoint(
+    request: Request,
+    operation_id: UUID,
+    payload: CancelOperationAttemptRequest,
+    org_id: str = Depends(default_get_org_id),
+) -> CancelOperationResponse:
+    """Cancel exactly one admitted generation attempt in the caller's scope.
+
+    A distinct route makes old servers reject this request instead of ignoring
+    an unknown body field and accidentally performing broad cancellation.
+    Missing, terminal, foreign and replaced attempts cancel nothing.
+    """
+    reflexio = reflexio_cache.get_reflexio(org_id=org_id)
+    return reflexio.cancel_operation(
+        CancelOperationRequest(service_name=payload.service_name),
+        operation_id=str(operation_id),
+    )
