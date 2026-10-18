@@ -156,6 +156,7 @@ __all__ = [
     "UpgradeUserPlaybooksResponse",
     "DowngradeUserPlaybooksRequest",
     "DowngradeUserPlaybooksResponse",
+    "GenerationServiceName",
     "OperationStatusInfo",
     "GetOperationStatusRequest",
     "GetOperationStatusResponse",
@@ -2332,6 +2333,9 @@ class DowngradeUserPlaybooksResponse(BaseModel):
 # ===============================
 # Operation Status Models
 # ===============================
+GenerationServiceName = Literal["profile_generation", "playbook_generation"]
+
+
 class OperationStatusInfo(BaseModel):
     service_name: str
     status: OperationStatus
@@ -2365,7 +2369,7 @@ class CancelOperationRequest(BaseModel):
 
 
 class CancelOperationAttemptRequest(BaseModel):
-    service_name: Literal["profile_generation", "playbook_generation"]
+    service_name: GenerationServiceName
 
 
 class CancelOperationResponse(BaseModel):

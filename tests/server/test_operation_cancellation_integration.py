@@ -154,6 +154,98 @@ def test_owner_failure_acknowledges_finished_execution(cancellation_cell):
     assert response.json()["cancelled_services"] == []
 
 
+def test_completed_attempt_survives_successor_admission(cancellation_cell):
+    client, stores = cancellation_cell
+    old = OperationStateManager(stores["owner"], "owner", "profile_generation")
+    assert old.claim_progress({"user_id": "private-user", "source": "private-filter"})
+    old.mark_cancelled()
+    old.finalize_progress(4, 9)
+    completed = old.get_attempt_progress(old.operation_id)
+    old.finalize_progress(100, 100)
+    assert old.get_attempt_progress(old.operation_id) == completed
+    current = OperationStateManager(stores["owner"], "owner", "profile_generation")
+    assert current.claim_progress({"user_id": "successor"})
+    response = client.get(
+        f"/api/generation_operations/profile_generation/{old.operation_id}"
+    )
+    assert response.status_code == 200, response.text
+    completion = response.json()["operation_status"]
+    assert completion["status"] == "cancelled"
+    assert completion["finished_operation_id"] == old.operation_id
+    assert completion["request_params"] == {"operation_id": old.operation_id}
+    assert completion["stats"]["total_generated"] == 9
+    # No user/filter metadata or identifier lists enter the retained receipt.
+    assert old.operation_id is not None
+    receipt = stores["owner"].get_operation_state(old._completion_key(old.operation_id))
+    assert receipt is not None
+    assert "private-user" not in str(receipt) and "private-filter" not in str(receipt)
+    foreign = client.get(
+        f"/api/generation_operations/profile_generation/{old.operation_id}",
+        headers={"x-test-org": "other"},
+    )
+    assert foreign.status_code == 200 and foreign.json() == {"success": True}
+    assert not current.is_cancellation_requested()
+
+
+def test_displaced_worker_finishes_only_its_own_execution(cancellation_cell):
+    client, stores = cancellation_cell
+    old = OperationStateManager(stores["owner"], "owner", "profile_generation")
+    assert old.claim_progress({})
+    state = old.get_progress()
+    assert state is not None
+    state["started_at"] = 0
+    stores["owner"].update_operation_state(old._progress_key(), state)
+    current = OperationStateManager(stores["owner"], "owner", "profile_generation")
+    assert current.claim_progress({})
+    before = current.get_progress()
+    with pytest.raises(RuntimeError, match="no longer owns"):
+        old.set_current_item("late-user")
+    response = client.post(
+        f"/api/cancel_operation/{old.operation_id}",
+        json={"service_name": "profile_generation"},
+    )
+    assert response.json()["cancelled_services"] == ["profile_generation"]
+    assert old.is_cancellation_requested() and not current.is_cancellation_requested()
+    old.mark_cancelled()
+    old.finalize_progress(0, 0)
+    assert current.get_progress() == before
+    response = client.get(
+        f"/api/generation_operations/profile_generation/{old.operation_id}"
+    )
+    assert response.status_code == 200
+    assert (
+        response.json()["operation_status"]["finished_operation_id"] == old.operation_id
+    )
+    assert response.json()["operation_status"]["status"] == "cancelled"
+    progress = current.get_progress()
+    assert (
+        progress is not None
+        and progress["request_params"]["operation_id"] == current.operation_id
+    )
+
+
+def test_receipt_write_failure_rolls_back_completion(cancellation_cell, monkeypatch):
+    _, stores = cancellation_cell
+    owner = OperationStateManager(stores["owner"], "owner", "profile_generation")
+    assert owner.claim_progress({})
+    before = owner.get_progress()
+
+    receipt_before = owner.get_attempt_progress(owner.operation_id)
+    replace = stores["owner"].clear_in_progress_lock_if_owner
+
+    def fail_mirror(key, operation_id, state):
+        if key == owner._progress_key():
+            raise RuntimeError("receipt storage failed")
+        return replace(key, operation_id, state)
+
+    monkeypatch.setattr(stores["owner"], "clear_in_progress_lock_if_owner", fail_mirror)
+    with pytest.raises(RuntimeError, match="receipt storage failed"):
+        owner.finalize_progress(0, 0)
+    assert owner.get_progress() == before
+    assert owner.operation_id is not None
+    assert owner.get_attempt_progress(owner.operation_id) == receipt_before
+
+
 @pytest.mark.parametrize(
     "payload", [{}, {"service_name": ""}, {"service_name": "other"}]
 )
@@ -161,3 +253,45 @@ def test_exact_cancellation_requires_a_generation_service(cancellation_cell, pay
     client, _ = cancellation_cell
     response = client.post(f"/api/cancel_operation/{uuid4()}", json=payload)
     assert response.status_code == 422
+
+
+def test_failed_admission_does_not_leave_claim_or_execution(
+    cancellation_cell, monkeypatch
+):
+    _, stores = cancellation_cell
+    owner = OperationStateManager(stores["owner"], "owner", "profile_generation")
+
+    def fail_receipt(*_args, **_kwargs):
+        raise RuntimeError("admission storage failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(stores["owner"], "create_operation_state", fail_receipt)
+        with pytest.raises(RuntimeError, match="admission storage failed"):
+            owner.claim_progress({})
+    assert owner.get_progress() is None
+    assert owner.get_attempt_progress(owner.operation_id) is None
+    next_owner = OperationStateManager(stores["owner"], "owner", "profile_generation")
+    assert next_owner.claim_progress({})
+
+
+def test_finished_execution_cannot_be_resurrected(cancellation_cell):
+    _, stores = cancellation_cell
+    owner = OperationStateManager(stores["owner"], "owner", "profile_generation")
+    assert owner.claim_progress({})
+    owner.finalize_progress(0)
+    before = owner.get_attempt_progress(owner.operation_id)
+    with pytest.raises(RuntimeError, match="no longer owns"):
+        owner.set_current_item("late-user")
+    assert owner.get_attempt_progress(owner.operation_id) == before
+
+
+def test_pre_upgrade_progress_is_not_execution_completion(cancellation_cell):
+    client, stores = cancellation_cell
+    stores["owner"].upsert_operation_state(
+        "profile_generation::owner::progress",
+        {"status": "failed", "request_params": {}, "completed_at": 1},
+    )
+    response = client.get("/api/generation_operations/profile_generation")
+    assert response.status_code == 200
+    assert response.json()["success"] is False
+    assert "no durable execution record" in response.json()["msg"]

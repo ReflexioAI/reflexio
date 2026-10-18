@@ -891,6 +891,15 @@ FULL_ROUTES = [
         ("default_get_org_id",),
     ),
     (
+        "/api/generation_operations/{service_name}/{operation_id}",
+        ("GET",),
+        "GetOperationStatusResponse",
+        None,
+        (),
+        "get_generation_attempt_endpoint",
+        ("default_get_org_id",),
+    ),
+    (
         "/api/cancel_operation",
         ("POST",),
         "CancelOperationResponse",

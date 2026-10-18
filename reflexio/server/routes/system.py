@@ -1,7 +1,7 @@
 """System/meta/stats/operations route handlers (extracted from api.py, Tier3 A2)."""
 
 import logging
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 if TYPE_CHECKING:
@@ -30,6 +30,7 @@ from reflexio.models.api_schema.service_schemas import (
     CancelOperationResponse,
     ClearUserDataRequest,
     ClearUserDataResponse,
+    GenerationServiceName,
     GetOperationStatusRequest,
     GetOperationStatusResponse,
     WhoamiResponse,
@@ -260,7 +261,7 @@ def get_operation_status_endpoint(
     response_model_exclude_none=True,
 )
 def get_generation_operation_endpoint(
-    service_name: Literal["profile_generation", "playbook_generation"],
+    service_name: GenerationServiceName,
     org_id: str = Depends(default_get_org_id),
 ) -> GetOperationStatusResponse:
     """Observe current attempt ownership without age-based status recovery.
@@ -269,8 +270,26 @@ def get_generation_operation_endpoint(
     finished_operation_id identifies the attempt that finalized its execution.
     """
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
-    return reflexio.get_operation_status(
-        GetOperationStatusRequest(service_name=service_name), recover_stale=False
+    return reflexio.get_generation_operation(service_name)
+
+
+@router.get(
+    "/api/generation_operations/{service_name}/{operation_id}",
+    response_model=GetOperationStatusResponse,
+    response_model_exclude_none=True,
+)
+def get_generation_attempt_endpoint(
+    service_name: GenerationServiceName,
+    operation_id: UUID,
+    org_id: str = Depends(default_get_org_id),
+) -> GetOperationStatusResponse:
+    """Read one attempt even after a successor replaces current progress.
+
+    Missing completion evidence is unknown, never proof that execution stopped.
+    """
+    reflexio = reflexio_cache.get_reflexio(org_id=org_id)
+    return reflexio.get_generation_operation(
+        service_name, operation_id=str(operation_id)
     )
 
 

@@ -140,12 +140,34 @@ class OperationStateManager:
                 and state.get("status") == OperationStatus.IN_PROGRESS.value
             )
         self.operation_id = str(uuid.uuid4())
+        operation_id = self.operation_id
+
+        def claim_once() -> bool:
+            # Admission and its durable execution identity become visible together.
+            with self.storage.commit_scope():
+                result = self.storage.try_acquire_in_progress_lock(
+                    self._progress_key(),
+                    operation_id,
+                    stale_lock_seconds=BATCH_STALE_PROGRESS_SECONDS,
+                )
+                if not result.get("acquired"):
+                    return False
+                self.storage.create_operation_state(
+                    self._completion_key(operation_id),
+                    {
+                        "current_request_id": operation_id,
+                        "service_name": self.service_name,
+                        "status": OperationStatus.IN_PROGRESS.value,
+                        "started_at": int(datetime.now(UTC).timestamp()),
+                        "request_params": {"operation_id": operation_id},
+                        "stats": {},
+                    },
+                )
+                self.initialize_progress(total_users=0, request_params=request_params)
+                return True
+
         try:
-            result = self.storage.try_acquire_in_progress_lock(
-                self._progress_key(),
-                self.operation_id,
-                stale_lock_seconds=BATCH_STALE_PROGRESS_SECONDS,
-            )
+            return claim_once()
         except StorageError as error:
             cause = error.__cause__
             diagnostic = getattr(cause, "diag", None)
@@ -161,15 +183,7 @@ class OperationStateManager:
                 or not self.get_progress()
             ):
                 raise
-            result = self.storage.try_acquire_in_progress_lock(
-                self._progress_key(),
-                self.operation_id,
-                stale_lock_seconds=BATCH_STALE_PROGRESS_SECONDS,
-            )
-        if not result.get("acquired"):
-            return False
-        self.initialize_progress(total_users=0, request_params=request_params)
-        return True
+            return claim_once()
 
     def _write_progress(self, state: dict) -> None:
         """Condition replacements on the admitted owner, including terminal writes."""
@@ -182,12 +196,15 @@ class OperationStateManager:
             state["pending_request_queue"] = []
             # This storage primitive conditionally replaces the supplied state;
             # it does not force in_progress=False, so it also fences progress writes.
-            if not self.storage.clear_in_progress_lock_if_owner(
-                self._progress_key(),
-                self.operation_id,
-                state,
-            ):
-                raise RuntimeError("Generation attempt no longer owns progress")
+            with self.storage.commit_scope():
+                if not self.storage.clear_in_progress_lock_if_owner(
+                    self._completion_key(self.operation_id),
+                    self.operation_id,
+                    self._attempt_summary(state),
+                ) or not self.storage.clear_in_progress_lock_if_owner(
+                    self._progress_key(), self.operation_id, state
+                ):
+                    raise RuntimeError("Generation attempt no longer owns progress")
         elif state.get("current_request_id"):
             raise RuntimeError("Cannot overwrite another generation attempt")
         else:
@@ -389,11 +406,9 @@ class OperationStateManager:
             total_processed: Total number of items processed
             total_generated: Total number of profiles or playbooks generated
         """
-        key = self._progress_key()
-        state_entry = self.storage.get_operation_state(key)
-        final_state = (
-            state_entry.get("operation_state", state_entry) if state_entry else {}
-        )
+        final_state = self._worker_progress()
+        if not final_state:
+            raise RuntimeError("Generation attempt was not admitted")
         if final_state.get("status") != OperationStatus.CANCELLED.value:
             failed_users = final_state.get("failed_users", 0)
             final_state["status"] = (
@@ -410,9 +425,7 @@ class OperationStateManager:
             final_state["progress_percentage"] = 100.0
         final_state["stats"]["total_interactions_processed"] = total_processed
         final_state["stats"]["total_generated"] = total_generated
-        if self.operation_id is not None:
-            final_state["finished_operation_id"] = self.operation_id
-        self._write_progress(final_state)
+        self._write_finished_progress(final_state)
         self._clear_attempt_cancellation()
 
     def mark_progress_failed(self, error_message: str) -> None:
@@ -422,16 +435,12 @@ class OperationStateManager:
             error_message: Error description
         """
         try:
-            key = self._progress_key()
-            state_entry = self.storage.get_operation_state(key)
-            if state_entry:
-                failed_state = state_entry.get("operation_state", state_entry)
+            failed_state = self._worker_progress()
+            if failed_state:
                 failed_state["status"] = OperationStatus.FAILED.value
                 failed_state["completed_at"] = int(datetime.now(UTC).timestamp())
                 failed_state["error_message"] = error_message
-                if self.operation_id is not None:
-                    failed_state["finished_operation_id"] = self.operation_id
-                self._write_progress(failed_state)
+                self._write_finished_progress(failed_state)
                 self._clear_attempt_cancellation()
         except Exception:  # noqa: S110
             pass  # Ignore errors updating state during exception handling
@@ -448,6 +457,95 @@ class OperationStateManager:
             return state_entry.get("operation_state", state_entry)
         return None
 
+    def _completion_key(self, operation_id: str) -> str:
+        return f"generation_attempt::{self.service_name}::{self.org_id}::{operation_id}"
+
+    def _attempt_summary(self, state: dict, *, finished: bool = False) -> dict:
+        """Retain execution evidence without user/filter payloads or identifier lists."""
+        return {
+            "service_name": self.service_name,
+            "current_request_id": None if finished else self.operation_id,
+            "request_params": {"operation_id": self.operation_id},
+            **{
+                name: state[name]
+                for name in (
+                    "status",
+                    "started_at",
+                    "completed_at",
+                    "total_users",
+                    "processed_users",
+                    "failed_users",
+                    "progress_percentage",
+                )
+                if name in state
+            },
+            "stats": {
+                name: state.get("stats", {})[name]
+                for name in ("total_interactions_processed", "total_generated")
+                if name in state.get("stats", {})
+            },
+        }
+
+    def get_attempt_progress(self, operation_id: str | None = None) -> dict | None:
+        """Read durable execution state; legacy age recovery is not completion."""
+        if operation_id is None:
+            current = self.get_progress()
+            if current is None:
+                return None
+            owner = current.get("current_request_id")
+            attempt = self.get_attempt_progress(owner) if owner else None
+            if attempt is None:
+                raise LookupError("Generation attempt has no durable execution record")
+            return {**current, **attempt, "request_params": current["request_params"]}
+        entry = self.storage.get_operation_state(self._completion_key(operation_id))
+        if not entry:
+            return None
+        state = entry.get("operation_state", entry)
+        if state.get("current_request_id") is None:
+            state["finished_operation_id"] = operation_id
+        return state
+
+    def _worker_progress(self) -> dict | None:
+        if self.operation_id is None:
+            return self.get_progress()
+        own = self.get_attempt_progress(self.operation_id)
+        if own is None:
+            return None
+        current = self.get_progress()
+        if current and current.get("current_request_id") == self.operation_id:
+            return {**current, **own, "request_params": current["request_params"]}
+        return own
+
+    def _write_finished_progress(self, state: dict) -> None:
+        self._write_attempt_outcome(state, finished=True)
+
+    def _write_attempt_outcome(self, state: dict, *, finished: bool) -> None:
+        if self.operation_id is None:
+            self._write_progress(state)
+            return
+        # An admitted worker retains the right to acknowledge its own execution
+        # after its display slot is replaced, never to change its successor.
+        with self.storage.commit_scope():
+            key = self._completion_key(self.operation_id)
+            if not self.storage.clear_in_progress_lock_if_owner(
+                key, self.operation_id, self._attempt_summary(state, finished=finished)
+            ):
+                own = self.get_attempt_progress(self.operation_id)
+                if own and own.get("finished_operation_id") == self.operation_id:
+                    return  # Terminal records are immutable, including retries.
+                raise RuntimeError("Generation attempt was not admitted")
+            mirror = {
+                **state,
+                "current_request_id": self.operation_id,
+                "in_progress": False,
+                "pending_request_queue": [],
+            }
+            if finished:
+                mirror["finished_operation_id"] = self.operation_id
+            self.storage.clear_in_progress_lock_if_owner(
+                self._progress_key(), self.operation_id, mirror
+            )
+
     def request_cancellation(self) -> bool:
         """Request cancellation of an in-progress operation.
 
@@ -460,11 +558,15 @@ class OperationStateManager:
         """
         # Verify the operation is actually in progress
         progress_key = self._progress_key()
-        state_entry = self.storage.get_operation_state(progress_key)
-        if not state_entry:
+        if self.operation_id is not None:
+            state = self.get_attempt_progress(self.operation_id)
+        else:
+            state_entry = self.storage.get_operation_state(progress_key)
+            state = (
+                state_entry.get("operation_state", state_entry) if state_entry else None
+            )
+        if not state:
             return False
-
-        state = state_entry.get("operation_state", state_entry)
         owner = state.get("current_request_id")
 
         def cancellable(progress: dict) -> bool:
@@ -487,7 +589,11 @@ class OperationStateManager:
             cancel_key, {"cancellation_requested": True}
         )
         if owner:
-            current = self.get_progress()
+            current = (
+                self.get_attempt_progress(self.operation_id)
+                if self.operation_id is not None
+                else self.get_progress()
+            )
             if (
                 not current
                 or current.get("current_request_id") != owner
@@ -523,15 +629,13 @@ class OperationStateManager:
         cancellation flag row.
         """
         # Update progress state to CANCELLED
-        key = self._progress_key()
-        state_entry = self.storage.get_operation_state(key)
-        if not state_entry:
+        state = self._worker_progress()
+        if not state:
             return
 
-        state = state_entry.get("operation_state", state_entry)
         state["status"] = OperationStatus.CANCELLED.value
         state["completed_at"] = int(datetime.now(UTC).timestamp())
-        self._write_progress(state)
+        self._write_attempt_outcome(state, finished=False)
 
         # Clear the separate cancellation flag
         cancel_key = self._cancellation_key()

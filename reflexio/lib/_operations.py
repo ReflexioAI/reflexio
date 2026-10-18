@@ -16,14 +16,12 @@ logger = logging.getLogger(__name__)
 
 class OperationsMixin(ReflexioBase):
     def get_operation_status(
-        self, request: GetOperationStatusRequest | dict, *, recover_stale: bool = True
+        self, request: GetOperationStatusRequest | dict
     ) -> GetOperationStatusResponse:
         """Get the status of an operation.
 
         Args:
             request (Union[GetOperationStatusRequest, dict]): Request containing service_name
-            recover_stale: Preserve legacy age-based recovery for the old route.
-                Read-only attempt observation must pass False.
 
         Returns:
             GetOperationStatusResponse: Response containing operation status info
@@ -56,10 +54,7 @@ class OperationsMixin(ReflexioBase):
 
             # Auto-recover stale IN_PROGRESS operations so the frontend
             # doesn't show "in progress" forever after a crash/restart
-            if (
-                recover_stale
-                and operation_state.get("status") == OperationStatus.IN_PROGRESS.value
-            ):
+            if operation_state.get("status") == OperationStatus.IN_PROGRESS.value:
                 from datetime import UTC, datetime
 
                 from reflexio.server.services.operation_state_utils import (
@@ -107,6 +102,28 @@ class OperationsMixin(ReflexioBase):
             return GetOperationStatusResponse(
                 success=False, msg=f"Failed to get operation status: {str(e)}"
             )
+
+    def get_generation_operation(
+        self, service_name: str, *, operation_id: str | None = None
+    ) -> GetOperationStatusResponse:
+        """Observe attempt identity and durable completion, without recovery writes."""
+        if not self._is_storage_configured():
+            return GetOperationStatusResponse(
+                success=True, operation_status=None, msg=STORAGE_NOT_CONFIGURED_MSG
+            )
+        manager = OperationStateManager(
+            self._get_storage(), self.request_context.org_id, service_name
+        )
+        try:
+            state = manager.get_attempt_progress(operation_id)
+        except LookupError as error:
+            return GetOperationStatusResponse(success=False, msg=str(error))
+        return GetOperationStatusResponse(
+            success=True,
+            operation_status=OperationStatusInfo(**state)
+            if state is not None
+            else None,
+        )
 
     def cancel_operation(
         self, request: CancelOperationRequest | dict, *, operation_id: str | None = None
