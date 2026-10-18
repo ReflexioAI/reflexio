@@ -1,5 +1,9 @@
 """Endpoint ownership is shared by clients, CLI and container adapters."""
 
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from reflexio.config_migration import ConfigurationMigrationError
@@ -8,6 +12,28 @@ from reflexio.inference_launch import (
     inference_service_url,
     ordinary_inference_launch,
 )
+
+
+def test_launcher_reuses_parser_without_importing_server_or_site_packages():
+    package_root = Path(__file__).resolve().parents[1]
+    script = f"""
+import sys
+sys.path.insert(0, {str(package_root)!r})
+from reflexio.inference_launch import ordinary_inference_launch
+from reflexio.env_utils import env_truthy
+assert env_truthy(' ON ')
+assert ordinary_inference_launch({{}}).mode == 'colocated'
+assert not any(name == 'reflexio.server' or name.startswith('reflexio.server.')
+               for name in sys.modules)
+"""
+    result = subprocess.run(  # noqa: S603 — fixed interpreter and repository-owned probe
+        [sys.executable, "-I", "-S", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize(

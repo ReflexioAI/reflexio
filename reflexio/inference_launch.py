@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from reflexio.config_migration import ConfigurationMigrationError
+from reflexio.env_utils import env_truthy
 
 _SERVICE_URL = "REFLEXIO_EMBEDDING_SERVICE_URL"
 _LEGACY_HOST = "REFLEXIO_EMBEDDING_DAEMON_HOST"
@@ -46,7 +47,7 @@ def ordinary_inference_launch(
     endpoint = inference_service_url(env, default_port=default_port)
     if env.get(_SERVICE_URL, "").strip():
         return InferenceLaunchPlan("attached", None)
-    if env.get(_LEGACY_DISABLE, "").strip().lower() in {"1", "true", "yes", "on"}:
+    if env_truthy(env.get(_LEGACY_DISABLE, "")):
         raise ConfigurationMigrationError(
             f"{_LEGACY_DISABLE} is retired. To attach to an existing process, "
             f"configure {_SERVICE_URL} explicitly, including for localhost. "

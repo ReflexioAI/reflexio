@@ -441,6 +441,9 @@ The import-light [inference launch resolver](reflexio/inference_launch.py) gives
 providers and launchers one endpoint and process-ownership contract. An explicit
 service URL attaches to an existing inference process; otherwise the launcher
 owns a separate child. See [developer.md](developer.md) for migration and runtime details.
+The shared legacy boolean parser lives in [env_utils.py](reflexio/env_utils.py)
+so launchers can reuse it without importing server startup. The existing
+`reflexio.server.env_utils.env_truthy` import remains a compatibility export.
 
 See [developer.md](developer.md) for project structure, supported LLM providers, and development setup.
 
