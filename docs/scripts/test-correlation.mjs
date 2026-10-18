@@ -75,7 +75,8 @@ const fetched = {
   api_key_config: {
     openai: { api_key: null, azure_config: {
       api_key: "synthetic-azure-key", endpoint: "https://example.openai.azure.com/",
-      api_version: "2024-02-15-preview", deployment_name: "keep-deployment",
+      api_version: "2024-02-15-preview", deployment_name: "ignored-legacy-deployment",
+      extension: { deployment_name: "opaque metadata" },
     } },
     dashscope: { api_key: "test-key", api_base: "", future_provider_option: 37 },
   },
@@ -87,7 +88,10 @@ const roundtrip = JSON.parse(JSON.stringify(configSchema.serializeConfig(edited)
 assert.deepEqual(roundtrip.governance_retention, fetched.governance_retention);
 assert.deepEqual(roundtrip.lineage_gc, fetched.lineage_gc);
 assert.deepEqual(roundtrip.future_policy, fetched.future_policy);
-assert.deepEqual(roundtrip.api_key_config.openai, fetched.api_key_config.openai);
+const expectedOpenAI = JSON.parse(JSON.stringify(fetched.api_key_config.openai));
+delete expectedOpenAI.azure_config.deployment_name;
+assert.deepEqual(roundtrip.api_key_config.openai, expectedOpenAI);
+assert.equal("deployment_name" in roundtrip.api_key_config.openai.azure_config, false);
 assert.equal(roundtrip.agent_context_prompt, "An unrelated edit");
 assert.equal(roundtrip.storage_config.db_path, null);
 assert.equal(roundtrip.storage_config.future_storage_option, "keep");
