@@ -7,6 +7,7 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     TypeAdapter,
@@ -394,21 +395,23 @@ class StorageConfigSupabase(BaseModel):
         populate_by_name=True, serialize_by_alias=True, extra="forbid"
     )
 
-    # Accepted on input, excluded from output -- see StorageConfigSQLite.
-    storage_type: Literal["supabase"] = Field(
-        default="supabase", alias="type", exclude=True
-    )
-    url: NonEmptyStr
-    key: NonEmptyStr
+    # Native Supabase and Postgres share DSN/schema fields but retain distinct
+    # pool policies. Persist their identity instead of inferring it from HTTP
+    # credentials that no data operation uses anymore.
+    storage_type: Literal["supabase"] = Field(default="supabase", alias="type")
     db_url: NonEmptyStr
     schema_name: str | None = Field(default=None, alias="schema")
 
     @model_validator(mode="before")
     @classmethod
-    def retire_http_reader(cls, data: Any) -> Any:
-        """Old HTTP reader fields no longer affect native SQL read execution."""
+    def retire_http_credentials(cls, data: Any) -> Any:
+        """Accept historical documents without retaining obsolete HTTP inputs."""
         if isinstance(data, dict):
-            return {k: v for k, v in data.items() if k not in {"read_url", "read_key"}}
+            return {
+                k: v
+                for k, v in data.items()
+                if k not in {"url", "key", "read_url", "read_key"}
+            }
         return data
 
 
@@ -436,19 +439,44 @@ class StorageConfigPostgres(BaseModel):
 
 
 class StorageConfigManagedSupabase(BaseModel):
-    """Redacted API response for platform-managed Supabase storage."""
+    """Redacted platform data reference; historical class name stays compatible."""
 
+    model_config = ConfigDict(
+        populate_by_name=True, serialize_by_alias=True, extra="forbid"
+    )
+    storage_type: Literal["supabase", "postgres"] = Field(
+        default="supabase", alias="type"
+    )
     managed_by: Literal["platform"]
     schema_present: bool = True
 
 
-StorageConfig = (
+def _normalize_storage_backend(data: Any) -> Any:
+    """Disambiguate historical native references before union validation.
+
+    Explicit tags and model instances retain authority. Old HTTP-bearing
+    references select Supabase even if malformed, so required-DSN validation
+    cannot turn a broken tenant reference into another backend.
+    """
+    if not isinstance(data, dict) or any(
+        key in data for key in ("type", "storage_type", "managed_by")
+    ):
+        return data
+    if any(key in data for key in ("url", "key", "read_url", "read_key")):
+        return {**data, "type": "supabase"}
+    if "db_url" in data:
+        return {**data, "type": "postgres"}
+    return data
+
+
+StorageConfig = Annotated[
     StorageConfigSQLite
     | StorageConfigSupabase
     | StorageConfigPostgres
     | StorageConfigManagedSupabase
-    | None
-)
+    | None,
+    BeforeValidator(_normalize_storage_backend),
+]
 
 # Used by validate_stored_config to check storage_config strictly, outside the
 # lenient whole-Config pass that would otherwise relax these models' extra rules.

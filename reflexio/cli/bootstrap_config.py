@@ -165,17 +165,12 @@ def save_storage_to_config(
         case "sqlite":
             config.storage_config = StorageConfigSQLite()
         case "supabase":
-            url = os.environ.get("DATA_SUPABASE_URL", "")
-            key = os.environ.get("DATA_SUPABASE_KEY", "")
             db_url = _data_db_url_from_env()
-            if url and key and db_url:
-                config.storage_config = StorageConfigSupabase(
-                    url=url, key=key, db_url=db_url
-                )
+            if db_url:
+                config.storage_config = StorageConfigSupabase(db_url=db_url)
             else:
                 logger.warning(
-                    "Supabase storage requested but credentials are missing "
-                    "(DATA_SUPABASE_URL, DATA_SUPABASE_KEY, DATA_DB_URL). "
+                    "Supabase storage requested but DATA_DB_URL is missing. "
                     "Keeping existing storage config."
                 )
         case "postgres":

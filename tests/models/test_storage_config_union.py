@@ -14,8 +14,8 @@ validated as *Postgres* and connected successfully by a path nobody intended.
 
 The invariant these tests defend:
 
-    A storage config that loses a field fails loudly, rather than becoming a
-    different backend.
+    Missing required data fields fail loudly. Retired HTTP fields never choose
+    execution, and canonical backend identity survives serialization.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from reflexio.config_migration import StoredConfigurationError
 from reflexio.models.config_schema import (
+    Config,
     StorageConfig,
     StorageConfigPostgres,
     StorageConfigSQLite,
@@ -93,20 +94,8 @@ def test_valid_configs_resolve_to_their_own_backend(
             "supabase missing db_url",
             {k: v for k, v in _PROD_SUPABASE.items() if k != "db_url"},
         ),
-        # Worse than the SQLite case: this validated as StorageConfigPostgres,
-        # which then connects successfully via an unintended path.
-        (
-            "supabase missing key",
-            {k: v for k, v in _PROD_SUPABASE.items() if k != "key"},
-        ),
-        (
-            "supabase with empty-string key",
-            {**_PROD_SUPABASE, "key": ""},
-        ),
-        (
-            "supabase missing url",
-            {k: v for k, v in _PROD_SUPABASE.items() if k != "url"},
-        ),
+        ("supabase blank db_url", {**_PROD_SUPABASE, "db_url": ""}),
+        ("unknown backend", {**_PROD_SUPABASE, "type": "unknown"}),
         ("unrecognised payload", {"nonsense": 1}),
         ("supabase field misspelled", {**_PROD_SUPABASE, "db_urls": "x"}),
     ],
@@ -154,8 +143,8 @@ class TestThroughValidateStoredConfig:
                 {k: v for k, v in _PROD_SUPABASE.items() if k != "db_url"},
             ),
             (
-                "supabase missing key",
-                {k: v for k, v in _PROD_SUPABASE.items() if k != "key"},
+                "supabase blank db_url",
+                {**_PROD_SUPABASE, "db_url": ""},
             ),
             ("unrecognised payload", {"nonsense": 1}),
         ],
@@ -195,17 +184,7 @@ class TestThroughValidateStoredConfig:
 
 
 class TestTypeTagCompatibility:
-    """The ``type`` tag must be accepted on input but absent from output.
-
-    Two constraints pull in opposite directions and both are load-bearing:
-
-    * The config API emits ``type`` alongside the storage config. Tightening the
-      models without accepting it made a response from ``/get_config`` invalid
-      to post back to ``/set_config`` -- a 422 on an unmodified round trip.
-    * The boot-time config upgrade rewrites every org's persisted blob. Adding
-      ``type`` to what the models serialize would change that document for the
-      whole fleet, which this change has no business doing.
-    """
+    """Remote backend identity must survive credential-free serialization."""
 
     @pytest.mark.parametrize(
         ("tag", "payload", "expected"),
@@ -238,18 +217,18 @@ class TestTypeTagCompatibility:
             ("sqlite", {"db_path": "/var/lib/reflexio.db"}),
         ],
     )
-    def test_serialized_shape_carries_no_type_tag(
+    def test_canonical_shape_preserves_backend_identity(
         self, label: str, payload: dict[str, object]
     ) -> None:
-        """Persisted documents must not gain a key from this change."""
         dumped = _ADAPTER.dump_python(_ADAPTER.validate_python(payload), mode="json")
-        assert "type" not in dumped, (
-            f"{label}: serializing the tag would rewrite every org's stored "
-            f"config blob at the next boot upgrade"
-        )
-        assert set(dumped) == (set(payload) - {"read_url", "read_key"}) | {
-            k for k in dumped if dumped[k] is None
-        }
+        if label == "supabase":
+            assert dumped == {
+                "type": "supabase",
+                "db_url": payload["db_url"],
+                "schema": payload["schema"],
+            }
+        else:
+            assert dumped == payload
 
 
 def test_round_trip_preserves_the_backend() -> None:
@@ -331,8 +310,60 @@ def test_obsolete_http_reader_drops_without_changing_storage_identity(
     config = validate_stored_config({"storage_config": payload})
     assert isinstance(config.storage_config, StorageConfigSupabase)
     canonical = config.storage_config.model_dump(mode="json")
-    assert canonical == {k: v for k, v in payload.items() if not k.startswith("read_")}
+    assert canonical == {
+        "type": "supabase",
+        "db_url": payload["db_url"],
+        "schema": payload["schema"],
+    }
     assert payload == before
     assert _ADAPTER.validate_python(canonical) == config.storage_config
     assert "read_url" not in StorageConfigSupabase.model_fields
     assert "read_key" not in StorageConfigSupabase.model_fields
+
+
+@pytest.mark.parametrize("field", ["url", "key"])
+@pytest.mark.parametrize("remove", [False, True])
+def test_obsolete_http_credentials_are_not_required_or_serialized(field, remove):
+    payload = dict(_PROD_SUPABASE)
+    if remove:
+        payload.pop(field)
+    else:
+        payload[field] = ""
+    loaded = validate_stored_config({"storage_config": payload}).storage_config
+    assert isinstance(loaded, StorageConfigSupabase)
+    canonical = loaded.model_dump(mode="json")
+    assert canonical["type"] == "supabase"
+    assert not set(canonical).intersection({"url", "key", "read_url", "read_key"})
+
+
+@pytest.mark.parametrize("stored", [False, True])
+@pytest.mark.parametrize("tag", [None, "supabase", "postgres"])
+def test_same_native_shape_keeps_legacy_or_explicit_backend_identity(stored, tag):
+    payload = {"db_url": "postgresql://user:pw@host/db", "schema": "org_56"}
+    if tag:
+        payload["type"] = tag
+    if stored:
+        resolved = validate_stored_config({"storage_config": payload}).storage_config
+    else:
+        resolved = _ADAPTER.validate_python(payload)
+    expected = StorageConfigSupabase if tag == "supabase" else StorageConfigPostgres
+    assert isinstance(resolved, expected)
+    canonical = resolved.model_dump(mode="json")
+    assert type(_ADAPTER.validate_python(canonical)) is type(resolved)
+
+
+def test_managed_response_cannot_absorb_an_invalid_remote_reference():
+    payload = {"managed_by": "platform", "type": "supabase", "db_url": ""}
+    with pytest.raises(ValidationError):
+        _ADAPTER.validate_python(payload)
+
+
+@pytest.mark.parametrize("backend", ["supabase", "postgres"])
+def test_managed_native_marker_serializes_its_backend_identity(backend):
+    payload = {"type": backend, "managed_by": "platform", "schema_present": False}
+    config = Config.model_validate({"storage_config": payload})
+    assert config.model_dump()["storage_config"] == payload
+    assert (
+        validate_stored_config(config.model_dump()).storage_config.storage_type
+        == backend
+    )

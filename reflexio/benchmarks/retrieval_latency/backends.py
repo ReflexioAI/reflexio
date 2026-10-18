@@ -98,22 +98,9 @@ def sqlite_backend() -> Iterator[BackendHandle]:
 
 
 def _supabase_env_ready() -> StorageConfigSupabase | None:
-    """
-    Read Supabase env vars and return a populated config, or ``None``.
-
-    Falls back to the default local ``supabase start`` URL when only the
-    keys are provided.
-
-    Returns:
-        StorageConfigSupabase | None: A config if all three fields can be
-        resolved, otherwise ``None``.
-    """
-    url = os.environ.get("SUPABASE_URL", "http://127.0.0.1:54321")
-    key = os.environ.get("SUPABASE_ANON_KEY") or os.environ.get("SUPABASE_KEY")
+    """Return the native data reference when its database URL is supplied."""
     db_url = os.environ.get("SUPABASE_DB_URL")
-    if not (key and db_url):
-        return None
-    return StorageConfigSupabase(url=url, key=key, db_url=db_url)
+    return StorageConfigSupabase(db_url=db_url) if db_url else None
 
 
 @contextmanager
