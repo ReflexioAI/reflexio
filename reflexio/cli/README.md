@@ -100,6 +100,10 @@ uv run reflexio services stop
 uv run reflexio services stop --force                   # SIGKILL instead of SIGTERM
 ```
 
+Service shutdown unwinds interrupted output before logging and stopping children,
+including signals received during startup. Repeated shutdown signals do not
+reenter cleanup or trigger service respawns.
+
 `services start --only backend` starts the separate `embedding` process unless
 `REFLEXIO_EMBEDDING_SERVICE_URL` routes inference to a remote service. This is
 also true when an organization uses cloud embeddings because the service owns

@@ -686,3 +686,67 @@ def test_supervisor_waits_for_delayed_model_process_before_launching_backend(
         "The first backend launch must wait for model readiness"
     )
     assert not pidfile.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("phase", ["output", "ready"])
+def test_shutdown_signal_unwinds_before_cleanup(tmp_path: Path, phase: str) -> None:
+    """Signals must release interrupted locks and reap children during startup."""
+    script = r"""import os,signal,sys
+from pathlib import Path
+from reflexio.cli import utils
+home=Path(sys.argv[1])
+phase=sys.argv[2]
+utils.get_pidfile_path=lambda ports: home/'services.json'
+utils.get_stop_request_path=lambda name,port: home/'backend.stop'
+utils.ensure_requested_ports_available=lambda ports: None
+children=[]
+original_popen=utils.subprocess.Popen
+def spawn(*args,**kwargs):
+    child=original_popen(*args,**kwargs)
+    children.append(child)
+    return child
+utils.subprocess.Popen=spawn
+original_write=utils._ServiceSupervisor.write_output
+fired=False
+def interrupt_output(self,message):
+    global fired
+    if phase=='output' and 'started (PID' in message and not fired:
+        fired=True
+        with self.output_lock:
+            os.kill(os.getpid(),signal.SIGTERM)
+    original_write(self,message)
+utils._ServiceSupervisor.write_output=interrupt_output
+def ready(ports):
+    os.kill(os.getpid(),signal.SIGTERM)
+# Deliver a second signal during cleanup: it must not reenter logging or reap.
+original_stop=utils._ServiceSupervisor.stop_started_services
+def stop(self):
+    os.kill(os.getpid(),signal.SIGTERM)
+    original_stop(self)
+utils._ServiceSupervisor.stop_started_services=stop
+try:
+    utils.run_services([utils.ServiceConfig(name='backend',command=[sys.executable,'-u','-c',"import time;print('Application startup complete.');time.sleep(60)"])],{'backend':8071},on_all_ready=ready)
+except SystemExit as exc:
+    assert exc.code==0
+else:
+    raise AssertionError('shutdown did not exit')
+assert len(children)==1 and all(child.poll() is not None for child in children)
+assert not (home/'services.json').exists()
+print('clean shutdown')
+"""
+    with utils.subprocess.Popen(
+        [sys.executable, "-c", script, str(tmp_path), phase],
+        stdout=utils.subprocess.PIPE,
+        stderr=utils.subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=12)
+        except utils.subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.communicate(timeout=5)
+            raise
+    assert process.returncode == 0, stderr
+    assert "clean shutdown" in stdout

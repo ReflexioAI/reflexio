@@ -405,6 +405,13 @@ class _ServiceSupervisor:
         for thread in self.threads.values():
             thread.join(timeout=1.0)
 
+    def request_shutdown(self, _signum: int, _frame: object = None) -> None:
+        # A handler may interrupt write_output while its non-reentrant lock is
+        # held. Unwind that frame before logging or touching child processes.
+        if not self.shutting_down:
+            self.shutting_down = True
+            raise KeyboardInterrupt
+
     def shutdown(self, _signum: int | None = None, _frame: object = None) -> None:
         self.shutting_down = True
         self.write_output("\nShutting down services...")
@@ -503,61 +510,61 @@ def run_services(
         },
     )
 
-    signal.signal(signal.SIGINT, supervisor.shutdown)
-    signal.signal(signal.SIGTERM, supervisor.shutdown)
-
-    ensure_requested_ports_available(ports)
-    for path in supervisor.stop_request_paths.values():
-        remove_pidfile(path)
-
-    service_names = {svc.name for svc in services}
-    gate_local_embedding = {"embedding", "backend"}.issubset(service_names)
+    signal.signal(signal.SIGINT, supervisor.request_shutdown)
+    signal.signal(signal.SIGTERM, supervisor.request_shutdown)
 
     try:
-        if gate_local_embedding:
-            embedding = next(svc for svc in services if svc.name == "embedding")
-            supervisor.start_service(embedding)
-            supervisor.write_output(
-                f"Waiting up to {_LOCAL_INFERENCE_READY_TIMEOUT_SECS:g}s for "
-                "local inference readiness; first launch "
-                "may download and initialize embedding and reranker models."
-            )
-            if not _wait_for_all_ready(
-                {"embedding": supervisor.ready_events["embedding"]},
-                {"embedding": supervisor.processes["embedding"]},
-                timeout=_LOCAL_INFERENCE_READY_TIMEOUT_SECS,
-            ):
-                exit_code = supervisor.processes["embedding"].poll()
-                reason = (
-                    f"process exited with code {exit_code}"
-                    if exit_code is not None
-                    else f"model download/warmup timed out after {_LOCAL_INFERENCE_READY_TIMEOUT_SECS:g}s"
-                )
-                raise RuntimeError(
-                    "embedding service did not become ready before backend startup: "
-                    f"{reason}. See the embedding logs above for the failing stage."
-                )
-
-        for svc in services:
-            if gate_local_embedding and svc.name == "embedding":
-                continue
-            supervisor.start_service(svc)
-        supervisor.write_current_pidfile()
-    except (OSError, RuntimeError):
-        supervisor.stop_started_services()
-        remove_pidfile(pidfile)
+        ensure_requested_ports_available(ports)
         for path in supervisor.stop_request_paths.values():
             remove_pidfile(path)
-        raise
 
-    # Wait for all services to be ready (or timeout with shared deadline)
-    if on_all_ready and _wait_for_all_ready(
-        supervisor.ready_events, supervisor.processes
-    ):
-        on_all_ready(ports)
+        service_names = {svc.name for svc in services}
+        gate_local_embedding = {"embedding", "backend"}.issubset(service_names)
 
-    # Wait for any child to exit
-    try:
+        try:
+            if gate_local_embedding:
+                embedding = next(svc for svc in services if svc.name == "embedding")
+                supervisor.start_service(embedding)
+                supervisor.write_output(
+                    f"Waiting up to {_LOCAL_INFERENCE_READY_TIMEOUT_SECS:g}s for "
+                    "local inference readiness; first launch "
+                    "may download and initialize embedding and reranker models."
+                )
+                if not _wait_for_all_ready(
+                    {"embedding": supervisor.ready_events["embedding"]},
+                    {"embedding": supervisor.processes["embedding"]},
+                    timeout=_LOCAL_INFERENCE_READY_TIMEOUT_SECS,
+                ):
+                    exit_code = supervisor.processes["embedding"].poll()
+                    reason = (
+                        f"process exited with code {exit_code}"
+                        if exit_code is not None
+                        else f"model download/warmup timed out after {_LOCAL_INFERENCE_READY_TIMEOUT_SECS:g}s"
+                    )
+                    raise RuntimeError(
+                        "embedding service did not become ready before backend startup: "
+                        f"{reason}. See the embedding logs above for the failing stage."
+                    )
+
+            for svc in services:
+                if gate_local_embedding and svc.name == "embedding":
+                    continue
+                supervisor.start_service(svc)
+            supervisor.write_current_pidfile()
+        except (OSError, RuntimeError):
+            supervisor.stop_started_services()
+            remove_pidfile(pidfile)
+            for path in supervisor.stop_request_paths.values():
+                remove_pidfile(path)
+            raise
+
+        # Wait for all services to be ready (or timeout with shared deadline)
+        if on_all_ready and _wait_for_all_ready(
+            supervisor.ready_events, supervisor.processes
+        ):
+            on_all_ready(ports)
+
+        # Wait for any child to exit
         while supervisor.processes or supervisor.pending_respawns:
             supervisor.respawn_due_services()
             for name, proc in list(supervisor.processes.items()):
@@ -566,12 +573,12 @@ def run_services(
                     supervisor.handle_service_exit(name, ret)
             if supervisor.processes or supervisor.pending_respawns:
                 time.sleep(_SERVICE_MONITOR_POLL_INTERVAL_SECS)
+
+        remove_pidfile(pidfile)
+        for path in supervisor.stop_request_paths.values():
+            remove_pidfile(path)
     except KeyboardInterrupt:
         supervisor.shutdown()
-
-    remove_pidfile(pidfile)
-    for path in supervisor.stop_request_paths.values():
-        remove_pidfile(path)
 
 
 def stop_services(
