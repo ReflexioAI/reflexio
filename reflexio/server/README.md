@@ -884,9 +884,11 @@ optimizer scheduling and pending-tool timing retain specific subclasses.
 Local-file loading, CLI bootstrap and enterprise adapters propagate this base
 rather than resetting unrelated settings to defaults.
 
-`reflexio/pending_tool_policy.py` owns five-second resume polling and 600-second
-claims. Workers, selected recovery, recovery inspection and enterprise discovery
-use the same lifetime. Default-valued legacy timing fields are stripped before
+`reflexio/pending_tool_policy.py::resolve_resume_timing` validates the process-owned
+`REFLEXIO_RESUME_POLL_INTERVAL_SECONDS` and `REFLEXIO_RESUME_CLAIM_TTL_SECONDS`
+policy (defaults 5/600). Workers, selected recovery, recovery inspection and
+enterprise discovery use the same lifetime. Run claims remain distinct from the
+renewable per-user extraction lease; `claimed_at` stays an immutable fence. Default-valued legacy timing fields are stripped before
 validation or raw upgrade pruning; customized fields require explicit adoption.
 Do not reintroduce a bootstrap org's timing as fleet scheduler policy.
 

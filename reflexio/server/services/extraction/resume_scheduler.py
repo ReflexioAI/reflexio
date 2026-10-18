@@ -16,7 +16,7 @@ import weakref
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from reflexio.pending_tool_policy import RESUME_POLL_SECONDS
+from reflexio.pending_tool_policy import resolve_resume_timing
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.auth import DEFAULT_ORG_ID
 from reflexio.server.background_work import (
@@ -57,6 +57,7 @@ class ExtractionResumeScheduler(ThreadedScheduler):
         max_runs_per_tick: int = 10,
         start_gate: Callable[[], bool] | None = None,
     ) -> None:
+        self.timing = resolve_resume_timing()
         super().__init__(
             thread_name="reflexio-extraction-resume-scheduler", start_gate=start_gate
         )
@@ -213,7 +214,7 @@ class ExtractionResumeScheduler(ThreadedScheduler):
             report_background_success(f"extraction-resume:{org_id}")
 
     def _run_once(self) -> float:
-        poll_interval = RESUME_POLL_SECONDS
+        poll_interval = self.timing.poll_seconds
         try:
             provider_org_ids = self._discover_provider_org_ids()
             if self.org_id_provider is not None and provider_org_ids is not None:

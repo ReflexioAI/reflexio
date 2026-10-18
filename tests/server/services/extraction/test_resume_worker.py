@@ -2249,10 +2249,20 @@ def test_readiness_finalization_classification_never_exhausts_retry_budget():
         AgentRunStatus.AGENT_COMPLETED,
     ],
 )
-@pytest.mark.parametrize("age_seconds,expected_claim", [(590, False), (610, True)])
+@pytest.mark.parametrize(
+    "ttl,age_seconds,expected_claim",
+    [
+        (600, 590, False),
+        (600, 610, True),
+        (1800, 610, False),
+        (1800, 1810, True),
+        (60, 70, True),
+    ],
+)
 def test_owned_claim_lifetime_preserves_live_work_and_recovers_stale_work(
-    storage, request_context, monkeypatch, status, age_seconds, expected_claim
+    storage, request_context, monkeypatch, status, ttl, age_seconds, expected_claim
 ):
+    monkeypatch.setenv("REFLEXIO_RESUME_CLAIM_TTL_SECONDS", str(ttl))
     if status == AgentRunStatus.RESUMING:
         _seed_ready_run(storage)
     else:
@@ -2292,3 +2302,26 @@ def test_policy_migration_error_prevents_claiming_work(request_context, storage)
         ExtractionResumeWorker(request_context=request_context).run_once()
     ready.assert_not_called()
     finalize.assert_not_called()
+
+
+@pytest.mark.parametrize("ttl,wait", [(1, 0.5), (60, 5.0)])
+def test_resume_admission_wait_respects_configured_claim_lifetime(
+    storage, request_context, monkeypatch, ttl, wait
+):
+    from reflexio.server.services.durable_learning.user_lease import UserLeaseBusyError
+
+    monkeypatch.setenv("REFLEXIO_RESUME_CLAIM_TTL_SECONDS", str(ttl))
+    _seed_ready_run(storage)
+    worker = ExtractionResumeWorker(request_context=request_context)
+    with patch(
+        "reflexio.server.services.durable_learning.user_lease.user_extraction_lease",
+        side_effect=UserLeaseBusyError("owned test budget busy"),
+    ) as admission:
+        worker.run_once()
+    assert admission.call_args.kwargs["max_wait_seconds"] == wait
+    saved = storage.get_agent_run("run_1")
+    # Busy admission preserves the owned run fence until expiry; it must not
+    # reset a claim or spend execution attempts without the user lease.
+    assert saved is not None and saved.status == AgentRunStatus.RESUMING
+    assert saved.claimed_by == worker.worker_id and saved.claimed_at is not None
+    assert saved.resume_attempts == 0

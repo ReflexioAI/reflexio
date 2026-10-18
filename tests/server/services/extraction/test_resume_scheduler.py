@@ -512,10 +512,11 @@ def test_first_org_context_failure_cannot_block_other_discovered_orgs(monkeypatc
         resume_scheduler, "pending_tool_calls_enabled", lambda _ctx: True
     )
     monkeypatch.setattr(resume_scheduler, "ExtractionResumeWorker", Worker)
+    monkeypatch.setenv("REFLEXIO_RESUME_POLL_INTERVAL_SECONDS", "0.25")
     scheduler = resume_scheduler.ExtractionResumeScheduler(
         request_context_factory=cast(Callable[[str], RequestContext], factory),
         bootstrap_org_id="broken",
         org_id_provider=lambda: ["broken", "healthy"],
     )
-    assert scheduler._run_once() == 5.0
+    assert scheduler._run_once() == 0.25
     assert drained == ["healthy"]

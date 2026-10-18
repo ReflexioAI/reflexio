@@ -104,3 +104,91 @@ def test_file_and_cli_propagate_new_migration_error_families(tmp_path):
             with pytest.raises(ConfigurationMigrationError, match="new policy family"):
                 load()
             assert path.read_text() == before
+
+
+@pytest.mark.parametrize("blank", ["", "  "])
+def test_resume_timing_supplied_mapping_defaults_ignore_ambient(monkeypatch, blank):
+    from reflexio.pending_tool_policy import resolve_resume_timing
+
+    monkeypatch.setenv("REFLEXIO_RESUME_POLL_INTERVAL_SECONDS", "invalid-private-poll")
+    monkeypatch.setenv("REFLEXIO_RESUME_CLAIM_TTL_SECONDS", "invalid-private-ttl")
+    for values in (
+        {},
+        {
+            "REFLEXIO_RESUME_POLL_INTERVAL_SECONDS": blank,
+            "REFLEXIO_RESUME_CLAIM_TTL_SECONDS": blank,
+        },
+    ):
+        policy = resolve_resume_timing(values)
+        assert policy.poll_seconds == 5.0
+        assert policy.claim_ttl_seconds == 600
+
+
+@pytest.mark.parametrize("ttl", [1, 1800, ((1 << 31) - 1) // 6])
+def test_resume_timing_preserves_independent_custom_policy(ttl):
+    from reflexio.pending_tool_policy import resolve_resume_timing
+
+    policy = resolve_resume_timing(
+        {
+            "REFLEXIO_RESUME_POLL_INTERVAL_SECONDS": "0.25",
+            "REFLEXIO_RESUME_CLAIM_TTL_SECONDS": str(ttl),
+        }
+    )
+    assert policy.poll_seconds == 0.25
+    assert policy.claim_ttl_seconds == ttl
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("REFLEXIO_RESUME_POLL_INTERVAL_SECONDS", value)
+        for value in ["0", "-1", "nan", "inf", "private-invalid", "1e100"]
+    ]
+    + [
+        ("REFLEXIO_RESUME_CLAIM_TTL_SECONDS", value)
+        for value in [
+            "0",
+            "-1",
+            "1.5",
+            "inf",
+            "private-invalid",
+            str(((1 << 31) - 1) // 6 + 1),
+        ]
+    ],
+)
+def test_resume_timing_rejects_invalid_policy_without_values(name, value):
+    from reflexio.pending_tool_policy import resolve_resume_timing
+
+    with pytest.raises(ValueError, match=name) as error:
+        resolve_resume_timing({name: value})
+    assert "private-invalid" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["REFLEXIO_RESUME_POLL_INTERVAL_SECONDS", "REFLEXIO_RESUME_CLAIM_TTL_SECONDS"],
+)
+def test_oss_startup_refuses_invalid_resume_timing_before_serving(tmp_path, name):
+    import os
+    import subprocess
+    import sys
+
+    empty = tmp_path / "empty-env"
+    empty.write_text("")
+    result = subprocess.run(  # noqa: S603 - fixed interpreter/script, isolated env.
+        [sys.executable, "-c", "import reflexio.server"],
+        env={
+            "PATH": os.environ["PATH"],
+            "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+            "REFLEXIO_ENV_FILE": str(empty),
+            "REFLEXIO_LOG_DIR": str(tmp_path / "logs"),
+            name: "invalid-private-timing",
+        },
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert name in result.stderr
+    assert "invalid-private-timing" not in result.stderr
