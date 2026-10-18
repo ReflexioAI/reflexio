@@ -448,7 +448,6 @@ class TestLiteLLMClientAPIKeyOverride:
                     api_key="test-azure-key-11111",
                     endpoint="https://test-resource.openai.azure.com/",  # type: ignore[arg-type]
                     api_version="2024-02-15-preview",
-                    deployment_name="gpt-4o-deployment",
                 )
             )
         )

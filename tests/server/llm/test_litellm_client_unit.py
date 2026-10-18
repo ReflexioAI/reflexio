@@ -446,6 +446,60 @@ class TestResolveApiKey:
 class TestGenerateResponse:
     """Tests for generate_response (single-prompt entry point)."""
 
+    @pytest.mark.parametrize(
+        "operation", ["generation", "embedding", "batch_embedding"]
+    )
+    @patch("reflexio.server.llm.litellm_client.litellm.embedding")
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_azure_legacy_deployment_cannot_override_selected_model(
+        self, mock_completion, mock_embedding, monkeypatch, operation
+    ):
+        _force_litellm_embedding_route(monkeypatch)
+        monkeypatch.setattr(
+            "reflexio.models.api_schema.validators.socket.getaddrinfo",
+            lambda _host, port, *_args, **_kwargs: [
+                (2, 1, 0, "", ("93.184.216.34", port or 443))
+            ],
+        )
+        credentials = APIKeyConfig.model_validate(
+            {
+                "openai": {
+                    "azure_config": {
+                        "api_key": "fixture-azure-key",
+                        "endpoint": "https://fixture.openai.azure.com/",
+                        "api_version": "2024-02-15-preview",
+                        "deployment_name": "ignored-legacy-deployment",
+                    }
+                }
+            }
+        )
+        mock_completion.return_value = _make_completion_response("selected model reply")
+        client = LiteLLMClient(
+            LiteLLMConfig(model="azure/selected-deployment", api_key_config=credentials)
+        )
+        if operation == "generation":
+            assert (
+                client.generate_response("Which deployment handles this?")
+                == "selected model reply"
+            )
+            sent = mock_completion.call_args.kwargs
+        else:
+            mock_embedding.return_value = _make_embedding_response([0.1, 0.2])
+            if operation == "embedding":
+                assert client.get_embedding(
+                    "text", model="azure/selected-deployment"
+                ) == [0.1, 0.2]
+            else:
+                assert client.get_embeddings(
+                    ["text"], model="azure/selected-deployment"
+                ) == [[0.1, 0.2]]
+            sent = mock_embedding.call_args.kwargs
+        assert sent["model"] == "azure/selected-deployment"
+        assert sent["api_key"] == "fixture-azure-key"
+        assert sent["api_base"] == "https://fixture.openai.azure.com/"
+        assert sent["api_version"] == "2024-02-15-preview"
+        assert "deployment_name" not in sent
+
     @patch("reflexio.server.llm.litellm_client.litellm.completion")
     def test_text_only_prompt(self, mock_completion):
         mock_completion.return_value = _make_completion_response("Paris")
