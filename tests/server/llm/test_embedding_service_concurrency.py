@@ -8,6 +8,7 @@ import time
 import numpy as np
 import pytest
 
+import reflexio.server.background_work as background_reporting
 from reflexio.server.llm import embedding_service as es
 
 
@@ -257,11 +258,28 @@ def test_worker_crash_fails_active_and_queued_callers_and_restarts(monkeypatch):
     monkeypatch.setattr(es, "_MICRO_BATCH_QUEUE", [])
     entered, release = threading.Event(), threading.Event()
     original = es._process_micro_batch
+    failure = RuntimeError("worker processing failed")
+    reported, recovered = threading.Event(), threading.Event()
+    monkeypatch.setattr(background_reporting, "_streaks", {})
+    monkeypatch.setattr(background_reporting, "_classifier", lambda exc: exc is failure)
+    report_failure = es.report_background_failure
+    report_success = es.report_background_success
+
+    def observe_failure(*args, **kwargs):
+        report_failure(*args, **kwargs)
+        reported.set()
+
+    def observe_success(scope):
+        report_success(scope)
+        recovered.set()
+
+    monkeypatch.setattr(es, "report_background_failure", observe_failure)
+    monkeypatch.setattr(es, "report_background_success", observe_success)
 
     def crash(_jobs):
         entered.set()
         assert release.wait(5)
-        raise RuntimeError("worker processing failed")
+        raise failure
 
     def encode(texts):
         return [[1.0] for _ in texts]
@@ -288,8 +306,12 @@ def test_worker_crash_fails_active_and_queued_callers_and_restarts(monkeypatch):
             with pytest.raises(RuntimeError, match="worker processing failed"):
                 future.result(timeout=3)
     assert es._MICRO_BATCH_QUEUE == []
+    assert reported.wait(2)
+    assert background_reporting._streaks["embedding-queue-worker"][0] == 1
     monkeypatch.setattr(es, "_process_micro_batch", original)
     assert embed("restart") == [[1.0]]
+    assert recovered.wait(2)
+    assert "embedding-queue-worker" not in background_reporting._streaks
 
 
 @pytest.mark.parametrize("failure", ["exception", "short-result"])

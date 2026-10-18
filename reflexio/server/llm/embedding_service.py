@@ -18,6 +18,10 @@ from fastapi import FastAPI, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from reflexio.server.background_work import (
+    report_background_failure,
+    report_background_success,
+)
 from reflexio.server.env_utils import positive_int_env
 from reflexio.server.llm.providers.local_embedding_provider import LocalEmbedder
 from reflexio.server.llm.providers.nomic_embedding_provider import (
@@ -547,13 +551,19 @@ def _run_micro_batch_processor() -> None:
                     return
             jobs = _take_micro_batch()
             _process_micro_batch(jobs)
+            report_background_success("embedding-queue-worker")
     except BaseException as error:
         for job in jobs:
             if not job.done.is_set():
                 job.error = error
                 job.done.set()
         _fail_queued_jobs(error)
-        logger.exception("Embedding queue worker failed")
+        report_background_failure(
+            logger,
+            "embedding_queue_worker_failed",
+            error,
+            scope="embedding-queue-worker",
+        )
 
 
 def _take_micro_batch() -> list[_EmbeddingJob]:
