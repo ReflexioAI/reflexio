@@ -1,85 +1,76 @@
-"""Legacy DSN alias promotion — see ``env_loader.promote_legacy_env_aliases``.
-
-The bug this guards: ``.env`` files load with ``override=False``, which only
-protects a canonical name already present in the process environment. It does
-nothing when the environment supplied the LEGACY name and the file supplies the
-CANONICAL one — the file wins, so a process handed a real prod DSN as
-``DATA_SUPABASE_DB_URL`` silently reads the developer's local ``DATA_DB_URL``.
-"""
+"""Removed database names cannot be redirected by dotenv or silently promoted."""
 
 import os
 
 import pytest
 
 from reflexio.cli import env_loader
-
-_PROD = "postgresql://u:p@prod-db.example.com:5432/reflexio"
-_LOCAL = "postgresql://postgres:postgres@127.0.0.1:54322/postgres"
+from reflexio.removed_env import REMOVED_ENV_ALIASES, reject_removed_env
 
 
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
-    for key in (
-        "DATA_DB_URL",
-        "DATA_SUPABASE_DB_URL",
-        "POSTGRES_DB_URL",
-        "REFLEXIO_STORAGE",
-    ):
-        monkeypatch.delenv(key, raising=False)
+def clean_environment(monkeypatch):
+    for name in (*REMOVED_ENV_ALIASES, "DATA_DB_URL"):
+        monkeypatch.delenv(name, raising=False)
 
 
-def test_promotes_legacy_when_canonical_unset(monkeypatch):
-    monkeypatch.setenv("DATA_SUPABASE_DB_URL", _PROD)
-    env_loader.promote_legacy_env_aliases()
-    assert os.environ["DATA_DB_URL"] == _PROD
-
-
-def test_a_dotenv_canonical_value_can_no_longer_shadow_the_legacy_one(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize("name", ["DATA_SUPABASE_DB_URL", "POSTGRES_DB_URL"])
+@pytest.mark.parametrize("mode", [None, "platform", "self_host"])
+def test_old_process_target_fails_before_a_dotenv_target_is_loaded(
+    monkeypatch, tmp_path, name, mode
 ):
-    """The actual regression: legacy injected, canonical only in the .env file.
-
-    Promotion runs first, so the file's ``override=False`` load can no longer
-    replace the injected value — which is what silently redirected a prod
-    verification at a local database.
-    """
-    env_file = tmp_path / ".env"
-    env_file.write_text(f"DATA_DB_URL={_LOCAL}\n")
-    monkeypatch.setenv("DATA_SUPABASE_DB_URL", _PROD)
-
-    env_loader.promote_legacy_env_aliases()
-    env_loader._load_dotenv_pruned(env_file)
-
-    assert os.environ["DATA_DB_URL"] == _PROD, "local .env shadowed the injected DSN"
-
-
-def test_never_overwrites_an_explicit_canonical_value(monkeypatch):
-    monkeypatch.setenv("DATA_DB_URL", _PROD)
-    monkeypatch.setenv("DATA_SUPABASE_DB_URL", _LOCAL)
-    env_loader.promote_legacy_env_aliases()
-    assert os.environ["DATA_DB_URL"] == _PROD
-
-
-def test_blank_canonical_is_treated_as_unset(monkeypatch):
-    """``.env.self_host`` ships ``DATA_DB_URL=`` — blank must not block promotion."""
-    monkeypatch.setenv("DATA_DB_URL", "")
-    monkeypatch.setenv("DATA_SUPABASE_DB_URL", _PROD)
-    env_loader.promote_legacy_env_aliases()
-    assert os.environ["DATA_DB_URL"] == _PROD
-
-
-@pytest.mark.parametrize(
-    "key,value",
-    [("POSTGRES_DB_URL", _LOCAL), ("REFLEXIO_STORAGE", "postgres")],
-)
-def test_defers_to_the_storage_aware_resolver_when_ambiguous(monkeypatch, key, value):
-    """Postgres in play → the Supabase alias is not necessarily the intended DSN."""
-    monkeypatch.setenv("DATA_SUPABASE_DB_URL", _PROD)
-    monkeypatch.setenv(key, value)
-    env_loader.promote_legacy_env_aliases()
-    assert os.environ.get("DATA_DB_URL", "") == ""
-
-
-def test_no_legacy_value_is_a_noop():
-    env_loader.promote_legacy_env_aliases()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / (f".env.{mode}" if mode else ".env")).write_text(
+        "DATA_DB_URL=local-target\n"
+    )
+    monkeypatch.setenv(name, "private-prod-target")
+    with pytest.raises(ValueError, match=name) as error:
+        env_loader.load_reflexio_env_for_mode(cli_mode=mode)
     assert "DATA_DB_URL" not in os.environ
+    assert "private-prod-target" not in str(error.value)
+
+
+@pytest.mark.parametrize("name", list(REMOVED_ENV_ALIASES))
+@pytest.mark.parametrize("value", ["", " ", "private-value"])
+def test_removed_names_rejected_in_process_and_file(monkeypatch, tmp_path, name, value):
+    with pytest.raises(ValueError, match=name):
+        reject_removed_env({name: value})
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"{name}={value}\nDATA_DB_URL=local-target\n")
+    with pytest.raises(ValueError, match=name) as error:
+        env_loader._load_dotenv_pruned(env_file)
+    assert "DATA_DB_URL" not in os.environ
+    assert "private-value" not in str(error.value)
+
+
+def test_canonical_process_target_keeps_precedence(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATA_DB_URL", "process-target")
+    env_file = tmp_path / ".env"
+    env_file.write_text("DATA_DB_URL=file-target\n")
+    env_loader._load_dotenv_pruned(env_file)
+    assert os.environ["DATA_DB_URL"] == "process-target"
+
+
+@pytest.mark.parametrize("disabled", ["1", "true", "T", "yes", "Y"])
+def test_disabled_dotenv_does_not_validate_or_prune_file(
+    monkeypatch, tmp_path, disabled
+):
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", disabled)
+    monkeypatch.setenv("KEEP_PROCESS_VALUE", "")
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "POSTGRES_DB_URL=private-target\nDATA_DB_URL=wrong-target\nKEEP_PROCESS_VALUE=\n"
+    )
+    env_loader._load_dotenv_pruned(env_file)
+    assert "DATA_DB_URL" not in os.environ
+    assert os.environ["KEEP_PROCESS_VALUE"] == ""
+    monkeypatch.setenv("POSTGRES_DB_URL", "private-process-target")
+    with pytest.raises(ValueError, match="POSTGRES_DB_URL"):
+        env_loader._load_dotenv_pruned(env_file)
+
+
+def test_worker_upgrade_diagnostic_preserves_execution_count():
+    with pytest.raises(ValueError, match="explicit server --workers N") as error:
+        reject_removed_env({"WEB_CONCURRENCY": "private-value"})
+    assert "diagnostic metadata only" in str(error.value)
+    assert "private-value" not in str(error.value)

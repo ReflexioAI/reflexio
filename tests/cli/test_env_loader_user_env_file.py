@@ -78,9 +78,9 @@ def test_generated_env_uses_only_canonical_backfill_budget(monkeypatch, tmp_path
     monkeypatch.setattr(env_loader, "_load_dotenv_pruned", lambda *_, **__: None)
     assert env_loader.load_reflexio_env() == target
     values = dotenv_values(target)
-    assert vbs.ENABLE_ENV_VAR not in values
+    assert "REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED" not in values
     assert values[vbs.CAP_ENV_VAR] == "0"
-    monkeypatch.delenv(vbs.ENABLE_ENV_VAR, raising=False)
+    monkeypatch.delenv("REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED", raising=False)
     monkeypatch.setenv(vbs.CAP_ENV_VAR, values[vbs.CAP_ENV_VAR])
     assert vbs._resolve_cap() == 0
     monkeypatch.setenv(vbs.CAP_ENV_VAR, "2")

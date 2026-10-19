@@ -94,14 +94,15 @@ def _log_multi_worker_daemons() -> None:
     (duplicate ticking). Safe by the concurrent-tick invariant — every daemon
     tick is concurrent-safe — but worth one visible line (design D3).
 
-    Checks ``REFLEXIO_SERVER_WORKERS`` then ``WEB_CONCURRENCY``. When the count
+    Reads ``REFLEXIO_SERVER_WORKERS``. When the count
     is unavailable or invalid, this logs nothing.
     """
     import os
 
-    raw_workers = os.environ.get("REFLEXIO_SERVER_WORKERS") or os.environ.get(
-        "WEB_CONCURRENCY"
-    )
+    from reflexio.removed_env import reject_removed_env
+
+    reject_removed_env(os.environ, canonical="REFLEXIO_SERVER_WORKERS")
+    raw_workers = os.environ.get("REFLEXIO_SERVER_WORKERS")
     try:
         workers = int(raw_workers) if raw_workers is not None else None
     except ValueError:

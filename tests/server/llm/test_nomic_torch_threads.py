@@ -36,9 +36,7 @@ def torch_budget(monkeypatch):
     return current, setter
 
 
-@pytest.mark.parametrize(
-    "name", ["REFLEXIO_EMBED_TORCH_THREADS", "REFLEXIO_INFERENCE_TORCH_THREADS"]
-)
+@pytest.mark.parametrize("name", ["REFLEXIO_INFERENCE_TORCH_THREADS"])
 @pytest.mark.parametrize("count", [1, 3])
 def test_both_names_select_the_same_budget_once(monkeypatch, torch_budget, name, count):
     monkeypatch.setenv(name, str(count))
@@ -72,30 +70,19 @@ def test_invalid_budget_keeps_model_default(
         torch_budget[1].assert_called_once_with(default)
 
 
-def test_matching_legacy_and_canonical_values_are_accepted(monkeypatch, torch_budget):
-    monkeypatch.setenv("REFLEXIO_INFERENCE_TORCH_THREADS", "3")
-    monkeypatch.setenv("REFLEXIO_EMBED_TORCH_THREADS", "3")
-    configure_torch_threads()
-    torch_budget[1].assert_called_once_with(3)
-
-
-def test_conflicting_budgets_fail_before_changing_torch(monkeypatch, torch_budget):
+@pytest.mark.parametrize("legacy", ["", "2", "private-value"])
+def test_removed_budget_is_rejected_before_changing_torch(
+    monkeypatch, torch_budget, legacy
+):
     monkeypatch.setenv("REFLEXIO_INFERENCE_TORCH_THREADS", "2")
-    monkeypatch.setenv("REFLEXIO_EMBED_TORCH_THREADS", "3")
-    with pytest.raises(ValueError, match="Conflicting Torch thread budgets"):
+    monkeypatch.setenv("REFLEXIO_EMBED_TORCH_THREADS", legacy)
+    with pytest.raises(ValueError, match="REFLEXIO_EMBED_TORCH_THREADS"):
         configure_torch_threads()
     torch_budget[1].assert_not_called()
 
 
-def test_legacy_budget_is_not_overwritten_by_e5_default(monkeypatch, torch_budget):
-    monkeypatch.setenv("REFLEXIO_EMBED_TORCH_THREADS", "3")
-    configure_torch_threads()
-    configure_torch_threads(default=2)
-    torch_budget[1].assert_called_once_with(3)
-
-
 def test_actual_torch_budget_and_tensor_operation_in_fresh_process(monkeypatch):
-    monkeypatch.setenv("REFLEXIO_EMBED_TORCH_THREADS", "2")
+    monkeypatch.setenv("REFLEXIO_INFERENCE_TORCH_THREADS", "2")
     result = subprocess.run(  # noqa: S603 — fixed interpreter and literal source
         [
             sys.executable,
@@ -138,16 +125,7 @@ def test_nomic_constructor_observes_the_shared_budget(monkeypatch, torch_budget)
     assert NomicEmbedder()._load() is model
 
 
-def test_valid_alias_survives_invalid_canonical_input(monkeypatch, torch_budget):
-    monkeypatch.setenv("REFLEXIO_INFERENCE_TORCH_THREADS", "invalid")
-    monkeypatch.setenv("REFLEXIO_EMBED_TORCH_THREADS", "3")
-    configure_torch_threads(default=2)
-    torch_budget[1].assert_called_once_with(3)
-
-
-@pytest.mark.parametrize(
-    "name", ["REFLEXIO_EMBED_TORCH_THREADS", "REFLEXIO_INFERENCE_TORCH_THREADS"]
-)
+@pytest.mark.parametrize("name", ["REFLEXIO_INFERENCE_TORCH_THREADS"])
 def test_reranker_first_load_applies_budget_before_model_import(
     monkeypatch, torch_budget, name
 ):

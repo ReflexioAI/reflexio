@@ -64,8 +64,7 @@ def _timing_on(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         lambda _: None,
     )
     monkeypatch.delenv(publish_timing.ENV_MIN_MS, raising=False)
-    monkeypatch.setenv(publish_timing.ENV_ENABLED, "true")
-    monkeypatch.setenv(publish_timing.ENV_THRESHOLD_MS, "0")
+    monkeypatch.setenv(publish_timing.ENV_MIN_MS, "0")
     monkeypatch.setenv(publish_timing.ENV_INTERVAL_SECONDS, "0")
     yield
     publish_timing.reset_for_tests()
@@ -270,7 +269,7 @@ def test_the_coverage_wait_is_not_counted_as_serving_time(
     worker; counting it reported a healthy publish as slow (measured at 609ms
     for one whose own phases summed to ~110ms).
     """
-    monkeypatch.setenv(publish_timing.ENV_THRESHOLD_MS, "300")
+    monkeypatch.setenv(publish_timing.ENV_MIN_MS, "300")
     clock = [0.0]
     monkeypatch.setattr(
         publish_timing,

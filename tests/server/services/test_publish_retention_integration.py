@@ -25,8 +25,7 @@ from .test_publish_http_timing import record_fields
 
 @pytest.fixture
 def reflexio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Reflexio]:
-    monkeypatch.delenv(publish_timing.ENV_MIN_MS, raising=False)
-    monkeypatch.setenv(publish_timing.ENV_ENABLED, "true")
+    monkeypatch.setenv(publish_timing.ENV_MIN_MS, "2000")
     monkeypatch.setattr(
         "reflexio.server.services.durable_learning.local.ensure_local_extraction",
         lambda _: None,
@@ -53,7 +52,7 @@ def test_http_persists_without_sweeping_then_scheduler_enforces_caps(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setenv(publish_timing.ENV_THRESHOLD_MS, "0")
+    monkeypatch.setenv(publish_timing.ENV_MIN_MS, "0")
     monkeypatch.setenv(publish_timing.ENV_INTERVAL_SECONDS, "0")
     app = FastAPI()
     app.add_middleware(publish_timing.PublishHttpTimingMiddleware)

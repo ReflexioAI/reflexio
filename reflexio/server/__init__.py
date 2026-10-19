@@ -45,12 +45,6 @@ LOCAL_STORAGE_PATH = (
     os.environ.get("LOCAL_STORAGE_PATH", "").strip() or _DEFAULT_DATA_DIR
 )
 
-# Interaction cleanup configuration
-
-INTERACTION_CLEANUP_THRESHOLD = int(
-    os.environ.get("INTERACTION_CLEANUP_THRESHOLD", "250000")
-)
-
 # Logging
 
 # Custom log level for full LLM prompts — written to file only (below INFO=20)

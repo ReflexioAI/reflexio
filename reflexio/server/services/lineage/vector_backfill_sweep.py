@@ -18,10 +18,7 @@ Design:
   logs / embedding cost — see ``llm/_litellm_embedding.py``).
 - **One effective budget**: ``REFLEXIO_MISSING_VECTOR_BACKFILL_CAP`` defaults
   to 200; zero disables registration and execution. A positive budget bounds
-  each org/tick. The retired enable flag is only a compatibility alias: falsey
-  resolves to zero, while true/unset delegates to the budget. A legacy explicit
-  disable wins over a positive cap. Existing negative/unparseable caps retain
-  their fallback to 200. Zero formerly fell back too; it now disables repair.
+  each org/tick. Negative/unparseable caps retain their fallback to 200.
   Registered hooks re-read the effective budget each tick. A startup disabled
   by a zero budget does not install this hook; reenabling then needs a restart.
 
@@ -38,12 +35,13 @@ Design:
 from __future__ import annotations
 
 import logging
+import os
 
-from reflexio.server.env_utils import env_str, env_truthy
+from reflexio.removed_env import reject_removed_env
+from reflexio.server.env_utils import env_str
 
 logger = logging.getLogger(__name__)
 
-ENABLE_ENV_VAR = "REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED"
 CAP_ENV_VAR = "REFLEXIO_MISSING_VECTOR_BACKFILL_CAP"
 _DEFAULT_CAP = 200
 
@@ -55,11 +53,10 @@ _installed = False
 def _resolve_cap() -> int:
     """Return the per-org per-tick backfill cap from the environment.
 
-    Zero disables repair. The legacy falsey enable alias resolves to zero.
+    Zero disables repair. Removed enable assignments require migration to the canonical cap.
     Unset, blank, negative or unparseable caps retain the default of 200.
     """
-    if not env_truthy(env_str(ENABLE_ENV_VAR, "true")):
-        return 0
+    reject_removed_env(os.environ, canonical=CAP_ENV_VAR)
     raw = env_str(CAP_ENV_VAR, str(_DEFAULT_CAP))
     try:
         cap = int(raw)

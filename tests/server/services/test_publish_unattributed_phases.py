@@ -41,8 +41,7 @@ from .test_generation_service_publish_timing import (  # noqa: TID252
 def _timing_on(monkeypatch):
     """Timing is off unless the flag is set; `collect()` is otherwise a no-op."""
     monkeypatch.delenv(publish_timing.ENV_MIN_MS, raising=False)
-    monkeypatch.setenv(publish_timing.ENV_ENABLED, "true")
-    monkeypatch.setenv(publish_timing.ENV_THRESHOLD_MS, "0")
+    monkeypatch.setenv(publish_timing.ENV_MIN_MS, "0")
     monkeypatch.setenv(publish_timing.ENV_INTERVAL_SECONDS, "0")
     publish_timing.reset_for_tests()
     yield

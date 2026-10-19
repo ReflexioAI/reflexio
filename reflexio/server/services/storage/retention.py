@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from reflexio.removed_env import reject_removed_env
 from reflexio.server.env_utils import env_str
 
 DEFAULT_ROW_RETENTION_LIMIT = 250_000
@@ -320,13 +321,14 @@ def get_row_retention_limits(*, env: Mapping[str, str] | None = None) -> dict[st
     overridden. A former-default override plus a custom shared limit is
     ambiguous on upgrade: the previous policy ignored that override. Reject
     it rather than silently activating deletion or lowering the effective cap.
-    Customer controls, fixed caps and the interaction alias stay independent.
+    Customer controls and fixed caps stay independent.
     """
     env = os.environ if env is None else env
     operational_limit = _operational_row_limit(
         "REFLEXIO_OPERATIONAL_ROW_LIMIT", DEFAULT_ROW_RETENTION_LIMIT, env
     )
     limits: dict[str, int] = {}
+    reject_removed_env(env, canonical="REFLEXIO_ROW_LIMIT_INTERACTIONS")
     for target in RETENTION_TARGETS:
         if target.fixed_row_limit is not None:
             limits[target.name] = target.fixed_row_limit
@@ -347,8 +349,6 @@ def get_row_retention_limits(*, env: Mapping[str, str] | None = None) -> dict[st
             limits[target.name] = limit
             continue
         default = DEFAULT_ROW_RETENTION_LIMIT
-        if target.name == "interactions":
-            default = _get_int_env("INTERACTION_CLEANUP_THRESHOLD", default, env)
         limits[target.name] = _get_int_env(env_name, default, env)
     return limits
 
