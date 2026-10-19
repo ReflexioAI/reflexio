@@ -65,22 +65,53 @@ def test_one_operational_cap_keeps_customer_and_fixed_limits(monkeypatch, cap):
 
 
 @pytest.mark.parametrize("target", OPERATIONAL)
-@pytest.mark.parametrize("value", ["0", "7", "invalid"])
-def test_custom_retired_cap_requires_explicit_migration(monkeypatch, target, value):
-    key = f"REFLEXIO_ROW_LIMIT_{target.upper()}"
-    monkeypatch.setenv(key, value)
-    with pytest.raises(ValueError, match=f"{key}.*retired.*{SHARED}"):
-        retention.get_row_retention_limits()
+@pytest.mark.parametrize("value", [0, 7, 250000])
+def test_independent_operational_override(monkeypatch, target, value):
+    monkeypatch.setenv(f"REFLEXIO_ROW_LIMIT_{target.upper()}", str(value))
+    limits = retention.get_row_retention_limits()
+    assert limits[target] == value
+    assert {limits[name] for name in OPERATIONAL if name != target} == {250000}
 
 
 @pytest.mark.parametrize("target", OPERATIONAL)
-def test_legacy_default_and_explicitly_matching_cap_are_compatible(monkeypatch, target):
+@pytest.mark.parametrize("value", ["-1", "invalid"])
+def test_invalid_operational_override_is_not_a_deletion_default(
+    monkeypatch, target, value
+):
     key = f"REFLEXIO_ROW_LIMIT_{target.upper()}"
-    monkeypatch.setenv(key, "250000")
-    monkeypatch.setenv(SHARED, "7")
-    assert retention.get_row_retention_limits()[target] == 7
-    monkeypatch.setenv(key, "7")
-    assert retention.get_row_retention_limits()[target] == 7
+    monkeypatch.setenv(key, value)
+    with pytest.raises(ValueError, match=key):
+        retention.get_row_retention_limits()
+
+
+@pytest.mark.parametrize("shared", [0, 7, 500000])
+def test_old_default_and_custom_shared_cap_require_disambiguation(monkeypatch, shared):
+    # The consolidation previously ignored this old default. Do not silently
+    # turn an inherited zero/high cap into a smaller deleting override.
+    monkeypatch.setenv("REFLEXIO_ROW_LIMIT_SHARE_LINKS", "250000")
+    monkeypatch.setenv(SHARED, str(shared))
+    with pytest.raises(ValueError, match="REFLEXIO_ROW_LIMIT_SHARE_LINKS.*ambiguous"):
+        retention.get_row_retention_limits()
+
+
+def test_mapping_is_complete_policy_authority(monkeypatch):
+    monkeypatch.setenv(SHARED, "bad ambient value")
+    assert set(retention.get_row_retention_limits(env={}).values()) == {250000}
+    limits = retention.get_row_retention_limits(
+        env={
+            SHARED: "17",
+            "REFLEXIO_ROW_LIMIT_SHARE_LINKS": "0",
+            "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_JOBS": "9",
+            "REFLEXIO_ROW_LIMIT_PROFILES": "21",
+            "INTERACTION_CLEANUP_THRESHOLD": "11",
+        }
+    )
+    assert limits["share_links"] == 0
+    assert limits["playbook_optimization_jobs"] == 9
+    assert limits["playbook_optimization_candidates"] == 17
+    assert limits["profiles"] == 21
+    assert limits["interactions"] == 11
+    assert limits["user_playbook_exposure_events"] == 250000
 
 
 @pytest.mark.parametrize("value", ["-1", "invalid"])
@@ -91,8 +122,10 @@ def test_invalid_shared_policy_does_not_fall_back_to_deletion(monkeypatch, value
 
 
 @pytest.mark.integration
-def test_sqlite_sweep_uses_shared_cap_and_blocks_conflicting_legacy_policy(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("source", ["shared", "override"])
+@pytest.mark.parametrize("bad_value", ["invalid", "-1", "250000"])
+def test_sqlite_sweep_uses_overrides_and_validates_before_storage_queries(
+    tmp_path, monkeypatch, source, bad_value
 ):
     from reflexio.server.services.storage.retention_sweep import sweep_retention_caps
     from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
@@ -113,7 +146,10 @@ def test_sqlite_sweep_uses_shared_cap_and_blocks_conflicting_legacy_policy(
     monkeypatch.setenv(SHARED, "0")
     assert sweep_retention_caps(storage.org_id, storage).deleted == 0
     assert storage.count_retention_target_rows("share_links") == 3
-    monkeypatch.setenv(SHARED, "2")
+    if source == "shared":
+        monkeypatch.setenv(SHARED, "2")
+    else:
+        monkeypatch.setenv("REFLEXIO_ROW_LIMIT_SHARE_LINKS", "2")
     result = sweep_retention_caps(storage.org_id, storage)
     assert not result.failed
     assert result.deleted == 1
@@ -124,8 +160,11 @@ def test_sqlite_sweep_uses_shared_cap_and_blocks_conflicting_legacy_policy(
         )
     ] == ["second", "third"]
 
-    # Conflict validation must finish before leases, probes, archiving or deletes.
-    monkeypatch.setenv("REFLEXIO_ROW_LIMIT_SHARE_LINKS", "7")
+    # Cap validation must finish before storage leases, probes, archiving or deletes.
+    monkeypatch.setenv("REFLEXIO_ROW_LIMIT_SHARE_LINKS", "0")
+    assert sweep_retention_caps(storage.org_id, storage).deleted == 0
+    assert storage.count_retention_target_rows("share_links") == 2
+    monkeypatch.setenv("REFLEXIO_ROW_LIMIT_SHARE_LINKS", bad_value)
     queries = []
     storage.conn.set_trace_callback(queries.append)
     result = sweep_retention_caps(storage.org_id, storage)
@@ -137,14 +176,14 @@ def test_sqlite_sweep_uses_shared_cap_and_blocks_conflicting_legacy_policy(
     storage.conn.close()
 
 
-def test_conflicting_policy_is_rejected_before_scheduler_start(monkeypatch):
+def test_invalid_policy_is_rejected_before_scheduler_start(monkeypatch):
     from unittest.mock import MagicMock
 
     from reflexio.server.services.lineage.gc_scheduler import maybe_start_lineage_gc
 
-    monkeypatch.setenv("REFLEXIO_ROW_LIMIT_SHARE_LINKS", "0")
+    monkeypatch.setenv("REFLEXIO_ROW_LIMIT_SHARE_LINKS", "invalid")
     factory = MagicMock()
-    with pytest.raises(ValueError, match="REFLEXIO_ROW_LIMIT_SHARE_LINKS.*retired"):
+    with pytest.raises(ValueError, match="REFLEXIO_ROW_LIMIT_SHARE_LINKS"):
         maybe_start_lineage_gc(factory, bootstrap_org_id="migration-check")
     factory.assert_not_called()
 
