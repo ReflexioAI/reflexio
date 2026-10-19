@@ -892,6 +892,15 @@ renewable per-user extraction lease; `claimed_at` stays an immutable fence. Defa
 validation or raw upgrade pruning; customized fields require explicit adoption.
 Do not reintroduce a bootstrap org's timing as fleet scheduler policy.
 
+Pending information request admission uses the durable create-or-attach store
+operation directly. The warning-only `max_pending_followups_per_scope` base and
+per-tool fields and their separate backlog count query are retired.
+`pending_tool_policy.py::strip_retired_pending_followup_warning` cleans only
+those known paths; profile preparation/consumption share the strict snapshot
+checker in `profile_package_preparation.py::pending_tool_policy_snapshot`. It
+retains original admitted snapshots/digests without resetting paid attempts.
+Waiting, answer reuse/relevance, retry limits and secrets remain independent.
+
 Agent-success evaluation consumes the full source-filtered session (or an explicit
 cutover prefix). Its former window/stride overrides and four historical aliases
 are accepted only as ignored input and removed by

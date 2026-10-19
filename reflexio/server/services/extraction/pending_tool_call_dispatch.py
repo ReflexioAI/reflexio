@@ -140,26 +140,6 @@ def handle_ask_human(
     current = datetime.now(UTC)
     spec = _build_async_request_spec(args=args, ctx=ctx)
     tool_config = ctx.config.for_tool(spec.tool_name)
-    # Observational soft cap only: intentionally read OUTSIDE the create/attach
-    # transaction. It never blocks or fails extraction (a small count race here
-    # would at most over/under-log the warning by one), so it does not need the
-    # per-scope transaction boundary that the dedup insert/attach uses.
-    unresolved_count = ctx.storage.count_unresolved_followup_dependencies(
-        org_id=ctx.org_id,
-        extractor_kind=ctx.extractor_kind,
-        tool_name=spec.tool_name,
-    )
-    if unresolved_count >= tool_config.max_pending_followups_per_scope:
-        logger.warning(
-            "event=pending_followup_soft_cap_exceeded org_id=%s extractor_kind=%s "
-            "tool_name=%s current_count=%d soft_cap=%d",
-            ctx.org_id,
-            ctx.extractor_kind,
-            spec.tool_name,
-            unresolved_count,
-            tool_config.max_pending_followups_per_scope,
-        )
-
     record = PendingToolCallRecord(
         id=f"ptc_{uuid.uuid4().hex}",
         org_id=ctx.org_id,

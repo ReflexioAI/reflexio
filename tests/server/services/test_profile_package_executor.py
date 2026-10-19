@@ -195,17 +195,42 @@ def test_restart_preserves_candidates_and_paid_calls(pipeline, monkeypatch, boun
     assert len(storage.pending_extraction_effects()) == 1
 
 
+@pytest.mark.parametrize("historical_pending_warning", [False, True])
 def test_retired_name_resume_keeps_frozen_profile_candidates_and_paid_calls(
-    pipeline, monkeypatch
+    pipeline, monkeypatch, historical_pending_warning
 ):
-    from reflexio.models.config_schema import ProfileExtractorConfig
+    from reflexio.models.config_schema import (
+        PendingToolCallConfig,
+        PendingToolCallToolOverrideConfig,
+        ProfileExtractorConfig,
+    )
     from reflexio.server.services.durable_learning import window_executor
     from reflexio.server.services.storage.storage_base import AgentRunStatus
+    from tests.server.services.extraction.test_profile_package_consumer import (
+        legacy_warning_config,
+    )
 
     class LegacyProfileExtractorConfig(ProfileExtractorConfig):
         extractor_name: str = "historical-profile-label"
 
     engine, storage, window, token, client, calls = setup(pipeline, monkeypatch)
+    pending = PendingToolCallConfig(
+        enabled=True,
+        hmac_secrets=["fixture-signing-secret"],
+        tool_overrides={
+            "ask_human": PendingToolCallToolOverrideConfig(pending_ttl_seconds=90)
+        },
+    )
+    root_config = engine.request_context.configurator.get_config()
+    if historical_pending_warning:
+        root_config.pending_tool_call_config = legacy_warning_config(pending)
+        monkeypatch.setattr(
+            engine.request_context.configurator, "get_config", lambda: root_config
+        )
+        monkeypatch.setattr(
+            "reflexio.server.services.durable_learning.profile_package_executor.pending_tool_calls_enabled",
+            lambda _: True,
+        )
     # Use the former schema before admission so native contracts, compression
     # witnesses and the parent snapshot all contain the historical field.
     policy = copy.deepcopy(window.policy)
@@ -242,6 +267,16 @@ def test_retired_name_resume_keeps_frozen_profile_candidates_and_paid_calls(
     )
     assert len(calls) == 3
     assert storage.get_user_profile("u") == []
+    if historical_pending_warning:
+        frozen_pending = snapshot["profile_package_preparation"]["pending_tool_config"]
+        assert frozen_pending["max_pending_followups_per_scope"] == 37
+        assert (
+            frozen_pending["tool_overrides"]["ask_human"][
+                "max_pending_followups_per_scope"
+            ]
+            == 73
+        )
+        root_config.pending_tool_call_config = pending
     monkeypatch.setattr(
         window_executor, "ProfileExtractorConfig", ProfileExtractorConfig
     )

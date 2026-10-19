@@ -466,83 +466,7 @@ def test_expire_pending_tool_calls_rolls_back_all_tables_on_midtxn_failure(
 
 
 # ---------------------------------------------------------------------------
-# 7. count_unresolved_followup_dependencies — 3-table JOIN (zero coverage)
-# ---------------------------------------------------------------------------
-
-
-def test_count_unresolved_followup_dependencies_joins_three_tables(storage):
-    """Counts dependencies that are unresolved AND unconsumed, whose pending
-    call is PENDING for the given org+extractor_kind+tool_name (a 3-table JOIN
-    across runs, deps, and pending calls). Non-vacuous: a resolved dep, a
-    dep whose pending call is RESOLVED, and a run of a different extractor_kind
-    must all be excluded — dropping any JOIN predicate over-counts.
-    """
-    now = datetime(2026, 5, 28, tzinfo=UTC)
-    storage.create_agent_run(_run("run_1", AgentRunStatus.RUNNING))
-    storage.create_agent_run(_run("run_2", AgentRunStatus.RUNNING))
-    storage.create_agent_run(
-        _run(
-            "run_other_kind",
-            AgentRunStatus.RUNNING,
-            binding=_binding(extractor_kind="success"),
-        )
-    )
-
-    # Counts: unresolved + pending call PENDING, across two runs.
-    storage.create_pending_tool_call(_pending("ptc_1", now=now, question="q1"))
-    storage.create_pending_tool_call(_pending("ptc_2", now=now, question="q2"))
-    storage.attach_run_tool_dependency(
-        RunToolDependencyRecord(run_id="run_1", pending_tool_call_id="ptc_1")
-    )
-    storage.attach_run_tool_dependency(
-        RunToolDependencyRecord(run_id="run_2", pending_tool_call_id="ptc_2")
-    )
-
-    # Excluded: dependency already resolved.
-    storage.create_pending_tool_call(
-        _pending("ptc_resolved_dep", now=now, question="q3")
-    )
-    storage.attach_run_tool_dependency(
-        RunToolDependencyRecord(
-            run_id="run_1", pending_tool_call_id="ptc_resolved_dep", resolved_at=now
-        )
-    )
-
-    # Excluded: pending call is not PENDING (RESOLVED).
-    storage.create_pending_tool_call(
-        _pending(
-            "ptc_call_resolved",
-            now=now,
-            question="q4",
-            status=PendingToolCallStatus.RESOLVED,
-            result={"answer": "x"},
-            resolved_at=now,
-            valid_until=now + timedelta(hours=1),
-        )
-    )
-    storage.attach_run_tool_dependency(
-        RunToolDependencyRecord(
-            run_id="run_2", pending_tool_call_id="ptc_call_resolved"
-        )
-    )
-
-    # Excluded: run of a different extractor_kind.
-    storage.create_pending_tool_call(_pending("ptc_other_kind", now=now, question="q5"))
-    storage.attach_run_tool_dependency(
-        RunToolDependencyRecord(
-            run_id="run_other_kind", pending_tool_call_id="ptc_other_kind"
-        )
-    )
-
-    count = storage.count_unresolved_followup_dependencies(
-        org_id="org_1", extractor_kind="profile", tool_name="ask_human"
-    )
-
-    assert count == 2
-
-
-# ---------------------------------------------------------------------------
-# 8. list_pending_tool_calls — filter / clamp / order (zero coverage)
+# 7. list_pending_tool_calls — filter / clamp / order (zero coverage)
 # ---------------------------------------------------------------------------
 
 
@@ -597,7 +521,7 @@ def test_list_pending_tool_calls_filters_clamps_and_orders(storage):
 
 
 # ---------------------------------------------------------------------------
-# 9. claim_ready_agent_run compare-and-set (RESUMING status guard, isolated)
+# 8. claim_ready_agent_run compare-and-set (RESUMING status guard, isolated)
 # ---------------------------------------------------------------------------
 
 

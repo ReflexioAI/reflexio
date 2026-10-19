@@ -797,7 +797,7 @@ class TestCrossFieldValidators:
         )
 
         assert config.pending_tool_call_config.enabled is False
-        assert config.pending_tool_call_config.max_pending_followups_per_scope == 10
+        assert config.pending_tool_call_config.pending_ttl_seconds == 86_400
 
     def test_pending_tool_calls_allow_managed_supabase_storage(self):
         """Managed Supabase is database-backed and supports pending tool calls."""
@@ -824,9 +824,7 @@ class TestCrossFieldValidators:
         assert config.storage_config is None
 
     def test_pending_tool_call_config_validates_positive_limits(self):
-        """PendingToolCallConfig rejects non-positive timeout and cap values."""
-        with pytest.raises(ValidationError):
-            PendingToolCallConfig(max_pending_followups_per_scope=0)
+        """PendingToolCallConfig rejects invalid waiting and relevance policy."""
         with pytest.raises(ValidationError):
             PendingToolCallConfig(pending_ttl_seconds=0)
         with pytest.raises(ValidationError):
