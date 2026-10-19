@@ -143,3 +143,30 @@ def test_valid_alias_survives_invalid_canonical_input(monkeypatch, torch_budget)
     monkeypatch.setenv("REFLEXIO_EMBED_TORCH_THREADS", "3")
     configure_torch_threads(default=2)
     torch_budget[1].assert_called_once_with(3)
+
+
+@pytest.mark.parametrize(
+    "name", ["REFLEXIO_EMBED_TORCH_THREADS", "REFLEXIO_INFERENCE_TORCH_THREADS"]
+)
+def test_reranker_first_load_applies_budget_before_model_import(
+    monkeypatch, torch_budget, name
+):
+    from reflexio.server.llm.rerank import cross_encoder_model
+    from reflexio.server.llm.rerank.common import ENGLISH_RERANK_MODEL
+
+    monkeypatch.setenv(name, "3")
+    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "true")
+    model = Mock()
+    constructor = Mock(return_value=model)
+
+    def import_model():
+        # A MiniLM deployment has not constructed either Torch embedding model.
+        assert torch_budget[0] == [3]
+        return constructor
+
+    monkeypatch.setattr(cross_encoder_model, "_import_cross_encoder", import_model)
+    runner = cross_encoder_model.CrossEncoderRunner(ENGLISH_RERANK_MODEL)
+    assert runner._get_model() is model
+    assert runner._get_model() is model
+    constructor.assert_called_once()
+    torch_budget[1].assert_called_once_with(3)
