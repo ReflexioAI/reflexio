@@ -51,8 +51,8 @@ would make every waited request look slow.
 
 The companion ``publish_http_timing`` event measures from ASGI entry through
 the final response body, including dependencies and explicit extraction waits.
-It shares a generated ``timing_id`` with the handler event. Each event type
-has its own threshold and per-org throttle; at most two lines per org per
+It shares a generated ``timing_id`` with the handler event. Both events share the request's captured threshold and throttle interval,
+with separate per-org throttle populations; at most two lines per org per
 window are emitted. HTTP records mark incomplete workers rather than treating
 a timeout response as publish completion.
 
@@ -106,13 +106,19 @@ storage layer, added there and read through :func:`record`; restructuring
 storage from a logging module to obtain it would cost far more than the field
 is worth.
 
-Every part of it is off unless ``REFLEXIO_PUBLISH_TIMING_ENABLED=true``.
+Diagnostics default to off. ``REFLEXIO_PUBLISH_TIMING_MIN_MS=off`` disables
+collection; a nonnegative integer enables it at that slow-request threshold
+(``0`` reports every request, subject to the independent per-org throttle).
+Absent or blank canonical input retains the legacy opt-in and threshold. An
+explicit legacy ``false`` remains a veto. HTTP entry captures one immutable
+policy shared with the handler; edits apply to the next request.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 import threading
 import time
@@ -125,7 +131,7 @@ from dataclasses import dataclass, field
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from reflexio.models.api_schema.common import sanitise_for_log
-from reflexio.server.env_utils import env_bool, env_str
+from reflexio.server.env_utils import EnvBoolError, env_bool, env_str
 from reflexio.server.ops_log import get_ops_logger
 
 logger = logging.getLogger(__name__)
@@ -133,6 +139,7 @@ logger = logging.getLogger(__name__)
 #: Opt-in. Absent or blank means off, and anything that is not ``true``/``false``
 #: raises rather than silently resolving to off -- see :func:`env_bool`.
 ENV_ENABLED = "REFLEXIO_PUBLISH_TIMING_ENABLED"
+ENV_MIN_MS = "REFLEXIO_PUBLISH_TIMING_MIN_MS"
 
 #: Only requests slower than this are worth a line. Below it the request is
 #: behaving and the line would be pure cost.
@@ -177,11 +184,20 @@ _last_logged_by_org: dict[str, float] = {}
 _last_http_logged_by_org: dict[str, float] = {}
 
 
+@dataclass(frozen=True)
+class PublishTimingPolicy:
+    """One request's diagnostic admission, slow threshold and throttle window."""
+
+    threshold_ms: int | None
+    interval_seconds: float
+
+
 @dataclass
 class _Scope:
     """One request's accumulator, plus its clock and its at-most-once latch."""
 
     started: float
+    policy: PublishTimingPolicy
     phases: dict[str, int] = field(default_factory=dict)
     excluded_s: float = 0.0
     emitted: bool = False
@@ -193,6 +209,7 @@ class _HttpScope:
     """Shared across ASGI child tasks and the shielded publish worker."""
 
     started: float
+    policy: PublishTimingPolicy
     timing_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     org_id: str = "unknown"
     request_id: str = "unknown"
@@ -215,17 +232,48 @@ _http_scope: ContextVar[_HttpScope | None] = ContextVar(
 _scope: ContextVar[_Scope | None] = ContextVar("publish_timing_scope", default=None)
 
 
-def publish_timing_enabled() -> bool:
-    """Return whether per-phase publish timing should be collected.
+def resolve_publish_timing_policy(
+    env: Mapping[str, str] | None = None,
+) -> PublishTimingPolicy:
+    """Resolve one policy, retaining strict legacy opt-in and explicit vetoes.
 
-    Returns:
-        bool: True when ``REFLEXIO_PUBLISH_TIMING_ENABLED`` is ``true``.
+    A new canonical name avoids enabling a dormant legacy threshold. ``off``
+    disables; nonnegative milliseconds enable timing. Blank uses legacy inputs.
     """
-    return env_bool(ENV_ENABLED, default=False)
+    source = os.environ if env is None else env
+    try:
+        legacy_enabled = env_bool(ENV_ENABLED, default=False, env=source)
+    except EnvBoolError:
+        raise EnvBoolError(f"{ENV_ENABLED} must be boolean true or false") from None
+    raw = env_str(ENV_MIN_MS, env=source)
+    if raw:
+        if raw.lower() == "off":
+            threshold = None
+        else:
+            try:
+                threshold = int(raw)
+            except ValueError:
+                raise ValueError(
+                    f"{ENV_MIN_MS} must be off or nonnegative integer milliseconds"
+                ) from None
+            if threshold < 0:
+                raise ValueError(
+                    f"{ENV_MIN_MS} must be off or nonnegative integer milliseconds"
+                )
+    else:
+        threshold = _threshold_ms(env=source) if legacy_enabled else None
+    if env_str(ENV_ENABLED, env=source) and not legacy_enabled:
+        threshold = None
+    return PublishTimingPolicy(threshold, _interval_seconds(env=source))
 
 
-def _threshold_ms() -> int:
-    """Return the slow-request threshold, refusing values that would flood.
+def publish_timing_enabled() -> bool:
+    """Return resolved admission; collectors capture the complete policy."""
+    return resolve_publish_timing_policy().threshold_ms is not None
+
+
+def _threshold_ms(*, env: Mapping[str, str] | None = None) -> int:
+    """Return the legacy threshold, refusing values that would flood.
 
     ``0`` stays an explicit "report every publish", which is useful when
     reproducing locally. A negative value is not a quieter version of that --
@@ -235,7 +283,7 @@ def _threshold_ms() -> int:
     Returns:
         int: Milliseconds a request must reach before it is worth a line.
     """
-    raw = env_str(ENV_THRESHOLD_MS, str(_DEFAULT_THRESHOLD_MS)).strip()
+    raw = env_str(ENV_THRESHOLD_MS, str(_DEFAULT_THRESHOLD_MS), env=env)
     try:
         value = int(raw)
     except ValueError:
@@ -243,7 +291,7 @@ def _threshold_ms() -> int:
     return value if value >= 0 else _DEFAULT_THRESHOLD_MS
 
 
-def _interval_seconds() -> float:
+def _interval_seconds(*, env: Mapping[str, str] | None = None) -> float:
     """Return the per-org throttle window, refusing values that would flood.
 
     ``0`` stays an explicit "no throttle". Anything negative or non-finite
@@ -254,7 +302,7 @@ def _interval_seconds() -> float:
     Returns:
         float: Seconds one org must wait before it is worth another line.
     """
-    raw = env_str(ENV_INTERVAL_SECONDS, str(_DEFAULT_INTERVAL_SECONDS)).strip()
+    raw = env_str(ENV_INTERVAL_SECONDS, str(_DEFAULT_INTERVAL_SECONDS), env=env)
     try:
         value = float(raw)
     except ValueError:
@@ -279,10 +327,15 @@ def collect() -> Iterator[None]:
     Yields:
         None: The scope is read from a ContextVar, not from the bound value.
     """
-    if not publish_timing_enabled() or _scope.get() is not None:
+    if _scope.get() is not None:
         yield
         return
-    token = _scope.set(_Scope(started=time.perf_counter()))
+    http = _http_scope.get()
+    policy = http.policy if http is not None else resolve_publish_timing_policy()
+    if policy.threshold_ms is None:
+        yield
+        return
+    token = _scope.set(_Scope(started=time.perf_counter(), policy=policy))
     try:
         yield
     finally:
@@ -292,14 +345,14 @@ def collect() -> Iterator[None]:
 def http_org_resolved(org_id: str) -> None:
     """Attribute dependency failures once trusted organization identity is known."""
     scope = _http_scope.get()
-    if scope is not None:
+    if scope is not None and scope.policy.threshold_ms is not None:
         scope.org_id = org_id
 
 
 def handler_started(*, org_id: str, request_id: str, wait_for_response: bool) -> None:
     """Mark route entry after dependencies, without moving the handler clock."""
     scope = _http_scope.get()
-    if scope is not None:
+    if scope is not None and scope.policy.threshold_ms is not None:
         scope.org_id = org_id
         scope.request_id = request_id
         scope.wait_for_response = wait_for_response
@@ -326,7 +379,7 @@ def worker_started() -> None:
 def http_phase(name: str) -> Iterator[None]:
     """Time a dependency within the HTTP boundary, separately from handler phases."""
     scope = _http_scope.get()
-    if scope is None:
+    if scope is None or scope.policy.threshold_ms is None:
         yield
         return
     start = time.perf_counter()
@@ -429,7 +482,9 @@ def increment(name: str, value: int = 1) -> None:
         scope.phases[name] = scope.phases.get(name, 0) + value
 
 
-def _should_log(org_id: str, now: float, *, http: bool = False) -> bool:
+def _should_log(
+    org_id: str, now: float, *, interval_seconds: float, http: bool = False
+) -> bool:
     """Return whether this org's throttle window is open, claiming it if so.
 
     Args:
@@ -439,11 +494,10 @@ def _should_log(org_id: str, now: float, *, http: bool = False) -> bool:
     Returns:
         bool: Whether the caller may emit.
     """
-    interval = _interval_seconds()
     with _lock:
         logged = _last_http_logged_by_org if http else _last_logged_by_org
         last = logged.get(org_id)
-        if last is not None and now - last < interval:
+        if last is not None and now - last < interval_seconds:
             return False
         logged[org_id] = now
         return True
@@ -481,9 +535,12 @@ def emit(*, org_id: str, request_id: str) -> bool:
         http.request_id = request_id
         http.handler_ms = total_ms
         http.handler_finished = finished
-    if total_ms < _threshold_ms():
+    threshold = scope.policy.threshold_ms
+    if threshold is None or total_ms < threshold:
         return False
-    if not _should_log(org_id, time.monotonic()):
+    if not _should_log(
+        org_id, time.monotonic(), interval_seconds=scope.policy.interval_seconds
+    ):
         return False
     scope.emitted = True
 
@@ -555,13 +612,19 @@ class PublishHttpTimingMiddleware:
             scope["type"] != "http"
             or scope.get("method") != "POST"
             or route_relative_path(scope) != "/api/publish_interaction"
-            or not publish_timing_enabled()
             or _http_scope.get() is not None
         ):
             await self.app(scope, receive, send)
             return
-        timing = _HttpScope(started=time.perf_counter())
+        policy = resolve_publish_timing_policy()
+        timing = _HttpScope(started=time.perf_counter(), policy=policy)
         token = _http_scope.set(timing)
+        if policy.threshold_ms is None:
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                _http_scope.reset(token)
+            return
         status = 0
         response_complete = False
 
@@ -588,8 +651,16 @@ def _emit_http(scope: _HttpScope, *, status: int, response_complete: bool) -> No
     """Emit a separately throttled HTTP record, including incomplete workers."""
     finished = time.perf_counter()
     total_ms = int((finished - scope.started) * 1000)
-    if total_ms < _threshold_ms() or not _should_log(
-        scope.org_id, time.monotonic(), http=True
+    threshold = scope.policy.threshold_ms
+    if (
+        threshold is None
+        or total_ms < threshold
+        or not _should_log(
+            scope.org_id,
+            time.monotonic(),
+            interval_seconds=scope.policy.interval_seconds,
+            http=True,
+        )
     ):
         return
     fields = dict(scope.phases)
