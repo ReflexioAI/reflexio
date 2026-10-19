@@ -249,6 +249,28 @@ def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
             ):
                 if payload.get(name) is None:
                     payload[name] = value
+    api_keys = payload.get("api_key_config")
+    openai = api_keys.get("openai") if isinstance(api_keys, dict) else None
+    azure = openai.get("azure_config") if isinstance(openai, dict) else None
+    if (
+        isinstance(api_keys, dict)
+        and isinstance(openai, dict)
+        and isinstance(azure, dict)
+        and "deployment_name" in azure
+    ):
+        # Azure deployments are selected by the model ID. This field never
+        # affected dispatch; raw upgrades must not preserve it as opaque metadata.
+        payload["api_key_config"] = {
+            **api_keys,
+            "openai": {
+                **openai,
+                "azure_config": {
+                    key: value
+                    for key, value in azure.items()
+                    if key != "deployment_name"
+                },
+            },
+        }
     if "pending_tool_call_config" in payload:
         payload["pending_tool_call_config"] = strip_legacy_pending_tool_timing(
             payload["pending_tool_call_config"]
@@ -489,7 +511,6 @@ class AzureOpenAIConfig(BaseModel):
     api_key: NonEmptyStr
     endpoint: SafeHttpUrl  # e.g., "https://your-resource.openai.azure.com/"
     api_version: str = "2024-02-15-preview"
-    deployment_name: str | None = None  # Optional, can be specified per request
 
 
 class OpenAIConfig(BaseModel):

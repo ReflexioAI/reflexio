@@ -18,7 +18,6 @@ export interface OpenAIConfig {
     api_key: string;
     endpoint: string;
     api_version: string;
-    deployment_name?: string | null;
   } | null;
 }
 
@@ -237,6 +236,12 @@ export function serializeConfig(config: ReflexioConfig): unknown {
     ] as const) {
       const entry = out[provider];
       if (!entry || clean(entry.api_key) === null) out[provider] = null;
+    }
+    if (out.openai?.azure_config) {
+      const azure = { ...out.openai.azure_config };
+      // Known retired input, not an opaque extension: the model ID owns routing.
+      Reflect.deleteProperty(azure, "deployment_name");
+      out.openai = { ...out.openai, azure_config: azure };
     }
     if (out.openai && clean(out.openai.api_key) === null) {
       out.openai = out.openai.azure_config ? { ...out.openai, api_key: null } : null;
