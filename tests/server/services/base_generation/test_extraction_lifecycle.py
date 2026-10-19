@@ -90,7 +90,7 @@ def test_failure_log_template_is_constant_across_identifiers(caplog):
     """The identifier and exception text are log ARGS, never the template.
 
     Error trackers group on ``LogRecord.msg``; an interpolated identifier made
-    every occurrence its own group (Sentry PYTHON-FASTAPI-157).
+    every occurrence its own group.
     """
     templates = set()
     for identifier in ("rqa1FTwfHfKWMmIil7VUS3NBEbxivFV9", "u-2", "Zz9"):

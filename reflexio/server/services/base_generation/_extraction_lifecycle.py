@@ -52,7 +52,7 @@ def _failure_template(*parts: str) -> str:
     Error trackers group log events by the unformatted template
     (``LogRecord.msg``). Interpolating the identifier or exception text into
     it made every failure a distinct template, so one recurring failure became
-    thousands of separately counted events (Sentry PYTHON-FASTAPI-157). The
+    thousands of separately counted events. The
     service name, timeout and exception type are bounded and stay in the
     template so different failures still group apart; the request identifier
     and exception message are passed as arguments. Odd-indexed ``parts`` are
