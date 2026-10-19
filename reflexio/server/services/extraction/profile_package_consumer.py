@@ -7,7 +7,6 @@ this child never completes its parent or advances an extraction cursor.
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -24,6 +23,7 @@ from reflexio.server.services.extraction.pending_tool_call_dispatch import (
 )
 from reflexio.server.services.extraction.profile_package_preparation import (
     ProfilePackagePreparation,
+    pending_tool_policy_snapshot,
 )
 from reflexio.server.services.extraction.resumable_agent import (
     AgentRunResult,
@@ -33,7 +33,6 @@ from reflexio.server.services.extraction.resumable_agent import (
 from reflexio.server.services.extraction.source_package import (
     source_package_presentation,
 )
-from reflexio.server.services.storage.storage_base import canonical_json
 
 if TYPE_CHECKING:
     from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -138,14 +137,7 @@ def _pending_tools(
         return [], None
     if pending_tool_config is None:
         raise InputBudgetConfigurationError("Profile pending tool secrets unavailable")
-    current = pending_tool_config.model_dump(mode="json", exclude={"hmac_secrets"})
-    current["hmac_secrets_digest"] = hashlib.sha256(
-        canonical_json(pending_tool_config.hmac_secrets).encode()
-    ).hexdigest()
-    if current != tools_config:
-        raise InputBudgetConfigurationError(
-            "Profile pending tool configuration changed"
-        )
+    pending_tool_policy_snapshot(pending_tool_config, tools_config)
     return create_pending_info_tools_for_extractor_kind(
         "profile"
     ), PendingToolCallToolContext(

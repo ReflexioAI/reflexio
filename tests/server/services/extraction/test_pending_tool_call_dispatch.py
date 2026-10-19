@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import tempfile
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
@@ -158,26 +157,41 @@ def test_same_human_question_attaches_across_users_with_org_scope(storage):
     )
 
 
-def test_soft_cap_logs_but_still_accepts_human_request(storage, caplog):
+def test_admission_does_not_depend_on_observational_backlog_read(storage, monkeypatch):
     storage.create_agent_run(_agent_run("run_1"))
     storage.create_agent_run(_agent_run("run_2"))
+    storage.create_agent_run(_agent_run("run_3"))
     tool = create_ask_human_tool()
-    config = PendingToolCallConfig(max_pending_followups_per_scope=1)
+    config = PendingToolCallConfig.model_validate(
+        {"max_pending_followups_per_scope": 1}
+    )
+    from unittest.mock import Mock
 
-    tool.handler(
+    count = Mock(side_effect=AssertionError("observational storage is unavailable"))
+    monkeypatch.setattr(
+        storage, "count_unresolved_followup_dependencies", count, raising=False
+    )
+    first = tool.handler(
         AskHumanArgs(question="What deployment target should this agent optimize for?"),
         _tool_context(storage, run_id="run_1", config=config),
     )
-
-    with caplog.at_level(logging.WARNING):
-        outcome = tool.handler(
-            AskHumanArgs(question="Which compliance framework applies?"),
-            _tool_context(storage, run_id="run_2", config=config),
-        )
-
+    outcome = tool.handler(
+        AskHumanArgs(question="Which compliance framework applies?"),
+        _tool_context(storage, run_id="run_2", config=config),
+    )
+    attached = tool.handler(
+        AskHumanArgs(question="What deployment target should this agent optimize for?"),
+        _tool_context(storage, run_id="run_3", config=config),
+    )
+    assert isinstance(first, AsyncAccepted)
     assert isinstance(outcome, AsyncAccepted)
-    assert "pending_followup_soft_cap_exceeded" in caplog.text
+    assert isinstance(attached, AsyncAccepted)
+    assert first.pending_tool_call_id == attached.pending_tool_call_id
+    assert outcome.pending_tool_call_id != first.pending_tool_call_id
     assert len(storage.list_pending_tool_calls()) == 2
+    for run in ("run_1", "run_2", "run_3"):
+        assert len(storage.list_run_tool_dependencies(run)) == 1
+    count.assert_not_called()
 
 
 def test_attach_pending_info_request_links_existing_org_scoped_request(storage):

@@ -254,6 +254,9 @@ class ProfilePackageWindowExecutor(WindowExecutor):
             prior_context=prior,
             pending_tools_active=tools_active,
             pending_tool_config=pending,
+            frozen_pending_tool_config=(
+                snapshot["pending_tool_config"] if snapshot is not None else None
+            ),
             frozen_extractor_config=(
                 known.generation_request_snapshot["extractor_config"] if known else None
             ),

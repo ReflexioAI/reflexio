@@ -24,7 +24,10 @@ from reflexio.config_migration import (
     StoredConfigurationError,
 )
 from reflexio.housekeeping_policy import strip_legacy_housekeeping_fields
-from reflexio.pending_tool_policy import strip_legacy_pending_tool_timing
+from reflexio.pending_tool_policy import (
+    strip_legacy_pending_tool_timing,
+    strip_retired_pending_followup_warning,
+)
 
 from .api_schema.validators import (
     NonEmptyStr,
@@ -272,8 +275,8 @@ def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
             },
         }
     if "pending_tool_call_config" in payload:
-        payload["pending_tool_call_config"] = strip_legacy_pending_tool_timing(
-            payload["pending_tool_call_config"]
+        payload["pending_tool_call_config"] = strip_retired_pending_followup_warning(
+            strip_legacy_pending_tool_timing(payload["pending_tool_call_config"])
         )
     if "playbook_optimizer_config" in payload:
         payload["playbook_optimizer_config"] = _normalize_optimizer_policy(
@@ -1016,7 +1019,6 @@ class GovernanceRetentionConfig(BaseModel):
 class EffectivePendingToolCallConfig:
     """Resolved pending-tool-call settings after applying tool overrides."""
 
-    max_pending_followups_per_scope: int
     pending_ttl_seconds: int
     dedup_cache_seconds: int
     prior_answer_valid_seconds: int
@@ -1026,7 +1028,6 @@ class EffectivePendingToolCallConfig:
 class PendingToolCallToolOverrideConfig(BaseModel):
     """Optional per-tool pending-call limits."""
 
-    max_pending_followups_per_scope: int | None = Field(default=None, gt=0)
     pending_ttl_seconds: int | None = Field(default=None, gt=0)
     dedup_cache_seconds: int | None = Field(default=None, gt=0)
     prior_answer_valid_seconds: int | None = Field(default=None, gt=0)
@@ -1037,7 +1038,6 @@ class PendingToolCallConfig(BaseModel):
     """Configuration for non-blocking pending tool calls."""
 
     enabled: bool = False
-    max_pending_followups_per_scope: int = Field(default=10, gt=0)
     pending_ttl_seconds: int = Field(default=86_400, gt=0)
     dedup_cache_seconds: int = Field(default=300, gt=0)
     prior_answer_valid_seconds: int = Field(default=2_592_000, gt=0)
@@ -1051,8 +1051,10 @@ class PendingToolCallConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def discard_legacy_execution_timing(cls, data: Any) -> Any:
-        return strip_legacy_pending_tool_timing(data)
+    def discard_retired_execution_policy(cls, data: Any) -> Any:
+        return strip_retired_pending_followup_warning(
+            strip_legacy_pending_tool_timing(data)
+        )
 
     def for_tool(self, tool_name: str) -> EffectivePendingToolCallConfig:
         """Return base settings with an optional exact tool-name override."""
@@ -1066,7 +1068,6 @@ class PendingToolCallConfig(BaseModel):
             return getattr(self, name)
 
         return EffectivePendingToolCallConfig(
-            max_pending_followups_per_scope=_value("max_pending_followups_per_scope"),
             pending_ttl_seconds=_value("pending_ttl_seconds"),
             dedup_cache_seconds=_value("dedup_cache_seconds"),
             prior_answer_valid_seconds=_value("prior_answer_valid_seconds"),

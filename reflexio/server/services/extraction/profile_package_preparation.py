@@ -17,6 +17,7 @@ from typing import Any
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import UserProfile
 from reflexio.models.config_schema import PendingToolCallConfig, ProfileExtractorConfig
+from reflexio.pending_tool_policy import strip_retired_pending_followup_warning
 from reflexio.server.llm._litellm_text_generation import (
     _is_structured_output_validation_repair_turn,
 )
@@ -211,6 +212,30 @@ def _extractor_snapshot(
     return copy.deepcopy(frozen)
 
 
+def pending_tool_policy_snapshot(
+    config: PendingToolCallConfig, frozen: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Validate live policy while retaining an admitted contract's original snapshot.
+
+    Only the retired observational warning may differ. Secret rotation, real
+    policy changes and unknown fields remain strict; no model round-trip may
+    discard witness data. The caller verifies the parent/preparation contract.
+    """
+    current = {
+        **config.model_dump(mode="json", exclude={"hmac_secrets"}),
+        "hmac_secrets_digest": _digest(config.hmac_secrets),
+    }
+    if frozen is None:
+        return current
+    if strip_retired_pending_followup_warning(
+        current
+    ) != strip_retired_pending_followup_warning(frozen):
+        raise InputBudgetConfigurationError(
+            "Profile pending tool configuration changed"
+        )
+    return copy.deepcopy(frozen)
+
+
 def prepare_profile_package(
     groups: list[RequestInteractionDataModel],
     *,
@@ -230,6 +255,7 @@ def prepare_profile_package(
     prior_context: CapturedPriorKnowledge | None = None,
     pending_tools_active: bool = False,
     pending_tool_config: PendingToolCallConfig | None = None,
+    frozen_pending_tool_config: dict[str, Any] | None = None,
     frozen_extractor_config: dict[str, Any] | None = None,
 ) -> ProfilePackagePreparation:
     """Price full gate/agent input across native ladders before compression.
@@ -391,10 +417,9 @@ def prepare_profile_package(
         "templates": templates,
         "prior_context": prior,
         "tools": tools,
-        "pending_tool_config": {
-            **pending_tool_config.model_dump(mode="json", exclude={"hmac_secrets"}),
-            "hmac_secrets_digest": _digest(pending_tool_config.hmac_secrets),
-        }
+        "pending_tool_config": pending_tool_policy_snapshot(
+            pending_tool_config, frozen_pending_tool_config
+        )
         if pending_tools_active and pending_tool_config is not None
         else None,
         "consumer": consumer,

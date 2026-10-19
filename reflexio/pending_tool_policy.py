@@ -70,6 +70,31 @@ class PendingToolTimingMigrationError(ConfigurationMigrationError):
     """Custom pending-tool execution timing requires explicit adoption."""
 
 
+def strip_retired_pending_followup_warning(data: Any) -> Any:
+    """Copy only known policy paths and omit the retired observational threshold.
+
+    This does not round-trip a model: frozen policy witnesses must retain unknown
+    fields and the secrets digest for strict execution-policy comparison.
+    """
+    if not isinstance(data, dict):
+        return data
+    cleaned = dict(data)
+    cleaned.pop("max_pending_followups_per_scope", None)
+    overrides = data.get("tool_overrides")
+    if isinstance(overrides, dict):
+        cleaned["tool_overrides"] = {
+            name: {
+                key: value
+                for key, value in override.items()
+                if key != "max_pending_followups_per_scope"
+            }
+            if isinstance(override, dict)
+            else override
+            for name, override in overrides.items()
+        }
+    return cleaned
+
+
 def strip_legacy_pending_tool_timing(data: Any) -> Any:
     """Copy and discard old defaults; reject customized or malformed timing."""
     if not isinstance(data, dict):

@@ -1,16 +1,4 @@
-"""SQLite RunToolDependencyStore methods (the RunToolDependencyStore bucket).
-
-Extracted verbatim from ``_agent_run.py`` (the RunToolDependencyStore bucket):
-the four run-tool-dependency methods. This is the LAST bucket — the residual
-``_agent_run.py`` module is now helpers-only (it no longer defines a mixin
-class), and permanently holds the shared row/datetime helpers (``_dt_str``,
-``_row_to_run_tool_dependency`` …), which are imported here rather than
-duplicated.
-
-``consume_run_tool_dependencies`` keeps its resolved-unconsumed ``WHERE`` guard
-and ``rowcount`` return; ``count_unresolved_followup_dependencies`` keeps its
-three-table JOIN. Both are moved WHOLE, byte-identically.
-"""
+"""SQLite attachment, listing and consumption of run-tool dependencies."""
 
 from __future__ import annotations
 
@@ -18,7 +6,6 @@ import sqlite3
 from typing import Any
 
 from reflexio.server.services.storage.storage_base import (
-    PendingToolCallStatus,
     RunToolDependencyRecord,
 )
 
@@ -66,36 +53,6 @@ class SQLiteRunToolDependencyStoreMixin:
         if row is None:  # pragma: no cover
             raise RuntimeError("Failed to attach run tool dependency")
         return _row_to_run_tool_dependency(row)
-
-    @SQLiteStorageBase.handle_exceptions
-    def count_unresolved_followup_dependencies(
-        self,
-        *,
-        org_id: str,
-        extractor_kind: str,
-        tool_name: str,
-    ) -> int:
-        row = self._fetchone(
-            """
-            SELECT COUNT(*) AS count
-            FROM _run_tool_dependencies d
-            JOIN _agent_runs r ON r.id = d.run_id
-            JOIN _pending_tool_calls p ON p.id = d.pending_tool_call_id
-            WHERE r.org_id = ?
-              AND r.extractor_kind = ?
-              AND p.tool_name = ?
-              AND p.status = ?
-              AND d.resolved_at IS NULL
-              AND d.consumed_at IS NULL
-            """,
-            (
-                org_id,
-                extractor_kind,
-                tool_name,
-                PendingToolCallStatus.PENDING.value,
-            ),
-        )
-        return int(row["count"]) if row is not None else 0
 
     @SQLiteStorageBase.handle_exceptions
     def list_run_tool_dependencies(self, run_id: str) -> list[RunToolDependencyRecord]:

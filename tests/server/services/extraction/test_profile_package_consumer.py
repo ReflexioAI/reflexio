@@ -5,12 +5,17 @@ import json
 from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import Mock
 
 import litellm
 import pytest
+from pydantic import Field, create_model
 
-from reflexio.models.config_schema import PendingToolCallConfig
+from reflexio.models.config_schema import (
+    PendingToolCallConfig,
+    PendingToolCallToolOverrideConfig,
+)
 from reflexio.server.llm._litellm_types import ProviderRequestGuardError
 from reflexio.server.llm.input_budget import InputBudgetConfigurationError
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
@@ -375,8 +380,39 @@ def test_missing_cache_only_processing_receipt_cannot_start_paid_work(
     wire.assert_not_called()
 
 
+def legacy_warning_config(config, *, future_policy=False):
+    """Construct the old serialized shape independently of the current schema."""
+    legacy_override = create_model(
+        "LegacyPendingToolOverride",
+        __base__=PendingToolCallToolOverrideConfig,
+        max_pending_followups_per_scope=(int, 73),
+    )
+    fields: dict[str, Any] = {
+        "max_pending_followups_per_scope": (int, 37),
+        "tool_overrides": (dict[str, Any], Field(default_factory=dict)),
+    }
+    if future_policy:
+        fields["unknown_execution_policy"] = (int, 11)
+    legacy_config = create_model(
+        "LegacyPendingToolConfig", __base__=PendingToolCallConfig, **fields
+    )
+    values = config.model_dump(
+        exclude={"tool_overrides", "max_pending_followups_per_scope"}
+    )
+    return legacy_config(
+        **values,
+        tool_overrides={
+            name: legacy_override(
+                **override.model_dump(exclude={"max_pending_followups_per_scope"})
+            )
+            for name, override in config.tool_overrides.items()
+        },
+    )
+
+
+@pytest.mark.parametrize("historical_warning", [False, True])
 def test_actual_pending_tool_wait_resumes_full_answer_and_remaining_turns(
-    package_pipeline, monkeypatch
+    package_pipeline, monkeypatch, historical_warning
 ):
     engine, _, _ = package_pipeline
     storage = engine.get_storage()
@@ -398,10 +434,21 @@ def test_actual_pending_tool_wait_resumes_full_answer_and_remaining_turns(
             cache_until=now + timedelta(hours=1),
         )
     )
-    tools_config = PendingToolCallConfig(hmac_secrets=["fixture-signing-secret"])
-    client, preparation, storage, window, token = prepare_consumer(
-        package_pipeline, monkeypatch, gate_enabled=False, pending_config=tools_config
+    tools_config = PendingToolCallConfig(
+        hmac_secrets=["fixture-signing-secret"],
+        tool_overrides={
+            "ask_human": PendingToolCallToolOverrideConfig(pending_ttl_seconds=90)
+        },
     )
+    client, preparation, storage, window, token = prepare_consumer(
+        package_pipeline,
+        monkeypatch,
+        gate_enabled=False,
+        pending_config=legacy_warning_config(tools_config)
+        if historical_warning
+        else tools_config,
+    )
+    frozen_preparation = copy.deepcopy(preparation.snapshot)
     calls = []
     qualifier = "Background " * 200 + "ONLY with separate customer approval"
 
@@ -487,6 +534,50 @@ def test_actual_pending_tool_wait_resumes_full_answer_and_remaining_turns(
     ]
     assert final.status == AgentRunStatus.RUNNING and final.committed_output is None
     assert storage.count_all_profiles() == 0
+    assert final.generation_request_snapshot["profile_package_preparation"] == (
+        frozen_preparation
+    )
+
+
+@pytest.mark.parametrize(
+    "change", ["secrets", "ttl", "tool_override", "unknown_policy"]
+)
+def test_warning_retirement_keeps_real_frozen_pending_policy_strict(
+    package_pipeline, monkeypatch, change
+):
+    config = PendingToolCallConfig(
+        hmac_secrets=["fixture-signing-secret"],
+        tool_overrides={
+            "ask_human": PendingToolCallToolOverrideConfig(pending_ttl_seconds=90)
+        },
+    )
+    client, preparation, storage, window, token = prepare_consumer(
+        package_pipeline,
+        monkeypatch,
+        gate_enabled=False,
+        pending_config=legacy_warning_config(
+            config, future_policy=change == "unknown_policy"
+        ),
+    )
+    saved = copy.deepcopy(storage.get_agent_run(f"window:{window.window_id}"))
+    if change == "secrets":
+        config.hmac_secrets = ["different-signing-secret"]
+    elif change == "ttl":
+        config.pending_ttl_seconds += 1
+    elif change == "tool_override":
+        config.tool_overrides["ask_human"].pending_ttl_seconds = 91
+    calls = install_transport(client, monkeypatch)
+    with pytest.raises(
+        InputBudgetConfigurationError, match="pending tool configuration"
+    ):
+        consume_profile_package(
+            preparation=preparation,
+            coordinator=coordinator(preparation, storage, window, token),
+            client=client,
+            pending_tool_config=config,
+        )
+    assert calls == []
+    assert storage.get_agent_run(saved.id) == saved
 
 
 def test_compressed_package_consumption_reuses_all_actual_selection_receipts(

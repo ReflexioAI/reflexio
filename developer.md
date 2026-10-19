@@ -887,3 +887,25 @@ Hostname-based local-service routes used a 30-second request default, while an
 explicit URL selects the existing 2-second internal-service default. Set
 `REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS` explicitly when preserving that older
 budget. Shadowed legacy settings do not override a canonical URL.
+
+
+### Pending information request admission
+
+`max_pending_followups_per_scope`, including its `tool_overrides.*` form, is
+retired. It selected a warning after a separate backlog query; it never limited
+admission. Old values are ignored and omitted from canonical configuration,
+without replacing them with a fixed threshold. `ask_human` now goes directly to
+the durable create-or-attach operation, so failure of an observational count
+cannot prevent request creation. TTLs, per-tool answer relevance/cache/validity,
+retry budgets and signing-secret rotation retain their existing authority.
+
+The `pending_followup_soft_cap_exceeded` warning is deliberately removed. Migrate
+any log rules using that event explicitly. Existing created/attached events and
+`extraction_agent_async_info_requested` usage outcomes remain; those describe
+requests, not an aggregate unresolved-dependency backlog gauge.
+
+Admitted profile packages retain their original pending-policy snapshot and
+contract digest when reconstructed or consumed after upgrade. Only the retired
+warning fields may differ from live configuration; unknown fields, signing-secret
+digests and real execution policy remain strict. Never rewrite a stored snapshot
+or reset paid-attempt journals to make an old package resume.
