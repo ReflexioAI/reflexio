@@ -25,6 +25,7 @@ from .test_publish_http_timing import record_fields
 
 @pytest.fixture
 def reflexio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Reflexio]:
+    monkeypatch.delenv(publish_timing.ENV_MIN_MS, raising=False)
     monkeypatch.setenv(publish_timing.ENV_ENABLED, "true")
     monkeypatch.setattr(
         "reflexio.server.services.durable_learning.local.ensure_local_extraction",
