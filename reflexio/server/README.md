@@ -856,14 +856,15 @@ singleton evaluator identity. This compatibility guarantee is SQLite-specific;
 other storage adapters must explicitly support nullable identities before
 callers rely on it there.
 
-Database environment aliases resolve through `reflexio/config_env.py`, shared with
+The canonical `DATA_DB_URL` resolves through `reflexio/config_env.py`, shared with
 CLI bootstrap. The same lightweight module owns native PostgreSQL pool defaults
 for CLI persistence and enterprise bootstrap/workers: 10 writer connections,
 30-second acquire wait, and optional reader overrides inheriting the writer.
 Blank means unset; invalid capacities and non-finite/non-positive waits fail.
 `REFLEXIO_STORAGE_POOL_SIZE` is independent of the native Postgres default.
-A nonblank `DATA_DB_URL` wins; backend-specific legacy names remain
-accepted when it is absent. The retired `shadow_mode_enabled` configuration input
+Removed database environment names are rejected even when blank or accompanied
+by `DATA_DB_URL`; preserve the database target when following the
+[configuration upgrade guide](../../docs/configuration-upgrade.md). The retired `shadow_mode_enabled` configuration input
 is accepted as a no-op and omitted from serialization.
 
 Extractor configuration names (`extractor_name`, legacy `playbook_name` /
