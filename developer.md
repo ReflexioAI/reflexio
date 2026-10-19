@@ -442,15 +442,13 @@ throttling). The two record types have separate throttle populations, allowing
 at most two lines per org per interval. An in-flight request retains its captured
 policy; environment edits affect the next request.
 
-Absent or blank `REFLEXIO_PUBLISH_TIMING_MIN_MS` preserves the legacy
-`REFLEXIO_PUBLISH_TIMING_ENABLED=true` opt-in and
-`REFLEXIO_PUBLISH_TIMING_THRESHOLD_MS` (default 2000). An explicit legacy `false`
-remains a veto, even with a canonical threshold. Invalid nonblank legacy booleans
-still raise; invalid canonical thresholds raise without echoing the supplied
-value. Invalid legacy thresholds and throttle intervals retain their existing
-2000 ms and 60 second fallbacks. To adopt the canonical setting, remove the
-legacy opt-in or explicitly keep it `true`; leave managed presets unchanged
-until adoption is intentional. `publish_timing.total_ms` retains its admission-to-worker-completion
+Absent or blank `REFLEXIO_PUBLISH_TIMING_MIN_MS` disables diagnostics. Removed
+legacy enable/threshold assignments fail with a migration message, even when
+canonical policy is supplied. Invalid canonical thresholds raise without echoing
+the value; invalid throttle intervals retain their 60 second fallback. Preserve
+managed presets' effective policy when upgrading. See the
+[configuration upgrade guide](docs/configuration-upgrade.md).
+`publish_timing.total_ms` retains its admission-to-worker-completion
 boundary. `publish_http_timing.http_total_ms` measures ASGI entry through sending
 the final response body, including authentication/dependencies and response work.
 Both share a generated `timing_id`; no request bodies or credentials are logged.

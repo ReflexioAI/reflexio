@@ -42,7 +42,7 @@ def main() -> None:
             != Path(origin).resolve()
         ):
             raise RuntimeError("Imported source is not owned by the installed wheel")
-    os.environ["REFLEXIO_EMBED_TORCH_THREADS"] = "2"
+    os.environ["REFLEXIO_INFERENCE_TORCH_THREADS"] = "2"
     embedder = NomicEmbedder()
     model = embedder._load()
     model_class = type(model[0].auto_model).__module__
