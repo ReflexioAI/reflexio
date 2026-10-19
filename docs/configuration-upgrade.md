@@ -10,7 +10,7 @@ between old and new names remains.
 | Removed name | Canonical name / effective policy |
 | --- | --- |
 | DATA_SUPABASE_DB_URL, POSTGRES_DB_URL | DATA_DB_URL; preserve the exact database target |
-| WEB_CONCURRENCY | REFLEXIO_SERVER_WORKERS |
+| WEB_CONCURRENCY | Explicit server `--workers N`; `REFLEXIO_SERVER_WORKERS` is diagnostic metadata, not a Uvicorn worker selector |
 | INTERACTION_CLEANUP_THRESHOLD | REFLEXIO_ROW_LIMIT_INTERACTIONS |
 | REFLEXIO_EMBED_TORCH_THREADS | REFLEXIO_INFERENCE_TORCH_THREADS |
 | REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED | REFLEXIO_MISSING_VECTOR_BACKFILL_CAP; zero disables, positive caps each org/tick |
@@ -42,3 +42,9 @@ When `PYTHON_DOTENV_DISABLED` is set to python-dotenv's truthy values
 (`1`, `true`, `t`, `yes`, `y`, case-insensitive), disabled files are neither loaded
 nor checked/pruned. Removed names in the process environment still fail. This
 preserves isolated tool execution without accepting aliases as runtime settings.
+
+For direct Uvicorn starts that previously used `WEB_CONCURRENCY=N`, pass
+`--workers N` explicitly before removing the environment assignment. The Reflexio
+launcher also accepts `--workers N` (with `--no-reload` for multiple workers).
+Renaming the old input to `REFLEXIO_SERVER_WORKERS` alone does not preserve the
+worker count: the latter records diagnostics and the launcher overwrites it.

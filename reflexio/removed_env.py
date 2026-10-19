@@ -40,6 +40,11 @@ def reject_removed_env(
     )
     if obsolete:
         migration = "; ".join(f"{name} -> {aliases[name]}" for name in obsolete)
+        if "WEB_CONCURRENCY" in obsolete:
+            migration += (
+                "; preserve the actual worker count with explicit server --workers N; "
+                "REFLEXIO_SERVER_WORKERS is diagnostic metadata only"
+            )
         raise ValueError(
             f"Removed environment names: {migration}. Migrate the effective "
             "policy to the canonical setting and remove the old assignments; "
