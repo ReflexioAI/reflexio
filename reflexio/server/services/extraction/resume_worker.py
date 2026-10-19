@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import Interaction, Request
 from reflexio.models.config_schema import PlaybookConfig, ProfileExtractorConfig
-from reflexio.pending_tool_policy import RESUME_CLAIM_TTL_SECONDS
+from reflexio.pending_tool_policy import resolve_resume_timing
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm._litellm_types import ModelProvenance
@@ -289,6 +289,7 @@ class ExtractionResumeWorker:
         llm_client: LiteLLMClient | None = None,
         worker_id: str | None = None,
     ) -> None:
+        self.timing = resolve_resume_timing()
         self.request_context = request_context
         self.storage = _storage(request_context)
         self.client = llm_client or _create_llm_client(request_context)
@@ -356,13 +357,13 @@ class ExtractionResumeWorker:
         finalization_retry = self.storage.claim_finalization_failed_agent_run(
             org_id=self.request_context.org_id,
             worker_id=self.worker_id,
-            claim_ttl_seconds=RESUME_CLAIM_TTL_SECONDS,
+            claim_ttl_seconds=self.timing.claim_ttl_seconds,
         )
 
         run = finalization_retry or self.storage.claim_ready_agent_run(
             org_id=self.request_context.org_id,
             worker_id=self.worker_id,
-            claim_ttl_seconds=RESUME_CLAIM_TTL_SECONDS,
+            claim_ttl_seconds=self.timing.claim_ttl_seconds,
         )
         if run is None:
             return None
@@ -390,7 +391,7 @@ class ExtractionResumeWorker:
                 worker_id=self.worker_id,
                 expected_updated_at=selection.updated_at,
                 operation_id=operation_id,
-                claim_ttl_seconds=RESUME_CLAIM_TTL_SECONDS,
+                claim_ttl_seconds=self.timing.claim_ttl_seconds,
             )
             if claimed is None:
                 raise RecoveryRefusedError("claim_conflict")
@@ -460,7 +461,7 @@ class ExtractionResumeWorker:
                 with user_extraction_lease(
                     self.storage,
                     run.binding.user_id or "",
-                    max_wait_seconds=min(5.0, RESUME_CLAIM_TTL_SECONDS / 2),
+                    max_wait_seconds=min(5.0, self.timing.claim_ttl_seconds / 2),
                 ):
                     latest = self.storage.get_agent_run(run.id)
                     if (

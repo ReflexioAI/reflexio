@@ -511,8 +511,14 @@ def test_selected_committed_receipt_survives_source_erasure_after_claim(context)
     assert len(events) == 1 and events[0].event_key == "learn:profile:committed-result"
 
 
-@pytest.mark.parametrize("age_seconds,blocked", [(590, True), (610, False)])
-def test_selected_recovery_uses_owned_claim_lifetime(context, age_seconds, blocked):
+@pytest.mark.parametrize(
+    "ttl,age_seconds,blocked",
+    [(600, 590, True), (600, 610, False), (1800, 610, True), (60, 70, False)],
+)
+def test_selected_recovery_uses_owned_claim_lifetime(
+    context, monkeypatch, ttl, age_seconds, blocked
+):
+    monkeypatch.setenv("REFLEXIO_RESUME_CLAIM_TTL_SECONDS", str(ttl))
     run = seed(context)
     now = datetime.now(UTC)
     old = (now - timedelta(seconds=age_seconds)).isoformat()
