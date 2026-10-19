@@ -195,8 +195,18 @@ def _load_dotenv_pruned(path: Path, *, override: bool = False) -> None:
         override: Forwarded to ``load_dotenv``. When False (default) the existing
             process environment wins over the file's values.
     """
-    file_vals = dotenv_values(path)
     reject_removed_env(os.environ)
+    # Preserve python-dotenv's existing opt-out: disabled files cannot supply
+    # configuration, so neither validate nor prune their unrelated assignments.
+    if os.environ.get("PYTHON_DOTENV_DISABLED", "").casefold() in {
+        "1",
+        "true",
+        "t",
+        "yes",
+        "y",
+    }:
+        return
+    file_vals = dotenv_values(path)
     reject_removed_env(file_vals)
     load_dotenv(dotenv_path=path, override=override)
     for key, value in file_vals.items():

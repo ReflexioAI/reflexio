@@ -37,3 +37,8 @@ Independent throttles, grace periods, concurrency, and customer retention caps
 remain configurable. No schema/data migration is required. AWS secret JSON
 fields may keep their physical names when explicitly injected under canonical
 runtime environment names; the runtime does not resolve old names.
+
+When `PYTHON_DOTENV_DISABLED` is set to python-dotenv's truthy values
+(`1`, `true`, `t`, `yes`, `y`, case-insensitive), disabled files are neither loaded
+nor checked/pruned. Removed names in the process environment still fail. This
+preserves isolated tool execution without accepting aliases as runtime settings.

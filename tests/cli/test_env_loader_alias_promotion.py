@@ -49,3 +49,21 @@ def test_canonical_process_target_keeps_precedence(monkeypatch, tmp_path):
     env_file.write_text("DATA_DB_URL=file-target\n")
     env_loader._load_dotenv_pruned(env_file)
     assert os.environ["DATA_DB_URL"] == "process-target"
+
+
+@pytest.mark.parametrize("disabled", ["1", "true", "T", "yes", "Y"])
+def test_disabled_dotenv_does_not_validate_or_prune_file(
+    monkeypatch, tmp_path, disabled
+):
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", disabled)
+    monkeypatch.setenv("KEEP_PROCESS_VALUE", "")
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "POSTGRES_DB_URL=private-target\nDATA_DB_URL=wrong-target\nKEEP_PROCESS_VALUE=\n"
+    )
+    env_loader._load_dotenv_pruned(env_file)
+    assert "DATA_DB_URL" not in os.environ
+    assert os.environ["KEEP_PROCESS_VALUE"] == ""
+    monkeypatch.setenv("POSTGRES_DB_URL", "private-process-target")
+    with pytest.raises(ValueError, match="POSTGRES_DB_URL"):
+        env_loader._load_dotenv_pruned(env_file)
