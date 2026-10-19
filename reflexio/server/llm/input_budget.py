@@ -36,6 +36,13 @@ class InputBudgetConfigurationError(ProviderRequestGuardError):
     """A safe effective model/endpoint capacity could not be established."""
 
 
+class SavedOutputIncompatibleError(InputBudgetConfigurationError):
+    """Saved extraction output fails the current contract; retrying cannot fix it.
+
+    The worker holds the window for an operator instead of retrying it.
+    """
+
+
 class InputBudgetExceededError(ProviderRequestGuardError):
     """The complete prompt plus reserved output exceeds its admission budget."""
 

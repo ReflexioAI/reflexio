@@ -181,6 +181,17 @@ def _release() -> None:
         _budget.release()
 
 
+def _cause_chain(exc: BaseException) -> list[BaseException]:
+    seen: set[int] = set()
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
+
+
 def _input_budget_failure_reason(exc: BaseException) -> str | None:
     from reflexio.server.llm.input_budget import (
         InputBudgetConfigurationError,
@@ -193,10 +204,7 @@ def _input_budget_failure_reason(exc: BaseException) -> str | None:
         OverflowAttemptBudgetExceededError,
     )
 
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
+    for current in _cause_chain(exc):
         if isinstance(current, InputBudgetConfigurationError):
             return "input_budget_configuration_error"
         if isinstance(
@@ -206,8 +214,17 @@ def _input_budget_failure_reason(exc: BaseException) -> str | None:
             | OverflowAttemptBudgetExceededError,
         ):
             return "input_budget_exceeded"
-        current = current.__cause__ or current.__context__
     return None
+
+
+def _parks_configuration_hold(exc: BaseException) -> bool:
+    """A saved output that fails the current contract cannot pass on retry."""
+    from reflexio.server.llm.input_budget import SavedOutputIncompatibleError
+
+    return any(
+        isinstance(current, SavedOutputIncompatibleError)
+        for current in _cause_chain(exc)
+    )
 
 
 class DurableLearningWorker:
@@ -291,14 +308,28 @@ class DurableLearningWorker:
             return "suspended"
         reason = _input_budget_failure_reason(exc)
         if reason is not None:
-            logger.warning(
-                "Extraction input held kind=%s reason=%s error=%s at=%s",
-                window.kind,
-                reason,
-                type(exc).__name__,
-                exception_locator(exc),
+            park = reason == "input_budget_configuration_error" and (
+                _parks_configuration_hold(exc)
             )
-            storage.fail_extraction_input_budget(window, token, reason)
+            if park:
+                # Parked until an operator re-arms it, so this logs once per
+                # park rather than on every backoff retry.
+                logger.error(
+                    "Extraction input parked kind=%s reason=%s error=%s at=%s",
+                    window.kind,
+                    reason,
+                    type(exc).__name__,
+                    exception_locator(exc),
+                )
+            else:
+                logger.warning(
+                    "Extraction input held kind=%s reason=%s error=%s at=%s",
+                    window.kind,
+                    reason,
+                    type(exc).__name__,
+                    exception_locator(exc),
+                )
+            storage.fail_extraction_input_budget(window, token, reason, park=park)
             record_health("worker.input_budget_failures", reason=reason)
             return "input_budget_failure"
         where = exception_locator(exc)

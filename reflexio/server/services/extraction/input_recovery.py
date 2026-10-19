@@ -19,6 +19,12 @@ from reflexio.server.services.storage.storage_base._extraction_stream import (
 )
 from reflexio.server.work_scope import current_project_id
 
+# Only parked holds (``retry_at=inf``) qualify; a configuration failure that is
+# still retrying on backoff is not held and needs no re-arm.
+RECOVERABLE_HOLDS = frozenset(
+    {"input_budget_exceeded", "input_budget_configuration_error"}
+)
+
 
 def _inspect(storage: BaseStorage, window_id: str) -> tuple[Window, dict[str, Any]]:
     with storage._stream_sql(read_only=True) as db:
@@ -62,7 +68,7 @@ def _inspect(storage: BaseStorage, window_id: str) -> tuple[Window, dict[str, An
         window.invalidated
         or rows[0]["completed"]
         or cursor.get("window_id") != window_id
-        or cursor.get("last_error") != "input_budget_exceeded"
+        or cursor.get("last_error") not in RECOVERABLE_HOLDS
         or cursor.get("retry_at") != float("inf")
     ):
         reason = "not_held"
