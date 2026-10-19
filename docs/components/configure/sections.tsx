@@ -58,10 +58,20 @@ export function StorageSection({
   setConfig: SetConfig;
 }) {
   const current = value ?? { db_path: null };
+  // Preserve remote/managed snapshots without offering an incompatible SQLite edit.
+  const editable = Object.entries(current).every(
+    ([key, field]) =>
+      key === "db_path" ||
+      ((key === "type" || key === "storage_type") && field === "sqlite"),
+  );
   return (
     <Section
       title="Storage (SQLite)"
-      description="This build only supports SQLite storage. Leave blank to use the default file from LOCAL_STORAGE_PATH."
+      description={
+        editable
+          ? "Edit SQLite storage. Leave blank to use the default file from LOCAL_STORAGE_PATH."
+          : "Storage is managed outside this editor. Its configuration is preserved when saving."
+      }
     >
       <FieldRow
         label="Database file path"
@@ -71,8 +81,9 @@ export function StorageSection({
         <TextField
           id="storage-db-path"
           value={current.db_path}
+          disabled={!editable}
           onChange={(v) =>
-            setConfig((prev) => ({
+            editable && setConfig((prev) => ({
               ...prev,
               storage_config: { ...prev.storage_config, db_path: v },
             }))

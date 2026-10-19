@@ -6,6 +6,8 @@ import logging
 import os
 from collections.abc import Mapping
 
+from reflexio.env_utils import env_truthy as env_truthy
+
 
 def env_get(env: Mapping[str, str], name: str) -> str:
     """Return a stripped environment value or an empty string."""
@@ -124,17 +126,6 @@ def env_bool(
         f"they were parsed inconsistently across this codebase, and an "
         f"unrecognised value used to read as false without any error."
     )
-
-
-def env_truthy(value: str) -> bool:
-    """Return whether a string environment value is truthy.
-
-    Deprecated in favour of :func:`env_bool`, which takes the variable NAME and
-    can therefore name it when refusing a bad value. Retained because it is a
-    public export of this package; it keeps the historical permissive set so an
-    external caller's behaviour does not change silently.
-    """
-    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def positive_int_env(name: str, default: int, logger: logging.Logger) -> int:

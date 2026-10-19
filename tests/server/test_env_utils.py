@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from reflexio.env_utils import env_truthy as shared_env_truthy
 from reflexio.server.env_utils import (
     EnvBoolError,
     env_bool,
@@ -11,6 +12,10 @@ from reflexio.server.env_utils import (
     env_str,
     env_truthy,
 )
+
+
+def test_legacy_parser_export_is_the_shared_parser() -> None:
+    assert env_truthy is shared_env_truthy
 
 
 def test_env_get_strips_values() -> None:

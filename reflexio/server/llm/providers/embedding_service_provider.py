@@ -21,6 +21,9 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from reflexio.inference_launch import (
+    inference_service_url as resolve_inference_service_url,
+)
 from reflexio.server.env_utils import env_str, env_truthy, positive_int_env
 from reflexio.server.search_runtime import (
     checkpoint,
@@ -41,12 +44,9 @@ _ENV_QUERY_URL = "REFLEXIO_QUERY_EMBEDDING_SERVICE_URL"
 _query_contract_cache: dict[tuple[int, str, str], tuple[str, str, int]] = {}
 _query_contract_lock = threading.Lock()
 _ENV_TIMEOUT_MS = "REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS"
-_ENV_EMBEDDING_PORT = "EMBEDDING_PORT"
-_ENV_DAEMON_HOST = "REFLEXIO_EMBEDDING_DAEMON_HOST"
 _ENV_CLAUDE_SMART_LOCAL = "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
 _ENV_MAX_TEXTS_PER_REQUEST = "REFLEXIO_EMBEDDING_SERVICE_MAX_TEXTS_PER_REQUEST"
 CUSTOM_EMBEDDING_MODEL = "custom"
-_DEFAULT_LOCAL_PORT = 8072
 _DEFAULT_INTERNAL_SERVICE_TIMEOUT_MS = 2_000
 _DEFAULT_LOCAL_SERVICE_TIMEOUT_MS = 30_000
 # Each request embeds its whole ``input`` list in one ``model.encode()`` on the
@@ -83,12 +83,6 @@ class InferenceServiceCapabilities:
     workload: str = "shared"
 
 
-def _local_service_url() -> str:
-    host = os.environ.get(_ENV_DAEMON_HOST, "").strip() or "127.0.0.1"
-    port = os.environ.get(_ENV_EMBEDDING_PORT, str(_DEFAULT_LOCAL_PORT))
-    return f"http://{host}:{port}"
-
-
 def inference_service_url() -> str:
     """Return the shared local/internal inference-service base URL.
 
@@ -96,8 +90,7 @@ def inference_service_url() -> str:
     reranking can share the same daemon even when an organization uses cloud
     embeddings.
     """
-    configured = os.environ.get(_ENV_SERVICE_URL, "").strip()
-    return configured.rstrip("/") if configured else _local_service_url()
+    return resolve_inference_service_url(os.environ)
 
 
 def remote_inference_service_configured() -> bool:
@@ -394,9 +387,6 @@ def embedding_provider_mode(model: str | None = None) -> EmbeddingProviderMode:
 
     if os.environ.get(_ENV_SERVICE_URL, "").strip():
         return "internal_service"
-
-    if _uses_embedding_service(model) and os.environ.get(_ENV_DAEMON_HOST, "").strip():
-        return "local_service"
 
     if _uses_embedding_service(model):
         return "local_service"

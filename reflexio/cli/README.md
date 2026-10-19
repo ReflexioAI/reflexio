@@ -104,8 +104,12 @@ Service shutdown unwinds interrupted output before logging and stopping children
 including signals received during startup. Repeated shutdown signals do not
 reenter cleanup or trigger service respawns.
 
+Provider URL resolution and launcher ownership share the pure
+`reflexio.inference_launch` resolver. An explicit endpoint, including localhost,
+belongs to its existing owner; see `developer.md` for legacy-setting migration.
+
 `services start --only backend` starts the separate `embedding` process unless
-`REFLEXIO_EMBEDDING_SERVICE_URL` routes inference to a remote service. This is
+`REFLEXIO_EMBEDDING_SERVICE_URL` supplies an explicit endpoint. This is
 also true when an organization uses cloud embeddings because the service owns
 reranking. The service exposes `POST /v1/embeddings` and `POST /v1/rerank`, and
 supports `local/nomic-embed-v1.5`,
