@@ -729,9 +729,14 @@ class ExtractionStreamStore:
             )
 
     def fail_extraction_input_budget(
-        self, window: Window, token: str, reason: str
+        self, window: Window, token: str, reason: str, *, park: bool = False
     ) -> None:
-        """Retry correctable configuration; hold capacity failures without replay."""
+        """Retry correctable configuration; hold capacity failures without replay.
+
+        ``park`` holds a configuration failure that no retry can fix (a saved
+        output failing the current contract) the same way as a capacity hold:
+        ``retry_at=inf`` until ``recover_extraction_input_budget`` re-arms it.
+        """
         if reason not in {"input_budget_exceeded", "input_budget_configuration_error"}:
             raise ValueError("Unknown extraction input failure reason")
         if window.project_id != (current_project_id() or ""):
@@ -739,7 +744,7 @@ class ExtractionStreamStore:
         with self._stream_sql() as db:
             self._fence(db, window.user_id, token)
             retry_at = float("inf")
-            if reason == "input_budget_configuration_error":
+            if reason == "input_budget_configuration_error" and not park:
                 rows = db.query(
                     f"SELECT attempts FROM {db.table('extraction_cursors')} "
                     "WHERE user_id=? AND kind=? AND project_id=? AND window_id=? LIMIT 1",
@@ -853,7 +858,8 @@ class ExtractionStreamStore:
             updated = db.query(
                 f"UPDATE {db.table('extraction_cursors')} SET retry_at=? "
                 "WHERE user_id=? AND kind=? AND project_id=? AND window_id=? "
-                "AND attempts=? AND retry_at=? AND last_error='input_budget_exceeded' "
+                "AND attempts=? AND retry_at=? AND last_error IN "
+                "('input_budget_exceeded','input_budget_configuration_error') "
                 "RETURNING window_id",
                 (
                     now,

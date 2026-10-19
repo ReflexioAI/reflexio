@@ -1352,14 +1352,14 @@ def test_saved_legacy_usage_is_fenced_and_added_once_without_fake_old_attempts(
     assert resumed.token_totals.completion_tokens == (23 if observed else 3)
 
 
-@pytest.mark.parametrize("changed_policy", [False, True])
+@pytest.mark.parametrize("policy", ["unchanged", "reworded", "rejected"])
 def test_cached_overflow_output_preserves_child_models_and_prompt_contract(
-    pipeline, changed_policy
+    pipeline, policy
 ):
     from dataclasses import asdict, replace
 
     from reflexio.server.llm._litellm_types import ModelProvenance
-    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+    from reflexio.server.llm.input_budget import SavedOutputIncompatibleError
     from reflexio.server.services.durable_learning.window_executor import (
         load_window_inputs,
     )
@@ -1459,9 +1459,13 @@ def test_cached_overflow_output_preserves_child_models_and_prompt_contract(
         ),
     )
 
+    changed_policy = policy != "unchanged"
+    building_children = [True]
+
     def build_call():
         presentation = current_overflow_presentation.get()
         assert presentation is not None
+        rejects = policy == "rejected" and not building_children[0]
         return OverflowExtractionCall(
             messages=[
                 {
@@ -1473,8 +1477,12 @@ def test_cached_overflow_output_preserves_child_models_and_prompt_contract(
                 {"role": "user", "content": presentation.text},
             ],
             schema=StructuredProfilesOutput,
-            validator=lambda value: _profile_evidence_validation_errors(
-                value, presentation.visible_spans
+            validator=lambda value: (
+                ["profiles[0]: rejected by the current contract"]
+                if rejects
+                else _profile_evidence_validation_errors(
+                    value, presentation.visible_spans
+                )
             ),
         )
 
@@ -1517,9 +1525,12 @@ def test_cached_overflow_output_preserves_child_models_and_prompt_contract(
     )
     coordinator.save_checkpoint(checkpoint)
 
+    building_children[0] = False
+    saved_policy = coordinator.checkpoint["extraction_policy"]
     execute = Mock(side_effect=AssertionError("Saved output must not dispatch models"))
-    if changed_policy:
-        with pytest.raises(InputBudgetConfigurationError, match="policy changed"):
+    if policy == "rejected":
+        # A changed policy alone is not a refusal; failing a current check is.
+        with pytest.raises(SavedOutputIncompatibleError, match="policy changed"):
             extract_overflow_window(
                 coordinator=coordinator,
                 client=Mock(),
@@ -1528,6 +1539,7 @@ def test_cached_overflow_output_preserves_child_models_and_prompt_contract(
                 final_validator=None,
             )
         assert coordinator.checkpoint["stage"] == "extracted"
+        assert coordinator.checkpoint["extraction_policy"] == saved_policy
     else:
         result = extract_overflow_window(
             coordinator=coordinator,
@@ -1546,6 +1558,27 @@ def test_cached_overflow_output_preserves_child_models_and_prompt_contract(
             (spans[0].interaction_id, spans[0].text),
             (spans[-1].interaction_id, spans[-1].text),
         }
+        checkpoint = coordinator.checkpoint
+        assert (checkpoint["extraction_policy"] == saved_policy) is not changed_policy
+        assert {
+            contract["policy"]
+            for contract in checkpoint["extraction_children"].values()
+        } == {checkpoint["extraction_policy"]}
+        # The adopted policy replays as unchanged: same output, same contract.
+        assert (
+            extract_overflow_window(
+                coordinator=coordinator,
+                client=Mock(),
+                build_call=build_call,
+                execute_call=execute,
+                final_validator=None,
+            ).output
+            == output
+        )
+        assert (
+            coordinator.checkpoint["extraction_policy"]
+            == (checkpoint["extraction_policy"])
+        )
     assert coordinator.checkpoint["candidate_models"] == child_models
     execute.assert_not_called()
 

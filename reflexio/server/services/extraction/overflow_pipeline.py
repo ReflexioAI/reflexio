@@ -1,6 +1,7 @@
 """Full-source chunk extraction followed by one source-verified reconciliation."""
 
 import json
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -11,7 +12,10 @@ from reflexio.server.llm._litellm_types import (
     ModelProvenance,
     ProviderRequestGuardError,
 )
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import (
+    InputBudgetConfigurationError,
+    SavedOutputIncompatibleError,
+)
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import ToolLoopTrace
@@ -37,6 +41,8 @@ from reflexio.server.services.playbook.playbook_evidence import (
     resolve_verbatim_source_span,
 )
 from reflexio.server.services.storage.storage_base import AgentRunStatus
+
+_ops_logger = logging.getLogger("reflexio.ops")
 
 
 @dataclass(frozen=True)
@@ -177,7 +183,16 @@ def _recover_saved_output(
     build_call: Callable[[], OverflowExtractionCall],
     final_validator: Callable[[BaseModel], Sequence[str]] | None,
 ) -> AgentRunResult:
-    """Replay verified output without changing its observed attribution."""
+    """Replay verified output without changing its observed attribution.
+
+    The saved policy hash covers the full prompt text and schema JSON, so a
+    wording-only change also moves it. A changed hash therefore does not refuse
+    the output on its own: the output must pass every check the fresh path
+    applies (child validators, carried evidence, the final validator, coverage
+    and attribution) under the CURRENT contract. If it does, the current hash
+    is adopted. If it does not, retrying cannot change the outcome, so
+    ``SavedOutputIncompatibleError`` holds the window for an operator.
+    """
     prepared = coordinator.require_prepared()
     field = "profiles" if coordinator.window.kind == "profile" else "playbooks"
     saved_run = coordinator.saved_run
@@ -194,59 +209,80 @@ def _recover_saved_output(
         and cached_call.schema.__name__ == "StructuredProfilesOutput"
     ):
         raise InputBudgetConfigurationError("Saved extraction schema is incompatible")
-    payload, cached_provenance = decode_committed_output(saved_run.committed_output)
-    output = cached_call.schema.model_validate(payload)
-    coverage = [coordinator.candidate_key(chunk.text) for chunk in prepared.chunks]
     checkpoint = coordinator.checkpoint
-    evidence = checkpoint.get("candidate_evidence", {})
-    protocol_output = bool(checkpoint.get("extraction_policy"))
+    saved_policy = checkpoint.get("extraction_policy")
+    protocol_output = bool(saved_policy)
+    current_policy = saved_policy
     if protocol_output:
-        protected, protected_spans = protected_quote_view(prepared, coordinator.record)
-        raw_candidates, raw_spans = _saved_raw_candidates(
-            coordinator, field, build_call
-        )
-        coordinator.carried_source_spans = (*raw_spans, *protected_spans)
-        if _carried_evidence_errors(
-            output,
-            field=field,
-            candidates=raw_candidates,
-            protected=protected,
-            protected_spans=protected_spans,
-        ):
-            raise ProviderRequestGuardError(
-                "Saved candidates exceed their carried evidence"
-            )
         with present_extraction_chunk(prepared, prepared.chunks[0], coordinator.record):
             current_policy = _extraction_policy(coordinator, cached_call)
-        if current_policy != checkpoint["extraction_policy"]:
-            raise InputBudgetConfigurationError(
-                "Extraction policy changed after checkpoint"
+    try:
+        payload, cached_provenance = decode_committed_output(saved_run.committed_output)
+        output = cached_call.schema.model_validate(payload)
+        coverage = [coordinator.candidate_key(chunk.text) for chunk in prepared.chunks]
+        evidence = checkpoint.get("candidate_evidence", {})
+        if protocol_output:
+            protected, protected_spans = protected_quote_view(
+                prepared, coordinator.record
             )
-    if final_validator is not None and final_validator(output):
-        raise ProviderRequestGuardError("Saved candidates lack original evidence")
-    if (protocol_output and checkpoint.get("source_coverage") != coverage) or (
-        not protocol_output
-        and (
-            checkpoint.get("protected_coverage") != coverage
-            or any(
-                not evidence.get(f"C{index}", {}).get("evidence")
-                for index, _ in enumerate(payload.get(field) or [], 1)
+            raw_candidates, raw_spans = _saved_raw_candidates(
+                coordinator, field, build_call
             )
-        )
-    ):
-        raise ProviderRequestGuardError(
-            "Saved candidates lack complete verified evidence scan"
-        )
-    keys = {
-        coordinator.candidate_key(candidate)
-        for candidate in output.model_dump(mode="json").get(field) or []
-    }
-    if "candidate_models" in checkpoint:
-        if set(checkpoint["candidate_models"]) != keys:
+            coordinator.carried_source_spans = (*raw_spans, *protected_spans)
+            if _carried_evidence_errors(
+                output,
+                field=field,
+                candidates=raw_candidates,
+                protected=protected,
+                protected_spans=protected_spans,
+            ):
+                raise ProviderRequestGuardError(
+                    "Saved candidates exceed their carried evidence"
+                )
+        if final_validator is not None and final_validator(output):
+            raise ProviderRequestGuardError("Saved candidates lack original evidence")
+        if (protocol_output and checkpoint.get("source_coverage") != coverage) or (
+            not protocol_output
+            and (
+                checkpoint.get("protected_coverage") != coverage
+                or any(
+                    not evidence.get(f"C{index}", {}).get("evidence")
+                    for index, _ in enumerate(payload.get(field) or [], 1)
+                )
+            )
+        ):
+            raise ProviderRequestGuardError(
+                "Saved candidates lack complete verified evidence scan"
+            )
+        keys = {
+            coordinator.candidate_key(candidate)
+            for candidate in output.model_dump(mode="json").get(field) or []
+        }
+        if (
+            "candidate_models" in checkpoint
+            and set(checkpoint["candidate_models"]) != keys
+        ):
             raise InputBudgetConfigurationError(
                 "Saved candidate attribution contract changed"
             )
-    else:
+    except (ProviderRequestGuardError, ValueError) as exc:
+        if current_policy == saved_policy:
+            raise
+        raise SavedOutputIncompatibleError(
+            "Extraction policy changed after checkpoint and saved output "
+            "fails the current contract"
+        ) from exc
+    if current_policy != saved_policy:
+        _adopt_current_policy(checkpoint, saved_policy, current_policy)
+        _ops_logger.warning(
+            "event=extraction_policy_revalidated window_id=%s kind=%s "
+            "old_policy=%s new_policy=%s",
+            coordinator.window.window_id,
+            coordinator.window.kind,
+            (saved_policy or "")[:12],
+            (current_policy or "")[:12],
+        )
+    if "candidate_models" not in checkpoint:
         # Legacy envelopes only have scalar attribution. New protocol
         # outputs retain the observed model of each unchanged child.
         checkpoint["candidate_models"] = {
@@ -266,6 +302,21 @@ def _recover_saved_output(
         finished_reason="structured_output",
         model_provenance=cached_provenance,
     )
+
+
+def _adopt_current_policy(
+    checkpoint: dict[str, Any], saved_policy: str | None, current_policy: str | None
+) -> None:
+    """Re-pin a revalidated checkpoint and its frozen children to one policy.
+
+    ``_saved_raw_candidates`` requires every child contract to carry the
+    checkpoint's policy, so both move together or a later replay would refuse
+    its own children.
+    """
+    checkpoint["extraction_policy"] = current_policy
+    for contract in checkpoint.get("extraction_children", {}).values():
+        if contract.get("policy") == saved_policy:
+            contract["policy"] = current_policy
 
 
 def extract_overflow_window(
