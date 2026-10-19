@@ -131,20 +131,14 @@ from dataclasses import dataclass, field
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from reflexio.models.api_schema.common import sanitise_for_log
-from reflexio.server.env_utils import EnvBoolError, env_bool, env_str
+from reflexio.removed_env import reject_removed_env
+from reflexio.server.env_utils import env_str
 from reflexio.server.ops_log import get_ops_logger
 
 logger = logging.getLogger(__name__)
 
-#: Opt-in. Absent or blank means off, and anything that is not ``true``/``false``
-#: raises rather than silently resolving to off -- see :func:`env_bool`.
-ENV_ENABLED = "REFLEXIO_PUBLISH_TIMING_ENABLED"
+#: ``off`` (also the unset default) disables; nonnegative milliseconds enable.
 ENV_MIN_MS = "REFLEXIO_PUBLISH_TIMING_MIN_MS"
-
-#: Only requests slower than this are worth a line. Below it the request is
-#: behaving and the line would be pure cost.
-ENV_THRESHOLD_MS = "REFLEXIO_PUBLISH_TIMING_THRESHOLD_MS"
-_DEFAULT_THRESHOLD_MS = 2000
 
 #: At most one line per event type per org per window, so an incident reports the
 #: shape of the problem without reporting it thousands of times. Same shape as
@@ -235,60 +229,28 @@ _scope: ContextVar[_Scope | None] = ContextVar("publish_timing_scope", default=N
 def resolve_publish_timing_policy(
     env: Mapping[str, str] | None = None,
 ) -> PublishTimingPolicy:
-    """Resolve one policy, retaining strict legacy opt-in and explicit vetoes.
-
-    A new canonical name avoids enabling a dormant legacy threshold. ``off``
-    disables; nonnegative milliseconds enable timing. Blank uses legacy inputs.
-    """
+    """Capture canonical diagnostic admission, threshold, and throttle."""
     source = os.environ if env is None else env
-    try:
-        legacy_enabled = env_bool(ENV_ENABLED, default=False, env=source)
-    except EnvBoolError:
-        raise EnvBoolError(f"{ENV_ENABLED} must be boolean true or false") from None
-    raw = env_str(ENV_MIN_MS, env=source)
-    if raw:
-        if raw.lower() == "off":
-            threshold = None
-        else:
-            try:
-                threshold = int(raw)
-            except ValueError:
-                raise ValueError(
-                    f"{ENV_MIN_MS} must be off or nonnegative integer milliseconds"
-                ) from None
-            if threshold < 0:
-                raise ValueError(
-                    f"{ENV_MIN_MS} must be off or nonnegative integer milliseconds"
-                )
-    else:
-        threshold = _threshold_ms(env=source) if legacy_enabled else None
-    if env_str(ENV_ENABLED, env=source) and not legacy_enabled:
-        threshold = None
+    reject_removed_env(source, canonical=ENV_MIN_MS)
+    raw = env_str(ENV_MIN_MS, "off", env=source)
+    threshold = None
+    if raw.lower() != "off":
+        try:
+            threshold = int(raw)
+        except ValueError:
+            raise ValueError(
+                f"{ENV_MIN_MS} must be off or nonnegative integer milliseconds"
+            ) from None
+        if threshold < 0:
+            raise ValueError(
+                f"{ENV_MIN_MS} must be off or nonnegative integer milliseconds"
+            )
     return PublishTimingPolicy(threshold, _interval_seconds(env=source))
 
 
 def publish_timing_enabled() -> bool:
     """Return resolved admission; collectors capture the complete policy."""
     return resolve_publish_timing_policy().threshold_ms is not None
-
-
-def _threshold_ms(*, env: Mapping[str, str] | None = None) -> int:
-    """Return the legacy threshold, refusing values that would flood.
-
-    ``0`` stays an explicit "report every publish", which is useful when
-    reproducing locally. A negative value is not a quieter version of that --
-    clamping it would mean "report everything" while reading as "off" -- so it
-    falls back to the default instead.
-
-    Returns:
-        int: Milliseconds a request must reach before it is worth a line.
-    """
-    raw = env_str(ENV_THRESHOLD_MS, str(_DEFAULT_THRESHOLD_MS), env=env)
-    try:
-        value = int(raw)
-    except ValueError:
-        return _DEFAULT_THRESHOLD_MS
-    return value if value >= 0 else _DEFAULT_THRESHOLD_MS
 
 
 def _interval_seconds(*, env: Mapping[str, str] | None = None) -> float:

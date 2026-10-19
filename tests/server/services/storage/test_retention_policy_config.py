@@ -55,7 +55,7 @@ def test_default_caps_and_registry_partition_are_preserved(monkeypatch, raw_cap)
 def test_one_operational_cap_keeps_customer_and_fixed_limits(monkeypatch, cap):
     monkeypatch.setenv(SHARED, str(cap))
     monkeypatch.setenv("REFLEXIO_ROW_LIMIT_PROFILES", "9")
-    monkeypatch.setenv("INTERACTION_CLEANUP_THRESHOLD", "11")
+    monkeypatch.setenv("REFLEXIO_ROW_LIMIT_INTERACTIONS", "11")
     limits = retention.get_row_retention_limits()
     assert {limits[name] for name in OPERATIONAL} == {cap}
     assert limits["profiles"] == 9
@@ -103,7 +103,7 @@ def test_mapping_is_complete_policy_authority(monkeypatch):
             "REFLEXIO_ROW_LIMIT_SHARE_LINKS": "0",
             "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_JOBS": "9",
             "REFLEXIO_ROW_LIMIT_PROFILES": "21",
-            "INTERACTION_CLEANUP_THRESHOLD": "11",
+            "REFLEXIO_ROW_LIMIT_INTERACTIONS": "11",
         }
     )
     assert limits["share_links"] == 0
@@ -199,3 +199,14 @@ def test_managed_alert_cap_remains_separate_from_operational_cleanup(monkeypatch
     assert {limits[name] for name in OPERATIONAL} == {17}
     assert {limits[name] for name in CUSTOMER} == {2_000_000}
     assert limits["user_playbook_exposure_events"] == 250_000
+
+
+@pytest.mark.parametrize("value", ["", "0", "11"])
+def test_removed_interaction_cap_requires_explicit_migration(value):
+    with pytest.raises(ValueError, match="INTERACTION_CLEANUP_THRESHOLD"):
+        retention.get_row_retention_limits(
+            env={
+                "INTERACTION_CLEANUP_THRESHOLD": value,
+                "REFLEXIO_ROW_LIMIT_INTERACTIONS": "11",
+            }
+        )

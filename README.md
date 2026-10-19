@@ -625,3 +625,5 @@ Local Torch model loaders share the thread-budget owner in
 `reflexio/server/llm/torch_threads.py`. Set `REFLEXIO_INFERENCE_TORCH_THREADS`
 to bound CPU intra-op work; the old `REFLEXIO_EMBED_TORCH_THREADS` name remains
 a compatible alias. Leaving both unset preserves Nomic thread autodetection.
+
+Environment-name upgrades: see the [canonical configuration guide](docs/configuration-upgrade.md) before adopting this version.

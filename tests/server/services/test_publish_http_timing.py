@@ -17,8 +17,7 @@ from reflexio.server import publish_timing as timing
 @pytest.fixture(autouse=True)
 def timing_enabled(monkeypatch):
     monkeypatch.delenv(timing.ENV_MIN_MS, raising=False)
-    monkeypatch.setenv(timing.ENV_ENABLED, "true")
-    monkeypatch.setenv(timing.ENV_THRESHOLD_MS, "0")
+    monkeypatch.setenv(timing.ENV_MIN_MS, "0")
     monkeypatch.setenv(timing.ENV_INTERVAL_SECONDS, "0")
     timing.reset_for_tests()
     yield
@@ -334,7 +333,7 @@ def test_concurrent_requests_do_not_share_phases_or_ids(caplog):
 def test_disabled_other_routes_and_mounts(
     monkeypatch, caplog, enabled, path, root, expected
 ):
-    monkeypatch.setenv(timing.ENV_ENABLED, str(enabled).lower())
+    monkeypatch.setenv(timing.ENV_MIN_MS, "0" if enabled else "off")
     sent = []
 
     async def app(_scope, _receive, send):
@@ -351,7 +350,7 @@ def test_disabled_other_routes_and_mounts(
 
 
 def test_http_threshold_independent_of_handler_and_throttled(monkeypatch, caplog):
-    monkeypatch.setenv(timing.ENV_THRESHOLD_MS, "2000")
+    monkeypatch.setenv(timing.ENV_MIN_MS, "2000")
     monkeypatch.setenv(timing.ENV_INTERVAL_SECONDS, "60")
     clock = [0.0]
     monkeypatch.setattr(

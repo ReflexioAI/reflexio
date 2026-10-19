@@ -207,7 +207,7 @@ case "$CMD" in
     # openclaw-smart users. Reflexio's library defaults are much higher
     # (250k/50k) for server deployments; here we override only in the
     # openclaw-smart plugin context. Users can still override via env.
-    export INTERACTION_CLEANUP_THRESHOLD="${INTERACTION_CLEANUP_THRESHOLD:-500}"
+    export REFLEXIO_ROW_LIMIT_INTERACTIONS="${REFLEXIO_ROW_LIMIT_INTERACTIONS:-500}"
     export INTERACTION_CLEANUP_DELETE_COUNT="${INTERACTION_CLEANUP_DELETE_COUNT:-200}"
 
     # backend-log-runner.sh owns stdout/stderr capture so process output

@@ -132,13 +132,13 @@ class TestSaveAndLoadStorage:
         result = load_storage_from_config(org_id="test-org", base_dir=str(tmp_path))
         assert result == "supabase"
 
-    def test_round_trip_supabase_with_legacy_db_url_alias(
+    def test_round_trip_supabase_with_canonical_db_url(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("DATA_SUPABASE_URL", "https://example.supabase.co")
         monkeypatch.setenv("DATA_SUPABASE_KEY", "test-key-123")
         monkeypatch.delenv("DATA_DB_URL", raising=False)
-        monkeypatch.setenv("DATA_SUPABASE_DB_URL", "postgresql://localhost/test")
+        monkeypatch.setenv("DATA_DB_URL", "postgresql://localhost/test")
         save_storage_to_config("supabase", org_id="test-org", base_dir=str(tmp_path))
         result = load_storage_from_config(org_id="test-org", base_dir=str(tmp_path))
         assert result == "supabase"

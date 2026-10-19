@@ -8,6 +8,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from math import isfinite
 
+from reflexio.removed_env import reject_removed_env
+
 DEFAULT_STORAGE_POOL_SIZE = 10
 DEFAULT_STORAGE_POOL_ACQUIRE_TIMEOUT = 30.0
 
@@ -89,21 +91,6 @@ def resolve_postgres_pool_defaults(env: Mapping[str, str]) -> PostgresPoolDefaul
 
 
 def resolve_data_db_url(env: Mapping[str, str]) -> str:
-    """Resolve one data database target, accepting backend-specific old names.
-
-    Blank values are unset. With no selected backend, retain the historical
-    Supabase-then-Postgres fallback used by import-time compatibility constants.
-    A selected backend never falls through to the other backend's old name.
-    """
-    canonical = env.get("DATA_DB_URL", "").strip()
-    if canonical:
-        return canonical
-    backend = env.get("REFLEXIO_STORAGE", "").strip().lower()
-    if backend == "postgres":
-        return env.get("POSTGRES_DB_URL", "").strip()
-    if backend == "supabase":
-        return env.get("DATA_SUPABASE_DB_URL", "").strip()
-    return (
-        env.get("DATA_SUPABASE_DB_URL", "").strip()
-        or env.get("POSTGRES_DB_URL", "").strip()
-    )
+    """Resolve the canonical data target; never fall back to another DSN."""
+    reject_removed_env(env, canonical="DATA_DB_URL")
+    return env.get("DATA_DB_URL", "").strip()

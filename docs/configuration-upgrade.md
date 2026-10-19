@@ -1,0 +1,39 @@
+# Canonical environment names
+
+Legacy configuration spellings are no longer accepted. The first environment
+loader rejects their presence before dotenv loading or blank-value pruning;
+direct policy readers reject their obsolete names too. An error names the old
+and replacement settings without printing values. Remove old assignments even
+when a canonical assignment is present. No automatic copying or precedence
+between old and new names remains.
+
+| Removed name | Canonical name / effective policy |
+| --- | --- |
+| DATA_SUPABASE_DB_URL, POSTGRES_DB_URL | DATA_DB_URL; preserve the exact database target |
+| WEB_CONCURRENCY | REFLEXIO_SERVER_WORKERS |
+| INTERACTION_CLEANUP_THRESHOLD | REFLEXIO_ROW_LIMIT_INTERACTIONS |
+| REFLEXIO_EMBED_TORCH_THREADS | REFLEXIO_INFERENCE_TORCH_THREADS |
+| REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED | REFLEXIO_MISSING_VECTOR_BACKFILL_CAP; zero disables, positive caps each org/tick |
+| REFLEXIO_PUBLISH_TIMING_ENABLED, REFLEXIO_PUBLISH_TIMING_THRESHOLD_MS | REFLEXIO_PUBLISH_TIMING_MIN_MS; off disables, nonnegative milliseconds enable |
+| CONTROL_PLANE_INGEST_URL | CONTROL_PLANE_URL |
+| TOPUP_RECONCILE_ENABLED, TOPUP_RECONCILE_INTERVAL_SECONDS | CREDIT_INVOICE_RECONCILE_INTERVAL_SECONDS; zero disables, positive seconds enable |
+| BILLING_METERING_SWEEPS_ENABLED, BILLING_METERING_SWEEP_INTERVAL_SECONDS | BILLING_METERING_MAINTENANCE_INTERVAL_SECONDS; zero disables, positive seconds opt in |
+| BILLING_PERIOD_CLOSE_ENABLED, PERIOD_CLOSE_INTERVAL_SECONDS | BILLING_PERIOD_CLOSE_INTERVAL_SECONDS; zero disables, positive seconds enable |
+
+The shared distribution guard includes enterprise-owned names so generic OSS
+imports cannot discard obsolete blank assignments before enterprise startup.
+This also rejects obsolete enterprise variables inherited by a standalone OSS
+process. Update the shell environment and dotenv files before upgrading.
+
+Do not rename a boolean to a numeric setting verbatim. Preserve the former
+effective policy: missing-vector repair defaults to 200; publish diagnostics
+default off (former true without a threshold meant 2000 ms); metering defaults
+off (former true without a cadence meant 3600 seconds); reconciliation defaults
+300 seconds; period close defaults 3600 seconds. A blank former period-close
+enable switch meant disabled and must become canonical zero. Publish timing
+zero enables every-request diagnostics, so a former false must become off.
+
+Independent throttles, grace periods, concurrency, and customer retention caps
+remain configurable. No schema/data migration is required. AWS secret JSON
+fields may keep their physical names when explicitly injected under canonical
+runtime environment names; the runtime does not resolve old names.
