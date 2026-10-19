@@ -16,6 +16,7 @@ from reflexio.server import publish_timing as timing
 
 @pytest.fixture(autouse=True)
 def timing_enabled(monkeypatch):
+    monkeypatch.delenv(timing.ENV_MIN_MS, raising=False)
     monkeypatch.setenv(timing.ENV_ENABLED, "true")
     monkeypatch.setenv(timing.ENV_THRESHOLD_MS, "0")
     monkeypatch.setenv(timing.ENV_INTERVAL_SECONDS, "0")

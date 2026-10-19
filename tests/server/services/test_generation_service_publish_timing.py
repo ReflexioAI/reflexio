@@ -63,6 +63,7 @@ def _timing_on(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         "reflexio.server.services.durable_learning.local.ensure_local_extraction",
         lambda _: None,
     )
+    monkeypatch.delenv(publish_timing.ENV_MIN_MS, raising=False)
     monkeypatch.setenv(publish_timing.ENV_ENABLED, "true")
     monkeypatch.setenv(publish_timing.ENV_THRESHOLD_MS, "0")
     monkeypatch.setenv(publish_timing.ENV_INTERVAL_SECONDS, "0")
