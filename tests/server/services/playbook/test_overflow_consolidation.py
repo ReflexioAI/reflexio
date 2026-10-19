@@ -1,7 +1,8 @@
 """Information retention and reference invariants in bounded historical checks."""
 
+from functools import partial
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -658,3 +659,250 @@ def test_identical_historical_source_geometry_does_not_count_twice_or_merge_prov
         900
     ]
     assert first.user_playbook_id == 51 and second.user_playbook_id == 52
+
+
+def _rule(identity, content, trigger="after preparation"):
+    return _old(identity).model_copy(
+        update={"content": content, "trigger": trigger, "source_interaction_ids": []}
+    )
+
+
+_APPROVAL = (
+    "Prepare the release branch only; production deployment needs a separate "
+    "explicit approval from the owner each time."
+)
+_PREFLIGHT = (
+    "Run the migration registration preflight and the deploy guards locally "
+    "before opening any pull request that adds a migration."
+)
+# Restates the OLD rule and adds a constraint; a lexical "same lesson" check
+# matches it, so superseding it by OLD would silently drop the new constraint.
+_APPROVAL_PLUS = _APPROVAL + " Never deploy on Fridays."
+
+
+def _uncleared_inputs():
+    old = [
+        _rule(51, "Unrelated lesson about formatting tables in reports."),
+        _rule(52, _APPROVAL),
+    ]
+    new = [
+        _rule(0, _APPROVAL_PLUS).model_copy(update={"request_id": "current"}),
+        # Two siblings describing the same lesson, neither matching history.
+        _rule(0, _PREFLIGHT, "before opening a pull request"),
+        _rule(0, _PREFLIGHT + " Always.", "before opening a pull request"),
+    ]
+    return new, old
+
+
+def test_uncleared_proposal_never_changes_history_or_drops_a_lesson():
+    from reflexio.server.services.playbook.components.consolidator import (
+        IndependentDecision,
+    )
+    from reflexio.server.services.playbook.components.overflow_consolidation import (
+        unconsolidated_decisions,
+    )
+
+    new, old = _uncleared_inputs()
+    plan = unconsolidated_decisions(new)
+    assert plan.decisions == [IndependentDecision(new_id=f"NEW-{i}") for i in range(3)]
+    owner = PlaybookConsolidator.__new__(PlaybookConsolidator)
+    owner.consolidated_output_indices = set()
+    owner.request_context = cast(Any, SimpleNamespace(org_id="org"))
+    build = partial(
+        owner._build_deduplicated_results,
+        new_playbooks=new,
+        existing_playbooks=old,
+        dedup_output=plan,
+        generation_request_id="current",
+        agent_version="v1",
+    )
+    # The overlap guard would reject this plan (NEW-0 against OLD, and the two
+    # siblings against each other); the no-merge plan admits it.
+    same = partial(
+        PlaybookConsolidator._describes_same_lesson,
+        content_threshold=0.7,
+        min_content_length=80,
+    )
+    assert same(new[0], old[1]) and same(new[1], new[2])
+    with pytest.raises(ValueError, match="Overlapping consolidation survivors"):
+        build()
+    rows, archived, groups = build(admit_overlapping_survivors=True)
+    assert archived == [] and groups == []
+    assert [row.content for row in rows] == [row.content for row in new]
+    assert [row.content for row in old] == [old[0].content, _APPROVAL]
+
+
+def test_deduplicate_completes_an_uncleared_window_without_touching_history(
+    monkeypatch,
+):
+    from reflexio.models.config_schema import DeduplicationConfig
+    from reflexio.server.services.extraction import overflow_coordinator
+    from reflexio.server.services.playbook.components import (
+        overflow_consolidation as module,
+    )
+
+    def refuse(*_):
+        raise module.ConsolidationNotClearedError(
+            "Historical consolidation is unsafe or undetermined"
+        )
+
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    monkeypatch.setattr(module, "_verified_proposal", refuse)
+    coordinator = SimpleNamespace(remember_historical_playbooks=lambda _rows: None)
+    token = overflow_coordinator.current_overflow_coordinator.set(
+        cast(Any, coordinator)
+    )
+    try:
+        owner = PlaybookConsolidator.__new__(PlaybookConsolidator)
+        owner._dedup_config = DeduplicationConfig()
+        owner.request_context = cast(Any, SimpleNamespace(org_id="org"))
+        new, old = _uncleared_inputs()
+        for _ in range(2):  # every retry of the window reaches the same result
+            rows, archived, groups = owner.deduplicate(
+                [new], "current", "v1", user_id="u", existing_playbooks=old
+            )
+            assert archived == [] and groups == []
+            assert [row.content for row in rows] == [row.content for row in new]
+            assert owner.consolidation_not_cleared is True
+        # A later VERIFIED plan with the same overlapping survivors is still
+        # rejected: admission is scoped to the uncleared call that set it.
+        monkeypatch.setattr(
+            module,
+            "_verified_proposal",
+            lambda *_: module.unconsolidated_decisions(new),
+        )
+        with pytest.raises(ValueError, match="Overlapping consolidation survivors"):
+            owner.deduplicate(
+                [new], "current", "v1", user_id="u", existing_playbooks=old
+            )
+        assert owner.consolidation_not_cleared is False
+    finally:
+        overflow_coordinator.current_overflow_coordinator.reset(token)
+
+
+@pytest.mark.parametrize(
+    "cause",
+    [
+        "Historical consolidation is unsafe or undetermined",
+        "Historical evidence coverage is undetermined",
+        "Historical rule lacks verified quotations",
+    ],
+)
+def test_uncleared_history_completes_with_no_merge_instead_of_retrying(
+    monkeypatch, cause
+):
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+    )
+    from reflexio.server.services.playbook.components import (
+        overflow_consolidation as module,
+    )
+
+    def refuse(*_):
+        raise module.ConsolidationNotClearedError(cause)
+
+    monkeypatch.setattr(module, "_verified_proposal", refuse)
+    new = [_rule(0, "A fresh, unrelated lesson about release notes.")]
+    old = [_rule(51, "Prepare only; deployment needs separate approval each time.")]
+    owner = cast(PlaybookConsolidator, SimpleNamespace())
+    coordinator = cast(OverflowCoordinator, SimpleNamespace())
+    first = module.verified_consolidation_decisions(owner, coordinator, new, old)
+    # Replays are identical: no saved receipt can turn into a retry loop.
+    assert (
+        module.verified_consolidation_decisions(owner, coordinator, new, old) == first
+    )
+    assert [decision.kind for decision in first.decisions] == ["independent"]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        InputBudgetConfigurationError("Historical source partition changed"),
+        InputBudgetExceededError("Original and historical coverage exceeds 48 chunks"),
+    ],
+)
+def test_capacity_and_integrity_failures_still_stop_publication(monkeypatch, error):
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+    )
+    from reflexio.server.services.playbook.components import (
+        overflow_consolidation as module,
+    )
+
+    def fail(*_):
+        raise error
+
+    monkeypatch.setattr(module, "_verified_proposal", fail)
+    with pytest.raises(type(error)):
+        module.verified_consolidation_decisions(
+            cast(PlaybookConsolidator, SimpleNamespace()),
+            cast(OverflowCoordinator, SimpleNamespace()),
+            [_rule(0, "lesson")],
+            [],
+        )
+
+
+def _dedup_owner(monkeypatch, error):
+    from reflexio.models.config_schema import DeduplicationConfig
+
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    owner = PlaybookConsolidator.__new__(PlaybookConsolidator)
+    owner._dedup_config = DeduplicationConfig()
+    owner.request_context = cast(Any, SimpleNamespace(org_id="org"))
+
+    def decide(*_):
+        raise error
+
+    monkeypatch.setattr(owner, "_window_consolidation_decisions", decide)
+    return owner
+
+
+def _deduplicate(owner):
+    return owner.deduplicate(
+        [[_rule(0, "new lesson")]],
+        "request",
+        "v1",
+        user_id="u",
+        existing_playbooks=[_rule(51, "old lesson")],
+    )
+
+
+@pytest.mark.parametrize("kind", ["suspended", "checkpoint", "lease"])
+def test_durable_control_flow_is_not_reported_as_consolidation_failure(
+    monkeypatch, caplog, kind
+):
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowSuspendedError,
+    )
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        LeaseLostError,
+        OverflowCheckpointConflictError,
+    )
+
+    error = {
+        "suspended": OverflowSuspendedError("Extraction turn needs continuation"),
+        "checkpoint": OverflowCheckpointConflictError("revision moved"),
+        "lease": LeaseLostError("lease lost"),
+    }[kind]
+    owner = _dedup_owner(monkeypatch, error)
+    caplog.set_level("DEBUG")
+    with pytest.raises(type(error)):
+        _deduplicate(owner)
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ValueError("bad decision"),
+        InputBudgetConfigurationError("Historical source partition changed"),
+    ],
+)
+def test_consolidation_failures_are_still_reported(monkeypatch, caplog, error):
+    owner = _dedup_owner(monkeypatch, error)
+    with pytest.raises(type(error)):
+        _deduplicate(owner)
+    assert any(
+        r.levelname == "ERROR" and r.getMessage() == "Failed to identify duplicates"
+        for r in caplog.records
+    )
