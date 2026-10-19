@@ -620,3 +620,8 @@ reranker as the shared worker, and a ready search workload. Generic
 the explicit `score_search_pairs` helpers. Unset search routing preserves the
 existing path. Failed isolated calls do not retry against the shared worker;
 retrieval retains its existing unavailable-reranker behavior and deadlines.
+
+Local Torch model loaders share the thread-budget owner in
+`reflexio/server/llm/torch_threads.py`. Set `REFLEXIO_INFERENCE_TORCH_THREADS`
+to bound CPU intra-op work; the old `REFLEXIO_EMBED_TORCH_THREADS` name remains
+a compatible alias. Leaving both unset preserves Nomic thread autodetection.
