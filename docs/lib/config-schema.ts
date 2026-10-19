@@ -77,7 +77,6 @@ export interface DeduplicationConfig {
   strategy: "legacy" | "audited";
   search_threshold: number;
   search_top_k: number;
-  max_unified_content_chars: number;
 }
 
 export interface UserPlaybookExtractorConfig {

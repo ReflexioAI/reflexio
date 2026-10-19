@@ -286,6 +286,17 @@ def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
                 else item
                 for item in value
             ]
+        if current == "user_playbook_extractor_config":
+            cleaned = payload.get(config_field)
+            for item in cleaned if isinstance(cleaned, list) else [cleaned]:
+                if isinstance(item, dict) and isinstance(
+                    policy := item.get("deduplication_config"), dict
+                ):
+                    item["deduplication_config"] = {
+                        key: value
+                        for key, value in policy.items()
+                        if key != "max_unified_content_chars"
+                    }
     return payload
 
 
@@ -572,7 +583,6 @@ class DeduplicationConfig(BaseModel):
         search_threshold: Minimum similarity score for deduplication candidates
             (0.0-1.0), independent from user-facing retrieval defaults.
         search_top_k: Maximum number of existing playbooks to retrieve per new playbook.
-        max_unified_content_chars: Legacy strategy's soft cap on unified content.
     """
 
     strategy: Literal["legacy", "audited"] = Field(
@@ -593,15 +603,6 @@ class DeduplicationConfig(BaseModel):
         default=5,
         ge=1,
         description="Maximum number of existing playbooks to retrieve per new playbook.",
-    )
-    max_unified_content_chars: int = Field(
-        default=1200,
-        gt=0,
-        description=(
-            "Legacy strategy soft cap on a unified playbook's content length; unify that would "
-            "exceed it should prefer differentiate/keep-separate. Enforced as a "
-            "warning-only backstop in the consolidator apply path."
-        ),
     )
 
 

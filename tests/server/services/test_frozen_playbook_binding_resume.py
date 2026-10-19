@@ -34,8 +34,9 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.parametrize("missing_strategy", [False, True])
+@pytest.mark.parametrize("retired_cap", [False, True])
 def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
-    pipeline, monkeypatch, missing_strategy
+    pipeline, monkeypatch, missing_strategy, retired_cap
 ):
     engine, _, http = pipeline
     configurator = engine.request_context.configurator
@@ -69,6 +70,10 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
     parent = storage.get_agent_run(f"window:{window.window_id}")
     snapshot = copy.deepcopy(parent.generation_request_snapshot)
     snapshot["extractor_config"]["extractor_name"] = "historical-playbook-label"
+    if retired_cap:
+        snapshot["extractor_config"]["deduplication_config"][
+            "max_unified_content_chars"
+        ] = 37
     if missing_strategy:
         snapshot["extractor_config"]["deduplication_config"].pop("strategy")
     original_hash = build_scope_hash(snapshot["extractor_config"])
@@ -191,12 +196,14 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
             for name, field in UserPlaybookExtractorConfig.model_fields.items()
         },
     }
-    if missing_strategy:
+    if missing_strategy or retired_cap:
         dedup_fields: dict[str, Any] = {
             name: (field.annotation, copy.deepcopy(field))
             for name, field in DeduplicationConfig.model_fields.items()
-            if name != "strategy"
+            if name != "strategy" or not missing_strategy
         }
+        if retired_cap:
+            dedup_fields["max_unified_content_chars"] = (int, 1200)
         legacy_dedup = create_model("DeduplicationConfig", **dedup_fields)
         legacy_fields["deduplication_config"] = (legacy_dedup, legacy_dedup())
     legacy_type = create_model("LegacyPlaybookExtractorConfig", **legacy_fields)

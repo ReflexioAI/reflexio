@@ -52,7 +52,7 @@ def source_interaction_digest(interaction: Interaction) -> str:
 
 
 def effective_frozen_extractor_config(frozen: dict[str, Any]) -> dict[str, Any]:
-    """Apply only the two behavior-preserving deployed schema transitions.
+    """Apply only known behavior-preserving deployed schema transitions.
 
     Do not round-trip this witness through a model: that would silently accept
     unknown retired fields, changed defaults, or other future schema changes.
@@ -60,8 +60,10 @@ def effective_frozen_extractor_config(frozen: dict[str, Any]) -> dict[str, Any]:
     effective = deepcopy(frozen)
     effective.pop("extractor_name", None)
     dedup = effective.get("deduplication_config")
-    if isinstance(dedup, dict) and "strategy" not in dedup:
-        dedup["strategy"] = "legacy"
+    if isinstance(dedup, dict):
+        dedup.pop("max_unified_content_chars", None)
+        if "strategy" not in dedup:
+            dedup["strategy"] = "legacy"
     return effective
 
 
@@ -69,7 +71,8 @@ def frozen_extractor_config_identity(config: BaseModel, frozen: dict[str, Any]) 
     """Reproduce the legacy v1 prior-answer key after frozen binding validation.
 
     Pydantic's representation was part of that key. The retired root label was
-    first; the newly added nested strategy must be absent for older admissions.
+    first; the nested strategy must be absent for pre-strategy admissions, and
+    the removed warning threshold must retain its original last-field position.
     Only the lookup identity uses this representation, never requests or policy.
     """
     fields = []
@@ -78,13 +81,20 @@ def frozen_extractor_config_identity(config: BaseModel, frozen: dict[str, Any]) 
     for name, value in config.__repr_args__():
         if name == "deduplication_config" and isinstance(value, BaseModel):
             dedup = frozen.get("deduplication_config")
-            if isinstance(dedup, dict) and "strategy" not in dedup:
-                args = ", ".join(
+            if isinstance(dedup, dict) and (
+                "strategy" not in dedup or "max_unified_content_chars" in dedup
+            ):
+                args = [
                     f"{key}={item!r}"
                     for key, item in value.__repr_args__()
-                    if key != "strategy"
-                )
-                fields.append(f"{name}={type(value).__name__}({args})")
+                    if key != "max_unified_content_chars"
+                    and (key != "strategy" or "strategy" in dedup)
+                ]
+                if "max_unified_content_chars" in dedup:
+                    args.append(
+                        f"max_unified_content_chars={dedup['max_unified_content_chars']!r}"
+                    )
+                fields.append(f"{name}={type(value).__name__}({', '.join(args)})")
                 continue
         fields.append(f"{name}={value!r}")
     return " ".join(fields)
@@ -93,7 +103,7 @@ def frozen_extractor_config_identity(config: BaseModel, frozen: dict[str, Any]) 
 def matches_frozen_extractor_binding(
     prior: AgentRunRecord, expected: AgentRunRecord, frozen_config: dict[str, Any]
 ) -> bool:
-    """Accept exact bindings or the two known inert schema transitions.
+    """Accept exact bindings or the known inert schema transitions.
 
     The compatibility case requires the immutable window policy and saved run
     snapshot to witness the original hash. It never rewrites historical state.

@@ -1012,64 +1012,53 @@ class TestBuildDeduplicatedResults:
         assert result[0].content == "solo final"
         assert delete_ids == []
 
-    def test_unify_over_budget_logs_warning(self, mock_consolidator, caplog):
-        """An over-budget unify logs a backstop warning but still applies.
+    @pytest.mark.parametrize("content_length", [5, 50, 2000])
+    @pytest.mark.parametrize("validate_only", [False, True])
+    def test_content_length_is_observed_without_changing_output(
+        self, mock_consolidator, caplog, content_length, validate_only
+    ):
+        from reflexio.models.config_schema import DeduplicationConfig
 
-        The complexity budget is a soft signal: the merge proceeds (the row is
-        inserted), and ``event=consolidation_over_budget`` is emitted with the
-        offending length and the configured budget.
-        """
-        mock_consolidator._dedup_config.max_unified_content_chars = 10
-        over_budget_content = "x" * 50
-
-        new_playbooks = [_make_user_playbook(0, content="new content")]
-
-        dedup_output = PlaybookConsolidationOutput(
-            decisions=[
-                _unify("NEW-0", archive_existing_ids=[], content=over_budget_content)
-            ],
-        )
-
-        with caplog.at_level("WARNING"):
-            result, _, _ = mock_consolidator._build_deduplicated_results(
-                new_playbooks=new_playbooks,
-                existing_playbooks=[],
-                dedup_output=dedup_output,
-                request_id="req1",
-                agent_version="v1",
+        content = "x" * content_length
+        for old_threshold in (1, 9999):
+            caplog.clear()
+            mock_consolidator._dedup_config = DeduplicationConfig.model_validate(
+                {"max_unified_content_chars": old_threshold}
             )
-
-        # Merge still applies (soft backstop, not a blocker).
-        assert len(result) == 1
-        assert result[0].content == over_budget_content
-        assert any(
-            "event=consolidation_over_budget" in rec.message
-            and "len=50" in rec.message
-            and "budget=10" in rec.message
-            for rec in caplog.records
-        )
-
-    def test_unify_within_budget_no_warning(self, mock_consolidator, caplog):
-        """A within-budget unify emits no over-budget warning."""
-        mock_consolidator._dedup_config.max_unified_content_chars = 1000
-
-        new_playbooks = [_make_user_playbook(0, content="new content")]
-        dedup_output = PlaybookConsolidationOutput(
-            decisions=[_unify("NEW-0", archive_existing_ids=[], content="short")],
-        )
-
-        with caplog.at_level("WARNING"):
-            mock_consolidator._build_deduplicated_results(
-                new_playbooks=new_playbooks,
-                existing_playbooks=[],
-                dedup_output=dedup_output,
-                request_id="req1",
-                agent_version="v1",
+            with caplog.at_level("INFO"):
+                rows, archived, _ = mock_consolidator._build_deduplicated_results(
+                    new_playbooks=[
+                        _make_user_playbook(0, content="new content"),
+                        _make_user_playbook(1, content="brief"),
+                    ],
+                    existing_playbooks=[],
+                    dedup_output=PlaybookConsolidationOutput(
+                        decisions=[
+                            _unify("NEW-0", archive_existing_ids=[], content=content),
+                            IndependentDecision(new_id="NEW-1"),
+                        ]
+                    ),
+                    request_id="req1",
+                    agent_version="v1",
+                    validate_only=validate_only,
+                )
+            assert [row.content for row in rows] == [content, "brief"]
+            assert archived == []
+            summaries = [
+                record
+                for record in caplog.records
+                if "event=playbook_consolidation_done" in record.message
+            ]
+            assert len(summaries) == (0 if validate_only else 1)
+            if summaries:
+                summary = summaries[0]
+                assert summary.name == "reflexio.ops.playbook_consolidation"
+                assert summary.levelname == "INFO"
+                assert f"max_output_chars={content_length}" in summary.message
+                assert content not in summary.message
+            assert not any(
+                "consolidation_over_budget" in r.message for r in caplog.records
             )
-
-        assert not any(
-            "event=consolidation_over_budget" in rec.message for rec in caplog.records
-        )
 
     def test_unify_counter_bumps_once_per_decision(self, mock_consolidator):
         """``unify_count`` increments by exactly one per applied ``UnifyDecision``,

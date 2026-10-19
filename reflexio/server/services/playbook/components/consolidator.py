@@ -27,6 +27,7 @@ from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
 )
+from reflexio.server.ops_log import get_ops_logger
 from reflexio.server.services.deduplication_utils import (
     BaseDeduplicator,
     format_dedup_timestamp,
@@ -44,6 +45,7 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
 from reflexio.server.services.storage.error import ReadinessUnavailableError
 
 logger = logging.getLogger(__name__)
+ops_logger = get_ops_logger("playbook_consolidation")
 
 # Token-overlap thresholds for judging whether two playbook rows state the same
 # lesson. Rows citing the same interaction need less lexical agreement than rows
@@ -1629,14 +1631,15 @@ class PlaybookConsolidator(BaseDeduplicator):
             raise ValueError("; ".join(overlap_errors))
 
         if not validate_only:
-            logger.info(
+            ops_logger.info(
                 "event=playbook_consolidation_done unify=%d reject_new=%d "
-                "differentiate=%d independent=%d failed=%d",
+                "differentiate=%d independent=%d failed=%d max_output_chars=%d",
                 result_counters.unify_count,
                 result_counters.reject_new_count,
                 result_counters.differentiate_count,
                 result_counters.independent_count,
                 result_counters.failed_count,
+                max((len(row.content) for row in new_rows), default=0),
             )
 
         return new_rows, archive_ids, merge_groups
@@ -1774,7 +1777,6 @@ class PlaybookConsolidator(BaseDeduplicator):
                 archive_ids=archive_ids,
                 seen_archive=seen_archive,
                 generation_request_id=generation_request_id,
-                validate_only=validate_only,
             )
         if isinstance(decision, RejectNewDecision):
             return self._apply_reject_new(
@@ -1811,7 +1813,6 @@ class PlaybookConsolidator(BaseDeduplicator):
         archive_ids: list[int],
         seen_archive: set[int],
         generation_request_id: str,
-        validate_only: bool = False,
     ) -> tuple[list[UserPlaybook], list[str], list[int]]:
         """Collapse / compose NEW (+ 0..N EXISTING) into one row.
 
@@ -1871,20 +1872,6 @@ class PlaybookConsolidator(BaseDeduplicator):
                 archive_ids.append(pid)
             if pid:
                 merge_source_ids.append(pid)
-
-        budget = self._dedup_config.max_unified_content_chars
-        content_len = len(decision.content)
-        if content_len > budget and not validate_only:
-            # Soft backstop only: the prompt instructs the model to prefer
-            # `differentiate` over an over-long unify. We log a signal rather
-            # than hard-fail or downgrade so we don't destabilize the 4-kind
-            # apply logic; the merge still proceeds.
-            logger.warning(
-                "event=consolidation_over_budget new_id=%s len=%d budget=%d",
-                ",".join(new_ids),
-                content_len,
-                budget,
-            )
 
         primary_candidate = candidates[0]
         combined_source_ids = self._merge_source_ids([*candidates, *existing_members])
