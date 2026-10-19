@@ -803,6 +803,14 @@ instruction. Unprepared extraction keeps its turn-reference contract. Strict
 source visibility validation, bounded corrective repair, and evidence-carrier
 limits are unchanged.
 
+### Supabase storage schema compatibility
+
+`StorageConfigSupabase` accepts legacy `read_url`/`read_key` fields only to discard
+them during normalization; they are absent from canonical output and the schema.
+Enterprise Supabase reads use native SQL, so these HTTP reader fields did not
+select a replica. `StorageConfigPostgres.read_db_url` and reader pool settings
+remain supported for actual native replica routing.
+
 ### Stored configuration validation
 
 Persisted reads use `validate_stored_config`: removed unknown fields are ignored

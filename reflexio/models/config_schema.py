@@ -402,8 +402,14 @@ class StorageConfigSupabase(BaseModel):
     key: NonEmptyStr
     db_url: NonEmptyStr
     schema_name: str | None = Field(default=None, alias="schema")
-    read_url: NonEmptyStr | None = None
-    read_key: NonEmptyStr | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def retire_http_reader(cls, data: Any) -> Any:
+        """Old HTTP reader fields no longer affect native SQL read execution."""
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if k not in {"read_url", "read_key"}}
+        return data
 
 
 class StorageConfigPostgres(BaseModel):

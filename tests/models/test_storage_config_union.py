@@ -247,7 +247,9 @@ class TestTypeTagCompatibility:
             f"{label}: serializing the tag would rewrite every org's stored "
             f"config blob at the next boot upgrade"
         )
-        assert set(dumped) == set(payload) | {k for k in dumped if dumped[k] is None}
+        assert set(dumped) == (set(payload) - {"read_url", "read_key"}) | {
+            k for k in dumped if dumped[k] is None
+        }
 
 
 def test_round_trip_preserves_the_backend() -> None:
@@ -316,3 +318,21 @@ def test_invalid_current_value_in_legacy_conversion_also_fails_closed(value):
     assert "private-invalid-merge-budget" not in "".join(
         traceback.format_exception(error.value)
     )
+
+
+@pytest.mark.parametrize(
+    "read_url,read_key", [(None, None), ("https://unused.example", "unused"), ("", "")]
+)
+def test_obsolete_http_reader_drops_without_changing_storage_identity(
+    read_url, read_key
+):
+    payload = {**_PROD_SUPABASE, "read_url": read_url, "read_key": read_key}
+    before = dict(payload)
+    config = validate_stored_config({"storage_config": payload})
+    assert isinstance(config.storage_config, StorageConfigSupabase)
+    canonical = config.storage_config.model_dump(mode="json")
+    assert canonical == {k: v for k, v in payload.items() if not k.startswith("read_")}
+    assert payload == before
+    assert _ADAPTER.validate_python(canonical) == config.storage_config
+    assert "read_url" not in StorageConfigSupabase.model_fields
+    assert "read_key" not in StorageConfigSupabase.model_fields
