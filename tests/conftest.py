@@ -233,8 +233,8 @@ def pytest_unconfigure(config):
 
 @pytest.fixture(autouse=True)
 def _fast_discovery_policy(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Speed internal scheduler ticks without reviving a retired public knob."""
-    monkeypatch.setattr("reflexio.durable_learning_policy.DISCOVERY_POLL_SECONDS", 0.05)
+    """Exercise the supported process policy while keeping discovery tests fast."""
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_POLL_SECONDS", "0.05")
 
 
 @pytest.fixture(autouse=True)

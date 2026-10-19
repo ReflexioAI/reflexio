@@ -805,14 +805,27 @@ limits are unchanged.
 
 ### Durable extraction timing
 
-`reflexio/durable_learning_policy.py` owns background discovery cadence (2 seconds)
-and renewable user-claim duration (300 seconds). Library/server scheduling and
-enterprise failure reporting share that policy. `REFLEXIO_DURABLE_LEARNING_POLL_SECONDS`
-and `REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS` are retired: unset/blank or former
-default values remain accepted as ignored compatibility inputs; custom or invalid
-values fail startup. Remove those entries before upgrading a deployment that
-customized them. Worker capacity remains independently configurable through
-`REFLEXIO_PUBLISH_LEARNING_WORKERS`; claim fencing and heartbeat renewal are unchanged.
+`reflexio/durable_learning_policy.py` resolves background discovery timing once
+before worker construction. `REFLEXIO_DURABLE_LEARNING_POLL_SECONDS` controls
+pickup latency and discovery read load (default 2 seconds);
+`REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS` controls renewable background claim
+lifetime and worker-loss recovery (default 300 seconds). These are independent
+supported deployment inputs again: the previous retirement fixed their values
+without removing their operational purpose. Valid custom values now take effect;
+review complete resolved deployment settings when upgrading from the retirement.
+
+Blank values select defaults. Poll seconds must be finite and positive within
+`threading.TIMEOUT_MAX`; lease seconds must be positive integral seconds within
+signed-64-bit epoch and heartbeat wait headroom. Integral decimal spellings remain
+accepted. Invalid values fail startup without disclosing supplied values.
+`resolve_discovery_timing(mapping)` and `validate_discovery_timing_env(mapping)`
+use the supplied mapping exclusively, even when empty. Scheduler and enterprise
+failure reporting capture the same policy at construction; restart to change it.
+
+Worker capacity remains independently configurable through
+`REFLEXIO_PUBLISH_LEARNING_WORKERS`. Claim fencing and heartbeat renewal are
+unchanged. Explicit/manual user leases and pending-run claims retain separate
+lifetimes and are not controlled by these background discovery settings.
 
 
 Housekeeping timing and governance deletion batches live in
