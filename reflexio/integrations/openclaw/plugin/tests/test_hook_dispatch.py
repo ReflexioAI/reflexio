@@ -115,3 +115,27 @@ def test_load_handlers_includes_all_events():
         "session-end",
     }
     assert set(handlers) == expected
+
+
+@pytest.mark.parametrize("legacy_host", [None, "openclaw", "codex", "unknown"])
+@pytest.mark.parametrize("argv", [["session-start"], ["openclaw", "session-start"]])
+def test_single_runtime_dispatch_does_not_read_or_rewrite_host_selection(
+    monkeypatch, legacy_host, argv
+):
+    import os
+
+    from openclaw_smart import runtime
+
+    name = "OPENCLAW_SMART_HOST"
+    if legacy_host is None:
+        monkeypatch.delenv(name, raising=False)
+    else:
+        monkeypatch.setenv(name, legacy_host)
+    monkeypatch.delenv("OPENCLAW_SMART_INTERNAL", raising=False)
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"sessionKey":"single-runtime"}'))
+    seen = []
+    monkeypatch.setattr(hook, "_HANDLERS", {"session-start": seen.append})
+    assert hook.main(argv) == 0
+    assert seen == [{"sessionKey": "single-runtime"}]
+    assert runtime.agent_version() == "openclaw"
+    assert os.environ.get(name) == legacy_host
