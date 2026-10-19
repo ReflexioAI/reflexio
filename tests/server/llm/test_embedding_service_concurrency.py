@@ -8,6 +8,7 @@ import time
 import numpy as np
 import pytest
 
+import reflexio.server.background_work as background_reporting
 from reflexio.server.llm import embedding_service as es
 
 
@@ -46,30 +47,10 @@ def _reset_service_state(
 ) -> None:
     monkeypatch.setattr(es, "_ACTIVE_MODEL", None)
     monkeypatch.setattr(es, "_MICRO_BATCH_QUEUE", [])
-    monkeypatch.setattr(es, "_ACTIVE_BATCH_PROCESSORS", 0)
+    monkeypatch.setattr(es, "_BATCH_WORKER_RUNNING", False)
     embedder = es.NomicEmbedder()
     embedder._model = model  # pre-load so _load() is a no-op fast path
     monkeypatch.setattr(es.NomicEmbedder, "get", classmethod(lambda _cls: embedder))
-
-
-def test_max_concurrency_defaults_to_4(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("REFLEXIO_EMBED_MAX_CONCURRENCY", raising=False)
-    assert es._max_concurrency() == 4
-
-
-def test_max_concurrency_respects_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("REFLEXIO_EMBED_MAX_CONCURRENCY", "2")
-    assert es._max_concurrency() == 2
-
-
-def test_max_concurrency_ignores_invalid_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("REFLEXIO_EMBED_MAX_CONCURRENCY", "bogus")
-    assert es._max_concurrency() == 4
-
-
-def test_micro_batch_delay_respects_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_DELAY_MS", "25")
-    assert es._micro_batch_delay_seconds() == 0.025
 
 
 def test_micro_batch_max_texts_respects_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -79,8 +60,6 @@ def test_micro_batch_max_texts_respects_env(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_embed_texts_caps_and_queues(monkeypatch: pytest.MonkeyPatch) -> None:
     """Excess concurrent requests queue (never reject) and encodes serialize."""
-    monkeypatch.setenv("REFLEXIO_EMBED_MAX_CONCURRENCY", "2")
-    monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_DELAY_MS", "1")
     monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS", "1")
     fake_model = _ConcurrencyModel(hold=0.1)
     _reset_service_state(monkeypatch, fake_model)
@@ -112,77 +91,6 @@ def test_embed_texts_caps_and_queues(monkeypatch: pytest.MonkeyPatch) -> None:
     assert fake_model.peak == 1
 
 
-def test_micro_batches_concurrent_requests(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Concurrent small requests can share one encode call."""
-    monkeypatch.setenv("REFLEXIO_EMBED_MAX_CONCURRENCY", "1")
-    monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_DELAY_MS", "50")
-    monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS", "8")
-    fake_model = _ConcurrencyModel(hold=0.0)
-    _reset_service_state(monkeypatch, fake_model)
-
-    model = "local/nomic-embed-text-v1.5"
-    barrier = threading.Barrier(2)
-    results: list[list[list[float]]] = []
-    errors: list[Exception] = []
-
-    def worker(text: str) -> None:
-        try:
-            barrier.wait(timeout=1)
-            results.append(es._embed_texts(model, [text]))
-        except Exception as exc:  # noqa: BLE001
-            errors.append(exc)
-
-    threads = [
-        threading.Thread(target=worker, args=("first",)),
-        threading.Thread(target=worker, args=("second",)),
-    ]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=10)
-
-    assert errors == []
-    assert len(results) == 2
-    assert len(fake_model.encode_calls) == 1
-    assert set(fake_model.encode_calls[0]) == {"first", "second"}
-
-
-def test_micro_batches_requests_for_registered_encoder(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A provider extension keeps the daemon's request coalescing behavior."""
-    monkeypatch.setenv("REFLEXIO_EMBED_MAX_CONCURRENCY", "1")
-    monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_DELAY_MS", "50")
-    monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS", "8")
-    monkeypatch.setattr(es, "_ACTIVE_MODEL", None)
-    monkeypatch.setattr(es, "_MICRO_BATCH_QUEUE", [])
-    monkeypatch.setattr(es, "_ACTIVE_BATCH_PROCESSORS", 0)
-    model = "custom/enterprise-model"
-    encode_calls: list[list[str]] = []
-    barrier = threading.Barrier(2)
-
-    def encode(texts: list[str]) -> list[list[float]]:
-        encode_calls.append(list(texts))
-        return [[1.0, 0.0] for _ in texts]
-
-    def worker(text: str) -> None:
-        barrier.wait(timeout=1)
-        es._embed_texts(model, [text], encoder=encode, allowed_models={model})
-
-    threads = [
-        threading.Thread(target=worker, args=("first",)),
-        threading.Thread(target=worker, args=("second",)),
-    ]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=10)
-
-    assert all(not thread.is_alive() for thread in threads)
-    assert len(encode_calls) == 1
-    assert set(encode_calls[0]) == {"first", "second"}
-
-
 @pytest.mark.parametrize("old_marker", [None, "1"])
 def test_service_owns_nomic_lifecycle_without_registration_marker(
     monkeypatch, old_marker
@@ -205,3 +113,310 @@ def test_service_owns_nomic_lifecycle_without_registration_marker(
         assert response.status_code == 200
         assert len(response.json()["data"][0]["embedding"]) == 512
         assert model.calls >= 2  # Startup warmup and the HTTP request both encode.
+
+
+@pytest.mark.parametrize("batch_limit", [2, 8])
+def test_queue_has_one_owner_and_batches_waiting_requests(monkeypatch, batch_limit):
+    """Serialization belongs to the queue, including registered encoders."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(es, "_ACTIVE_MODEL", None)
+    monkeypatch.setattr(es, "_MICRO_BATCH_QUEUE", [])
+    monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS", str(batch_limit))
+    entered = threading.Event()
+    release = threading.Event()
+    guard = threading.Lock()
+    calls = []
+    active = 0
+    peak = 0
+
+    def encode(texts):
+        nonlocal active, peak
+        with guard:
+            active += 1
+            peak = max(peak, active)
+            calls.append(list(texts))
+        try:
+            if texts == ["blocker"]:
+                entered.set()
+                assert release.wait(5), "test did not release encoder"
+            return [[float(len(text))] for text in texts]
+        finally:
+            with guard:
+                active -= 1
+
+    def embed(text):
+        return es._embed_texts(
+            "custom/test", [text], encoder=encode, allowed_models={"custom/test"}
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        first = pool.submit(embed, "blocker")
+        others = []
+        try:
+            assert entered.wait(2)
+            others = [pool.submit(embed, text) for text in ("one", "second", "third")]
+            deadline = time.monotonic() + 2
+            while (
+                len(es._MICRO_BATCH_QUEUE) != 3
+                and peak == 1
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.001)
+            assert peak == 1, "competing processors entered the registered encoder"
+            assert len(es._MICRO_BATCH_QUEUE) == 3
+        finally:
+            release.set()
+        assert first.result(timeout=3) == [[7.0]]
+        assert [future.result(timeout=3) for future in others] == [
+            [[3.0]],
+            [[6.0]],
+            [[5.0]],
+        ]
+    assert calls[0] == ["blocker"]
+    assert len(calls[1]) == min(3, batch_limit)
+    assert {text for batch in calls[1:] for text in batch} == {"one", "second", "third"}
+    assert len(calls) == (3 if batch_limit == 2 else 2)
+    assert peak == 1
+
+
+def test_worker_start_failure_discards_unowned_work_and_recovers(monkeypatch):
+    monkeypatch.setattr(es, "_ACTIVE_MODEL", None)
+    monkeypatch.setattr(es, "_MICRO_BATCH_QUEUE", [])
+    calls = []
+
+    def encode(texts):
+        calls.append(list(texts))
+        return [[1.0] for _ in texts]
+
+    def unavailable(_thread):
+        raise RuntimeError("worker unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(threading.Thread, "start", unavailable)
+        with pytest.raises(RuntimeError, match="worker unavailable"):
+            es._embed_texts(
+                "custom/test",
+                ["failed"],
+                encoder=encode,
+                allowed_models={"custom/test"},
+            )
+    assert es._MICRO_BATCH_QUEUE == [], "failed admission left ghost work queued"
+    assert es._embed_texts(
+        "custom/test", ["next"], encoder=encode, allowed_models={"custom/test"}
+    ) == [[1.0]]
+    assert calls == [["next"]]
+
+
+@pytest.mark.parametrize("failure", ["exception", "short-result"])
+def test_failed_encode_reaches_its_caller_and_queue_can_restart(monkeypatch, failure):
+    monkeypatch.setattr(es, "_ACTIVE_MODEL", None)
+    monkeypatch.setattr(es, "_MICRO_BATCH_QUEUE", [])
+
+    def encode(texts):
+        if texts == ["failed"]:
+            if failure == "exception":
+                raise ValueError("encode failed")
+            return []
+        return [[1.0] for _ in texts]
+
+    with pytest.raises(
+        (ValueError, RuntimeError), match="encode failed|count mismatch"
+    ):
+        es._embed_texts(
+            "custom/test", ["failed"], encoder=encode, allowed_models={"custom/test"}
+        )
+    assert es._embed_texts(
+        "custom/test", ["next"], encoder=encode, allowed_models={"custom/test"}
+    ) == [[1.0]]
+
+
+def test_registered_encoder_identity_is_not_coalesced(monkeypatch):
+    monkeypatch.setattr(es, "_ACTIVE_MODEL", None)
+    monkeypatch.setattr(es, "_MICRO_BATCH_QUEUE", [])
+    first = es._EmbeddingJob(
+        "custom/test", ["a"], encoder=lambda texts: [[1.0] for _ in texts]
+    )
+    other = es._EmbeddingJob(
+        "custom/test", ["b"], encoder=lambda texts: [[2.0] for _ in texts]
+    )
+    es._MICRO_BATCH_QUEUE.extend([first, other])
+    batch = es._take_micro_batch()
+    assert batch == [first]
+    es._process_micro_batch(batch)
+    assert first.done.is_set() and first.result == [[1.0]]
+    assert not other.done.is_set()
+    es._process_micro_batch(es._take_micro_batch())
+    assert other.done.is_set() and other.result == [[2.0]]
+
+
+def test_worker_crash_fails_active_and_queued_callers_and_restarts(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(es, "_JOB_WAIT_TIMEOUT_SECONDS", 4)
+    monkeypatch.setattr(es, "_ACTIVE_MODEL", None)
+    monkeypatch.setattr(es, "_MICRO_BATCH_QUEUE", [])
+    entered, release = threading.Event(), threading.Event()
+    original = es._process_micro_batch
+    failure = RuntimeError("worker processing failed")
+    reported, recovered = threading.Event(), threading.Event()
+    report_entered, report_release = threading.Event(), threading.Event()
+    monkeypatch.setattr(background_reporting, "_streaks", {})
+    monkeypatch.setattr(background_reporting, "_classifier", lambda exc: exc is failure)
+    report_failure = es.report_background_failure
+    report_success = es.report_background_success
+
+    def observe_failure(*args, **kwargs):
+        report_entered.set()
+        assert report_release.wait(5)
+        report_failure(*args, **kwargs)
+        reported.set()
+
+    def observe_success(scope):
+        report_success(scope)
+        recovered.set()
+
+    monkeypatch.setattr(es, "report_background_failure", observe_failure)
+    monkeypatch.setattr(es, "report_background_success", observe_success)
+
+    def crash(_jobs):
+        entered.set()
+        assert release.wait(5)
+        raise failure
+
+    def encode(texts):
+        return [[1.0] for _ in texts]
+
+    def embed(text):
+        return es._embed_texts(
+            "custom/test", [text], encoder=encode, allowed_models={"custom/test"}
+        )
+
+    monkeypatch.setattr(es, "_process_micro_batch", crash)
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        active = pool.submit(embed, "active")
+        queued = []
+        try:
+            assert entered.wait(2)
+            queued = [pool.submit(embed, text) for text in ("queued1", "queued2")]
+            deadline = time.monotonic() + 2
+            while len(es._MICRO_BATCH_QUEUE) != 2 and time.monotonic() < deadline:
+                time.sleep(0.001)
+            assert len(es._MICRO_BATCH_QUEUE) == 2
+        finally:
+            release.set()
+        try:
+            # Existing borrowers must finish even while reporting is blocked.
+            for future in [active, *queued]:
+                with pytest.raises(RuntimeError, match="worker processing failed"):
+                    future.result(timeout=3)
+            assert report_entered.wait(2)
+            during_report = pool.submit(embed, "during-report")
+            deadline = time.monotonic() + 2
+            while not es._MICRO_BATCH_QUEUE and time.monotonic() < deadline:
+                if during_report.done():
+                    break
+                time.sleep(0.001)
+            # No replacement may report recovery before the failure is recorded.
+            assert len(es._MICRO_BATCH_QUEUE) == 1
+            assert es._BATCH_WORKER_RUNNING
+            assert not during_report.done()
+        finally:
+            report_release.set()
+        with pytest.raises(RuntimeError, match="worker processing failed"):
+            during_report.result(timeout=3)
+    assert es._MICRO_BATCH_QUEUE == []
+    assert reported.wait(2)
+    assert background_reporting._streaks["embedding-queue-worker"][0] == 1
+    monkeypatch.setattr(es, "_process_micro_batch", original)
+    assert embed("restart") == [[1.0]]
+    assert recovered.wait(2)
+    assert "embedding-queue-worker" not in background_reporting._streaks
+
+
+def test_failed_reporter_releases_queue_ownership_and_arrivals(monkeypatch):
+    failure = RuntimeError("worker failed")
+    reporter_failure = RuntimeError("reporter failed")
+    active = es._EmbeddingJob("custom/test", ["active"])
+    queued = es._EmbeddingJob("custom/test", ["queued"])
+    arriving = es._EmbeddingJob("custom/test", ["arriving"])
+    monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS", "1")
+    monkeypatch.setattr(es, "_MICRO_BATCH_QUEUE", [active, queued])
+    monkeypatch.setattr(es, "_BATCH_WORKER_RUNNING", True)
+
+    def crash(_jobs):
+        raise failure
+
+    def broken_reporter(*_args, **_kwargs):
+        assert active.done.is_set() and queued.done.is_set()
+        assert es._BATCH_WORKER_RUNNING
+        with es._MICRO_BATCH_LOCK:
+            es._MICRO_BATCH_QUEUE.append(arriving)
+        raise reporter_failure
+
+    monkeypatch.setattr(es, "_process_micro_batch", crash)
+    monkeypatch.setattr(es, "report_background_failure", broken_reporter)
+    with pytest.raises(RuntimeError, match="reporter failed"):
+        es._run_micro_batch_processor()
+    assert es._MICRO_BATCH_QUEUE == []
+    assert not es._BATCH_WORKER_RUNNING
+    for job in (active, queued, arriving):
+        assert job.done.is_set()
+        assert job.error is failure
+
+
+@pytest.mark.parametrize("failure", ["exception", "short-result"])
+def test_failed_coalesced_batch_fails_all_borrowers_but_not_other_encoder(
+    monkeypatch, failure
+):
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(es, "_JOB_WAIT_TIMEOUT_SECONDS", 4)
+    monkeypatch.setattr(es, "_ACTIVE_MODEL", None)
+    monkeypatch.setattr(es, "_MICRO_BATCH_QUEUE", [])
+    monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS", "8")
+    entered, release = threading.Event(), threading.Event()
+    batches = []
+
+    def encode(texts):
+        batches.append(list(texts))
+        if texts == ["blocker"]:
+            entered.set()
+            assert release.wait(5)
+        if any(text.startswith("bad") for text in texts):
+            if failure == "exception":
+                raise ValueError("combined encode failed")
+            return []
+        return [[1.0] for _ in texts]
+
+    def isolated(texts):
+        return [[2.0] for _ in texts]
+
+    def embed(text, encoder=encode):
+        return es._embed_texts(
+            "custom/test", [text], encoder=encoder, allowed_models={"custom/test"}
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        active = pool.submit(embed, "blocker")
+        failed = []
+        try:
+            assert entered.wait(2)
+            failed = [pool.submit(embed, text) for text in ("bad1", "bad2")]
+            unrelated = pool.submit(embed, "other", isolated)
+            deadline = time.monotonic() + 2
+            while len(es._MICRO_BATCH_QUEUE) != 3 and time.monotonic() < deadline:
+                time.sleep(0.001)
+            assert len(es._MICRO_BATCH_QUEUE) == 3
+        finally:
+            release.set()
+        assert active.result(timeout=3) == [[1.0]]
+        for future in failed:
+            with pytest.raises(
+                (ValueError, RuntimeError),
+                match="combined encode failed|count mismatch",
+            ):
+                future.result(timeout=3)
+        assert unrelated.result(timeout=3) == [[2.0]]
+    assert len(batches) == 2
+    assert set(batches[1]) == {"bad1", "bad2"}

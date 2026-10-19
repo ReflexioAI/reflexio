@@ -206,7 +206,15 @@ Key files:
   Embedding requests carry `priority` (`bulk` by default, `interactive` for searches)
   and `timeout_ms`; rerank requests carry their remaining deadline. An optional
   scheduler hook receives bounded embedding/rerank chunks and cancels queued
-  work on disconnect. The ordinary unscheduled daemon remains supported.
+  work on disconnect. The ordinary unscheduled daemon remains supported. Its
+  single queue owner dispatches the active model immediately and coalesces
+  compatible requests already waiting, bounded by
+  `REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS`. Runner encode batching remains
+  independently configurable. The competing processor-count and batch-fill-delay
+  mechanisms were removed; `REFLEXIO_EMBED_MAX_CONCURRENCY` and
+  `REFLEXIO_EMBED_MICRO_BATCH_DELAY_MS` no longer control execution. Direct model
+  callers retain the runner's serialization lock. A failed worker launch releases
+  every queued borrower with an error and permits the next submission to retry.
   `REFLEXIO_EMBEDDING_BULK_TIMEOUT_MS` extends only bulk HTTP requests;
   search requests always retain their active search deadline.
 

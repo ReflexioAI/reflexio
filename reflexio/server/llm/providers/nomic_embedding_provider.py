@@ -54,8 +54,8 @@ _MAX_CHARS = 32_000
 
 # Encode in small mini-batches so a single large request can't spike memory:
 # peak activation memory scales with batch_size, not with the total number of
-# texts in the request. A small batch is what makes the daemon's bounded
-# concurrency (see ``embedding_service``) safe to raise above 1.
+# texts in the request. This bounds encoder activation memory independently
+# of how many requests the daemon coalesces through its single queue owner.
 _DEFAULT_ENCODE_BATCH_SIZE = 4
 _ENV_BATCH_SIZE = "REFLEXIO_EMBED_BATCH_SIZE"
 

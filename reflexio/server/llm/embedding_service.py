@@ -6,7 +6,6 @@ import logging
 import math
 import os
 import threading
-import time
 from _thread import LockType
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
@@ -19,6 +18,10 @@ from fastapi import FastAPI, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from reflexio.server.background_work import (
+    report_background_failure,
+    report_background_success,
+)
 from reflexio.server.env_utils import positive_int_env
 from reflexio.server.llm.providers.local_embedding_provider import LocalEmbedder
 from reflexio.server.llm.providers.nomic_embedding_provider import (
@@ -53,28 +56,15 @@ _ACTIVE_MODEL_LOCK = threading.Lock()
 
 DEFAULT_OSS_EMBEDDING_MODEL = MINILM_MODEL
 
-# Bound how many micro-batch processor threads run at once. The endpoint is a
-# sync ``def`` served from Starlette's threadpool, so without a cap a burst of
-# requests would spawn a processor per request and stack their activation
-# memory, OOM-killing the daemon. This caps concurrent processors; excess
-# requests queue on the micro-batch condition and are picked up when a slot
-# frees — they are never rejected. The embedder singletons (NomicEmbedder /
-# LocalEmbedder) serialize the actual model.encode() internally — the shared
-# models are not thread-safe — so no encode lock or semaphore is needed here.
-# Pair with a small encode batch_size so each in-flight encode stays cheap.
-_DEFAULT_MAX_CONCURRENCY = 4
-_ENV_MAX_CONCURRENCY = "REFLEXIO_EMBED_MAX_CONCURRENCY"
-
-# Opportunistically coalesce concurrent small requests before calling
-# model.encode(). This keeps request concurrency thread-based while giving the
-# GPU larger batches during bursts.
-_DEFAULT_MICRO_BATCH_DELAY_MS = 5
+# One queue owner dispatches the daemon's single active model. The model
+# runners also serialize direct callers; competing queue processors only wait
+# on those model locks and fragment batches. Coalesce work already waiting,
+# without delaying an idle request to fill a batch.
 _DEFAULT_MICRO_BATCH_MAX_TEXTS = 64
-_ENV_MICRO_BATCH_DELAY_MS = "REFLEXIO_EMBED_MICRO_BATCH_DELAY_MS"
 _ENV_MICRO_BATCH_MAX_TEXTS = "REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS"
-_MICRO_BATCH_CONDITION = threading.Condition()
+_MICRO_BATCH_LOCK = threading.Lock()
 _MICRO_BATCH_QUEUE: list[_EmbeddingJob] = []
-_ACTIVE_BATCH_PROCESSORS = 0
+_BATCH_WORKER_RUNNING = False
 # Failsafe bound for a submitter waiting on its job (see _embed_texts).
 _JOB_WAIT_TIMEOUT_SECONDS = 600.0
 
@@ -99,30 +89,6 @@ class _EmbeddingJob:
     done: threading.Event = field(default_factory=threading.Event)
     result: list[list[float]] | None = None
     error: BaseException | None = None
-
-
-def _nonnegative_int_env(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        logger.warning("Invalid %s=%r; falling back to default %d", name, raw, default)
-        return default
-    return value if value >= 0 else default
-
-
-def _max_concurrency() -> int:
-    """Resolve the max simultaneous encodes from env, defaulting to 4."""
-    return positive_int_env(_ENV_MAX_CONCURRENCY, _DEFAULT_MAX_CONCURRENCY, logger)
-
-
-def _micro_batch_delay_seconds() -> float:
-    return (
-        _nonnegative_int_env(_ENV_MICRO_BATCH_DELAY_MS, _DEFAULT_MICRO_BATCH_DELAY_MS)
-        / 1000
-    )
 
 
 def _micro_batch_max_texts() -> int:
@@ -532,22 +498,22 @@ def _embed_texts(
         return []
 
     job = _EmbeddingJob(model=model, texts=list(texts), encoder=encoder)
-    should_process = False
-
-    global _ACTIVE_BATCH_PROCESSORS
-    with _MICRO_BATCH_CONDITION:
+    global _BATCH_WORKER_RUNNING
+    with _MICRO_BATCH_LOCK:
         _MICRO_BATCH_QUEUE.append(job)
-        if _max_concurrency() > _ACTIVE_BATCH_PROCESSORS:
-            _ACTIVE_BATCH_PROCESSORS += 1
-            should_process = True
-        _MICRO_BATCH_CONDITION.notify()
+        start_worker = not _BATCH_WORKER_RUNNING
+        _BATCH_WORKER_RUNNING = True
 
-    if should_process:
-        threading.Thread(
-            target=_run_micro_batch_processor,
-            daemon=True,
-            name="embedding-micro-batch",
-        ).start()
+    if start_worker:
+        try:
+            threading.Thread(
+                target=_run_micro_batch_processor,
+                daemon=True,
+                name="embedding-micro-batch",
+            ).start()
+        except BaseException as error:
+            _fail_queued_jobs(error)
+            raise
 
     # Last-resort failsafe: a processor thread that dies between taking and
     # completing jobs would otherwise leave this request hanging forever. The
@@ -564,60 +530,64 @@ def _embed_texts(
     return job.result
 
 
+def _fail_queued_jobs(error: BaseException, *, release_worker: bool = True) -> None:
+    global _BATCH_WORKER_RUNNING
+    with _MICRO_BATCH_LOCK:
+        for job in _MICRO_BATCH_QUEUE:
+            job.error = error
+            job.done.set()
+        _MICRO_BATCH_QUEUE.clear()
+        if release_worker:
+            _BATCH_WORKER_RUNNING = False
+
+
 def _run_micro_batch_processor() -> None:
-    global _ACTIVE_BATCH_PROCESSORS
+    global _BATCH_WORKER_RUNNING
+    jobs: list[_EmbeddingJob] = []
     try:
         while True:
-            jobs = _take_micro_batch()
-            if not jobs:
-                with _MICRO_BATCH_CONDITION:
-                    if _MICRO_BATCH_QUEUE:
-                        continue
-                    _ACTIVE_BATCH_PROCESSORS -= 1
-                    _MICRO_BATCH_CONDITION.notify_all()
+            with _MICRO_BATCH_LOCK:
+                if not _MICRO_BATCH_QUEUE:
+                    _BATCH_WORKER_RUNNING = False
                     return
+            jobs = _take_micro_batch()
             _process_micro_batch(jobs)
-    except BaseException:
-        with _MICRO_BATCH_CONDITION:
-            _ACTIVE_BATCH_PROCESSORS -= 1
-            _MICRO_BATCH_CONDITION.notify_all()
-        raise
+            report_background_success("embedding-queue-worker")
+    except BaseException as error:
+        for job in jobs:
+            if not job.done.is_set():
+                job.error = error
+                job.done.set()
+        # Release existing borrowers before logging, but keep ownership until
+        # failure reporting finishes so a successor cannot reset the streak first.
+        _fail_queued_jobs(error, release_worker=False)
+        try:
+            report_background_failure(
+                logger,
+                "embedding_queue_worker_failed",
+                error,
+                scope="embedding-queue-worker",
+            )
+        finally:
+            # Also fail arrivals during reporting, even if the reporter raises.
+            _fail_queued_jobs(error)
 
 
 def _take_micro_batch() -> list[_EmbeddingJob]:
     max_texts = _micro_batch_max_texts()
-    deadline = time.monotonic() + _micro_batch_delay_seconds()
-
-    with _MICRO_BATCH_CONDITION:
-        if not _MICRO_BATCH_QUEUE:
-            return []
-
+    with _MICRO_BATCH_LOCK:
         first = _MICRO_BATCH_QUEUE.pop(0)
         jobs = [first]
         total_texts = len(first.texts)
-
-        while total_texts < max_texts:
-            compatible_index = next(
-                (
-                    index
-                    for index, candidate in enumerate(_MICRO_BATCH_QUEUE)
-                    if candidate.model == first.model
-                    and candidate.encoder is first.encoder
-                    and total_texts + len(candidate.texts) <= max_texts
-                ),
-                None,
-            )
-            if compatible_index is not None:
-                candidate = _MICRO_BATCH_QUEUE.pop(compatible_index)
+        for candidate in list(_MICRO_BATCH_QUEUE):
+            if (
+                candidate.model == first.model
+                and candidate.encoder is first.encoder
+                and total_texts + len(candidate.texts) <= max_texts
+            ):
+                _MICRO_BATCH_QUEUE.remove(candidate)
                 jobs.append(candidate)
                 total_texts += len(candidate.texts)
-                continue
-
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            _MICRO_BATCH_CONDITION.wait(timeout=remaining)
-
         return jobs
 
 
@@ -663,8 +633,7 @@ def _encode_texts_now(model: str, texts: list[str]) -> list[list[float]]:
     # The embedder singletons serialize their own model.encode() internally
     # (the shared sentence-transformers / ONNX models are not thread-safe — see
     # NomicEmbedder / LocalEmbedder). Concurrency is already bounded by the
-    # micro-batch processor cap (``_max_concurrency``), so no extra encode
-    # lock/semaphore is needed here.
+    # queue owner, so no extra encode lock/semaphore is needed here.
     if is_nomic_model(model):
         return NomicEmbedder.get().embed(texts)
     if model == MINILM_MODEL:
