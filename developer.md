@@ -909,3 +909,24 @@ contract digest when reconstructed or consumed after upgrade. Only the retired
 warning fields may differ from live configuration; unknown fields, signing-secret
 digests and real execution policy remain strict. Never rewrite a stored snapshot
 or reset paid-attempt journals to make an old package resume.
+
+### Shared maintenance scheduling
+
+`REFLEXIO_MAINTENANCE_INTERVAL_SECONDS` sets the process-level cadence for
+lineage, row-cap and registered retention maintenance (positive integer seconds,
+default 86400; blank uses the default, invalid/zero/negative values fail).
+`MaintenanceSchedule` captures that interval, the leader gate and healthy-wait
+provider before bootstrap configuration reads. The composer installs one complete
+schedule with `set_maintenance_schedule`; later installs do not change an
+existing worker. Standalone OSS waits the captured interval after healthy work;
+enterprise may align first and subsequent healthy waits to its UTC anchor.
+
+Three bounded fast retries use min(300,cadence), then back off to the healthy
+schedule. The separate no-organizations bootstrap retry stays five seconds.
+Always-global sweeps still run before bootstrap discovery, and registered sweeps
+and row caps still admit the worker when bootstrap policy cannot be read. This
+does not make an unreadable organization's own storage/config usable.
+
+Per-org retention holds, ages, batches and scope remain independent. Retired
+`lineage_gc.poll_interval_seconds` custom values still require explicit migration
+to a fleet policy; a bootstrap org is not a schedule authority for every org.

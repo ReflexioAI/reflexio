@@ -89,3 +89,69 @@ def test_tick_tombstones_then_gc_reclaims_expired(real_ctx_factory, org_id):
     # The tombstone_grace_window_days=1 ensures a freshly-tombstoned row is NOT
     # hard-deleted in the same tick.  The row must exist and be EXPIRED.
     assert row is not None and row.status == Status.EXPIRED
+
+
+def test_real_worker_uses_captured_cadence_and_preserves_retention_hold(
+    real_ctx_factory, org_id, monkeypatch
+):
+    """Actual threaded SQLite expiry keeps policy holds separate from timing."""
+    from threading import Event
+
+    from reflexio.server.services.lineage import gc_scheduler as gc
+
+    monkeypatch.setenv("REFLEXIO_MAINTENANCE_INTERVAL_SECONDS", "37")
+    monkeypatch.setattr(gc, "_maintenance_schedule_hook", None)
+    for name in (
+        "_per_org_sweep_hooks",
+        "_global_sweep_hooks",
+        "_always_global_sweep_hooks",
+    ):
+        monkeypatch.setattr(gc, name, [])
+    ctx = real_ctx_factory(org_id)
+
+    def add(profile_id):
+        ctx.storage.add_user_profile(
+            "u1",
+            [
+                UserProfile(
+                    profile_id=profile_id,
+                    user_id="u1",
+                    content="expired evidence",
+                    last_modified_timestamp=1,
+                    generated_from_request_id="r1",
+                    expiration_timestamp=100,
+                )
+            ],
+        )
+
+    add("expire-now")
+    scheduler = LineageGCScheduler(
+        request_context_factory=real_ctx_factory, bootstrap_org_id=org_id
+    )
+    first, second = Event(), Event()
+    intervals = []
+    real_tick = scheduler._run_once
+
+    def tick():
+        interval = real_tick()
+        intervals.append(interval)
+        (first if len(intervals) == 1 else second).set()
+        return interval
+
+    monkeypatch.setattr(scheduler, "_run_once", tick)
+    monkeypatch.setenv("REFLEXIO_MAINTENANCE_INTERVAL_SECONDS", "91")
+    try:
+        scheduler.start()
+        assert first.wait(3)
+        expired = ctx.storage.get_profile_by_id("expire-now", include_tombstones=True)
+        assert expired is not None and expired.status == Status.EXPIRED
+        add("hold-this")
+        ctx.configurator.get_config().lineage_gc.enabled = False
+        scheduler.wake()
+        assert second.wait(3)
+        held = ctx.storage.get_profile_by_id("hold-this", include_tombstones=True)
+        assert held is not None and held.status != Status.EXPIRED
+        assert intervals == [37, 37]
+    finally:
+        scheduler.stop(timeout_seconds=3)
+    assert not scheduler.is_running()

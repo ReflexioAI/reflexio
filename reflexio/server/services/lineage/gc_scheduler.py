@@ -24,9 +24,8 @@ times out again on the next tick, escalated as
 in the background; a failure it records after its own tick ended is ignored
 rather than charged to the tick then running.
 
-Note: healthy sweeps use the code-owned daily housekeeping cadence
-even when only ``expiry_reclamation`` or ``governance_retention`` is enabled;
-all sweep classes share that cadence.
+Healthy sweeps share one captured process cadence (default daily), including
+``expiry_reclamation`` and ``governance_retention``.
 """
 
 from __future__ import annotations
@@ -35,6 +34,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from reflexio.housekeeping_policy import DAILY_SWEEP_SECONDS
 from reflexio.models.config_schema import Config
@@ -58,14 +58,13 @@ from reflexio.server.work_scope import WorkScope, WorkScopeError, bind_work_scop
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_POLL_INTERVAL_SECONDS = DAILY_SWEEP_SECONDS
 _MIN_POLL_SECONDS = 1
 _BOOTSTRAP_RETRY_INTERVAL_SECONDS = 5
 _ORG_SWEEP_TIMEOUT_SECONDS = 60.0
 _DEFAULT_ORG_FANOUT_WORKERS = 8
 
 # How soon to tick again after a tick in which work FAILED, rather than waiting
-# the full code-owned daily interval (86400s).
+# the captured healthy maintenance interval (default 86400s).
 #
 # Measured on staging, 2026-09-24: 18 of 18 orgs failed one tick with PostgREST
 # `PGRST002: Could not query the database for the schema cache. Retrying.` The
@@ -146,54 +145,52 @@ def set_project_id_provider(provider: Callable[[str], list[str]] | None) -> None
     _project_id_provider_hook = provider
 
 
-# Injection seam: enterprise sets the fleet leader gate here at composition
-# time (spec 4.3), exactly like set_org_id_provider. None (OSS default) keeps
-# the always-tick behavior.
-_leader_gate_hook: LeaderGate | None = None
+@dataclass(frozen=True)
+class MaintenanceSchedule:
+    """One captured process cadence and its fleet coordination/wait policy."""
+
+    interval_seconds: int = DAILY_SWEEP_SECONDS
+    leader_gate: LeaderGate | None = None
+    healthy_interval_provider: Callable[[float], float] | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.interval_seconds, bool)
+            or not isinstance(self.interval_seconds, int)
+            or not _MIN_POLL_SECONDS <= self.interval_seconds <= threading.TIMEOUT_MAX
+        ):
+            raise ValueError(
+                "REFLEXIO_MAINTENANCE_INTERVAL_SECONDS must be a positive integer "
+                "within the supported timer range"
+            )
+
+    @classmethod
+    def from_env(cls) -> MaintenanceSchedule:
+        """Resolve before bootstrap/resource effects; blank uses the daily default."""
+        raw = env_str("REFLEXIO_MAINTENANCE_INTERVAL_SECONDS", str(DAILY_SWEEP_SECONDS))
+        try:
+            interval = int(raw)
+        except ValueError:
+            raise ValueError(
+                "REFLEXIO_MAINTENANCE_INTERVAL_SECONDS must be a positive integer"
+            ) from None
+        return cls(interval_seconds=interval)
 
 
-def set_leader_gate(gate: LeaderGate | None) -> None:
-    """Register the leader gate consulted by ``maybe_start_lineage_gc``.
-
-    Enterprise deployments call this at app-composition time so the scheduler
-    only ticks on the elected leader (``gate.should_run()`` wraps fleet leader
-    election, e.g. an advisory-lock gate). ``None`` (OSS default) preserves
-    always-tick behavior. Pass ``None`` to clear the hook (tests restore defaults).
-
-    Args:
-        gate (LeaderGate | None): Fleet-coordination gate, or ``None`` to clear.
-    """
-    global _leader_gate_hook  # noqa: PLW0603
-    _leader_gate_hook = gate
+# Enterprise publishes the whole schedule at composition. Workers capture it;
+# later installs cannot mix a prior cadence with a new leader or UTC provider.
+_maintenance_schedule_hook: MaintenanceSchedule | None = None
 
 
-# Injection seam: enterprise aligns the healthy cadence to a fixed daily slot.
-# None (OSS default) keeps "a daily interval after the tick ended", which
-# drifts the start time later by each tick's duration.
-_healthy_interval_provider_hook: Callable[[float], float] | None = None
+def set_maintenance_schedule(schedule: MaintenanceSchedule | None) -> None:
+    """Install a complete process schedule, or clear the composition hook."""
+    global _maintenance_schedule_hook  # noqa: PLW0603
+    _maintenance_schedule_hook = schedule
 
 
-def set_healthy_interval_provider(
-    provider: Callable[[float], float] | None,
-) -> None:
-    """Register how long to wait after a healthy (or retries-exhausted) tick.
-
-    The provider receives the code-owned healthy cadence and returns
-    the seconds to wait, e.g. the time until the next daily UTC slot, so the
-    sweep starts at the same wall-clock time every day instead of drifting by
-    each tick's duration. The failed-tick fast retry is never affected.
-    ``None`` (OSS default) clears the hook.
-
-    Args:
-        provider (Callable[[float], float] | None): Wait-seconds provider, or
-            ``None`` to clear.
-    """
-    global _healthy_interval_provider_hook  # noqa: PLW0603
-    _healthy_interval_provider_hook = provider
-
-
-def _healthy_interval(poll_interval: float) -> float:
-    provider = _healthy_interval_provider_hook
+def _healthy_interval(
+    poll_interval: float, provider: Callable[[float], float] | None = None
+) -> float:
     wait = provider(poll_interval) if provider is not None else poll_interval
     return max(wait, _MIN_POLL_SECONDS)
 
@@ -291,9 +288,16 @@ class LineageGCScheduler(ThreadedScheduler):
         bootstrap_org_id: str,
         org_id_provider: Callable[[], list[str]] | None = None,
         leader_gate: LeaderGate | None = None,
+        schedule: MaintenanceSchedule | None = None,
     ) -> None:
+        self._schedule = (
+            schedule or _maintenance_schedule_hook or MaintenanceSchedule.from_env()
+        )
         super().__init__(
-            thread_name="reflexio-lineage-gc-scheduler", leader_gate=leader_gate
+            thread_name="reflexio-lineage-gc-scheduler",
+            leader_gate=leader_gate
+            if leader_gate is not None
+            else self._schedule.leader_gate,
         )
         self.request_context_factory = request_context_factory
         self.bootstrap_org_id = bootstrap_org_id
@@ -858,7 +862,9 @@ class LineageGCScheduler(ThreadedScheduler):
         """
         if not self._tick_had_failure:
             self._consecutive_failed_ticks = 0
-            return _healthy_interval(poll_interval)
+            return _healthy_interval(
+                poll_interval, self._schedule.healthy_interval_provider
+            )
 
         self._consecutive_failed_ticks += 1
         # Keep retries no slower than the healthy cadence if the owned policy
@@ -877,7 +883,9 @@ class LineageGCScheduler(ThreadedScheduler):
                 "off to the configured interval; the per-org anomalies say why",
                 self._consecutive_failed_ticks,
             )
-            return _healthy_interval(poll_interval)
+            return _healthy_interval(
+                poll_interval, self._schedule.healthy_interval_provider
+            )
 
         logger.warning(
             "event=lineage_gc_tick_retry_soon in=%.0fs consecutive=%d",
@@ -891,7 +899,7 @@ class LineageGCScheduler(ThreadedScheduler):
             self._tick_generation += 1
             self._tick_had_failure = False
         self._run_always_global_sweeps()
-        poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
+        poll_interval = self._schedule.interval_seconds
         try:
             if (
                 self.bootstrap_org_id == DEFAULT_ORG_ID
@@ -907,7 +915,6 @@ class LineageGCScheduler(ThreadedScheduler):
                 self.bootstrap_org_id = org_ids[0]
             bootstrap_ctx = self.request_context_factory(self.bootstrap_org_id)
             cfg = bootstrap_ctx.configurator.get_config()
-            poll_interval = DAILY_SWEEP_SECONDS
             org_ids = self._discover_org_ids(bootstrap_ctx)
             self._gc_tick(org_ids, max_workers=self._org_fanout_workers(bootstrap_ctx))
             self._run_global_sweeps(cfg)
@@ -956,8 +963,8 @@ def maybe_start_lineage_gc(
     4. **DPO sign-off**: obtain sign-off on the PII-lifetime and audit-depth
        implications before enabling in any deployment that processes personal data.
 
-    Note: healthy sweeps use the code-owned daily housekeeping cadence
-    even when only ``expiry_reclamation`` is enabled; Class B shares that interval.
+    Healthy sweeps share one captured process cadence, including Class B.
+    REFLEXIO_MAINTENANCE_INTERVAL_SECONDS defaults to one day.
 
     Args:
         request_context_factory: Builds an org-scoped :class:`RequestContext`.
@@ -967,14 +974,14 @@ def maybe_start_lineage_gc(
             :func:`set_org_id_provider`; when both are ``None`` discovery uses
             ``storage.list_org_ids()`` exactly as before.
         leader_gate: Optional fleet-coordination gate. When ``None`` (OSS
-            default), falls back to the module-level hook set via
-            :func:`set_leader_gate`; when both are ``None`` the scheduler ticks
-            unconditionally (today's behavior).
+            default), uses the captured process schedule's gate; without a
+            configured gate the scheduler ticks unconditionally.
 
     Returns:
         LineageGCScheduler: The started scheduler, or ``None`` if no start
         condition holds (see the startup criteria above).
     """
+    schedule = _maintenance_schedule_hook or MaintenanceSchedule.from_env()
     effective_org_id_provider = (
         org_id_provider if org_id_provider is not None else _org_id_provider_hook
     )
@@ -1080,7 +1087,8 @@ def maybe_start_lineage_gc(
         request_context_factory=request_context_factory,
         bootstrap_org_id=bootstrap_org_id,
         org_id_provider=effective_org_id_provider,
-        leader_gate=leader_gate if leader_gate is not None else _leader_gate_hook,
+        leader_gate=leader_gate,
+        schedule=schedule,
     )
     scheduler.start()
     return scheduler
