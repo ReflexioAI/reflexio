@@ -20,7 +20,6 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
-from openclaw_smart import runtime
 from openclaw_smart.internal_call import is_internal_invocation
 
 _LOGGER = logging.getLogger(__name__)
@@ -77,13 +76,12 @@ def _read_stdin_json() -> dict[str, Any]:
 def _parse_args(argv: list[str]) -> str:
     """Return the event name from ``argv``.
 
-    Accepts either ``[event]`` or ``[host, event]`` for symmetry with
-    claude-smart, but the host arg (if present) must be ``"openclaw"`` and
-    is otherwise ignored — runtime.set_host is called either way.
+    ``[event]`` is canonical. Accept historical ``[openclaw, event]``
+    invocations as an event-syntax compatibility form, without host state.
     """
     if not argv:
         return ""
-    if len(argv) >= 2 and argv[0] in runtime.VALID_HOSTS:
+    if len(argv) >= 2 and argv[0] == "openclaw":
         return argv[1]
     return argv[0]
 
@@ -101,7 +99,6 @@ def main(argv: list[str] | None = None) -> int:
     """
     argv = argv if argv is not None else sys.argv[1:]
     event = _parse_args(argv)
-    runtime.set_host(runtime.HOST_OPENCLAW)
     if not event:
         _LOGGER.warning("hook dispatcher called with no event name")
         return 0

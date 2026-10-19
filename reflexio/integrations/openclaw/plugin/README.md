@@ -37,6 +37,14 @@ openclaw-smart uninstall --purge
 access, writes `OPENCLAW_BIN` and `OPENCLAW_SMART_USE_LOCAL_CLI=1` to
 `~/.reflexio/.env`, warms Python dependencies, and verifies the plugin is loaded.
 
+## Runtime identity
+
+This integration runs only in OpenClaw. The unused `OPENCLAW_SMART_HOST`
+selector and its mutable process state have been removed; stale environment
+values are ignored. Hook commands accept both `<event>` and the historical
+`openclaw <event>` form. The existing `openclaw` learning identity, recursion
+guards, session storage, provider selection and optimizer policy are unchanged.
+
 ## Retrieved-learning attribution
 
 The session buffer attaches injected learning references to the completed
