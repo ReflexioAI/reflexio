@@ -34,6 +34,8 @@ def _records(
     if kind == "playbook":
         current["deduplication_config"] = DeduplicationConfig().model_dump(mode="json")
     frozen = {**deepcopy(current), "extractor_name": "historical-label"}
+    if kind == "playbook":
+        frozen["deduplication_config"]["max_unified_content_chars"] = 37
     binding = AgentBinding(
         org_id="org-1",
         extractor_kind=kind,
@@ -302,4 +304,35 @@ def test_nested_dedup_policy_changes_are_not_schema_compatibility(change: str) -
         binding=replace(prior.binding, extractor_config_hash=build_scope_hash(frozen)),
         generation_request_snapshot={"extractor_config": deepcopy(frozen)},
     )
+    assert not matches_frozen_extractor_binding(prior, expected, frozen)
+
+
+@pytest.mark.parametrize("with_label", [False, True])
+@pytest.mark.parametrize("with_strategy", [False, True])
+@pytest.mark.parametrize("with_cap", [False, True])
+def test_length_warning_retirement_composes_only_with_known_transitions(
+    with_label, with_strategy, with_cap
+):
+    prior, expected, frozen = _records()
+    if not with_label:
+        frozen.pop("extractor_name")
+    if not with_strategy:
+        frozen["deduplication_config"].pop("strategy")
+    if not with_cap:
+        frozen["deduplication_config"].pop("max_unified_content_chars")
+    saved = deepcopy(prior.generation_request_snapshot)
+    saved["extractor_config"] = deepcopy(frozen)
+    prior = replace(
+        prior,
+        binding=replace(prior.binding, extractor_config_hash=build_scope_hash(frozen)),
+        generation_request_snapshot=saved,
+    )
+    before = deepcopy((prior, expected, frozen))
+    assert matches_frozen_extractor_binding(prior, expected, frozen)
+    assert (prior, expected, frozen) == before
+
+
+def test_retired_warning_value_still_requires_original_witness_hash():
+    prior, expected, frozen = _records()
+    frozen["deduplication_config"]["max_unified_content_chars"] += 1
     assert not matches_frozen_extractor_binding(prior, expected, frozen)

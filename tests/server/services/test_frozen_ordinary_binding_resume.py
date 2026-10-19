@@ -55,10 +55,11 @@ def setup_ordinary(pipeline, monkeypatch, kind, state):
     user, token = storage.claim_extraction("ordinary-upgrade-worker", 600)
     window = storage.prepare_extraction(user, token)
     policy = copy.deepcopy(window.policy)
-    # These are exactly the two serialization differences in deployed 56d70163.
+    # Reproduce deployed label/strategy and warning-threshold serialization.
     policy["extractor"]["extractor_name"] = None
     if kind == "playbook":
         policy["extractor"]["deduplication_config"].pop("strategy")
+        policy["extractor"]["deduplication_config"]["max_unified_content_chars"] = 37
     with storage.conn:
         storage.conn.execute(
             "UPDATE extraction_windows SET policy=? WHERE window_id=?",
