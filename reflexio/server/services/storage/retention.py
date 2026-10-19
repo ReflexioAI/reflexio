@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -298,51 +298,34 @@ class RetentionConfigurationError(ValueError):
     """Retention cannot safely reinterpret an invalid or retired policy input."""
 
 
-def _operational_row_limit() -> tuple[int, bool]:
-    raw = env_str("REFLEXIO_OPERATIONAL_ROW_LIMIT")
+def _operational_row_limit(name: str, default: int, env: Mapping[str, str]) -> int:
+    raw = env_str(name, env=env)
     if not raw:
-        return DEFAULT_ROW_RETENTION_LIMIT, False
+        return default
     try:
         limit = int(raw)
     except ValueError:
         limit = -1
     if limit < 0:
         raise RetentionConfigurationError(
-            "REFLEXIO_OPERATIONAL_ROW_LIMIT must be a nonnegative integer; "
-            "zero disables operational cap cleanup"
+            f"{name} must be a nonnegative integer; zero disables row-cap cleanup"
         )
-    return limit, True
+    return limit
 
 
-def _validate_retired_operational_limit(
-    env_name: str, limit: int, explicit: bool
-) -> None:
-    raw = env_str(env_name)
-    if not raw:
-        return
-    try:
-        legacy = int(raw)
-    except ValueError:
-        legacy = None
-    if legacy == DEFAULT_ROW_RETENTION_LIMIT or (explicit and legacy == limit):
-        return
-    raise RetentionConfigurationError(
-        f"{env_name} is retired; operational tables share REFLEXIO_OPERATIONAL_ROW_LIMIT. "
-        "Review all operational targets before selecting a shared cap and removing "
-        "the legacy override; no retention pass can run with conflicting caps."
-    )
+def get_row_retention_limits(*, env: Mapping[str, str] | None = None) -> dict[str, int]:
+    """Resolve all caps before a sweep can acquire a lease or delete anything.
 
-
-def get_row_retention_limits() -> dict[str, int]:
-    """Resolve and validate all caps before a sweep can delete anything.
-
-    Customer targets retain their independent ``REFLEXIO_ROW_LIMIT_<TARGET>``
-    controls. Other non-fixed targets share ``REFLEXIO_OPERATIONAL_ROW_LIMIT``.
-    Legacy operational overrides cannot silently change the shared policy.
-    Fixed targets retain their code-owned limits. Interactions still accept
-    ``INTERACTION_CLEANUP_THRESHOLD`` when their canonical override is absent.
+    Operational targets inherit the shared default unless independently
+    overridden. A former-default override plus a custom shared limit is
+    ambiguous on upgrade: the previous policy ignored that override. Reject
+    it rather than silently activating deletion or lowering the effective cap.
+    Customer controls, fixed caps and the interaction alias stay independent.
     """
-    operational_limit, explicit = _operational_row_limit()
+    env = os.environ if env is None else env
+    operational_limit = _operational_row_limit(
+        "REFLEXIO_OPERATIONAL_ROW_LIMIT", DEFAULT_ROW_RETENTION_LIMIT, env
+    )
     limits: dict[str, int] = {}
     for target in RETENTION_TARGETS:
         if target.fixed_row_limit is not None:
@@ -350,13 +333,23 @@ def get_row_retention_limits() -> dict[str, int]:
             continue
         env_name = f"REFLEXIO_ROW_LIMIT_{target.name.upper()}"
         if not target.customer_data:
-            _validate_retired_operational_limit(env_name, operational_limit, explicit)
-            limits[target.name] = operational_limit
+            limit = _operational_row_limit(env_name, operational_limit, env)
+            if (
+                env_str(env_name, env=env)
+                and limit == DEFAULT_ROW_RETENTION_LIMIT
+                and operational_limit != DEFAULT_ROW_RETENTION_LIMIT
+            ):
+                raise RetentionConfigurationError(
+                    f"{env_name} is ambiguous with REFLEXIO_OPERATIONAL_ROW_LIMIT: "
+                    "remove the old per-target default to inherit the shared cap, "
+                    "or remove the shared setting and configure independent caps."
+                )
+            limits[target.name] = limit
             continue
         default = DEFAULT_ROW_RETENTION_LIMIT
         if target.name == "interactions":
-            default = _get_int_env("INTERACTION_CLEANUP_THRESHOLD", default)
-        limits[target.name] = _get_int_env(env_name, default)
+            default = _get_int_env("INTERACTION_CLEANUP_THRESHOLD", default, env)
+        limits[target.name] = _get_int_env(env_name, default, env)
     return limits
 
 
@@ -367,8 +360,8 @@ def delete_count_for_retention(current_count: int) -> int:
     return max(1, math.ceil(current_count * ROW_RETENTION_DELETE_FRACTION))
 
 
-def _get_int_env(name: str, default: int) -> int:
-    value = os.environ.get(name)
+def _get_int_env(name: str, default: int, env: Mapping[str, str]) -> int:
+    value = env.get(name)
     if value is None or not value.strip():
         return default
     try:
