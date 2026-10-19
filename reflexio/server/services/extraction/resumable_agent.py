@@ -540,8 +540,9 @@ class ResumableExtractionAgent:
                 logging.getLogger("reflexio.ops").info(
                     "event=extraction_binding_schema_compatible run_id=%s", existing.id
                 )
-            # Keep the admitted hash, snapshots, remaining budget and pending
-            # dependencies for both cache replay and failed/running continuation.
+            # Keep the admitted hash, snapshots and pending dependencies for
+            # both cache replay and failed/running continuation.
+            fresh_budget = run.max_steps_remaining
             run = existing
             if existing.committed_output is not None:
                 payload, provenance = decode_committed_output(existing.committed_output)
@@ -560,9 +561,15 @@ class ResumableExtractionAgent:
                 raise RuntimeError("Extraction window agent awaits resolution")
             # No durable output exists: a crash may require repeating a remote
             # call. Reuse its stable run identity; the first saved output wins.
+            # The step budget is NOT continuation state here: this path keeps no
+            # conversation, so the attempt restarts from the seed prompt. A
+            # failed (or crashed) attempt stores 0 remaining, and reusing it
+            # would run zero model turns and fail with max_steps on every retry.
+            run = replace(run, max_steps_remaining=fresh_budget)
             self.storage.update_agent_run_status(
                 run.id,
                 AgentRunStatus.RUNNING,
+                max_steps_remaining=fresh_budget,
                 expected_statuses=(AgentRunStatus.RUNNING, AgentRunStatus.FAILED),
             )
         else:

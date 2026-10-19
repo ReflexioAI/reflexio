@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import tempfile
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,6 +16,9 @@ from reflexio.server.llm.litellm_client import (
     StructuredOutputRepairError,
 )
 from reflexio.server.prompt.prompt_manager import PromptManager
+from reflexio.server.services.extraction import (
+    resumable_agent as resumable_agent_module,
+)
 from reflexio.server.services.extraction.pending_tool_call_dispatch import (
     PendingToolCallToolContext,
     create_ask_human_tool,
@@ -551,6 +556,149 @@ def test_resumable_agent_resume_uses_persisted_step_budget(
     assert stored.status == AgentRunStatus.FAILED
     assert stored.max_steps_remaining == 0
     assert stored.last_error == "Extraction agent did not finish: max_steps"
+
+
+def _window_playbook_client(monkeypatch, side_effect):
+    """A client whose structured calls follow ``side_effect`` (errors or outputs)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
+    call = MagicMock(side_effect=side_effect)
+    monkeypatch.setattr(client, "generate_chat_response_with_provenance", call)
+    return client, call
+
+
+def _playbook_completion() -> SimpleNamespace:
+    return SimpleNamespace(
+        value=StructuredPlaybookList.model_validate(
+            {
+                "playbooks": [
+                    {
+                        "trigger": "Deploying services",
+                        "content": "Prefer ECS for this environment.",
+                        "rationale": "The team standardizes on AWS.",
+                    }
+                ]
+            }
+        ),
+        provenance=None,
+    )
+
+
+def _start_window(agent: ResumableExtractionAgent, run_id: str):
+    return agent.start(
+        run=_agent_run(run_id, extractor_kind="playbook"),
+        messages=[{"role": "user", "content": "extract playbooks"}],
+        output_schema=StructuredPlaybookList,
+    )
+
+
+def test_window_retry_after_timeout_makes_a_model_call(monkeypatch, storage):
+    """Regression: an errored attempt stores 0 remaining steps; the retry of the
+    same window must still call the model instead of failing with max_steps."""
+    client, call = _window_playbook_client(
+        monkeypatch, [TimeoutError("transient"), _playbook_completion()]
+    )
+    agent = ResumableExtractionAgent(client=client, storage=storage)
+
+    first = _start_window(agent, "window:w_timeout")
+    assert first.finished_reason == "error"
+    failed = storage.get_agent_run("window:w_timeout")
+    assert failed is not None
+    assert failed.status == AgentRunStatus.FAILED
+    assert failed.max_steps_remaining == 0
+
+    retry = _start_window(agent, "window:w_timeout")
+
+    assert call.call_count == 2
+    assert retry.finished_reason == "structured_output"
+    assert isinstance(retry.output, StructuredPlaybookList)
+    assert retry.output.playbooks[0].content == "Prefer ECS for this environment."
+    stored = storage.get_agent_run("window:w_timeout")
+    assert stored is not None
+    assert stored.status == AgentRunStatus.AGENT_COMPLETED
+    assert stored.max_steps_remaining == 7
+
+
+@pytest.mark.parametrize("status", [AgentRunStatus.FAILED, AgentRunStatus.RUNNING])
+def test_window_retry_of_spent_run_gets_full_step_budget(monkeypatch, storage, status):
+    """A seeded FAILED row (or a RUNNING row whose process died after spending
+    its budget) with 0 remaining restarts with the full budget, and the RUNNING
+    transition persists that budget before any model call."""
+    seeded = replace(
+        _agent_run("window:w_spent", extractor_kind="playbook"),
+        status=status,
+        max_steps_remaining=0,
+        last_error="Extraction agent did not finish: max_steps",
+    )
+    storage.create_agent_run(seeded)
+    observed: list[AgentRunRecord | None] = []
+
+    def complete(**_kwargs):
+        observed.append(storage.get_agent_run("window:w_spent"))
+        return _playbook_completion()
+
+    client, call = _window_playbook_client(monkeypatch, complete)
+    agent = ResumableExtractionAgent(client=client, storage=storage, max_steps=8)
+    loop_budgets: list[int] = []
+    real_loop = resumable_agent_module.run_tool_loop
+
+    def spy_loop(**kwargs):
+        loop_budgets.append(kwargs["max_steps"])
+        return real_loop(**kwargs)
+
+    monkeypatch.setattr(resumable_agent_module, "run_tool_loop", spy_loop)
+
+    result = _start_window(agent, "window:w_spent")
+
+    assert loop_budgets == [8]
+    assert call.call_count == 1
+    assert result.finished_reason == "structured_output"
+    assert observed[0] is not None
+    assert observed[0].status == AgentRunStatus.RUNNING
+    assert observed[0].max_steps_remaining == 8
+
+
+def test_window_retry_preserves_admitted_run_identity_and_snapshots(
+    monkeypatch, storage
+):
+    """The fresh budget is the only field reset: the admitted binding, request,
+    service and context snapshots, and resume count stay as first written."""
+    admitted = replace(
+        _agent_run("window:w_keep", extractor_kind="playbook"),
+        status=AgentRunStatus.FAILED,
+        generation_request_snapshot={"request_id": "admitted", "frozen": True},
+        service_config_snapshot={"admitted": "service"},
+        agent_context_snapshot="admitted context",
+        max_steps_remaining=0,
+        resume_attempts=2,
+    )
+    storage.create_agent_run(admitted)
+    original = storage.get_agent_run("window:w_keep")
+    assert original is not None
+    client, _call = _window_playbook_client(monkeypatch, [_playbook_completion()])
+    agent = ResumableExtractionAgent(client=client, storage=storage)
+
+    result = agent.start(
+        run=replace(
+            _agent_run("window:w_keep", extractor_kind="playbook"),
+            generation_request_snapshot={"request_id": "retry"},
+            service_config_snapshot={"retry": "service"},
+            agent_context_snapshot="retry context",
+        ),
+        messages=[{"role": "user", "content": "extract playbooks"}],
+        output_schema=StructuredPlaybookList,
+    )
+
+    assert result.finished_reason == "structured_output"
+    assert result.run_id == original.id
+    stored = storage.get_agent_run("window:w_keep")
+    assert stored is not None
+    assert stored.binding == original.binding
+    assert stored.generation_request_snapshot == original.generation_request_snapshot
+    assert stored.service_config_snapshot == original.service_config_snapshot
+    assert stored.agent_context_snapshot == original.agent_context_snapshot
+    assert stored.resume_attempts == original.resume_attempts
 
 
 def _claimed_resume(
