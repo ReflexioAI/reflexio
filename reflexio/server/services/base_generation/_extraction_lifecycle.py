@@ -45,6 +45,33 @@ from reflexio.server.services.storage.storage_base import AgentRunStatus, BaseSt
 
 logger = logging.getLogger(__name__)
 
+
+def _failure_template(*parts: str) -> str:
+    """Build a logging template whose only placeholders are the per-call values.
+
+    Error trackers group log events by the unformatted template
+    (``LogRecord.msg``). Interpolating the identifier or exception text into
+    it made every failure a distinct template, so one recurring failure became
+    thousands of separately counted events (Sentry PYTHON-FASTAPI-157). The
+    service name, timeout and exception type are bounded and stay in the
+    template so different failures still group apart; the request identifier
+    and exception message are passed as arguments. Odd-indexed ``parts`` are
+    placeholders; the rest are literal text, escaped so a ``%`` cannot be read
+    as one.
+
+    Args:
+        *parts (str): Alternating literal text and ``%s`` placeholder runs,
+            starting with literal text.
+
+    Returns:
+        str: The ``%``-style template.
+    """
+    return "".join(
+        part if index % 2 else part.replace("%", "%%")
+        for index, part in enumerate(parts)
+    )
+
+
 # An automatic extraction window that fails is retried by the durable worker
 # (``retry_extraction``) with backoff ``min(300, 2 ** min(attempts - 1, 9))`` s,
 # indefinitely. A single failed attempt is therefore not actionable: it is
@@ -223,7 +250,15 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
                 f"Extractor timed out after {timeout_seconds} seconds "
                 f"for {self._get_service_name()} identifier={identifier}"
             )
-            logger.log(self._extractor_failure_log_level(), error_msg)
+            logger.log(
+                self._extractor_failure_log_level(),
+                _failure_template(
+                    f"Extractor timed out after {timeout_seconds} seconds for "
+                    f"{self._get_service_name()} identifier=",
+                    "%s",
+                ),
+                identifier,
+            )
             self._fail_active_extraction_runs(
                 extractor_kind=get_extractor_name(extractor_config),
                 last_error=error_msg,
@@ -239,7 +274,16 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
                 f"Extractor failed for {self._get_service_name()} "
                 f"identifier={identifier}: {exc} (type={type(exc).__name__})"
             )
-            logger.log(self._extractor_failure_log_level(), error_msg)
+            logger.log(
+                self._extractor_failure_log_level(),
+                _failure_template(
+                    f"Extractor failed for {self._get_service_name()} identifier=",
+                    "%s: %s",
+                    f" (type={type(exc).__name__})",
+                ),
+                identifier,
+                exc,
+            )
             raise ExtractorExecutionError(error_msg) from exc
         finally:
             if executor is not None:
