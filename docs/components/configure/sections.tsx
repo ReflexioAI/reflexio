@@ -19,17 +19,17 @@ import {
   TextAreaField,
 } from "./primitives";
 import {
-  APIKeyConfig,
-  AgentSuccessConfig,
+  type APIKeyConfig,
+  type AgentSuccessConfig,
   EXTRACTION_PRESET_LABELS,
-  ExtractionPreset,
-  LLMConfig,
+  type ExtractionPreset,
+  type LLMConfig,
   PRESET_VALUES,
-  ProfileExtractorConfig,
-  ReflexioConfig,
-  StorageConfigSQLite,
-  ToolUseConfig,
-  UserPlaybookExtractorConfig,
+  type ProfileExtractorConfig,
+  type ReflexioConfig,
+  type StorageConfigSQLite,
+  type ToolUseConfig,
+  type UserPlaybookExtractorConfig,
   defaultAgentSuccess,
   defaultPlaybookExtractor,
   defaultProfileExtractor,
@@ -37,6 +37,18 @@ import {
 } from "@/lib/config-schema";
 
 type SetConfig = (updater: (prev: ReflexioConfig) => ReflexioConfig) => void;
+
+// Names are editable, so row identity belongs to the UI rather than the payload.
+const toolItemIds = new WeakMap<ToolUseConfig, number>();
+let nextToolItemId = 0;
+function toolItemId(item: ToolUseConfig): number {
+  let id = toolItemIds.get(item);
+  if (id === undefined) {
+    id = nextToolItemId++;
+    toolItemIds.set(item, id);
+  }
+  return id;
+}
 
 export function StorageSection({
   value,
@@ -62,7 +74,7 @@ export function StorageSection({
           onChange={(v) =>
             setConfig((prev) => ({
               ...prev,
-              storage_config: { db_path: v },
+              storage_config: { ...prev.storage_config, db_path: v },
             }))
           }
           placeholder="(default)"
@@ -263,7 +275,7 @@ export function APIKeysSection({
           id="key-openai"
           type="password"
           value={keys.openai?.api_key ?? null}
-          onChange={(v) => update({ openai: v ? { api_key: v } : null })}
+          onChange={(v) => update({ openai: { ...keys.openai, api_key: v } })}
           placeholder="sk-…"
         />
       </FieldRow>
@@ -730,7 +742,9 @@ export function ToolsSection({
   const updateAt = (idx: number, patch: Partial<ToolUseConfig>) => {
     setConfig((prev) => {
       const next = [...(prev.tool_can_use ?? [])];
-      next[idx] = { ...next[idx], ...patch };
+      const previous = next[idx];
+      next[idx] = { ...previous, ...patch };
+      toolItemIds.set(next[idx], toolItemId(previous));
       return { ...prev, tool_can_use: next };
     });
   };
@@ -761,7 +775,7 @@ export function ToolsSection({
       )}
       {items.map((item, idx) => (
         <ListItemCard
-          key={idx}
+          key={toolItemId(item)}
           title={item.tool_name || "(unnamed)"}
           onRemove={() => removeAt(idx)}
         >

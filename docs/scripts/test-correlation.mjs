@@ -60,6 +60,51 @@ assert.equal(serialized.agent_success_config.retrieved_learning_sampling_rate, 0
 assert.equal(serialized.agent_success_config.request_sources_enabled[0], "api");
 assert.equal(serialized.profile_extractor_config.window_size_override, 23);
 
+// A subset editor must preserve the fetched snapshot through full replacement.
+const fetched = {
+  ...configSchema.defaultConfig(),
+  governance_retention: {
+    audit_events_retention_enabled: false,
+    audit_events_retention_days: 45,
+    audit_events_delete_batch_limit: 2000,
+  },
+  lineage_gc: { enabled: false, tombstone_grace_window_days: 120 },
+  future_policy: { enabled: false, budget: 37 },
+  storage_config: { db_path: "  ", future_storage_option: "keep" },
+  llm_config: { generation_model_name: "keep-model", future_llm_option: 37 },
+  api_key_config: {
+    openai: { api_key: null, azure_config: {
+      api_key: "synthetic-azure-key", endpoint: "https://example.openai.azure.com/",
+      api_version: "2024-02-15-preview", deployment_name: "keep-deployment",
+    } },
+    dashscope: { api_key: "test-key", api_base: "", future_provider_option: 37 },
+  },
+};
+const before = JSON.stringify(fetched);
+const edited = configSchema.hydrateConfig(fetched);
+edited.agent_context_prompt = "An unrelated edit";
+const roundtrip = JSON.parse(JSON.stringify(configSchema.serializeConfig(edited)));
+assert.deepEqual(roundtrip.governance_retention, fetched.governance_retention);
+assert.deepEqual(roundtrip.lineage_gc, fetched.lineage_gc);
+assert.deepEqual(roundtrip.future_policy, fetched.future_policy);
+assert.deepEqual(roundtrip.api_key_config.openai, fetched.api_key_config.openai);
+assert.equal(roundtrip.agent_context_prompt, "An unrelated edit");
+assert.equal(roundtrip.storage_config.db_path, null);
+assert.equal(roundtrip.storage_config.future_storage_option, "keep");
+assert.equal(roundtrip.llm_config.future_llm_option, 37);
+assert.equal(roundtrip.api_key_config.dashscope.future_provider_option, 37);
+assert.equal(roundtrip.api_key_config.dashscope.api_base, null);
+assert.equal(JSON.stringify(fetched), before);
+// A snapshot from another storage implementation must not become SQLite.
+const remote = { type: "postgres", db_url: "postgresql://local-test", schema: "tenant" };
+assert.deepEqual(
+  configSchema.serializeConfig(configSchema.hydrateConfig({ ...fetched, storage_config: remote })).storage_config,
+  remote,
+);
+// Explicitly clearing a represented optional section remains a real clear.
+edited.llm_config = null;
+assert.equal(configSchema.serializeConfig(edited).llm_config, null);
+
 const { generatePythonCode } = load("execution/code-generator.ts");
 const { initialParams } = load("execution/default-params.ts");
 const { unifiedSearchMethods } = load("methods/unified-search.ts");

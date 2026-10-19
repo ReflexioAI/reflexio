@@ -841,12 +841,18 @@ unchanged. Explicit/manual user leases and pending-run claims retain separate
 lifetimes and are not controlled by these background discovery settings.
 
 
-Housekeeping timing and governance deletion batches live in
+Housekeeping cadence and lineage timing migration checks live in
 `reflexio/housekeeping_policy.py`. The former `lineage_gc.poll_interval_seconds`
-and `governance_retention.audit_events_delete_batch_limit` settings accept only
-legacy defaults (86400 and 500) during migration and are absent from canonical
-configuration. Custom values fail validation; review them before upgrading.
-Retention ages, grace windows and explicit holds remain supported.
+accepts only its legacy default (86400) and is absent from canonical configuration;
+custom lineage cadence still requires explicit migration. In contrast,
+`governance_retention.audit_events_delete_batch_limit` is supported again: a
+positive integer up to PostgreSQL int32, default 500. Enterprise audit cleanup
+applies the configured limit separately to audit events and erasure tombstones
+in the existing transaction. The earlier retirement did not eliminate this
+throughput/transaction-size choice. Stored custom values are preserved; invalid
+values fail loading without resetting other saved policy. Retention enablement,
+ages, grace windows and holds remain independent. OSS accepts this enterprise
+policy without executing audit-event cleanup.
 
 ### Session outcome cutovers
 
