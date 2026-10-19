@@ -23,6 +23,7 @@ class BatchService(BatchProgressMixin[dict]):
         storage.get_operation_state.side_effect = lambda key: deepcopy(
             self.rows.get(key)
         )
+        storage.create_operation_state.side_effect = self._save_state
         storage.upsert_operation_state.side_effect = self._save_state
         storage.update_operation_state.side_effect = self._save_state
         storage.try_acquire_in_progress_lock.side_effect = self._claim

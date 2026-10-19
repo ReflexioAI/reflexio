@@ -45,6 +45,9 @@ def test_rejected_claim_preserves_the_admitted_attempt(tmp_path):
     first.update_progress("u1", count=0, success=True, total_users=2)
     assert not second.claim_progress({"agent_version": "other"})
     second.mark_progress_failed("rejected contender")
+    assert second.get_attempt_progress(second.operation_id) is None
+    with pytest.raises(RuntimeError, match="not admitted"):
+        second.finalize_progress(0)
     state = first.get_progress()
     assert state is not None
     assert state["request_params"]["operation_id"] == first.operation_id
@@ -83,8 +86,12 @@ def test_replaced_worker_cannot_write_new_attempt_progress(tmp_path):
     assert new.claim_progress({})
     before = new.get_progress()
     with pytest.raises(RuntimeError, match="no longer owns"):
-        old.finalize_progress(1, 99)
+        old.set_current_item("late-user")
+    old.finalize_progress(1, 99)
+    receipt = old.get_attempt_progress(old.operation_id)
+    assert receipt is not None and receipt["finished_operation_id"] == old.operation_id
     old.mark_progress_failed("old failure")
+    assert old.get_attempt_progress(old.operation_id) == receipt
     assert new.get_progress() == before
     # Cancellation is scoped to the admitted attempt, rather than old flags.
     storage.upsert_operation_state(

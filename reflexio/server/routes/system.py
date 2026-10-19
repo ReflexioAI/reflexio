@@ -2,6 +2,7 @@
 
 import logging
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 if TYPE_CHECKING:
     pass
@@ -24,10 +25,12 @@ from reflexio.models.api_schema.retriever_schema import (
 from reflexio.models.api_schema.service_schemas import (
     AdminInvalidateCacheRequest,
     AdminInvalidateCacheResponse,
+    CancelOperationAttemptRequest,
     CancelOperationRequest,
     CancelOperationResponse,
     ClearUserDataRequest,
     ClearUserDataResponse,
+    GenerationServiceName,
     GetOperationStatusRequest,
     GetOperationStatusResponse,
     WhoamiResponse,
@@ -252,6 +255,44 @@ def get_operation_status_endpoint(
     return reflexio.get_operation_status(request)
 
 
+@router.get(
+    "/api/generation_operations/{service_name}",
+    response_model=GetOperationStatusResponse,
+    response_model_exclude_none=True,
+)
+def get_generation_operation_endpoint(
+    service_name: GenerationServiceName,
+    org_id: str = Depends(default_get_org_id),
+) -> GetOperationStatusResponse:
+    """Observe current attempt ownership without age-based status recovery.
+
+    A terminal progress label alone does not acknowledge worker completion;
+    finished_operation_id identifies the attempt that finalized its execution.
+    """
+    reflexio = reflexio_cache.get_reflexio(org_id=org_id)
+    return reflexio.get_generation_operation(service_name)
+
+
+@router.get(
+    "/api/generation_operations/{service_name}/{operation_id}",
+    response_model=GetOperationStatusResponse,
+    response_model_exclude_none=True,
+)
+def get_generation_attempt_endpoint(
+    service_name: GenerationServiceName,
+    operation_id: UUID,
+    org_id: str = Depends(default_get_org_id),
+) -> GetOperationStatusResponse:
+    """Read one attempt even after a successor replaces current progress.
+
+    Missing completion evidence is unknown, never proof that execution stopped.
+    """
+    reflexio = reflexio_cache.get_reflexio(org_id=org_id)
+    return reflexio.get_generation_operation(
+        service_name, operation_id=str(operation_id)
+    )
+
+
 @router.post(
     "/api/cancel_operation",
     response_model=CancelOperationResponse,
@@ -275,3 +316,28 @@ def cancel_operation_endpoint(
     """
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
     return reflexio.cancel_operation(payload)
+
+
+@router.post(
+    "/api/cancel_operation/{operation_id}",
+    response_model=CancelOperationResponse,
+    response_model_exclude_none=True,
+)
+@limiter.limit("10/minute")
+def cancel_operation_attempt_endpoint(
+    request: Request,
+    operation_id: UUID,
+    payload: CancelOperationAttemptRequest,
+    org_id: str = Depends(default_get_org_id),
+) -> CancelOperationResponse:
+    """Cancel exactly one admitted generation attempt in the caller's scope.
+
+    A distinct route makes old servers reject this request instead of ignoring
+    an unknown body field and accidentally performing broad cancellation.
+    Missing, finalized, foreign and replaced attempts cancel nothing.
+    """
+    reflexio = reflexio_cache.get_reflexio(org_id=org_id)
+    return reflexio.cancel_operation(
+        CancelOperationRequest(service_name=payload.service_name),
+        operation_id=str(operation_id),
+    )

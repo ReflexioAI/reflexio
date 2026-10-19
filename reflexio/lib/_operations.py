@@ -103,8 +103,30 @@ class OperationsMixin(ReflexioBase):
                 success=False, msg=f"Failed to get operation status: {str(e)}"
             )
 
+    def get_generation_operation(
+        self, service_name: str, *, operation_id: str | None = None
+    ) -> GetOperationStatusResponse:
+        """Observe attempt identity and durable completion, without recovery writes."""
+        if not self._is_storage_configured():
+            return GetOperationStatusResponse(
+                success=True, operation_status=None, msg=STORAGE_NOT_CONFIGURED_MSG
+            )
+        manager = OperationStateManager(
+            self._get_storage(), self.request_context.org_id, service_name
+        )
+        try:
+            state = manager.get_attempt_progress(operation_id)
+        except LookupError as error:
+            return GetOperationStatusResponse(success=False, msg=str(error))
+        return GetOperationStatusResponse(
+            success=True,
+            operation_status=OperationStatusInfo(**state)
+            if state is not None
+            else None,
+        )
+
     def cancel_operation(
-        self, request: CancelOperationRequest | dict
+        self, request: CancelOperationRequest | dict, *, operation_id: str | None = None
     ) -> CancelOperationResponse:
         """Cancel an in-progress operation (rerun or manual generation).
 
@@ -114,6 +136,8 @@ class OperationsMixin(ReflexioBase):
         Args:
             request (Union[CancelOperationRequest, dict]): Request containing optional service_name.
                 If service_name is None, cancels both profile_generation and playbook_generation.
+            operation_id: When supplied, cancel only this admitted attempt of
+                the named service. A missing service is rejected.
 
         Returns:
             CancelOperationResponse: Response with list of services that were cancelled
@@ -125,6 +149,8 @@ class OperationsMixin(ReflexioBase):
         try:
             if isinstance(request, dict):
                 request = CancelOperationRequest(**request)
+            if operation_id is not None and not request.service_name:
+                raise ValueError("Attempt cancellation requires a service_name")
 
             # Determine which services to cancel
             if request.service_name:
@@ -139,6 +165,7 @@ class OperationsMixin(ReflexioBase):
                     org_id=self.request_context.org_id,
                     service_name=svc,
                 )
+                mgr.operation_id = operation_id
                 if mgr.request_cancellation():
                     cancelled_services.append(svc)
 

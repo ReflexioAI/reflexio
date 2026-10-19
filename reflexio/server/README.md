@@ -147,7 +147,7 @@ Compose the shared HTTP API, resolve request dependencies, and coordinate durabl
 - **Playbook lifecycle**: `POST /api/review_user_playbooks`, `POST /api/rerun_playbook_generation`, `POST /api/manual_playbook_generation`, `POST /api/run_playbook_aggregation`, `GET /api/playbook_aggregation_change_logs`, `POST /api/upgrade_all_user_playbooks`, `POST /api/downgrade_all_user_playbooks`, `PUT /api/update_agent_playbook_status`, `PUT /api/update_agent_playbook`, `PUT /api/update_user_playbook`, `DELETE /api/delete_agent_playbook`, `DELETE /api/delete_user_playbook`, `DELETE /api/delete_agent_playbooks_by_ids`, `DELETE /api/delete_user_playbooks_by_ids`, `DELETE /api/delete_all_playbooks`, `DELETE /api/delete_all_user_playbooks`, `DELETE /api/delete_all_agent_playbooks`
 - **Evaluation**: `POST /api/get_evaluation_overview`, `POST /api/evaluations/regenerate`, `GET /api/evaluations/regenerate/{job_id}`, `DELETE /api/evaluations/regenerate/{job_id}`, `POST /api/evaluations/grade_on_demand`, `GET /api/evaluations/shadow_comparisons/recent`
 - **Braintrust**: `POST /api/braintrust/connect`, `POST /api/braintrust/select_projects`, `GET /api/braintrust/status`, `DELETE /api/braintrust/connection`, `POST /api/braintrust/sync`
-- **Operations/admin**: `GET /api/get_operation_status`, `POST /api/cancel_operation`, `POST /api/admin/cache/invalidate`, `POST /api/session_outcome`, `POST /api/get_session_outcomes`, `DELETE /api/delete_interaction`, `DELETE /api/delete_request`, `DELETE /api/delete_session`, `DELETE /api/delete_requests_by_ids`, `DELETE /api/delete_all_interactions`, `POST /api/clear_user_data`
+- **Operations/admin**: `GET /api/get_operation_status`, `GET /api/generation_operations/{service_name}`, `GET /api/generation_operations/{service_name}/{operation_id}`, `POST /api/cancel_operation`, `POST /api/cancel_operation/{operation_id}`, `POST /api/admin/cache/invalidate`, `POST /api/session_outcome`, `POST /api/get_session_outcomes`, `DELETE /api/delete_interaction`, `DELETE /api/delete_request`, `DELETE /api/delete_session`, `DELETE /api/delete_requests_by_ids`, `DELETE /api/delete_all_interactions`, `POST /api/clear_user_data`
 - **Human clarification/stall state**: `GET /api/pending_tool_calls`, `GET /api/pending_tool_calls/{pending_tool_call_id}`, `POST /api/pending_tool_calls/{pending_tool_call_id}/resolve`, `PATCH /api/pending_tool_calls/{pending_tool_call_id}/answer`, `POST /api/pending_tool_calls/{pending_tool_call_id}/not_applicable`, `POST /api/pending_tool_calls/{pending_tool_call_id}/cancel`, `GET /api/stall_state`, `POST /api/stall_state/notified`
 
 **Authentication Pattern**: The standalone open-source `api:app` uses `default_get_org_id` and `DEFAULT_ORG_ID`, with `LocalAccessMiddleware` limiting no-key data access to loopback peers, hostnames, and browser origins. Setting `REFLEXIO_API_KEY` requires matching Bearer authentication for all data clients. Its launcher binds loopback by default. Embedded hosts composing `create_app()` own their access policy; enterprise deployments supply authenticated org resolution, additional account routers, admin checks, observability hooks, and usage metrics.
@@ -360,6 +360,26 @@ Called by API endpoints via `Reflexio`
 - `service_utils.py`: Utilities (`construct_messages_from_interactions()`, `format_interactions_to_history_string()` (prepends tool usage info when `tools_used` is present), `extract_json_from_string()`, `log_model_response()` for colored LLM response logging)
 
 **Operation State Management** (via `OperationStateManager` in `operation_state_utils.py`):
+
+`POST /api/cancel_operation/{operation_id}` requires a UUID and a named generation
+service (`CancelOperationAttemptRequest`). It targets only that admitted attempt
+in the authenticated scope, using the existing owner fence. A distinct route
+makes older servers reject exact cancellation instead of ignoring a body field.
+Use `GET /api/generation_operations/{service_name}` for a read-only observation.
+Unlike the legacy status endpoint it performs no age-based recovery. Progress
+metadata can say FAILED while a worker still runs; `finished_operation_id`
+records the owner that finalized execution (or acknowledged its fatal failure).
+Exact cancellation remains possible until that owner acknowledgement exists.
+An accepted cancellation is cooperative; wait for the matching completion ID.
+Poll the exact operation-ID route after cancellation. Admission atomically
+creates a durable execution record; only that admitted worker can finalize it.
+A displaced worker can acknowledge its own completion without changing its
+successor's progress. Releasing the execution record's write ownership makes
+completion immutable and supplies `finished_operation_id` in read responses.
+Records retain counters and IDs, not user/filter payloads or identifier lists.
+They remain in project operation-state storage without a new expiry setting;
+absent evidence never means completed execution. Pre-upgrade progress without
+an execution record fails closed on the read-only current-operation route.
 
 - Centralized manager for all `_operation_state` table interactions with 6 use cases:
   1. **Progress tracking**: Rerun + manual batch operations (key: `{service}::{org_id}::progress`)
