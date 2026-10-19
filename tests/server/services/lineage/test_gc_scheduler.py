@@ -17,16 +17,16 @@ from reflexio.server.services.lineage import gc_scheduler
 from reflexio.server.services.lineage import gc_scheduler as gc_mod
 from reflexio.server.services.lineage.gc_scheduler import (
     _DEFAULT_ORG_FANOUT_WORKERS,
-    _DEFAULT_POLL_INTERVAL_SECONDS,
     _ENTITY_TYPES,
     _HIGH_VOLUME_THRESHOLD,
     _MIN_POLL_SECONDS,
     LineageGCScheduler,
+    MaintenanceSchedule,
     clear_global_sweeps,
     clear_per_org_sweeps,
     maybe_start_lineage_gc,
     register_per_org_sweep,
-    set_leader_gate,
+    set_maintenance_schedule,
 )
 
 # ---------------------------------------------------------------------------
@@ -367,7 +367,7 @@ def test_gc_scheduler_recovers_when_first_org_appears():
     assert factory_calls == []
 
     org_ids[:] = ["org_1"]
-    assert scheduler._run_once() == _DEFAULT_POLL_INTERVAL_SECONDS
+    assert scheduler._run_once() == 86400
     assert scheduler.bootstrap_org_id == "org_1"
     assert factory_calls == ["org_1"]
     scheduler._gc_tick.assert_called_once()  # type: ignore[attr-defined]
@@ -935,7 +935,7 @@ def test_leader_gate_forwarded(gc_scheduler_factory) -> None:
 
 
 def test_maybe_start_lineage_gc_reads_module_leader_gate_hook():
-    """maybe_start_lineage_gc picks up a leader gate set via set_leader_gate,
+    """maybe_start_lineage_gc picks up a leader gate set via set_maintenance_schedule,
     mirroring the module-hook fallback for set_org_id_provider (see
     test_maybe_start_lineage_gc_reads_module_provider_hook in
     test_gc_scheduler_multitenant_integration.py)."""
@@ -948,17 +948,17 @@ def test_maybe_start_lineage_gc_reads_module_leader_gate_hook():
     cfg = LineageGCConfig(enabled=True)
     ctx = _make_ctx("org_1", lineage_gc=cfg)
 
-    set_leader_gate(gate)
+    set_maintenance_schedule(MaintenanceSchedule(leader_gate=gate))
     sched = None
     try:
         sched = maybe_start_lineage_gc(lambda _: ctx, bootstrap_org_id="org_1")  # type: ignore[arg-type]
         assert sched is not None
         assert sched._leader_gate is gate
     finally:
-        set_leader_gate(None)
+        set_maintenance_schedule(None)
         if sched is not None:
             sched.stop(timeout_seconds=1.0)
-    assert gc_mod._leader_gate_hook is None
+    assert gc_mod._maintenance_schedule_hook is None
 
 
 def test_transient_tick_failure_is_a_warning_and_still_retries_soon(

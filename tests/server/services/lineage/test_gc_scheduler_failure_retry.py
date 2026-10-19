@@ -164,21 +164,18 @@ def test_a_straggler_failing_late_does_not_fail_the_next_tick(fanout_scheduler):
 
 @pytest.fixture
 def aligned_scheduler():
-    scheduler = LineageGCScheduler(
-        request_context_factory=lambda _org: None,  # type: ignore[arg-type]
-        bootstrap_org_id="org-boot",
-    )
     seen: list[float] = []
 
     def provider(poll_interval: float) -> float:
         seen.append(poll_interval)
         return 1234.0
 
-    gc_scheduler.set_healthy_interval_provider(provider)
-    try:
-        yield scheduler, seen
-    finally:
-        gc_scheduler.set_healthy_interval_provider(None)
+    scheduler = LineageGCScheduler(
+        request_context_factory=lambda _org: None,  # type: ignore[arg-type]
+        bootstrap_org_id="org-boot",
+        schedule=gc_scheduler.MaintenanceSchedule(healthy_interval_provider=provider),
+    )
+    return scheduler, seen
 
 
 def test_a_healthy_tick_waits_what_the_provider_says(aligned_scheduler):

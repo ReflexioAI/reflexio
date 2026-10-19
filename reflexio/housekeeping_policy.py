@@ -40,7 +40,7 @@ def strip_legacy_housekeeping_fields(payload: dict[str, Any]) -> dict[str, Any]:
         raise HousekeepingMigrationError(
             "Retired housekeeping settings require explicit migration: "
             + ", ".join(conflicts)
-            + ". Remove these fields to adopt code-owned daily sweeps."
+            + ". Select the fleet maintenance cadence with REFLEXIO_MAINTENANCE_INTERVAL_SECONDS, then remove these per-org fields."
         )
     cleaned = dict(payload)
     for section, field, _ in _RETIRED_FIELDS:
