@@ -135,6 +135,11 @@ class BaseConfigurator(ABC):
         config_name: str,
         config_value: str | int | float | bool | list | dict | BaseModel | None,
     ) -> None:
+        if config_name == "extraction_preset":
+            # Old named writes only changed the tag: existing explicit geometry
+            # still won on reload. Keep that precedence without persisting a tag.
+            self.set_config(self.prepare_config_patch({config_name: config_value}))
+            return
         original_config_name = config_name
         config_name = _CONFIG_NAME_ALIASES.get(config_name, config_name)
         if config_name not in type(self.config).model_fields:
