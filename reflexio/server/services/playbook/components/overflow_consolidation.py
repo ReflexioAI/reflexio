@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -31,11 +32,27 @@ from reflexio.server.services.playbook.components.overflow_evidence import (
     historical_playbook_digest,
 )
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from reflexio.server.services.playbook.components.consolidator import (
         PlaybookConsolidationOutput,
         PlaybookConsolidator,
     )
+
+
+class ConsolidationNotClearedError(InputBudgetConfigurationError):
+    """A proposal touching history could not be cleared for apply.
+
+    Raised for semantic outcomes of the bounded historical check -- an
+    unsafe/undetermined verification verdict, undetermined scan coverage,
+    a carrier with no verified quotation, or a proposal whose references or
+    survivors are inconsistent. Each is decided by an immutable receipt, so
+    replaying the same window reproduces it exactly: it is never corrected by
+    retrying. ``verified_consolidation_decisions`` therefore converts it into
+    the no-merge plan instead of letting it escape as a retryable
+    configuration failure.
+    """
 
 
 class HistoricalQuote(BaseModel):
@@ -190,14 +207,14 @@ def _selected_rows(
             rows = []
         for row in rows:
             if row is None:
-                raise InputBudgetConfigurationError(
+                raise ConsolidationNotClearedError(
                     "Historical proposal reference is unknown"
                 )
             identity = row.user_playbook_id
             selected[identity] = row
             if not isinstance(decision, RejectNewDecision):
                 if enforce_conflicts and identity in changed:
-                    raise InputBudgetConfigurationError(
+                    raise ConsolidationNotClearedError(
                         "Historical row has conflicting survivors"
                     )
                 changed.add(identity)
@@ -213,7 +230,7 @@ def _selected_rows(
                     and row is not None
                     and row.user_playbook_id in changed
                 ):
-                    raise InputBudgetConfigurationError(
+                    raise ConsolidationNotClearedError(
                         "Rejected NEW points to archived history"
                     )
     return list(selected.values())
@@ -277,7 +294,7 @@ def _merge_quotes(
     end: int,
 ) -> list[HistoricalQuote]:
     if update.coverage != "complete":
-        raise InputBudgetConfigurationError(
+        raise ConsolidationNotClearedError(
             "Historical evidence coverage is undetermined"
         )
     merged = list(prior)
@@ -414,7 +431,7 @@ def _scan_history(
             update = HistoricalScan.model_validate(saved["output"])
         quotes = _merge_quotes(quotes, update, text, visible_start, visible_end)
     if not quotes:
-        raise InputBudgetConfigurationError("Historical rule lacks verified quotations")
+        raise ConsolidationNotClearedError("Historical rule lacks verified quotations")
     return quotes
 
 
@@ -631,7 +648,7 @@ def _remap_proposal(
             raw, existing_by_position=subset_positions, existing_by_id=subset_ids
         )
         if row is None:
-            raise InputBudgetConfigurationError(
+            raise ConsolidationNotClearedError(
                 "Historical proposal reference is unknown"
             )
         return positions[row.user_playbook_id]
@@ -697,7 +714,66 @@ def _bounded_proposals(
     return _remap_proposal(owner, combined, selected, existing, None)
 
 
+def unconsolidated_decisions(new: list[UserPlaybook]) -> PlaybookConsolidationOutput:
+    """Return the no-merge plan used when a historical proposal is not cleared.
+
+    Every NEW is inserted unchanged and no existing row is archived, rewritten,
+    differentiated or used to supersede a NEW. Nothing unverified reaches
+    history and no learned constraint is dropped: when the relation between a
+    NEW and history (or a sibling) cannot be established, both survive. A
+    later window that retrieves them proposes the merge again, under
+    verification. The plan depends only on the candidate count, so a replayed
+    window reproduces it exactly.
+
+    Args:
+        new (list[UserPlaybook]): Candidates, in ``NEW-<index>`` order.
+
+    Returns:
+        PlaybookConsolidationOutput: One ``independent`` decision per NEW.
+    """
+    from reflexio.server.services.playbook.components.consolidator import (
+        ConsolidationDecision,
+        IndependentDecision,
+        PlaybookConsolidationOutput,
+    )
+
+    decisions: list[ConsolidationDecision] = [
+        IndependentDecision(new_id=f"NEW-{index}") for index in range(len(new))
+    ]
+    return PlaybookConsolidationOutput(decisions=decisions)
+
+
 def verified_consolidation_decisions(
+    owner: PlaybookConsolidator,
+    coordinator: OverflowCoordinator,
+    new: list[UserPlaybook],
+    existing: list[UserPlaybook],
+) -> PlaybookConsolidationOutput:
+    """Return a verified proposal, or the no-merge plan when none is cleared.
+
+    A proposal that cannot be cleared must not be applied, and must not stall
+    the window either: its saved receipts make every retry fail the same way,
+    so raising would retry the window forever. The no-merge plan sets
+    ``owner.consolidation_not_cleared`` so the apply path admits survivors it
+    could not prove distinct instead of rejecting them. Capacity, quota,
+    suspension, lease and source-integrity failures still propagate unchanged.
+    """
+    try:
+        return _verified_proposal(owner, coordinator, new, existing)
+    except ConsolidationNotClearedError as exc:
+        owner.consolidation_not_cleared = True
+        # Fixed module strings only; the verifier's reason can quote tenant text.
+        logger.warning(
+            "event=playbook_consolidation_not_cleared cause=%s new_count=%d "
+            "existing_count=%d",
+            exc,
+            len(new),
+            len(existing),
+        )
+        return unconsolidated_decisions(new)
+
+
+def _verified_proposal(
     owner: PlaybookConsolidator,
     coordinator: OverflowCoordinator,
     new: list[UserPlaybook],
@@ -796,7 +872,7 @@ def verified_consolidation_decisions(
     else:
         verification = ConsolidationVerification.model_validate(saved["output"])
     if verification.verdict != "verified":
-        raise InputBudgetConfigurationError(
+        raise ConsolidationNotClearedError(
             "Historical consolidation is unsafe or undetermined"
         )
     return output
