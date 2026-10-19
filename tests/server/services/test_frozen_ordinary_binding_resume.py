@@ -182,7 +182,9 @@ def test_ordinary_old_schema_resumes_or_replays_without_rewriting_admission(
     assert saved.resume_attempts == original.resume_attempts
     assert loop.call_count == (0 if state == "agent_completed" else 1)
     if loop.called:
-        assert loop.call_args.kwargs["max_steps"] == 3
+        # A no-output retry restarts from the seed prompt, so it gets the full
+        # step budget rather than the saved run's spent counter (3).
+        assert loop.call_args.kwargs["max_steps"] == 8
     else:
         assert saved.committed_output == original.committed_output
     assert (
