@@ -433,9 +433,24 @@ omits reporting fields on a post-commit reporting failure while preserving
 
 ### Publish and retention ownership
 
-Publish diagnostics have two independently thresholded/throttled records under
-the existing `REFLEXIO_PUBLISH_TIMING_*` settings (at most two lines per org per
-interval). `publish_timing.total_ms` retains its admission-to-worker-completion
+Publish diagnostics capture one policy at HTTP entry and share it with the
+handler and shielded worker. `REFLEXIO_PUBLISH_TIMING_MIN_MS=off` disables timing
+(the default); a nonnegative integer enables it at that millisecond threshold,
+with `0` reporting all requests. `REFLEXIO_PUBLISH_TIMING_INTERVAL_SECONDS`
+remains the independent per-org throttle window (default 60 seconds; `0` disables
+throttling). The two record types have separate throttle populations, allowing
+at most two lines per org per interval. An in-flight request retains its captured
+policy; environment edits affect the next request.
+
+Absent or blank `REFLEXIO_PUBLISH_TIMING_MIN_MS` preserves the legacy
+`REFLEXIO_PUBLISH_TIMING_ENABLED=true` opt-in and
+`REFLEXIO_PUBLISH_TIMING_THRESHOLD_MS` (default 2000). An explicit legacy `false`
+remains a veto, even with a canonical threshold. Invalid nonblank legacy booleans
+still raise; invalid canonical thresholds raise without echoing the supplied
+value. Invalid legacy thresholds and throttle intervals retain their existing
+2000 ms and 60 second fallbacks. To adopt the canonical setting, remove the
+legacy opt-in or explicitly keep it `true`; leave managed presets unchanged
+until adoption is intentional. `publish_timing.total_ms` retains its admission-to-worker-completion
 boundary. `publish_http_timing.http_total_ms` measures ASGI entry through sending
 the final response body, including authentication/dependencies and response work.
 Both share a generated `timing_id`; no request bodies or credentials are logged.
