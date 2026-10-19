@@ -23,6 +23,7 @@ from __future__ import annotations
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
+from reflexio.config_migration import StoredConfigurationError
 from reflexio.models.config_schema import (
     StorageConfig,
     StorageConfigPostgres,
@@ -162,7 +163,7 @@ class TestThroughValidateStoredConfig:
     def test_malformed_storage_config_is_rejected_on_the_load_path(
         self, label: str, storage_config: dict[str, object]
     ) -> None:
-        with pytest.raises(ValidationError):
+        with pytest.raises(StoredConfigurationError):
             validate_stored_config({"storage_config": storage_config})
 
     def test_valid_storage_configs_survive_the_load_path(self) -> None:
@@ -267,3 +268,51 @@ def test_round_trip_preserves_the_backend() -> None:
             f"round trip changed backend: {type(original).__name__} -> "
             f"{type(reloaded).__name__}"
         )
+
+
+@pytest.mark.parametrize(
+    "private_key",
+    ["private-tool-map-key", "enabled", "model", "db_url", "similarity_threshold"],
+)
+def test_stored_policy_error_and_traceback_omit_values_and_dynamic_keys(private_key):
+    import traceback
+
+    secret = "private-customer-content"
+    payload = {
+        "storage_config": None,
+        "agent_context_prompt": secret,
+        "pending_tool_call_config": {
+            "tool_overrides": {private_key: {"similarity_threshold": 2}},
+        },
+    }
+    try:
+        validate_stored_config(payload)
+    except StoredConfigurationError as exc:
+        rendered = "".join(traceback.format_exception(exc))
+        assert secret not in rendered
+        assert f".{private_key}." not in str(exc)
+        assert "tool_overrides" not in str(exc)
+        assert "pending_tool_call_config" in str(exc)
+        if private_key == "private-tool-map-key":
+            assert private_key not in rendered
+        assert "input_value" not in rendered
+    else:
+        pytest.fail("invalid recognized saved policy was accepted")
+
+
+@pytest.mark.parametrize("value", [-1, "private-invalid-merge-budget"])
+def test_invalid_current_value_in_legacy_conversion_also_fails_closed(value):
+    import traceback
+
+    payload = {
+        "storage_config": None,
+        "playbook_optimizer_config": {
+            "use_merge": True,
+            "max_merge_invocations": value,
+        },
+    }
+    with pytest.raises(StoredConfigurationError) as error:
+        validate_stored_config(payload)
+    assert "private-invalid-merge-budget" not in "".join(
+        traceback.format_exception(error.value)
+    )

@@ -293,3 +293,38 @@ def test_retired_custom_policy_propagates_without_resetting_file(
             load()
         assert "private-custom-policy" not in str(error.value)
         assert path.read_bytes() == before
+
+
+def test_invalid_recognized_policy_preserves_file_and_blocks_cli_fallback(tmp_path):
+    from reflexio.cli.bootstrap_config import (
+        load_storage_from_config,
+        save_storage_to_config,
+    )
+    from reflexio.config_migration import StoredConfigurationError
+
+    storage = _make_local_file_storage(str(tmp_path))
+    payload = {
+        "storage_config": {"type": "sqlite"},
+        "lineage_gc": {"enabled": False},
+        "agent_context_prompt": "private-customer-prompt",
+        "governance_retention": {"audit_events_retention_days": 0},
+    }
+    path = Path(storage.config_file)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(payload))
+    original = path.read_bytes()
+    for load in (
+        storage.load_config,
+        lambda: load_storage_from_config("test-org", base_dir=str(tmp_path)),
+        lambda: save_storage_to_config("sqlite", "test-org", base_dir=str(tmp_path)),
+    ):
+        with pytest.raises(StoredConfigurationError, match="governance_retention"):
+            load()
+        assert path.read_bytes() == original
+    payload["governance_retention"]["audit_events_retention_days"] = 45
+    path.write_text(json.dumps(payload))
+    cfg = storage.load_config()
+    assert cfg.lineage_gc.enabled is False
+    assert cfg.governance_retention.audit_events_retention_days == 45
+    storage.save_config(cfg)
+    assert storage.load_config().lineage_gc.enabled is False

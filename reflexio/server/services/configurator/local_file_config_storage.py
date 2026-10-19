@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from reflexio.cli.paths import reflexio_home
-from reflexio.config_migration import ConfigurationMigrationError
+from reflexio.config_migration import StoredConfigurationError
 from reflexio.models.config_schema import (
     Config,
     PlaybookConfig,
@@ -116,7 +116,8 @@ class LocalFileConfigStorage(ConfigStorage):
                             self.config_file,
                         )
                 return config
-        except ConfigurationMigrationError:
+        except StoredConfigurationError as exc:
+            logger.error("Invalid stored config at %s: %s", self.config_file, exc)
             raise
         except Exception:
             logger.exception(
