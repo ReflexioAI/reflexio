@@ -986,7 +986,6 @@ def test_historical_consolidation_scans_complete_source_and_replays_without_call
     from reflexio.models.api_schema.service_schemas import UserPlaybook
     from reflexio.models.config_schema import DeduplicationConfig
     from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
-    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
     from reflexio.server.llm.token_accounting import RunTokenTotals
     from reflexio.server.services.durable_learning.window_executor import (
         load_window_inputs,
@@ -1003,6 +1002,7 @@ def test_historical_consolidation_scans_complete_source_and_replays_without_call
         ProtectedRecordUpdate,
     )
     from reflexio.server.services.playbook.components.consolidator import (
+        IndependentDecision,
         PlaybookConsolidationOutput,
         PlaybookConsolidator,
         UnifyDecision,
@@ -1072,6 +1072,7 @@ def test_historical_consolidation_scans_complete_source_and_replays_without_call
     owner.model_provenance = None
     owner._dedup_config = DeduplicationConfig()
     owner.consolidated_output_indices = set()
+    owner.consolidation_not_cleared = False
     owner.request_context = pipeline[0].request_context
     calls = []
     primary_ranges = []
@@ -1170,13 +1171,14 @@ def test_historical_consolidation_scans_complete_source_and_replays_without_call
         with active.provider_scope():
             return verified_consolidation_decisions(owner, active, [new], [old])
 
-    if verdict == "verified":
-        assert replay() == output
-    else:
-        with pytest.raises(
-            InputBudgetConfigurationError, match="unsafe or undetermined"
-        ):
-            replay()
+    # An uncleared verdict is a saved receipt: raising would replay it on every
+    # worker retry forever. It yields the no-merge plan instead: NEW is kept
+    # unchanged and OLD is not archived or rewritten.
+    no_merge = PlaybookConsolidationOutput(
+        decisions=[IndependentDecision(new_id="NEW-0")]
+    )
+    expected = output if verdict == "verified" else no_merge
+    assert replay() == expected
     assert len(primary_ranges) > 1
     assert primary_ranges[0][0] == 0 and primary_ranges[-1][1] == len(old_text)
     assert all(
@@ -1198,22 +1200,27 @@ def test_historical_consolidation_scans_complete_source_and_replays_without_call
             source_digest=prepared.source_digest,
             reserve_attempt_id=f"reserved-{index}",
         )
+    # The replay is identical and needs no provider capacity.
+    assert replay() == expected
+    assert owner.consolidation_not_cleared is (verdict != "verified")
+    rows, archived, groups = owner._build_deduplicated_results(
+        new_playbooks=[new],
+        existing_playbooks=[old],
+        dedup_output=expected,
+        generation_request_id="current",
+        agent_version="v1",
+        admit_overlapping_survivors=owner.consolidation_not_cleared,
+    )
     if verdict == "verified":
-        assert replay() == output
-        rows, archived, groups = owner._build_deduplicated_results(
-            new_playbooks=[new],
-            existing_playbooks=[old],
-            dedup_output=output,
-            generation_request_id="current",
-            agent_version="v1",
-        )
         assert archived == [51] and groups == [(0, [51])]
         assert rows[0].source_span is not None
         assert old_text in rows[0].source_span
         assert 9001 in rows[0].source_interaction_ids
     else:
-        with pytest.raises(InputBudgetConfigurationError):
-            replay()
+        # No unverified change reaches history: nothing archived or merged,
+        # and the NEW lesson survives verbatim beside the untouched OLD.
+        assert archived == [] and groups == []
+        assert [row.content for row in rows] == [new.content]
     assert len(calls) == first_calls
     assert active is not None
     assert active.token_totals.prompt_tokens == first_usage

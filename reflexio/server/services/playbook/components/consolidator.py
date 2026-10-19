@@ -574,6 +574,9 @@ class PlaybookConsolidator(BaseDeduplicator):
         # an exhausted repair says whether coverage or overlap kept failing.
         self.last_failed_check: str | None = None
         self.consolidated_output_indices: set[int] = set()
+        # Set when the window's historical proposal was not cleared and the
+        # no-merge plan replaced it (see overflow_consolidation).
+        self.consolidation_not_cleared = False
         self.lineage_sources_by_output_index: dict[int, list[str]] = {}
 
     def _get_prompt_id(self) -> str:
@@ -1037,6 +1040,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         self.model_provenance = None
         self.consolidated_output_indices = set()
         self.lineage_sources_by_output_index = {}
+        self.consolidation_not_cleared = False
         if agent_version is None:
             raise TypeError("agent_version is required")
 
@@ -1149,11 +1153,29 @@ class PlaybookConsolidator(BaseDeduplicator):
                 [],
             )
 
+        from reflexio.server.services.extraction.overflow_coordinator import (
+            OverflowSuspendedError,
+        )
+        from reflexio.server.services.storage.storage_base._extraction_stream import (
+            LeaseLostError,
+            OverflowCheckpointConflictError,
+        )
+
         # Run the LLM decision step (prompt render + LLM call + parse only).
         try:
             dedup_output = self._window_consolidation_decisions(
                 new_playbooks, existing_playbooks
             )
+        except (
+            OverflowSuspendedError,
+            OverflowCheckpointConflictError,
+            LeaseLostError,
+        ):
+            # Durable-worker control flow (suspend for a continuation turn, a
+            # lost checkpoint race or lease), handled by the worker -- not a
+            # consolidation failure to report. Deliberately narrower than
+            # EXTRACTION_CONTROL_ERRORS: input-budget failures stay reported.
+            raise
         except Exception as e:
             # Low-cardinality causes only: the repair ladder's failure kind and
             # the deterministic check that rejected the last attempt (validation
@@ -1193,14 +1215,21 @@ class PlaybookConsolidator(BaseDeduplicator):
             generation_request_id,
         )
         # Build consolidated result via the discriminated-union apply path.
+        # The no-merge plan for an uncleared proposal keeps every NEW and
+        # every OLD by design; rejecting near-duplicates there would either
+        # drop a learned constraint or stall the window on its saved receipts.
+        admit_overlap = self.consolidation_not_cleared
         consolidated = self._build_deduplicated_results(
             new_playbooks=new_playbooks,
             existing_playbooks=existing_playbooks,
             dedup_output=dedup_output,
             generation_request_id=generation_request_id,
             agent_version=agent_version,
+            admit_overlapping_survivors=admit_overlap,
         )
         new_rows, archive_ids, _ = consolidated
+        if admit_overlap:
+            return consolidated
         untouched_existing = [
             existing
             for existing in existing_playbooks
@@ -1498,6 +1527,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         *,
         request_id: str | None = None,
         validate_only: bool = False,
+        admit_overlapping_survivors: bool = False,
     ) -> tuple[list[UserPlaybook], list[int], list[tuple[int, list[int]]]]:
         """
         Build the deduplicated entry list from LLM decisions.
@@ -1513,6 +1543,9 @@ class PlaybookConsolidator(BaseDeduplicator):
             dedup_output: LLM decisions output (discriminated union).
             generation_request_id: Request ID stamped onto newly-built rows.
             agent_version: Agent version (currently unused, kept for symmetry).
+            admit_overlapping_survivors: Skip the survivor-overlap rejection.
+                Only for the deterministic no-merge plan of an uncleared
+                historical proposal, which has no repair step to send it to.
 
         Returns:
             Tuple of ``(entries ready to save, existing entry IDs to delete,
@@ -1627,7 +1660,7 @@ class PlaybookConsolidator(BaseDeduplicator):
             )
 
         overlap_errors = self._find_overlapping_survivors(new_rows)
-        if overlap_errors:
+        if overlap_errors and not admit_overlapping_survivors:
             raise ValueError("; ".join(overlap_errors))
 
         if not validate_only:
