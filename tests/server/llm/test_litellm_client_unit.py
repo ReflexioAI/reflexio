@@ -5059,3 +5059,38 @@ def test_completion_startup_and_final_queue_read_share_absolute_budget(
         context.Queue.return_value.join_thread.assert_called_once()
     finally:
         search_runtime._scope.reset(token)
+
+
+@pytest.mark.parametrize("has_usage", [False, True])
+def test_provenance_result_preserves_final_response_usage_and_missing_fields(
+    monkeypatch, has_usage
+):
+    from types import SimpleNamespace
+
+    response = _make_completion_response("ok")
+    response.usage = (
+        SimpleNamespace(
+            prompt_tokens=12,
+            completion_tokens=None,
+            total_tokens=None,
+            prompt_tokens_details=None,
+            cache_creation_input_tokens=None,
+            cache_read_input_tokens=None,
+        )
+        if has_usage
+        else None
+    )
+    monkeypatch.setattr(litellm, "completion", lambda **_params: response)
+    client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
+    result = client.generate_chat_response_with_provenance(
+        [{"role": "user", "content": "hi"}]
+    )
+    assert result.value == "ok"
+    if has_usage:
+        assert result.usage is not None
+        assert result.usage.prompt_tokens == 12
+        assert (
+            result.usage.completion_tokens is None and result.usage.total_tokens is None
+        )
+    else:
+        assert result.usage is None

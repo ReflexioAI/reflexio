@@ -113,22 +113,42 @@ def run_rule_evidence(data: RuleEvidenceInput, invoke: Invoke) -> RuleEvidenceRe
     # Revalidate even model_copy/model_construct inputs and detach mutable lists
     # before invoking caller code. The same snapshot feeds both stages.
     data = RuleEvidenceInput.model_validate_json(data.model_dump_json())
-    diagnostics: list[Diagnostic] = []
-    sources = [_source(data, session) for session in data.sessions]
-    for session, source in zip(data.sessions, sources, strict=True):
-        payload = {**source, "incumbent": data.incumbent.model_dump(mode="json")}
-        system = prompt("judge")
-        _check_budget(system, payload, Diagnostic)
-        output = invoke(system, payload, Diagnostic)
-        diagnostic = Diagnostic.model_validate_json(output.model_dump_json())
+    from .wire import diagnose, field_catalog, rebuild, tune_schema
+
+    diagnostics = diagnose(data, invoke)
+    payload = {
+        "original_source": data.model_dump(mode="json"),
+        "diagnostics": [item.model_dump(mode="json") for item in diagnostics],
+        "correctable_fields": list(
+            field_catalog([item.model_dump(mode="json") for item in diagnostics])
+        ),
+        "editable_scope": "Complete nonblank incumbent content, selected by code; no span selection",
+    }
+    schema = tune_schema(data, diagnostics)
+    system = prompt("tune")
+    _check_budget(system, payload, schema)
+    value = invoke(system, payload, schema)
+    return rebuild(
+        data, diagnostics, schema.model_validate_json(value.model_dump_json())
+    )
+
+
+def apply_proposal(
+    data: RuleEvidenceInput, diagnostics: list[Diagnostic], proposal: Proposal
+) -> RuleEvidenceResult:
+    """Validate corrected source evidence and apply exactly one code-owned edit."""
+    if len(diagnostics) != len(data.sessions):
+        raise ValueError("diagnostics must cover every source session")
+    for diagnostic, session in zip(diagnostics, data.sessions, strict=True):
         validate_diagnostic(diagnostic, data, session)
-        diagnostics.append(diagnostic)
     admitted = [
         diagnostic.rule_assessment
         for diagnostic in diagnostics
         if diagnostic.rule_assessment.disposition == "rule_gap"
     ]
     if not admitted:
+        if proposal.decision != "abstain":
+            raise ValueError("repair requires an admitted source gap")
         return RuleEvidenceResult(
             decision="abstain",
             reason="No incumbent rule gap was admitted",
@@ -137,25 +157,6 @@ def run_rule_evidence(data: RuleEvidenceInput, invoke: Invoke) -> RuleEvidenceRe
             revised_content=None,
             evidence_refs=[],
         )
-    payload = {
-        "incumbent": data.incumbent.model_dump(mode="json"),
-        "available_tools": [
-            tool.model_dump(mode="json") for tool in data.available_tools
-        ],
-        "tool_context_status": data.tool_context_status,
-        "diagnostics": [
-            diagnostic.model_dump(mode="json") for diagnostic in diagnostics
-        ],
-        "admitted_gaps": [
-            {"gap_index": index, **gap.model_dump(mode="json")}
-            for index, gap in enumerate(admitted)
-        ],
-        "source_evidence": sources,
-    }
-    system = prompt("tune")
-    _check_budget(system, payload, Proposal)
-    output = invoke(system, payload, Proposal)
-    proposal = Proposal.model_validate_json(output.model_dump_json())
     if proposal.decision == "abstain":
         return RuleEvidenceResult(
             decision="abstain",

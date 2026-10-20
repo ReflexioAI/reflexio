@@ -539,6 +539,7 @@ class _StructuredAttempt:
     finish_reason: str | None
     model: str
     provenance: ModelProvenance | None = None
+    usage: Any | None = None
 
 
 def _is_expected_transient_llm_error(exc: BaseException) -> bool:
@@ -1582,7 +1583,9 @@ class TextGenerationMixin:
             attempt: _StructuredAttempt,
         ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse]:
             assert attempt.provenance is not None  # noqa: S101
-            return CompletionResult(attempt.value, attempt.provenance)
+            return CompletionResult(
+                attempt.value, attempt.provenance, usage=attempt.usage
+            )
 
         if structured_output_validator is not None and (
             original_kwargs.get("response_format") is None
@@ -1807,6 +1810,7 @@ class TextGenerationMixin:
                         finish_reason=finish_reason,
                         model=str(turn_params.get("model")),
                         provenance=provenance,
+                        usage=getattr(response, "usage", None),
                     )
 
                 try:
@@ -1828,6 +1832,7 @@ class TextGenerationMixin:
                     finish_reason=finish_reason,
                     model=str(turn_params.get("model")),
                     provenance=provenance,
+                    usage=getattr(response, "usage", None),
                 )
             except (
                 ProviderRequestGuardError,

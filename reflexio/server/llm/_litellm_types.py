@@ -41,6 +41,8 @@ class CompletionResult[T]:
 
     value: T
     provenance: ModelProvenance
+    # Final provider response only; earlier retry/fallback usage is not included.
+    usage: Any | None = None
 
 
 @dataclass
