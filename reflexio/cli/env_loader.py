@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import sys
+from io import StringIO
 from pathlib import Path
 
 _logger = logging.getLogger(__name__)
@@ -175,7 +176,7 @@ def _env_search_paths() -> list[Path]:
     ]
 
 
-def _load_dotenv_pruned(path: Path, *, override: bool = False) -> None:
+def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> None:
     """Load a .env file, treating blank assignments (``KEY=``) as unset.
 
     python-dotenv exports a blank ``KEY=`` line as ``os.environ["KEY"] = ""``
@@ -191,7 +192,7 @@ def _load_dotenv_pruned(path: Path, *, override: bool = False) -> None:
     file value is never removed.
 
     Args:
-        path: Path to the .env file to load.
+        path: An existing .env path or in-memory bundled preset.
         override: Forwarded to ``load_dotenv``. When False (default) the existing
             process environment wins over the file's values.
     """
@@ -206,9 +207,16 @@ def _load_dotenv_pruned(path: Path, *, override: bool = False) -> None:
         "y",
     }:
         return
-    file_vals = dotenv_values(path)
+    file_vals = (
+        dotenv_values(stream=StringIO(path.getvalue()))
+        if isinstance(path, StringIO)
+        else dotenv_values(path)
+    )
     reject_removed_env(file_vals)
-    load_dotenv(dotenv_path=path, override=override)
+    if isinstance(path, StringIO):
+        load_dotenv(stream=StringIO(path.getvalue()), override=override)
+    else:
+        load_dotenv(dotenv_path=path, override=override)
     for key, value in file_vals.items():
         if (
             value is not None
@@ -216,6 +224,31 @@ def _load_dotenv_pruned(path: Path, *, override: bool = False) -> None:
             and not os.environ.get(key, "").strip()
         ):
             os.environ.pop(key, None)
+
+
+def _load_existing_env_paths() -> Path | None:
+    global _loaded_env_path
+    reject_removed_env(os.environ)
+    for env_path in _env_search_paths():
+        if env_path.exists():
+            _load_dotenv_pruned(env_path)
+            _loaded_env_path = env_path.resolve()
+            _logger.debug("Loaded env from: %s", _loaded_env_path)
+            return env_path
+    _loaded_env_path = None
+    return None
+
+
+def load_existing_reflexio_env(
+    *, package_data_module: str = "reflexio.data"
+) -> Path | None:
+    """Read existing config or bundled defaults without provisioning env files."""
+    existing = _load_existing_env_paths()
+    if existing is None:
+        content = _find_env_example(package_data_module)
+        if content is not None:
+            _load_dotenv_pruned(StringIO(content))
+    return existing
 
 
 def load_reflexio_env(
@@ -241,16 +274,10 @@ def load_reflexio_env(
         Path to the loaded .env file, or None if no .env was found/created.
     """
     global _loaded_env_path
-    reject_removed_env(os.environ)
-    for env_path in _env_search_paths():
-        if env_path.exists():
-            _load_dotenv_pruned(env_path)
-            resolved = env_path.resolve()
-            _logger.debug("Loaded env from: %s", resolved)
-            _loaded_env_path = resolved
-            # Auto-generate any missing secret keys into the existing .env
-            _backfill_missing_keys(env_path, auto_generate_keys or [])
-            return env_path
+    existing = _load_existing_env_paths()
+    if existing is not None:
+        _backfill_missing_keys(existing, auto_generate_keys or [])
+        return existing
 
     # No .env found — auto-create from bundled template
     created = _create_default_env(package_data_module, auto_generate_keys or [])
@@ -323,7 +350,6 @@ def load_reflexio_env_for_mode(
     Returns:
         Path to the loaded mode env file, or None if nothing was found/created.
     """
-    global _loaded_env_path
     reject_removed_env(os.environ)
     mode = resolve_mode(cli_mode)
     if mode is None:
@@ -332,6 +358,24 @@ def load_reflexio_env_for_mode(
             auto_generate_keys=auto_generate_keys,
         )
 
+    loaded = _load_existing_mode_paths(mode)
+    home_secrets = _USER_ENV_DIR / f".env.{mode}"
+
+    if loaded is None:
+        loaded = _create_default_env_for_mode(mode, package_data_module)
+
+    # Auto-generate any missing secret keys into the gitignored home file ONLY,
+    # never the committed ./.env.<mode> presets file.
+    if auto_generate_keys:
+        _USER_ENV_DIR.mkdir(parents=True, exist_ok=True)
+        _backfill_missing_keys(home_secrets, auto_generate_keys)
+
+    return loaded
+
+
+def _load_existing_mode_paths(mode: str) -> Path | None:
+    """Shared on-disk precedence for runtime reads and explicit CLI setup."""
+    global _loaded_env_path
     # Optional gitignored home secrets, loaded first so committed presets and
     # process env both still win where they define the same keys.
     home_secrets = _USER_ENV_DIR / f".env.{mode}"
@@ -347,15 +391,30 @@ def load_reflexio_env_for_mode(
             loaded = env_path
             break
 
+    _loaded_env_path = loaded.resolve() if loaded is not None else None
+    return loaded
+
+
+def load_existing_reflexio_env_for_mode(
+    *,
+    cli_mode: str | None = None,
+    package_data_module: str = "reflexio.data",
+) -> Path | None:
+    """Read mode configuration; bundled defaults stay in memory.
+
+    Process values win, then existing home secrets and CWD mode presets in the
+    same order as CLI setup. Returns an on-disk path only when one was loaded.
+    No mode falls back to the existing plain-file reader, never provisioning.
+    """
+    reject_removed_env(os.environ)
+    mode = resolve_mode(cli_mode)
+    if mode is None:
+        return load_existing_reflexio_env(package_data_module=package_data_module)
+    loaded = _load_existing_mode_paths(mode)
     if loaded is None:
-        loaded = _create_default_env_for_mode(mode, package_data_module)
-
-    # Auto-generate any missing secret keys into the gitignored home file ONLY,
-    # never the committed ./.env.<mode> presets file.
-    if auto_generate_keys:
-        _USER_ENV_DIR.mkdir(parents=True, exist_ok=True)
-        _backfill_missing_keys(home_secrets, auto_generate_keys)
-
+        content = _find_mode_template(mode, package_data_module)
+        if content is not None:
+            _load_dotenv_pruned(StringIO(content))
     return loaded
 
 

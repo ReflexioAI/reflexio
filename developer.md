@@ -142,6 +142,21 @@ from reflexio import ReflexioClient
 client = ReflexioClient(url_endpoint=f"http://localhost:{BACKEND_PORT}")
 ```
 
+## Environment loading and setup
+
+Server imports read existing environment files and bundled defaults without
+creating env files or generating secrets. Mode-aware hosts use
+`load_existing_reflexio_env_for_mode`; bundled mode presets are read in memory
+when no mode file exists. Process overrides, optional home secrets and current
+working-directory presets retain their established precedence and blank-value
+handling. An in-memory preset has no on-disk source path.
+
+CLI first-run setup still uses `load_reflexio_env` or
+`load_reflexio_env_for_mode` to create user files and backfill requested keys.
+Keep provisioning at that explicit setup boundary; importing a database or
+validation helper must not initialize an operator's environment. Logging retains
+its own existing profile and file behavior.
+
 ## Package Management
 
 - **Python**: Use `uv` (`uv sync`, `uv add`, `uv run <cmd>`, or activate `.venv`)
