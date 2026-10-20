@@ -778,3 +778,44 @@ class TestEmbeddingFailureDegradesToFTS(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _phase_b_with_failing_user_playbooks(error: Exception):
+    storage = _fanout_storage()
+    storage.search_user_playbooks.side_effect = error
+    return _run_phase_b(
+        request=UnifiedSearchRequest(query="billing", user_id="user-1"),
+        org_id="test-org",
+        storage=storage,
+        embedding=[0.1] * 1536,
+        query="billing",
+        top_k=5,
+        threshold=0.3,
+    )
+
+
+def test_phase_b_request_deadline_is_a_countable_warning(caplog) -> None:
+    """An expired request deadline is a bounded outcome: WARNING with a stable
+    event name, same all-None answer (the route's 503), never ERROR."""
+    from reflexio.server import search_runtime
+
+    with caplog.at_level("WARNING", logger="reflexio.server.services"):
+        result = _phase_b_with_failing_user_playbooks(
+            search_runtime.SearchDeadlineError()
+        )
+
+    assert result == (None, None, None)
+    records = [r for r in caplog.records if r.name.endswith("unified_search_service")]
+    assert [r.levelname for r in records] == ["WARNING"]
+    assert "event=unified_search_deadline_exceeded" in records[0].getMessage()
+    assert "error_type=SearchDeadlineError" in records[0].getMessage()
+
+
+def test_phase_b_unexpected_failure_stays_error(caplog) -> None:
+    with caplog.at_level("WARNING", logger="reflexio.server.services"):
+        result = _phase_b_with_failing_user_playbooks(RuntimeError("boom"))
+
+    assert result == (None, None, None)
+    records = [r for r in caplog.records if r.name.endswith("unified_search_service")]
+    assert [r.levelname for r in records] == ["ERROR"]
+    assert "Unified search failed" in records[0].getMessage()

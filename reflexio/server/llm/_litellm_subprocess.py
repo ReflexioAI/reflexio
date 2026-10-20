@@ -73,6 +73,7 @@ class _CompletionErrorSnapshot:
     model: str | None = None
     llm_provider: str | None = None
     input_capacity_exceeded: bool = False
+    status_code: int | None = None
 
 
 def _snapshot_completion_error(
@@ -80,12 +81,14 @@ def _snapshot_completion_error(
 ) -> _CompletionErrorSnapshot:
     model = getattr(exc, "model", None) or params.get("model")
     llm_provider = getattr(exc, "llm_provider", None)
+    status_code = getattr(exc, "status_code", None)
     return _CompletionErrorSnapshot(
         type_name=type(exc).__name__,
         message=str(exc),
         model=str(model) if model else None,
         llm_provider=str(llm_provider) if llm_provider else None,
         input_capacity_exceeded=isinstance(exc, ContextWindowExceededError),
+        status_code=status_code if isinstance(status_code, int) else None,
     )
 
 

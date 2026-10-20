@@ -32,6 +32,9 @@ from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.extraction.input_preparation import SourceSpan
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
+from reflexio.server.services.extraction.resumable_agent import (
+    ExtractionIncompleteError,
+)
 from reflexio.server.services.profile.components.extractor import (
     ProfileExtractor,
     _profile_evidence_validation_errors,
@@ -552,6 +555,113 @@ class TestRun:
             extractor.run()
 
         request_context.storage.upsert_operation_state.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("error", "level"),
+        [
+            # The window retry owns transient provider failures: expected noise.
+            (
+                ExtractionIncompleteError(
+                    "Profile extraction did not finish: error "
+                    "(LiteLLMClientError/transient)",
+                    error_detail="transient",
+                ),
+                "WARNING",
+            ),
+            (
+                ExtractionIncompleteError(
+                    "Profile extraction did not finish: error "
+                    "(LiteLLMClientError/non_transient)",
+                    error_detail="non_transient",
+                ),
+                "ERROR",
+            ),
+            (
+                ExtractionIncompleteError(
+                    "Profile extraction did not finish: error "
+                    "(StructuredOutputRepairError/semantic)",
+                    error_detail="semantic",
+                ),
+                "ERROR",
+            ),
+            (ExtractionIncompleteError("max_steps", error_detail=None), "ERROR"),
+            (TimeoutError("provider hung"), "WARNING"),
+            (RuntimeError("boom"), "ERROR"),
+        ],
+        ids=["transient", "non_transient", "semantic", "no_detail", "raw", "bug"],
+    )
+    def test_extract_failed_log_level_follows_failure_classification(
+        self,
+        extractor_config,
+        caplog,
+        request_context,
+        mock_llm_client,
+        service_config,
+        sample_request_interaction_models,
+        error,
+        level,
+    ):
+        request_context.storage.get_last_k_interactions_grouped.return_value = (
+            sample_request_interaction_models,
+            [],
+        )
+        extractor = ProfileExtractor(
+            request_context=request_context,
+            llm_client=mock_llm_client,
+            extractor_config=extractor_config,
+            service_config=service_config,
+            agent_context="Test agent",
+        )
+        extractor._generate_raw_updates_from_sessions = MagicMock(side_effect=error)
+
+        with caplog.at_level("WARNING"), pytest.raises(RuntimeError):
+            extractor.run()
+
+        records = [
+            r
+            for r in caplog.records
+            if "event=profile_extract_failed" in r.getMessage()
+        ]
+        assert [r.levelname for r in records] == [level]
+
+    def test_incomplete_window_extraction_carries_failure_detail(
+        self,
+        extractor_config,
+        request_context,
+        mock_llm_client,
+        service_config,
+        sample_request_interaction_models,
+    ):
+        """The durable-window raise keeps the tool loop's classification as a
+        field, so the log level never has to parse it back out of the text."""
+        service_config.extraction_window_id = "window-1"
+        extractor = ProfileExtractor(
+            request_context=request_context,
+            llm_client=mock_llm_client,
+            extractor_config=extractor_config,
+            service_config=service_config,
+            agent_context="Test agent",
+        )
+        result = MagicMock(
+            output=None,
+            run_id="run-1",
+            model_provenance=None,
+            failure_label="error (LiteLLMClientError/transient)",
+            error_detail="transient",
+        )
+        module = "reflexio.server.services.profile.components.extractor"
+        with (
+            patch(f"{module}.run_resumable_extraction_agent", return_value=result),
+            patch(f"{module}.sum_trace_tokens", return_value=None),
+            patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
+            pytest.raises(ExtractionIncompleteError) as caught,
+        ):
+            extractor._generate_raw_updates_from_sessions(
+                request_interaction_data_models=sample_request_interaction_models,
+                existing_profiles=[],
+            )
+
+        assert caught.value.error_detail == "transient"
 
     def test_run_carries_bookmark_advance_on_success(
         self,

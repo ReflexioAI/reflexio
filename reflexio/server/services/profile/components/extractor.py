@@ -17,6 +17,7 @@ from reflexio.server.env_utils import env_bool
 from reflexio.server.llm._litellm_types import ProviderRequestGuardError
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_tokens
+from reflexio.server.llm.tools import describe_tool_loop_error
 from reflexio.server.services.deferred_learning_plan import ExtractorBookmarkAdvance
 from reflexio.server.services.extraction.input_preparation import SourceSpan
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
@@ -28,6 +29,7 @@ from reflexio.server.services.extraction.overflow_presentation import (
     current_overflow_presentation,
 )
 from reflexio.server.services.extraction.resumable_agent import (
+    ExtractionIncompleteError,
     run_resumable_extraction_agent,
 )
 from reflexio.server.services.extractor_config_utils import get_extractor_name
@@ -62,6 +64,22 @@ PROFILE_EXTRACTION_MAX_RETRIES = 2
 
 # Maximum number of existing profiles to include in extraction prompt for context
 MAX_EXISTING_PROFILES_FOR_CONTEXT = 5
+
+
+def _is_transient_extraction_failure(exc: BaseException) -> bool:
+    """Whether a profile extraction failure is an expected transient outage.
+
+    Args:
+        exc (BaseException): The failure raised by profile generation.
+
+    Returns:
+        bool: True for a provider timeout / connection / rate-limit / overload
+        failure, which the durable window retries; False for semantic, parse
+        or repair-exhausted failures and anything unclassified.
+    """
+    if isinstance(exc, ExtractionIncompleteError):
+        return exc.error_detail == "transient"
+    return describe_tool_loop_error(exc)[1] == "transient"
 
 
 def _profile_evidence_validation_errors(
@@ -261,7 +279,12 @@ class ProfileExtractor:
         except ProviderRequestGuardError:
             raise
         except Exception as e:
-            logger.error(
+            # A transient provider failure is retried by the durable window, so
+            # it is expected noise; semantic / repair-exhausted failures stay ERROR.
+            log = (
+                logger.warning if _is_transient_extraction_failure(e) else logger.error
+            )
+            log(
                 "event=profile_extract_failed user_id=%s extractor_name=%s error_type=%s error=%s",
                 self.service_config.user_id,
                 get_extractor_name(self.config),
@@ -540,8 +563,9 @@ class ProfileExtractor:
         self._last_model_provenance = result.model_provenance
         if not isinstance(result.output, StructuredProfilesOutput):
             if self.service_config.extraction_window_id is not None:
-                raise RuntimeError(
-                    f"Profile extraction did not finish: {result.failure_label}"
+                raise ExtractionIncompleteError(
+                    f"Profile extraction did not finish: {result.failure_label}",
+                    error_detail=result.error_detail,
                 )
             logger.warning(
                 "Profile extraction did not finish: %s", result.failure_label

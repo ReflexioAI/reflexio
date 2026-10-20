@@ -95,6 +95,19 @@ def _record_agent_usage_event(
     )
 
 
+class ExtractionIncompleteError(RuntimeError):
+    """An extraction agent ended without structured output.
+
+    ``error_detail`` is the tool loop's failure classification (``transient``,
+    ``non_transient``, or a repair ``failure_kind``), kept structured so a
+    caller choosing a log level does not parse it back out of the message.
+    """
+
+    def __init__(self, message: str, *, error_detail: str | None) -> None:
+        super().__init__(message)
+        self.error_detail = error_detail
+
+
 @dataclass(slots=True)
 class AgentRunResult:
     run_id: str
@@ -815,8 +828,9 @@ class ResumableExtractionAgent:
             if result.pending_tool_call_ids:
                 raise OverflowSuspendedError("Extraction child awaits human/tool input")
             if result.finished_reason != "max_steps":
-                raise RuntimeError(
-                    f"Overflow extraction child did not finish: {result.failure_label}"
+                raise ExtractionIncompleteError(
+                    f"Overflow extraction child did not finish: {result.failure_label}",
+                    error_detail=result.error_detail,
                 )
             current_messages = result.messages
         else:

@@ -684,8 +684,13 @@ def _run_phase_b(
                     "user_playbooks_count": len(user_playbooks),
                 },
             )
-    except FuturesTimeoutError:
-        logger.error("Unified search timed out")
+    except (FuturesTimeoutError, search_runtime.SearchDeadlineError) as e:
+        # The request's own deadline expiring is a bounded, expected outcome
+        # (the caller degrades to an empty answer), not an application fault.
+        # Keep a stable event name so the rate stays countable.
+        logger.warning(
+            "event=unified_search_deadline_exceeded error_type=%s", type(e).__name__
+        )
         return None, None, None
     except Exception as e:
         logger.error("Unified search failed: %s", e)
