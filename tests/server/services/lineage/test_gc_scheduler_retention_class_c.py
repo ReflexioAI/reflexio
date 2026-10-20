@@ -370,7 +370,7 @@ def test_a_success_after_failures_resets_the_retry_budget():
 
 def test_internal_interval_shorter_than_retry_is_not_lengthened(monkeypatch):
     """A future shorter owned cadence must not be delayed by the fast retry."""
-    monkeypatch.setattr(gc_scheduler, "DAILY_SWEEP_SECONDS", 60)
+    monkeypatch.setenv("REFLEXIO_MAINTENANCE_INTERVAL_SECONDS", "60")
     sched = _tick_scheduler()
     sched.request_context_factory = lambda _org: types.SimpleNamespace(  # type: ignore[assignment]
         storage=types.SimpleNamespace(),
