@@ -395,6 +395,19 @@ or polling deadline is a nonzero CLI outcome. Admission without `--wait` is
 reported separately from completion. See [CLI usage](reflexio/cli/README.md#agent-playbooks)
 for operation status, timeout and JSON output behavior.
 
+### Query-vector cache ownership
+
+Unified search reuses a query vector only within one storage instance's lifetime,
+for the exact raw input, model, dimensions and query purpose. A private identity
+token avoids conflating separate provider/client configurations with the same
+model name, without retaining their storage connections in the global LRU. Text
+is not case-folded or whitespace-collapsed before cache lookup.
+
+The existing cache expiration and global capacity settings remain independent
+operational policy. Instance ownership is not an immutable model-version proof;
+changing a provider behind a live instance can still require expiry or restart.
+Do not remove expiration until the actual execution identity can invalidate it.
+
 ### Storage requirements for publishing
 
 SQLite dataset ownership checks read an established owner without taking a writer

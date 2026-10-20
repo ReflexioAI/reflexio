@@ -59,6 +59,11 @@ class BaseStorageCore(ABC):  # noqa: B024
             base_dir = LOCAL_STORAGE_PATH
         self.base_dir = base_dir
 
+    @property
+    def _query_embedding_cache_identity(self) -> object:
+        """Lifetime identity without retaining the storage or its connections."""
+        return vars(self).setdefault("_query_embedding_cache_token", object())
+
     def governance_subject_ref_for_user(self, user_id: str) -> str | None:  # noqa: ARG002
         """Resolve a trusted owner identity; OSS has no governance subject refs.
 

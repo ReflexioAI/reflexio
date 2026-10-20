@@ -113,9 +113,9 @@ _EMBEDDING_CACHE_MAX_SIZE = max(
     1, int(os.getenv("REFLEXIO_QUERY_EMBEDDING_CACHE_MAX_SIZE", "1024") or "1024")
 )
 _embedding_cache_lock = threading.Lock()
-_embedding_cache: OrderedDict[tuple[str, int, str, str], tuple[float, list[float]]] = (
-    OrderedDict()
-)
+_embedding_cache: OrderedDict[
+    tuple[object, str, int, str, str], tuple[float, list[float]]
+] = OrderedDict()
 
 
 def run_unified_search(
@@ -991,11 +991,18 @@ def _get_cached_query_embedding(
     """Return a cached query embedding when available."""
     model_name = storage.embedding_model_name
     dimensions = int(getattr(storage, "embedding_dimensions", 0) or 0)
-    normalized_query = " ".join(query.casefold().split())
-    key = (model_name, dimensions, normalized_query, "query")
     now = time.monotonic()
-    if _EMBEDDING_CACHE_TTL_SECONDS > 0:
-        with _embedding_cache_lock:
+    with _embedding_cache_lock:
+        # A model name is not a provider/tenant identity, and distinct raw
+        # inputs need not encode alike. The token never retains storage.
+        key = (
+            storage._query_embedding_cache_identity,
+            model_name,
+            dimensions,
+            query,
+            "query",
+        )
+        if _EMBEDDING_CACHE_TTL_SECONDS > 0:
             cached = _embedding_cache.get(key)
             if cached is not None:
                 created_at, value = cached
