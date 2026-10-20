@@ -317,3 +317,25 @@ def test_whitespace_boundaries_do_not_force_an_invalid_left_anchor(padding):
     assert len(quote) <= 12
     assert original.find(quote) == original.rfind(quote)
     assert original.replace(quote, replacement, 1) == revised
+
+
+@pytest.mark.parametrize(
+    "original,revised",
+    [
+        ("ab  a    aabb ", "ab  a    aabb    "),
+        (" ab ", " ab  ab "),
+        (" ab  ab ", " ab "),
+    ],
+)
+def test_equivalent_whitespace_and_repeated_edit_alignments(original, revised):
+    quote, replacement = exact_edit(original, revised)
+    assert quote == quote.strip() and original.find(quote) == original.rfind(quote)
+    assert original.replace(quote, replacement, 1) == revised
+
+
+def test_newline_terminated_instruction_can_be_deleted_exactly():
+    original = "Keep this.\nRemove this.\n"
+    revised = "Keep this.\n"
+    quote, replacement = exact_edit(original, revised)
+    assert quote == quote.strip() and len(quote) <= 1200
+    assert original.replace(quote, replacement, 1) == revised

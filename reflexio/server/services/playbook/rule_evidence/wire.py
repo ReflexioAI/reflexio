@@ -95,19 +95,8 @@ def field_catalog(
     return result
 
 
-def exact_edit(original: str, revised: str) -> tuple[str, str]:
-    """Keep full short-rule edits; bound long-rule edits without changing their result.
-
-    Common prefix/suffix removal locates all changes. Expand context until the
-    quote is unique, nonblank and trim-stable and the replacement is nonblank.
-    Never truncate an edit or silently apply only some of the generated changes.
-    """
-    if original == revised:
-        raise ValueError("Whole-rule repair must change the incumbent")
-    if not revised.strip():
-        raise ValueError("Whole-rule repair must retain nonblank guidance")
-    if len(original) <= 1200 and original == original.strip():
-        return original, revised
+def _edit_bounds(original: str, revised: str) -> list[tuple[int, int, int]]:
+    """Canonical and opposite alignments of a repeated insertion/deletion."""
     start = 0
     while (
         start < min(len(original), len(revised)) and original[start] == revised[start]
@@ -121,42 +110,85 @@ def exact_edit(original: str, revised: str) -> tuple[str, str]:
         suffix += 1
     end = len(original) - suffix
     new_end = len(revised) - suffix
+    bounds = [(start, end, new_end)]
+    # Repeated insertions/deletions can align at either end of a shared run.
+    # Considering the opposite alignment avoids trapping edits outside trailing
+    # whitespace; an interior nonblank anchor handles whitespace at both ends.
+    shared_suffix = suffix
+    while (
+        shared_suffix < min(len(original), len(revised))
+        and original[-shared_suffix - 1] == revised[-shared_suffix - 1]
+    ):
+        shared_suffix += 1
+    if shared_suffix > suffix:
+        first = min(len(original), len(revised)) - shared_suffix
+        positions = [first]
+        anchor = first
+        while anchor < start and original[anchor].isspace():
+            anchor += 1
+        if first < anchor < start:
+            positions.append(anchor)
+        bounds.extend(
+            (
+                position,
+                position + max(0, len(original) - len(revised)),
+                position + max(0, len(revised) - len(original)),
+            )
+            for position in positions
+        )
+    return bounds
+
+
+def exact_edit(original: str, revised: str) -> tuple[str, str]:
+    """Keep full short-rule edits; bound long-rule edits without changing their result.
+
+    Common prefix/suffix removal locates all changes. Expand context until the
+    quote is unique, nonblank and trim-stable and the replacement is nonblank.
+    Never truncate an edit or silently apply only some of the generated changes.
+    """
+    if original == revised:
+        raise ValueError("Whole-rule repair must change the incumbent")
+    if not revised.strip():
+        raise ValueError("Whole-rule repair must retain nonblank guidance")
+    if len(original) <= 1200 and original == original.strip():
+        return original, revised
     best: tuple[str, str] | None = None
     # Enumerate bounded left anchors. Uniqueness is monotone as the right
     # boundary grows, so binary search avoids enumerating every possible span.
-    for left in range(start, max(-1, end - 1201), -1):
-        if best is not None and end - left >= len(best[0]):
-            break
-        if left >= len(original) or original[left].isspace():
-            continue
-        maximum = min(
-            len(original), left + (1200 if best is None else len(best[0]) - 1)
-        )
-        while maximum > left and original[maximum - 1].isspace():
-            maximum -= 1
-        low = max(end, left + 1)
-        if maximum < low:
-            continue
-        quote = original[left:maximum]
-        if original.find(quote) != original.rfind(quote):
-            continue
-        high = maximum
-        while low < high:
-            middle = (low + high) // 2
-            quote = original[left:middle]
-            if original.find(quote) == original.rfind(quote):
-                high = middle
-            else:
-                low = middle + 1
-        for right in range(low, maximum + 1):
-            if original[right - 1].isspace():
-                continue
-            replacement = (
-                original[left:start] + revised[start:new_end] + original[end:right]
-            )
-            if replacement.strip():
-                best = original[left:right], replacement
+    for start, end, new_end in _edit_bounds(original, revised):
+        for left in range(start, max(-1, end - 1201), -1):
+            if best is not None and end - left >= len(best[0]):
                 break
+            if left >= len(original) or original[left].isspace():
+                continue
+            maximum = min(
+                len(original), left + (1200 if best is None else len(best[0]) - 1)
+            )
+            while maximum > left and original[maximum - 1].isspace():
+                maximum -= 1
+            low = max(end, left + 1)
+            if maximum < low:
+                continue
+            quote = original[left:maximum]
+            if original.find(quote) != original.rfind(quote):
+                continue
+            high = maximum
+            while low < high:
+                middle = (low + high) // 2
+                quote = original[left:middle]
+                if original.find(quote) == original.rfind(quote):
+                    high = middle
+                else:
+                    low = middle + 1
+            for right in range(low, maximum + 1):
+                if original[right - 1].isspace():
+                    continue
+                replacement = (
+                    original[left:start] + revised[start:new_end] + original[end:right]
+                )
+                if replacement.strip():
+                    best = original[left:right], replacement
+                    break
     if best is None:
         raise ValueError(
             "Complete generated rule cannot be represented by a unique1200-character edit"
