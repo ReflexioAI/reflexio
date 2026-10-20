@@ -1315,6 +1315,35 @@ class Config(BaseModel):
         self.stride_size = value
 
 
+def canonicalize_stored_config_fields(data: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite legacy policy names without serializing away opaque metadata.
+
+    This is a raw migration, not validation or default materialization. Callers
+    must still use ``validate_stored_config`` before persisting or executing it.
+    Storage identity/credentials retain their separate strict validation path.
+    """
+    payload = strip_retired_config_fields(normalize_legacy_config_shape(data))
+    payload = _migrate_dict(payload, _CONFIG_FIELD_MIGRATION)
+    for config_field, mapping in (
+        ("profile_extractor_config", _PROFILE_CONFIG_FIELD_MIGRATION),
+        ("user_playbook_extractor_config", _PLAYBOOK_CONFIG_FIELD_MIGRATION),
+    ):
+        value = payload.get(config_field)
+        if not isinstance(value, dict):
+            continue
+        value = _migrate_dict(
+            _migrate_dict(value, mapping), _EXTRACTOR_OVERRIDE_MIGRATION
+        )
+        if config_field == "user_playbook_extractor_config" and isinstance(
+            aggregator := value.get("aggregation_config"), dict
+        ):
+            value["aggregation_config"] = _migrate_dict(
+                aggregator, _AGGREGATOR_FIELD_MIGRATION
+            )
+        payload[config_field] = value
+    return payload
+
+
 def validate_stored_config(data: dict[str, Any]) -> Config:
     """Validate persisted config with schema-evolution read compatibility.
 
@@ -1331,7 +1360,7 @@ def validate_stored_config(data: dict[str, Any]) -> Config:
         # Normalize before Pydantic model construction so typed migration errors
         # remain intact. Pydantic failures from legacy conversion need the same
         # fail-closed boundary as failures in the resulting current schema.
-        normalized = strip_retired_config_fields(normalize_legacy_config_shape(data))
+        normalized = canonicalize_stored_config_fields(data)
         # extra="ignore" cascades into nested models; validate storage strictly
         # first so a malformed remote config cannot become a local backend.
         storage_config = normalized.get("storage_config")
