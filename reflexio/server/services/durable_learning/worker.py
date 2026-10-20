@@ -217,6 +217,16 @@ def _input_budget_failure_reason(exc: BaseException) -> str | None:
     return None
 
 
+def _discards_computation(exc: BaseException) -> bool:
+    """Evidence behind a cached computation changed; only a recompute can pass."""
+    from reflexio.server.llm.input_budget import ComputationEvidenceChangedError
+
+    return any(
+        isinstance(current, ComputationEvidenceChangedError)
+        for current in _cause_chain(exc)
+    )
+
+
 def _parks_configuration_hold(exc: BaseException) -> bool:
     """A saved output that fails the current contract cannot pass on retry."""
     from reflexio.server.llm.input_budget import SavedOutputIncompatibleError
@@ -306,6 +316,19 @@ class DurableLearningWorker:
         if isinstance(exc, OverflowSuspendedError):
             storage.suspend_extraction(window, token)
             return "suspended"
+        if _discards_computation(exc):
+            # Retrying the cached computation would re-validate the same stale
+            # witnesses forever; discard it so the next attempt recomputes.
+            logger.warning(
+                "Extraction outcome discarded for recompute kind=%s reason=%s error=%s at=%s",
+                window.kind,
+                "computation_evidence_changed",
+                type(exc).__name__,
+                exception_locator(exc),
+            )
+            storage.discard_extraction_computation(window, token)
+            record_health("worker.computation_discards", extractor=window.kind)
+            return "input_budget_failure"
         reason = _input_budget_failure_reason(exc)
         if reason is not None:
             park = reason == "input_budget_configuration_error" and (

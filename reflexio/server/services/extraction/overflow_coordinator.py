@@ -24,6 +24,7 @@ from reflexio.server.llm._litellm_types import (
     ProviderRequestGuardError,
 )
 from reflexio.server.llm.input_budget import (
+    ComputationEvidenceChangedError,
     InputBudgetConfigurationError,
     InputBudgetExceededError,
     ProviderInputOverflowError,
@@ -502,7 +503,9 @@ class OverflowCoordinator:
             key = str(playbook.user_playbook_id)
             digest = historical_playbook_digest(playbook)
             if key in witnesses and witnesses[key] != digest:
-                raise InputBudgetConfigurationError(
+                # Fails this pass. The saved witness is now permanently stale,
+                # so the worker discards it and the next pass starts empty.
+                raise ComputationEvidenceChangedError(
                     "Historical playbook changed after checkpoint"
                 )
             if key not in witnesses:

@@ -793,6 +793,55 @@ class ExtractionStreamStore:
                 (self.org_id, window.user_id),
             )
 
+    def discard_extraction_computation(self, window: Window, token: str) -> None:
+        """Drop a computation whose historical evidence changed, then retry it.
+
+        One fenced transaction clears the cached window outcome and the overflow
+        checkpoint's ``historical_playbooks`` witnesses, then schedules the
+        ordinary configuration retry (attempts counted, backoff applied). The
+        next attempt recomputes against current playbooks and re-records only
+        the witnesses it actually reads. Content-addressed ``completed_steps``
+        and ``historical_chunks`` are kept: unchanged rows reuse their saved
+        steps and consumed provider attempts are never refunded, so repeated
+        recomputes end in the attempt-budget hold.
+        """
+        if window.project_id != (current_project_id() or ""):
+            raise LeaseLostError("Extraction project scope changed")
+        with self.commit_scope(), self._stream_sql() as db:
+            self._fence(db, window.user_id, token)
+            if not db.query(
+                f"UPDATE {db.table('extraction_windows')} SET outcome=NULL "
+                "WHERE window_id=? AND user_id=? AND kind=? AND project_id=? "
+                "AND completed=0 AND invalidated=0 RETURNING window_id",
+                (window.window_id, window.user_id, window.kind, window.project_id),
+            ):
+                raise LeaseLostError("Extraction discard lost its active window")
+            run_id = f"window:{window.window_id}"
+            rows = db.query(
+                f"SELECT generation_request_snapshot FROM {db.table('_agent_runs')} "
+                "WHERE id=? AND org_id=? AND user_id=? AND extractor_kind=?"
+                + db.lock(),
+                (run_id, self.org_id, window.user_id, window.kind),
+            )
+            snapshot = decoded(rows[0]["generation_request_snapshot"]) if rows else {}
+            if isinstance(snapshot, dict) and "overflow" in snapshot:
+                manifest = validate_extraction_overflow_manifest(snapshot["overflow"])
+                if manifest["checkpoint"].pop("historical_playbooks", None) is not None:
+                    manifest["revision"] += 1
+                    db.query(
+                        f"UPDATE {db.table('_agent_runs')} SET generation_request_snapshot=? "
+                        "WHERE id=? AND org_id=? AND user_id=?",
+                        (
+                            json.dumps(snapshot, separators=(",", ":")),
+                            run_id,
+                            self.org_id,
+                            window.user_id,
+                        ),
+                    )
+            self.fail_extraction_input_budget(
+                window, token, "input_budget_configuration_error"
+            )
+
     def recover_extraction_input_budget(
         self,
         window: Window,
@@ -1741,8 +1790,16 @@ class ExtractionStreamStore:
     def validate_extraction_historical_playbooks(
         self, window: Window, witnesses: dict[str, str]
     ) -> None:
-        """Fence only the bounded historical rows actually used by this computation."""
-        from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+        """Fence only the bounded historical rows actually used by this computation.
+
+        A mismatch raises ``ComputationEvidenceChangedError``: the computation's
+        decisions were made against rows that are no longer current, so the
+        worker discards it (``discard_extraction_computation``) and recomputes.
+        """
+        from reflexio.server.llm.input_budget import (
+            ComputationEvidenceChangedError,
+            InputBudgetConfigurationError,
+        )
         from reflexio.server.services.playbook.components.overflow_evidence import (
             HISTORICAL_PLAYBOOK_FIELDS,
             historical_playbook_row_digest,
@@ -1770,7 +1827,7 @@ class ExtractionStreamStore:
                 for row in rows
             }
             if observed != witnesses:
-                raise InputBudgetConfigurationError(
+                raise ComputationEvidenceChangedError(
                     "Historical playbook changed after computation"
                 )
 
