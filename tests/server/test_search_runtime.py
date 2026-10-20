@@ -636,7 +636,7 @@ def test_search_openapi_describes_deadline_and_unavailable_responses():
 
 
 @pytest.mark.asyncio
-async def test_expired_searches_leave_workers_for_unrelated_routes():
+async def test_expired_searches_leave_workers_for_unrelated_routes(monkeypatch):
     from anyio.to_thread import current_default_thread_limiter
     from httpx import ASGITransport, AsyncClient
 
@@ -644,25 +644,58 @@ async def test_expired_searches_leave_workers_for_unrelated_routes():
     original_tokens = limiter.total_tokens
     limiter.total_tokens = 4
     release = threading.Event()
+    workers_entered = threading.Event()
+    entered_lock = threading.Lock()
+    entered_count = 0
+    rejected = asyncio.Event()
+    rejected_count = 0
+    wait_for = asyncio.wait_for
     app = FastAPI()
+
+    async def expire_after_admission(awaitable, timeout):
+        # Admission and real worker ownership are the invariant. Do not let a
+        # busy CI host spend a 40ms deadline buffering the request body first.
+        if getattr(awaitable, "__qualname__", "") == "Event.wait":
+            assert await wait_for(asyncio.to_thread(workers_entered.wait, 5), 5)
+            await wait_for(rejected.wait(), 5)
+            state = runtime.current()
+            assert state is not None
+            state.deadline = time.monotonic()
+            timeout = 0
+        return await wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(runtime.asyncio, "wait_for", expire_after_admission)
 
     @app.post("/api/search")
     def search():
-        release.wait(3)
+        nonlocal entered_count
+        with entered_lock:
+            entered_count += 1
+            if entered_count == 2:
+                workers_entered.set()
+        release.wait()  # Always released below, even if an assertion fails.
         return {"ok": True}
 
     @app.get("/unrelated")
     def unrelated():
         return {"ok": True}
 
-    middleware = runtime.SearchRuntimeMiddleware(app, timeout=0.04)
+    middleware = runtime.SearchRuntimeMiddleware(app, timeout=5)
     try:
         async with AsyncClient(
             transport=ASGITransport(app=middleware), base_url="http://test"
         ) as client:
-            responses = await asyncio.gather(
-                *(client.post("/api/search") for _ in range(4))
-            )
+
+            async def search_request():
+                nonlocal rejected_count
+                response = await client.post("/api/search")
+                if response.status_code == 503:
+                    rejected_count += 1
+                    if rejected_count == 2:
+                        rejected.set()
+                return response
+
+            responses = await asyncio.gather(*(search_request() for _ in range(4)))
             assert sorted(r.status_code for r in responses) == [503, 503, 504, 504]
             assert limiter.borrowed_tokens == 2
             response = await asyncio.wait_for(client.get("/unrelated"), timeout=0.5)
