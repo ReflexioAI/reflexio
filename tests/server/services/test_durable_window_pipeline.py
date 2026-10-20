@@ -856,7 +856,7 @@ def test_historical_playbook_fence_keeps_full_evidence_and_rejects_stale_rows(
     from datetime import UTC, datetime
 
     from reflexio.models.api_schema.service_schemas import UserPlaybook
-    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+    from reflexio.server.llm.input_budget import ComputationEvidenceChangedError
     from reflexio.server.services.extraction.overflow_coordinator import (
         OverflowCoordinator,
     )
@@ -967,7 +967,7 @@ def test_historical_playbook_fence_keeps_full_evidence_and_rejects_stale_rows(
     with (
         storage.commit_scope(),
         pytest.raises(
-            InputBudgetConfigurationError, match="Historical playbook changed"
+            ComputationEvidenceChangedError, match="Historical playbook changed"
         ),
     ):
         storage.validate_extraction_historical_playbooks(window, witnesses)
@@ -4949,3 +4949,305 @@ def test_finalization_wakeup_failure_preserves_durable_acceptance(
     assert storage.extraction_report("u", "short")[0]["reason"] == "queued"
     worker.drain_org("stream-test", 1, 300)
     assert storage.extraction_status("u", "short")["status"] == "done"
+
+
+def _insert_historical_playbook(storage, user_id, content, request_id="history"):
+    import json
+    from datetime import UTC, datetime
+
+    with storage.commit_scope(), storage._stream_sql() as db:
+        return db.query(
+            "INSERT INTO user_playbooks (user_id,playbook_name,created_at,request_id,agent_version,content,trigger,rationale,source,source_interaction_ids,source_span,notes,reader_angle,tags,expanded_terms) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING user_playbook_id",
+            (
+                user_id,
+                "deployment",
+                datetime.now(UTC).isoformat(),
+                request_id,
+                "v1",
+                content,
+                "when planning",
+                "Require explicit approval",
+                "test",
+                json.dumps([]),
+                "Stored historical evidence",
+                None,
+                "instruction",
+                "[]",
+                None,
+            ),
+        )[0]["user_playbook_id"]
+
+
+def _supersede_historical_playbook(storage, user_id, old_id):
+    """What unrelated normal work does: retire the old row behind a successor."""
+    new_id = _insert_historical_playbook(storage, user_id, "Prepare, then approve")
+    with storage.commit_scope(), storage._stream_sql() as db:
+        db.query(
+            "UPDATE user_playbooks SET status='archived',superseded_by=?,retired_at=? "
+            "WHERE user_playbook_id=?",
+            (new_id, int(time.time()), old_id),
+        )
+    return new_id
+
+
+def _witnessing_playbook_window(pipeline, monkeypatch, *, supersede_after_first):
+    """A real overflow playbook window whose compute witnesses current history."""
+    from reflexio.models.config_schema import UserPlaybookExtractorConfig
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        current_overflow_coordinator,
+    )
+    from reflexio.server.services.playbook.service import PlaybookGenerationService
+
+    engine, worker, client = pipeline
+    configurator = engine.request_context.configurator
+    configurator.set_config(
+        configurator.get_config().model_copy(
+            update={
+                "profile_extractor_config": None,
+                "user_playbook_extractor_config": UserPlaybookExtractorConfig(
+                    extraction_definition_prompt="Extract scoped approval practices."
+                ),
+            }
+        )
+    )
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
+    monkeypatch.setattr(
+        "reflexio.server.llm.litellm_client.LiteLLMClient._completion_with_hard_timeout",
+        Mock(side_effect=AssertionError("Witness tests make no provider calls")),
+    )
+    storage = engine.get_storage()
+    first = _insert_historical_playbook(storage, "u", "Prepare only")
+    state = {"witnessed": [], "superseded_by": None}
+
+    def compute(_service, _request):
+        # Stands in for hybrid retrieval + consolidation: read the CURRENT
+        # active rows, witness them, and finish full source coverage.
+        coordinator = current_overflow_coordinator.get()
+        assert coordinator is not None
+        active = [
+            row
+            for row in storage.get_user_playbooks(user_id="u")
+            if row.status is None
+            and row.superseded_by is None
+            and row.merged_into is None
+            and row.retired_at is None
+        ]
+        coordinator.remember_historical_playbooks(active)
+        checkpoint = coordinator.checkpoint
+        checkpoint["source_coverage"] = [
+            coordinator.candidate_key(chunk.text)
+            for chunk in coordinator.require_prepared().chunks
+        ]
+        checkpoint["stage"] = "extracted"
+        coordinator.save_checkpoint(checkpoint)
+        state["witnessed"].append(
+            sorted(coordinator.checkpoint["historical_playbooks"])
+        )
+        if supersede_after_first and len(state["witnessed"]) == 1:
+            # The plan's "distinct from history" decision was made against
+            # ``first``; normal work now replaces it before the commit fence.
+            state["superseded_by"] = _supersede_historical_playbook(storage, "u", first)
+        return
+
+    monkeypatch.setattr(PlaybookGenerationService, "compute_generation", compute)
+    data = payload("witness", force=True)
+    data["agent_version"] = "v1"
+    assert client.post("/api/publish_interaction", json=data).json()["success"]
+    return engine, worker, storage, first, state
+
+
+def _window_state(storage):
+    import json
+
+    with storage._stream_sql(read_only=True) as db:
+        window = db.query(
+            "SELECT window_id,outcome,completed FROM extraction_windows WHERE user_id=? AND kind='playbook'",
+            ("u",),
+        )[0]
+        cursor = db.query(
+            "SELECT attempts,retry_at,last_error,window_id FROM extraction_cursors WHERE user_id=? AND kind='playbook'",
+            ("u",),
+        )[0]
+        now = db.now()
+    run = storage.get_agent_run(f"window:{window['window_id']}")
+    overflow = run.generation_request_snapshot["overflow"]
+    return {
+        "outcome": None if window["outcome"] is None else json.loads(window["outcome"]),
+        "completed": bool(window["completed"]),
+        "attempts": cursor["attempts"],
+        "retry_scheduled": cursor["retry_at"] > now,
+        "last_error": cursor["last_error"],
+        "witnesses": overflow["checkpoint"].get("historical_playbooks"),
+        "revision": overflow["revision"],
+        "provider_attempts": len(overflow["attempts"]),
+    }
+
+
+def _rearm_backoff(storage):
+    with storage._stream_sql() as db:
+        db.query("UPDATE extraction_cursors SET retry_at=0")
+
+
+def test_stale_historical_witness_discards_cached_outcome_and_recomputes(
+    pipeline, monkeypatch, caplog
+):
+    """Regression: a cached plan witnessing a since-superseded playbook.
+
+    Before the fix every retry decoded the same cached outcome and failed the
+    same witness check, so the window could never commit.
+    """
+    sink = Mock()
+    monkeypatch.setattr("reflexio.server.operational_metrics._sink", sink)
+    _, worker, storage, first, state = _witnessing_playbook_window(
+        pipeline, monkeypatch, supersede_after_first=True
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert worker.drain_org("stream-test", 1, 300) == 0
+    held = _window_state(storage)
+    # The refusal is kept; the stale computation and its witnesses are not.
+    assert held["outcome"] is None
+    assert held["witnesses"] is None
+    assert held["completed"] is False
+    assert held["attempts"] == 1
+    assert held["retry_scheduled"] is True
+    assert held["last_error"] == "input_budget_configuration_error"
+    assert state["witnessed"] == [[str(first)]]
+    discards = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("Extraction outcome discarded for recompute")
+    ]
+    assert len(discards) == 1
+    assert "computation_evidence_changed" in discards[0].getMessage()
+    assert "Prepare" not in discards[0].getMessage()
+    assert [
+        call.kwargs
+        for call in sink.record.call_args_list
+        if call.args[0] == "worker.computation_discards"
+    ] == [{"kind": "counter", "unit": None, "attributes": {"extractor": "playbook"}}]
+
+    _rearm_backoff(storage)
+    assert worker.drain_org("stream-test", 1, 300) == 1
+    done = _window_state(storage)
+    assert done["completed"] is True
+    assert done["outcome"] == {"version": 1, "skipped": True}
+    # Recomputed against the successor only; the retired witness is gone.
+    assert state["witnessed"] == [[str(first)], [str(state["superseded_by"])]]
+    assert done["witnesses"] == {
+        str(state["superseded_by"]): done["witnesses"][str(state["superseded_by"])]
+    }
+    assert done["provider_attempts"] == held["provider_attempts"]
+    assert storage.extraction_status("u", "witness")["status"] == "done"
+
+
+def test_unchanged_historical_witness_commits_without_discard(
+    pipeline, monkeypatch, caplog
+):
+    _, worker, storage, first, state = _witnessing_playbook_window(
+        pipeline, monkeypatch, supersede_after_first=False
+    )
+    with caplog.at_level(logging.WARNING):
+        assert worker.drain_org("stream-test", 1, 300) == 1
+    done = _window_state(storage)
+    assert done["completed"] is True
+    assert done["attempts"] == 0
+    assert list(done["witnesses"]) == [str(first)]
+    assert state["witnessed"] == [[str(first)]]
+    assert not any(
+        "discarded for recompute" in record.getMessage() for record in caplog.records
+    )
+
+
+def test_computation_discard_is_fenced_and_keeps_content_addressed_progress(
+    pipeline,
+):
+    from reflexio.server.llm.input_budget import ComputationEvidenceChangedError
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+    )
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        LeaseLostError,
+    )
+
+    attempt = {"id": "spent", "usage": None, "model_provenance": None}
+    storage, window, token = _overflow_coordinator(pipeline, attempts=[attempt])
+    parent = storage.get_agent_run(f"window:{window.window_id}")
+    coordinator = OverflowCoordinator(
+        storage,
+        window,
+        token,
+        parent.generation_request_snapshot["overflow"],
+        source_digest="captured-source",
+        context_limits={},
+    )
+    first = _insert_historical_playbook(storage, window.user_id, "Prepare only")
+    [row] = [
+        row
+        for row in storage.get_user_playbooks(user_id=window.user_id)
+        if row.user_playbook_id == first
+    ]
+    coordinator.remember_historical_playbooks([row])
+    checkpoint = coordinator.checkpoint
+    checkpoint["completed_steps"] = {
+        "step": {"output": {"kept": True}, "model_provenance": {}}
+    }
+    checkpoint["historical_chunks"] = {"digest": [[0, 10]]}
+    coordinator.save_checkpoint(checkpoint)
+    # A mid-pass change still fails that pass, typed so the worker discards.
+    with pytest.raises(ComputationEvidenceChangedError, match="after checkpoint"):
+        coordinator.remember_historical_playbooks(
+            [row.model_copy(update={"content": "Deploy now"})]
+        )
+    storage.save_extraction_outcome(window, token, {"version": 1, "skipped": True})
+
+    def snapshot():
+        with storage._stream_sql(read_only=True) as db:
+            outcome = db.query(
+                "SELECT outcome FROM extraction_windows WHERE window_id=?",
+                (window.window_id,),
+            )[0]["outcome"]
+            attempts = db.query(
+                "SELECT attempts,retry_at FROM extraction_cursors WHERE window_id=?",
+                (window.window_id,),
+            )[0]
+        manifest = storage.get_agent_run(
+            f"window:{window.window_id}"
+        ).generation_request_snapshot["overflow"]
+        return outcome, dict(attempts), manifest
+
+    before = snapshot()
+    assert first == int(next(iter(before[2]["checkpoint"]["historical_playbooks"])))
+    with pytest.raises(LeaseLostError):
+        storage.discard_extraction_computation(window, "stale-token")
+    assert snapshot() == before
+
+    storage.discard_extraction_computation(window, token)
+    outcome, cursor, manifest = snapshot()
+    assert outcome is None
+    assert cursor["attempts"] == before[1]["attempts"] + 1
+    assert "historical_playbooks" not in manifest["checkpoint"]
+    # Content-addressed progress and spent quota survive the discard.
+    assert manifest["checkpoint"]["completed_steps"] == checkpoint["completed_steps"]
+    assert manifest["checkpoint"]["historical_chunks"] == {"digest": [[0, 10]]}
+    assert manifest["checkpoint"]["stage"] == before[2]["checkpoint"]["stage"]
+    assert manifest["attempts"] == before[2]["attempts"]
+    assert manifest["revision"] == before[2]["revision"] + 1
+
+    # A completed window has nothing to discard; the fence refuses it.
+    with storage._stream_sql() as db:
+        db.query(
+            "UPDATE extraction_windows SET completed=1 WHERE window_id=?",
+            (window.window_id,),
+        )
+    with storage._stream_sql() as db:
+        db.query(
+            "UPDATE extraction_windows SET outcome=? WHERE window_id=?",
+            ('{"version":1,"skipped":true}', window.window_id),
+        )
+    completed = snapshot()
+    with pytest.raises(LeaseLostError):
+        storage.discard_extraction_computation(window, token)
+    assert snapshot() == completed

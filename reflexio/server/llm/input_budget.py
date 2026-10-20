@@ -43,6 +43,15 @@ class SavedOutputIncompatibleError(InputBudgetConfigurationError):
     """
 
 
+class ComputationEvidenceChangedError(InputBudgetConfigurationError):
+    """Evidence a cached extraction computation was based on has changed.
+
+    The refusal is correct, but retrying the same cached computation cannot
+    pass. The worker discards that computation and recomputes it against
+    current evidence, consuming the window's existing provider attempt budget.
+    """
+
+
 class InputBudgetExceededError(ProviderRequestGuardError):
     """The complete prompt plus reserved output exceeds its admission budget."""
 

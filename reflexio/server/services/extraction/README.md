@@ -126,6 +126,15 @@ Reconstructed playbooks retain the persisted parent's creation time, and each
 consolidation receipt binds only its participating historical witnesses. Resumed
 turns therefore reuse unchanged decisions as time passes or other history is read;
 the complete historical witness set still fences publication.
+When that fence (or a mid-pass digest change) finds a witnessed playbook changed,
+it raises `ComputationEvidenceChangedError`. Retrying the cached plan cannot pass,
+so the worker logs `Extraction outcome discarded for recompute` and, in one
+lease-fenced transaction (`discard_extraction_computation`), clears the window's
+cached outcome and the checkpoint's `historical_playbooks`, then schedules the
+ordinary configuration retry. The next attempt recomputes against current
+playbooks. Content-addressed completed steps and historical chunks are kept, and
+spent provider attempts are never refunded, so repeated recomputes end in the
+attempt-budget hold.
 
 Protected context exposes only its literal quotation at original source offsets.
 Final reconciliation and cached recovery reuse proof carried by registered child
