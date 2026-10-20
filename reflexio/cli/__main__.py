@@ -36,6 +36,12 @@ def main(argv: list[str] | None = None) -> None:
     ``reflexio.cli`` entry-point group before falling back to the
     default open-source app factory.
     """
+    from reflexio.cli.offline import dispatch_offline
+
+    args = argv if argv is not None else sys.argv[1:]
+    if dispatch_offline(args):
+        return
+
     from reflexio.cli.env_loader import (
         block_implicit_dotenv_walkup,
         load_reflexio_env,
@@ -58,7 +64,7 @@ def main(argv: list[str] | None = None) -> None:
         from reflexio.cli.app import create_app
 
     app = create_app()
-    app(argv if argv is not None else sys.argv[1:], standalone_mode=True)
+    app(args, standalone_mode=True)
 
 
 if __name__ == "__main__":
