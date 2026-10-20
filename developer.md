@@ -943,3 +943,17 @@ does not make an unreadable organization's own storage/config usable.
 Per-org retention holds, ages, batches and scope remain independent. Retired
 `lineage_gc.poll_interval_seconds` custom values still require explicit migration
 to a fleet policy; a bootstrap org is not a schedule authority for every org.
+
+## Stored configuration upgrades
+
+`models/config_schema.py::canonicalize_stored_config_fields` rewrites legacy
+extraction/aggregation field names and list shapes in raw saved dictionaries.
+It preserves unknown metadata and does not materialize schema defaults. It is
+idempotent and does not mutate its input. Use it when a raw upgrade must retain
+extensions that typed serialization would omit; still validate with
+`validate_stored_config` before writing or using the result. Storage identity and
+credentials retain their separate strict validation path.
+
+`validate_stored_config` shares this raw normalization before applying typed
+validation. API model validation still accepts its existing aliases; introducing
+the migration helper does not retire any supported configuration input.
