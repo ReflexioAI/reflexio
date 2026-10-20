@@ -14,7 +14,7 @@ import colorlog
 import openai  # noqa: F401
 import openai.resources  # noqa: F401
 
-from reflexio.cli.env_loader import load_reflexio_env
+from reflexio.cli.env_loader import load_existing_reflexio_env
 from reflexio.cli.paths import reflexio_home
 from reflexio.durable_learning_policy import (
     validate_aggregation_timing_env,
@@ -25,7 +25,7 @@ from reflexio.server.env_utils import env_truthy
 from reflexio.server.ops_log import OPS_LOGGER_NAME
 
 # Load environment variables using shared discovery logic
-load_reflexio_env()
+load_existing_reflexio_env()
 validate_discovery_timing_env(os.environ)
 validate_aggregation_timing_env(os.environ)
 resolve_resume_timing(os.environ)
