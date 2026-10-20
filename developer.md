@@ -400,8 +400,9 @@ for operation status, timeout and JSON output behavior.
 Unified search reuses a query vector only within one storage instance's lifetime,
 for the exact raw input, model, dimensions and query purpose. A private identity
 token avoids conflating separate provider/client configurations with the same
-model name, without retaining their storage connections in the global LRU. Text
-is not case-folded or whitespace-collapsed before cache lookup.
+model name, without retaining their storage connections in the global LRU.
+A digest represents the exact input without retaining the raw query in cache keys.
+Text is not case-folded or whitespace-collapsed before cache lookup.
 
 The existing cache expiration and global capacity settings remain independent
 operational policy. Instance ownership is not an immutable model-version proof;

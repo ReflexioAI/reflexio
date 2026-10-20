@@ -70,6 +70,21 @@ def test_cache_does_not_retain_storage_or_share_mutable_results():
     assert len(search._embedding_cache) == 1
 
 
+def test_cache_does_not_retain_the_callers_raw_query():
+    class Query(str):
+        pass
+
+    storage = RecordingStorage([1.0, 0.0])
+    query = Query("private query " * 1000)
+    reference = weakref.ref(query)
+    embed(storage, query)
+    storage.calls.clear()
+    del query
+    gc.collect()
+    assert reference() is None
+    assert len(search._embedding_cache) == 1
+
+
 def test_expiry_and_disabled_reuse_still_follow_operator_policy(monkeypatch):
     from types import SimpleNamespace
 

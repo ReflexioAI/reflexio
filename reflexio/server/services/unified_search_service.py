@@ -9,6 +9,7 @@ Executes in two phases:
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import logging
 import os
 import threading
@@ -114,7 +115,7 @@ _EMBEDDING_CACHE_MAX_SIZE = max(
 )
 _embedding_cache_lock = threading.Lock()
 _embedding_cache: OrderedDict[
-    tuple[object, str, int, str, str], tuple[float, list[float]]
+    tuple[object, str, int, bytes, str], tuple[float, list[float]]
 ] = OrderedDict()
 
 
@@ -991,6 +992,9 @@ def _get_cached_query_embedding(
     """Return a cached query embedding when available."""
     model_name = storage.embedding_model_name
     dimensions = int(getattr(storage, "embedding_dimensions", 0) or 0)
+    input_digest = hashlib.sha256(
+        query.encode("utf-8", errors="surrogatepass")
+    ).digest()
     now = time.monotonic()
     with _embedding_cache_lock:
         # A model name is not a provider/tenant identity, and distinct raw
@@ -999,7 +1003,7 @@ def _get_cached_query_embedding(
             storage._query_embedding_cache_identity,
             model_name,
             dimensions,
-            query,
+            input_digest,
             "query",
         )
         if _EMBEDDING_CACHE_TTL_SECONDS > 0:
