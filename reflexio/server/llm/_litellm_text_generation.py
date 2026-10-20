@@ -132,6 +132,17 @@ _TRANSIENT_LLM_ERROR_NAMES: frozenset[str] = frozenset(
     }
 )
 
+# Upstream HTTP statuses that mean "retry later", for provider errors LiteLLM
+# does not map to one of the classes above. LiteLLM 1.103 raises a MiniMax 529
+# overload as a generic ``APIError(status_code=529)`` and a 502 as
+# ``BadGatewayError``; neither name is listed. 500 is deliberately absent: a
+# genuine upstream 500 already arrives as ``InternalServerError``, while LiteLLM
+# itself raises ``APIError(status_code=500)`` for a malformed 200 body (e.g.
+# MiniMax ``choices: null``) -- a response-shape defect, not a measured outage.
+_TRANSIENT_UPSTREAM_STATUS_CODES: frozenset[int] = frozenset(
+    {408, 429, 502, 503, 504, 529}
+)
+
 # A response of the wrong SHAPE spends one error slot per required field before
 # it names a single unexpected key. Live evidence: an open-world discovery call
 # echoed its own input payload back, and the nine required ``DiscoveryMemo``
@@ -549,9 +560,11 @@ def _is_expected_transient_llm_error(exc: BaseException) -> bool:
 
     Subprocess-isolated calls cross a pickle boundary, so their concrete
     provider exception cannot safely be re-raised in the parent. The wrapper
-    retains ``upstream_error_type`` explicitly; checking it here prevents an
-    expected provider outage from being promoted to an application ERROR just
-    because isolation made the outer type ``LiteLLMClientError``.
+    retains ``upstream_error_type`` and ``upstream_status_code`` explicitly;
+    checking them here prevents an expected provider outage from being promoted
+    to an application ERROR just because isolation made the outer type
+    ``LiteLLMClientError``. The HTTP status covers provider overloads LiteLLM
+    raises under a generic class name (MiniMax 529 -> ``APIError``).
     """
     current: BaseException | None = exc
     seen: set[int] = set()
@@ -562,6 +575,11 @@ def _is_expected_transient_llm_error(exc: BaseException) -> bool:
         if type(current).__name__ in _TRANSIENT_LLM_ERROR_NAMES:
             return True
         if getattr(current, "upstream_error_type", None) in _TRANSIENT_LLM_ERROR_NAMES:
+            return True
+        status = getattr(current, "upstream_status_code", None)
+        if status is None:
+            status = getattr(current, "status_code", None)
+        if isinstance(status, int) and status in _TRANSIENT_UPSTREAM_STATUS_CODES:
             return True
         current = current.__cause__ or current.__context__
     return False
@@ -1309,6 +1327,7 @@ class TextGenerationMixin:
                 f"{payload.type_name}: {payload.message} "
                 f"({', '.join(context_parts)})",
                 upstream_error_type=payload.type_name,
+                upstream_status_code=payload.status_code,
             )
         finally:
             result_queue.close()
