@@ -957,3 +957,13 @@ credentials retain their separate strict validation path.
 `validate_stored_config` shares this raw normalization before applying typed
 validation. API model validation still accepts its existing aliases; introducing
 the migration helper does not retire any supported configuration input.
+
+For an explicit offline file conversion, run
+`reflexio config upgrade-file old.json --output canonical.json`. The input must
+be a complete saved organization configuration and is retained unchanged. The
+command replaces the explicitly selected output atomically, uses restrictive
+temporary-file permissions and never calls the backend or edits `.env`.
+`config_migration.canonicalize_config_document` verifies equivalent effective
+policy and makes storage identity explicit before removing old HTTP selectors;
+`cli/config_upgrade.py` owns only file I/O. Neither operation activates the copy
+or removes runtime compatibility.

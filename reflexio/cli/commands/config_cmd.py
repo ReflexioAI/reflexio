@@ -1,4 +1,4 @@
-"""Configuration management commands (show, set, storage, pull)."""
+"""Configuration management and explicit offline document conversion."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Annotated
 import typer
 
 from reflexio.cli.errors import EXIT_NETWORK, EXIT_VALIDATION, CliError, handle_errors
+from reflexio.cli.offline import upgrade_file
 from reflexio.cli.output import (
     print_error,
     print_info,
@@ -509,3 +510,6 @@ def storage(
         display,
         revealed=reveal,
     )
+
+
+app.command(name="upgrade-file")(upgrade_file)

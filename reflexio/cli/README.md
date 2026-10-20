@@ -6,7 +6,10 @@ Description: Typer command layer for local service management and typed calls to
 ## Main Entry Points
 
 
-- **`app.py`** — root app, aliases, global flags, and command-group registration
+- **`root_app.py`** — shared global options without service imports
+- **`app.py`** — full command-group registration after environment bootstrap
+- **`offline.py`** — explicit file-command dispatch before environment bootstrap
+- **`config_upgrade.py`** — atomic canonical JSON-copy publication
 - **`commands/`** — domain command handlers
 - **`_client.py`** — configured SDK client construction
 - **`run_services.py`** — backend/docs/inference startup
@@ -300,8 +303,13 @@ uv run reflexio config show
 uv run reflexio config set --data '{"api_key_config": {"openai": "sk-..."}}'
 uv run reflexio config set --data @config.json
 uv run reflexio config storage                           # show storage backend info
-uv run reflexio config pull                              # pull server config to local file
+uv run reflexio config upgrade-file old.json --output canonical.json  # explicit offline copy
 ```
+
+The explicit file converter preserves the input and custom policy, writes a canonical
+copy with restrictive permissions, and does not load operator dotenv, create home
+configuration, connect to a backend, or activate the output. An existing chosen
+output is replaced; input and output must differ. Runtime aliases remain accepted.
 
 ## Auth
 
