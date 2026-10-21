@@ -66,6 +66,67 @@ def test_document_conversion_preserves_policy_identity_and_opaque_metadata():
     assert result["playbook_optimizer_config"]["max_merge_invocations"] == 0
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _payload(),
+        {
+            "storage_config": {
+                "storage_type": "postgres",
+                "schema_name": "custom",
+                "db_url": "postgresql://local:local@localhost/test",
+                "read_db_url": "postgresql://local:local@localhost/replica",
+                "pool_size": 7,
+                "read_pool_size": 3,
+            },
+            "extraction_preset": "long_form",
+        },
+        {"storage_config": {"db_path": "/tmp/custom.sqlite"}, "batch_size": 31},
+        {"storage_config": {"managed_by": "platform", "schema_present": False}},
+    ],
+)
+def test_conversion_does_not_require_runtime_acceptance_of_legacy_input(
+    monkeypatch, payload
+):
+    from reflexio.models import config_schema
+
+    expected = canonicalize_config_document(payload)
+    received = []
+
+    def canonical_only(document):
+        # Simulate the future strict reader: old names cannot reach validation.
+        assert document == expected
+        received.append(document)
+        return validate_stored_config(document)
+
+    monkeypatch.setattr(config_schema, "validate_stored_config", canonical_only)
+    assert canonicalize_config_document(payload) == expected
+    assert len(received) == 1
+
+
+@pytest.mark.parametrize(
+    "duplicate",
+    [
+        {"storage_type": "postgres", "type": "postgres"},
+        {"storage_type": "supabase", "type": "postgres"},
+        {"schema_name": "private-schema", "schema": "private-schema"},
+        {"schema_name": "private-schema", "schema": "other-private-schema"},
+    ],
+)
+def test_storage_spelling_conflicts_remain_invalid_and_value_free(duplicate):
+    payload = {
+        "storage_config": {
+            "db_url": "postgresql://user:private-password@localhost/test",
+            **duplicate,
+        }
+    }
+    original = deepcopy(payload)
+    with pytest.raises(ValueError, match="cannot be converted safely") as error:
+        canonicalize_config_document(payload)
+    assert "private" not in str(error.value)
+    assert payload == original
+
+
 def test_real_cli_converts_copy_without_client_or_operator_env_writes(
     tmp_path, monkeypatch
 ):

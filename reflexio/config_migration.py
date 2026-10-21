@@ -19,27 +19,36 @@ def canonicalize_config_document(payload: dict[str, Any]) -> dict[str, Any]:
     HTTP selectors, whose presence otherwise influences untagged storage.
     """
     from reflexio.models.config_schema import (
+        _normalize_storage_backend,
         canonicalize_stored_config_fields,
         validate_stored_config,
     )
 
     try:
-        before = validate_stored_config(payload)
         converted = canonicalize_stored_config_fields(payload)
         raw_storage = converted.get("storage_config")
-        if isinstance(raw_storage, dict) and before.storage_config is not None:
+        if isinstance(raw_storage, dict):
             storage = dict(raw_storage)
-            storage["type"] = before.storage_config.storage_type
-            storage.pop("storage_type", None)
-            if "schema_name" in storage:
-                storage["schema"] = storage.pop("schema_name")
+            for old, canonical in (("storage_type", "type"), ("schema_name", "schema")):
+                if old in storage:
+                    # The current storage models forbid both spellings together.
+                    # Do not turn a previously invalid document into a valid one.
+                    if canonical in storage:
+                        raise StoredConfigurationError("Conflicting storage fields")
+                    storage[canonical] = storage.pop(old)
+            # Capture historical backend identity before removing HTTP selectors.
+            # This raw migration is independent of runtime alias acceptance.
+            storage = _normalize_storage_backend(storage)
+            storage.setdefault(
+                "type", "supabase" if "managed_by" in storage else "sqlite"
+            )
             if storage["type"] == "supabase":
                 for key in ("url", "key", "read_url", "read_key"):
                     storage.pop(key, None)
             converted["storage_config"] = storage
-        after = validate_stored_config(converted)
-        if before.model_dump_json() != after.model_dump_json():
-            raise StoredConfigurationError("Conversion changed effective policy")
+        # Runtime validation sees only the converted document. In particular,
+        # explicit upgrades must keep working after runtime aliases are removed.
+        validate_stored_config(converted)
         return converted
     except ValueError:
         # Legacy validators can include values in ValidationError text. This

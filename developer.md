@@ -992,7 +992,9 @@ For an explicit offline file conversion, run
 be a complete saved organization configuration and is retained unchanged. The
 command replaces the explicitly selected output atomically, uses restrictive
 temporary-file permissions and never calls the backend or edits `.env`.
-`config_migration.canonicalize_config_document` verifies equivalent effective
-policy and makes storage identity explicit before removing old HTTP selectors;
+`config_migration.canonicalize_config_document` translates historical fields and
+makes storage identity explicit before validating only the canonical document.
+It does not require runtime validation to accept old input spellings. Policy
+equivalence is protected by migration-contract tests, including custom settings;
 `cli/config_upgrade.py` owns only file I/O. Neither operation activates the copy
 or removes runtime compatibility.
