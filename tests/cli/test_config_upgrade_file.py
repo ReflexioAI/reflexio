@@ -361,3 +361,75 @@ def test_offline_probe_preserves_online_route_arguments(args):
     original = list(args)
     assert dispatch_offline(args) is False
     assert args == original
+
+
+def test_real_cli_preserves_precise_opaque_numbers_and_source(tmp_path, monkeypatch):
+    from decimal import Decimal
+
+    source, output = tmp_path / "precise.json", tmp_path / "canonical.json"
+    original = b'{"storage_config":{"type":"sqlite","db_path":"/tmp/offline-precision.sqlite"},"batch_size":23,"batch_interval":7,"extension":{"fraction":0.12345678901234567890123456789,"scaled":1.00,"huge":1e1000,"integer":123456789012345678901234567890,"boolean":true,"array":[0.12345678901234567890123456789]}}'
+    source.write_bytes(original)
+    source.chmod(0o640)
+    monkeypatch.setenv("REFLEXIO_HOME", str(tmp_path / "unused-home"))
+    result = CliRunner().invoke(
+        create_app(),
+        ["--json", "config", "upgrade-file", str(source), "--output", str(output)],
+    )
+    assert result.exit_code == 0, result.output
+    expected = json.loads(original, parse_float=Decimal)["extension"]
+    converted = json.loads(output.read_text(), parse_float=Decimal)["extension"]
+    assert converted == expected
+    assert type(converted["boolean"]) is bool and converted["boolean"] is True
+    assert type(converted["integer"]) is int
+    assert converted["fraction"].as_tuple() == expected["fraction"].as_tuple()
+    assert converted["scaled"].as_tuple() == expected["scaled"].as_tuple()
+    assert converted["huge"] == Decimal("1e1000")
+    assert source.read_bytes() == original
+    assert source.stat().st_mode & 0o777 == 0o640
+    assert output.stat().st_mode & 0o077 == 0
+    assert output.read_text().startswith("{\n  ")
+    assert not (tmp_path / "unused-home").exists()
+
+
+def test_real_cli_refuses_fractional_legacy_integer_without_rounding(tmp_path):
+    source, output = tmp_path / "invalid.json", tmp_path / "preserved.json"
+    original = b'{"storage_config":{"type":"sqlite","db_path":"/tmp/precision.sqlite"},"batch_size":23.000000000000000000000001,"batch_interval":7,"extension":{"secret":"private-precision-value"}}'
+    source.write_bytes(original)
+    output.write_bytes(b"existing-output")
+    result = CliRunner().invoke(
+        create_app(),
+        ["--json", "config", "upgrade-file", str(source), "--output", str(output)],
+    )
+    assert result.exit_code != 0
+    assert "private-precision-value" not in result.output
+    assert source.read_bytes() == original
+    assert output.read_bytes() == b"existing-output"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"private-secret":1e9999999999999999999999999999999}',
+        '{"private-secret":' + "[" * 2000 + "0" + "]" * 2000 + "}",
+    ],
+    ids=["oversized-exponent", "deep-nesting"],
+)
+def test_real_cli_sanitizes_parser_limits_without_writes(tmp_path, raw):
+    source, output = tmp_path / "input.json", tmp_path / "output.json"
+    source.write_text(raw)
+    output.write_bytes(b"existing-output")
+    import simplejson
+
+    vars(simplejson)["_toggle_speedups"](False)
+    try:
+        result = CliRunner().invoke(
+            create_app(),
+            ["--json", "config", "upgrade-file", str(source), "--output", str(output)],
+        )
+    finally:
+        vars(simplejson)["_toggle_speedups"](True)
+    assert result.exit_code != 0
+    assert "private-secret" not in result.output
+    assert "Input is not a valid configuration for safe conversion." in result.output
+    assert source.read_text() == raw
+    assert output.read_bytes() == b"existing-output"

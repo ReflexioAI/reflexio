@@ -12,6 +12,7 @@ Paths below are relative to this package. The repository's [public README](../RE
 | `client/client.py` | Typed HTTP SDK, Bearer authentication, sync calls and explicit async methods | [SDK reference](../client_dist/README.md) |
 | `models/api_schema/` | Shared API and storage-facing contracts; domain entities live in `models/api_schema/domain/` | |
 | `models/config_schema.py` | Shared `Config` and extractor/storage configuration | |
+| `config_document.py` | Pure finite raw JSON representation with exact decimal metadata; shared by storage and explicit conversion | |
 | `models/profile_id.py` | Canonical UUIDv4 profile identities | |
 | `lib/reflexio_lib.py` | `Reflexio` local-library facade; focused `_*.py` mixins own domain operations | |
 | `lib/generation_client.py` | Generation client protocol used by callers | |
