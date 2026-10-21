@@ -992,6 +992,15 @@ For an explicit offline file conversion, run
 be a complete saved organization configuration and is retained unchanged. The
 command replaces the explicitly selected output atomically, uses restrictive
 temporary-file permissions and never calls the backend or edits `.env`.
+Historical rename maps, list/preset decoding, optimizer compatibility and backend
+disambiguation live in `reflexio/config_migration.py`. The compatible runtime
+schema temporarily imports these same helpers; explicit conversion imports only
+canonical validation and canonical optimizer policy from the schema, so deleting
+runtime rewrite hooks will not delete the upgrade algorithm. Historical preset
+geometry is frozen in the migration decoder; current `window_size`, `stride_size`
+and optimizer settings remain independently configurable. This relocation does
+not remove any accepted input.
+
 `config_migration.canonicalize_config_document` translates historical fields and
 makes storage identity explicit before validating only the canonical document.
 It does not require runtime validation to accept old input spellings. Policy

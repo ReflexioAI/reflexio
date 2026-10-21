@@ -97,8 +97,11 @@ def test_conversion_does_not_require_runtime_acceptance_of_legacy_input(
         # Simulate the future strict reader: old names cannot reach validation.
         assert document == expected
         received.append(document)
-        return validate_stored_config(document)
+        return config_schema.Config.model_validate(document, extra="ignore")
 
+    # Explicit conversion must outlive removal of these runtime rewrite hooks.
+    monkeypatch.delattr(config_schema, "canonicalize_stored_config_fields")
+    monkeypatch.delattr(config_schema, "_normalize_storage_backend")
     monkeypatch.setattr(config_schema, "validate_stored_config", canonical_only)
     assert canonicalize_config_document(payload) == expected
     assert len(received) == 1
