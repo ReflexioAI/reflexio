@@ -310,6 +310,8 @@ The explicit file converter preserves the input and custom policy, writes a cano
 copy with restrictive permissions, and does not load operator dotenv, create home
 configuration, connect to a backend, or activate the output. An existing chosen
 output is replaced; input and output must differ. Runtime aliases remain accepted.
+Numeric metadata retains decimal precision and scale, including finite values
+beyond binary-float range. Nonfinite numbers are refused before replacing output.
 
 ## Auth
 

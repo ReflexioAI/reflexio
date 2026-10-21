@@ -57,6 +57,7 @@ dependencies = [
     # SQLite build can't load extensions, but ship the fast path by default.
     "sqlite-vec>=0.1.6",
     "urllib3>=2.7.0",
+    "simplejson>=4.2.0",
 ]
 
 [project.optional-dependencies]

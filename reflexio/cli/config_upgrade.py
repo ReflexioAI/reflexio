@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import tempfile
 from pathlib import Path
 
+from reflexio.config_document import decode_config_document, encode_config_document
 from reflexio.config_migration import canonicalize_config_document
 
 
@@ -23,11 +23,9 @@ def convert_config_file(source: Path, destination: Path) -> None:
             "Input and output paths must differ; keep the original configuration."
         )
     try:
-        payload = json.loads(source.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            raise ValueError("Configuration must be a JSON object")
+        payload = decode_config_document(source.read_text(encoding="utf-8"))
         converted = canonicalize_config_document(payload)
-        encoded = json.dumps(converted, indent=2, allow_nan=False) + "\n"
+        encoded = encode_config_document(converted, indent=2) + "\n"
     except ValueError:
         raise ValueError(
             "Input is not a valid configuration for safe conversion."
