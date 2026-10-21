@@ -3,7 +3,7 @@
 LiteLLM 1.103 raises a MiniMax 529 overload as a generic ``APIError`` with
 ``status_code=529`` and a 502 as ``BadGatewayError`` -- neither name is in
 ``_TRANSIENT_LLM_ERROR_NAMES``, so before the status check every MiniMax overload
-logged the request-end failure at ERROR (Sentry PYTHON-FASTAPI-56). The status
+logged the request-end failure at ERROR. The status
 must also survive the isolated-worker pickle boundary, where the outer type is
 always ``LiteLLMClientError``.
 """
