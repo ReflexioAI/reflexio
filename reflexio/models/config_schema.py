@@ -29,8 +29,6 @@ from reflexio.config_migration import (
     _migrate_dict,
     _normalize_optimizer_policy,
     _normalize_storage_backend,
-    canonicalize_stored_config_fields,
-    strip_retired_config_fields,
 )
 from reflexio.config_migration import (
     ConfigurationMigrationError as ConfigurationMigrationError,
@@ -42,7 +40,13 @@ from reflexio.config_migration import (
     OptimizerSchedulingMigrationError as OptimizerSchedulingMigrationError,
 )
 from reflexio.config_migration import (
+    canonicalize_stored_config_fields as canonicalize_stored_config_fields,
+)
+from reflexio.config_migration import (
     normalize_legacy_config_shape as normalize_legacy_config_shape,
+)
+from reflexio.config_migration import (
+    strip_retired_config_fields as strip_retired_config_fields,
 )
 from reflexio.housekeeping_policy import strip_legacy_housekeeping_fields
 from reflexio.pending_tool_policy import (
