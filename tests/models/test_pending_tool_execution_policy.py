@@ -57,9 +57,16 @@ def test_local_saved_default_policy_is_canonicalized(tmp_path):
             }
         )
     )
+    original = path.read_bytes()
     for _ in range(2):
         assert not storage.load_config().pending_tool_call_config.enabled
-    saved = json.loads(path.read_text())["pending_tool_call_config"]
+    assert path.read_bytes() == original
+    from reflexio.cli.config_upgrade import convert_config_file
+
+    canonical = tmp_path / "canonical.json"
+    convert_config_file(path, canonical)
+    assert path.read_bytes() == original
+    saved = json.loads(canonical.read_text())["pending_tool_call_config"]
     assert not set(LEGACY_DEFAULTS).intersection(saved)
 
 
