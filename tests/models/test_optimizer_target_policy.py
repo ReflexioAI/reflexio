@@ -112,11 +112,18 @@ def test_real_local_file_upgrade_preserves_effective_activation(
             }
         )
     )
+    original = path.read_bytes()
     for _ in range(2):
         assert storage.load_config().playbook_optimizer_config.allows_target(
             "user_playbook"
         ) is (optimize and adopt)
-    saved = json.loads(path.read_text())["playbook_optimizer_config"]
+    assert path.read_bytes() == original
+    from reflexio.cli.config_upgrade import convert_config_file
+
+    canonical = tmp_path / "canonical.json"
+    convert_config_file(path, canonical)
+    assert path.read_bytes() == original
+    saved = json.loads(canonical.read_text())["playbook_optimizer_config"]
     assert saved["user_playbooks_enabled"] is (optimize and adopt)
     assert "optimize_user_playbooks" not in saved
     assert "auto_update_user_playbooks" not in saved

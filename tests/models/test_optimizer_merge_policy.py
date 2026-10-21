@@ -94,11 +94,18 @@ def test_local_file_canonicalization_never_enables_legacy_disabled_merges(tmp_pa
             }
         )
     )
+    original = path.read_bytes()
     for _ in range(2):
         assert (
             storage.load_config().playbook_optimizer_config.max_merge_invocations == 0
         )
-    saved = json.loads(path.read_text())["playbook_optimizer_config"]
+    assert path.read_bytes() == original
+    from reflexio.cli.config_upgrade import convert_config_file
+
+    canonical = tmp_path / "canonical.json"
+    convert_config_file(path, canonical)
+    assert path.read_bytes() == original
+    saved = json.loads(canonical.read_text())["playbook_optimizer_config"]
     assert saved["max_merge_invocations"] == 0
     assert "use_merge" not in saved
 

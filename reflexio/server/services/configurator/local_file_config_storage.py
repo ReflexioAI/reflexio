@@ -1,6 +1,4 @@
 import contextlib
-import copy
-import json
 import logging
 import os
 import time
@@ -8,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from reflexio.cli.paths import reflexio_home
+from reflexio.config_document import decode_config_document
 from reflexio.config_migration import StoredConfigurationError
 from reflexio.models.config_schema import (
     Config,
@@ -66,66 +65,31 @@ class LocalFileConfigStorage(ConfigStorage):
         )
 
     def load_config(self) -> Config:
-        """
-        Loads the current configuration from local JSON file. If the file doesn't exist,
-        creates a default configuration and saves it.
+        """Read existing policy without rewriting it; initialize only absent files.
 
-        Returns:
-            Config: Loaded configuration object
+        Invalid saved policy and read failures never select another database or
+        defaults. Historical conversion belongs to explicit upgrade operations.
         """
-        if not Path(self.config_file).exists():
-            config = self.get_default_config()
-            self._save_config_to_local_dir(config=config)
-            return config
-
+        path = Path(self.config_file)
         try:
-            with Path(self.config_file).open(encoding="utf-8") as f:
-                config_content = f.read()
-                data = json.loads(str(config_content))
-                if not isinstance(data, dict):
-                    raise ValueError("Configuration JSON must decode to an object")
-                original_payload = copy.deepcopy(data)
-                # Detect legacy on-disk configs that used the removed "disk"
-                # storage backend and rewrite only the storage_config field
-                # to default SQLite. Other persisted fields (extractors,
-                # prompts, etc.) are preserved so the migration doesn't
-                # silently lose user customizations. Without this guard,
-                # legacy configs would fail Pydantic validation and the
-                # broad-except path below would discard everything.
-                storage_cfg = (
-                    data.get("storage_config") if isinstance(data, dict) else None
-                )
-                if isinstance(storage_cfg, dict) and storage_cfg.get("type") == "disk":
-                    logger.warning(
-                        "Legacy storage_config.type='disk' detected in %s. "
-                        "The disk backend was removed; rewriting storage_config "
-                        "to default SQLite and preserving all other fields.",
-                        self.config_file,
-                    )
-                    data = dict(data)
-                    data["storage_config"] = self._default_storage_config().model_dump()
-                config = validate_stored_config(data)
-                if config.model_dump(mode="json") != original_payload:
-                    try:
-                        self._save_config_to_local_dir(config=config)
-                    except OSError:
-                        logger.exception(
-                            "Loaded config from %s after normalizing its stored "
-                            "schema, but could not rewrite the file; cleanup will "
-                            "be retried on the next load.",
-                            self.config_file,
-                        )
-                return config
-        except StoredConfigurationError as exc:
-            logger.error("Invalid stored config at %s: %s", self.config_file, exc)
-            raise
-        except Exception:
-            logger.exception(
-                "Failed to load config from %s; falling back to default config.",
-                self.config_file,
-            )
-            # Create a default config if anything goes wrong.
-            return self.get_default_config()
+            try:
+                content = path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                config = self.get_default_config()
+                if self._publish_config_document(
+                    config.model_dump_json(), create_only=True
+                ):
+                    return config
+                # Another creator won. Read its complete document once; if it
+                # disappeared, propagate that failure instead of recreating it.
+                content = path.read_text(encoding="utf-8")
+            data = decode_config_document(content)
+        except ValueError:
+            raise StoredConfigurationError(
+                "Saved configuration is not a valid finite JSON object. "
+                "Correct or restore the original file before continuing."
+            ) from None
+        return validate_stored_config(data)
 
     def save_config(self, config: Config) -> None:
         """
@@ -162,38 +126,35 @@ class LocalFileConfigStorage(ConfigStorage):
             return None
 
     def _save_config_to_local_dir(self, config: Config) -> None:
-        """
-        Saves configuration to the local JSON file atomically.
+        """Publish an explicitly supplied full configuration by atomic replace."""
+        self._publish_config_document(config.model_dump_json())
 
-        Writes to a per-write unique ``.tmp`` file first, then renames it
-        over the final path. ``Path.replace`` is atomic on POSIX (same
-        filesystem), so concurrent ``set_config`` calls across multiple
-        workers cannot observe a partially-written file, and a crash
-        mid-write leaves the previous good file intact. The tmp filename
-        embeds the pid and a nanosecond timestamp so concurrent writers
-        do not race on the same temp path.
+    def _publish_config_document(
+        self, document: str, *, create_only: bool = False
+    ) -> bool:
+        """Atomically publish a complete file; initialization never replaces one.
 
-        Args:
-            config (Config): Configuration object to save
-
-        Raises:
-            OSError: If the write or atomic rename fails. The tmp file is
-                cleaned up on failure (best-effort), but the original
-                exception propagates so callers see the failure rather
-                than a false success.
+        The raw-document seam also serves subclasses that own schema overlays.
+        Unsupported exclusive publication and other I/O failures propagate.
+        Returns False only when another initializer already created the path.
         """
         if not (self.base_dir and self.config_file):
             raise ValueError("base_dir and config_file must be set")
-
         final_path = Path(self.config_file)
         final_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = final_path.with_name(
             f"{final_path.name}.{os.getpid()}.{time.time_ns()}.tmp"
         )
         try:
-            tmp_path.write_text(config.model_dump_json(), encoding="utf-8")
-            tmp_path.replace(final_path)
-        except OSError:
+            tmp_path.write_text(document, encoding="utf-8")
+            if create_only:
+                try:
+                    os.link(tmp_path, final_path)
+                except FileExistsError:
+                    return False
+            else:
+                tmp_path.replace(final_path)
+            return True
+        finally:
             with contextlib.suppress(OSError):
                 tmp_path.unlink(missing_ok=True)
-            raise

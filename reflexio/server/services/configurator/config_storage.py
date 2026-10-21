@@ -29,9 +29,11 @@ class ConfigStorage(ABC):
     @abstractmethod
     def load_config(self) -> Config:
         """
-        Loads the current configuration of the organization. If the organization does
-        not exist, or if no config exists, or if the current saved config is no longer valid,
-        this routine creates a default one but will not update the persistent storage.
+        Load the organization's saved policy. An adapter may initialize defaults
+        when no configuration exists. Invalid or unreadable saved configuration
+        must raise rather than silently select defaults. Existing-file reads do
+        not publish replacements; explicit versioned migrations belong to their
+        owning adapter's documented lifecycle.
 
         Returns:
             Config: Loaded configuration object
