@@ -200,7 +200,6 @@ def test_aggregation_emits_no_learnings_generated(
     config = MagicMock()
     configurator.get_config.return_value = config
     config.user_playbook_extractor_config = PlaybookConfig(
-        extractor_name="billing-boundary",
         extraction_definition_prompt="Extract user playbooks.",
         aggregation_config=PlaybookAggregatorConfig(
             min_cluster_size=2,

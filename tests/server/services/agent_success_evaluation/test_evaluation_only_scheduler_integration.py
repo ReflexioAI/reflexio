@@ -72,7 +72,6 @@ def test_evaluation_only_publish_waits_and_batches_followup_session_requests(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
         agent_context_prompt="this is a coding assistant",
         agent_success_config=AgentSuccessConfig(
-            evaluation_name="overall_success",
             success_definition_prompt="agent completes the requested task",
             sampling_rate=0.0,
             evaluation_only_sampling_rate=1.0,

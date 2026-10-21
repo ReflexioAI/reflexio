@@ -120,7 +120,6 @@ def test_refresh_profiles_for_user(mock_chat_completion):
 
         # Set up profile extractor config with window_size
         profile_extractor_config = ProfileExtractorConfig(
-            extractor_name="test_extractor",
             should_extract_profile_prompt_override="test",
             context_prompt="test",
             extraction_definition_prompt="test",
@@ -194,7 +193,6 @@ def test_test_refresh_profiles_for_user_with_image_encoding(mock_chat_completion
 
         # Set up profile extractor config with window_size
         profile_extractor_config = ProfileExtractorConfig(
-            extractor_name="test_extractor",
             should_extract_profile_prompt_override="test",
             context_prompt="test",
             extraction_definition_prompt="test",
@@ -283,7 +281,6 @@ def test_profile_extraction_message_construction():
 
             # Set up profile extractor config with window_size
             profile_extractor_config = ProfileExtractorConfig(
-                extractor_name="test_extractor",
                 should_extract_profile_prompt_override="test",
                 context_prompt="test context",
                 extraction_definition_prompt="food preferences",
@@ -460,7 +457,6 @@ def test_refresh_profiles_with_output_pending_status(mock_chat_completion):
 
         # Set up profile extractor config with window_size
         profile_extractor_config = ProfileExtractorConfig(
-            extractor_name="test_extractor",
             should_extract_profile_prompt_override="test",
             context_prompt="test",
             extraction_definition_prompt="test",
@@ -604,7 +600,6 @@ def test_run_manual_regular_no_window_size(mock_chat_completion):
 
         # Set up profile extractor config WITHOUT window size
         profile_extractor_config = ProfileExtractorConfig(
-            extractor_name="test_extractor",
             should_extract_profile_prompt_override="test",
             context_prompt="test",
             extraction_definition_prompt="test",
@@ -662,7 +657,6 @@ def test_run_manual_regular_no_interactions(mock_chat_completion):
 
         # Set up profile extractor config WITH window size
         profile_extractor_config = ProfileExtractorConfig(
-            extractor_name="test_extractor",
             should_extract_profile_prompt_override="test",
             context_prompt="test",
             extraction_definition_prompt="test",
@@ -703,7 +697,6 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
 
         # Set up profile extractor config WITH window size
         profile_extractor_config = ProfileExtractorConfig(
-            extractor_name="test_extractor",
             should_extract_profile_prompt_override="test",
             context_prompt="test",
             extraction_definition_prompt="test",
@@ -780,7 +773,6 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
 
         # Set up profile extractor config WITH window size
         profile_extractor_config = ProfileExtractorConfig(
-            extractor_name="test_extractor",
             should_extract_profile_prompt_override="test",
             context_prompt="test",
             extraction_definition_prompt="test",
@@ -1176,7 +1168,6 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
         # the pre-check should query storage with the extractor's window override
         # (150) and the triggering source filter (["api"]), and return that config.
         api_config = ProfileExtractorConfig(
-            extractor_name="api_profiles",
             extraction_definition_prompt="communication preferences",
             request_sources_enabled=["api"],
             window_size_override=150,
@@ -1200,7 +1191,6 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
         # and return empty groups WITHOUT touching storage.
         get_grouped_mock.reset_mock()
         web_config = ProfileExtractorConfig(
-            extractor_name="web_profiles",
             extraction_definition_prompt="shopping preferences",
             request_sources_enabled=["web"],
             window_size_override=90,
@@ -1261,7 +1251,6 @@ def test_should_run_before_extraction_includes_extractor_definition_and_override
         )
 
         work_config = ProfileExtractorConfig(
-            extractor_name="work_profiles",
             extraction_definition_prompt="career goals and projects",
             should_extract_profile_prompt_override=(
                 "when user mentions work projects, deadlines, or role changes"

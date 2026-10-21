@@ -105,7 +105,6 @@ def mock_llm_client():
 def extractor_config():
     """Classic playbook extractor config (non-expert)."""
     return PlaybookConfig(
-        extractor_name="quality_playbook",
         extraction_definition_prompt="Evaluate agent quality",
     )
 

@@ -127,7 +127,6 @@ def sqlite_storage(temp_storage_dir):
 def extractor_config():
     """Create a profile extractor config."""
     return ProfileExtractorConfig(
-        extractor_name="test_extractor",
         extraction_definition_prompt="Extract user preferences",
     )
 
@@ -270,7 +269,6 @@ class TestGetInteractions:
     ):
         """Test that interactions are returned from storage."""
         config = ProfileExtractorConfig(
-            extractor_name="test_extractor",
             extraction_definition_prompt="Extract user preferences",
         )
 
@@ -302,7 +300,6 @@ class TestGetInteractions:
         """Test that window size is used to fetch interactions."""
         # Configure extractor with window size
         config = ProfileExtractorConfig(
-            extractor_name="test_extractor",
             extraction_definition_prompt="Extract user preferences",
             window_size_override=50,
         )
@@ -337,7 +334,6 @@ class TestGetInteractions:
         """Test that None is returned when source filter causes skip."""
         # Configure extractor with specific sources
         config = ProfileExtractorConfig(
-            extractor_name="test_extractor",
             extraction_definition_prompt="Extract user preferences",
             request_sources_enabled=["mobile", "desktop"],
         )
@@ -370,7 +366,6 @@ class TestGetInteractions:
     ):
         """Test that user_id is passed to storage methods (user-scoped)."""
         config = ProfileExtractorConfig(
-            extractor_name="test_extractor",
             extraction_definition_prompt="Extract user preferences",
         )
 
@@ -418,7 +413,6 @@ class TestUpdateOperationState:
     ):
         """run() must carry the processed interactions on outcome.bookmark_advance."""
         config = ProfileExtractorConfig(
-            extractor_name="test_extractor",
             extraction_definition_prompt="Extract user preferences",
         )
         request_context.storage.get_last_k_interactions_grouped.return_value = (
@@ -468,7 +462,6 @@ class TestRun:
     ):
         """Test that run() collects interactions when not provided in service config."""
         config = ProfileExtractorConfig(
-            extractor_name="test_extractor",
             extraction_definition_prompt="Extract user preferences",
         )
 
@@ -500,7 +493,6 @@ class TestRun:
     ):
         """Test that run() returns None when no interactions available."""
         config = ProfileExtractorConfig(
-            extractor_name="test_extractor",
             extraction_definition_prompt="Extract user preferences",
         )
 
@@ -531,7 +523,6 @@ class TestRun:
     ):
         """Run should raise and leave bookmark unchanged when extraction fails."""
         config = ProfileExtractorConfig(
-            extractor_name="test_extractor",
             extraction_definition_prompt="Extract user preferences",
         )
         request_context.storage.get_last_k_interactions_grouped.return_value = (
@@ -676,7 +667,6 @@ class TestRun:
         advance onto the ExtractionOutcome for persist to apply.
         """
         config = ProfileExtractorConfig(
-            extractor_name="test_extractor",
             extraction_definition_prompt="Extract user preferences",
         )
 
@@ -972,7 +962,6 @@ class TestResumableAgentPath:
         resume chain could never fire.
         """
         config = ProfileExtractorConfig(
-            extractor_name="test_extractor",
             extraction_definition_prompt="Extract user preferences",
         )
         request_context.storage.get_last_k_interactions_grouped.return_value = (
@@ -1009,7 +998,6 @@ class TestConvertRawToUserProfiles:
 
     def _make_extractor(self, request_context, mock_llm_client, service_config):
         config = ProfileExtractorConfig(
-            extractor_name="test_extractor",
             extraction_definition_prompt="Extract user preferences",
         )
         return ProfileExtractor(

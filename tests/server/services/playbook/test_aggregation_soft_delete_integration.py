@@ -75,7 +75,6 @@ def _make_request_context(
     )
     ctx.configurator.get_config.return_value.user_playbook_extractor_config = (
         PlaybookConfig(
-            extractor_name="default",
             extraction_definition_prompt="stub",
             aggregation_config=agg_config,
         )

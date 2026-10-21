@@ -185,7 +185,6 @@ class _CharService(BaseGenerationService):  # type: ignore[type-arg]
 
     def _load_extractor_config(self):
         return ProfileExtractorConfig(
-            extractor_name="char_extractor",
             extraction_definition_prompt="Extract durable preferences.",
         )
 
@@ -258,7 +257,6 @@ def _request_context(storage: Any) -> RequestContext:
     ctx.configurator.get_config.return_value = Config(
         storage_config=StorageConfigSQLite(),
         profile_extractor_config=ProfileExtractorConfig(
-            extractor_name="char_extractor",
             extraction_definition_prompt="Extract durable preferences.",
         ),
     )

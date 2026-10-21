@@ -112,7 +112,6 @@ def _make_reflexio_with_playbook(
         # Single configured playbook extractor (the list-valued field is retired and
         # the Config constructor would ignore it, leaving aggregation_config unset).
         user_playbook_extractor_config=PlaybookConfig(
-            extractor_name=_PLAYBOOK_NAME,
             extraction_definition_prompt=(
                 "Extract any correction the user gave the assistant — "
                 "something the assistant did wrong that the user asked to change. "
@@ -136,7 +135,6 @@ def _make_reflexio_with_profile(
         storage_config=storage_config,
         agent_context_prompt="AI coding assistant that learns about the user",
         profile_extractor_config=ProfileExtractorConfig(
-            extractor_name="openclaw_profile",
             context_prompt="Extract user preferences and work habits from the conversation.",
             extraction_definition_prompt=(
                 "coding language preferences, tool preferences, workflow preferences"

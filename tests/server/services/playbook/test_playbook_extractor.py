@@ -473,7 +473,6 @@ def sqlite_storage(temp_storage_dir):
 def extractor_config():
     """Create a playbook extractor config."""
     return PlaybookConfig(
-        extractor_name="quality_playbook",
         extraction_definition_prompt="Evaluate agent quality",
     )
 
@@ -587,11 +586,9 @@ class TestOperationStateKey:
     ):
         """Test that different playbook names get different operation state keys."""
         config1 = PlaybookConfig(
-            extractor_name="quality_playbook",
             extraction_definition_prompt="Quality prompt",
         )
         config2 = PlaybookConfig(
-            extractor_name="speed_playbook",
             extraction_definition_prompt="Speed prompt",
         )
 
@@ -638,7 +635,6 @@ class TestGetInteractions:
     ):
         """Test that user_id from service_config is passed to get_last_k_interactions_grouped."""
         config = PlaybookConfig(
-            extractor_name="quality_playbook",
             extraction_definition_prompt="Evaluate agent quality",
         )
 
@@ -672,7 +668,6 @@ class TestGetInteractions:
     ):
         """Test that interactions are returned from storage."""
         config = PlaybookConfig(
-            extractor_name="quality_playbook",
             extraction_definition_prompt="Evaluate agent quality",
         )
 
@@ -703,7 +698,6 @@ class TestGetInteractions:
     ):
         """Test that window size and required user scope are passed together."""
         config = PlaybookConfig(
-            extractor_name="quality_playbook",
             extraction_definition_prompt="Evaluate agent quality",
             window_size_override=50,
         )
@@ -740,7 +734,6 @@ class TestGetInteractions:
     ):
         """Test that request_sources_enabled=None gets interactions from all sources."""
         config = PlaybookConfig(
-            extractor_name="quality_playbook",
             extraction_definition_prompt="Evaluate quality",
             request_sources_enabled=None,  # Get all sources
         )
@@ -789,7 +782,6 @@ class TestUpdateOperationState:
         the playbook row writes.
         """
         config = PlaybookConfig(
-            extractor_name="quality_playbook",
             extraction_definition_prompt="Evaluate agent quality",
         )
         request_context.storage.get_last_k_interactions_grouped.return_value = (
@@ -838,7 +830,6 @@ class TestRun:
     ):
         """Test that run() keeps storage discovery scoped to its user."""
         config = PlaybookConfig(
-            extractor_name="quality_playbook",
             extraction_definition_prompt="Evaluate agent quality",
         )
 
@@ -873,7 +864,6 @@ class TestRun:
     ):
         """Test that run() returns UserPlaybook objects."""
         config = PlaybookConfig(
-            extractor_name="quality_playbook",
             extraction_definition_prompt="Evaluate agent quality",
         )
 
@@ -906,7 +896,6 @@ class TestRun:
     ):
         """Test that mock mode populates source_interaction_ids from input interactions."""
         config = PlaybookConfig(
-            extractor_name="quality_playbook",
             extraction_definition_prompt="Evaluate agent quality",
         )
 
@@ -938,7 +927,6 @@ class TestRun:
     ):
         """Test that run() returns empty list when no interactions available."""
         config = PlaybookConfig(
-            extractor_name="quality_playbook",
             extraction_definition_prompt="Evaluate agent quality",
         )
 
@@ -972,7 +960,6 @@ class TestRun:
         advance onto the ExtractionOutcome for persist to apply.
         """
         config = PlaybookConfig(
-            extractor_name="quality_playbook",
             extraction_definition_prompt="Evaluate agent quality",
         )
 

@@ -116,7 +116,6 @@ def mock_request_context():
     context.configurator = MagicMock()
     context.configurator.get_config.return_value.user_playbook_extractor_config = (
         PlaybookConfig(
-            extractor_name="test_playbook",
             extraction_definition_prompt="Test playbook definition",
             aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
         )

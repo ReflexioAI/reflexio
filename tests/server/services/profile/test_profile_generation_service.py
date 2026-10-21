@@ -157,7 +157,6 @@ class TestBuildShouldRunPrompt:
     ):
         """Prompt is rendered when config has extraction_definition_prompt."""
         config = ProfileExtractorConfig(
-            extractor_name="prefs",
             extraction_definition_prompt="Extract user preferences",
         )
 
@@ -187,7 +186,6 @@ class TestBuildShouldRunPrompt:
     ):
         """Prompt includes override condition when config has should_extract_profile_prompt_override."""
         config = ProfileExtractorConfig(
-            extractor_name="custom",
             extraction_definition_prompt="Basic profile",
             should_extract_profile_prompt_override="Check if user shared info",
         )
@@ -218,7 +216,6 @@ class TestBuildShouldRunPrompt:
     ):
         """Single config renders definition and override criteria."""
         config = ProfileExtractorConfig(
-            extractor_name="prefs",
             extraction_definition_prompt="Extract preferences",
             should_extract_profile_prompt_override="User shared preference",
         )
@@ -248,7 +245,6 @@ class TestBuildShouldRunPrompt:
     ):
         """Single config definition is included in criteria."""
         config = ProfileExtractorConfig(
-            extractor_name="hobbies",
             extraction_definition_prompt="Extract hobbies",
         )
 
