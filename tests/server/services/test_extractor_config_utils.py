@@ -224,9 +224,11 @@ class TestGetExtractorName:
     """The singleton dispatch must ignore any user-set name on real configs."""
 
     def test_profile_config_returns_singleton_name(self):
-        config = ProfileExtractorConfig(
-            extractor_name="custom_profile",
-            extraction_definition_prompt="Extract profile facts.",
+        config = ProfileExtractorConfig.model_validate(
+            {
+                "extractor_name": "custom_profile",
+                "extraction_definition_prompt": "Extract profile facts.",
+            }
         )
         assert get_extractor_name(config) == SINGLETON_PROFILE_EXTRACTOR_NAME
 
@@ -237,16 +239,20 @@ class TestGetExtractorName:
         assert get_extractor_name(config) == SINGLETON_PROFILE_EXTRACTOR_NAME
 
     def test_playbook_config_returns_singleton_name(self):
-        config = UserPlaybookExtractorConfig(
-            extractor_name="custom_playbook",
-            extraction_definition_prompt="Extract playbook rules.",
+        config = UserPlaybookExtractorConfig.model_validate(
+            {
+                "extractor_name": "custom_playbook",
+                "extraction_definition_prompt": "Extract playbook rules.",
+            }
         )
         assert get_extractor_name(config) == SINGLETON_USER_PLAYBOOK_NAME
 
     def test_agent_success_config_returns_singleton_name(self):
-        config = AgentSuccessConfig(
-            evaluation_name="custom_eval",
-            success_definition_prompt="Evaluate agent success.",
+        config = AgentSuccessConfig.model_validate(
+            {
+                "evaluation_name": "custom_eval",
+                "success_definition_prompt": "Evaluate agent success.",
+            }
         )
         assert get_extractor_name(config) == SINGLETON_AGENT_SUCCESS_EVALUATION_NAME
 

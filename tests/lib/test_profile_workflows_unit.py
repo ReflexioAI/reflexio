@@ -76,7 +76,6 @@ def reflexio_with_config(temp_storage, ensure_mock_env, monkeypatch):
     # interaction publish would sit at ``waiting_for_window`` and these tests
     # would assert on profiles that were never going to be extracted.
     profile_extractor_config = ProfileExtractorConfig(
-        extractor_name="test_profile",
         context_prompt="Extract user preferences",
         extraction_definition_prompt="User likes and dislikes",
         tagging_definition_prompt="Metadata about preferences",

@@ -87,7 +87,6 @@ def test_request_org_admission_and_restart_poll_register_only_local_worker(
     configurator.create_storage.return_value = storage
     configurator.get_config.return_value.user_playbook_extractor_config = (
         PlaybookConfig(
-            extractor_name="default",
             extraction_definition_prompt="stub",
             aggregation_config=PlaybookAggregatorConfig(
                 min_cluster_size=2, reaggregation_trigger_count=2

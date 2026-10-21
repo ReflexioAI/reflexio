@@ -108,14 +108,12 @@ def _seed_session(
     )
 
 
-def _configure_evaluator(org_id: str, *, evaluation_name: str) -> None:
-    """Register a single AgentSuccessConfig so the handler passes the
-    'known evaluation_name' gate."""
+def _configure_evaluator(org_id: str) -> None:
+    """Register the singleton evaluator configuration for on-demand grading."""
     reflexio = get_reflexio(org_id=org_id)
     reflexio.request_context.configurator.set_config_by_name(
         "agent_success_config",
         AgentSuccessConfig(
-            evaluation_name=evaluation_name,
             success_definition_prompt=(
                 "Evaluate whether the agent successfully completed the task."
             ),
@@ -169,7 +167,7 @@ def test_grade_on_demand_first_call_returns_fresh_result(client_with_org):
     and surface ``cached=False`` with a non-None ``result_id``.
     """
     client, org_id = client_with_org
-    _configure_evaluator(org_id, evaluation_name="overall_success")
+    _configure_evaluator(org_id)
     reflexio = get_reflexio(org_id=org_id)
     storage = reflexio.request_context.storage
     assert storage is not None
@@ -212,7 +210,7 @@ def test_grade_on_demand_second_call_returns_cached(client_with_org):
     the prior ``result_id`` so the frontend can re-link to the verdict.
     """
     client, org_id = client_with_org
-    _configure_evaluator(org_id, evaluation_name="overall_success")
+    _configure_evaluator(org_id)
     reflexio = get_reflexio(org_id=org_id)
     storage = reflexio.request_context.storage
     assert storage is not None
@@ -264,7 +262,7 @@ def test_grade_on_demand_second_call_returns_cached(client_with_org):
 def test_grade_on_demand_scopes_cache_and_readback_by_evaluation_name(client_with_org):
     """Rows for another evaluator in the same session/version must not be reused."""
     client, org_id = client_with_org
-    _configure_evaluator(org_id, evaluation_name="overall_success")
+    _configure_evaluator(org_id)
     reflexio = get_reflexio(org_id=org_id)
     storage = reflexio.request_context.storage
     assert storage is not None
@@ -343,7 +341,7 @@ def test_grade_on_demand_unknown_session_returns_skipped(client_with_org):
     the frontend's error-handling local and avoids polluting 5xx telemetry.
     """
     client, org_id = client_with_org
-    _configure_evaluator(org_id, evaluation_name="overall_success")
+    _configure_evaluator(org_id)
 
     with patch("reflexio.server.routes.evaluation.run_group_evaluation") as runner:
         resp = client.post(
@@ -373,7 +371,7 @@ def test_grade_on_demand_caches_terminal_retrieved_status_and_revalidates(
     runner is invoked again instead of claiming stale cached completion.
     """
     client, org_id = client_with_org
-    _configure_evaluator(org_id, evaluation_name="overall_success")
+    _configure_evaluator(org_id)
     reflexio = get_reflexio(org_id=org_id)
     storage = reflexio.request_context.storage
     assert storage is not None
@@ -476,7 +474,7 @@ def test_grade_on_demand_does_not_cache_when_terminal_confirmation_fails(
     client_with_org,
 ):
     client, org_id = client_with_org
-    _configure_evaluator(org_id, evaluation_name="overall_success")
+    _configure_evaluator(org_id)
     reflexio = get_reflexio(org_id=org_id)
     storage = reflexio.request_context.storage
     assert storage is not None

@@ -71,7 +71,6 @@ def reflexio_instance(tmp_path: pathlib.Path, worker_id: str) -> Reflexio:
         window_size=1,
         stride_size=1,
         profile_extractor_config=ProfileExtractorConfig(
-            extractor_name="expiry_test_extractor",
             context_prompt="extract user facts",
             extraction_definition_prompt="name, intent",
             tagging_definition_prompt="choice of ['fact']",

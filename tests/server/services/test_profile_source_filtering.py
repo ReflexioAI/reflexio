@@ -76,7 +76,6 @@ def test_profile_extractor_filters_by_source_api(mock_chat_completion):
         # Set up two profile extractor configs with window_size
         # Config 1: only enabled for "api" source
         config1 = ProfileExtractorConfig(
-            extractor_name="api_extractor",
             extraction_definition_prompt="API config",
             request_sources_enabled=["api"],
         )
@@ -145,7 +144,6 @@ def test_profile_extractor_filters_by_source_webhook(mock_chat_completion):
 
         # Set up config only enabled for "api" source with window_size
         config = ProfileExtractorConfig(
-            extractor_name="api_only_extractor",
             extraction_definition_prompt="API only config",
             request_sources_enabled=["api"],
         )
@@ -213,7 +211,6 @@ def test_profile_extractor_none_enables_all_sources(mock_chat_completion):
 
         # Config with request_sources_enabled=None (default) and window_size
         config = ProfileExtractorConfig(
-            extractor_name="all_sources_extractor",
             extraction_definition_prompt="All sources config",
             request_sources_enabled=None,
         )
@@ -281,7 +278,6 @@ def test_profile_extractor_empty_list_enables_all_sources(mock_chat_completion):
 
         # Config with request_sources_enabled=[] and window_size
         config = ProfileExtractorConfig(
-            extractor_name="empty_sources_extractor",
             extraction_definition_prompt="All sources config",
             request_sources_enabled=[],
         )

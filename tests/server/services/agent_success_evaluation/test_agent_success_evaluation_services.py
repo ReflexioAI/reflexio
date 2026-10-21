@@ -89,7 +89,6 @@ def test_loads_singular_agent_success_config():
     with tempfile.TemporaryDirectory() as temp_dir:
         service = _make_agent_success_service(temp_dir)
         success_config = AgentSuccessConfig(
-            evaluation_name="overall_success",
             success_definition_prompt="Evaluate task success",
         )
         service.configurator.set_config_by_name("agent_success_config", success_config)
@@ -138,7 +137,6 @@ def test_precheck_uses_provided_session_models_for_evaluation_only():
     with tempfile.TemporaryDirectory() as temp_dir:
         service = _make_agent_success_service(temp_dir)
         success_config = AgentSuccessConfig(
-            evaluation_name="test_agent_success",
             success_definition_prompt="Evaluate if the answer was clear and useful",
         )
         service.configurator.set_config_by_name("agent_success_config", success_config)
@@ -176,7 +174,6 @@ def test_evaluate_agent_success(mock_chat_completion):
 
         # Set up agent success config (tool_can_use now at root config level)
         success_config = AgentSuccessConfig(
-            evaluation_name="test_agent_success",
             success_definition_prompt="Evaluate if the agent successfully completed the task",
         )
         agent_success_service.configurator.set_config_by_name(
@@ -228,7 +225,6 @@ def test_empty_interactions(mock_chat_completion):
 
         # Set up agent success config
         success_config = AgentSuccessConfig(
-            evaluation_name="test_agent_success",
             success_definition_prompt="Evaluate if the agent successfully completed the task",
         )
         agent_success_service.configurator.set_config_by_name(
@@ -313,7 +309,6 @@ def test_error_handling(mock_chat_completion):
 
         # Set up agent success config
         success_config = AgentSuccessConfig(
-            evaluation_name="test_agent_success",
             success_definition_prompt="Evaluate if the agent successfully completed the task",
         )
         agent_success_service.configurator.set_config_by_name(
@@ -370,7 +365,6 @@ def test_configured_success_evaluator_runs(mock_chat_completion):
         )
 
         success_config = AgentSuccessConfig(
-            evaluation_name="task_completion",
             success_definition_prompt="Evaluate if the agent completed the task",
         )
         agent_success_service.configurator.set_config_by_name(
@@ -421,7 +415,6 @@ def test_with_tool_configs(mock_chat_completion):
 
         # Set up agent success config with tools at root level
         success_config = AgentSuccessConfig(
-            evaluation_name="tool_usage_evaluation",
             success_definition_prompt="Evaluate if the agent used tools effectively",
         )
         agent_success_service.configurator.set_config_by_name(
@@ -476,7 +469,6 @@ def test_none_request():
 
         # Set up agent success config
         success_config = AgentSuccessConfig(
-            evaluation_name="test_agent_success",
             success_definition_prompt="Evaluate if the agent successfully completed the task",
         )
         agent_success_service.configurator.set_config_by_name(
@@ -527,7 +519,6 @@ def test_agent_success_message_construction_with_interactions():
 
         # Set up agent success config (tool_can_use at root level)
         success_config = AgentSuccessConfig(
-            evaluation_name="test_agent_success",
             success_definition_prompt="Evaluate if the agent successfully completed the task",
         )
         agent_success_service.configurator.set_config_by_name(

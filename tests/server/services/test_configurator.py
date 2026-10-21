@@ -63,7 +63,6 @@ def test_set_and_get_config_by_name(configurator):
         (
             "profile_extractor_config",
             ProfileExtractorConfig(
-                extractor_name="test_extractor",
                 should_extract_profile_prompt_override="test",
                 context_prompt="test",
                 extraction_definition_prompt="test",

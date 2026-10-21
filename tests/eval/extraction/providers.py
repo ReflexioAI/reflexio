@@ -111,7 +111,6 @@ def _sessions_to_ridm(
 def _minimal_playbook_extractor_config() -> PlaybookConfig:
     """Minimal ``PlaybookConfig`` -- mirrors the playbook-extractor tests."""
     return PlaybookConfig(
-        extractor_name="eval_playbook",
         extraction_definition_prompt="Evaluate agent quality",
     )
 
@@ -119,7 +118,6 @@ def _minimal_playbook_extractor_config() -> PlaybookConfig:
 def _minimal_profile_extractor_config() -> ProfileExtractorConfig:
     """Minimal ``ProfileExtractorConfig`` -- mirrors the profile-extractor tests."""
     return ProfileExtractorConfig(
-        extractor_name="eval_profile",
         extraction_definition_prompt="Extract user preferences",
     )
 

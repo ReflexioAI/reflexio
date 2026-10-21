@@ -577,7 +577,6 @@ def test_oversized_full_rerun_records_failed_gate(monkeypatch) -> None:
     agg = _make_aggregator()
     agg.configurator.get_config.return_value.user_playbook_extractor_config = (
         PlaybookConfig(
-            extractor_name="playbook",
             extraction_definition_prompt="test",
             aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
         )
@@ -927,7 +926,6 @@ class TestGetPlaybookAggregatorConfig:
             min_cluster_size=3, reaggregation_trigger_count=5
         )
         afc = PlaybookConfig(
-            extractor_name="my_fb",
             extraction_definition_prompt="prompt",
             aggregation_config=fac,
         )
@@ -943,7 +941,6 @@ class TestGetPlaybookAggregatorConfig:
             min_cluster_size=3, reaggregation_trigger_count=5
         )
         afc = PlaybookConfig(
-            extractor_name="other",
             extraction_definition_prompt="prompt",
             aggregation_config=fac,
         )
@@ -974,7 +971,6 @@ class TestRun:
             min_cluster_size=2, reaggregation_trigger_count=2
         )
         afc = PlaybookConfig(
-            extractor_name="fb",
             extraction_definition_prompt="prompt",
             aggregation_config=fac,
         )
@@ -1001,7 +997,6 @@ class TestRun:
             min_cluster_size=1, reaggregation_trigger_count=2
         )
         afc = PlaybookConfig(
-            extractor_name="fb",
             extraction_definition_prompt="prompt",
             aggregation_config=fac,
         )
@@ -1018,7 +1013,6 @@ class TestRun:
             min_cluster_size=2, reaggregation_trigger_count=10
         )
         afc = PlaybookConfig(
-            extractor_name="fb",
             extraction_definition_prompt="prompt",
             aggregation_config=fac,
         )
@@ -2463,7 +2457,6 @@ def _make_ordered_aggregator(call_log: list[tuple[str, Any]]) -> Any:
 
     fac = PlaybookAggregatorConfig(min_cluster_size=2, reaggregation_trigger_count=2)
     afc = PlaybookConfig(
-        extractor_name="fb",
         extraction_definition_prompt="prompt",
         aggregation_config=fac,
     )

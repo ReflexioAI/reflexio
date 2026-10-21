@@ -86,7 +86,6 @@ def request_context(sqlite_storage, temp_storage_dir, worker_id):
     )
     context.configurator.get_config.return_value.user_playbook_extractor_config = (
         PlaybookConfig(
-            extractor_name="default",
             extraction_definition_prompt="stub",
             aggregation_config=agg_config,
         )
@@ -456,7 +455,6 @@ def _make_storage_and_ctx(
     )
     ctx.configurator.get_config.return_value.user_playbook_extractor_config = (
         PlaybookConfig(
-            extractor_name="default",
             extraction_definition_prompt="stub",
             aggregation_config=agg_config,
         )

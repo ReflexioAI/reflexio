@@ -131,7 +131,6 @@ def _build_instance(storage_config: StorageConfigSQLite, org_id: str) -> Reflexi
         skip_should_run_check=True,
         window_size=20,
         profile_extractor_config=ProfileExtractorConfig(
-            extractor_name="test_profile_extractor",
             context_prompt=(
                 "Conversation between sales agent and user, extract any "
                 "information from the interaction if it contains information "
@@ -145,7 +144,6 @@ def _build_instance(storage_config: StorageConfigSQLite, org_id: str) -> Reflexi
             tagging_definition_prompt="choice of ['basic_info', 'conversation_intent']",
         ),
         user_playbook_extractor_config=PlaybookConfig(
-            extractor_name="test_playbook",
             extraction_definition_prompt=(
                 "playbook should be something the user told you to do differently "
                 "in the next session. content is what the agent should do "

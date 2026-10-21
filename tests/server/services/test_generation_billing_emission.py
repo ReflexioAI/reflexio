@@ -75,7 +75,6 @@ def _request_context(storage: SQLiteStorage) -> RequestContext:
     ctx.configurator.get_config.return_value = Config(
         storage_config=StorageConfigSQLite(),
         profile_extractor_config=ProfileExtractorConfig(
-            extractor_name="billing_test_extractor",
             extraction_definition_prompt="Extract durable preferences.",
         ),
     )
@@ -351,7 +350,6 @@ def test_should_run_skip_emits_no_learning_billing(tmp_path, monkeypatch):
             ctx.configurator.get_config.return_value = Config(
                 storage_config=StorageConfigSQLite(),
                 profile_extractor_config=ProfileExtractorConfig(
-                    extractor_name="billing_test_extractor",
                     extraction_definition_prompt="Extract durable preferences.",
                 ),
                 stride_size=1,
@@ -565,7 +563,6 @@ def _prepared() -> PreparedGenerationRun[Any]:
     """A minimal prepared run with a real profile extractor config."""
     return PreparedGenerationRun(
         extractor_config=ProfileExtractorConfig(
-            extractor_name="billing_test_extractor",
             extraction_definition_prompt="Extract durable preferences.",
         ),
         extractor_name="billing_test_extractor",

@@ -90,7 +90,6 @@ def _configure_context(
     config = Config(
         storage_config=StorageConfigSQLite(),
         user_playbook_extractor_config=PlaybookConfig(
-            extractor_name="ask_human_eval_playbook",
             extraction_definition_prompt=case.extraction_definition_prompt
             or "Extract durable playbooks from natural agent-user trajectories.",
         ),
