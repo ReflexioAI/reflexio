@@ -24,8 +24,20 @@ def test_retired_shadow_input_is_accepted_but_not_serialized(value: bool) -> Non
     assert "shadow_mode_enabled" not in Config.model_json_schema()["properties"]
 
 
+def test_constructor_rejects_retired_input() -> None:
+    with pytest.raises(ValidationError) as error:
+        Config.model_validate({"storage_config": None, "shadow_mode_enabled": True})
+    assert [(e["type"], e["loc"]) for e in error.value.errors()] == [
+        ("extra_forbidden", ("shadow_mode_enabled",))
+    ]
+
+
 def test_retired_input_does_not_allow_arbitrary_unknown_keys() -> None:
-    with pytest.raises(ValidationError, match="extra_forbidden"):
-        Config.model_validate(
-            {"storage_config": None, "shadow_mode_enabled": True, "typo_config": True}
-        )
+    upgraded = canonicalize_config_document(
+        {"storage_config": None, "shadow_mode_enabled": True, "typo_config": True}
+    )
+    with pytest.raises(ValidationError) as error:
+        Config.model_validate(upgraded)
+    assert [(e["type"], e["loc"]) for e in error.value.errors()] == [
+        ("extra_forbidden", ("typo_config",))
+    ]

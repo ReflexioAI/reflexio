@@ -880,7 +880,9 @@ Blank means unset; invalid capacities and non-finite/non-positive waits fail.
 Removed database environment names are rejected even when blank or accompanied
 by `DATA_DB_URL`; preserve the database target when following the
 [configuration upgrade guide](../../docs/configuration-upgrade.md). The retired `shadow_mode_enabled` configuration input
-is accepted as a no-op and omitted from serialization.
+is ignored by stored reads and dropped by explicit upgrades; constructors and
+API writes (`/api/set_config`, `/api/update_config`) reject it with 422 and
+write nothing. It is never serialized.
 
 Extractor configuration names (`extractor_name`, legacy `playbook_name` /
 `feedback_name`, and `evaluation_name`) are also retired no-ops: older payloads

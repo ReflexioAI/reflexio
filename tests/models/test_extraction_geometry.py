@@ -5,7 +5,6 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
 from reflexio.config_migration import (
     StoredConfigurationError,
@@ -67,15 +66,17 @@ def test_explicit_geometry_and_old_field_aliases_keep_precedence(fields, geometr
 
 @pytest.mark.parametrize("preset", ["unknown", 42, {}, False])
 def test_invalid_legacy_shortcuts_are_not_silently_dropped(preset):
-    with pytest.raises(ValidationError):
-        Config.model_validate(
-            {
-                "storage_config": None,
-                "extraction_preset": preset,
-                "window_size": 42,
-                "stride_size": 3,
-            }
-        )
+    # Runtime constructors reject ``extraction_preset`` outright (#747); the
+    # explicit upgrade must reject an invalid preset rather than drop it.
+    payload = {
+        "storage_config": None,
+        "extraction_preset": "standard",
+        "window_size": 42,
+        "stride_size": 3,
+    }
+    assert "extraction_preset" not in canonicalize_config_document(payload)
+    with pytest.raises(StoredConfigurationError):
+        canonicalize_config_document({**payload, "extraction_preset": preset})
 
 
 def test_raw_cleanup_preserves_extensions_and_removes_preset_before_upgrade():

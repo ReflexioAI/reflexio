@@ -33,6 +33,7 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.rate_limit import limiter
+from reflexio.server.services.configurator.base_configurator import BaseConfigurator
 from reflexio.server.services.configurator.config_storage import (
     ConfigWriteConflictError,
 )
@@ -736,22 +737,40 @@ class TestUpdateConfigRoute:
         # Cache invalidated on success.
         mock_invalidate.assert_called_once_with(org_id="test-org")
 
-    def test_retired_shadow_patch_preserves_live_customizations(
+    def test_retired_shadow_patch_is_rejected_without_writing(
         self, client, patched_reflexio, mock_reflexio
     ):
+        """API writes reject retired names; only explicit upgrades drop them (#747).
+
+        The whole patch is refused, so its canonical half is not applied and
+        the live customization is neither saved over nor invalidated.
+        """
         existing = self._existing_config()
         existing.agent_context_prompt = "customer customization"
+        before = existing.model_dump(mode="python")
         self._wire_mock(mock_reflexio, existing)
-        response = client.post(
-            "/api/update_config",
-            json={"shadow_mode_enabled": True, "enable_document_expansion": True},
+        configurator = mock_reflexio.request_context.configurator
+        # Exercise the shared production merge rather than the mock's copy of it.
+        configurator.prepare_config_patch.side_effect = lambda partial: (
+            BaseConfigurator.prepare_config_patch(configurator, partial)
         )
-        assert response.status_code == 200, response.text
-        assert response.json()["success"] is True
-        saved = mock_reflexio.set_config.call_args.args[0].model_dump()
-        assert "shadow_mode_enabled" not in saved
-        assert saved["agent_context_prompt"] == "customer customization"
-        assert saved["enable_document_expansion"] is True
+
+        with patch(
+            "reflexio.server.cache.reflexio_cache.invalidate_reflexio_cache"
+        ) as mock_invalidate:
+            response = client.post(
+                "/api/update_config",
+                json={"shadow_mode_enabled": True, "enable_document_expansion": True},
+            )
+
+        assert response.status_code == 422, response.text
+        errors = response.json()["detail"]["validation_errors"]
+        assert [(e["type"], e["loc"]) for e in errors] == [
+            ("extra_forbidden", ["shadow_mode_enabled"])
+        ]
+        mock_reflexio.set_config.assert_not_called()
+        mock_invalidate.assert_not_called()
+        assert existing.model_dump(mode="python") == before
 
     def test_rejects_direct_experiment_lifecycle_mutation(
         self, client, patched_reflexio, mock_reflexio

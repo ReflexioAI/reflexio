@@ -5,9 +5,11 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
-from reflexio.config_migration import strip_retired_config_fields
+from reflexio.config_migration import (
+    StoredConfigurationError,
+    strip_retired_config_fields,
+)
 from reflexio.models.config_schema import PlaybookOptimizerConfig
 from reflexio.server.services.configurator.local_file_config_storage import (
     LocalFileConfigStorage,
@@ -49,8 +51,10 @@ def test_legacy_merge_policy_round_trip(legacy, expected):
     ],
 )
 def test_retirement_does_not_hide_invalid_policy(legacy):
-    with pytest.raises(ValidationError):
-        PlaybookOptimizerConfig.model_validate(legacy)
+    # Runtime constructors reject ``use_merge`` outright (#747); the explicit
+    # upgrade is the only translator and must still fail closed on bad values.
+    with pytest.raises(StoredConfigurationError):
+        _upgrade_policy(legacy)
 
 
 def test_raw_cleanup_preserves_inactive_policy_and_extensions():
