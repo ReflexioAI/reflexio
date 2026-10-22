@@ -162,3 +162,64 @@ def test_failure_template_escapes_literal_percent():
     assert _failure_template("100% of ", "%s", " (type=X%)") == (
         "100%% of %s (type=X%%)"
     )
+
+
+def test_failure_the_caller_reports_is_logged_at_warning(caplog):
+    """A caller that retries or escalates the failure itself owns its one report."""
+    service = _failing_service()
+    service._caller_reports_extractor_failure = True
+
+    assert _failure_levels(service, caplog) == [logging.WARNING]
+
+
+@pytest.mark.parametrize(
+    ("caller_reports", "expected"),
+    [(False, logging.ERROR), (True, logging.WARNING)],
+)
+def test_run_generation_failure_level_follows_the_reporting_owner(
+    caplog, monkeypatch, caller_reports, expected
+):
+    service = _failing_service()
+    service._caller_reports_extractor_failure = caller_reports
+    monkeypatch.setattr(
+        service,
+        "compute_generation",
+        MagicMock(side_effect=ExtractorExecutionError("judge failed")),
+    )
+
+    with (
+        caplog.at_level(
+            logging.WARNING, logger="reflexio.server.services.base_generation_service"
+        ),
+        pytest.raises(ExtractorExecutionError),
+    ):
+        service._run_generation(_CharRequest(user_id="u", request_id="r"))
+
+    assert [
+        record.levelno
+        for record in caplog.records
+        if record.getMessage().startswith("Failed to run")
+    ] == [expected]
+
+
+def test_run_generation_non_extractor_failure_stays_error_when_caller_reports(
+    caplog, monkeypatch
+):
+    """Only an ``ExtractorExecutionError`` reaches the caller; anything else is
+    swallowed here, so the caller cannot report it and it stays at ERROR."""
+    service = _failing_service()
+    service._caller_reports_extractor_failure = True
+    monkeypatch.setattr(
+        service, "compute_generation", MagicMock(side_effect=RuntimeError("bug"))
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger="reflexio.server.services.base_generation_service"
+    ):
+        service._run_generation(_CharRequest(user_id="u", request_id="r"))
+
+    assert [
+        record.levelno
+        for record in caplog.records
+        if record.getMessage().startswith("Failed to run")
+    ] == [logging.ERROR]

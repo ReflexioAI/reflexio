@@ -6,11 +6,13 @@ silently bypassed the scheduler call, leaving /evaluations permanently empty.
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
+from litellm.exceptions import APIError, RateLimitError
 
 from reflexio.models.api_schema.domain.entities import (
     Interaction,
@@ -23,6 +25,7 @@ from reflexio.models.config_schema import (
     Config,
     StorageConfigSQLite,
 )
+from reflexio.server.services.base_generation_service import ExtractorExecutionError
 from reflexio.server.services.generation_service import GenerationService
 
 
@@ -614,3 +617,168 @@ def test_retrieved_learning_retry_does_not_fire_when_family_not_sampled(
     _drain_scheduler(scheduler)
 
     assert runner.call_count == 1
+
+
+def _extractor_failure(cause: BaseException) -> ExtractorExecutionError:
+    """An ``ExtractorExecutionError`` chained to ``cause``, as the service raises it."""
+    try:
+        raise ExtractorExecutionError(f"Extractor failed: {cause}") from cause
+    except ExtractorExecutionError as exc:
+        return exc
+
+
+def _zai_rate_limit() -> BaseException:
+    return RateLimitError(
+        message="429 rate limited", llm_provider="zai", model="glm-4.6"
+    )
+
+
+def _minimax_overloaded() -> BaseException:
+    # MiniMax reports an overload as a generic ``APIError`` with HTTP 529.
+    return APIError(
+        status_code=529,
+        message="overloaded_error",
+        llm_provider="minimax",
+        model="MiniMax-M2",
+    )
+
+
+def _run_with_failure(
+    service: GenerationService,
+    monkeypatch: pytest.MonkeyPatch,
+    failures: list[BaseException],
+    *,
+    retrieved: float = 1.0,
+) -> tuple[MagicMock, MagicMock]:
+    """Schedule a session whose judge raises ``failures`` in order, then succeeds."""
+    scheduler = MagicMock()
+    monkeypatch.setattr(
+        "reflexio.server.services.generation_service.GroupEvaluationScheduler.get_instance",
+        lambda: scheduler,
+    )
+    outcomes: list[Any] = [*failures]
+    outcomes.append(
+        SimpleNamespace(
+            agent_success_status="complete",
+            retrieved_learning_status="complete",
+            retrieved_learning_fingerprint=None,
+        )
+    )
+    runner = MagicMock(name="run_group_evaluation", side_effect=outcomes)
+    monkeypatch.setattr(
+        "reflexio.server.services.generation_service.run_group_evaluation", runner
+    )
+    _set_rates(service, success=1.0, retrieved=retrieved)
+
+    service._schedule_group_evaluation_if_needed(
+        new_request=MagicMock(session_id="sess_transient"),
+        user_id="user_test",
+        agent_version="v_test",
+        source=None,
+    )
+    _drain_scheduler(scheduler)
+    return scheduler, runner
+
+
+_GEN_LOGGER = "reflexio.server.services.generation_service"
+
+
+def _gen_records(caplog: pytest.LogCaptureFixture, level: int) -> list[Any]:
+    return [r for r in caplog.records if r.name == _GEN_LOGGER and r.levelno == level]
+
+
+@pytest.mark.parametrize("cause", [_zai_rate_limit, _minimax_overloaded])
+def test_transient_judge_failure_is_rearmed_at_warning(
+    service: GenerationService,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    cause: Any,
+) -> None:
+    """Sentry PYTHON-FASTAPI-Q/169/16A: one 429 / 529 lost the evaluation and
+    raised three ERROR issues. It must be re-armed, at WARNING, with no ERROR."""
+    with caplog.at_level(logging.INFO):
+        scheduler, runner = _run_with_failure(
+            service, monkeypatch, [_extractor_failure(cause())]
+        )
+
+    assert runner.call_count == 2
+    assert scheduler.schedule.call_count == 2
+    # The retry re-runs the same families: nothing was judged or saved.
+    retry = runner.call_args_list[1].kwargs
+    assert retry["run_agent_success"] is True
+    assert retry["run_retrieved_learning"] is True
+    # The scheduler callback owns the report, so the service logs at WARNING.
+    for call in runner.call_args_list:
+        assert call.kwargs["caller_reports_extractor_failure"] is True
+    assert (
+        scheduler.schedule.call_args_list[1][0][0]
+        == (scheduler.schedule.call_args_list[0][0][0])
+    )
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+    warnings = _gen_records(caplog, logging.WARNING)
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "event=agent_success_retry_scheduled" in message
+    assert "session=sess_transient" in message
+    assert "attempt=1/3" in message
+    assert type(cause()).__name__ in message
+
+
+def test_transient_retry_keeps_the_sampled_families(
+    service: GenerationService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session not admitted for retrieved-learning must not gain it on retry."""
+    _, runner = _run_with_failure(
+        service, monkeypatch, [_extractor_failure(_zai_rate_limit())], retrieved=0.0
+    )
+
+    assert runner.call_count == 2
+    assert runner.call_args_list[1].kwargs["run_retrieved_learning"] is False
+
+
+def test_exhausted_transient_retries_report_one_error(
+    service: GenerationService,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    failures: list[BaseException] = [
+        _extractor_failure(_minimax_overloaded()) for _ in range(10)
+    ]
+    with caplog.at_level(logging.INFO):
+        _, runner = _run_with_failure(service, monkeypatch, failures)
+
+    # 1 initial + 3 bounded retries, then it stops.
+    assert runner.call_count == 1 + 3
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1
+    assert "after 4 attempt(s) (transient=True)" in errors[0].getMessage()
+    assert errors[0].exc_info is not None
+    assert len(_gen_records(caplog, logging.WARNING)) == 3
+
+
+def test_non_transient_judge_failure_is_one_error_and_not_retried(
+    service: GenerationService,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.INFO):
+        scheduler, runner = _run_with_failure(
+            service,
+            monkeypatch,
+            [_extractor_failure(ValueError("judge returned an unknown verdict"))],
+        )
+
+    assert runner.call_count == 1
+    assert scheduler.schedule.call_count == 1
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1
+    assert "(transient=False)" in errors[0].getMessage()
+
+
+def test_a_failure_that_is_not_the_judge_still_reaches_the_scheduler(
+    service: GenerationService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the judge's ``ExtractorExecutionError`` is classified here; a storage
+    failure keeps propagating to ``GroupEvaluationScheduler._run_callback``."""
+    with pytest.raises(RuntimeError, match="storage down"):
+        _run_with_failure(service, monkeypatch, [RuntimeError("storage down")])
