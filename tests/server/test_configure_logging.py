@@ -311,7 +311,7 @@ def test_the_report_is_frozen_so_a_caller_cannot_edit_it() -> None:
 
 
 # --------------------------------------------------------------------------
-# Profile resolution. One name, with the old three kept as aliases.
+# One profile selector; production verbose authorization stays independent.
 # --------------------------------------------------------------------------
 
 
@@ -342,40 +342,32 @@ def test_the_default_is_production(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _resolve(monkeypatch)["verbose"] is False
 
 
-def test_the_legacy_flag_still_selects_verbose(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("legacy", ["", "false", "true", "unknown-sensitive-value"])
+@pytest.mark.parametrize("profile", [None, "production", "verbose"])
+def test_retired_console_flag_refuses_before_logging_configuration(
+    monkeypatch: pytest.MonkeyPatch, legacy: str, profile: str | None
 ) -> None:
-    """A self-host customer or a dev machine may only set the old name."""
-    assert _resolve(monkeypatch, DEBUG_LOG_TO_CONSOLE="true")["verbose"] is True
+    env = {"DEBUG_LOG_TO_CONSOLE": legacy}
+    if profile is not None:
+        env["REFLEXIO_LOG_PROFILE"] = profile
+    with pytest.raises(
+        ValueError, match="DEBUG_LOG_TO_CONSOLE.*REFLEXIO_LOG_PROFILE"
+    ) as error:
+        _resolve(monkeypatch, **env)
+    assert "unknown-sensitive-value" not in str(error.value)
 
 
-def test_the_new_name_wins_over_the_legacy_flag(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("environment", ["prod", "production", "PRODUCTION"])
+@pytest.mark.parametrize("override", ["", "false", "foo"])
+def test_production_refuses_verbose_without_explicit_override(
+    monkeypatch: pytest.MonkeyPatch, environment: str, override: str
 ) -> None:
-    """Otherwise an ambient ~/.reflexio/.env would override a deliberate choice."""
-    assert (
-        _resolve(
-            monkeypatch, REFLEXIO_LOG_PROFILE="production", DEBUG_LOG_TO_CONSOLE="true"
-        )["verbose"]
-        is False
+    resolved = _resolve(
+        monkeypatch,
+        REFLEXIO_LOG_PROFILE="verbose",
+        ENVIRONMENT=environment,
+        REFLEXIO_ALLOW_PRODUCTION_DEBUG_LOGS=override,
     )
-
-
-@pytest.mark.parametrize(
-    "requested_via", ["REFLEXIO_LOG_PROFILE", "DEBUG_LOG_TO_CONSOLE"]
-)
-def test_production_refuses_a_verbose_request_from_either_name(
-    monkeypatch: pytest.MonkeyPatch, requested_via: str
-) -> None:
-    """The gate that stops a copied env file making production chatty.
-
-    It applied to the legacy flag only; extending it to the new name is the
-    behaviour-preserving generalization, and the parametrization is what stops the
-    new name becoming a way around it.
-    """
-    value = "verbose" if requested_via == "REFLEXIO_LOG_PROFILE" else "true"
-    resolved = _resolve(monkeypatch, **{requested_via: value}, ENVIRONMENT="production")
-
     assert resolved["verbose"] is False
 
 
@@ -393,15 +385,16 @@ def test_the_break_glass_override_still_re_enables_it(
     assert resolved["verbose"] is True
 
 
-def test_an_unrecognised_profile_falls_back_to_the_legacy_flag(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A typo must not silently mean production while the old flag says verbose."""
-    resolved = _resolve(
-        monkeypatch, REFLEXIO_LOG_PROFILE="cheerful", DEBUG_LOG_TO_CONSOLE="true"
-    )
+def test_an_unrecognised_profile_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValueError, match="REFLEXIO_LOG_PROFILE"):
+        _resolve(monkeypatch, REFLEXIO_LOG_PROFILE="cheerful")
 
-    assert resolved["verbose"] is True
+
+@pytest.mark.parametrize("profile", ["", "   "])
+def test_an_empty_profile_uses_the_production_default(
+    monkeypatch: pytest.MonkeyPatch, profile: str
+) -> None:
+    assert _resolve(monkeypatch, REFLEXIO_LOG_PROFILE=profile)["verbose"] is False
 
 
 def test_the_log_level_and_info_loggers_are_resolved(

@@ -208,7 +208,7 @@ Copy `.env.example` to `.env` and fill in values. Key variables:
 - **LLM API keys**: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, etc.
 - **Storage**: `LOCAL_STORAGE_PATH` (defaults to `~/.reflexio/data`) — houses the SQLite DB file. (Not used by `supabase`/`postgres`, which use external connections.)
 - **Storage backend**: `REFLEXIO_STORAGE` — `sqlite` (default), `supabase`, or `postgres`. Selects the data storage backend independently from auth configuration.
-- **Testing**: `IS_TEST_ENV`, `DEBUG_LOG_TO_CONSOLE`, `MOCK_LLM_RESPONSE`
+- **Testing**: `IS_TEST_ENV`, `MOCK_LLM_RESPONSE`; logging profile: `REFLEXIO_LOG_PROFILE=production|verbose` (remove retired `DEBUG_LOG_TO_CONSOLE` assignments)
 
 Never change env variable values in `.env` directly for port overrides — use shell exports instead.
 
