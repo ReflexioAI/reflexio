@@ -21,6 +21,22 @@ from reflexio.server.work_scope import current_project_id
 Kind = Literal["profile", "playbook"]
 KINDS: tuple[Kind, ...] = ("profile", "playbook")
 
+# A window whose failure reaches this many recorded attempts is parked
+# (``retry_at=inf``) instead of re-armed. Backoff reaches its 300 s cap at
+# attempt 10 (the worker's paging threshold), so a cursor parks after roughly
+# 18 minutes of consecutive failures: long enough to ride out a transient
+# provider incident, short enough that a deterministic failure stops spending.
+MAX_EXTRACTION_WINDOW_ATTEMPTS = 12
+# ``last_error`` of a cursor parked by the ceiling: this prefix, then the
+# ``<ExceptionClass>@<locator>`` of the failure that parked it. Messages are
+# never stored. The prefix is what operator re-arm and status reads key on.
+RETRY_EXHAUSTED_PREFIX = "retry_exhausted:"
+
+
+def is_retry_exhausted(last_error: Any) -> bool:
+    """Whether a cursor's ``last_error`` marks a park by the attempt ceiling."""
+    return isinstance(last_error, str) and last_error.startswith(RETRY_EXHAUSTED_PREFIX)
+
 
 def _validate_frozen_profile_checkpoint(
     previous_checkpoint: dict[str, Any], checkpoint: dict[str, Any]
@@ -699,7 +715,24 @@ class ExtractionStreamStore:
                 (window.user_id, db.now(), self.org_id, window.user_id),
             )
 
-    def retry_extraction(self, window: Window, token: str, error: str) -> None:
+    def retry_extraction(self, window: Window, token: str, error: str) -> bool:
+        """Record one failed attempt and schedule the next, or park the cursor.
+
+        Every failure class the worker does not hold itself lands here, so the
+        attempt ceiling is enforced once, for every backend. At
+        ``MAX_EXTRACTION_WINDOW_ATTEMPTS`` the cursor is held with
+        ``retry_at=inf`` and ``last_error=RETRY_EXHAUSTED_PREFIX + error`` until
+        an operator re-arms it (``rearm_exhausted_extraction``); a re-armed
+        cursor keeps its count, so one more failure parks it again.
+
+        Args:
+            window (Window): The failed window.
+            token (str): The caller's user lease.
+            error (str): ``<ExceptionClass>@<locator>``; never a message.
+
+        Returns:
+            bool: True when this failure parked the cursor.
+        """
         with self._stream_sql() as db:
             self._fence(db, window.user_id, token)
             row = db.query(
@@ -707,7 +740,12 @@ class ExtractionStreamStore:
                 (window.user_id, window.kind, window.project_id),
             )[0]
             attempts = int(row["attempts"]) + 1
-            due = db.now() + min(300, 2 ** min(attempts - 1, 9))
+            parked = attempts >= MAX_EXTRACTION_WINDOW_ATTEMPTS
+            if parked:
+                due = float("inf")
+                error = RETRY_EXHAUSTED_PREFIX + error
+            else:
+                due = db.now() + min(300, 2 ** min(attempts - 1, 9))
             db.query(
                 f"UPDATE {db.table('extraction_cursors')} SET attempts=?,retry_at=?,last_error=?,last_turn=? "
                 "WHERE user_id=? AND kind=? AND project_id=?",
@@ -727,6 +765,7 @@ class ExtractionStreamStore:
                 "WHERE org_id=? AND user_id=?",
                 (self.org_id, window.user_id),
             )
+            return parked
 
     def fail_extraction_input_budget(
         self, window: Window, token: str, reason: str, *, park: bool = False
@@ -930,6 +969,54 @@ class ExtractionStreamStore:
                 (now, self.org_id, window.user_id, token),
             )
 
+    def rearm_exhausted_extraction(
+        self,
+        window: Window,
+        token: str,
+        *,
+        expected_attempts: int,
+        expected_last_error: str,
+    ) -> None:
+        """Operator-only re-arm of a cursor parked by the attempt ceiling.
+
+        Sibling of ``recover_extraction_input_budget`` for holds written by
+        ``retry_extraction``. The caller must hold the ordinary user lease and
+        name the exact parked state it inspected; the attempt count is kept, so
+        the re-armed window gets one attempt and a repeat failure parks it
+        again with its new locator. Any provider quota the window journals is
+        still enforced by the extraction itself. No automatic worker calls this.
+        """
+        if not is_retry_exhausted(expected_last_error):
+            raise OverflowCheckpointConflictError("Re-arm names no exhausted hold")
+        with self._stream_sql() as db:
+            self._fence(db, window.user_id, token)
+            now = db.now()
+            updated = db.query(
+                f"UPDATE {db.table('extraction_cursors')} SET retry_at=? "
+                "WHERE user_id=? AND kind=? AND project_id=? AND window_id=? "
+                "AND attempts=? AND retry_at=? AND last_error=? "
+                "RETURNING window_id",
+                (
+                    now,
+                    window.user_id,
+                    window.kind,
+                    window.project_id,
+                    window.window_id,
+                    expected_attempts,
+                    float("inf"),
+                    expected_last_error,
+                ),
+            )
+            if not updated:
+                raise OverflowCheckpointConflictError(
+                    "Exhausted hold changed or was already re-armed"
+                )
+            db.query(
+                f"UPDATE {db.table('learning_work')} SET due_at=? "
+                "WHERE org_id=? AND user_id=? AND lease_token=?",
+                (now, self.org_id, window.user_id, token),
+            )
+
     def suspend_extraction(self, window: Window, token: str) -> None:
         """Yield saved work without advancing coverage or counting a failure."""
         with self._stream_sql() as db:
@@ -1053,6 +1140,11 @@ class ExtractionStreamStore:
                 "input_budget_configuration_error",
             }:
                 return {"status": "failed", "reason": cursor["last_error"]}
+            # Fixed reason only: the stored locator is operator detail. Checked
+            # before any ``retry_at`` comparison, which a JSON snapshot may
+            # carry as the string "Infinity" for a parked cursor.
+            if is_retry_exhausted(cursor.get("last_error")):
+                return {"status": "failed", "reason": "retry_exhausted"}
         now = snapshot.now if snapshot.now is not None else db.now()
         if any(c["retry_at"] > now for c in pending):
             return {"status": "pending", "reason": "retrying"}

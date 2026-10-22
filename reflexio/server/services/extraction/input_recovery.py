@@ -15,12 +15,15 @@ from reflexio.server.services.storage.storage_base._extraction_stream import (
     OverflowCheckpointConflictError,
     Window,
     decoded,
+    is_retry_exhausted,
     validate_extraction_overflow_manifest,
 )
 from reflexio.server.work_scope import current_project_id
 
 # Only parked holds (``retry_at=inf``) qualify; a configuration failure that is
-# still retrying on backoff is not held and needs no re-arm.
+# still retrying on backoff is not held and needs no re-arm. A cursor parked by
+# the retry ceiling (``is_retry_exhausted``) qualifies too, as hold
+# ``retry_exhausted``.
 RECOVERABLE_HOLDS = frozenset(
     {"input_budget_exceeded", "input_budget_configuration_error"}
 )
@@ -64,14 +67,20 @@ def _inspect(storage: BaseStorage, window_id: str) -> tuple[Window, dict[str, An
     ).hexdigest()
     reason = "ready"
     manifest: dict[str, Any] = {}
+    exhausted = is_retry_exhausted(cursor.get("last_error"))
     if (
         window.invalidated
         or rows[0]["completed"]
         or cursor.get("window_id") != window_id
-        or cursor.get("last_error") not in RECOVERABLE_HOLDS
+        or not (exhausted or cursor.get("last_error") in RECOVERABLE_HOLDS)
         or cursor.get("retry_at") != float("inf")
     ):
         reason = "not_held"
+    elif exhausted:
+        # The retry ceiling is not a quota decision: no parent or journal
+        # authority is needed to grant one more attempt, and any journaled
+        # provider quota is still enforced by the extraction itself.
+        reason = "ready"
     elif not parent:
         reason = "missing_parent_unknown_history"
     elif parent["status"] != "failed":
@@ -92,6 +101,10 @@ def _inspect(storage: BaseStorage, window_id: str) -> tuple[Window, dict[str, An
         "state_sha256": fingerprint,
         "recoverable": reason == "ready",
         "reason": reason,
+        "hold": "retry_exhausted" if exhausted else cursor.get("last_error"),
+        # ``<ExceptionClass>@<locator>`` (or a fixed reason word): coordinates,
+        # never a message, so safe to put on a receipt.
+        "last_error": cursor.get("last_error"),
         "cursor_attempts": cursor.get("attempts"),
         "parent_revision": manifest.get("revision"),
         "source_digest": manifest.get("source_digest"),
@@ -122,6 +135,14 @@ def apply_input_budget_recovery(storage: BaseStorage, receipt: dict[str, Any]) -
             raise OverflowCheckpointConflictError(
                 "Recovery changed before lease acquisition"
             )
+        if current["hold"] == "retry_exhausted":
+            storage.rearm_exhausted_extraction(
+                window,
+                token,
+                expected_attempts=current["cursor_attempts"],
+                expected_last_error=current["last_error"],
+            )
+            return
         storage.recover_extraction_input_budget(
             window,
             token,

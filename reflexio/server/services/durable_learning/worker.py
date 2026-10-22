@@ -30,6 +30,7 @@ from reflexio.server.services.extraction.overflow_coordinator import (
 )
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.services.storage.storage_base._extraction_stream import (
+    MAX_EXTRACTION_WINDOW_ATTEMPTS,
     LeaseLostError,
     Window,
 )
@@ -104,12 +105,32 @@ def _position(filename: str, lineno: int) -> str:
     return path + suffix
 
 
+def root_cause(exc: BaseException) -> BaseException:
+    """The innermost exception of an explicit ``raise ... from`` chain.
+
+    Only ``__cause__`` is followed. An implicit ``__context__`` is a different
+    failure that happened while handling this one, and ``raise ... from None``
+    deliberately severs the chain; neither is where the wrapper came from.
+    """
+    seen = {id(exc)}
+    current = exc
+    while current.__cause__ is not None and id(current.__cause__) not in seen:
+        current = current.__cause__
+        seen.add(id(current))
+    return current
+
+
 def exception_locator(exc: BaseException) -> str:
     """Where an exception came from, as source coordinates and nothing else.
 
     A file path and line number are *our* coordinates, so unlike an exception
     message they can never carry customer content. That is what makes this
     safe to log and to store where ``str(exc)`` is not.
+
+    A wrapper raised ``from`` another exception is located at its root cause
+    (:func:`root_cause`): ``raise Wrapper(...) from exc`` otherwise reports the
+    wrapping line for every failure it wraps, which says nothing. The class
+    name logged beside the locator still names the wrapper.
 
     The raise site is reported first. When it lands inside a dependency the
     innermost first-party frame is appended after ``<-``, because
@@ -119,6 +140,13 @@ def exception_locator(exc: BaseException) -> str:
     Every coordinate returned names a line: each half is bounded on its own,
     so the composition cannot overrun and need not be sliced afterwards.
     """
+    cause = root_cause(exc)
+    if cause is not exc and cause.__traceback__ is not None:
+        return _single_locator(cause)
+    return _single_locator(exc)
+
+
+def _single_locator(exc: BaseException) -> str:
     positions = _tb_positions(exc)
     if not positions:
         return "unknown"
@@ -365,12 +393,27 @@ class DurableLearningWorker:
         # Only class/source coordinates are stored; messages may contain customer
         # content. An already committed window retries its durable effects.
         try:
-            storage.retry_extraction(window, token, f"{type(exc).__name__}@{where}")
+            parked = storage.retry_extraction(
+                window, token, f"{type(exc).__name__}@{where}"
+            )
         except LeaseLostError:
             storage.retry_extraction_effects(window)
             record_health("worker.retries", phase="effects")
-        else:
-            record_health("worker.retries", phase="window")
+            return "failure"
+        if parked:
+            # Held until an operator re-arms it, so this logs once per park
+            # rather than once per backoff retry.
+            logger.error(
+                "Extraction window parked after %d attempts kind=%s error=%s "
+                "cause=%s at=%s",
+                MAX_EXTRACTION_WINDOW_ATTEMPTS,
+                window.kind,
+                type(exc).__name__,
+                type(root_cause(exc)).__name__,
+                where,
+            )
+            return "parked"
+        record_health("worker.retries", phase="window")
         return "failure"
 
     def _turn(

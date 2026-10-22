@@ -27,6 +27,7 @@ from reflexio.server.llm.input_budget import (
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     ProviderRequestGuardError,
+    StructuredOutputRepairError,
     ToolCallingChatResponse,
 )
 from reflexio.server.services.extraction.input_preparation import resolve_evidence_span
@@ -58,7 +59,15 @@ Text = Annotated[str, Field(min_length=1, pattern=r"\S")]
 
 
 class AuditedConsolidationAbstainedError(ProviderRequestGuardError):
-    """No audited batch can be committed; committed incumbents remain unchanged."""
+    """No audited batch can be committed; committed incumbents remain unchanged.
+
+    A ``ProviderRequestGuardError`` on purpose: ``Reconciler.guard`` raises it
+    from inside the client's provider-guard seam, where only that type passes
+    through unwrapped (anything else becomes a retried/fallen-back
+    ``LiteLLMClientError``, i.e. another physical request past the allowance),
+    and ``EXTRACTION_CONTROL_ERRORS`` must never turn it into a best-effort
+    result.
+    """
 
 
 class Model(StrictStructuredOutput):
@@ -196,6 +205,47 @@ def validation_errors(value: BaseModel, validate: Callable) -> tuple[str, ...]:
     except ValueError as exc:
         return (str(exc),)
     return ()
+
+
+def _search_tool_result(call: dict[str, Any], collections: dict[str, list]) -> str:
+    """Answer one read-only search call; malformed calls get a tool error.
+
+    Model-authored tool calls are untrusted input. A wrong name, non-object or
+    unparseable arguments, or a bad ``query``/``limit`` is returned to the model
+    as an error it can correct within the existing turn and call allowance; it
+    must never raise, because an exception here is a bug report, not a model
+    mistake.
+    """
+    function = call.get("function")
+    name = function.get("name") if isinstance(function, dict) else None
+    raw = function.get("arguments") if isinstance(function, dict) else None
+    if name not in collections:
+        return _tool_error(f"Unknown tool; use one of: {', '.join(collections)}")
+    try:
+        args = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        args = None
+    if not isinstance(args, dict):
+        return _tool_error("Arguments must be a JSON object")
+    if set(args) - {"query", "limit"}:
+        return _tool_error("Only 'query' and 'limit' are accepted")
+    query, limit = args.get("query"), args.get("limit", 5)
+    if not isinstance(query, str) or not query.strip():
+        return _tool_error("'query' must be a non-empty string")
+    if type(limit) is not int or not 1 <= limit <= 10:
+        return _tool_error("'limit' must be an integer from 1 to 10")
+    terms = set(re.findall(r"\w+", query.casefold()))
+    scored = [
+        (len(terms & set(re.findall(r"\w+", json.dumps(row).casefold()))), row)
+        for row in collections[name]
+    ]
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    result = [row for score, row in scored if score][:limit]
+    return json.dumps(result, ensure_ascii=False)
+
+
+def _tool_error(message: str) -> str:
+    return json.dumps({"error": message})
 
 
 class _ConversationState(BaseModel):
@@ -404,39 +454,11 @@ class Reconciler:
                     }
                 )
                 for call in calls:
-                    function = call["function"]
-                    args = json.loads(function["arguments"])
-                    if function["name"] not in collections or set(args) - {
-                        "query",
-                        "limit",
-                    }:
-                        raise ValueError("Unknown read-only tool or arguments")
-                    query, limit = args["query"], args.get("limit", 5)
-                    if (
-                        not isinstance(query, str)
-                        or not query.strip()
-                        or type(limit) is not int
-                        or not 1 <= limit <= 10
-                    ):
-                        raise ValueError("Invalid read-only search arguments")
-                    terms = set(re.findall(r"\w+", query.casefold()))
-                    scored = [
-                        (
-                            len(
-                                terms
-                                & set(re.findall(r"\w+", json.dumps(row).casefold()))
-                            ),
-                            row,
-                        )
-                        for row in collections[function["name"]]
-                    ]
-                    scored.sort(key=lambda pair: pair[0], reverse=True)
-                    result = [row for score, row in scored if score][:limit]
                     messages.append(
                         {
                             "role": "tool",
-                            "tool_call_id": call["id"],
-                            "content": json.dumps(result, ensure_ascii=False),
+                            "tool_call_id": call.get("id"),
+                            "content": _search_tool_result(call, collections),
                         }
                     )
                 turn += 1
@@ -732,6 +754,16 @@ def _bounded_sources(
     return sources
 
 
+# What the audited loop raises when the model's answer is deterministically
+# rejected: ``validate_*``/``project`` and the schema (``ValueError``, which
+# includes pydantic's ``ValidationError`` and ``json.JSONDecodeError``), and the
+# client's exhausted structured-output repair ladder. Anything else -- a
+# provider/transport failure or a programming error such as ``TypeError`` --
+# propagates with its own type and traceback, so it is diagnosed rather than
+# recorded as a semantic abstention.
+_DETERMINISTIC_REJECTIONS = (ValueError, StructuredOutputRepairError)
+
+
 def _run_audited(
     engine: Reconciler, payload: dict, references: dict[tuple[str, int], Any]
 ) -> Decisions:
@@ -748,7 +780,7 @@ def _run_audited(
         # Preserve the durable coordinator's suspension/lease/budget signals.
         # They are control flow, not semantic rejection or a legacy fallback.
         raise
-    except Exception as exc:
+    except _DETERMINISTIC_REJECTIONS as exc:
         logger.warning(
             "event=audited_consolidation_abstained error_type=%s request_allowance_used=%d",
             type(exc).__name__,

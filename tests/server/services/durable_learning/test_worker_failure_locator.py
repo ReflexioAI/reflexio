@@ -607,3 +607,54 @@ def test_heartbeat_failure_is_scoped_to_the_leased_user(
     assert set(background_work._streaks) == {
         f"durable-learning-heartbeat:org1:{_user_ref('user-a')}"
     }
+
+
+def _wrap(*, explicit: bool) -> BaseException:
+    """``RuntimeError`` raised while handling ``ValueError`` from a dependency."""
+    try:
+        try:
+            _raise_from_a_dependency()
+        except ValueError as exc:
+            if explicit:
+                raise RuntimeError("wrapped") from exc
+            raise RuntimeError("wrapped")  # noqa: B904 - implicit context on purpose
+    except RuntimeError as wrapped:
+        return wrapped
+    raise AssertionError("the helper must raise")
+
+
+def _line(text: str) -> int:
+    source = Path(__file__).read_text().splitlines()
+    matches = [n for n, line in enumerate(source, start=1) if line.strip() == text]
+    assert len(matches) == 1, text
+    return matches[0]
+
+
+_HERE = "durable_learning/test_worker_failure_locator.py"
+
+
+def test_a_wrapped_error_is_located_at_its_root_cause() -> None:
+    """``raise X from exc`` must report where ``exc`` happened, not the wrap.
+
+    Production recorded ``reconciliation.py:757`` -- the wrapping ``raise`` --
+    for every masked failure, so the real site was never seen.
+    """
+    where = exception_locator(_wrap(explicit=True))
+    assert where.startswith(f"{_HERE}:{_line('raise ValueError(SENTINEL)')}"), where
+    assert f":{_line('raise RuntimeError("wrapped") from exc')}" not in where
+    assert len(where) <= worker_module._LOCATOR_MAX
+
+
+def test_a_severed_or_implicit_chain_keeps_the_outer_site() -> None:
+    """``from None`` and an implicit ``__context__`` are not a wrapper's cause."""
+    implicit = _wrap(explicit=False)
+    assert implicit.__context__ is not None and implicit.__cause__ is None
+    outer = _line(
+        'raise RuntimeError("wrapped")  # noqa: B904 - implicit context on purpose'
+    )
+    assert exception_locator(implicit).startswith(f"{_HERE}:{outer}")
+    try:
+        raise RuntimeError("severed") from None
+    except RuntimeError as severed:
+        severed_line = _line('raise RuntimeError("severed") from None')
+        assert exception_locator(severed).startswith(f"{_HERE}:{severed_line}")
