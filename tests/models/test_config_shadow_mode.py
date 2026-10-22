@@ -3,6 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
+from reflexio.config_migration import canonicalize_config_document
 from reflexio.models.config_schema import Config, validate_stored_config
 
 
@@ -13,7 +14,10 @@ def test_retired_shadow_input_is_accepted_but_not_serialized(value: bool) -> Non
         "shadow_mode_enabled": value,
         "agent_context_prompt": "keep me",
     }
-    for config in (Config.model_validate(payload), validate_stored_config(payload)):
+    for config in (
+        Config.model_validate(canonicalize_config_document(payload)),
+        validate_stored_config(payload),
+    ):
         assert config.agent_context_prompt == "keep me"
         assert "shadow_mode_enabled" not in config.model_dump()
     assert payload["shadow_mode_enabled"] is value

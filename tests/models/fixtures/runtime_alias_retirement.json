@@ -1,0 +1,4054 @@
+[
+  {
+    "alias": "agent_feedback_configs.aggregation_config.clustering_similarity",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.aggregation_config.direction_overlap_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.direction_overlap_threshold",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.aggregation_config.min_cluster_size",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.aggregation_config.min_feedback_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_feedback_threshold": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.aggregation_config.reaggregation_trigger_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.aggregation_config.refresh_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "refresh_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.aggregation_config.similarity_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "similarity_threshold": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.batch_interval_override",
+    "canonical": "user_playbook_extractor_config.stride_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "batch_interval_override": 7
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.batch_size_override",
+    "canonical": "user_playbook_extractor_config.window_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "batch_size_override": 23
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.context_prompt",
+    "canonical": "user_playbook_extractor_config.context_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "context_prompt": "Keep customer context"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "context_prompt": "Keep customer context"
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.deduplication_config.search_threshold",
+    "canonical": "user_playbook_extractor_config.deduplication_config.search_threshold",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "deduplication_config": {
+          "search_threshold": 0.67
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "deduplication_config": {
+          "search_threshold": 0.67
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.deduplication_config.search_top_k",
+    "canonical": "user_playbook_extractor_config.deduplication_config.search_top_k",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "deduplication_config": {
+          "search_top_k": 13
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "deduplication_config": {
+          "search_top_k": 13
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.deduplication_config.strategy",
+    "canonical": "user_playbook_extractor_config.deduplication_config.strategy",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "deduplication_config": {
+          "strategy": "audited"
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "deduplication_config": {
+          "strategy": "audited"
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.extraction_definition_prompt",
+    "canonical": "user_playbook_extractor_config.extraction_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Keep customer extraction policy"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Keep customer extraction policy"
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.extraction_window_size_override",
+    "canonical": "user_playbook_extractor_config.window_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "extraction_window_size_override": 23
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.extraction_window_stride_override",
+    "canonical": "user_playbook_extractor_config.stride_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "extraction_window_stride_override": 7
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.feedback_aggregator_config.clustering_similarity",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.feedback_aggregator_config.direction_overlap_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.direction_overlap_threshold",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.feedback_aggregator_config.min_cluster_size",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "min_cluster_size": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.feedback_aggregator_config.min_feedback_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "min_feedback_threshold": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.feedback_aggregator_config.reaggregation_trigger_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.feedback_aggregator_config.refresh_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "refresh_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.feedback_aggregator_config.similarity_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "similarity_threshold": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.feedback_definition_prompt",
+    "canonical": "user_playbook_extractor_config.extraction_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "feedback_definition_prompt": "Keep customer extraction policy"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Keep customer extraction policy"
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.playbook_aggregator_config.clustering_similarity",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.playbook_aggregator_config.direction_overlap_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.direction_overlap_threshold",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.playbook_aggregator_config.min_cluster_size",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "min_cluster_size": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.playbook_aggregator_config.min_feedback_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "min_feedback_threshold": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.playbook_aggregator_config.reaggregation_trigger_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.playbook_aggregator_config.refresh_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "refresh_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.playbook_aggregator_config.similarity_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "similarity_threshold": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.playbook_definition_prompt",
+    "canonical": "user_playbook_extractor_config.extraction_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "playbook_definition_prompt": "Keep customer extraction policy"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Keep customer extraction policy"
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.request_sources_enabled",
+    "canonical": "user_playbook_extractor_config.request_sources_enabled",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "request_sources_enabled": [
+          "customer-channel"
+        ]
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "request_sources_enabled": [
+          "customer-channel"
+        ]
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.stride_size_override",
+    "canonical": "user_playbook_extractor_config.stride_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.tagging_definition_prompt",
+    "canonical": "user_playbook_extractor_config.tagging_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "tagging_definition_prompt": "Keep customer tagging"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "tagging_definition_prompt": "Keep customer tagging"
+      }
+    }
+  },
+  {
+    "alias": "agent_feedback_configs.window_size_override",
+    "canonical": "user_playbook_extractor_config.window_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_feedback_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    }
+  },
+  {
+    "alias": "agent_success_configs.evaluation_only_sampling_rate",
+    "canonical": "agent_success_config.evaluation_only_sampling_rate",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_success_configs": {
+        "success_definition_prompt": "Required customer policy",
+        "evaluation_only_sampling_rate": 0.29
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_success_config": {
+        "success_definition_prompt": "Required customer policy",
+        "evaluation_only_sampling_rate": 0.29
+      }
+    }
+  },
+  {
+    "alias": "agent_success_configs.request_sources_enabled",
+    "canonical": "agent_success_config.request_sources_enabled",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_success_configs": {
+        "success_definition_prompt": "Required customer policy",
+        "request_sources_enabled": [
+          "customer-channel"
+        ]
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_success_config": {
+        "success_definition_prompt": "Required customer policy",
+        "request_sources_enabled": [
+          "customer-channel"
+        ]
+      }
+    }
+  },
+  {
+    "alias": "agent_success_configs.retrieved_learning_sampling_rate",
+    "canonical": "agent_success_config.retrieved_learning_sampling_rate",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_success_configs": {
+        "success_definition_prompt": "Required customer policy",
+        "retrieved_learning_sampling_rate": 0.19
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_success_config": {
+        "success_definition_prompt": "Required customer policy",
+        "retrieved_learning_sampling_rate": 0.19
+      }
+    }
+  },
+  {
+    "alias": "agent_success_configs.sampling_rate",
+    "canonical": "agent_success_config.sampling_rate",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_success_configs": {
+        "success_definition_prompt": "Required customer policy",
+        "sampling_rate": 0.37
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_success_config": {
+        "success_definition_prompt": "Required customer policy",
+        "sampling_rate": 0.37
+      }
+    }
+  },
+  {
+    "alias": "agent_success_configs.success_definition_prompt",
+    "canonical": "agent_success_config.success_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_success_configs": {
+        "success_definition_prompt": "Keep customer success policy"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_success_config": {
+        "success_definition_prompt": "Keep customer success policy"
+      }
+    }
+  },
+  {
+    "alias": "agent_success_configs.tagging_definition_prompt",
+    "canonical": "agent_success_config.tagging_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_success_configs": {
+        "success_definition_prompt": "Required customer policy",
+        "tagging_definition_prompt": "Keep customer tagging"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "agent_success_config": {
+        "success_definition_prompt": "Required customer policy",
+        "tagging_definition_prompt": "Keep customer tagging"
+      }
+    }
+  },
+  {
+    "alias": "batch_interval",
+    "canonical": "stride_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "batch_interval": 7
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7
+    }
+  },
+  {
+    "alias": "batch_size",
+    "canonical": "window_size",
+    "input": {
+      "storage_config": null,
+      "stride_size": 7,
+      "batch_size": 23
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7
+    }
+  },
+  {
+    "alias": "extraction_preset",
+    "canonical": "window_size",
+    "input": {
+      "storage_config": null,
+      "extraction_preset": "long_form"
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 25,
+      "stride_size": 10
+    }
+  },
+  {
+    "alias": "extraction_window_size",
+    "canonical": "window_size",
+    "input": {
+      "storage_config": null,
+      "stride_size": 7,
+      "extraction_window_size": 23
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7
+    }
+  },
+  {
+    "alias": "extraction_window_stride",
+    "canonical": "stride_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "extraction_window_stride": 7
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7
+    }
+  },
+  {
+    "alias": "playbook_configs.aggregation_config.clustering_similarity",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.aggregation_config.direction_overlap_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.direction_overlap_threshold",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.aggregation_config.min_cluster_size",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.aggregation_config.min_feedback_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_feedback_threshold": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.aggregation_config.reaggregation_trigger_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.aggregation_config.refresh_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "refresh_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.aggregation_config.similarity_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "similarity_threshold": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.batch_interval_override",
+    "canonical": "user_playbook_extractor_config.stride_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "batch_interval_override": 7
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.batch_size_override",
+    "canonical": "user_playbook_extractor_config.window_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "batch_size_override": 23
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.context_prompt",
+    "canonical": "user_playbook_extractor_config.context_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "context_prompt": "Keep customer context"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "context_prompt": "Keep customer context"
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.deduplication_config.search_threshold",
+    "canonical": "user_playbook_extractor_config.deduplication_config.search_threshold",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "deduplication_config": {
+          "search_threshold": 0.67
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "deduplication_config": {
+          "search_threshold": 0.67
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.deduplication_config.search_top_k",
+    "canonical": "user_playbook_extractor_config.deduplication_config.search_top_k",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "deduplication_config": {
+          "search_top_k": 13
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "deduplication_config": {
+          "search_top_k": 13
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.deduplication_config.strategy",
+    "canonical": "user_playbook_extractor_config.deduplication_config.strategy",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "deduplication_config": {
+          "strategy": "audited"
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "deduplication_config": {
+          "strategy": "audited"
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.extraction_definition_prompt",
+    "canonical": "user_playbook_extractor_config.extraction_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Keep customer extraction policy"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Keep customer extraction policy"
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.extraction_window_size_override",
+    "canonical": "user_playbook_extractor_config.window_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "extraction_window_size_override": 23
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.extraction_window_stride_override",
+    "canonical": "user_playbook_extractor_config.stride_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "extraction_window_stride_override": 7
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.feedback_aggregator_config.clustering_similarity",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.feedback_aggregator_config.direction_overlap_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.direction_overlap_threshold",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.feedback_aggregator_config.min_cluster_size",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "min_cluster_size": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.feedback_aggregator_config.min_feedback_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "min_feedback_threshold": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.feedback_aggregator_config.reaggregation_trigger_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.feedback_aggregator_config.refresh_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "refresh_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.feedback_aggregator_config.similarity_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "similarity_threshold": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.feedback_definition_prompt",
+    "canonical": "user_playbook_extractor_config.extraction_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "feedback_definition_prompt": "Keep customer extraction policy"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Keep customer extraction policy"
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.playbook_aggregator_config.clustering_similarity",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.playbook_aggregator_config.direction_overlap_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.direction_overlap_threshold",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.playbook_aggregator_config.min_cluster_size",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "min_cluster_size": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.playbook_aggregator_config.min_feedback_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "min_feedback_threshold": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.playbook_aggregator_config.reaggregation_trigger_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.playbook_aggregator_config.refresh_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "refresh_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.playbook_aggregator_config.similarity_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "similarity_threshold": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.playbook_definition_prompt",
+    "canonical": "user_playbook_extractor_config.extraction_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "playbook_definition_prompt": "Keep customer extraction policy"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Keep customer extraction policy"
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.request_sources_enabled",
+    "canonical": "user_playbook_extractor_config.request_sources_enabled",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "request_sources_enabled": [
+          "customer-channel"
+        ]
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "request_sources_enabled": [
+          "customer-channel"
+        ]
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.stride_size_override",
+    "canonical": "user_playbook_extractor_config.stride_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.tagging_definition_prompt",
+    "canonical": "user_playbook_extractor_config.tagging_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "tagging_definition_prompt": "Keep customer tagging"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "tagging_definition_prompt": "Keep customer tagging"
+      }
+    }
+  },
+  {
+    "alias": "playbook_configs.window_size_override",
+    "canonical": "user_playbook_extractor_config.window_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    }
+  },
+  {
+    "alias": "playbook_optimizer_config.auto_update_user_playbooks",
+    "canonical": "playbook_optimizer_config.user_playbooks_enabled",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_optimizer_config": {
+        "optimize_user_playbooks": true,
+        "auto_update_user_playbooks": true
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_optimizer_config": {
+        "user_playbooks_enabled": true
+      }
+    }
+  },
+  {
+    "alias": "playbook_optimizer_config.optimize_user_playbooks",
+    "canonical": "playbook_optimizer_config.user_playbooks_enabled",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_optimizer_config": {
+        "optimize_user_playbooks": true,
+        "auto_update_user_playbooks": true
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_optimizer_config": {
+        "user_playbooks_enabled": true
+      }
+    }
+  },
+  {
+    "alias": "playbook_optimizer_config.use_merge",
+    "canonical": "playbook_optimizer_config.max_merge_invocations",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_optimizer_config": {
+        "use_merge": false,
+        "max_merge_invocations": 9
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "playbook_optimizer_config": {
+        "max_merge_invocations": 0
+      }
+    }
+  },
+  {
+    "alias": "profile_extractor_config.batch_interval_override",
+    "canonical": "profile_extractor_config.stride_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "batch_interval_override": 7
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    }
+  },
+  {
+    "alias": "profile_extractor_config.batch_size_override",
+    "canonical": "profile_extractor_config.window_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "batch_size_override": 23
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    }
+  },
+  {
+    "alias": "profile_extractor_config.extraction_window_size_override",
+    "canonical": "profile_extractor_config.window_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "extraction_window_size_override": 23
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    }
+  },
+  {
+    "alias": "profile_extractor_config.extraction_window_stride_override",
+    "canonical": "profile_extractor_config.stride_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "extraction_window_stride_override": 7
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    }
+  },
+  {
+    "alias": "profile_extractor_config.profile_content_definition_prompt",
+    "canonical": "profile_extractor_config.extraction_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "profile_content_definition_prompt": "Keep customer extraction policy"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Keep customer extraction policy"
+      }
+    }
+  },
+  {
+    "alias": "profile_extractor_configs.batch_interval_override",
+    "canonical": "profile_extractor_config.stride_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "batch_interval_override": 7
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    }
+  },
+  {
+    "alias": "profile_extractor_configs.batch_size_override",
+    "canonical": "profile_extractor_config.window_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "batch_size_override": 23
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    }
+  },
+  {
+    "alias": "profile_extractor_configs.context_prompt",
+    "canonical": "profile_extractor_config.context_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "context_prompt": "Keep customer context"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "context_prompt": "Keep customer context"
+      }
+    }
+  },
+  {
+    "alias": "profile_extractor_configs.extraction_definition_prompt",
+    "canonical": "profile_extractor_config.extraction_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_configs": {
+        "extraction_definition_prompt": "Keep customer extraction policy"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Keep customer extraction policy"
+      }
+    }
+  },
+  {
+    "alias": "profile_extractor_configs.extraction_window_size_override",
+    "canonical": "profile_extractor_config.window_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "extraction_window_size_override": 23
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    }
+  },
+  {
+    "alias": "profile_extractor_configs.extraction_window_stride_override",
+    "canonical": "profile_extractor_config.stride_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "extraction_window_stride_override": 7
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    }
+  },
+  {
+    "alias": "profile_extractor_configs.manual_trigger",
+    "canonical": "profile_extractor_config.manual_trigger",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "manual_trigger": true
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "manual_trigger": true
+      }
+    }
+  },
+  {
+    "alias": "profile_extractor_configs.profile_content_definition_prompt",
+    "canonical": "profile_extractor_config.extraction_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_configs": {
+        "profile_content_definition_prompt": "Keep customer extraction policy"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Keep customer extraction policy"
+      }
+    }
+  },
+  {
+    "alias": "profile_extractor_configs.request_sources_enabled",
+    "canonical": "profile_extractor_config.request_sources_enabled",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "request_sources_enabled": [
+          "customer-channel"
+        ]
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "request_sources_enabled": [
+          "customer-channel"
+        ]
+      }
+    }
+  },
+  {
+    "alias": "profile_extractor_configs.should_extract_profile_prompt_override",
+    "canonical": "profile_extractor_config.should_extract_profile_prompt_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "should_extract_profile_prompt_override": "Keep extraction admission"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "should_extract_profile_prompt_override": "Keep extraction admission"
+      }
+    }
+  },
+  {
+    "alias": "profile_extractor_configs.stride_size_override",
+    "canonical": "profile_extractor_config.stride_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    }
+  },
+  {
+    "alias": "profile_extractor_configs.tagging_definition_prompt",
+    "canonical": "profile_extractor_config.tagging_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "tagging_definition_prompt": "Keep customer tagging"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "tagging_definition_prompt": "Keep customer tagging"
+      }
+    }
+  },
+  {
+    "alias": "profile_extractor_configs.window_size_override",
+    "canonical": "profile_extractor_config.window_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "profile_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    }
+  },
+  {
+    "alias": "storage_config.key",
+    "canonical": "storage_config.type",
+    "input": {
+      "storage_config": {
+        "db_url": "postgresql://user:password@localhost:5432/customer",
+        "url": "https://customer.supabase.co",
+        "key": "historical-key",
+        "read_url": "https://replica.supabase.co",
+        "read_key": "historical-read-key",
+        "schema": "customer_schema"
+      },
+      "window_size": 23,
+      "stride_size": 7
+    },
+    "expected": {
+      "storage_config": {
+        "type": "supabase",
+        "db_url": "postgresql://user:password@localhost:5432/customer",
+        "schema": "customer_schema"
+      },
+      "window_size": 23,
+      "stride_size": 7
+    }
+  },
+  {
+    "alias": "storage_config.read_key",
+    "canonical": "storage_config.type",
+    "input": {
+      "storage_config": {
+        "db_url": "postgresql://user:password@localhost:5432/customer",
+        "url": "https://customer.supabase.co",
+        "key": "historical-key",
+        "read_url": "https://replica.supabase.co",
+        "read_key": "historical-read-key",
+        "schema": "customer_schema"
+      },
+      "window_size": 23,
+      "stride_size": 7
+    },
+    "expected": {
+      "storage_config": {
+        "type": "supabase",
+        "db_url": "postgresql://user:password@localhost:5432/customer",
+        "schema": "customer_schema"
+      },
+      "window_size": 23,
+      "stride_size": 7
+    }
+  },
+  {
+    "alias": "storage_config.read_url",
+    "canonical": "storage_config.type",
+    "input": {
+      "storage_config": {
+        "db_url": "postgresql://user:password@localhost:5432/customer",
+        "url": "https://customer.supabase.co",
+        "key": "historical-key",
+        "read_url": "https://replica.supabase.co",
+        "read_key": "historical-read-key",
+        "schema": "customer_schema"
+      },
+      "window_size": 23,
+      "stride_size": 7
+    },
+    "expected": {
+      "storage_config": {
+        "type": "supabase",
+        "db_url": "postgresql://user:password@localhost:5432/customer",
+        "schema": "customer_schema"
+      },
+      "window_size": 23,
+      "stride_size": 7
+    }
+  },
+  {
+    "alias": "storage_config.schema_name",
+    "canonical": "storage_config.schema",
+    "input": {
+      "storage_config": {
+        "type": "postgres",
+        "db_url": "postgresql://user:password@localhost:5432/customer",
+        "pool_size": 7,
+        "pool_acquire_timeout": 2.5,
+        "read_db_url": "postgresql://reader:password@localhost:5432/replica",
+        "read_pool_size": 3,
+        "read_pool_acquire_timeout": 1.5,
+        "schema_name": "customer_schema"
+      },
+      "window_size": 23,
+      "stride_size": 7
+    },
+    "expected": {
+      "storage_config": {
+        "type": "postgres",
+        "db_url": "postgresql://user:password@localhost:5432/customer",
+        "schema": "customer_schema",
+        "pool_size": 7,
+        "pool_acquire_timeout": 2.5,
+        "read_db_url": "postgresql://reader:password@localhost:5432/replica",
+        "read_pool_size": 3,
+        "read_pool_acquire_timeout": 1.5
+      },
+      "window_size": 23,
+      "stride_size": 7
+    }
+  },
+  {
+    "alias": "storage_config.storage_type",
+    "canonical": "storage_config.type",
+    "input": {
+      "storage_config": {
+        "db_url": "postgresql://user:password@localhost:5432/customer",
+        "schema": "customer_schema",
+        "pool_size": 7,
+        "pool_acquire_timeout": 2.5,
+        "read_db_url": "postgresql://reader:password@localhost:5432/replica",
+        "read_pool_size": 3,
+        "read_pool_acquire_timeout": 1.5,
+        "storage_type": "postgres"
+      },
+      "window_size": 23,
+      "stride_size": 7
+    },
+    "expected": {
+      "storage_config": {
+        "type": "postgres",
+        "db_url": "postgresql://user:password@localhost:5432/customer",
+        "schema": "customer_schema",
+        "pool_size": 7,
+        "pool_acquire_timeout": 2.5,
+        "read_db_url": "postgresql://reader:password@localhost:5432/replica",
+        "read_pool_size": 3,
+        "read_pool_acquire_timeout": 1.5
+      },
+      "window_size": 23,
+      "stride_size": 7
+    }
+  },
+  {
+    "alias": "storage_config.url",
+    "canonical": "storage_config.type",
+    "input": {
+      "storage_config": {
+        "db_url": "postgresql://user:password@localhost:5432/customer",
+        "url": "https://customer.supabase.co",
+        "key": "historical-key",
+        "read_url": "https://replica.supabase.co",
+        "read_key": "historical-read-key",
+        "schema": "customer_schema"
+      },
+      "window_size": 23,
+      "stride_size": 7
+    },
+    "expected": {
+      "storage_config": {
+        "type": "supabase",
+        "db_url": "postgresql://user:password@localhost:5432/customer",
+        "schema": "customer_schema"
+      },
+      "window_size": 23,
+      "stride_size": 7
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.aggregation_config.min_feedback_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_feedback_threshold": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.aggregation_config.refresh_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "refresh_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.aggregation_config.similarity_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "similarity_threshold": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.batch_interval_override",
+    "canonical": "user_playbook_extractor_config.stride_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "batch_interval_override": 7
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.batch_size_override",
+    "canonical": "user_playbook_extractor_config.window_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "batch_size_override": 23
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.extraction_window_size_override",
+    "canonical": "user_playbook_extractor_config.window_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "extraction_window_size_override": 23
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.extraction_window_stride_override",
+    "canonical": "user_playbook_extractor_config.stride_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "extraction_window_stride_override": 7
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.feedback_aggregator_config.clustering_similarity",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.feedback_aggregator_config.direction_overlap_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.direction_overlap_threshold",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.feedback_aggregator_config.min_cluster_size",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "min_cluster_size": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.feedback_aggregator_config.min_feedback_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "min_feedback_threshold": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.feedback_aggregator_config.reaggregation_trigger_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.feedback_aggregator_config.refresh_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "refresh_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.feedback_aggregator_config.similarity_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "similarity_threshold": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.feedback_definition_prompt",
+    "canonical": "user_playbook_extractor_config.extraction_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "feedback_definition_prompt": "Keep customer extraction policy"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Keep customer extraction policy"
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.playbook_aggregator_config.clustering_similarity",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.playbook_aggregator_config.direction_overlap_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.direction_overlap_threshold",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.playbook_aggregator_config.min_cluster_size",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "min_cluster_size": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.playbook_aggregator_config.min_feedback_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "min_feedback_threshold": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.playbook_aggregator_config.reaggregation_trigger_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.playbook_aggregator_config.refresh_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "refresh_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.playbook_aggregator_config.similarity_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "similarity_threshold": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_config.playbook_definition_prompt",
+    "canonical": "user_playbook_extractor_config.extraction_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "playbook_definition_prompt": "Keep customer extraction policy"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Keep customer extraction policy"
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.aggregation_config.clustering_similarity",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.aggregation_config.direction_overlap_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.direction_overlap_threshold",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.aggregation_config.min_cluster_size",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.aggregation_config.min_feedback_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_feedback_threshold": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.aggregation_config.reaggregation_trigger_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.aggregation_config.refresh_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "refresh_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.aggregation_config.similarity_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "similarity_threshold": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.batch_interval_override",
+    "canonical": "user_playbook_extractor_config.stride_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "batch_interval_override": 7
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.batch_size_override",
+    "canonical": "user_playbook_extractor_config.window_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "batch_size_override": 23
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.context_prompt",
+    "canonical": "user_playbook_extractor_config.context_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "context_prompt": "Keep customer context"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "context_prompt": "Keep customer context"
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.deduplication_config.search_threshold",
+    "canonical": "user_playbook_extractor_config.deduplication_config.search_threshold",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "deduplication_config": {
+          "search_threshold": 0.67
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "deduplication_config": {
+          "search_threshold": 0.67
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.deduplication_config.search_top_k",
+    "canonical": "user_playbook_extractor_config.deduplication_config.search_top_k",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "deduplication_config": {
+          "search_top_k": 13
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "deduplication_config": {
+          "search_top_k": 13
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.deduplication_config.strategy",
+    "canonical": "user_playbook_extractor_config.deduplication_config.strategy",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "deduplication_config": {
+          "strategy": "audited"
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "deduplication_config": {
+          "strategy": "audited"
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.extraction_definition_prompt",
+    "canonical": "user_playbook_extractor_config.extraction_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Keep customer extraction policy"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Keep customer extraction policy"
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.extraction_window_size_override",
+    "canonical": "user_playbook_extractor_config.window_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "extraction_window_size_override": 23
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.extraction_window_stride_override",
+    "canonical": "user_playbook_extractor_config.stride_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "extraction_window_stride_override": 7
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.feedback_aggregator_config.clustering_similarity",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.feedback_aggregator_config.direction_overlap_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.direction_overlap_threshold",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.feedback_aggregator_config.min_cluster_size",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "min_cluster_size": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.feedback_aggregator_config.min_feedback_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "min_feedback_threshold": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.feedback_aggregator_config.reaggregation_trigger_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.feedback_aggregator_config.refresh_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "refresh_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.feedback_aggregator_config.similarity_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "feedback_aggregator_config": {
+          "similarity_threshold": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.feedback_definition_prompt",
+    "canonical": "user_playbook_extractor_config.extraction_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "feedback_definition_prompt": "Keep customer extraction policy"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Keep customer extraction policy"
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.playbook_aggregator_config.clustering_similarity",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.playbook_aggregator_config.direction_overlap_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.direction_overlap_threshold",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "direction_overlap_threshold": 0.71
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.playbook_aggregator_config.min_cluster_size",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "min_cluster_size": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.playbook_aggregator_config.min_feedback_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.min_cluster_size",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "min_feedback_threshold": 7
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "min_cluster_size": 7
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.playbook_aggregator_config.reaggregation_trigger_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.playbook_aggregator_config.refresh_count",
+    "canonical": "user_playbook_extractor_config.aggregation_config.reaggregation_trigger_count",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "refresh_count": 11
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "reaggregation_trigger_count": 11
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.playbook_aggregator_config.similarity_threshold",
+    "canonical": "user_playbook_extractor_config.aggregation_config.clustering_similarity",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "playbook_aggregator_config": {
+          "similarity_threshold": 0.83
+        }
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "aggregation_config": {
+          "clustering_similarity": 0.83
+        }
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.playbook_definition_prompt",
+    "canonical": "user_playbook_extractor_config.extraction_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "playbook_definition_prompt": "Keep customer extraction policy"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Keep customer extraction policy"
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.request_sources_enabled",
+    "canonical": "user_playbook_extractor_config.request_sources_enabled",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "request_sources_enabled": [
+          "customer-channel"
+        ]
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "request_sources_enabled": [
+          "customer-channel"
+        ]
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.stride_size_override",
+    "canonical": "user_playbook_extractor_config.stride_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "stride_size_override": 7
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.tagging_definition_prompt",
+    "canonical": "user_playbook_extractor_config.tagging_definition_prompt",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "tagging_definition_prompt": "Keep customer tagging"
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "tagging_definition_prompt": "Keep customer tagging"
+      }
+    }
+  },
+  {
+    "alias": "user_playbook_extractor_configs.window_size_override",
+    "canonical": "user_playbook_extractor_config.window_size_override",
+    "input": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_configs": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    },
+    "expected": {
+      "storage_config": null,
+      "window_size": 23,
+      "stride_size": 7,
+      "user_playbook_extractor_config": {
+        "extraction_definition_prompt": "Required customer policy",
+        "window_size_override": 23
+      }
+    }
+  }
+]

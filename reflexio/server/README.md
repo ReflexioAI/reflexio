@@ -728,7 +728,10 @@ Key files:
 - `configurator.py`: DefaultConfigurator - loads the current JSON config and creates storage
 - `local_file_config_storage.py`: Read-only existing-file loads, exclusive first initialization and explicit atomic replacement
 Existing local configuration files retain their bytes, permissions, inode and modification time during reads.
-Invalid JSON, unsupported backends and invalid policy fail without substituting
+Obsolete configuration names are rejected during normal constructors, reads and
+writes, including when a canonical name is also present. Historical translation
+exists only in explicit upgrade operations. Invalid JSON, unsupported backends
+and invalid policy fail without substituting
 defaults. Use `reflexio config upgrade-file old.json --output canonical.json` for
 an explicit canonical copy while retaining the original. Full `save_config`
 remains an explicit typed replacement. First initialization publishes a complete

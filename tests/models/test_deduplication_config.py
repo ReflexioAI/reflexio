@@ -4,10 +4,8 @@ from copy import deepcopy
 
 import pytest
 
-from reflexio.models.config_schema import (
-    DeduplicationConfig,
-    strip_retired_config_fields,
-)
+from reflexio.config_migration import strip_retired_config_fields
+from reflexio.models.config_schema import DeduplicationConfig
 
 
 def test_retired_length_warning_does_not_survive_schema_or_serialization():

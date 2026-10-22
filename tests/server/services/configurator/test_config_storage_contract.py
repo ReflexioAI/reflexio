@@ -270,7 +270,7 @@ def test_retired_custom_policy_propagates_without_resetting_file(
         load_storage_from_config,
         save_storage_to_config,
     )
-    from reflexio.config_migration import ConfigurationMigrationError
+    from reflexio.config_migration import StoredConfigurationError
 
     storage = _make_local_file_storage(str(tmp_path))
     payload = {
@@ -288,7 +288,7 @@ def test_retired_custom_policy_propagates_without_resetting_file(
         lambda: load_storage_from_config("test-org", base_dir=str(tmp_path)),
         lambda: save_storage_to_config("sqlite", "test-org", base_dir=str(tmp_path)),
     ):
-        with pytest.raises(ConfigurationMigrationError, match=field) as error:
+        with pytest.raises(StoredConfigurationError, match=section) as error:
             load()
         assert "private-custom-policy" not in str(error.value)
         assert path.read_bytes() == before

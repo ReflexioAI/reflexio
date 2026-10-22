@@ -49,10 +49,12 @@ def test_document_conversion_preserves_policy_identity_and_opaque_metadata():
     result = canonicalize_config_document(payload)
     assert payload == before
     assert canonicalize_config_document(result) == result
-    assert (
-        validate_stored_config(result).model_dump_json()
-        == validate_stored_config(payload).model_dump_json()
-    )
+    typed = validate_stored_config(result)
+    assert (typed.window_size, typed.stride_size) == (23, 13)
+    assert typed.user_playbook_extractor_config is not None
+    assert typed.user_playbook_extractor_config.aggregation_config.min_cluster_size == 9
+    assert typed.playbook_optimizer_config.max_merge_invocations == 0
+    assert typed.playbook_optimizer_config.user_playbooks_enabled is False
     assert result["storage_config"] == {
         "type": "supabase",
         "schema": "custom_schema",
@@ -100,8 +102,10 @@ def test_conversion_does_not_require_runtime_acceptance_of_legacy_input(
         return config_schema.Config.model_validate(document, extra="ignore")
 
     # Explicit conversion must outlive removal of these runtime rewrite hooks.
-    monkeypatch.delattr(config_schema, "canonicalize_stored_config_fields")
-    monkeypatch.delattr(config_schema, "_normalize_storage_backend")
+    monkeypatch.delattr(
+        config_schema, "canonicalize_stored_config_fields", raising=False
+    )
+    monkeypatch.delattr(config_schema, "_normalize_storage_backend", raising=False)
     monkeypatch.setattr(config_schema, "validate_stored_config", canonical_only)
     assert canonicalize_config_document(payload) == expected
     assert len(received) == 1
@@ -206,30 +210,50 @@ def test_failed_publication_cleans_temporary_output_and_preserves_originals(tmp_
 
 
 @pytest.mark.parametrize(
-    "storage",
+    "storage,expected",
     [
-        None,
-        {"db_path": "/tmp/custom.sqlite"},
-        {"db_url": "postgresql://local:local@localhost/test"},
-        {
-            "type": "postgres",
-            "schema_name": "custom",
-            "db_url": "postgresql://local:local@localhost/test",
-            "pool_size": 7,
-            "read_db_url": "postgresql://local:local@localhost/replica",
-            "read_pool_size": 3,
-        },
-        {"type": "postgres", "managed_by": "platform", "schema_present": False},
+        (None, None),
+        (
+            {"db_path": "/tmp/custom.sqlite"},
+            {"type": "sqlite", "db_path": "/tmp/custom.sqlite"},
+        ),
+        (
+            {"db_url": "postgresql://local:local@localhost/test"},
+            {"type": "postgres", "db_url": "postgresql://local:local@localhost/test"},
+        ),
+        (
+            {
+                "type": "postgres",
+                "schema_name": "custom",
+                "db_url": "postgresql://local:local@localhost/test",
+                "pool_size": 7,
+                "read_db_url": "postgresql://local:local@localhost/replica",
+                "read_pool_size": 3,
+            },
+            {
+                "type": "postgres",
+                "schema": "custom",
+                "db_url": "postgresql://local:local@localhost/test",
+                "pool_size": 7,
+                "read_db_url": "postgresql://local:local@localhost/replica",
+                "read_pool_size": 3,
+            },
+        ),
+        (
+            {"type": "postgres", "managed_by": "platform", "schema_present": False},
+            {"type": "postgres", "managed_by": "platform", "schema_present": False},
+        ),
     ],
 )
-def test_conversion_keeps_storage_policy_without_materializing_defaults(storage):
-    payload = {"storage_config": storage}
-    result = canonicalize_config_document(payload)
-    assert (
-        validate_stored_config(result).model_dump_json()
-        == validate_stored_config(payload).model_dump_json()
-    )
-    if storage is not None:
+def test_conversion_keeps_storage_policy_without_materializing_defaults(
+    storage, expected
+):
+    result = canonicalize_config_document({"storage_config": storage})
+    assert result == {"storage_config": expected}
+    loaded = validate_stored_config(result)
+    if expected is not None:
+        assert loaded.storage_config is not None
+        assert loaded.storage_config.storage_type == expected["type"]
         assert "pool_acquire_timeout" not in result["storage_config"]
         assert "read_pool_acquire_timeout" not in result["storage_config"]
 

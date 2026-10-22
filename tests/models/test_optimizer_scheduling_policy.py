@@ -7,10 +7,8 @@ from pathlib import Path
 import pytest
 
 from reflexio.cli.bootstrap_config import load_storage_from_config
-from reflexio.models.config_schema import (
-    PlaybookOptimizerConfig,
-    strip_retired_config_fields,
-)
+from reflexio.config_migration import strip_retired_config_fields
+from reflexio.models.config_schema import PlaybookOptimizerConfig
 from reflexio.server.services.configurator.local_file_config_storage import (
     LocalFileConfigStorage,
 )
@@ -106,11 +104,11 @@ def test_invalid_saved_policy_is_not_rewritten(tmp_path):
         }
     )
     path.write_text(original)
-    with pytest.raises(ValueError, match="cooldown_after_aborts_seconds"):
+    with pytest.raises(ValueError, match="playbook_optimizer_config"):
         storage.load_config()
     assert path.read_text() == original
 
-    with pytest.raises(ValueError, match="cooldown_after_aborts_seconds"):
+    with pytest.raises(ValueError, match="playbook_optimizer_config"):
         load_storage_from_config(org_id="scheduler-custom", base_dir=str(tmp_path))
     assert path.read_text() == original
 
