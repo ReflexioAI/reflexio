@@ -20,9 +20,16 @@ def test_launcher_reuses_parser_without_importing_server_or_site_packages():
 import sys
 sys.path.insert(0, {str(package_root)!r})
 from reflexio.inference_launch import ordinary_inference_launch
+from reflexio.config_env import ConfigurationMigrationError
 from reflexio.env_utils import env_truthy
 assert env_truthy(' ON ')
 assert ordinary_inference_launch({{}}).mode == 'colocated'
+try:
+    ordinary_inference_launch({{'REFLEXIO_DISABLE_LOCAL_EMBEDDING_DAEMON': 'true'}})
+except ConfigurationMigrationError:
+    pass
+else:
+    raise AssertionError('Legacy ownership settings must still fail without site packages')
 assert not any(name == 'reflexio.server' or name.startswith('reflexio.server.')
                for name in sys.modules)
 """

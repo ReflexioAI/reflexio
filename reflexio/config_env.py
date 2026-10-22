@@ -14,6 +14,14 @@ DEFAULT_STORAGE_POOL_SIZE = 10
 DEFAULT_STORAGE_POOL_ACQUIRE_TIMEOUT = 30.0
 
 
+class StoredConfigurationError(ValueError):
+    """The saved configuration must be corrected before it can load."""
+
+
+class ConfigurationMigrationError(StoredConfigurationError):
+    """An explicit migration is required before this saved policy can load."""
+
+
 def _positive_int(env: Mapping[str, str], name: str, default: int) -> int:
     raw = env.get(name, "").strip()
     if not raw:
