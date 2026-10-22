@@ -321,3 +321,121 @@ def test_suspension_before_dispatch_does_not_consume_method_allowance():
     finally:
         extraction_provider_guard.reset(guard_token)
         current_overflow_coordinator.reset(coordinator_token)
+
+
+def _tool_turn(arguments, name="search_playbooks"):
+    from reflexio.server.llm._litellm_types import ToolCallingChatResponse
+
+    return ToolCallingChatResponse(
+        content=None,
+        tool_calls=[
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": name, "arguments": arguments},
+            }
+        ],
+        finish_reason="tool_calls",
+    )
+
+
+class ToolScriptedClient(ScriptedClient):
+    """Returns ``ToolCallingChatResponse`` items unserialized."""
+
+    def generate_chat_response_with_provenance(self, **kwargs):
+        kwargs["provider_request_guard"]()
+        self.requests.append(json.loads(json.dumps(kwargs, default=str)))
+        output = next(self.outputs)
+        if not isinstance(output, dict):
+            return SimpleNamespace(value=output, provenance=ModelProvenance())
+        return SimpleNamespace(value=json.dumps(output), provenance=ModelProvenance())
+
+
+@pytest.mark.parametrize(
+    ("arguments", "name", "error"),
+    [
+        ("null", "search_playbooks", "JSON object"),
+        ("[]", "search_playbooks", "JSON object"),
+        ("{}", "search_playbooks", "'query'"),
+        ("not json", "search_playbooks", "JSON object"),
+        ('{"query": 7}', "search_playbooks", "'query'"),
+        ('{"query": "  "}', "search_playbooks", "'query'"),
+        ('{"query": "auth", "limit": "3"}', "search_playbooks", "'limit'"),
+        ('{"query": "auth", "limit": 11}', "search_playbooks", "'limit'"),
+        ('{"query": "auth", "extra": 1}', "search_playbooks", "Only"),
+        ('{"query": "auth"}', "search_everything", "Unknown tool"),
+    ],
+)
+def test_malformed_tool_arguments_are_returned_to_the_model(arguments, name, error):
+    """A malformed read-only call is the model's mistake to correct, not a crash.
+
+    Before this, ``set(None)`` / ``args["query"]`` raised TypeError/KeyError,
+    which the abstention handler masked as a semantic abstention and the
+    durable worker retried forever.
+    """
+    client = ToolScriptedClient(
+        [
+            _tool_turn(arguments, name),
+            {"decisions": [replacement()]},
+            {"findings": []},
+        ]
+    )
+    engine = Reconciler(cast(LiteLLMClient, client), "scripted")
+    batch = engine.run(payload(), {("request", 17): object()})
+
+    assert [d.kind for d in batch.decisions] == ["replace"]
+    tool_messages = [
+        m for m in client.requests[1]["messages"] if m.get("role") == "tool"
+    ]
+    assert len(tool_messages) == 1
+    assert tool_messages[0]["tool_call_id"] == "call_1"
+    assert error in json.loads(tool_messages[0]["content"])["error"]
+    assert engine.calls == 3
+
+
+def test_well_formed_tool_call_still_searches_the_collection():
+    client = ToolScriptedClient(
+        [
+            _tool_turn('{"query": "authorization", "limit": 1}'),
+            {"decisions": [replacement()]},
+            {"findings": []},
+        ]
+    )
+    engine = Reconciler(cast(LiteLLMClient, client), "scripted")
+    engine.run(payload(), {("request", 17): object()})
+    tool = next(m for m in client.requests[1]["messages"] if m.get("role") == "tool")
+    rows = json.loads(tool["content"])
+    assert len(rows) == 1 and rows[0]["content"] == "check authorization"
+
+
+@pytest.mark.parametrize("error", [TypeError("bug"), KeyError("bug")])
+def test_unexpected_errors_are_not_masked_as_abstentions(error):
+    """Only deterministic rejections abstain; a bug keeps its own type."""
+    from reflexio.server.services.playbook.components.reconciliation import (
+        _run_audited,
+    )
+
+    client = ScriptedClient([error])
+    engine = Reconciler(cast(LiteLLMClient, client), "scripted")
+    with pytest.raises(type(error)) as raised:
+        _run_audited(engine, payload(), {("request", 17): object()})
+    assert not isinstance(raised.value, AuditedConsolidationAbstainedError)
+
+
+def test_deterministic_rejections_still_abstain():
+    from reflexio.server.llm.litellm_client import StructuredOutputRepairError
+    from reflexio.server.services.playbook.components.reconciliation import (
+        _run_audited,
+    )
+
+    repair = StructuredOutputRepairError(
+        "exhausted", failure_kind="semantic", model="scripted"
+    )
+    for outputs in (
+        [{"decisions": []}, {"decisions": []}],  # repaired once, still invalid
+        [repair],
+    ):
+        engine = Reconciler(cast(LiteLLMClient, ScriptedClient(outputs)), "scripted")
+        with pytest.raises(AuditedConsolidationAbstainedError) as raised:
+            _run_audited(engine, payload(), {("request", 17): object()})
+        assert isinstance(raised.value.__cause__, ValueError | type(repair))

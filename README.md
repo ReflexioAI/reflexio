@@ -486,6 +486,12 @@ Publishing commits interactions before returning success. Background workers pro
 configured sliding windows in admission order, regardless of request boundaries.
 Different users can extract concurrently within `REFLEXIO_PUBLISH_LEARNING_WORKERS`
 (default 4 per process); each user's profile/playbook cursors retry independently.
+A failing window retries with backoff capped at five minutes, up to 12 attempts
+(about 18 minutes); the 12th failure parks the cursor, logs one ERROR naming the
+failure's source location, and reports `failed` with reason `retry_exhausted`.
+An operator re-arms it with
+`reflexio.server.services.extraction.input_recovery.plan_input_budget_recovery`
+then `apply_input_budget_recovery`; a re-armed window gets one more attempt.
 A partial window is evaluated after an optional completion hint or six hours of
 session inactivity by default. Both paths retain the usefulness judge; a negative
 judge result covers the input without generating learnings. Normal full windows
