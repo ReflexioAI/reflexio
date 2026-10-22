@@ -75,6 +75,10 @@ health alarms still page in that case.
 
 - **API composer**: `api.py` - `create_app()` factory, middleware/capability wiring, OpenAPI auth decoration, and `core_router` aggregation
 - **Search request runtime**: `search_runtime.py` - HTTP deadline, unsampled phase timing, bounded worker ownership and connection cancellation; embedded calls have no request scope
+  Its `run_in_threadpool` helper delegates to Starlette's default shared limiter
+  and measures search-scoped dispatch wait, execution and return wait. Dispatch
+  wait includes scheduling, not just permit queueing; unwrapped dependencies
+  remain outside this measurement. It does not change admission or cancellation.
 - **Domain routes**: `routes/` - FastAPI route modules; add new public API surfaces here and include their routers in `api.py`
 - **Endpoint Helpers**: `api_endpoints/` - Shared handlers/helpers plus `RequestContext` used by route modules
 - **Extension Registry**: `extensions.py` - Capability and service registry for optional OSS/enterprise integrations

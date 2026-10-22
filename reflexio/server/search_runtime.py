@@ -680,6 +680,65 @@ def connection(cancel: Callable[[], None]) -> Iterator[None]:
             scope.leases.discard(lease)
 
 
+async def run_in_threadpool[**P, T](
+    func: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs
+) -> T:
+    """Measure search handoffs without changing Starlette's shared admission.
+
+    Dispatch wait includes admission and dispatch scheduling, not just permit
+    wait. Return wait measures worker completion to caller resumption. Calls
+    outside a search scope take Starlette's unmodified path.
+    """
+    from starlette.concurrency import run_in_threadpool as offload
+
+    scope = current()
+    if scope is None:
+        return await offload(func, *args, **kwargs)
+
+    submitted = time.monotonic()
+    dispatch_key = object()
+    dispatch_name = "search.threadpool.dispatch_wait"
+    with scope.lock:
+        scope.active[dispatch_key] = (dispatch_name, submitted)
+        scope.phase_counts[dispatch_name] = scope.phase_counts.get(dispatch_name, 0) + 1
+    lock = threading.Lock()
+    wait_recorded = False
+    finished: float | None = None
+
+    def finish_wait(end: float) -> None:
+        nonlocal wait_recorded
+        with lock:
+            if not wait_recorded:
+                with scope.lock:
+                    scope.active.pop(dispatch_key, None)
+                    scope.intervals.append((dispatch_name, submitted, end))
+                wait_recorded = True
+
+    def invoke() -> T:
+        nonlocal finished
+        finish_wait(time.monotonic())
+        try:
+            with phase("search.threadpool.execution", cleanup=True):
+                return func(*args, **kwargs)
+        finally:
+            with lock:
+                finished = time.monotonic()
+
+    try:
+        return await offload(invoke)
+    finally:
+        # A queued cancellation still records its actual wait. A late worker
+        # entry must not record that interval twice. Running work stays owned
+        # by AnyIO and its execution phase remains active until it really exits.
+        finish_wait(time.monotonic())
+        with lock:
+            if finished is not None:
+                name = "search.threadpool.return_wait"
+                with scope.lock:
+                    scope.intervals.append((name, finished, time.monotonic()))
+                    scope.phase_counts[name] = scope.phase_counts.get(name, 0) + 1
+
+
 @contextmanager
 def phase(name: str, *, cleanup: bool = False) -> Iterator[None]:
     scope = current()
