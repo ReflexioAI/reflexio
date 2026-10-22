@@ -186,7 +186,7 @@ def test_z_fast():
         '[tool.mutmut]\nprocess_isolation = "forkserver"\n'
         'source_paths = ["number.py"]\n'
         'pytest_add_cli_args_test_selection = ["tests/"]\n'
-        'pytest_add_cli_args = ["-o", "addopts=", "--timeout=10"]\n'
+        'pytest_add_cli_args = ["-o", "addopts=", "-p", "pytest_timeout", "--timeout=10"]\n'
     )
     for command in (["run", "--max-children", "1"], ["export-cicd-stats"]):
         result = subprocess.run(  # noqa: S603 - installed engine, fixed arguments
@@ -195,7 +195,13 @@ def test_z_fast():
             capture_output=True,
             text=True,
             timeout=90,
-            env={**os.environ, "PYTHONHASHSEED": str(hash_seed)},
+            # Only the generated synchronous project uses explicit plugins;
+            # the repository-workspace collection above keeps normal discovery.
+            env={
+                **os.environ,
+                "PYTHONHASHSEED": str(hash_seed),
+                "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            },
         )
         assert result.returncode == 0, result.stdout + result.stderr
     if cost == "fixtures":

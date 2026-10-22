@@ -605,6 +605,15 @@ Ordinary pytest temporary file retention is unchanged. Real-engine lifecycle
 controls live in
 `tests/scripts/test_mutation_scratch.py`.
 
+Those lifecycle controls and the generated-project ordering controls in
+`tests/scripts/test_mutation_configuration.py` run tiny synchronous projects
+with the real engine and copied production hooks. Their child processes disable
+pytest plugin autoload and explicitly load `pytest_timeout`, avoiding unrelated
+plugin startup in each independent scenario. Actual repository-workspace
+collection, repository test suites and the weekly mutation workflow keep their
+normal plugin configuration; all lifecycle, storage-failure, fixture-teardown
+and ordering scenarios remain independent.
+
 
 The test bootstrap adds the directory immediately above `tests/` to the import
 path. During mutation testing this is `mutants/`, not the original checkout;
