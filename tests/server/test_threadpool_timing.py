@@ -13,6 +13,8 @@ from starlette.concurrency import run_in_threadpool
 
 from reflexio.server import search_runtime as runtime
 
+pytestmark = pytest.mark.unit
+
 
 async def until(predicate):
     async with asyncio.timeout(3):
