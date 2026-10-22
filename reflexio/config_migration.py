@@ -9,14 +9,10 @@ from typing import Annotated, Any
 
 from pydantic import Field, TypeAdapter, ValidationError
 
-
-class StoredConfigurationError(ValueError):
-    """The saved configuration must be corrected before it can load."""
-
-
-class ConfigurationMigrationError(StoredConfigurationError):
-    """An explicit migration is required before this saved policy can load."""
-
+from reflexio.config_env import (
+    ConfigurationMigrationError as ConfigurationMigrationError,
+)
+from reflexio.config_env import StoredConfigurationError as StoredConfigurationError
 
 _LEGACY_OPTIMIZER_BOOL = TypeAdapter(bool)
 _LEGACY_MERGE_LIMIT = TypeAdapter(Annotated[int, Field(ge=0)])

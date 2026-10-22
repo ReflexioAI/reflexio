@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from reflexio.config_migration import ConfigurationMigrationError
+from reflexio.config_env import ConfigurationMigrationError
 from reflexio.env_utils import env_truthy
 
 _SERVICE_URL = "REFLEXIO_EMBEDDING_SERVICE_URL"
