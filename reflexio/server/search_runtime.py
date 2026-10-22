@@ -1059,8 +1059,36 @@ def _emit(state: SearchScope, response_at: float, status: int) -> None:
         )
     timing_logger.info(
         "event=search_timing %s",
-        json.dumps({**fields, "status_code": status}),
+        json.dumps(
+            {**_log_fields(fields), "status_code": status}, separators=(",", ":")
+        ),
     )
+
+
+def _log_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    """Drop the per-phase values a ``search_timing`` record can reconstruct.
+
+    One record is emitted per search, so redundant bytes dominate log volume.
+    ``phase_work_ms`` keeps only phases whose summed work differs from their
+    wall time in ``phases_ms`` (the same phase overlapping itself), and
+    ``phase_counts`` omits a phase that has a ``phases_ms`` entry and ran
+    exactly once. A reader takes a missing work entry as the ``phases_ms``
+    value and a missing count as 1. ``snapshot()`` itself stays complete.
+    """
+    phases = fields["phases_ms"]
+    return {
+        **fields,
+        "phase_counts": {
+            name: count
+            for name, count in fields["phase_counts"].items()
+            if count != 1 or name not in phases
+        },
+        "phase_work_ms": {
+            name: work
+            for name, work in fields["phase_work_ms"].items()
+            if work != phases.get(name)
+        },
+    }
 
 
 async def _drain_workers(

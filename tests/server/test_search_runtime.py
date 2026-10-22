@@ -578,6 +578,47 @@ def test_fast_search_logs_complete_counts_without_trace_sampling(caplog):
     assert fields["trace_id"] is None
 
 
+def _emitted_timing(caplog, state: runtime.SearchScope, end: float) -> str:
+    with caplog.at_level("INFO"):
+        runtime._emit(state, end, 200)
+    records = [r for r in caplog.records if "event=search_timing " in r.message]
+    assert len(records) == 1
+    return records[0].message.split("event=search_timing ", 1)[1]
+
+
+def test_search_timing_record_omits_values_its_reader_can_reconstruct(caplog):
+    state = runtime.SearchScope(started=10)
+    state.intervals = [
+        ("storage.query", 11, 12),
+        ("search.rerank", 12, 13),
+        ("search.rerank", 14, 15),
+    ]
+    state.phase_counts = {"storage.query": 1, "search.rerank": 2, "orphan": 1}
+    raw = _emitted_timing(caplog, state, 20)
+    fields = json.loads(raw)
+    assert fields["phases_ms"] == {"storage.query": 1000, "search.rerank": 2000}
+    # Disjoint runs of a phase: work equals wall time, so nothing is repeated.
+    assert fields["phase_work_ms"] == {}
+    # A phase in phases_ms that ran once is implied; a count without
+    # wall time keeps its entry because nothing else records it.
+    assert fields["phase_counts"] == {"search.rerank": 2, "orphan": 1}
+    assert ", " not in raw and ": " not in raw
+    # The in-memory snapshot is still complete for its consumers.
+    snapshot = state.snapshot(20)
+    assert snapshot["phase_counts"]["storage.query"] == 1
+    assert snapshot["phase_work_ms"]["storage.query"] == 1000
+
+
+def test_search_timing_record_keeps_overlapping_phase_work(caplog):
+    state = runtime.SearchScope(started=10)
+    state.intervals = [("storage.query", 11, 15), ("storage.query", 12, 16)]
+    state.phase_counts = {"storage.query": 2}
+    fields = json.loads(_emitted_timing(caplog, state, 20))
+    assert fields["phases_ms"]["storage.query"] == 5000
+    assert fields["phase_work_ms"] == {"storage.query": 8000}
+    assert fields["phase_counts"] == {"storage.query": 2}
+
+
 def test_config_waiter_obeys_original_deadline_without_releasing_owner_lock():
     from unittest.mock import Mock
 
