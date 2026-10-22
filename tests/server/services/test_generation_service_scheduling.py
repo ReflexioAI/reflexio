@@ -694,7 +694,7 @@ def test_transient_judge_failure_is_rearmed_at_warning(
     caplog: pytest.LogCaptureFixture,
     cause: Any,
 ) -> None:
-    """Sentry PYTHON-FASTAPI-Q/169/16A: one 429 / 529 lost the evaluation and
+    """One transient 429 / 529 lost the evaluation and
     raised three ERROR issues. It must be re-armed, at WARNING, with no ERROR."""
     with caplog.at_level(logging.INFO):
         scheduler, runner = _run_with_failure(
