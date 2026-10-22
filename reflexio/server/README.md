@@ -75,6 +75,7 @@ health alarms still page in that case.
 
 - **API composer**: `api.py` - `create_app()` factory, middleware/capability wiring, OpenAPI auth decoration, and `core_router` aggregation
 - **Search request runtime**: `search_runtime.py` - HTTP deadline, unsampled phase timing (including completed monotonic landmarks), bounded worker ownership and connection cancellation; embedded calls have no request scope
+  - `search.deps_to_body` reuses the final-dependency stamp through the endpoint profiling boundary. It includes dispatch and setup (such as experiment lookup), not pure pool wait. It is absent for missing stamps, holdout early returns and timeouts before that boundary; completed-landmark recording does not track still-queued endpoints.
   Its `run_in_threadpool` helper delegates to Starlette's default shared limiter
   and measures search-scoped dispatch wait, execution and return wait. Dispatch
   wait includes scheduling, not just permit queueing; unwrapped dependencies
