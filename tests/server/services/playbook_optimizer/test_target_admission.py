@@ -17,14 +17,8 @@ from reflexio.server.services.playbook_optimizer import PlaybookOptimizationSche
     [
         ("user_playbook", {"enabled": False, "user_playbooks_enabled": True}),
         ("user_playbook", {"enabled": True, "user_playbooks_enabled": False}),
-        (
-            "user_playbook",
-            {
-                "enabled": True,
-                "optimize_user_playbooks": True,
-                "auto_update_user_playbooks": False,
-            },
-        ),
+        # Global opt-in alone must leave the canonical user target disabled.
+        ("user_playbook", {"enabled": True}),
         (
             "agent_playbook",
             {
