@@ -21,7 +21,8 @@ from reflexio.durable_learning_policy import (
     validate_discovery_timing_env,
 )
 from reflexio.pending_tool_policy import resolve_resume_timing
-from reflexio.server.env_utils import env_truthy
+from reflexio.removed_env import reject_removed_env
+from reflexio.server.env_utils import env_str, env_truthy
 from reflexio.server.ops_log import OPS_LOGGER_NAME
 
 # Load environment variables using shared discovery logic
@@ -145,22 +146,6 @@ def _is_production_environment() -> bool:
     return os.environ.get("ENVIRONMENT", "").strip().lower() in ("prod", "production")
 
 
-def _debug_log_to_console_enabled() -> bool:
-    """Return whether verbose console logging should be enabled.
-
-    ``DEBUG_LOG_TO_CONSOLE`` is a local/dev switch. Deployments with
-    ``ENVIRONMENT=production`` must stay quiet by default even if a copied local
-    env file accidentally sets it;
-    use ``REFLEXIO_ALLOW_PRODUCTION_DEBUG_LOGS=true`` for a deliberate incident
-    override.
-    """
-    if not _truthy_env("DEBUG_LOG_TO_CONSOLE"):
-        return False
-    return not _is_production_environment() or _truthy_env(
-        "REFLEXIO_ALLOW_PRODUCTION_DEBUG_LOGS"
-    )
-
-
 _LOG_LEVEL_NAMES: dict[str, int] = {
     "debug": logging.DEBUG,
     "info": logging.INFO,
@@ -248,23 +233,18 @@ def resolve_logging_env() -> dict[str, object]:
     which is why working out what a deployed process could log meant running a
     child interpreter against it.
 
-    Profile resolution, preserving the previous semantics exactly:
-
-    * ``REFLEXIO_LOG_PROFILE`` is the one name to read; ``DEBUG_LOG_TO_CONSOLE``
-      remains a truthy alias for ``verbose`` when the profile is unset.
-    * A verbose REQUEST is still refused under ``ENVIRONMENT=production`` unless
-      ``REFLEXIO_ALLOW_PRODUCTION_DEBUG_LOGS`` is set. That gate exists because a
-      copied local env file must not make a production deployment verbose, and it
-      now applies to the new name as well as the old one.
+    ``REFLEXIO_LOG_PROFILE`` is the sole profile selector. A verbose request
+    still requires explicit incident authorization under production; that
+    safeguard is independent of profile selection.
 
     Returns:
         dict: Keyword arguments for :func:`configure_logging`.
     """
-    profile = os.environ.get("REFLEXIO_LOG_PROFILE", "").strip().lower()
-    if profile in ("production", "verbose"):
-        wants_verbose = profile == "verbose"
-    else:
-        wants_verbose = _truthy_env("DEBUG_LOG_TO_CONSOLE")
+    reject_removed_env(os.environ, canonical="REFLEXIO_LOG_PROFILE")
+    profile = env_str("REFLEXIO_LOG_PROFILE", "production").lower()
+    if profile not in ("production", "verbose"):
+        raise ValueError("REFLEXIO_LOG_PROFILE must be production or verbose")
+    wants_verbose = profile == "verbose"
 
     verbose = wants_verbose and (
         not _is_production_environment()
@@ -534,11 +514,6 @@ def configure_logging(
         pinned=tuple(sorted(pinned.items())),
     )
 
-
-#: Resolved once at import, and kept as a module attribute because callers read
-#: it to name the branch they are in (`reflexio_ext/server/startup.py`, and the
-#: reasoning in `publish_timing.py` and `offline_tuner/config.py`).
-DEBUG_LOG_TO_CONSOLE = bool(resolve_logging_env()["verbose"])
 
 #: Kept for backwards compatibility: modules imported this name.
 root_logger = logging.getLogger()
