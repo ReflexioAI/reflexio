@@ -175,16 +175,26 @@ def pytest_runtest_makereport_group_witness(item, call):
         '[tool.mutmut]\nprocess_isolation = "forkserver"\n'
         'source_paths = ["number.py"]\n'
         'pytest_add_cli_args_test_selection = ["tests/"]\n'
-        'pytest_add_cli_args = ["-o", "addopts=", "--timeout=10"]\n'
+        'pytest_add_cli_args = ["-o", "addopts=", "-p", "pytest_timeout", "--timeout=10"]\n'
     )
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    env = {**os.environ, "TMPDIR": str(scratch), "SCRATCH_CONTROL": mode}
+    # These generated projects exercise the real engine and copied lifecycle
+    # hooks, without repository fixtures or unrelated installed pytest plugins.
+    # Keep the timeout plugin explicit, including in forkserver warmup runs.
+    env = {
+        **os.environ,
+        "TMPDIR": str(scratch),
+        "SCRATCH_CONTROL": mode,
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+    }
     for key in ("MUTANT_UNDER_TEST", "PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTHONPATH"):
         env.pop(key, None)
     if mode == "normal":
         executable = sys.executable
-        commands = [["-m", "pytest", "-o", "addopts=", "tests/"]]
+        commands = [
+            ["-m", "pytest", "-o", "addopts=", "-p", "pytest_timeout", "tests/"]
+        ]
     else:
         executable = shutil.which("mutmut")
         commands = [["run", "--max-children", "2"], ["export-cicd-stats"]]
