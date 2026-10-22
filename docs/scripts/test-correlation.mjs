@@ -50,6 +50,17 @@ config.profile_extractor_config = configSchema.defaultProfileExtractor();
 config.profile_extractor_config.extraction_definition_prompt = "Keep";
 config.profile_extractor_config.window_size_override = 23;
 const serialized = configSchema.serializeConfig(config);
+assert.equal("extraction_preset" in serialized, false);
+assert.equal("extraction_preset" in configSchema.defaultConfig(), false);
+for (const geometry of Object.values(configSchema.PRESET_VALUES)) {
+  const edited = configSchema.hydrateConfig({ ...config, extraction_preset: "stale-browser-state" });
+  [edited.window_size, edited.stride_size] = geometry;
+  const saved = configSchema.serializeConfig(edited);
+  assert.equal("extraction_preset" in saved, false);
+  assert.equal(saved.window_size, geometry[0]);
+  assert.equal(saved.stride_size, geometry[1]);
+}
+
 for (const key of ["window_size_override", "stride_size_override", "batch_size_override"]) {
   assert.equal(key in serialized.agent_success_config, false);
 }

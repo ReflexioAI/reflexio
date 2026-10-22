@@ -114,7 +114,6 @@ export interface ReflexioConfig {
   profile_extractor_config: ProfileExtractorConfig | null;
   user_playbook_extractor_config: UserPlaybookExtractorConfig | null;
   agent_success_config: AgentSuccessConfig | null;
-  extraction_preset: ExtractionPreset | null;
   window_size: number;
   stride_size: number;
   api_key_config: APIKeyConfig | null;
@@ -123,7 +122,7 @@ export interface ReflexioConfig {
 }
 
 // Preset → (window_size, stride_size). Mirrors _PRESET_VALUES in
-// config_schema.py so the UI can preview what a preset will set.
+// config_migration.py; UI shortcuts save only canonical numeric geometry.
 export const PRESET_VALUES: Record<ExtractionPreset, [number, number]> = {
   quick_chat: [5, 3],
   standard: [10, 5],
@@ -146,7 +145,6 @@ export function defaultConfig(): ReflexioConfig {
     profile_extractor_config: defaultProfileExtractor(),
     user_playbook_extractor_config: defaultPlaybookExtractor(),
     agent_success_config: null,
-    extraction_preset: null,
     window_size: 10,
     stride_size: 5,
     api_key_config: null,
@@ -324,8 +322,11 @@ export function serializeConfig(config: ReflexioConfig): unknown {
     };
   };
 
+  const { extraction_preset: _retiredPreset, ...canonical } = config as ReflexioConfig & {
+    extraction_preset?: unknown;
+  };
   return {
-    ...config,
+    ...canonical,
     storage_config: config.storage_config && "db_path" in config.storage_config
       ? { ...config.storage_config, db_path: clean(config.storage_config.db_path) }
       : config.storage_config,
@@ -336,7 +337,6 @@ export function serializeConfig(config: ReflexioConfig): unknown {
       config.user_playbook_extractor_config,
     ),
     agent_success_config: cleanAgentSuccess(config.agent_success_config),
-    extraction_preset: config.extraction_preset,
     window_size: config.window_size,
     stride_size: config.stride_size,
     api_key_config: cleanApiKeys(config.api_key_config),

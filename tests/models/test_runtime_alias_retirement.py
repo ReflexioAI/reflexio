@@ -136,3 +136,61 @@ def test_native_storage_requires_a_canonical_raw_tag_but_keeps_typed_defaults():
         db_url="postgresql://user:password@localhost/db", pool_size=7, read_pool_size=3
     )
     assert Config(storage_config=typed).storage_config is typed
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("batch_size", 23),
+        ("batch_interval", 7),
+        ("extraction_window_size", 23),
+        ("extraction_window_stride", 7),
+        ("extraction_preset", "long_form"),
+        ("profile_extractor_configs", []),
+        ("user_playbook_extractor_configs", []),
+        ("profile_extractor_config", {"profile_content_definition_prompt": "obsolete"}),
+        (
+            "user_playbook_extractor_config",
+            {"extraction_definition_prompt": "Keep", "batch_size_override": 17},
+        ),
+        ("storage_config", {"type": "sqlite", "schema_name": "obsolete"}),
+    ],
+)
+def test_named_writes_reject_aliases_without_mutating_live_or_saved_policy(
+    tmp_path, name, value
+):
+    from pathlib import Path
+
+    from reflexio.server.services.configurator.configurator import (
+        DefaultConfigurator,
+    )
+
+    configurator = DefaultConfigurator("named", base_dir=str(tmp_path))
+    from reflexio.server.services.configurator.local_file_config_storage import (
+        LocalFileConfigStorage,
+    )
+
+    assert isinstance(configurator.config_storage, LocalFileConfigStorage)
+    path = Path(configurator.config_storage.config_file)
+    before = path.read_bytes()
+    served = configurator.get_config().model_dump(mode="json")
+    with pytest.raises(ValueError):
+        configurator.set_config_by_name(name, value)
+    assert path.read_bytes() == before
+    assert configurator.get_config().model_dump(mode="json") == served
+    configurator.set_config_by_name("window_size", 31)
+    assert configurator.get_config().window_size == 31
+    assert configurator.config_storage.load_config().window_size == 31
+
+
+def test_documented_evaluation_file_is_accepted_by_the_current_runtime():
+    from pathlib import Path
+
+    from reflexio.config_document import decode_config_document
+
+    path = Path(__file__).resolve().parents[1] / "test_data/scenarios/eval_config.json"
+    config = Config.model_validate(decode_config_document(path.read_text()))
+    assert config.profile_extractor_config is not None
+    assert config.user_playbook_extractor_config is not None
+    assert config.profile_extractor_config.window_size_override == 20
+    assert config.user_playbook_extractor_config.stride_size_override == 1

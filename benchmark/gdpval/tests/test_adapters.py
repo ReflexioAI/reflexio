@@ -444,3 +444,39 @@ def test_resolve_task_ids_returns_none_when_both_absent() -> None:
 
     assert _resolve_task_ids(None, None) is None
     assert _resolve_task_ids("", "") is None
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_prompt_updater_uses_singular_extractor_and_preserves_other_policy(enabled):
+    from benchmark.gdpval.memory.reflexio_bridge import update_playbook_extractor_prompt
+    from reflexio.models.config_schema import Config
+
+    config = Config.model_validate(
+        {
+            "storage_config": None,
+            "window_size": 23,
+            "stride_size": 7,
+            "agent_context_prompt": "Preserve context",
+            "user_playbook_extractor_config": {"extraction_definition_prompt": "old"}
+            if enabled
+            else None,
+        }
+    )
+    client = MagicMock()
+    client.get_config.return_value = config
+    client.set_config.return_value = {"success": True}
+    with patch(
+        "benchmark.gdpval.memory.reflexio_bridge.ReflexioClient", return_value=client
+    ):
+        assert update_playbook_extractor_prompt(prompt="new prompt") is enabled
+    if enabled:
+        client.set_config.assert_called_once_with(config)
+        assert config.user_playbook_extractor_config is not None
+        assert (
+            config.user_playbook_extractor_config.extraction_definition_prompt
+            == "new prompt"
+        )
+        assert (config.window_size, config.stride_size) == (23, 7)
+        assert config.agent_context_prompt == "Preserve context"
+    else:
+        client.set_config.assert_not_called()
