@@ -109,7 +109,8 @@ class ReviewCallMetrics(logging.Handler):
         if "event=llm_structured_repair_attempted " in text:
             self.data["repair_attempts"] += 1
             if match := re.search(
-                r"failure_kind=(parse|semantic|blank|refusal)\b", text
+                r"failure_kind=(parse|semantic|blank|refusal|empty|reasoning_exhausted)\b",
+                text,
             ):
                 self.data["repair_kinds"].append(match[1])
         if "event=llm_structured_repair_succeeded " in text:

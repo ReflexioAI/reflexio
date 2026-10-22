@@ -585,6 +585,41 @@ def _is_expected_transient_llm_error(exc: BaseException) -> bool:
     return False
 
 
+def _token_count(value: Any) -> int | None:
+    """Return ``value`` when it is a real token count, else ``None``."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def _stamp_parse_failure(
+    exc: StructuredOutputParseError,
+    *,
+    content: Any,
+    finish_reason: str | None,
+    provenance: ModelProvenance | None,
+    response: Any,
+    turn_params: dict[str, Any],
+) -> None:
+    """Attach the response's content-free diagnostics to a parse failure.
+
+    The parser sees only the body; whether a blank body was a reasoning model
+    spending its whole ``max_tokens`` on hidden reasoning is only answerable
+    with the finish reason and token counts beside it. Only counts, lengths
+    and the finish reason are recorded -- never the content.
+    """
+    exc.finish_reason = finish_reason
+    if exc.raw_content is None and isinstance(content, str):
+        exc.raw_content = content
+    exc.provenance = provenance
+    usage = getattr(response, "usage", None)
+    exc.completion_tokens = _token_count(getattr(usage, "completion_tokens", None))
+    details = getattr(usage, "completion_tokens_details", None)
+    exc.reasoning_tokens = _token_count(getattr(details, "reasoning_tokens", None))
+    exc.max_tokens = _token_count(turn_params.get("max_tokens"))
+    exc.content_len = len(content) if isinstance(content, str) else None
+
+
 def _rung_reason(error: Exception | None) -> str:
     """Classify why the ladder advanced past a rung, for the fallback signal.
 
@@ -1806,10 +1841,14 @@ class TextGenerationMixin:
                                 turn_parse_structured_output,
                             )
                         except StructuredOutputParseError as exc:
-                            exc.finish_reason = finish_reason
-                            if exc.raw_content is None and isinstance(content, str):
-                                exc.raw_content = content
-                            exc.provenance = provenance
+                            _stamp_parse_failure(
+                                exc,
+                                content=content,
+                                finish_reason=finish_reason,
+                                provenance=provenance,
+                                response=response,
+                                turn_params=turn_params,
+                            )
                             raise
                         if isinstance(parsed, BaseModel):
                             parsed_output = parsed
@@ -1839,10 +1878,14 @@ class TextGenerationMixin:
                         turn_parse_structured_output,
                     )
                 except StructuredOutputParseError as exc:
-                    exc.finish_reason = finish_reason
-                    if exc.raw_content is None and isinstance(content, str):
-                        exc.raw_content = content
-                    exc.provenance = provenance
+                    _stamp_parse_failure(
+                        exc,
+                        content=content,
+                        finish_reason=finish_reason,
+                        provenance=provenance,
+                        response=response,
+                        turn_params=turn_params,
+                    )
                     raise
                 return _StructuredAttempt(
                     value=value,
@@ -1890,6 +1933,19 @@ class TextGenerationMixin:
         ) -> str:
             if finish_reason == "length":
                 token_limit = turn_params.get("max_tokens")
+                if raw_content is None or not raw_content.strip():
+                    # Reasoning exhausted: the budget went to hidden reasoning
+                    # and no answer was written, so "truncated" would misstate
+                    # it as a partial answer.
+                    limit = (
+                        f"the {token_limit}-token output limit"
+                        if token_limit
+                        else "the model output limit"
+                    )
+                    return (
+                        f"(empty response: {limit} was reached before any "
+                        "answer was written)"
+                    )
                 if token_limit:
                     return f"(output truncated at {token_limit} tokens)"
                 return "(output truncated at the model output limit)"
@@ -1956,7 +2012,13 @@ class TextGenerationMixin:
         ) -> StructuredOutputRepairError:
             return StructuredOutputRepairError(
                 "Structured output repair exhausted",
-                failure_kind="parse" if failure_kind == "parse" else "semantic",
+                # Empty and reasoning-exhausted bodies are parse failures to
+                # callers; the finer kind lives on the log lines only.
+                failure_kind=(
+                    "parse"
+                    if failure_kind in ("parse", "empty", "reasoning_exhausted")
+                    else "semantic"
+                ),
                 model=model,
                 raw_content=attempt.raw_content if attempt else None,
                 parsed_output=attempt.parsed_output if attempt else None,
@@ -2006,9 +2068,9 @@ class TextGenerationMixin:
             failed. It was previously byte-identical, which at ``temperature=0``
             is two identical attempts at a schema the model has already misread
             -- the second could only fail the same way. When the failure names
-            nothing (the deliberate "appears truncated" diagnostic, whose
-            ``validation_errors`` is empty), the retry stays the byte-identical
-            re-issue it always was.
+            nothing (the deliberate "appears truncated" diagnostic, or an empty
+            or whitespace-only body, whose ``validation_errors`` are empty), the
+            retry stays the byte-identical re-issue it always was.
 
             Raises ``StructuredOutputParseError`` when both attempts return a
             malformed body (the walk catches it and advances), or
@@ -2026,10 +2088,15 @@ class TextGenerationMixin:
                 )
             except StructuredOutputParseError as exc:
                 if not exc.validation_errors:
+                    # Empty and truncated bodies carry no validation errors:
+                    # nothing written can be corrected, so re-issue instead.
                     self.logger.warning(
-                        "event=llm_parse_retry model=%s — malformed structured output, "
-                        "retrying once on the same model",
+                        "event=llm_parse_retry model=%s failure_kind=%s %s — "
+                        "unusable structured output, re-issuing once on the "
+                        "same model",
                         params.get("model"),
+                        exc.failure_kind,
+                        exc.log_fields(),
                     )
                     # REBUILD, never reuse ``params``. ``_prepare_turn`` detaches
                     # request state from the CALLER's objects, which protects the
@@ -2081,12 +2148,14 @@ class TextGenerationMixin:
                 # own, so nothing else bounds what reaches the sink.
                 self.logger.warning(
                     "event=llm_parse_retry_corrective model=%s schema=%s "
-                    "validation_error_count=%d — malformed structured output, "
-                    "retrying once on the same model with the validation errors "
-                    "fed back",
+                    "validation_error_count=%d failure_kind=%s %s — malformed "
+                    "structured output, retrying once on the same model with "
+                    "the validation errors fed back",
                     params.get("model"),
                     schema_name,
                     len(exc.validation_errors),
+                    exc.failure_kind,
+                    exc.log_fields(),
                 )
                 (
                     retry_params,
@@ -2133,19 +2202,23 @@ class TextGenerationMixin:
                     params, rf, parse_so, hard_timeout, detect_refusal=True
                 )
             except StructuredOutputParseError as exc:
-                failure_kind = "parse"
+                failure_kind = exc.failure_kind
+                parse_diagnostics = f" {exc.log_fields()}"
                 errors: tuple[str, ...] = exc.validation_errors or (str(exc),)
                 if exc.validation_errors:
                     self.logger.warning(
-                        "event=llm_structured_schema_validation_failed model=%s schema=%s errors=%s",
+                        "event=llm_structured_schema_validation_failed model=%s schema=%s failure_kind=%s %s errors=%s",
                         params.get("model"),
                         schema_name,
+                        failure_kind,
+                        exc.log_fields(),
                         _log_safe_validation_errors(exc.validation_errors),
                     )
                 raw_content = exc.raw_content
                 finish_reason = exc.finish_reason
                 latest_parsed_output = None
             else:
+                parse_diagnostics = ""
                 valid, errors, failure_kind = _validate_attempt(first_attempt)
                 if valid:
                     return _finish(first_attempt)
@@ -2180,12 +2253,15 @@ class TextGenerationMixin:
                 # to its model, so the budget stop must carry that provenance.
                 exc.first_parsed_provenance = first_parsed_provenance
                 raise
+            # The diagnostics suffix is present only when attempt 1 failed to
+            # parse: a semantic failure has a parsed body and nothing to add.
             self.logger.warning(
-                "event=llm_structured_repair_attempted model=%s repair_target_model=%s schema=%s failure_kind=%s",
+                "event=llm_structured_repair_attempted model=%s repair_target_model=%s schema=%s failure_kind=%s%s",
                 params.get("model"),
                 repair_params.get("model"),
                 schema_name,
                 failure_kind,
+                parse_diagnostics,
             )
             try:
                 repair_attempt = _call_and_parse(
@@ -2205,14 +2281,16 @@ class TextGenerationMixin:
                     provenance=getattr(exc, "provenance", None),
                 )
                 errors = exc.validation_errors or (str(exc),)
+                failure_kind = exc.failure_kind
                 if exc.validation_errors:
                     self.logger.warning(
-                        "event=llm_structured_schema_validation_failed model=%s schema=%s errors=%s",
+                        "event=llm_structured_schema_validation_failed model=%s schema=%s failure_kind=%s %s errors=%s",
                         repair_params.get("model"),
                         schema_name,
+                        failure_kind,
+                        exc.log_fields(),
                         _log_safe_validation_errors(exc.validation_errors),
                     )
-                failure_kind = "parse"
             except (LiteLLMClientError, ProviderCapSaturatedError) as exc:
                 # Cap saturation is not a LiteLLMClientError subclass; still stamp
                 # first-parsed so the ladder outer handler can salvage attribution.
@@ -2317,9 +2395,11 @@ class TextGenerationMixin:
                     raise
                 if isinstance(exc, StructuredOutputParseError):
                     self.logger.error(
-                        "event=llm_request_end model=%s success=False error_type=%s error=%s",
+                        "event=llm_request_end model=%s success=False error_type=%s failure_kind=%s %s error=%s",
                         rung,
                         type(exc).__name__,
+                        exc.failure_kind,
+                        exc.log_fields(),
                         exc,
                     )
                 wrapped = LiteLLMClientError(

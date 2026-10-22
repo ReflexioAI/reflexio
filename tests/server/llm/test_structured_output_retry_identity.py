@@ -283,6 +283,94 @@ def test_a_truncation_diagnostic_reissues_the_callers_exact_request() -> None:
     assert snapshots[1]["messages"] == [{"role": "user", "content": "hi"}]
 
 
+@pytest.mark.parametrize("blank", ["\n\n", ""])
+def test_a_blank_body_reissues_the_callers_exact_request(
+    blank: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A blank body is re-issued byte-for-byte, never corrected.
+
+    MiniMax-M3 can spend its whole ``max_tokens`` on hidden reasoning and
+    return ``"\n\n"``. Parsed, that became ``json_invalid at line 1 column
+    1`` and a corrective turn about output that was never written. Classified
+    as empty, it carries no validation errors and takes the re-issue branch.
+    """
+    snapshots: list[dict[str, Any]] = []
+    client = LiteLLMClient(LiteLLMConfig(model=_MODEL))
+
+    with (
+        patch(
+            "litellm.completion",
+            side_effect=_scribbling_transport(snapshots, [blank, _VALID_BODY]),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        result = client.generate_chat_response(
+            [{"role": "user", "content": "hi"}],
+            response_format=SampleResponse,
+            extra_headers=dict(_CALLER_HEADERS),
+        )
+
+    assert isinstance(result, SampleResponse)
+    assert len(snapshots) == 2
+    assert snapshots[1] == snapshots[0]
+    assert snapshots[1]["extra_headers"] == _CALLER_HEADERS
+    assert snapshots[1]["messages"] == [{"role": "user", "content": "hi"}]
+    messages = [record.getMessage() for record in caplog.records]
+    assert not any("event=llm_parse_retry_corrective " in m for m in messages)
+    reissues = [m for m in messages if "event=llm_parse_retry " in m]
+    assert len(reissues) == 1
+    assert "failure_kind=empty " in reissues[0]
+    assert f"content_len={len(blank)} " in reissues[0]
+
+
+def test_a_final_blank_failure_logs_its_kind_and_diagnostics(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The final ERROR names reasoning exhaustion with the counts that prove it."""
+
+    def serve(**_params: Any) -> MagicMock:
+        response = _response("\n\n", finish_reason="length")
+        response.usage = MagicMock(
+            prompt_tokens=10, completion_tokens=8192, total_tokens=8202
+        )
+        response.usage.prompt_tokens_details = None
+        response.usage.cache_creation_input_tokens = None
+        response.usage.cache_read_input_tokens = None
+        response.usage.completion_tokens_details = MagicMock(reasoning_tokens=8190)
+        return response
+
+    client = LiteLLMClient(LiteLLMConfig(model=_MODEL))
+    with (
+        patch("litellm.completion", side_effect=serve),
+        caplog.at_level(logging.WARNING),
+        pytest.raises(Exception, match="content was empty"),
+    ):
+        client.generate_chat_response(
+            [{"role": "user", "content": "hi"}],
+            response_format=SampleResponse,
+            max_tokens=8192,
+        )
+
+    ends = [
+        record
+        for record in caplog.records
+        if "event=llm_request_end " in record.getMessage()
+        and "success=False" in record.getMessage()
+    ]
+    assert len(ends) == 1
+    assert ends[0].levelno == logging.ERROR
+    line = ends[0].getMessage()
+    for field in (
+        "failure_kind=reasoning_exhausted ",
+        "finish_reason=length ",
+        "completion_tokens=8192 ",
+        "reasoning_tokens=8190 ",
+        "max_tokens=8192 ",
+        "content_len=2 ",
+    ):
+        assert field in line, field
+
+
 def test_the_scribbling_transport_would_expose_a_reused_params_dict() -> None:
     """The fake used above is not polite: it mutates what it is handed.
 

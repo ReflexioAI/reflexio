@@ -227,12 +227,50 @@ class StructuredOutputParseError(Exception):
         finish_reason: str | None = None,
         provenance: ModelProvenance | None = None,
         validation_errors: tuple[str, ...] = (),
+        empty_response: bool = False,
     ) -> None:
         super().__init__(message)
         self.raw_content = raw_content
         self.finish_reason = finish_reason
         self.provenance = provenance
         self.validation_errors = validation_errors
+        # True when the body was ``None`` or whitespace-only: nothing was
+        # written, so there is nothing to correct -- only to re-issue.
+        self.empty_response = empty_response
+        # Content-free response diagnostics, stamped by the request path once
+        # the response is in hand (the parser never sees usage or params).
+        self.completion_tokens: int | None = None
+        self.reasoning_tokens: int | None = None
+        self.max_tokens: int | None = None
+        self.content_len: int | None = None
+
+    @property
+    def failure_kind(self) -> Literal["reasoning_exhausted", "empty", "parse"]:
+        """Classify the failure for logging, never from content.
+
+        ``reasoning_exhausted`` is a blank body cut off by the output limit
+        (a reasoning model spent its whole budget on hidden reasoning);
+        ``empty`` is any other blank body; ``parse`` is a body that was written
+        but did not parse or validate.
+        """
+        if not self.empty_response:
+            return "parse"
+        if self.finish_reason == "length":
+            return "reasoning_exhausted"
+        return "empty"
+
+    def log_fields(self) -> str:
+        """Render the content-free response diagnostics as ``key=value`` fields.
+
+        ``failure_kind`` is not included: every event that carries these
+        fields logs its own ``failure_kind`` beside them.
+        """
+        return (
+            f"finish_reason={self.finish_reason} "
+            f"completion_tokens={self.completion_tokens} "
+            f"reasoning_tokens={self.reasoning_tokens} "
+            f"max_tokens={self.max_tokens} content_len={self.content_len}"
+        )
 
 
 class LLMHardTimeoutError(TimeoutError):

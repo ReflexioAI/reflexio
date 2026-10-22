@@ -49,11 +49,17 @@ class _PromptTokenDetailsSnapshot:
 
 
 @dataclass
+class _CompletionTokenDetailsSnapshot:
+    reasoning_tokens: int | None = None
+
+
+@dataclass
 class _CompletionUsageSnapshot:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
     prompt_tokens_details: _PromptTokenDetailsSnapshot | None = None
+    completion_tokens_details: _CompletionTokenDetailsSnapshot | None = None
     cache_creation_input_tokens: int | None = None
     cache_read_input_tokens: int | None = None
 
@@ -124,11 +130,21 @@ def _snapshot_completion_response(response: Any) -> _CompletionResponseSnapshot:
             prompt_details_snapshot = _PromptTokenDetailsSnapshot(
                 cached_tokens=int(getattr(prompt_details, "cached_tokens", 0) or 0)
             )
+        completion_details = getattr(usage, "completion_tokens_details", None)
+        completion_details_snapshot = None
+        if completion_details is not None:
+            reasoning_tokens = getattr(completion_details, "reasoning_tokens", None)
+            completion_details_snapshot = _CompletionTokenDetailsSnapshot(
+                reasoning_tokens=reasoning_tokens
+                if isinstance(reasoning_tokens, int)
+                else None
+            )
         usage_snapshot = _CompletionUsageSnapshot(
             prompt_tokens=getattr(usage, "prompt_tokens", None),
             completion_tokens=getattr(usage, "completion_tokens", None),
             total_tokens=getattr(usage, "total_tokens", None),
             prompt_tokens_details=prompt_details_snapshot,
+            completion_tokens_details=completion_details_snapshot,
             cache_creation_input_tokens=getattr(
                 usage, "cache_creation_input_tokens", None
             ),

@@ -417,10 +417,17 @@ class StructuredOutputMixin:
         if not response_format or not parse_structured_output:
             return content
 
-        if content is None:
+        # A whitespace-only body (MiniMax-M3 returns "\n\n" after spending its
+        # whole output budget on hidden reasoning) is as empty as ``None``.
+        # Parsing it would yield a JSON syntax error whose "json_invalid at
+        # line 1 column 1" steers a corrective turn at output that was never
+        # written; an empty error carries no validation errors, so the plain
+        # rung re-issues the request instead.
+        if content is None or (isinstance(content, str) and not content.strip()):
             raise StructuredOutputParseError(
                 "Structured output response content was empty",
-                raw_content=None,
+                raw_content=content,
+                empty_response=True,
             )
 
         # If content is already a Pydantic model (some providers return parsed)

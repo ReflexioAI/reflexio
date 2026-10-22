@@ -1322,6 +1322,39 @@ class TestMaybeParseStructuredOutput:
         ):
             client._maybe_parse_structured_output(None, SampleResponse, True)
 
+    @pytest.mark.parametrize("content", ["", "\n\n", " \t\r\n "])
+    def test_whitespace_content_is_empty_not_a_syntax_error(self, client, content):
+        """A blank body is classified as empty, never parsed into a JSON error.
+
+        Parsing ``"\n\n"`` used to yield ``json_invalid at line 1 column 1``
+        as a validation error, which steered a corrective turn at output that
+        was never written. An empty error carries no validation errors, so the
+        plain rung re-issues the request instead.
+        """
+        with pytest.raises(
+            StructuredOutputParseError,
+            match="Structured output response content was empty",
+        ) as exc_info:
+            client._maybe_parse_structured_output(content, SampleResponse, True)
+
+        assert exc_info.value.validation_errors == ()
+        assert exc_info.value.empty_response is True
+        assert exc_info.value.failure_kind == "empty"
+
+    def test_blank_body_cut_at_output_limit_is_reasoning_exhausted(self):
+        exc = StructuredOutputParseError(
+            "Structured output response content was empty",
+            finish_reason="length",
+            empty_response=True,
+        )
+        assert exc.failure_kind == "reasoning_exhausted"
+
+    def test_written_body_cut_at_output_limit_stays_a_parse_failure(self):
+        exc = StructuredOutputParseError(
+            "Structured output appears truncated", finish_reason="length"
+        )
+        assert exc.failure_kind == "parse"
+
     def test_already_pydantic_model_returned_as_is(self, client):
         obj = SampleResponse(answer="ok", score=5)
         result = client._maybe_parse_structured_output(obj, SampleResponse, True)
@@ -2464,6 +2497,111 @@ class TestStructuredOutputRepair:
         # tells the model its previous output overflowed instead.
         repair_echo = calls[1]["messages"][1]["content"]
         assert repair_echo.startswith("(output truncated at")
+
+    def test_repair_echo_names_a_reasoning_exhausted_blank_body(self, caplog):
+        """Length + blank: distinct failure_kind, an echo that says so, and
+        content-free diagnostics on the WARNING events."""
+        calls: list[dict[str, Any]] = []
+        responses = ["\n\n", '{"answer": "ok", "score": 42}']
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs)
+            index = len(calls) - 1
+            resp = self._make_mock_response(
+                responses[index],
+                finish_reason="length" if index == 0 else "stop",
+            )
+            resp.usage.completion_tokens = 8192
+            resp.usage.completion_tokens_details = MagicMock(reasoning_tokens=8190)
+            return resp
+
+        client = _build_client(LiteLLMConfig(model="primary-model"))
+
+        with (
+            patch("litellm.completion", side_effect=fake_completion),
+            caplog.at_level(logging.WARNING),
+        ):
+            result = client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                structured_output_validator=self._score_validator,
+                max_tokens=8192,
+            )
+
+        assert isinstance(result, SampleResponse)
+        assert calls[1]["messages"][1]["content"] == (
+            "(empty response: the 8192-token output limit was reached before "
+            "any answer was written)"
+        )
+        # Not the misleading JSON syntax error a parsed blank body produced.
+        assert "json_invalid" not in calls[1]["messages"][2]["content"]
+        attempted = [
+            r.getMessage()
+            for r in caplog.records
+            if "event=llm_structured_repair_attempted " in r.getMessage()
+        ]
+        assert len(attempted) == 1
+        line = attempted[0]
+        assert "failure_kind=reasoning_exhausted " in line
+        assert "finish_reason=length " in line
+        assert "completion_tokens=8192 " in line
+        assert "reasoning_tokens=8190 " in line
+        assert "max_tokens=8192 " in line
+        assert line.endswith("content_len=2")
+
+    def test_repair_exhausted_on_blank_bodies_stays_a_parse_failure(self):
+        """Callers branch on ``failure_kind == "parse"``; the finer kind is a
+        log-line distinction only and must not reclassify the typed error."""
+        client = _build_client(LiteLLMConfig(model="primary-model"))
+
+        with (
+            patch(
+                "litellm.completion",
+                side_effect=lambda **_kw: self._make_mock_response("  "),
+            ),
+            pytest.raises(StructuredOutputRepairError) as exc_info,
+        ):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                structured_output_validator=self._score_validator,
+            )
+
+        assert exc_info.value.failure_kind == "parse"
+
+    def test_parse_failure_log_lines_never_carry_content(self, caplog):
+        secret = "CUSTOMER-SECRET-7f3a"
+        responses = [
+            f'{{"answer": "{secret}"}}',
+            f'{{"{secret}": 1}}',
+        ]
+        calls: list[dict[str, Any]] = []
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs)
+            return self._make_mock_response(responses[len(calls) - 1])
+
+        client = _build_client(LiteLLMConfig(model="primary-model"))
+
+        with (
+            patch("litellm.completion", side_effect=fake_completion),
+            caplog.at_level(logging.DEBUG),
+            pytest.raises(StructuredOutputRepairError),
+        ):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                structured_output_validator=self._score_validator,
+            )
+
+        validation_lines = [
+            r.getMessage()
+            for r in caplog.records
+            if "event=llm_structured_schema_validation_failed " in r.getMessage()
+        ]
+        assert len(validation_lines) == 2
+        assert all("content_len=" in line for line in validation_lines)
+        assert all(secret not in r.getMessage() for r in caplog.records)
 
     def test_refusal_short_circuits_repair(self):
         calls: list[dict[str, Any]] = []
@@ -3751,6 +3889,23 @@ def test_subprocess_snapshot_preserves_provenance_metadata():
 
     assert snapshot.model == "claude-sonnet-5"
     assert snapshot._hidden_params == response._hidden_params
+
+
+def test_subprocess_snapshot_carries_reasoning_tokens():
+    """The hard-timeout path pickles a snapshot; reasoning tokens must survive
+    it, or a reasoning-exhausted blank body is unattributable."""
+    response = _make_completion_response("")
+    response.usage = MagicMock(
+        prompt_tokens=10, completion_tokens=8192, total_tokens=8202
+    )
+    response.usage.prompt_tokens_details = None
+    response.usage.completion_tokens_details = MagicMock(reasoning_tokens=8190)
+
+    snapshot = _snapshot_completion_response(response)
+
+    assert snapshot.usage is not None
+    assert snapshot.usage.completion_tokens_details is not None
+    assert snapshot.usage.completion_tokens_details.reasoning_tokens == 8190
 
 
 class TestLitellmIntegration:
