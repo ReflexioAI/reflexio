@@ -443,9 +443,13 @@ def unified_search_endpoint(
         return resp
 
     deps_done = getattr(request.state, "search_deps_done_monotonic", None)
-    deps_to_body_ms = (
-        int((time.monotonic() - deps_done) * 1000) if deps_done is not None else None
-    )
+    deps_to_body_ms = None
+    if deps_done is not None:
+        body_started = time.monotonic()
+        deps_to_body_ms = int((body_started - deps_done) * 1000)
+        search_runtime.record_phase_interval(
+            "search.deps_to_body", deps_done, body_started
+        )
     with profile_step(
         "search.endpoint",
         enabled=bool(payload.enable_reformulation),

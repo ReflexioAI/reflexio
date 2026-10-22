@@ -74,7 +74,7 @@ health alarms still page in that case.
 
 
 - **API composer**: `api.py` - `create_app()` factory, middleware/capability wiring, OpenAPI auth decoration, and `core_router` aggregation
-- **Search request runtime**: `search_runtime.py` - HTTP deadline, unsampled phase timing, bounded worker ownership and connection cancellation; embedded calls have no request scope
+- **Search request runtime**: `search_runtime.py` - HTTP deadline, unsampled phase timing (including completed monotonic landmarks), bounded worker ownership and connection cancellation; embedded calls have no request scope
   Its `run_in_threadpool` helper delegates to Starlette's default shared limiter
   and measures search-scoped dispatch wait, execution and return wait. Dispatch
   wait includes scheduling, not just permit queueing; unwrapped dependencies
