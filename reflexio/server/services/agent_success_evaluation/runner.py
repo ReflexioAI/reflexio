@@ -109,6 +109,7 @@ def run_group_evaluation(
     run_agent_success: bool = True,
     run_retrieved_learning: bool = True,
     through_request_id: str | None = None,
+    caller_reports_extractor_failure: bool = False,
 ) -> GroupEvaluationOutcome:
     """Run agent success evaluation for an entire session, or a prefix of it.
 
@@ -153,6 +154,11 @@ def run_group_evaluation(
             (``cutover_not_found``). Every verdict, with or without a cutover,
             is stamped with the last judged request and the judged interaction
             count.
+        caller_reports_extractor_failure: The caller retries or escalates an
+            agent-success ``ExtractorExecutionError`` and logs it once (the
+            publish scheduler). The error is raised either way; this only
+            stops the service from also logging it at ERROR. Regen jobs and
+            the on-demand grade route leave it False.
 
     Returns:
         GroupEvaluationOutcome: Per-family statuses for this invocation.
@@ -332,7 +338,9 @@ def run_group_evaluation(
     )
 
     evaluation_service = AgentSuccessEvaluationService(
-        llm_client=llm_client, request_context=request_context
+        llm_client=llm_client,
+        request_context=request_context,
+        caller_reports_extractor_failure=caller_reports_extractor_failure,
     )
     evaluation_service.run(evaluation_request)
 

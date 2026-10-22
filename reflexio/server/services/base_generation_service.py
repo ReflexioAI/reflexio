@@ -230,6 +230,10 @@ class BaseGenerationService(
         # stashed so the billing path (_extraction_input_text) can reuse it instead of
         # re-querying storage. None when the gate did not run (bypass paths).
         self._last_precheck_sessions: list[Any] | None = None
+        # True when the caller retries or escalates an ``ExtractorExecutionError``
+        # itself and logs it once; the service then logs it at WARNING so one
+        # failure is not reported at ERROR on every layer it crosses.
+        self._caller_reports_extractor_failure: bool = False
 
     @abstractmethod
     def _load_extractor_config(self) -> TExtractorConfig | None:
@@ -582,7 +586,11 @@ class BaseGenerationService(
                 duration_ms=int((time.perf_counter() - generation_start) * 1000),
                 error_kind=type(e).__name__,
             )
-            logger.error(
+            logger.log(
+                logging.WARNING
+                if isinstance(e, ExtractorExecutionError)
+                and self._caller_reports_extractor_failure
+                else logging.ERROR,
                 "Failed to run %s due to %s, exception type: %s",
                 self._get_service_name(),
                 str(e),

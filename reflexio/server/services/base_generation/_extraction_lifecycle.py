@@ -121,6 +121,7 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
     _last_bookmark_advance: ExtractorBookmarkAdvance | None
     _last_model_provenance: ModelProvenance | None
     _window_prior_attempts: int | None
+    _caller_reports_extractor_failure: bool
 
     if TYPE_CHECKING:
         # Abstract on the base ABC (stays there per SINK-2); declared here type-only so
@@ -151,12 +152,18 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
         )
 
     def _extractor_failure_log_level(self) -> int:
-        """ERROR unless this is an early attempt of a retried extraction window.
+        """ERROR unless something above this run retries or reports the failure.
 
+        WARNING for an early attempt of a retried extraction window, and for a
+        run whose caller declared it owns the single report of an extractor
+        failure (``_caller_reports_extractor_failure``: the group-evaluation
+        scheduler retries a transient failure and escalates the rest once).
         Outside an automatic window (manual / synchronous runs) nothing retries
         the failure, and a window whose attempt count is unknown is treated the
         same way: both stay at ERROR.
         """
+        if getattr(self, "_caller_reports_extractor_failure", False):
+            return logging.WARNING
         if getattr(self, "_window_id", None) is None:
             return logging.ERROR
         prior_attempts = getattr(self, "_window_prior_attempts", None)

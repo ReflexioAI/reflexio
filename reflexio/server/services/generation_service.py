@@ -20,6 +20,7 @@ from reflexio.server import publish_timing
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.llm.tools import describe_tool_loop_error
 from reflexio.server.services.agent_success_evaluation.runner import (
     run_group_evaluation,
 )
@@ -30,6 +31,7 @@ from reflexio.server.services.agent_success_evaluation.sampling import (
 from reflexio.server.services.agent_success_evaluation.scheduler import (
     GroupEvaluationScheduler,
 )
+from reflexio.server.services.base_generation_service import ExtractorExecutionError
 from reflexio.server.services.external_admission import ExternalAdmissionParticipant
 from reflexio.server.services.profile.service import (
     ProfileGenerationService,
@@ -64,7 +66,36 @@ _STALL_WARNING_PREFIX = "Reflexio learning is paused"
 # It is re-judged fresh (new generation) on the next scheduled run and
 # self-heals to "complete" once the transient failure clears.
 _RETRIABLE_RETRIEVED_STATUSES = frozenset({"failed", "pending"})
-_MAX_RETRIEVED_LEARNING_RETRIES = 3
+# One bound for every re-arm of a scheduled session evaluation: a retriable
+# retrieved-learning status above, or a transient provider failure of the
+# agent-success judge (see ``_is_transient_evaluation_failure``).
+_MAX_GROUP_EVALUATION_RETRIES = 3
+
+
+def _is_transient_evaluation_failure(exc: BaseException) -> bool:
+    """Whether an agent-success judge failure is an expected provider outage.
+
+    Classified by type and status code only (``describe_tool_loop_error``),
+    walking the ``__cause__`` / ``__context__`` chain from the
+    ``ExtractorExecutionError`` wrapper down to the provider error, so a 429
+    rate limit or a 529 overload is transient while a parse / semantic failure
+    or a bug is not.
+
+    Args:
+        exc (BaseException): The failure ``run_group_evaluation`` raised.
+
+    Returns:
+        bool: True when some link of the chain is a transient LLM failure.
+    """
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if describe_tool_loop_error(current)[1] == "transient":
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
 
 # ── Durable-learning same-user guard (F4) ──
 # Service prefix for the per-user in-progress lock that serializes concurrent
@@ -680,17 +711,63 @@ class GenerationService:
             _attempt: int,
         ) -> Callable[[], None]:
             def callback() -> None:
-                outcome = run_group_evaluation(
-                    org_id=_org_id,
-                    user_id=_user_id,
-                    session_id=_sid,
-                    agent_version=_av,
-                    source=_src,
-                    request_context=_rc,
-                    llm_client=_llm,
-                    run_agent_success=_run_agent_success,
-                    run_retrieved_learning=_run_retrieved_learning,
-                )
+                try:
+                    outcome = run_group_evaluation(
+                        org_id=_org_id,
+                        user_id=_user_id,
+                        session_id=_sid,
+                        agent_version=_av,
+                        source=_src,
+                        request_context=_rc,
+                        llm_client=_llm,
+                        run_agent_success=_run_agent_success,
+                        run_retrieved_learning=_run_retrieved_learning,
+                        caller_reports_extractor_failure=True,
+                    )
+                except ExtractorExecutionError as exc:
+                    # The agent-success judge failed before anything was saved
+                    # or marked, and nothing else re-triggers this session
+                    # unless it gets more traffic. This callback owns the one
+                    # report (the runner logged it at WARNING): a transient
+                    # provider failure is re-armed with the same families,
+                    # bounded; anything else, or the last attempt, is an ERROR.
+                    transient = _is_transient_evaluation_failure(exc)
+                    if transient and _attempt < _MAX_GROUP_EVALUATION_RETRIES:
+                        logger.warning(
+                            "event=agent_success_retry_scheduled session=%s"
+                            " attempt=%d/%d error_type=%s: %s",
+                            _sid,
+                            _attempt + 1,
+                            _MAX_GROUP_EVALUATION_RETRIES,
+                            type(exc.__cause__ or exc).__name__,
+                            exc,
+                        )
+                        scheduler.schedule(
+                            key,
+                            make_callback(
+                                _org_id,
+                                _user_id,
+                                _sid,
+                                _av,
+                                _src,
+                                _rc,
+                                _llm,
+                                _run_agent_success,
+                                _run_retrieved_learning,
+                                _attempt + 1,
+                            ),
+                        )
+                        return
+                    logger.error(
+                        "Agent-success evaluation failed for session=%s user=%s"
+                        " after %d attempt(s) (transient=%s)",
+                        _sid,
+                        _user_id,
+                        _attempt + 1,
+                        transient,
+                        exc_info=exc,
+                    )
+                    return
                 # Retry sweep: a retrieved-learning run that ends non-terminal
                 # (degraded / failed / pending) is NEVER retried on its own —
                 # nothing re-triggers it unless the session receives more
@@ -703,7 +780,7 @@ class GenerationService:
                     _run_retrieved_learning
                     and outcome.retrieved_learning_status
                     in _RETRIABLE_RETRIEVED_STATUSES
-                    and _attempt < _MAX_RETRIEVED_LEARNING_RETRIES
+                    and _attempt < _MAX_GROUP_EVALUATION_RETRIES
                 ):
                     logger.info(
                         "event=retrieved_learning_retry_scheduled session=%s"

@@ -1,13 +1,17 @@
 """Tests for runner behavior."""
 
 from datetime import UTC, datetime
+from functools import partial
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from reflexio.models.api_schema.service_schemas import Interaction, Request
 from reflexio.server.services.agent_success_evaluation.runner import (
     _build_state_key,
     run_group_evaluation,
 )
+from reflexio.server.services.base_generation_service import ExtractorExecutionError
 
 
 def _make_request(request_id: str, user_id: str, session_id: str) -> Request:
@@ -250,4 +254,50 @@ def test_run_group_evaluation_skips_mark_when_nothing_saved() -> None:
         )
 
     storage.get_operation_state.assert_called_once_with(state_key)
+    storage.upsert_operation_state.assert_not_called()
+
+
+@pytest.mark.parametrize("caller_reports", [None, True])
+def test_run_group_evaluation_raises_judge_failure_to_every_caller(
+    caller_reports: bool | None,
+) -> None:
+    """Regen jobs and the on-demand grade route count / surface the raised
+    ``ExtractorExecutionError`` themselves; the scheduler flag only moves who
+    logs it (default: the service, at ERROR)."""
+    user_id = "user_a"
+    session_id = "group_a"
+    storage = MagicMock()
+    storage.get_operation_state.return_value = None
+    storage.get_requests_by_session.return_value = [
+        _make_request("req_1", user_id, session_id)
+    ]
+    storage.get_interactions_by_request_ids.return_value = [
+        _make_interaction("req_1", user_id)
+    ]
+    request_context = MagicMock()
+    request_context.storage = storage
+
+    with patch(
+        "reflexio.server.services.agent_success_evaluation.runner.AgentSuccessEvaluationService"
+    ) as service_cls:
+        service_cls.return_value.run.side_effect = ExtractorExecutionError("429")
+        run = partial(
+            run_group_evaluation,
+            org_id="org_a",
+            user_id=user_id,
+            session_id=session_id,
+            agent_version="1.0.0",
+            source="api",
+            request_context=request_context,
+            llm_client=MagicMock(),
+        )
+        with pytest.raises(ExtractorExecutionError):
+            if caller_reports is None:
+                run()
+            else:
+                run(caller_reports_extractor_failure=caller_reports)
+
+    assert service_cls.call_args.kwargs["caller_reports_extractor_failure"] is bool(
+        caller_reports
+    )
     storage.upsert_operation_state.assert_not_called()

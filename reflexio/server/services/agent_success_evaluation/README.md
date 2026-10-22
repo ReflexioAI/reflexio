@@ -5,7 +5,7 @@ Description: Session-level agent success and retrieved-learning evaluation.
 
 
 - `service.py`: `AgentSuccessEvaluationService`, the request-path service that runs configured evaluators and saves result rows.
-- `runner.py`: `run_group_evaluation(...)`, the background/manual workflow entry point that loads a session, runs the service, and marks operation state. After agent-success work it also runs the retrieved-learning evaluation (independent completion; generation + session-fingerprint fenced) and returns a `GroupEvaluationOutcome` carrying both statuses.
+- `runner.py`: `run_group_evaluation(...)`, the background/manual workflow entry point that loads a session, runs the service, and marks operation state. After agent-success work it also runs the retrieved-learning evaluation (independent completion; generation + session-fingerprint fenced) and returns a `GroupEvaluationOutcome` carrying both statuses. A judge failure is raised (`ExtractorExecutionError`); the publish scheduler's callback in `generation_service.py` re-arms a transient provider failure (rate limit, overload, timeout) on the scheduler with the same bounded attempt counter as retrieved-learning retries, and reports a non-transient or exhausted failure once at ERROR. Regen jobs and the on-demand grade route receive the raised error unchanged.
 - `scheduler.py`: `GroupEvaluationScheduler`, the deferred inactivity scheduler.
 - `components/evaluator.py`: `AgentSuccessEvaluator`, the LLM evaluator component.
 - `components/retrieved_learning_evaluator.py`: `RetrievedLearningEvaluator`, per-learning relevance/impact judges over `Interaction.retrieved_learnings`; results go to the `retrieved_learning_evaluation` table.

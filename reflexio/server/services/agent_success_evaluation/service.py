@@ -62,10 +62,23 @@ class AgentSuccessEvaluationService(
     """
 
     def __init__(
-        self, llm_client: LiteLLMClient, request_context: RequestContext
+        self,
+        llm_client: LiteLLMClient,
+        request_context: RequestContext,
+        *,
+        caller_reports_extractor_failure: bool = False,
     ) -> None:
-        """Initialize service and reset per-run outcome flags."""
+        """Initialize service and reset per-run outcome flags.
+
+        Args:
+            llm_client: LLM client for the evaluator.
+            request_context: Request context with storage and configurator.
+            caller_reports_extractor_failure: The caller retries or escalates
+                an ``ExtractorExecutionError`` and logs it once, so the
+                service logs it at WARNING. It is raised either way.
+        """
         super().__init__(llm_client=llm_client, request_context=request_context)
+        self._caller_reports_extractor_failure = caller_reports_extractor_failure
         self.last_run_result_count = 0
         self.last_run_saved_result_count = 0
         self.last_run_save_failed = False
