@@ -5,9 +5,11 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
-from reflexio.config_migration import strip_retired_config_fields
+from reflexio.config_migration import (
+    StoredConfigurationError,
+    strip_retired_config_fields,
+)
 from reflexio.models.config_schema import PlaybookOptimizerConfig
 from reflexio.server.services.configurator.local_file_config_storage import (
     LocalFileConfigStorage,
@@ -57,9 +59,12 @@ def test_inactive_or_superseded_legacy_switches_still_validate(key, invalid):
         "auto_update_user_playbooks": False,
         "user_playbooks_enabled": False,
     }
+    # Runtime constructors reject these names outright (#747), so the
+    # boolean validation this guards now lives in the explicit upgrade.
+    assert _upgrade_policy(legacy).user_playbooks_enabled is False
     legacy[key] = invalid
-    with pytest.raises(ValidationError):
-        PlaybookOptimizerConfig.model_validate(legacy)
+    with pytest.raises(StoredConfigurationError):
+        _upgrade_policy(legacy)
 
 
 @pytest.mark.parametrize(
