@@ -129,42 +129,28 @@ export function WindowingSection({
   config: ReflexioConfig;
   setConfig: SetConfig;
 }) {
-  const preset = config.extraction_preset;
-  const usingPreset = preset !== null;
-
   return (
     <Section
       title="Windowing & presets"
       description="Controls how many interactions are processed per extraction run."
     >
       <FieldRow
-        label="Extraction preset"
+        label="Apply extraction preset"
         htmlFor="extraction-preset"
-        hint="Presets bundle window size and stride. Pick 'Custom' to set values manually."
+        hint="Presets fill window size and stride. Both values remain editable."
       >
         <Select
-          value={preset ?? "custom"}
+          value=""
           onValueChange={(v) => {
-            const next = v === "custom" ? null : (v as ExtractionPreset);
-            setConfig((prev) => {
-              if (next === null) return { ...prev, extraction_preset: null };
-              const [bs, bi] = PRESET_VALUES[next];
-              return {
-                ...prev,
-                extraction_preset: next,
-                window_size: bs,
-                stride_size: bi,
-              };
-            });
+            if (v === null || !(v in PRESET_VALUES)) return;
+            const [window_size, stride_size] = PRESET_VALUES[v as ExtractionPreset];
+            setConfig((prev) => ({ ...prev, window_size, stride_size }));
           }}
         >
           <SelectTrigger className="h-8 text-xs w-full">
-            <SelectValue placeholder="Select preset…" />
+            <SelectValue placeholder="Apply a preset…" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="custom" className="text-xs">
-              Custom
-            </SelectItem>
             {(Object.keys(EXTRACTION_PRESET_LABELS) as ExtractionPreset[]).map(
               (key) => (
                 <SelectItem key={key} value={key} className="text-xs">
@@ -189,7 +175,6 @@ export function WindowingSection({
               setConfig((prev) => ({ ...prev, window_size: v ?? 1 }))
             }
             min={1}
-            disabled={usingPreset}
           />
         </FieldRow>
         <FieldRow
@@ -204,7 +189,6 @@ export function WindowingSection({
               setConfig((prev) => ({ ...prev, stride_size: v ?? 1 }))
             }
             min={1}
-            disabled={usingPreset}
           />
         </FieldRow>
       </div>

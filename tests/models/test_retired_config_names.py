@@ -5,13 +5,16 @@ from copy import deepcopy
 import pytest
 from pydantic import ValidationError
 
+from reflexio.config_migration import (
+    canonicalize_config_document,
+    strip_retired_config_fields,
+)
 from reflexio.models.config_schema import (
     AgentSuccessConfig,
     AzureOpenAIConfig,
     Config,
     ProfileExtractorConfig,
     UserPlaybookExtractorConfig,
-    strip_retired_config_fields,
     validate_stored_config,
 )
 from reflexio.server.services.extractor_config_utils import get_extractor_name
@@ -66,7 +69,14 @@ def test_retired_names_are_input_only(model, field, prompt, identity):
 def test_legacy_playbook_names_do_not_survive_alias_migration(field):
     payload = {field: "old name", "playbook_definition_prompt": "Keep rules"}
     before = deepcopy(payload)
-    config = UserPlaybookExtractorConfig.model_validate(payload)
+    from reflexio.config_migration import canonicalize_config_document
+
+    current = canonicalize_config_document(
+        {"storage_config": None, "user_playbook_extractor_config": payload}
+    )
+    config = UserPlaybookExtractorConfig.model_validate(
+        current["user_playbook_extractor_config"]
+    )
     assert payload == before
     assert config.extraction_definition_prompt == "Keep rules"
     assert field not in config.model_dump()
@@ -107,7 +117,7 @@ def test_cleanup_preserves_opaque_metadata_and_all_legacy_entries(legacy):
         for item in value if legacy else [value]:
             assert "extractor_name" not in item and "evaluation_name" not in item
             assert "Keep prompt" in item.values()
-    loaded = validate_stored_config(payload)
+    loaded = validate_stored_config(canonicalize_config_document(payload))
     assert loaded.profile_extractor_config is not None
     assert loaded.user_playbook_extractor_config is not None
     assert loaded.agent_success_config is not None

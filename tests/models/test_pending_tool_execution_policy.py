@@ -7,10 +7,8 @@ from pathlib import Path
 import pytest
 
 from reflexio.cli.bootstrap_config import load_storage_from_config
-from reflexio.models.config_schema import (
-    PendingToolCallConfig,
-    strip_retired_config_fields,
-)
+from reflexio.config_migration import strip_retired_config_fields
+from reflexio.models.config_schema import PendingToolCallConfig
 from reflexio.server.services.configurator.local_file_config_storage import (
     LocalFileConfigStorage,
 )
@@ -81,11 +79,11 @@ def test_custom_saved_policy_is_not_rewritten(tmp_path):
         }
     )
     path.write_text(original)
-    with pytest.raises(ValueError, match="resume_claim_ttl_seconds"):
+    with pytest.raises(ValueError, match="pending_tool_call_config"):
         storage.load_config()
     assert path.read_text() == original
 
-    with pytest.raises(ValueError, match="resume_claim_ttl_seconds"):
+    with pytest.raises(ValueError, match="pending_tool_call_config"):
         load_storage_from_config(org_id="pending-custom", base_dir=str(tmp_path))
     assert path.read_text() == original
 

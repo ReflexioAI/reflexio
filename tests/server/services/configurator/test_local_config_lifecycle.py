@@ -48,6 +48,11 @@ def test_existing_read_preserves_sparse_source_and_nested_metadata(
         "_save_config_to_local_dir",
         Mock(side_effect=AssertionError("reading must not publish")),
     )
+    if '"batch_size"' in geometry:
+        with pytest.raises(StoredConfigurationError):
+            storage.load_config()
+        assert path.read_bytes() == raw
+        return
     loaded = storage.load_config()
     assert (loaded.window_size, loaded.stride_size) == (23, 7)
     assert (

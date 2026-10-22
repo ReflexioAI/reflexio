@@ -472,13 +472,12 @@ def update_playbook_extractor_prompt(
     api_key: str | None = None,
     prompt: str = GDPVAL_PLAYBOOK_EXTRACTOR_PROMPT,
 ) -> bool:
-    """Overwrite the `default_playbook_extractor` prompt on the backend.
+    """Overwrite the enabled user-playbook extractor's prompt on the backend.
 
-    Reads the current config, replaces the extraction_definition_prompt on
-    the one existing `default_playbook_extractor` entry in
-    `user_playbook_extractor_configs`, and POSTs the updated config back.
-    Preserves every other config field — storage, profile extractors,
-    batch sizes, LLM config — so this is safe to call on any reflexio
+    Reads the current config, replaces extraction_definition_prompt on the
+    singular user_playbook_extractor_config, and POSTs the updated config back.
+    Preserves every other config field — storage, profile extractor,
+    window geometry, LLM config — so this is safe to call on any reflexio
     backend the benchmark connects to.
 
     Args:
@@ -499,21 +498,9 @@ def update_playbook_extractor_prompt(
         logger.error("Failed to fetch reflexio config: %s", exc)
         return False
 
-    extractors = getattr(config, "user_playbook_extractor_configs", None) or []
-    if not extractors:
-        logger.error("No user_playbook_extractor_configs on reflexio backend")
-        return False
-
-    target = None
-    for entry in extractors:
-        if getattr(entry, "extractor_name", "") == "default_playbook_extractor":
-            target = entry
-            break
+    target = config.user_playbook_extractor_config
     if target is None:
-        logger.error(
-            "default_playbook_extractor not found; available: %s",
-            [getattr(e, "extractor_name", "?") for e in extractors],
-        )
+        logger.error("No user_playbook_extractor_config on reflexio backend")
         return False
 
     current_prompt = getattr(target, "extraction_definition_prompt", "")

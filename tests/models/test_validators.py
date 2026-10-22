@@ -973,28 +973,30 @@ class TestConversationTurn:
 
 
 class TestBackwardCompatibility:
-    """Tests that old field names still work via model_validator migration."""
+    """Historical field names require explicit conversion before validation."""
 
     def test_config_accepts_old_window_names(self):
         """Config: extraction_window_size/stride still accepted as aliases."""
-        config = Config.model_validate(
+        config = _explicit_upgrade_model(
+            Config,
             {
                 "storage_config": StorageConfigSQLite(),
                 "extraction_window_size": 15,
                 "extraction_window_stride": 7,
-            }
+            },
         )
         assert config.window_size == 15
         assert config.stride_size == 7
 
     def test_config_accepts_current_legacy_names(self):
         """Config: batch_size/batch_interval still accepted as aliases."""
-        config = Config.model_validate(
+        config = _explicit_upgrade_model(
+            Config,
             {
                 "storage_config": StorageConfigSQLite(),
                 "batch_size": 20,
                 "batch_interval": 8,
-            }
+            },
         )
         assert config.window_size == 20
         assert config.stride_size == 8
@@ -1011,7 +1013,8 @@ class TestBackwardCompatibility:
 
     def test_config_prefers_new_names_when_both_present(self):
         """Config: new names win if old and new field names are both present."""
-        config = Config.model_validate(
+        config = _explicit_upgrade_model(
+            Config,
             {
                 "storage_config": StorageConfigSQLite(),
                 "window_size": 20,
@@ -1020,19 +1023,20 @@ class TestBackwardCompatibility:
                 "batch_interval": 5,
                 "extraction_window_size": 2,
                 "extraction_window_stride": 1,
-            }
+            },
         )
         assert config.window_size == 20
         assert config.stride_size == 8
 
     def test_config_model_dump_uses_only_new_names(self):
         """Config: serialization emits window_size/stride_size only."""
-        config = Config.model_validate(
+        config = _explicit_upgrade_model(
+            Config,
             {
                 "storage_config": StorageConfigSQLite(),
                 "batch_size": 20,
                 "batch_interval": 8,
-            }
+            },
         )
         dumped = config.model_dump()
         assert dumped["window_size"] == 20
@@ -1040,53 +1044,56 @@ class TestBackwardCompatibility:
         assert "batch_size" not in dumped
         assert "batch_interval" not in dumped
 
-    def test_config_deprecated_properties_read_write_new_fields(self):
-        """Config: deprecated Python properties still read/write canonical fields."""
-        config = Config(storage_config=StorageConfigSQLite())
-        config.batch_size = 22
-        config.batch_interval = 11
-        assert config.window_size == 22
-        assert config.stride_size == 11
-        assert config.batch_size == 22
-        assert config.batch_interval == 11
+    def test_config_deprecated_properties_are_removed(self):
+        config = Config(
+            storage_config=StorageConfigSQLite(), window_size=22, stride_size=11
+        )
+        for name in ("batch_size", "batch_interval"):
+            assert not hasattr(config, name)
+            with pytest.raises(ValueError):
+                setattr(config, name, 99)
+        assert (config.window_size, config.stride_size) == (22, 11)
 
     def test_profile_extractor_old_override_names(self):
         """ProfileExtractorConfig: old extraction_window_*_override names still work."""
-        config = ProfileExtractorConfig.model_validate(
+        config = _explicit_upgrade_model(
+            ProfileExtractorConfig,
             {
                 "extractor_name": "test",
                 "extraction_definition_prompt": "test",
                 "extraction_window_size_override": 30,
                 "extraction_window_stride_override": 10,
-            }
+            },
         )
         assert config.window_size_override == 30
         assert config.stride_size_override == 10
 
     def test_profile_extractor_current_legacy_override_names(self):
         """ProfileExtractorConfig: batch_*_override names still work."""
-        config = ProfileExtractorConfig.model_validate(
+        config = _explicit_upgrade_model(
+            ProfileExtractorConfig,
             {
                 "extractor_name": "test",
                 "extraction_definition_prompt": "test",
                 "batch_size_override": 30,
                 "batch_interval_override": 10,
-            }
+            },
         )
         assert config.window_size_override == 30
         assert config.stride_size_override == 10
-        assert config.batch_size_override == 30
-        assert config.batch_interval_override == 10
+        assert not hasattr(config, "batch_size_override")
+        assert not hasattr(config, "batch_interval_override")
 
     def test_profile_extractor_override_model_dump_uses_only_new_names(self):
         """ProfileExtractorConfig: serialization emits window/stride override names."""
-        config = ProfileExtractorConfig.model_validate(
+        config = _explicit_upgrade_model(
+            ProfileExtractorConfig,
             {
                 "extractor_name": "test",
                 "extraction_definition_prompt": "test",
                 "batch_size_override": 30,
                 "batch_interval_override": 10,
-            }
+            },
         )
         dumped = config.model_dump()
         assert dumped["window_size_override"] == 30
@@ -1096,39 +1103,42 @@ class TestBackwardCompatibility:
 
     def test_playbook_config_old_override_names(self):
         """PlaybookConfig: old extraction_window_*_override names still work."""
-        config = PlaybookConfig.model_validate(
+        config = _explicit_upgrade_model(
+            PlaybookConfig,
             {
                 "extractor_name": "test",
                 "extraction_definition_prompt": "test",
                 "extraction_window_size_override": 25,
                 "extraction_window_stride_override": 5,
-            }
+            },
         )
         assert config.window_size_override == 25
         assert config.stride_size_override == 5
 
     def test_playbook_config_current_legacy_override_names(self):
         """PlaybookConfig: batch_*_override names still work."""
-        config = PlaybookConfig.model_validate(
+        config = _explicit_upgrade_model(
+            PlaybookConfig,
             {
                 "extractor_name": "test",
                 "extraction_definition_prompt": "test",
                 "batch_size_override": 25,
                 "batch_interval_override": 5,
-            }
+            },
         )
         assert config.window_size_override == 25
         assert config.stride_size_override == 5
 
     def test_success_config_old_override_names(self):
         """AgentSuccessConfig: old extraction-window inputs remain readable but ignored."""
-        config = AgentSuccessConfig.model_validate(
+        config = _explicit_upgrade_model(
+            AgentSuccessConfig,
             {
                 "evaluation_name": "test",
                 "success_definition_prompt": "test",
                 "extraction_window_size_override": 40,
                 "extraction_window_stride_override": 15,
-            }
+            },
         )
         assert config.success_definition_prompt == "test"
         assert "window_size_override" not in config.model_dump()
@@ -1136,13 +1146,14 @@ class TestBackwardCompatibility:
 
     def test_success_config_current_legacy_override_names(self):
         """AgentSuccessConfig: old batch-window inputs remain readable but ignored."""
-        config = AgentSuccessConfig.model_validate(
+        config = _explicit_upgrade_model(
+            AgentSuccessConfig,
             {
                 "evaluation_name": "test",
                 "success_definition_prompt": "test",
                 "batch_size_override": 40,
                 "batch_interval_override": 15,
-            }
+            },
         )
         assert config.success_definition_prompt == "test"
         assert "window_size_override" not in config.model_dump()
@@ -1150,12 +1161,13 @@ class TestBackwardCompatibility:
 
     def test_aggregator_config_old_field_names(self):
         """PlaybookAggregatorConfig: old field names still work via AliasChoices."""
-        config = PlaybookAggregatorConfig.model_validate(
+        config = _explicit_upgrade_model(
+            PlaybookAggregatorConfig,
             {
                 "min_feedback_threshold": 5,
                 "refresh_count": 3,
                 "similarity_threshold": 0.7,
-            }
+            },
         )
         assert config.min_cluster_size == 5
         assert config.reaggregation_trigger_count == 3
@@ -1181,3 +1193,38 @@ class TestBackwardCompatibility:
         """Omitted similarity is resolved from the active embedding model."""
         config = PlaybookAggregatorConfig()
         assert config.clustering_similarity is None
+
+
+from pydantic import BaseModel
+
+
+def _explicit_upgrade_model[UpgradeModel: BaseModel](
+    model: type[UpgradeModel], payload
+) -> UpgradeModel:
+    from reflexio.config_migration import canonicalize_config_document
+
+    if model is Config:
+        return model.model_validate(canonicalize_config_document(payload))
+    root = (
+        "profile_extractor_config"
+        if model is ProfileExtractorConfig
+        else "agent_success_config"
+        if model is AgentSuccessConfig
+        else "user_playbook_extractor_config"
+    )
+    nested = (
+        payload
+        if model is not PlaybookAggregatorConfig
+        else {
+            "extraction_definition_prompt": "Required policy",
+            "aggregation_config": payload,
+        }
+    )
+    converted = canonicalize_config_document({"storage_config": None, root: nested})[
+        root
+    ]
+    return model.model_validate(
+        converted
+        if model is not PlaybookAggregatorConfig
+        else converted["aggregation_config"]
+    )

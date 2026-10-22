@@ -79,7 +79,7 @@ def test_valid_configs_resolve_to_their_own_backend(
     label: str, payload: dict[str, object], expected: type
 ) -> None:
     """Legitimate configs must keep resolving to the backend they name."""
-    resolved = _ADAPTER.validate_python(payload)
+    resolved = _ADAPTER.validate_python(_explicit_storage_upgrade(payload))
     assert type(resolved) is expected, (
         f"{label}: expected {expected.__name__}, got {type(resolved).__name__}"
     )
@@ -164,7 +164,9 @@ class TestThroughValidateStoredConfig:
                 StorageConfigPostgres,
             ),
         ):
-            loaded = validate_stored_config({"storage_config": storage_config})
+            loaded = validate_stored_config(
+                {"storage_config": _explicit_storage_upgrade(storage_config)}
+            )
             assert type(loaded.storage_config) is expected
 
     def test_storage_config_none_still_means_deployment_managed(self) -> None:
@@ -202,7 +204,9 @@ class TestTypeTagCompatibility:
         self, tag: str, payload: dict[str, object], expected: type
     ) -> None:
         """Exactly what the config API hands back to a client."""
-        resolved = _ADAPTER.validate_python({**payload, "type": tag})
+        resolved = _ADAPTER.validate_python(
+            _explicit_storage_upgrade({**payload, "type": tag})
+        )
         assert type(resolved) is expected
 
     def test_a_wrong_tag_is_rejected(self) -> None:
@@ -220,7 +224,9 @@ class TestTypeTagCompatibility:
     def test_canonical_shape_preserves_backend_identity(
         self, label: str, payload: dict[str, object]
     ) -> None:
-        dumped = _ADAPTER.dump_python(_ADAPTER.validate_python(payload), mode="json")
+        dumped = _ADAPTER.dump_python(
+            _ADAPTER.validate_python(_explicit_storage_upgrade(payload)), mode="json"
+        )
         if label == "supabase":
             assert dumped == {
                 "type": "supabase",
@@ -228,7 +234,7 @@ class TestTypeTagCompatibility:
                 "schema": payload["schema"],
             }
         else:
-            assert dumped == payload
+            assert dumped == {"type": "sqlite", **payload}
 
 
 def test_round_trip_preserves_the_backend() -> None:
@@ -243,7 +249,7 @@ def test_round_trip_preserves_the_backend() -> None:
         {"db_path": "/var/lib/reflexio.db"},
         {"type": "postgres", "db_url": "postgresql://u:p@h:5432/db"},
     ):
-        original = _ADAPTER.validate_python(payload)
+        original = _ADAPTER.validate_python(_explicit_storage_upgrade(payload))
         reloaded = _ADAPTER.validate_python(_ADAPTER.dump_python(original, mode="json"))
         assert type(reloaded) is type(original), (
             f"round trip changed backend: {type(original).__name__} -> "
@@ -307,7 +313,9 @@ def test_obsolete_http_reader_drops_without_changing_storage_identity(
 ):
     payload = {**_PROD_SUPABASE, "read_url": read_url, "read_key": read_key}
     before = dict(payload)
-    config = validate_stored_config({"storage_config": payload})
+    config = validate_stored_config(
+        {"storage_config": _explicit_storage_upgrade(payload)}
+    )
     assert isinstance(config.storage_config, StorageConfigSupabase)
     canonical = config.storage_config.model_dump(mode="json")
     assert canonical == {
@@ -329,7 +337,9 @@ def test_obsolete_http_credentials_are_not_required_or_serialized(field, remove)
         payload.pop(field)
     else:
         payload[field] = ""
-    loaded = validate_stored_config({"storage_config": payload}).storage_config
+    loaded = validate_stored_config(
+        {"storage_config": _explicit_storage_upgrade(payload)}
+    ).storage_config
     assert isinstance(loaded, StorageConfigSupabase)
     canonical = loaded.model_dump(mode="json")
     assert canonical["type"] == "supabase"
@@ -343,9 +353,11 @@ def test_same_native_shape_keeps_legacy_or_explicit_backend_identity(stored, tag
     if tag:
         payload["type"] = tag
     if stored:
-        resolved = validate_stored_config({"storage_config": payload}).storage_config
+        resolved = validate_stored_config(
+            {"storage_config": _explicit_storage_upgrade(payload)}
+        ).storage_config
     else:
-        resolved = _ADAPTER.validate_python(payload)
+        resolved = _ADAPTER.validate_python(_explicit_storage_upgrade(payload))
     expected = StorageConfigSupabase if tag == "supabase" else StorageConfigPostgres
     assert isinstance(resolved, expected)
     canonical = resolved.model_dump(mode="json")
@@ -363,7 +375,12 @@ def test_managed_native_marker_serializes_its_backend_identity(backend):
     payload = {"type": backend, "managed_by": "platform", "schema_present": False}
     config = Config.model_validate({"storage_config": payload})
     assert config.model_dump()["storage_config"] == payload
-    assert (
-        validate_stored_config(config.model_dump()).storage_config.storage_type
-        == backend
-    )
+    restored = validate_stored_config(config.model_dump()).storage_config
+    assert restored is not None
+    assert restored.storage_type == backend
+
+
+def _explicit_storage_upgrade(payload):
+    from reflexio.config_migration import canonicalize_config_document
+
+    return canonicalize_config_document({"storage_config": payload})["storage_config"]

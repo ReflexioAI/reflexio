@@ -6,10 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from reflexio.models.config_schema import (
-    AgentSuccessConfig,
-    strip_retired_config_fields,
-)
+from reflexio.config_migration import strip_retired_config_fields
+from reflexio.models.config_schema import AgentSuccessConfig
 from reflexio.server.services.configurator.local_file_config_storage import (
     LocalFileConfigStorage,
 )

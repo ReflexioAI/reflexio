@@ -1,4 +1,4 @@
-"""Explicit historical configuration conversion and its temporary bridge adapters.
+"""Explicit historical configuration conversion for the canonical runtime.
 
 Current schemas own canonical validation. Historical rewrite rules live here so
 explicit upgrades remain usable after runtime compatibility hooks are removed.
@@ -369,6 +369,10 @@ def canonicalize_config_document(payload: dict[str, Any]) -> dict[str, Any]:
         # explicit upgrades must keep working after runtime aliases are removed.
         validate_stored_config(converted)
         return converted
+    except ConfigurationMigrationError:
+        # These policy errors already contain only known field names and actionable
+        # upgrade guidance; retain their fail-closed contract for explicit tools.
+        raise
     except ValueError:
         # Legacy validators can include values in ValidationError text. This
         # migration interface must never print configuration contents to a CLI.

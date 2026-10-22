@@ -19,35 +19,7 @@ from reflexio.config_env import (
     DEFAULT_STORAGE_POOL_ACQUIRE_TIMEOUT,
     DEFAULT_STORAGE_POOL_SIZE,
 )
-from reflexio.config_migration import (
-    _AGGREGATOR_FIELD_MIGRATION,
-    _CONFIG_FIELD_MIGRATION,
-    _EXTRACTOR_OVERRIDE_MIGRATION,
-    _PLAYBOOK_CONFIG_FIELD_MIGRATION,
-    _PROFILE_CONFIG_FIELD_MIGRATION,
-    StoredConfigurationError,
-    _migrate_dict,
-    _normalize_optimizer_policy,
-    _normalize_storage_backend,
-)
-from reflexio.config_migration import (
-    ConfigurationMigrationError as ConfigurationMigrationError,
-)
-from reflexio.config_migration import (
-    ExtractionPreset as ExtractionPreset,
-)
-from reflexio.config_migration import (
-    OptimizerSchedulingMigrationError as OptimizerSchedulingMigrationError,
-)
-from reflexio.config_migration import (
-    canonicalize_stored_config_fields as canonicalize_stored_config_fields,
-)
-from reflexio.config_migration import (
-    normalize_legacy_config_shape as normalize_legacy_config_shape,
-)
-from reflexio.config_migration import (
-    strip_retired_config_fields as strip_retired_config_fields,
-)
+from reflexio.config_migration import StoredConfigurationError
 from reflexio.housekeeping_policy import strip_legacy_housekeeping_fields
 from reflexio.pending_tool_policy import (
     strip_legacy_pending_tool_timing,
@@ -88,29 +60,67 @@ EMBEDDING_DIMENSIONS = 512
 DEFAULT_WINDOW_SIZE = 10
 DEFAULT_STRIDE_SIZE = 8
 
-# Deprecated aliases kept for older imports.
-DEFAULT_BATCH_SIZE = DEFAULT_WINDOW_SIZE
-DEFAULT_BATCH_INTERVAL = DEFAULT_STRIDE_SIZE
+
+def _reject_obsolete_fields(data: Any, fields: tuple[str, ...]) -> Any:
+    """Reject known obsolete inputs before stored extra-ignore can hide them."""
+    if isinstance(data, dict):
+        rejected = sorted(set(data).intersection(fields))
+        if rejected:
+            raise ValueError(
+                "Obsolete configuration fields: "
+                + ", ".join(rejected)
+                + ". Use canonical names; explicitly upgrade saved configuration."
+            )
+    return data
 
 
-class _ExtractorWindowOverrideCompatMixin:
-    @property
-    def batch_size_override(self) -> int | None:
-        """Deprecated alias for window_size_override."""
-        return self.window_size_override  # type: ignore[attr-defined]
+_OBSOLETE_STORAGE_FIELDS = (
+    "storage_type",
+    "schema_name",
+    "url",
+    "key",
+    "read_url",
+    "read_key",
+)
 
-    @batch_size_override.setter
-    def batch_size_override(self, value: int | None) -> None:
-        self.window_size_override = value  # type: ignore[attr-defined]
 
-    @property
-    def batch_interval_override(self) -> int | None:
-        """Deprecated alias for stride_size_override."""
-        return self.stride_size_override  # type: ignore[attr-defined]
+def reject_obsolete_config_names(data: Any) -> Any:
+    """Admit root names before project/stored filtering can hide obsolete input."""
+    return _reject_obsolete_fields(
+        data,
+        (
+            "batch_size",
+            "batch_interval",
+            "extraction_window_size",
+            "extraction_window_stride",
+            "extraction_preset",
+            "profile_extractor_configs",
+            "user_playbook_extractor_configs",
+            "playbook_configs",
+            "agent_feedback_configs",
+            "agent_success_configs",
+        ),
+    )
 
-    @batch_interval_override.setter
-    def batch_interval_override(self, value: int | None) -> None:
-        self.stride_size_override = value  # type: ignore[attr-defined]
+
+class _StorageConfigModel(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_obsolete_storage_fields(cls, data: Any) -> Any:
+        return _reject_obsolete_fields(data, _OBSOLETE_STORAGE_FIELDS)
+
+
+def _validate_storage_identity(data: Any) -> Any:
+    _reject_obsolete_fields(data, _OBSOLETE_STORAGE_FIELDS)
+    if (
+        isinstance(data, dict)
+        and "type" not in data
+        and any(key in data for key in ("db_url", "read_db_url", "managed_by"))
+    ):
+        raise ValueError("Remote storage requires an explicit canonical type")
+    return data
 
 
 class SearchMode(StrEnum):
@@ -148,7 +158,7 @@ class StorageConfigTest(IntEnum):
     SUCCEEDED = 3
 
 
-class StorageConfigSQLite(BaseModel):
+class StorageConfigSQLite(_StorageConfigModel):
     """SQLite storage configuration.
 
     ``extra="forbid"`` is load-bearing, not stylistic. ``StorageConfig`` is an
@@ -165,26 +175,26 @@ class StorageConfigSQLite(BaseModel):
     """
 
     model_config = ConfigDict(
-        populate_by_name=True, serialize_by_alias=True, extra="forbid"
+        validate_by_name=False,
+        validate_by_alias=True,
+        serialize_by_alias=True,
+        extra="forbid",
     )
 
-    # Declared so the union is discriminated by tag where a tag is present, and
-    # so the ``type`` the config API emits round-trips back in. Defaulted
-    # because blobs persisted before this field existed do not carry it, and
-    # excluded from serialization so the persisted document shape is unchanged
-    # -- the boot-time config upgrade rewrites every org's blob, and this is not
-    # the change that should alter what it writes.
-    storage_type: Literal["sqlite"] = Field(
-        default="sqlite", alias="type", exclude=True
-    )
+    # Publish the canonical backend tag with typed saves. Historical empty local
+    # references still select SQLite, but no writer needs an implicit tag.
+    storage_type: Literal["sqlite"] = Field(default="sqlite", alias="type")
     db_path: str | None = None  # None = use LOCAL_STORAGE_PATH env var default
 
 
-class StorageConfigSupabase(BaseModel):
+class StorageConfigSupabase(_StorageConfigModel):
     # extra="forbid" keeps this distinguishable from the other union members --
     # see StorageConfigSQLite for why an untagged union needs it.
     model_config = ConfigDict(
-        populate_by_name=True, serialize_by_alias=True, extra="forbid"
+        validate_by_name=False,
+        validate_by_alias=True,
+        serialize_by_alias=True,
+        extra="forbid",
     )
 
     # Native Supabase and Postgres share DSN/schema fields but retain distinct
@@ -194,26 +204,17 @@ class StorageConfigSupabase(BaseModel):
     db_url: NonEmptyStr
     schema_name: str | None = Field(default=None, alias="schema")
 
-    @model_validator(mode="before")
-    @classmethod
-    def retire_http_credentials(cls, data: Any) -> Any:
-        """Accept historical documents without retaining obsolete HTTP inputs."""
-        if isinstance(data, dict):
-            return {
-                k: v
-                for k, v in data.items()
-                if k not in {"url", "key", "read_url", "read_key"}
-            }
-        return data
 
-
-class StorageConfigPostgres(BaseModel):
+class StorageConfigPostgres(_StorageConfigModel):
     # extra="forbid" keeps this distinguishable from the other union members --
     # see StorageConfigSQLite for why an untagged union needs it. Without it a
     # Supabase config missing only its ``key`` validated as Postgres and
     # connected by a path nobody intended.
     model_config = ConfigDict(
-        populate_by_name=True, serialize_by_alias=True, extra="forbid"
+        validate_by_name=False,
+        validate_by_alias=True,
+        serialize_by_alias=True,
+        extra="forbid",
     )
 
     storage_type: Literal["postgres"] = Field(default="postgres", alias="type")
@@ -230,11 +231,14 @@ class StorageConfigPostgres(BaseModel):
     read_pool_acquire_timeout: float | None = Field(default=None, gt=0)
 
 
-class StorageConfigManagedSupabase(BaseModel):
+class StorageConfigManagedSupabase(_StorageConfigModel):
     """Redacted platform data reference; historical class name stays compatible."""
 
     model_config = ConfigDict(
-        populate_by_name=True, serialize_by_alias=True, extra="forbid"
+        validate_by_name=False,
+        validate_by_alias=True,
+        serialize_by_alias=True,
+        extra="forbid",
     )
     storage_type: Literal["supabase", "postgres"] = Field(
         default="supabase", alias="type"
@@ -249,12 +253,19 @@ StorageConfig = Annotated[
     | StorageConfigPostgres
     | StorageConfigManagedSupabase
     | None,
-    BeforeValidator(_normalize_storage_backend),
+    BeforeValidator(_validate_storage_identity),
 ]
 
 # Used by validate_stored_config to check storage_config strictly, outside the
 # lenient whole-Config pass that would otherwise relax these models' extra rules.
-_STORAGE_CONFIG_ADAPTER: TypeAdapter[StorageConfig] = TypeAdapter(StorageConfig)
+_STORAGE_CONFIG_ADAPTER: TypeAdapter[StorageConfig] = TypeAdapter(
+    StorageConfig, config=ConfigDict(hide_input_in_errors=True)
+)
+
+
+def validate_storage_config(data: Any) -> StorageConfig:
+    """Validate a canonical reference before any deployment binding replaces it."""
+    return _STORAGE_CONFIG_ADAPTER.validate_python(data)
 
 
 class AzureOpenAIConfig(BaseModel):
@@ -428,7 +439,9 @@ DEFAULT_AGENT_SUCCESS_DEFINITION_PROMPT = (
 )
 
 
-class ProfileExtractorConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
+class ProfileExtractorConfig(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     extraction_definition_prompt: SanitizedNonEmptyStr
     context_prompt: str | None = None
     tagging_definition_prompt: str | None = None
@@ -442,12 +455,22 @@ class ProfileExtractorConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _migrate_field_names(cls, data: Any) -> Any:
-        data = _migrate_dict(data, _PROFILE_CONFIG_FIELD_MIGRATION)
-        return _migrate_dict(data, _EXTRACTOR_OVERRIDE_MIGRATION)
+    def reject_obsolete_names(cls, data: Any) -> Any:
+        return _reject_obsolete_fields(
+            data,
+            (
+                "profile_content_definition_prompt",
+                "batch_size_override",
+                "batch_interval_override",
+                "extraction_window_size_override",
+                "extraction_window_stride_override",
+            ),
+        )
 
 
 class PlaybookAggregatorConfig(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     min_cluster_size: int = Field(default=2, ge=1)
     reaggregation_trigger_count: int = Field(default=2, ge=1)
     clustering_similarity: float | None = Field(
@@ -468,11 +491,20 @@ class PlaybookAggregatorConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _migrate_field_names(cls, data: Any) -> Any:
-        return _migrate_dict(data, _AGGREGATOR_FIELD_MIGRATION)
+    def reject_obsolete_names(cls, data: Any) -> Any:
+        return _reject_obsolete_fields(
+            data,
+            (
+                "min_feedback_threshold",
+                "refresh_count",
+                "similarity_threshold",
+            ),
+        )
 
 
-class UserPlaybookExtractorConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
+class UserPlaybookExtractorConfig(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     extraction_definition_prompt: SanitizedNonEmptyStr
     context_prompt: str | None = None
     tagging_definition_prompt: str | None = None
@@ -488,8 +520,24 @@ class UserPlaybookExtractorConfig(_ExtractorWindowOverrideCompatMixin, BaseModel
 
     @model_validator(mode="before")
     @classmethod
-    def _migrate_field_names(cls, data: Any) -> Any:
-        data = _migrate_dict(data, _PLAYBOOK_CONFIG_FIELD_MIGRATION)
+    def reject_obsolete_names(cls, data: Any) -> Any:
+        data = _reject_obsolete_fields(
+            data,
+            (
+                "feedback_definition_prompt",
+                "playbook_definition_prompt",
+                "feedback_aggregator_config",
+                "playbook_aggregator_config",
+                "playbook_name",
+                "feedback_name",
+                "batch_size_override",
+                "batch_interval_override",
+                "extraction_window_size_override",
+                "extraction_window_stride_override",
+            ),
+        )
+        if isinstance(data, dict):
+            data = dict(data)
         if (
             isinstance(data, dict)
             and "aggregation_config" in data
@@ -499,7 +547,7 @@ class UserPlaybookExtractorConfig(_ExtractorWindowOverrideCompatMixin, BaseModel
             # JSON null. Aggregation is now default-on, so treat both a missing
             # field and the legacy null representation as "use defaults".
             data.pop("aggregation_config")
-        return _migrate_dict(data, _EXTRACTOR_OVERRIDE_MIGRATION)
+        return data
 
 
 # Backward-compatible alias (deprecated — use UserPlaybookExtractorConfig)
@@ -545,15 +593,6 @@ class AgentSuccessConfig(BaseModel):
             " session-success judge."
         ),
     )
-
-    @model_validator(mode="before")
-    @classmethod
-    def discard_retired_fields(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            return strip_retired_config_fields({"agent_success_config": data})[
-                "agent_success_config"
-            ]
-        return data
 
 
 def _default_agent_success_config() -> AgentSuccessConfig:
@@ -650,8 +689,15 @@ class PlaybookOptimizerConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def normalize_policy(cls, data: Any) -> Any:
-        return _normalize_optimizer_policy(data)
+    def reject_obsolete_policy(cls, data: Any) -> Any:
+        return _reject_obsolete_fields(
+            data,
+            (
+                "optimize_user_playbooks",
+                "auto_update_user_playbooks",
+                "use_merge",
+            ),
+        )
 
     def allows_target(self, kind: Literal["agent_playbook", "user_playbook"]) -> bool:
         """Admit only targets with an enabled optimization and adoption path."""
@@ -982,18 +1028,11 @@ class Config(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _migrate_field_names(cls, data: Any) -> Any:
-        """Rename old field names from stored JSON to current names.
-
-        Also strips None values for fields that have non-optional defaults,
-        so rows missing these columns fall back to defaults instead of
-        failing validation.
-        """
+    def reject_obsolete_names(cls, data: Any) -> Any:
+        """Admit canonical names and preserve established null-default semantics."""
+        data = reject_obsolete_config_names(data)
         if isinstance(data, dict):
-            # Retired no-ops: accept old SDK/stored payloads without advertising
-            # or persisting it. All other unknown API keys remain forbidden.
-            data = strip_retired_config_fields(data)
-        data = _migrate_dict(data, _CONFIG_FIELD_MIGRATION)
+            data = dict(data)
         if isinstance(data, dict):
             for key in (
                 "window_size",
@@ -1045,24 +1084,6 @@ class Config(BaseModel):
             )
         return self
 
-    @property
-    def batch_size(self) -> int:
-        """Deprecated alias for window_size."""
-        return self.window_size
-
-    @batch_size.setter
-    def batch_size(self, value: int) -> None:
-        self.window_size = value
-
-    @property
-    def batch_interval(self) -> int:
-        """Deprecated alias for stride_size."""
-        return self.stride_size
-
-    @batch_interval.setter
-    def batch_interval(self, value: int) -> None:
-        self.stride_size = value
-
 
 def validate_stored_config(data: dict[str, Any]) -> Config:
     """Validate persisted config with schema-evolution read compatibility.
@@ -1077,10 +1098,8 @@ def validate_stored_config(data: dict[str, Any]) -> Config:
     the model's strict ``extra="forbid"`` behavior.
     """
     try:
-        # Normalize before Pydantic model construction so typed migration errors
-        # remain intact. Pydantic failures from legacy conversion need the same
-        # fail-closed boundary as failures in the resulting current schema.
-        normalized = canonicalize_stored_config_fields(data)
+        # Normal reads validate canonical input; only explicit upgrades translate.
+        normalized = data
         # extra="ignore" cascades into nested models; validate storage strictly
         # first so a malformed remote config cannot become a local backend.
         storage_config = normalized.get("storage_config")

@@ -7,10 +7,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from reflexio.models.config_schema import (
-    PlaybookOptimizerConfig,
-    strip_retired_config_fields,
-)
+from reflexio.config_migration import strip_retired_config_fields
+from reflexio.models.config_schema import PlaybookOptimizerConfig
 from reflexio.server.services.configurator.local_file_config_storage import (
     LocalFileConfigStorage,
 )
@@ -32,16 +30,11 @@ from reflexio.server.services.configurator.local_file_config_storage import (
 )
 def test_legacy_merge_policy_round_trip(legacy, expected):
     before = deepcopy(legacy)
-    config = PlaybookOptimizerConfig.model_validate(legacy)
+    config = _upgrade_policy(legacy)
     assert config.max_merge_invocations == expected
     assert "use_merge" not in config.model_dump()
     assert "use_merge" not in config.model_json_schema()["properties"]
-    assert (
-        PlaybookOptimizerConfig.model_validate(
-            config.model_dump()
-        ).max_merge_invocations
-        == expected
-    )
+    assert _upgrade_policy(config.model_dump()).max_merge_invocations == expected
     assert legacy == before
 
 
@@ -95,15 +88,20 @@ def test_local_file_canonicalization_never_enables_legacy_disabled_merges(tmp_pa
         )
     )
     original = path.read_bytes()
-    for _ in range(2):
-        assert (
-            storage.load_config().playbook_optimizer_config.max_merge_invocations == 0
-        )
+    from reflexio.config_migration import StoredConfigurationError
+
+    with pytest.raises(StoredConfigurationError):
+        storage.load_config()
     assert path.read_bytes() == original
     from reflexio.cli.config_upgrade import convert_config_file
 
     canonical = tmp_path / "canonical.json"
     convert_config_file(path, canonical)
+    storage.config_file = str(canonical)
+    for _ in range(2):
+        assert (
+            storage.load_config().playbook_optimizer_config.max_merge_invocations == 0
+        )
     assert path.read_bytes() == original
     saved = json.loads(canonical.read_text())["playbook_optimizer_config"]
     assert saved["max_merge_invocations"] == 0
@@ -117,9 +115,7 @@ def test_real_gepa_merge_admission_matches_legacy_policy(enabled, limit):
     from gepa.core.data_loader import ListDataLoader
     from gepa.proposer.merge import MergeProposer
 
-    config = PlaybookOptimizerConfig.model_validate(
-        {"use_merge": enabled, "max_merge_invocations": limit}
-    )
+    config = _upgrade_policy({"use_merge": enabled, "max_merge_invocations": limit})
     evaluator = Mock(side_effect=AssertionError("admission must not invoke a model"))
     legacy = MergeProposer(
         logger=Mock(),
@@ -159,3 +155,12 @@ def test_optimizer_normalization_keeps_housekeeping_migration_safeguards():
     payload["lineage_gc"]["poll_interval_seconds"] = 7
     with pytest.raises(HousekeepingMigrationError):
         strip_retired_config_fields(payload)
+
+
+def _upgrade_policy(legacy):
+    from reflexio.config_migration import canonicalize_config_document
+
+    current = canonicalize_config_document(
+        {"storage_config": None, "playbook_optimizer_config": legacy}
+    )
+    return PlaybookOptimizerConfig.model_validate(current["playbook_optimizer_config"])

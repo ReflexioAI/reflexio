@@ -4,10 +4,10 @@ from copy import deepcopy
 
 import pytest
 
+from reflexio.config_migration import strip_retired_config_fields
 from reflexio.models.config_schema import (
     PendingToolCallConfig,
     PendingToolCallToolOverrideConfig,
-    strip_retired_config_fields,
 )
 
 

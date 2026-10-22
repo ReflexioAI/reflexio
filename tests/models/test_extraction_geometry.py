@@ -7,11 +7,12 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from reflexio.models.config_schema import (
-    Config,
+from reflexio.config_migration import (
+    StoredConfigurationError,
+    canonicalize_config_document,
     strip_retired_config_fields,
-    validate_stored_config,
 )
+from reflexio.models.config_schema import Config, validate_stored_config
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
 from reflexio.server.services.configurator.local_file_config_storage import (
     LocalFileConfigStorage,
@@ -34,7 +35,9 @@ def test_legacy_shortcuts_resolve_once_without_persisted_authority(
 ):
     payload = {"storage_config": None, "extraction_preset": preset}
     before = deepcopy(payload)
-    config = loader(payload)
+    with pytest.raises(ValueError):
+        loader(payload)
+    config = loader(canonicalize_config_document(payload))
     assert (config.window_size, config.stride_size) == geometry
     assert payload == before
     dumped = config.model_dump(mode="json")
@@ -55,7 +58,9 @@ def test_legacy_shortcuts_resolve_once_without_persisted_authority(
 )
 def test_explicit_geometry_and_old_field_aliases_keep_precedence(fields, geometry):
     config = Config.model_validate(
-        {"storage_config": None, "extraction_preset": "long_form", **fields}
+        canonicalize_config_document(
+            {"storage_config": None, "extraction_preset": "long_form", **fields}
+        )
     )
     assert (config.window_size, config.stride_size) == geometry
 
@@ -98,14 +103,29 @@ def test_real_config_file_load_patch_save_and_reload(tmp_path: Path):
     path.write_text(
         json.dumps({"storage_config": None, "extraction_preset": "long_form"})
     )
+    from reflexio.cli.config_upgrade import convert_config_file
+
+    original = path.read_bytes()
+    with pytest.raises(StoredConfigurationError):
+        store.load_config()
+    legacy = tmp_path / "legacy.json"
+    path.rename(legacy)
+    convert_config_file(legacy, path)
+    assert legacy.read_bytes() == original
     configurator = DefaultConfigurator("geometry", base_dir=str(tmp_path))
     assert configurator.get_config().window_size == 25
     # Shallow patches already contain explicit geometry: an old label alone
     # must not gain new authority over it.
-    updated = configurator.prepare_config_patch({"extraction_preset": "quick_chat"})
-    assert (updated.window_size, updated.stride_size) == (25, 10)
-    configurator.set_config(updated)
-    configurator.set_config_by_name("extraction_preset", "standard")
+    before = path.read_bytes()
+    with pytest.raises(ValueError):
+        configurator.prepare_config_patch({"extraction_preset": "quick_chat"})
+    with pytest.raises((ValueError, KeyError)):
+        configurator.set_config_by_name("extraction_preset", "standard")
+    assert path.read_bytes() == before
+    assert (
+        configurator.get_config().window_size,
+        configurator.get_config().stride_size,
+    ) == (25, 10)
     assert "extraction_preset" not in json.loads(path.read_text())
     reloaded = store.load_config()
     assert reloaded is not None

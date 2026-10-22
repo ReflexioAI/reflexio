@@ -7,10 +7,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from reflexio.models.config_schema import (
-    PlaybookOptimizerConfig,
-    strip_retired_config_fields,
-)
+from reflexio.config_migration import strip_retired_config_fields
+from reflexio.models.config_schema import PlaybookOptimizerConfig
 from reflexio.server.services.configurator.local_file_config_storage import (
     LocalFileConfigStorage,
 )
@@ -25,7 +23,7 @@ def test_legacy_user_activation_truth_table_and_roundtrip(optimize, adopt):
     if adopt is not None:
         legacy["auto_update_user_playbooks"] = adopt
     before = deepcopy(legacy)
-    config = PlaybookOptimizerConfig.model_validate(legacy)
+    config = _upgrade_policy(legacy)
     expected = bool(optimize and adopt)
     assert config.user_playbooks_enabled is expected
     assert config.allows_target("user_playbook") is expected
@@ -33,16 +31,13 @@ def test_legacy_user_activation_truth_table_and_roundtrip(optimize, adopt):
     for name in ("optimize_user_playbooks", "auto_update_user_playbooks"):
         assert name not in saved
         assert name not in config.model_json_schema()["properties"]
-    assert (
-        PlaybookOptimizerConfig.model_validate(saved).allows_target("user_playbook")
-        is expected
-    )
+    assert _upgrade_policy(saved).allows_target("user_playbook") is expected
     assert legacy == before
 
 
 @pytest.mark.parametrize("canonical", [False, True])
 def test_explicit_canonical_field_wins_over_valid_legacy_values(canonical):
-    config = PlaybookOptimizerConfig.model_validate(
+    config = _upgrade_policy(
         {
             "user_playbooks_enabled": canonical,
             "optimize_user_playbooks": not canonical,
@@ -72,7 +67,7 @@ def test_inactive_or_superseded_legacy_switches_still_validate(key, invalid):
     [("true", "on", True), ("true", "off", False), ("0", 1, False)],
 )
 def test_legacy_boolean_coercion_is_preserved(optimize, adopt, expected):
-    config = PlaybookOptimizerConfig.model_validate(
+    config = _upgrade_policy(
         {"optimize_user_playbooks": optimize, "auto_update_user_playbooks": adopt}
     )
     assert config.user_playbooks_enabled is expected
@@ -113,15 +108,20 @@ def test_real_local_file_upgrade_preserves_effective_activation(
         )
     )
     original = path.read_bytes()
-    for _ in range(2):
-        assert storage.load_config().playbook_optimizer_config.allows_target(
-            "user_playbook"
-        ) is (optimize and adopt)
+    from reflexio.config_migration import StoredConfigurationError
+
+    with pytest.raises(StoredConfigurationError):
+        storage.load_config()
     assert path.read_bytes() == original
     from reflexio.cli.config_upgrade import convert_config_file
 
     canonical = tmp_path / "canonical.json"
     convert_config_file(path, canonical)
+    storage.config_file = str(canonical)
+    for _ in range(2):
+        assert storage.load_config().playbook_optimizer_config.allows_target(
+            "user_playbook"
+        ) is (optimize and adopt)
     assert path.read_bytes() == original
     saved = json.loads(canonical.read_text())["playbook_optimizer_config"]
     assert saved["user_playbooks_enabled"] is (optimize and adopt)
@@ -141,3 +141,12 @@ def test_agent_adoption_veto_remains_independent(enabled, optimize, adopt):
     )
     assert config.allows_target("agent_playbook") is (enabled and optimize and adopt)
     assert config.allows_target("user_playbook") is enabled
+
+
+def _upgrade_policy(legacy):
+    from reflexio.config_migration import canonicalize_config_document
+
+    current = canonicalize_config_document(
+        {"storage_config": None, "playbook_optimizer_config": legacy}
+    )
+    return PlaybookOptimizerConfig.model_validate(current["playbook_optimizer_config"])
