@@ -739,6 +739,20 @@ async def run_in_threadpool[**P, T](
                     scope.phase_counts[name] = scope.phase_counts.get(name, 0) + 1
 
 
+def record_phase_interval(name: str, started: float, finished: float) -> None:
+    """Record completed landmarks from this request's monotonic clock.
+
+    Observation adds no deadline checkpoint or work admission. Overlapping
+    intervals use the same union accounting as context-managed phases.
+    """
+    scope = current()
+    if scope is None:
+        return
+    with scope.lock:
+        scope.intervals.append((name, started, finished))
+        scope.phase_counts[name] = scope.phase_counts.get(name, 0) + 1
+
+
 @contextmanager
 def phase(name: str, *, cleanup: bool = False) -> Iterator[None]:
     scope = current()
