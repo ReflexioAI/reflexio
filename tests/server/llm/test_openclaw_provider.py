@@ -68,25 +68,26 @@ class TestResolveCliPath:
 
 
 class TestExtractText:
-    def test_text_key(self) -> None:
-        assert ocp._extract_text({"text": "A"}) == "A"
+    def test_outputs_text(self) -> None:
+        # Shape emitted by `openclaw infer model run --json` (2026.10.6).
+        payload = {
+            "ok": True,
+            "capability": "model.run",
+            "outputs": [{"text": "Four.", "mediaUrl": None}],
+        }
+        assert ocp._extract_text(payload) == "Four."
 
-    def test_content_key(self) -> None:
-        assert ocp._extract_text({"content": "B"}) == "B"
+    def test_joins_multiple_outputs(self) -> None:
+        assert ocp._extract_text({"outputs": [{"text": "A"}, {"text": "B"}]}) == "AB"
 
-    def test_output_key(self) -> None:
-        assert ocp._extract_text({"output": "C"}) == "C"
-
-    def test_message_content_nested(self) -> None:
-        assert ocp._extract_text({"message": {"content": "D"}}) == "D"
-
-    def test_unknown_shape_returns_empty(self) -> None:
-        assert ocp._extract_text({"unknown": "X"}) == ""
+    def test_top_level_text_is_not_the_envelope(self) -> None:
+        assert ocp._extract_text({"text": "A"}) == ""
 
     def test_non_dict_returns_empty(self) -> None:
         assert ocp._extract_text("plain string") == ""
         assert ocp._extract_text([]) == ""
         assert ocp._extract_text(None) == ""
+        assert ocp._extract_text({"outputs": "x"}) == ""
 
 
 class TestCallCli:
@@ -98,7 +99,9 @@ class TestCallCli:
         fake.chmod(0o755)
         monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
 
-        proc = _fake_completed_process(json.dumps({"text": "PONG"}))
+        proc = _fake_completed_process(
+            json.dumps({"ok": True, "outputs": [{"text": "PONG"}]})
+        )
         with patch("subprocess.run", return_value=proc) as run:
             result = ocp._call_cli(prompt="ping", model=None, timeout_s=10)
         assert result == "PONG"
@@ -117,7 +120,9 @@ class TestCallCli:
         fake.chmod(0o755)
         monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
 
-        proc = _fake_completed_process(json.dumps({"text": "ok"}))
+        proc = _fake_completed_process(
+            json.dumps({"ok": True, "outputs": [{"text": "ok"}]})
+        )
         with patch("subprocess.run", return_value=proc) as run:
             ocp._call_cli(prompt="p", model=None, timeout_s=10)
         env = run.call_args[1]["env"]
@@ -131,7 +136,9 @@ class TestCallCli:
         fake.chmod(0o755)
         monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
 
-        proc = _fake_completed_process(json.dumps({"text": "ok"}))
+        proc = _fake_completed_process(
+            json.dumps({"ok": True, "outputs": [{"text": "ok"}]})
+        )
         with patch("subprocess.run", return_value=proc) as run:
             ocp._call_cli(prompt="p", model="anthropic/claude-sonnet-4-6", timeout_s=10)
         argv = run.call_args[0][0]
@@ -191,6 +198,36 @@ class TestCallCli:
         ):
             ocp._call_cli(prompt="p", model=None, timeout_s=10)
 
+    def test_raises_on_reported_failure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        fake = tmp_path / "openclaw"
+        fake.write_text("#!/bin/sh")
+        fake.chmod(0o755)
+        monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
+
+        proc = _fake_completed_process(json.dumps({"ok": False, "error": "no auth"}))
+        with (
+            patch("subprocess.run", return_value=proc),
+            pytest.raises(ocp.OpenClawCLIError, match="no auth"),
+        ):
+            ocp._call_cli(prompt="p", model=None, timeout_s=10)
+
+    def test_refuses_prompt_over_argv_limit(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        fake = tmp_path / "openclaw"
+        fake.write_text("#!/bin/sh")
+        fake.chmod(0o755)
+        monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
+
+        with (
+            patch("subprocess.run") as run,
+            pytest.raises(ocp.OpenClawCLIError, match="at most"),
+        ):
+            ocp._call_cli(prompt="x" * 130_000, model=None, timeout_s=10)
+        run.assert_not_called()
+
 
 class TestRegisterIfEnabled:
     def test_skips_when_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -223,3 +260,186 @@ class TestRegisterIfEnabled:
         assert ocp.register_if_enabled() is True
         # Second call must not fail
         assert ocp.register_if_enabled() is True
+
+
+class TestAutoDetection:
+    """Opting in must make OpenClaw a usable provider, not just a registered one.
+
+    Before this, OPENCLAW_SMART_USE_LOCAL_CLI=1 registered the LiteLLM handler
+    but no role ever resolved to it, and `reflexio services start` refused to
+    boot for lack of an API key.
+    """
+
+    def test_opt_in_with_cli_resolves_every_generation_role(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        from reflexio.server.llm import model_defaults as md
+
+        fake = tmp_path / "openclaw"
+        fake.write_text("#!/bin/sh")
+        fake.chmod(0o755)
+        monkeypatch.setenv(ocp.ENV_ENABLE, "1")
+        monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
+        for env_var in md._ENV_TO_PROVIDER:
+            monkeypatch.delenv(env_var, raising=False)
+        monkeypatch.setattr(
+            "reflexio.server.llm.providers.claude_code_provider.is_claude_code_available",
+            lambda: False,
+        )
+
+        providers = md.detect_available_providers()
+        assert "openclaw" in providers
+        assert "openclaw" in md.GENERATION_CAPABLE_PROVIDERS
+        for role in (md.ModelRole.GENERATION, md.ModelRole.EXTRACTION_AGENT):
+            assert md.resolve_model_name(role) == "openclaw/default"
+
+    def test_not_detected_without_opt_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from reflexio.server.llm import model_defaults as md
+
+        monkeypatch.delenv(ocp.ENV_ENABLE, raising=False)
+        assert "openclaw" not in md.detect_available_providers()
+
+    def test_default_model_uses_openclaws_configured_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(ocp.ENV_DEFAULT_MODEL, raising=False)
+        with patch.object(ocp, "_call_cli", return_value="ok") as call:
+            ocp.OpenClawLLM().completion(
+                model="openclaw/default", messages=[{"role": "user", "content": "hi"}]
+            )
+        assert call.call_args.kwargs["model"] is None
+
+
+class TestCliFailureReporting:
+    @staticmethod
+    def _fake(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        fake = tmp_path / "openclaw"
+        fake.write_text("#!/bin/sh")
+        fake.chmod(0o755)
+        monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
+
+    def test_reports_the_json_error_not_the_generic_stderr(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        self._fake(monkeypatch, tmp_path)
+        failed = _fake_completed_process(
+            json.dumps({"ok": False, "error": {"message": "Unknown model: x"}}),
+            stderr="[openclaw] The CLI command failed.",
+            returncode=1,
+        )
+        with (
+            patch("subprocess.run", return_value=failed),
+            pytest.raises(ocp.OpenClawCLIError, match="Unknown model: x"),
+        ):
+            ocp._call_cli(prompt="p", model=None, timeout_s=10)
+
+    def test_retries_state_maintenance_then_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        self._fake(monkeypatch, tmp_path)
+        monkeypatch.setattr(ocp, "_BUSY_BACKOFF_SECONDS", 0)
+        busy = _fake_completed_process(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": {
+                        "message": "OpenClaw state at x is undergoing offline "
+                        "maintenance; retry when it finishes."
+                    },
+                }
+            ),
+            returncode=1,
+        )
+        ok = _fake_completed_process(
+            json.dumps({"ok": True, "outputs": [{"text": "hi"}]})
+        )
+        with patch("subprocess.run", side_effect=[busy, busy, ok]) as run:
+            assert ocp._call_cli(prompt="p", model=None, timeout_s=10) == "hi"
+        assert run.call_count == 3
+
+
+class TestToolCalling:
+    """The extraction agent is a tool loop; the CLI only returns text."""
+
+    TOOLS = [
+        {
+            "type": "function",
+            "function": {
+                "name": "finish",
+                "description": "Return the extracted items",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"items": {"type": "array"}},
+                },
+            },
+        }
+    ]
+
+    def test_reports_openclaw_models_as_tool_capable(self) -> None:
+        from reflexio.server.llm.tools import supports_tool_calling
+
+        assert supports_tool_calling("openclaw/default")
+        assert supports_tool_calling("openclaw/openai/gpt-5.6-luna")
+
+    def test_tool_json_reply_becomes_a_tool_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(ocp.ENV_DEFAULT_MODEL, raising=False)
+        reply = 'Sure.\n{"tool": "finish", "args": {"items": ["x"]}}'
+        with patch.object(ocp, "_call_cli", return_value=reply) as call:
+            response = ocp.OpenClawLLM().completion(
+                model="openclaw/default",
+                messages=[
+                    {"role": "system", "content": "Extract."},
+                    {"role": "user", "content": "hi"},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "c1",
+                                "function": {
+                                    "name": "search",
+                                    "arguments": '{"q": "a"}',
+                                },
+                            }
+                        ],
+                    },
+                    {"role": "tool", "tool_call_id": "c1", "content": "no results"},
+                ],
+                optional_params={"tools": self.TOOLS},
+            )
+        prompt = call.call_args.kwargs["prompt"]
+        assert "EXTERNAL TOOL-CALLING MODE" in prompt and "- finish:" in prompt
+        assert 'called search with {"q": "a"}' in prompt
+        assert "tool[c1]: no results" in prompt
+        message = response.choices[0].message
+        assert message.content is None
+        assert message.tool_calls
+        function = message.tool_calls[0].function  # pyright: ignore[reportAttributeAccessIssue]
+        assert function.name == "finish"
+        assert json.loads(function.arguments) == {"items": ["x"]}
+        assert response.choices[0].finish_reason == "tool_calls"
+
+    def test_unparsable_reply_stays_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        with patch.object(ocp, "_call_cli", return_value="I cannot help"):
+            response = ocp.OpenClawLLM().completion(
+                model="openclaw/default",
+                messages=[{"role": "user", "content": "hi"}],
+                optional_params={"tools": self.TOOLS},
+            )
+        assert response.choices[0].message.content == "I cannot help"
+
+    def test_response_format_is_written_into_the_prompt(self) -> None:
+        from pydantic import BaseModel
+
+        class Out(BaseModel):
+            answer: str
+
+        with patch.object(ocp, "_call_cli", return_value='{"answer": "4"}') as call:
+            ocp.OpenClawLLM().completion(
+                model="openclaw/default",
+                messages=[{"role": "user", "content": "2+2"}],
+                optional_params={"response_format": Out},
+            )
+        assert '"answer"' in call.call_args.kwargs["prompt"]

@@ -5,10 +5,12 @@ Several guards walk `reflexio/**/*.py` looking for a call pattern. A bare
 means "every .py file currently on disk under this directory", and that includes
 gitignored build output.
 
-`reflexio/integrations/openclaw/plugin/` grows a `.venv` the moment anyone builds
-that plugin. It is gitignored, so CI never sees it and the guards pass there --
-but on a developer machine it turns a ~200-file scan into ~17,400, dragging in
-sympy, torch and litellm. Two ways that bites, both observed:
+The Python OpenClaw plugin used to grow a `.venv` under
+`reflexio/integrations/openclaw/plugin/` the moment anyone built it (today that
+directory grows a `node_modules`, which ships Python from node-gyp). It is
+gitignored, so CI never sees it and the guards pass there -- but on a developer
+machine the venv turned a ~200-file scan into ~17,400, dragging in sympy, torch
+and litellm. Two ways that bit, both observed:
 
 - `test_lineage_silent_bulk_delete_callers_only_remove_ineligible_rows` uses a
   recursive `ast.NodeVisitor`. `sympy/polys/numberfields/resolvent_lookup.py`

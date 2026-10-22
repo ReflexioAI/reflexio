@@ -1,0 +1,73 @@
+name: OpenClaw plugin
+
+on:
+  pull_request:
+    paths:
+      - reflexio/integrations/openclaw/**
+      - reflexio/server/llm/providers/openclaw_provider.py
+      - reflexio/server/routes/**
+      - reflexio/models/api_schema/**
+      - reflexio/cli/commands/setup_cmd.py
+      - .github/workflows/openclaw-plugin.yml
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24.22.1"
+
+jobs:
+  plugin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: reflexio/integrations/openclaw/plugin
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: reflexio/integrations/openclaw/plugin/package-lock.json
+      - run: npm ci --no-fund --no-audit
+      # Typechecks against the real OpenClaw SDK (a pinned devDependency), so
+      # a host API change fails here instead of at a user's runtime.
+      - run: npm run typecheck
+      - run: npm test
+
+  # Drives a real OpenClaw against a real Reflexio backend through the packed
+  # plugin. See reflexio/integrations/openclaw/lab/README.md.
+  lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # The declared compat.pluginApi floor, plus what users get today and
+        # what they get next. Dist-tags keep the last two moving with upstream.
+        openclaw: ["2026.9.33", "latest", "beta"]
+    env:
+      OPENCLAW_LAB_VERSION: ${{ matrix.openclaw }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync
+      - run: reflexio/integrations/openclaw/lab/lab.sh up
+      - run: uv run --no-sync python reflexio/integrations/openclaw/lab/scenarios.py
+      - name: Lab logs
+        if: failure()
+        run: tail -n 200 "${TMPDIR:-/tmp}"/reflexio-openclaw-lab/{backend,gateway}.log || true
+      - if: always()
+        run: reflexio/integrations/openclaw/lab/lab.sh down

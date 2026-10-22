@@ -33,6 +33,11 @@ _CLAUDE_CODE_PROVIDER = "claude-code"
 # cloud embedder is configured — see Path 3 in ``_auto_detect_model``.
 _LOCAL_EMBEDDING_PROVIDER = "local"
 
+# The OpenClaw CLI provider (providers/openclaw_provider.py), opted into with
+# OPENCLAW_SMART_USE_LOCAL_CLI=1 plus a resolvable `openclaw` binary. Like
+# claude-code it borrows the host CLI's own login instead of an API key.
+_OPENCLAW_PROVIDER = "openclaw"
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -58,6 +63,7 @@ _ENV_TO_PROVIDER: dict[str, str] = {
 # surprised by an OpenAI/Anthropic API bill from a leftover env var.
 _PROVIDER_PRIORITY: list[str] = [
     _CLAUDE_CODE_PROVIDER,
+    _OPENCLAW_PROVIDER,
     _LOCAL_EMBEDDING_PROVIDER,
     "anthropic",
     "gemini",
@@ -137,9 +143,14 @@ def detect_available_providers(
     from reflexio.server.llm.providers.local_embedding_provider import (
         is_local_embedder_available,
     )
+    from reflexio.server.llm.providers.openclaw_provider import (
+        is_openclaw_available,
+    )
 
     if is_claude_code_available():
         available.add(_CLAUDE_CODE_PROVIDER)
+    if is_openclaw_available():
+        available.add(_OPENCLAW_PROVIDER)
     if is_local_embedder_available():
         available.add(_LOCAL_EMBEDDING_PROVIDER)
 
@@ -190,6 +201,16 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         pre_retrieval="claude-code/default",
         embedding=None,
         extraction_agent="claude-code/default",
+    ),
+    # openclaw routes through `openclaw infer model run`; "default" lets
+    # OpenClaw pick its configured model. No embedding endpoint.
+    _OPENCLAW_PROVIDER: ProviderDefaults(
+        generation="openclaw/default",
+        evaluation="openclaw/default",
+        should_run="openclaw/default",
+        pre_retrieval="openclaw/default",
+        embedding=None,
+        extraction_agent="openclaw/default",
     ),
     # local is an embedding-only provider that routes through an
     # in-process ONNX model (all-MiniLM-L6-v2). Generation

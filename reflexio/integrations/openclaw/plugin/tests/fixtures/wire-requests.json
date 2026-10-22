@@ -1,0 +1,90 @@
+{
+  "/api/search": {
+    "query": "q",
+    "user_id": "u",
+    "agent_version": "openclaw",
+    "entity_types": [
+      "profiles",
+      "user_playbooks",
+      "agent_playbooks"
+    ],
+    "agent_playbook_status_filter": [
+      "pending",
+      "approved"
+    ],
+    "enable_agent_answer": false,
+    "enable_reformulation": false,
+    "top_k": 3,
+    "search_mode": "hybrid",
+    "session_id": "s",
+    "request_id": "r"
+  },
+  "/api/publish_interaction": {
+    "request_id": "r",
+    "user_id": "u",
+    "session_id": "s",
+    "agent_version": "openclaw",
+    "source": "openclaw",
+    "interaction_data_list": [
+      {
+        "role": "User",
+        "content": "q"
+      },
+      {
+        "role": "Assistant",
+        "content": "a",
+        "tools_used": [
+          {
+            "tool_name": "exec",
+            "status": "success",
+            "tool_data": {
+              "input": {
+                "command": "ls"
+              }
+            }
+          }
+        ],
+        "citations": [
+          {
+            "kind": "profile",
+            "real_id": "p",
+            "tag": "p1-p",
+            "title": "t"
+          }
+        ],
+        "retrieved_learnings": [
+          {
+            "kind": "user_playbook",
+            "learning_id": "1",
+            "exposure_receipt": "x"
+          }
+        ]
+      }
+    ]
+  },
+  "/api/finalize_session": {
+    "user_id": "u",
+    "session_id": "s"
+  },
+  "/api/get_profiles": {
+    "user_id": "u",
+    "top_k": 20,
+    "status_filter": [
+      null
+    ]
+  },
+  "/api/get_user_playbooks": {
+    "user_id": "u",
+    "limit": 20,
+    "status_filter": [
+      null
+    ]
+  },
+  "/api/get_agent_playbooks": {
+    "agent_version": "openclaw",
+    "limit": 20,
+    "status_filter": [
+      null
+    ]
+  }
+}

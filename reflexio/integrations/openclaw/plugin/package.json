@@ -1,39 +1,33 @@
 {
   "name": "@reflexioai/openclaw-smart",
-  "version": "0.1.0",
-  "description": "Self-improving openClaw plugin — learns from corrections across sessions via reflexio.",
+  "version": "0.2.0",
+  "description": "Self-improving OpenClaw plugin — learns from corrections across sessions via Reflexio.",
   "type": "module",
-  "bin": {
-    "openclaw-smart": "./scripts/npm-cli.js"
-  },
+  "license": "Apache-2.0",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "prepack": "npm run build",
     "test": "vitest run",
-    "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
   "openclaw": {
     "extensions": ["./dist/index.js"],
     "compat": {
-      "pluginApi": ">=2026.3.24",
-      "minGatewayVersion": "2026.3.24"
+      "pluginApi": ">=2026.9.33"
     }
   },
   "files": [
     "dist/**/*.js",
-    "scripts/**/*",
-    "skills/**/*",
-    "src/**/*.py",
-    "types/**/*.d.ts",
     "openclaw.plugin.json",
-    "pyproject.toml",
-    "uv.lock",
     "README.md"
   ],
+  "engines": {
+    "node": ">=24.22.1 <25 || >=26.12.1"
+  },
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "typescript": "^5.0.0",
-    "vitest": "^3.0.0"
+    "@types/node": "^24.0.0",
+    "openclaw": "2026.10.6",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
   }
 }

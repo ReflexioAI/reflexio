@@ -8,6 +8,7 @@
         "reflexio/scripts", "notebooks", "demo",
         "tests/test_scripts",
         "**/.venv",
+        "**/node_modules",
         "benchmark"
     ],
     "extraPaths": ["."],

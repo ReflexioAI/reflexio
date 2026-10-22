@@ -580,23 +580,19 @@ class TestChooseEmbeddingProviderEdgeCases:
 
 
 class TestOpenclawSetup:
-    """Tests for the openclaw-smart install/uninstall/repair flows."""
+    """Tests for the OpenClaw plugin install/uninstall flows."""
 
     def test_plugin_id_constant(self) -> None:
-        """The plugin id must match what openClaw and the TS shim register."""
+        """The plugin id must match openclaw.plugin.json, or config keys drift."""
+        import json as _json
+
         from reflexio.cli.commands.setup_cmd import _OPENCLAW_PLUGIN_ID
 
-        assert _OPENCLAW_PLUGIN_ID == "reflexio-openclaw-smart"
-
-    def test_write_openclaw_env_persists_keys(self, tmp_path: Path) -> None:
-        """``_write_openclaw_env`` upserts OPENCLAW_BIN + USE_LOCAL_CLI=1."""
-        from reflexio.cli.commands.setup_cmd import _write_openclaw_env
-
-        env = tmp_path / ".env"
-        _write_openclaw_env(env, "/usr/local/bin/openclaw")
-        body = env.read_text()
-        assert 'OPENCLAW_BIN="/usr/local/bin/openclaw"' in body
-        assert 'OPENCLAW_SMART_USE_LOCAL_CLI="1"' in body
+        manifest = (
+            Path(__file__).resolve().parents[2]
+            / "reflexio/integrations/openclaw/plugin/openclaw.plugin.json"
+        )
+        assert _json.loads(manifest.read_text())["id"] == _OPENCLAW_PLUGIN_ID
 
     def test_remove_env_keys_strips_lines(self, tmp_path: Path) -> None:
         """``_remove_env_keys`` drops the named keys, leaves others untouched."""
@@ -613,10 +609,9 @@ class TestOpenclawSetup:
         remaining = env.read_text().splitlines()
         assert remaining == ["OTHER=keep", "STILL=keep"]
 
-    def test_openclaw_rejects_conflicting_flags(
+    def test_openclaw_rejects_purge_without_uninstall(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Repair, uninstall, and purge modes must be unambiguous."""
         from reflexio.cli import env_loader
         from reflexio.cli.commands.setup_cmd import openclaw
 
@@ -625,97 +620,149 @@ class TestOpenclawSetup:
         monkeypatch.setattr(env_loader, "ensure_user_env_for_setup", lambda: env)
 
         with pytest.raises(typer.Exit):
-            openclaw(repair=True, uninstall=True, purge=False)
-        with pytest.raises(typer.Exit):
-            openclaw(repair=False, uninstall=False, purge=True)
+            openclaw(uninstall=False, purge=True)
 
-    def test_install_openclaw_uses_new_plugin_id(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`_install_openclaw_integration` passes the new plugin id to subprocess."""
+    @staticmethod
+    def _fake_openclaw(
+        monkeypatch: pytest.MonkeyPatch, inspect_plugin: dict, fail_on: tuple = ()
+    ) -> list[tuple[list[str], str | None]]:
+        import json as _json
+
         from reflexio.cli.commands import setup_cmd
 
-        env_path = tmp_path / ".env"
-        env_path.write_text("")
-
         monkeypatch.setattr(setup_cmd.shutil, "which", lambda _: "/usr/bin/openclaw")
-        plugin_dir = tmp_path / "plugin"
-        plugin_dir.mkdir()
-        monkeypatch.setattr(setup_cmd, "_openclaw_plugin_dir", lambda: plugin_dir)
-        monkeypatch.setattr(setup_cmd, "_run_smart_install", lambda _p: None)
-
-        calls: list[list[str]] = []
+        calls: list[tuple[list[str], str | None]] = []
 
         class _Result:
-            def __init__(self, stdout: str = "Status: loaded\n") -> None:
+            def __init__(self, stdout: str = "", returncode: int = 0) -> None:
                 self.stdout = stdout
-                self.stderr = ""
-                self.returncode = 0
-
-        def fake_run(argv, **_kw):  # noqa: ANN001
-            calls.append(list(argv))
-            # CLI is invoked by absolute path (TOCTOU fix), so check the
-            # subcommand position rather than the executable string.
-            if argv[1:3] == ["plugins", "inspect"]:
-                return _Result("Status: loaded\n")
-            return _Result("")
-
-        monkeypatch.setattr(setup_cmd.subprocess, "run", fake_run)
-
-        ok = setup_cmd._install_openclaw_integration(env_path)
-
-        assert ok is True
-        flat_args = [arg for call in calls for arg in call]
-        assert "reflexio-openclaw-smart" in flat_args
-        assert "reflexio-federated" not in flat_args
-        # Every install-side call should target the absolute openclaw_bin
-        # path, not the bare "openclaw" string.
-        for call in calls:
-            assert call[0] == "/usr/bin/openclaw", (
-                f"expected absolute CLI path, got {call[0]!r}"
-            )
-        body = env_path.read_text()
-        assert 'OPENCLAW_BIN="/usr/bin/openclaw"' in body
-        assert 'OPENCLAW_SMART_USE_LOCAL_CLI="1"' in body
-
-    def test_install_openclaw_fails_if_conversation_access_not_persisted(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Setup must not report success if typed-hook access cannot be saved."""
-        from reflexio.cli.commands import setup_cmd
-
-        env_path = tmp_path / ".env"
-        env_path.write_text("")
-        plugin_dir = tmp_path / "plugin"
-        plugin_dir.mkdir()
-
-        monkeypatch.setattr(setup_cmd.shutil, "which", lambda _: "/usr/bin/openclaw")
-        monkeypatch.setattr(setup_cmd, "_openclaw_plugin_dir", lambda: plugin_dir)
-
-        class _Result:
-            def __init__(self, returncode: int = 0) -> None:
-                self.stdout = ""
-                self.stderr = "denied"
+                self.stderr = "denied rk-1" if returncode else ""
                 self.returncode = returncode
 
-        def fake_run(argv, **_kw):  # noqa: ANN001
-            if argv[1:3] == ["config", "set"]:
+        def fake_run(argv, **kw):  # noqa: ANN001
+            calls.append((list(argv), kw.get("input")))
+            if tuple(argv[1:3]) == fail_on:
                 return _Result(returncode=1)
+            if argv[1:3] == ["plugins", "inspect"]:
+                return _Result(_json.dumps({"plugin": inspect_plugin}))
             return _Result()
 
         monkeypatch.setattr(setup_cmd.subprocess, "run", fake_run)
+        return calls
+
+    def test_install_points_plugin_at_configured_backend(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Install consents, then one patch grants hook access and sets URL + key."""
+        import json as _json
+
+        from reflexio.cli.commands import setup_cmd
+
+        env_path = tmp_path / ".env"
+        env_path.write_text(
+            'REFLEXIO_URL="https://reflexio.example/"\nREFLEXIO_API_KEY="rk-1"\n'
+        )
+        calls = self._fake_openclaw(monkeypatch, {"status": "loaded", "hookCount": 3})
+
+        assert setup_cmd._install_openclaw_integration(env_path) is True
+
+        argvs = [argv for argv, _ in calls]
+        assert [
+            "/usr/bin/openclaw",
+            "plugins",
+            "install",
+            "@reflexioai/openclaw-smart",
+            "--force",
+            "--accept-capabilities",
+        ] in argvs
+        patches = [
+            _json.loads(stdin)
+            for argv, stdin in calls
+            if argv[1:3] == ["config", "patch"] and stdin is not None
+        ]
+        entry = patches[0]["plugins"]["entries"]["reflexio-openclaw-smart"]
+        assert entry == {
+            "hooks": {"allowConversationAccess": True},
+            "config": {"url": "https://reflexio.example/", "apiKey": "rk-1"},
+        }
+        # The key travels on stdin only; argv is visible to other users via ps.
+        assert not any("rk-1" in arg for argv in argvs for arg in argv)
+        assert all(argv[0] == "/usr/bin/openclaw" for argv in argvs)
+        # The plugin talks HTTP; the legacy provider opt-in must not be written.
+        assert "OPENCLAW_SMART_USE_LOCAL_CLI" not in env_path.read_text()
+
+    def test_install_from_local_path_defaults_to_local_server(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without a key, the URL defaults locally and old settings are cleared first."""
+        import json as _json
+
+        from reflexio.cli.commands import setup_cmd
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        calls = self._fake_openclaw(monkeypatch, {"status": "loaded", "hookCount": 3})
+
+        assert setup_cmd._install_openclaw_integration(
+            env_path, plugin_source="/src/plugin"
+        )
+        # Old settings are cleared before install: the new schema rejects them.
+        assert calls[0][0][1:] == [
+            "config",
+            "unset",
+            "plugins.entries.reflexio-openclaw-smart.config",
+        ]
+        assert calls[1][0][1:4] == ["plugins", "install", "/src/plugin"]
+        patch = next(
+            _json.loads(i)
+            for a, i in calls
+            if a[1:3] == ["config", "patch"] and i is not None
+        )
+        config = patch["plugins"]["entries"]["reflexio-openclaw-smart"]["config"]
+        assert config == {"url": setup_cmd._LOCAL_SERVER_URL}
+
+    def test_install_reports_unverified_when_hooks_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A loaded plugin that registered no hooks is not a working install."""
+        from reflexio.cli.commands import setup_cmd
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        self._fake_openclaw(monkeypatch, {"status": "loaded", "hookCount": 0})
+
+        assert setup_cmd._install_openclaw_integration(env_path) is False
+
+    def test_install_fails_without_echoing_the_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """A failed config write stops setup, and its error text hides the key."""
+        from reflexio.cli.commands import setup_cmd
+
+        env_path = tmp_path / ".env"
+        env_path.write_text('REFLEXIO_API_KEY="rk-1"\n')
+        self._fake_openclaw(
+            monkeypatch,
+            {"status": "loaded", "hookCount": 3},
+            fail_on=("config", "patch"),
+        )
 
         with pytest.raises(typer.Exit):
             setup_cmd._install_openclaw_integration(env_path)
+        out = capsys.readouterr().out
+        assert "denied <redacted>" in out
+        assert "rk-1" not in out
 
     def test_uninstall_openclaw_reuses_openclaw_bin_from_env(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Uninstall should remove the plugin even if PATH no longer has openclaw."""
+        """Uninstall removes the plugin and the legacy env keys."""
         from reflexio.cli.commands import setup_cmd
 
         env_path = tmp_path / ".env"
-        env_path.write_text('OPENCLAW_BIN="/opt/openclaw/bin/openclaw"\n')
+        env_path.write_text(
+            'OPENCLAW_BIN="/opt/openclaw/bin/openclaw"\nOPENCLAW_SMART_USE_LOCAL_CLI="1"\n'
+        )
         monkeypatch.setattr(setup_cmd.typer, "confirm", lambda *_a, **_kw: True)
         monkeypatch.setattr(setup_cmd.shutil, "which", lambda _: None)
 
@@ -737,6 +784,7 @@ class TestOpenclawSetup:
 
         assert calls
         assert all(call[0] == "/opt/openclaw/bin/openclaw" for call in calls)
+        assert env_path.read_text() == ""
 
 
 class TestEnsureUserEnvForSetup:

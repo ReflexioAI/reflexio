@@ -198,10 +198,33 @@ def _reset_llm_client_state_after_fork() -> None:
         pass
 
 
+def _register_local_cli_providers() -> None:
+    """Register the opt-in CLI providers in this child, if enabled.
+
+    Under ``fork`` the child inherits the parent's ``custom_provider_map``. But
+    uvicorn starts its workers with ``spawn``, and a spawned process inherits
+    ``spawn`` as its default start method, so the completion child in a
+    multi-worker server re-imports only this module and never runs the
+    registration ``litellm_client`` does at import. Every ``openclaw/...`` or
+    ``claude-code/...`` call then failed with "LLM Provider NOT provided".
+    Both registrations are idempotent and no-ops unless their env opt-in is set.
+    """
+    from reflexio.server.llm.providers.claude_code_provider import (
+        register_if_enabled as register_claude_code,
+    )
+    from reflexio.server.llm.providers.openclaw_provider import (
+        register_if_enabled as register_openclaw,
+    )
+
+    register_claude_code()
+    register_openclaw()
+
+
 def _litellm_completion_worker(
     params: dict[str, Any], result_queue: multiprocessing.Queue
 ) -> None:
     _reset_llm_client_state_after_fork()
+    _register_local_cli_providers()
     try:
         result_queue.put(("ok", _picklable_completion_result(model_completion(params))))
     except BaseException as exc:

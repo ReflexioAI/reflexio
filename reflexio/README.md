@@ -24,7 +24,7 @@ Paths below are relative to this package. The repository's [public README](../RE
 | `server/prompt/prompt_bank/` | Versioned LLM prompts | [Prompts](server/prompt/prompt_bank/README.md) |
 | `server/site_var/` | Model settings, retrieval defaults, and feature flags | [Site variables](server/site_var/README.md) |
 | `mem0/` | Optional hosted mem0 wrappers and scoped cleanup | [mem0](mem0/README.md) |
-| `integrations/` | External agent integrations | [OpenClaw](integrations/openclaw/README.md), [embedded OpenClaw](integrations/openclaw-embedded/README.md) |
+| `integrations/` | External agent integrations | [OpenClaw](integrations/openclaw/README.md) |
 | `benchmarks/retrieval_latency/` | Storage/library retrieval timing | [Benchmark](benchmarks/retrieval_latency/README.md) |
 | `test_support/` | Shared test fixtures and helpers; `reviewer_metrics.py` captures safe per-call qualification observations | |
 

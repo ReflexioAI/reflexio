@@ -1,7 +1,0 @@
-eval/
-TESTING.md
-hook/node_modules/
-hook/package-lock.json
-.DS_Store
-publish_clawhub.sh
-.clawhubignore
