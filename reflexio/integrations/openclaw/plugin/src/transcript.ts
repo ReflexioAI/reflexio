@@ -50,12 +50,24 @@ const SECRET_PATTERNS: RegExp[] = [
   /((?:--?|\b)[A-Za-z0-9_.-]*(?:key|token|secret|passw(?:or)?d|pwd|credentials?|authorization)["']?\s*[:=]\s*["']?)([^\s"',;&|]{8,})/gi,
 ];
 
+// Fallback for credentials no name or shape above recognises
+// (GITLAB_PAT=glpat-…, a vendor's own prefix): an upper-case environment
+// assignment whose value mixes upper and lower case letters and digits. Hex
+// digests and ordinary words lack one of the three and are left alone.
+const ENV_ASSIGNMENT = /(\b[A-Z][A-Z0-9_]{2,}=["']?)([A-Za-z0-9+/=_-]{20,})/g;
+
+function looksLikeSecret(value: string): boolean {
+  return /[a-z]/.test(value) && /[A-Z]/.test(value) && /[0-9]/.test(value);
+}
+
 export function redact(text: string): string {
   let out = text;
   for (const pattern of SECRET_PATTERNS) {
     out = out.replace(pattern, (_whole, prefix: string, value: string) => `${prefix}<redacted:${value.length}>`);
   }
-  return out;
+  return out.replace(ENV_ASSIGNMENT, (whole, prefix: string, value: string) =>
+    looksLikeSecret(value) ? `${prefix}<redacted:${value.length}>` : whole,
+  );
 }
 
 function clip(text: string, max: number): string {

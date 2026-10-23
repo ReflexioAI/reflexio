@@ -3,7 +3,7 @@ import { ReflexioClient, type ReflexioError } from "../src/client.js";
 import { resolveSettings } from "../src/config.js";
 import { requestIdFor, resolveUserId } from "../src/identity.js";
 import { renderInjection, resolveCitations } from "../src/render.js";
-import { currentTurn } from "../src/transcript.js";
+import { currentTurn, redact } from "../src/transcript.js";
 
 describe("identity", () => {
   it("separates workspaces that share a basename", () => {
@@ -71,6 +71,18 @@ describe("transcript", () => {
     expect(data).not.toMatch(/Ab3dEf6h|ghp_abc|sk-proj|0123456789abcdef/);
     expect(data).toContain("API_TOKEN=<redacted:24>");
     expect(turn?.user).toBe("deploy with <redacted:30> please");
+  });
+
+  it("masks high-entropy environment assignments no name or shape names", () => {
+    // Built by concatenation so the source holds no token-shaped literal for
+    // secret scanners to flag.
+    const pat = ["glpat", "AbCdEfGh123456789012"].join("-");
+    const rk = ["rk", "live", "51HxYzAbCdEfGh0123456"].join("_");
+    expect(redact(`GITLAB_PAT=${pat} git push`)).toBe("GITLAB_PAT=<redacted:26> git push");
+    expect(redact(`export STRIPE_RK='${rk}'`)).toBe("export STRIPE_RK='<redacted:29>'");
+    // A lower-case digest or a plain word is not a credential.
+    const sha = "GIT_SHA=0123456789abcdef0123456789abcdef01234567 LOG_LEVEL=information_verbose_mode";
+    expect(redact(sha)).toBe(sha);
   });
 
   it("masks values under credential-named keys, whatever they look like", () => {
