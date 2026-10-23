@@ -5,6 +5,7 @@
 // OpenAPI document.
 
 import type { Settings } from "./config.js";
+import { characterPrefix } from "./text.js";
 
 export const AGENT_VERSION = "openclaw";
 export const SOURCE = "openclaw";
@@ -198,7 +199,7 @@ export class ReflexioClient {
     const text = await res.text();
     if (!res.ok) {
       throw new ReflexioError(
-        `${path} -> HTTP ${res.status}: ${text.slice(0, 200)}`,
+        `${path} -> HTTP ${res.status}: ${text.slice(0, characterPrefix(text, 200).end)}`,
         res.status,
       );
     }

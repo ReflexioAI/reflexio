@@ -15,6 +15,7 @@ import type {
   RetrievedLearning,
   SearchHits,
 } from "./client.js";
+import { characterPrefix } from "./text.js";
 
 export interface RegistryEntry {
   tag: string;
@@ -44,11 +45,12 @@ function tagFor(prefix: "p" | "s", kind: RetrievedLearning["kind"], identity: st
 
 function titleOf(content: string, limit = 80): string {
   const text = content.trim();
+  const { end } = characterPrefix(text, limit);
   for (const terminator of [". ", "\n"]) {
     const idx = text.indexOf(terminator);
-    if (idx > 0 && idx <= limit) return text.slice(0, idx).trimEnd();
+    if (idx > 0 && idx <= end) return text.slice(0, idx).trimEnd();
   }
-  return text.length <= limit ? text : `${text.slice(0, limit - 1).trimEnd()}…`;
+  return end === text.length ? text : `${text.slice(0, characterPrefix(text, limit - 1).end).trimEnd()}…`;
 }
 
 function idOf(value: unknown): string | undefined {

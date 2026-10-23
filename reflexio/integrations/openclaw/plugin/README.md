@@ -37,9 +37,11 @@ The native plugin retains these existing configuration names:
 
 Set them under `plugins.entries.reflexio-openclaw-smart.config`, alongside
 `url` and `apiKey`. Malformed numeric policy fails before hook registration.
-Custom content limits do not truncate the local text used to resolve citations.
-The older Python plugin used a 5000ms search default; carry that value explicitly
-when preserving its former deadline during an upgrade.
+Prompt and content limits count complete Unicode code points. Custom content
+limits do not truncate the local text used to resolve citations.
+The older manifest advertised a 5000ms search default but its Python hook did
+not consume these fields. Select 5000ms explicitly if desired; the native
+runtime keeps its existing 3000ms default.
 
 Publication and finalization share the hook's absolute deadline. Each request
 receives only the remaining time; there is no separate fixed per-request cap.

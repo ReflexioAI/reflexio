@@ -10,8 +10,9 @@
 // Injected context never appears here: OpenClaw keeps it on
 // `__openclaw.modelPromptProjection`, separate from the user's own text.
 
-import { DEFAULT_MAX_CONTENT_LENGTH } from "./config.js";
 import type { ToolUsed } from "./client.js";
+import { DEFAULT_MAX_CONTENT_LENGTH } from "./config.js";
+import { characterPrefix } from "./text.js";
 
 const TOOL_STRING_MAX = 256;
 const TOOL_DATA_MAX = 2048;
@@ -58,7 +59,8 @@ export function redact(text: string): string {
 }
 
 function clip(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max)}…(truncated)` : text;
+  const { end } = characterPrefix(text, max);
+  return end < text.length ? `${text.slice(0, end)}…(truncated)` : text;
 }
 
 // A key that names a credential (DATABASE_PASSWORD, apiKey, x-auth-token,

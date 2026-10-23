@@ -13,7 +13,8 @@ import { type Interaction, type PublishRequest, type ReflexioClient, ReflexioErr
 import type { Settings } from "./config.js";
 import { requestIdFor, resolveUserId } from "./identity.js";
 import { renderInjection, resolveCitations, retrievedLearnings } from "./render.js";
-import { Sessions, type SessionState } from "./sessions.js";
+import { type SessionState, Sessions } from "./sessions.js";
+import { characterPrefix } from "./text.js";
 import { currentTurn, runStartIn } from "./transcript.js";
 
 export interface Logger {
@@ -68,7 +69,7 @@ export class ReflexioHooks {
     // words; search on what the user actually wrote when the host gives it.
     const query = (event.currentUserMessage ?? event.prompt ?? "").trim();
     if (Array.isArray(event.messages)) run.start = runStartIn(event.messages, query);
-    if (!query || query.length < this.settings.minPromptLength) return undefined;
+    if (!query || characterPrefix(query, this.settings.minPromptLength).count < this.settings.minPromptLength) return undefined;
     try {
       const hits = await this.client.search({
         query,

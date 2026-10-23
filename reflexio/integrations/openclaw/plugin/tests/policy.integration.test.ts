@@ -46,7 +46,7 @@ it("carries retained policy through hooks and real loopback HTTP", async () => {
       {
         success: true,
         messages: [
-          { role: "user", content: "question" },
+          { role: "user", content: "😀😀😀😀x" },
           { role: "assistant", content: "answer" },
         ],
       },
@@ -59,7 +59,7 @@ it("carries retained policy through hooks and real loopback HTTP", async () => {
     expect(received.every((request) => request.authorization === "Bearer test-only")).toBe(true);
     expect(received[0]!.body).toMatchObject({ query: "?", top_k: 7 });
     expect(received[1]!.body.interaction_data_list).toEqual([
-      { role: "User", content: "ques…(truncated)" },
+      { role: "User", content: "😀😀😀😀…(truncated)" },
       { role: "Assistant", content: "answ…(truncated)" },
     ]);
   } finally {

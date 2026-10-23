@@ -381,3 +381,12 @@ describe("host deadline ownership", () => {
     expect(timeouts).toEqual([25_000]);
   });
 });
+
+it("measures prompt admission in Unicode code points", async () => {
+  const client = new FakeClient();
+  const hooks = new ReflexioHooks(resolveSettings({ search: { min_prompt_length: 2 } }, {}), client as unknown as ReflexioClient, {});
+  await hooks.beforePromptBuild({ prompt: "😀" }, ctx("short-unicode"));
+  expect(client.searches).toHaveLength(0);
+  await hooks.beforePromptBuild({ prompt: "😀x" }, ctx("long-unicode"));
+  expect(client.searches).toHaveLength(1);
+});

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ReflexioClient, ReflexioError } from "../src/client.js";
+import { ReflexioClient, type ReflexioError } from "../src/client.js";
 import { resolveSettings } from "../src/config.js";
 import { requestIdFor, resolveUserId } from "../src/identity.js";
 import { renderInjection, resolveCitations } from "../src/render.js";
@@ -260,4 +260,15 @@ describe("search timer bounds", () => {
   it.each([0, 1.5, 2147482648, Number.NaN, Number.POSITIVE_INFINITY])("rejects an invalid hook deadline %s", (timeout_ms) => {
     expect(() => resolveSettings({ search: { timeout_ms } }, {})).toThrow("search.timeout_ms");
   });
+});
+
+it("clips whole Unicode code points without introducing unpaired surrogates", () => {
+  const turn = currentTurn([{ role: "user", content: "😀x" }, { role: "assistant", content: "🐦" }], undefined, 1);
+  expect(turn?.user).toBe("😀…(truncated)");
+  expect(turn?.assistant).toBe("🐦");
+});
+
+it("retains whole Unicode code points in citation titles", () => {
+  const { registry } = renderInjection({ profiles: [{ profile_id: "unicode", content: "😀".repeat(80) + "x" }], user_playbooks: [], agent_playbooks: [] });
+  expect(registry[0]?.title).toBe("😀".repeat(79) + "…");
 });
