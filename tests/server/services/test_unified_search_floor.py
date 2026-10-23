@@ -42,6 +42,44 @@ class _FakeStorage:
     embedding_model_name = "local/minilm-l6-v2"
 
 
+@pytest.mark.parametrize("pool_size", [0, 40])
+def test_recency_pool_owns_scored_routing_and_overfetch(monkeypatch, pool_size):
+    """Zero skips the path; positive neutral-scoring pools still fetch scores."""
+    monkeypatch.setattr(
+        uss,
+        "_run_phase_a",
+        lambda **_kw: (ReformulationResult(standalone_query="q"), None, False),
+    )
+    seen = {}
+    playbook = _fake_user_playbook("relevant")
+
+    def retrieve(**kwargs):
+        seen.update(kwargs)
+        items = [ScoredItem(playbook, 0.8)] if kwargs["recency_on"] else [playbook]
+        return [], [], items
+
+    monkeypatch.setattr(uss, "_run_phase_b", retrieve)
+    with patch.object(
+        uss, "_apply_combined_score_recency", wraps=uss._apply_combined_score_recency
+    ) as rank:
+        response = uss.run_unified_search(
+            request=UnifiedSearchRequest(query="q", user_id="u", top_k=1),
+            org_id="o",
+            storage=cast(BaseStorage, _FakeStorage()),
+            llm_client=MagicMock(),
+            prompt_manager=MagicMock(),
+            retrieval_floor=RetrievalFloorConfig(enabled=False),
+            recency=RecencyConfig(
+                pool_size=pool_size, max_penalty_frac=0, max_penalty_logit=0
+            ),
+        )
+    assert response.success
+    assert seen["recency_on"] is (pool_size > 0)
+    assert seen["top_k"] == max(1, pool_size)
+    assert rank.call_count == (3 if pool_size else 0)
+    assert [item.content for item in response.user_playbooks] == ["relevant"]
+
+
 def test_expired_reranker_does_not_start_source_suppression_lookup(monkeypatch):
     storage = MagicMock(spec=_FakeStorage)
     storage.get_source_user_playbook_ids_for_agent_playbooks = MagicMock(
@@ -158,7 +196,7 @@ def test_floor_recency_applied_after_logits(monkeypatch):
             retrieval_floor=RetrievalFloorConfig(
                 enabled=True, user_playbook_floor=-5.0
             ),
-            recency=RecencyConfig(enabled=True, max_penalty_logit=1.0, pool_size=2),
+            recency=RecencyConfig(max_penalty_logit=1.0, pool_size=2),
         )
 
     assert [p.content for p in resp.user_playbooks] == ["fresh", "old"]
@@ -196,7 +234,7 @@ def test_floor_recency_does_not_overtake_clearly_more_relevant(monkeypatch):
             retrieval_floor=RetrievalFloorConfig(
                 enabled=True, user_playbook_floor=-5.0
             ),
-            recency=RecencyConfig(enabled=True, max_penalty_logit=0.2, pool_size=2),
+            recency=RecencyConfig(max_penalty_logit=0.2, pool_size=2),
         )
 
     assert [p.content for p in resp.user_playbooks] == ["old", "fresh"]
@@ -231,7 +269,7 @@ def test_floor_recency_falls_back_to_combined_score_when_unavailable(monkeypatch
             retrieval_floor=RetrievalFloorConfig(
                 enabled=True, user_playbook_floor=-5.0
             ),
-            recency=RecencyConfig(enabled=True, max_penalty_frac=1.0, pool_size=2),
+            recency=RecencyConfig(max_penalty_frac=1.0, pool_size=2),
         )
 
     assert [p.content for p in resp.user_playbooks] == ["fresh", "old"]
