@@ -20,7 +20,6 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PLUGIN_DIR="$HERE/../plugin"
 REPO_ROOT="$(cd "$HERE/../../../.." && pwd)"   # lab/ -> open_source/reflexio
 LAB="${OPENCLAW_LAB_DIR:-${TMPDIR:-/tmp}/reflexio-openclaw-lab}"
 OC_VERSION="${OPENCLAW_LAB_VERSION:-2026.10.6}"
@@ -153,16 +152,26 @@ cmd_gateway() {
 }
 
 install_plugin() {
-  log "building and packing the plugin"
-  (cd "$PLUGIN_DIR" && { [ -d node_modules ] || npm ci --no-fund --no-audit --loglevel=error; } \
-    && npm pack --silent --pack-destination "$LAB" >"$LAB/pack.out")
-  local tgz="$LAB/$(tail -1 "$LAB/pack.out")"
-  # Always install the packed archive: an in-place install is what hid the
-  # previous plugin's broken relative dependency path.
-  openclaw plugins install "$tgz" --force --accept-capabilities >/dev/null
-  openclaw config set "plugins.entries.$PLUGIN_ID.hooks.allowConversationAccess" true >/dev/null
-  openclaw config set "plugins.entries.$PLUGIN_ID.config.url" "http://127.0.0.1:$BACKEND_PORT/" >/dev/null
-  openclaw plugins enable "$PLUGIN_ID" >/dev/null
+  log "building the SDK wheel and installing its bundled plugin through setup"
+  # Import the built wheel outside the source checkout. This is the customer
+  # installation door, including bundle compilation and host config migration.
+  uv build --wheel --clear --out-dir "$LAB/wheel" "$REPO_ROOT" >/dev/null
+  local wheel
+  wheel=$(find "$LAB/wheel" -name '*.whl' -print -quit)
+  rm -rf "$LAB/sdk"
+  uv pip install --no-deps --target "$LAB/sdk" "$wheel" >/dev/null
+  (cd "$LAB" && PYTHONPATH="$LAB/sdk" "$REPO_ROOT/.venv/bin/python" - "$LAB/plugin.env" "$BACKEND_PORT" <<'PYINSTALL'
+import sys
+from pathlib import Path
+from reflexio.cli.commands import setup_cmd
+
+env_path = Path(sys.argv[1])
+env_path.write_text(f"REFLEXIO_URL=http://127.0.0.1:{sys.argv[2]}/\n")
+assert Path(setup_cmd.__file__).is_relative_to(Path.cwd() / "sdk")
+if not setup_cmd._install_openclaw_integration(env_path):
+    raise SystemExit("SDK plugin installation did not load all hooks")
+PYINSTALL
+  )
 }
 
 sign_in_openai() {
