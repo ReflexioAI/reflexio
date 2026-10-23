@@ -2,7 +2,9 @@
 
 from copy import deepcopy
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -366,3 +368,28 @@ def test_live_profile_context_still_invalidates_frozen_binding() -> None:
         generation_request_snapshot={"extractor_config": deepcopy(frozen)},
     )
     assert not matches_frozen_extractor_binding(prior, expected, frozen)
+
+
+@pytest.mark.parametrize("witness", ["snapshot", "window"])
+@pytest.mark.parametrize("changed", [None, "malformed", {"context_prompt": "tampered"}])
+def test_equal_parent_binding_authenticates_identity_witnesses(
+    witness, changed
+) -> None:
+    from reflexio.server.services.extraction.resumable_agent import (
+        _require_overflow_parent,
+    )
+
+    prior, _, frozen = _records()
+    storage = Mock()
+    storage.get_agent_run.return_value = prior
+    coordinator = Mock()
+    coordinator.window = SimpleNamespace(
+        window_id="original", policy={"extractor": deepcopy(frozen)}
+    )
+    assert _require_overflow_parent(storage, coordinator, prior) == prior
+    if witness == "snapshot":
+        prior.generation_request_snapshot["extractor_config"] = changed
+    else:
+        coordinator.window.policy["extractor"] = changed
+    with pytest.raises(RuntimeError, match="child parent binding changed"):
+        _require_overflow_parent(storage, coordinator, prior)

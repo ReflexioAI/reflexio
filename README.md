@@ -527,8 +527,14 @@ prior-answer lookups retain the old representation. Selected finalization recove
 also authenticates its saved snapshot before applying these comparisons. Changed
 prompts, live profile context, identities, unknown removed fields and `"audited"`
 strategy remain rejected. No cursor reset or deletion of pending work is needed.
-The playbook context field is no longer exposed or serialized; profile context
-remains supported. Raw upgrades preserve the old unused text as opaque data.
+The playbook context field is no longer exposed or serialized as configuration;
+profile context remains supported. Raw upgrades preserve old unused text as opaque
+data. A separate durable snapshot adapter keeps the historical nullable metadata
+slot for old workers, and retains witnessed values when continuing admitted work.
+New job hashes therefore remain readable by the previous worker schema. This slot
+is not a configuration input or execution default. Older operator-selected recovery
+may refuse new neutral snapshots when an old raw org config has custom context;
+use the upgraded recovery worker/tool in that case. Such refusals leave work intact.
 
 Overflow extraction meters source input using the complete original primary
 fields once, rejoining their pieces before canonical `cl100k_base` tokenization.
