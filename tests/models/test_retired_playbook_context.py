@@ -3,6 +3,8 @@
 from copy import deepcopy
 from decimal import Decimal
 
+import pytest
+
 from reflexio.config_migration import canonicalize_config_document
 from reflexio.models.config_schema import (
     Config,
@@ -10,6 +12,8 @@ from reflexio.models.config_schema import (
     UserPlaybookExtractorConfig,
     validate_stored_config,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def test_playbook_context_is_not_a_supported_input_or_serialized_policy() -> None:
