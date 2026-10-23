@@ -365,3 +365,19 @@ describe("ReflexioHooks", () => {
     expect(client.finalized.map(([, session]) => session)).toEqual(["sess-1"]);
   });
 });
+
+describe("host deadline ownership", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("gives publication the actual remaining hook budget, without a second fixed cap", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const { client, hooks } = setup();
+    const timeouts: (number | undefined)[] = [];
+    client.publish = async (_req: PublishRequest, timeoutMs?: number) => {
+      timeouts.push(timeoutMs);
+    };
+    await hooks.agentEnd({ success: true, messages: turn("question", "answer") }, ctx("r1"));
+    expect(timeouts).toEqual([25_000]);
+  });
+});

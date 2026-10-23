@@ -126,7 +126,7 @@ export class ReflexioClient {
     };
   }
 
-  async publish(req: PublishRequest, timeoutMs = this.settings.publishTimeoutMs): Promise<void> {
+  async publish(req: PublishRequest, timeoutMs: number): Promise<void> {
     try {
       await this.post(
         "api/publish_interaction",
@@ -149,7 +149,7 @@ export class ReflexioClient {
   async finalizeSession(
     userId: string,
     sessionId: string,
-    timeoutMs = this.settings.publishTimeoutMs,
+    timeoutMs: number,
   ): Promise<void> {
     await this.post("api/finalize_session", { user_id: userId, session_id: sessionId }, timeoutMs);
   }

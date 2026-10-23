@@ -16,6 +16,46 @@
       "apiKey": {
         "type": "string",
         "description": "Bearer token for managed or self-hosted Reflexio. Defaults to REFLEXIO_API_KEY. Prefer a secret reference such as \"${REFLEXIO_API_KEY}\"."
+      },
+      "search": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "top_k": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "default": 3,
+            "description": "Requested results per search arm."
+          },
+          "min_prompt_length": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "default": 5,
+            "description": "Minimum trimmed prompt length before retrieval; zero admits every nonempty prompt."
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147482647,
+            "default": 3000,
+            "description": "Search deadline in milliseconds; the hook reserves an additional second for host overhead."
+          }
+        }
+      },
+      "publish": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "max_content_length": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "default": 10000,
+            "description": "Maximum redacted characters retained per published message; a truncation marker may follow. Full reply text is retained locally for citation resolution."
+          }
+        }
       }
     }
   }

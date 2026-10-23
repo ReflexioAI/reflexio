@@ -23,3 +23,33 @@ learned; `/reflexio learn` asks Reflexio to extract from this session now.
 Requires OpenClaw `>=2026.9.33`. See the
 [integration README](https://github.com/reflexio-ai/reflexio/tree/main/reflexio/integrations/openclaw)
 for how it works and how to develop it.
+
+## Search and publication policy
+
+The native plugin retains these existing configuration names:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `search.top_k` | 3 | Positive result count requested per search arm. |
+| `search.min_prompt_length` | 5 | Minimum trimmed prompt length; zero admits every nonempty prompt. |
+| `search.timeout_ms` | 3000 | Positive search deadline, with an additional second reserved by the host hook. |
+| `publish.max_content_length` | 10000 | Positive maximum redacted characters retained per published message; a truncation marker may follow. |
+
+Set them under `plugins.entries.reflexio-openclaw-smart.config`, alongside
+`url` and `apiKey`. Malformed numeric policy fails before hook registration.
+Custom content limits do not truncate the local text used to resolve citations.
+The older Python plugin used a 5000ms search default; carry that value explicitly
+when preserving its former deadline during an upgrade.
+
+Publication and finalization share the hook's absolute deadline. Each request
+receives only the remaining time; there is no separate fixed per-request cap.
+An unacknowledged publication remains queued for a later event with its original
+request identity, rather than spinning through configurable retries or releasing
+later turns out of order.
+
+Before upgrading an older Python/embedded installation, remove the obsolete
+`publish.batch_size`, `publish.max_retries`, `server` and `extraction` plugin
+settings and the separate `reflexio-embedded` plugin entry. The four policy fields
+above keep their existing spelling. Extraction model selection belongs to the
+backend's configured model (`openclaw/<model>`), not this transport plugin.
+Keep an operator copy of the old configuration before removing retired fields.

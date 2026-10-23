@@ -10,11 +10,11 @@
 // Injected context never appears here: OpenClaw keeps it on
 // `__openclaw.modelPromptProjection`, separate from the user's own text.
 
+import { DEFAULT_MAX_CONTENT_LENGTH } from "./config.js";
 import type { ToolUsed } from "./client.js";
 
 const TOOL_STRING_MAX = 256;
 const TOOL_DATA_MAX = 2048;
-const CONTENT_MAX = 10_000;
 
 type Block = { type?: unknown; text?: unknown; name?: unknown; id?: unknown; arguments?: unknown };
 type Message = {
@@ -140,7 +140,7 @@ function runStart(list: Message[], recordedStart: number | undefined): number {
   return -1;
 }
 
-export function currentTurn(messages: unknown[], recordedStart?: number): TurnContent | undefined {
+export function currentTurn(messages: unknown[], recordedStart?: number, maxContentLength = DEFAULT_MAX_CONTENT_LENGTH): TurnContent | undefined {
   const list = messages.filter((m): m is Message => typeof m === "object" && m !== null);
   const start = runStart(list, recordedStart);
   if (start < 0) return undefined;
@@ -175,8 +175,8 @@ export function currentTurn(messages: unknown[], recordedStart?: number): TurnCo
   const assistant = assistantParts.join("\n\n");
   if (!user && !assistant) return undefined;
   return {
-    user: clip(redact(user), CONTENT_MAX),
-    assistant: clip(redact(assistant), CONTENT_MAX),
+    user: clip(redact(user), maxContentLength),
+    assistant: clip(redact(assistant), maxContentLength),
     fullAssistant: assistant,
     tools: [...tools.values()].map((t) => ({ ...t, tool_data: bounded(t.tool_data ?? {}) })),
   };
