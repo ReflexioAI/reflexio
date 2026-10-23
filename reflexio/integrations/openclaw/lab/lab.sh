@@ -69,8 +69,10 @@ free_port() { python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0)
 
 # Ports are picked once per lab and reused, so check them again before each
 # start: attaching to whatever else now listens there would test the wrong server.
+# Bind with SO_REUSEADDR, as the services themselves do, so connections the
+# previous run left in TIME_WAIT do not read as taken; a live listener still does.
 require_free_port() {
-  python3 -c 'import socket,sys; s=socket.socket(); s.bind(("127.0.0.1", int(sys.argv[1])))' "$1" 2>/dev/null \
+  python3 -c 'import socket,sys; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", int(sys.argv[1])))' "$1" 2>/dev/null \
     || die "port $1 is taken by another process; run 'lab.sh down --wipe' to pick new ports"
 }
 
