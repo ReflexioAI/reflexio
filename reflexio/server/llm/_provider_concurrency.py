@@ -1,18 +1,13 @@
-"""Per-provider, per-instance concurrency cap for remote LLM calls.
+"""Per-provider admission for remote LLM calls in one process.
 
-A bounded semaphore keyed by LLM provider. Acquired in the PARENT process
-around a provider call so N tasks don't fan into a provider-429 storm.
-By default, on saturation it fails OPEN (proceeds without a permit) after a
-bounded wait, never blocking unboundedly — that would re-open the hung-provider
-stall class through the limiter. Providers listed in
-``REFLEXIO_LLM_FAIL_CLOSED_PROVIDERS`` instead fail CLOSED — they raise
-``ProviderCapSaturatedError`` on saturation to protect a fixed-quota
-subscription (e.g. the Z.ai GLM coding plan used as a fallback), which the
-fallback walk treats as an advance-worthy rung failure. Part of Scalability
-Workstream C (design §5). 429 recovery stays with the fallback ladder (Decision A).
+Every resolved-provider call holds its provider's bounded semaphore until the
+call finishes. Saturation fails within the caller's remaining deadline and
+raises ProviderCapSaturatedError; the generation fallback walk may advance to
+another independently admitted provider. Capacity is never bypassed.
 """
 
 import logging
+import os
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -20,6 +15,7 @@ from typing import TYPE_CHECKING
 
 import litellm
 
+from reflexio.removed_env import reject_removed_env
 from reflexio.server.env_utils import env_str
 from reflexio.server.llm.llm_utils import positive_int_env
 
@@ -28,24 +24,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+reject_removed_env(os.environ, canonical="REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY")
+
 _DEFAULT_MAX_CONCURRENCY = 8
 REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY = positive_int_env(
     "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY", _DEFAULT_MAX_CONCURRENCY, logger
 )
-# Bounded wait before failing open. Long enough to queue a burst, short enough
-# to never park a request thread near the ~hard-timeout ceiling. Module constant
-# (not an env var) to keep C3 to a single knob.
+# Admission wait is also clamped by the caller's remaining deadline.
 _ACQUIRE_TIMEOUT_SECONDS = 30.0
 
 
 class ProviderCapSaturatedError(Exception):
-    """Raised when a fail-closed provider's concurrency cap is saturated.
+    """The provider has no available permit within the admission budget.
 
-    Unlike the fail-open default, providers in ``REFLEXIO_LLM_FAIL_CLOSED_PROVIDERS``
-    (e.g. a fixed-quota Z.ai coding-plan fallback) raise this instead of
-    proceeding without a permit, so a mass-fallback event degrades rather than
-    exhausting the subscription. The fallback walker treats it as an
-    advance-worthy rung failure.
+    Generation may advance to an independently admitted fallback; no provider
+    request was dispatched on the saturated rung.
     """
 
     def __init__(
@@ -56,11 +49,6 @@ class ProviderCapSaturatedError(Exception):
     ) -> None:
         super().__init__(message)
         self.first_parsed_provenance = first_parsed_provenance
-
-
-def _parse_fail_closed() -> frozenset[str]:
-    raw = env_str("REFLEXIO_LLM_FAIL_CLOSED_PROVIDERS", "")
-    return frozenset(p.strip() for p in raw.split(",") if p.strip())
 
 
 def _parse_per_provider_cap() -> dict[str, int]:
@@ -80,7 +68,6 @@ def _parse_per_provider_cap() -> dict[str, int]:
     return out
 
 
-_fail_closed_providers: frozenset[str] = _parse_fail_closed()
 _per_provider_cap: dict[str, int] = _parse_per_provider_cap()
 
 
@@ -144,9 +131,9 @@ def _get_semaphore(provider: str) -> threading.BoundedSemaphore:
 def provider_slot(model: str, *, max_wait: float | None = None) -> Iterator[None]:
     """Cap concurrent in-flight calls to ``model``'s provider.
 
-    Fails OPEN on saturation by default; fails CLOSED (raises
-    ``ProviderCapSaturatedError``) for providers in
-    ``REFLEXIO_LLM_FAIL_CLOSED_PROVIDERS``.
+    Raises ``ProviderCapSaturatedError`` when admission expires. A caller may
+    choose another provider through its existing fallback policy, but must not
+    dispatch without a permit.
 
     Args:
         model (str): The model whose provider is capped.
@@ -170,26 +157,16 @@ def provider_slot(model: str, *, max_wait: float | None = None) -> Iterator[None
     if not acquired:
         search_runtime.checkpoint()
         cap = _max_concurrency_for_provider(provider)
-        if provider in _fail_closed_providers:
-            logger.warning(
-                "event=llm_provider_cap_saturated provider=%s cap=%d "
-                "timeout=%.1fs — FAIL-CLOSED (raising to protect quota)",
-                provider,
-                cap,
-                _ACQUIRE_TIMEOUT_SECONDS,
-            )
-            raise ProviderCapSaturatedError(
-                f"provider {provider} concurrency cap {cap} saturated"
-            )
         logger.warning(
             "event=llm_provider_cap_saturated provider=%s cap=%d "
-            "timeout=%.1fs — proceeding without permit (fail-open)",
+            "timeout=%.1fs — request not admitted",
             provider,
             cap,
-            _ACQUIRE_TIMEOUT_SECONDS,
+            wait,
         )
-        yield
-        return
+        raise ProviderCapSaturatedError(
+            f"provider {provider} concurrency cap {cap} saturated"
+        )
     try:
         search_runtime.checkpoint()
         yield
