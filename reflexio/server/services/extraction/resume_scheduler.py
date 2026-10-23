@@ -33,6 +33,12 @@ from reflexio.server.services.extraction.resume_worker import ExtractionResumeWo
 
 logger = logging.getLogger(__name__)
 
+# Ceiling on the idle backoff. Fixed, not configurable: it bounds how long new
+# work can wait for an idle scheduler that nothing woke, and 60s keeps that
+# latency well inside the claim TTL and the expiry deadlines the sweep serves.
+# An operator poll interval above it is honoured as-is (never shortened).
+IDLE_BACKOFF_CAP_SECONDS = 60.0
+
 _live_schedulers: weakref.WeakSet[ExtractionResumeScheduler] = weakref.WeakSet()
 _live_lock = threading.Lock()
 
@@ -65,6 +71,40 @@ class ExtractionResumeScheduler(ThreadedScheduler):
         self.bootstrap_org_id = bootstrap_org_id
         self.org_id_provider = org_id_provider
         self.max_runs_per_tick = max_runs_per_tick
+        # Consecutive completed ticks that found no work. Owned by the loop
+        # thread; reset on work, on any failure, and on stop/start.
+        self._idle_ticks = 0
+
+    def start(self) -> None:
+        """Start the loop with a fresh idle backoff (first wait is the poll)."""
+        if not self.is_running():
+            self._idle_ticks = 0
+        super().start()
+
+    def _next_interval(self, *, idle: bool) -> float:
+        """Return the wait before the next tick and advance the idle streak.
+
+        Every tick is still a complete scan; only the gap between idle ticks
+        grows. The first idle tick after work waits ``poll_seconds``; each
+        further consecutive idle tick doubles it, up to
+        ``max(poll_seconds, IDLE_BACKOFF_CAP_SECONDS)``. Work or a failure
+        returns to ``poll_seconds``. ``wake()`` cuts any wait short.
+
+        Args:
+            idle (bool): True when this tick proved there was no work.
+
+        Returns:
+            float: Seconds to wait before the next tick.
+        """
+        poll = self.timing.poll_seconds
+        if not idle:
+            self._idle_ticks = 0
+            return poll
+        cap = max(poll, IDLE_BACKOFF_CAP_SECONDS)
+        # Exponent clamp keeps the float finite however long the streak runs.
+        interval = min(poll * 2 ** min(self._idle_ticks, 32), cap)
+        self._idle_ticks += 1
+        return interval
 
     def _on_started(self) -> None:
         with _live_lock:
@@ -72,6 +112,7 @@ class ExtractionResumeScheduler(ThreadedScheduler):
         logger.info("event=extraction_resume_scheduler_started")
 
     def _on_stopped(self) -> None:
+        self._idle_ticks = 0
         if not self.is_running():
             with _live_lock:
                 _live_schedulers.discard(self)
@@ -148,7 +189,12 @@ class ExtractionResumeScheduler(ThreadedScheduler):
         if expired:
             logger.info("event=pending_tool_calls_expired expired=%d", expired)
 
-    def _drain_org(self, org_id: str, *, has_known_work: bool = False) -> None:
+    def _drain_org(self, org_id: str, *, has_known_work: bool = False) -> bool:
+        """Drain one org; return True when the worker inspected any claim.
+
+        A failed drain also returns True: a failure is never evidence of
+        idleness, so it must not lengthen the next wait.
+        """
         try:
             ctx = self.request_context_factory(org_id)
             if not pending_tool_calls_enabled(ctx):
@@ -185,7 +231,7 @@ class ExtractionResumeScheduler(ThreadedScheduler):
                         # is already correct.
                         pending_tool_calls_disabled_reason(ctx) or "gate closed",
                     )
-                return
+                return False
             self._expire_pending_tool_calls(ctx)
             inspected = ExtractionResumeWorker(request_context=ctx).drain(
                 max_runs=self.max_runs_per_tick
@@ -210,18 +256,26 @@ class ExtractionResumeScheduler(ThreadedScheduler):
                     scope=f"extraction-resume:{org_id}",
                     org_id=org_id,
                 )
-        else:
-            report_background_success(f"extraction-resume:{org_id}")
+            return True
+        report_background_success(f"extraction-resume:{org_id}")
+        return bool(inspected)
 
     def _run_once(self) -> float:
-        poll_interval = self.timing.poll_seconds
+        # Idle means this tick PROVED there was nothing to do: the provider
+        # answered with no orgs, or (no provider) local discovery named no org
+        # and no drain inspected a claim. The bootstrap org that local
+        # discovery prepends unconditionally is not evidence of work, but its
+        # drain result is -- a backend without discovery still reports work
+        # through the drain. A provider failure or a tick failure is never
+        # idle, so a broken discovery keeps polling at ``poll_seconds``.
+        idle = False
         try:
             provider_org_ids = self._discover_provider_org_ids()
             if self.org_id_provider is not None and provider_org_ids is not None:
                 if not provider_org_ids:
                     # Not a success: the context and config resolution this
                     # streak counts failures of was never attempted.
-                    return poll_interval
+                    return self._next_interval(idle=True)
                 # Remember a discovered org only for provider-failure fallback.
                 # Resolve each context inside _drain_org so a broken first org
                 # cannot prevent healthy orgs from being processed.
@@ -229,6 +283,7 @@ class ExtractionResumeScheduler(ThreadedScheduler):
             # Orgs discovery PROVED hold resumable work, as opposed to orgs we
             # merely visit. Only the former may be described as stalled.
             known_work: set[str] = set()
+            local_discovery = False
             if provider_org_ids is not None:
                 org_ids = provider_org_ids
                 known_work = set(provider_org_ids)
@@ -242,11 +297,16 @@ class ExtractionResumeScheduler(ThreadedScheduler):
             else:
                 bootstrap_ctx = self.request_context_factory(self.bootstrap_org_id)
                 org_ids, known_work = self._discover_local_org_ids(bootstrap_ctx)
+                local_discovery = True
+            drained_work = False
             for org_id in org_ids:
                 if self._stop_event.is_set():
                     break
-                self._drain_org(org_id, has_known_work=org_id in known_work)
+                if self._drain_org(org_id, has_known_work=org_id in known_work):
+                    drained_work = True
+            idle = local_discovery and not known_work and not drained_work
         except Exception as exc:
+            idle = False
             with error_tags(
                 subsystem="extraction",
                 op="scheduler_tick",
@@ -260,7 +320,7 @@ class ExtractionResumeScheduler(ThreadedScheduler):
                 )
         else:
             report_background_success("extraction-resume-tick")
-        return poll_interval
+        return self._next_interval(idle=idle)
 
 
 def maybe_start_resume_scheduler(

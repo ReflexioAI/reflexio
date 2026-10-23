@@ -909,6 +909,10 @@ enterprise discovery use the same lifetime. Run claims remain distinct from the
 renewable per-user extraction lease; `claimed_at` stays an immutable fence. Default-valued legacy timing fields are stripped before
 validation or raw upgrade pruning; customized fields require explicit adoption.
 Do not reintroduce a bootstrap org's timing as fleet scheduler policy.
+`ExtractionResumeScheduler` waits the poll interval after a sweep that found work
+(or failed) and doubles the wait across consecutive idle sweeps up to the fixed
+`IDLE_BACKOFF_CAP_SECONDS` (60s, or the poll if larger). Every sweep is still a
+complete scan; `wake_resume_schedulers()` cuts a backed-off wait short.
 
 Pending information request admission uses the durable create-or-attach store
 operation directly. The warning-only `max_pending_followups_per_scope` base and

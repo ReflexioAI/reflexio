@@ -520,3 +520,188 @@ def test_first_org_context_failure_cannot_block_other_discovered_orgs(monkeypatc
     )
     assert scheduler._run_once() == 0.25
     assert drained == ["healthy"]
+
+
+# --- Idle backoff -----------------------------------------------------------
+#
+# Invariant: every tick is still a complete scan; only the gap between ticks
+# that proved there was no work grows. Work, a provider failure, a tick
+# failure, and stop/start all return the wait to ``poll_seconds``, and
+# ``wake()`` cuts a backed-off wait short.
+
+
+def _idle_provider_scheduler(provider, monkeypatch, *, poll: str = "5"):
+    monkeypatch.setenv("REFLEXIO_RESUME_POLL_INTERVAL_SECONDS", poll)
+    monkeypatch.setattr(resume_scheduler, "pending_tool_calls_enabled", lambda _: True)
+
+    class Worker:
+        def __init__(self, *, request_context):
+            self.context = request_context
+
+        def drain(self, *, max_runs: int) -> int:
+            return 0
+
+    monkeypatch.setattr(resume_scheduler, "ExtractionResumeWorker", Worker)
+    return resume_scheduler.ExtractionResumeScheduler(
+        request_context_factory=cast(
+            Callable[[str], RequestContext], lambda org_id: _request_context(org_id)
+        ),
+        bootstrap_org_id="org_1",
+        org_id_provider=provider,
+    )
+
+
+def test_idle_provider_ticks_double_the_wait_up_to_the_cap(monkeypatch):
+    scheduler = _idle_provider_scheduler(lambda: [], monkeypatch)
+
+    waits = [scheduler._run_once() for _ in range(7)]
+
+    assert waits == [5.0, 10.0, 20.0, 40.0, 60.0, 60.0, 60.0]
+    assert resume_scheduler.IDLE_BACKOFF_CAP_SECONDS == 60.0
+
+
+def test_poll_interval_above_the_cap_is_never_shortened(monkeypatch):
+    scheduler = _idle_provider_scheduler(lambda: [], monkeypatch, poll="90")
+
+    assert [scheduler._run_once() for _ in range(3)] == [90.0, 90.0, 90.0]
+
+
+def test_work_found_resets_the_backoff(monkeypatch):
+    answers = [[], [], [], ["org_2"], []]
+    scheduler = _idle_provider_scheduler(lambda: answers.pop(0), monkeypatch)
+
+    waits = [scheduler._run_once() for _ in range(5)]
+
+    # Third idle tick waited 20s; the tick that found work returns to the
+    # poll, and the next idle streak starts over from it.
+    assert waits == [5.0, 10.0, 20.0, 5.0, 5.0]
+
+
+def test_provider_failure_returns_to_the_poll_interval(monkeypatch):
+    calls = {"n": 0}
+
+    def provider():
+        calls["n"] += 1
+        if calls["n"] == 4:
+            raise RuntimeError("registry unavailable")
+        return []
+
+    scheduler = _idle_provider_scheduler(provider, monkeypatch)
+
+    waits = [scheduler._run_once() for _ in range(5)]
+
+    # A failed discovery is not evidence of idleness: poll, then restart.
+    assert waits == [5.0, 10.0, 20.0, 5.0, 5.0]
+
+
+def test_tick_failure_returns_to_the_poll_interval(monkeypatch):
+    scheduler = _idle_provider_scheduler(lambda: [], monkeypatch)
+    scheduler.org_id_provider = None
+    failing = {"on": False}
+
+    def factory(org_id: str):
+        if failing["on"]:
+            raise RuntimeError("bootstrap context unavailable")
+        return _request_context(
+            org_id,
+            storage=SimpleNamespace(
+                list_resumable_work_org_ids=MagicMock(return_value=[]),
+                expire_pending_tool_calls=MagicMock(return_value=0),
+            ),
+        )
+
+    scheduler.request_context_factory = cast(Callable[[str], RequestContext], factory)
+    assert [scheduler._run_once() for _ in range(3)] == [5.0, 10.0, 20.0]
+    failing["on"] = True
+    assert scheduler._run_once() == 5.0
+    failing["on"] = False
+    assert scheduler._run_once() == 5.0
+
+
+def test_bootstrap_org_alone_is_not_counted_as_work(monkeypatch):
+    """No provider: the always-prepended bootstrap org is visited, not work."""
+    drained: list[str] = []
+    inspected = {"n": 0}
+    discovered: list[str] = []
+    storage = SimpleNamespace(
+        list_resumable_work_org_ids=MagicMock(side_effect=lambda **_: list(discovered)),
+        expire_pending_tool_calls=MagicMock(return_value=0),
+    )
+
+    class Worker:
+        def __init__(self, *, request_context):
+            self.context = request_context
+
+        def drain(self, *, max_runs: int) -> int:
+            drained.append(self.context.org_id)
+            return inspected["n"]
+
+    monkeypatch.setenv("REFLEXIO_RESUME_POLL_INTERVAL_SECONDS", "5")
+    monkeypatch.setattr(resume_scheduler, "pending_tool_calls_enabled", lambda _: True)
+    monkeypatch.setattr(resume_scheduler, "ExtractionResumeWorker", Worker)
+    scheduler = resume_scheduler.ExtractionResumeScheduler(
+        request_context_factory=cast(
+            Callable[[str], RequestContext],
+            lambda org_id: _request_context(org_id, storage=storage),
+        ),
+        bootstrap_org_id="org_1",
+    )
+
+    assert [scheduler._run_once() for _ in range(3)] == [5.0, 10.0, 20.0]
+    # Every idle tick still drained the bootstrap org: a complete scan.
+    assert drained == ["org_1", "org_1", "org_1"]
+
+    # Discovery naming an org is work, and so is a drain that inspected a
+    # claim on a backend that cannot discover.
+    discovered[:] = ["org_2"]
+    assert scheduler._run_once() == 5.0
+    discovered.clear()
+    assert scheduler._run_once() == 5.0
+    assert scheduler._run_once() == 10.0
+    inspected["n"] = 1
+    assert scheduler._run_once() == 5.0
+
+
+def test_stop_and_start_reset_the_backoff(monkeypatch):
+    scheduler = _idle_provider_scheduler(lambda: [], monkeypatch)
+    assert [scheduler._run_once() for _ in range(3)] == [5.0, 10.0, 20.0]
+
+    scheduler.stop(timeout_seconds=0)
+    assert scheduler._run_once() == 5.0
+
+    scheduler._run_once()
+    monkeypatch.setattr(resume_scheduler.ThreadedScheduler, "start", lambda _s: None)
+    scheduler.start()
+    assert scheduler._run_once() == 5.0
+
+
+def test_wake_cuts_a_backed_off_wait_short(monkeypatch):
+    """A tool resolution must not wait out the idle backoff."""
+    ticks: list[float] = []
+    first = threading.Event()
+    second = threading.Event()
+    scheduler = _idle_provider_scheduler(lambda: [], monkeypatch, poll="30")
+    real_run_once = scheduler._run_once
+
+    def counting_run_once() -> float:
+        interval = real_run_once()
+        ticks.append(interval)
+        if len(ticks) == 1:
+            first.set()
+        if len(ticks) == 2:
+            second.set()
+        return interval
+
+    scheduler._run_once = counting_run_once  # type: ignore[method-assign]
+    scheduler.start()
+    try:
+        # The first idle tick returns a 30s wait; only wake() can bring the
+        # second tick inside the 2s bound below.
+        assert first.wait(2)
+        assert not second.is_set()
+        assert ticks == [30.0]
+        resume_scheduler.wake_resume_schedulers()
+        assert second.wait(2), "wake() did not cut the backed-off wait short"
+    finally:
+        scheduler.stop(timeout_seconds=2)
+    assert ticks[:2] == [30.0, 60.0]
