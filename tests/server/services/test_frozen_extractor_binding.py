@@ -336,3 +336,33 @@ def test_retired_warning_value_still_requires_original_witness_hash():
     prior, expected, frozen = _records()
     frozen["deduplication_config"]["max_unified_content_chars"] += 1
     assert not matches_frozen_extractor_binding(prior, expected, frozen)
+
+
+@pytest.mark.parametrize("retired_context", [None, "Historical playbook instructions"])
+def test_retired_playbook_context_keeps_frozen_binding(
+    retired_context: str | None,
+) -> None:
+    prior, expected, frozen = _records("playbook")
+    frozen["context_prompt"] = retired_context
+    prior = replace(
+        prior,
+        binding=replace(prior.binding, extractor_config_hash=build_scope_hash(frozen)),
+        generation_request_snapshot={
+            **prior.generation_request_snapshot,
+            "extractor_config": deepcopy(frozen),
+        },
+    )
+    before = deepcopy((prior, expected, frozen))
+    assert matches_frozen_extractor_binding(prior, expected, frozen)
+    assert (prior, expected, frozen) == before
+
+
+def test_live_profile_context_still_invalidates_frozen_binding() -> None:
+    prior, expected, frozen = _records("profile")
+    frozen["context_prompt"] = "Customer profile policy must remain strict"
+    prior = replace(
+        prior,
+        binding=replace(prior.binding, extractor_config_hash=build_scope_hash(frozen)),
+        generation_request_snapshot={"extractor_config": deepcopy(frozen)},
+    )
+    assert not matches_frozen_extractor_binding(prior, expected, frozen)

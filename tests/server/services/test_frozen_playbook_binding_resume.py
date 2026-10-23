@@ -35,8 +35,9 @@ pytestmark = pytest.mark.integration
 
 @pytest.mark.parametrize("missing_strategy", [False, True])
 @pytest.mark.parametrize("retired_cap", [False, True])
+@pytest.mark.parametrize("retired_context", [None, "Historical playbook instructions"])
 def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
-    pipeline, monkeypatch, missing_strategy, retired_cap
+    pipeline, monkeypatch, missing_strategy, retired_cap, retired_context
 ):
     engine, _, http = pipeline
     configurator = engine.request_context.configurator
@@ -70,6 +71,7 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
     parent = storage.get_agent_run(f"window:{window.window_id}")
     snapshot = copy.deepcopy(parent.generation_request_snapshot)
     snapshot["extractor_config"]["extractor_name"] = "historical-playbook-label"
+    snapshot["extractor_config"]["context_prompt"] = retired_context
     if retired_cap:
         snapshot["extractor_config"]["deduplication_config"][
             "max_unified_content_chars"
@@ -191,11 +193,11 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
     # it last and manufacture the wrong historical str(config) cache identity.
     legacy_fields: dict[str, Any] = {
         "extractor_name": (str, "historical-playbook-label"),
-        **{
-            name: (field.annotation, copy.deepcopy(field))
-            for name, field in UserPlaybookExtractorConfig.model_fields.items()
-        },
     }
+    for name, field in UserPlaybookExtractorConfig.model_fields.items():
+        legacy_fields[name] = (field.annotation, copy.deepcopy(field))
+        if name == "extraction_definition_prompt":
+            legacy_fields["context_prompt"] = (str | None, None)
     if missing_strategy or retired_cap:
         dedup_fields: dict[str, Any] = {
             name: (field.annotation, copy.deepcopy(field))

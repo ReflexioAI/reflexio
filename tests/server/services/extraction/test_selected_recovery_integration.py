@@ -530,3 +530,71 @@ def test_selected_recovery_uses_owned_claim_lifetime(
     assert current is not None
     report = inspect_run(context, current, now=now)
     assert ("publish_finalization_may_be_active" in report["blockers"]) is blocked
+
+
+@pytest.mark.parametrize("retired_context", [None, "Historical playbook instructions"])
+def test_selected_recovery_keeps_historical_playbook_context_inert(
+    context, retired_context
+):
+    import json
+
+    from reflexio.models.config_schema import UserPlaybookExtractorConfig
+
+    config = UserPlaybookExtractorConfig(extraction_definition_prompt="test")
+    context.configurator.get_config().user_playbook_extractor_config = config
+    stored = seed(context)
+    frozen = {**config.model_dump(mode="json"), "context_prompt": retired_context}
+    snapshot = {
+        **stored.generation_request_snapshot,
+        "extractor_config": frozen,
+        "output_schema_name": "StructuredPlaybookList",
+    }
+    context.storage.conn.execute(
+        "UPDATE _agent_runs SET extractor_kind='playbook',extractor_config_hash=?,"
+        "generation_request_snapshot=?,committed_output=? WHERE id=?",
+        (build_scope_hash(frozen), json.dumps(snapshot), '{"playbooks":[]}', stored.id),
+    )
+    context.storage.conn.commit()
+    run = context.storage.get_agent_run(stored.id)
+    assert "configuration_changed" not in inspect_run(context, run)["blockers"]
+    worker = ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
+    selection = selection_from_report(inspect_run(context, run))
+    result = worker.recover_selected(selection, operation_id="historical-context")
+    assert result.status == AgentRunStatus.FINALIZED
+    assert result.generation_request_snapshot == snapshot
+    assert result.binding.extractor_config_hash == build_scope_hash(frozen)
+
+
+@pytest.mark.parametrize(
+    "change", ["prompt", "missing_snapshot", "tampered_snapshot", "profile"]
+)
+def test_retired_context_does_not_relax_recovery_policy_witnesses(context, change):
+    from reflexio.models.config_schema import UserPlaybookExtractorConfig
+
+    stored = seed(context)
+    if change == "profile":
+        config = context.configurator.get_config().profile_extractor_config
+        kind = "profile"
+    else:
+        config = UserPlaybookExtractorConfig(extraction_definition_prompt="test")
+        context.configurator.get_config().user_playbook_extractor_config = config
+        kind = "playbook"
+    frozen = {**config.model_dump(mode="json"), "context_prompt": "Historical context"}
+    snapshot = {**stored.generation_request_snapshot, "extractor_config": frozen.copy()}
+    original_hash = build_scope_hash(frozen)
+    if change == "prompt":
+        config.extraction_definition_prompt = "Changed live policy"
+    elif change == "missing_snapshot":
+        snapshot.pop("extractor_config")
+    elif change == "tampered_snapshot":
+        snapshot["extractor_config"]["context_prompt"] = (
+            "Not witnessed by original hash"
+        )
+    run = replace(
+        stored,
+        binding=replace(
+            stored.binding, extractor_kind=kind, extractor_config_hash=original_hash
+        ),
+        generation_request_snapshot=snapshot,
+    )
+    assert "configuration_changed" in inspect_run(context, run)["blockers"]
