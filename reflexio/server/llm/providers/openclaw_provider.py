@@ -18,14 +18,29 @@ import logging
 import os
 import shutil
 import subprocess  # noqa: S404 — subprocess is the integration point.
+import time
 from pathlib import Path
 from typing import Any
 
 import litellm
 from litellm.llms.custom_llm import CustomLLM
-from litellm.types.utils import Choices, Message, ModelResponse, Usage
+from litellm.types.utils import (
+    ChatCompletionMessageToolCall,
+    Choices,
+    Function,
+    Message,
+    ModelResponse,
+    Usage,
+)
 
 from reflexio.server.env_utils import env_truthy
+from reflexio.server.llm.providers.cli_tool_protocol import (
+    append_schema_instruction,
+    append_tools_instruction,
+    parse_tool_use,
+    tool_call_attr,
+    tool_names,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,6 +50,11 @@ ENV_CLI_PATH = "OPENCLAW_BIN"
 ENV_DEFAULT_MODEL = "OPENCLAW_DEFAULT_MODEL"
 ENV_TIMEOUT = "OPENCLAW_CLI_TIMEOUT"
 _DEFAULT_TIMEOUT_SECONDS = 180
+_BUSY_MARKER = "retry when it finishes"
+_BUSY_ATTEMPTS = 4
+_BUSY_BACKOFF_SECONDS = 2.0
+# Headroom under Linux MAX_ARG_STRLEN (131072) for the argv string.
+_MAX_PROMPT_BYTES = 120_000
 
 
 # Module-level state reset by tests via the _reset_module_state fixture.
@@ -85,30 +105,41 @@ def is_openclaw_available() -> bool:
 
 
 def _extract_text(payload: Any) -> str:
-    """Extract the model's text reply from openclaw's JSON output.
+    """Extract the model's text reply from ``openclaw infer model run --json``.
 
-    The exact field name in ``openclaw infer model run --json`` output
-    couldn't be probed at design time (no model providers were
-    auth-configured). Scan common keys in priority order: ``text`` →
-    ``content`` → ``output`` → ``message.content``. The first end-to-end
-    test will surface the real key; we can pin it then if needed.
+    Observed against openclaw 2026.10.6, the envelope is::
+
+        {"ok": true, "capability": "model.run", "outputs": [{"text": "..."}]}
+
+    The original parser guessed top-level ``text``/``content``/``output`` keys
+    before any provider could be probed; none of them exist, so every
+    completion through this provider raised "no completion text".
 
     Args:
         payload (Any): Parsed JSON response from openclaw.
 
     Returns:
-        str: Completion text, or empty string if no known key matches.
+        str: Concatenated ``outputs[].text``, or ``""`` when there is none.
     """
     if not isinstance(payload, dict):
         return ""
-    for key in ("text", "content", "output"):
-        value = payload.get(key)
-        if isinstance(value, str):
-            return value
-    msg = payload.get("message")
-    if isinstance(msg, dict) and isinstance(msg.get("content"), str):
-        return msg["content"]
-    return ""
+    outputs = payload.get("outputs")
+    if not isinstance(outputs, list):
+        return ""
+    texts = [
+        item["text"]
+        for item in outputs
+        if isinstance(item, dict) and isinstance(item.get("text"), str)
+    ]
+    return "".join(texts)
+
+
+def _json_or_none(text: str) -> Any:
+    """Parse the CLI's JSON stdout, or return None when it is not JSON."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
 
 
 def _call_cli(*, prompt: str, model: str | None, timeout_s: int) -> str:
@@ -130,6 +161,14 @@ def _call_cli(*, prompt: str, model: str | None, timeout_s: int) -> str:
     if not cli:
         raise OpenClawCLIError("openclaw CLI not found; set OPENCLAW_BIN")
 
+    # `infer model run` takes the prompt only as an argument, and Linux caps a
+    # single argv string at MAX_ARG_STRLEN (128 KiB). Refuse clearly instead
+    # of surfacing an opaque E2BIG from exec.
+    if len(prompt.encode()) > _MAX_PROMPT_BYTES:
+        raise OpenClawCLIError(
+            f"prompt is {len(prompt.encode())} bytes; openclaw accepts at most "
+            f"{_MAX_PROMPT_BYTES} via --prompt"
+        )
     argv = [cli, "infer", "model", "run", "--prompt", prompt, "--json"]
     if model:
         argv += ["--model", model]
@@ -137,29 +176,41 @@ def _call_cli(*, prompt: str, model: str | None, timeout_s: int) -> str:
     env = os.environ.copy()
     env["OPENCLAW_SMART_INTERNAL"] = "1"
 
-    try:
-        proc = subprocess.run(  # noqa: S603 — argv is fully constructed.
-            argv,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise OpenClawCLIError(f"openclaw timed out after {timeout_s}s") from exc
+    for attempt in range(1, _BUSY_ATTEMPTS + 1):
+        try:
+            proc = subprocess.run(  # noqa: S603 — argv is fully constructed.
+                argv,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise OpenClawCLIError(f"openclaw timed out after {timeout_s}s") from exc
+        payload = _json_or_none(proc.stdout)
+        error = payload.get("error") if isinstance(payload, dict) else None
+        # Two embedded OpenClaw processes on one state directory (an agent run
+        # with --local and this one) contend for its startup maintenance; the
+        # loser is told to retry. A running Gateway avoids it.
+        if _BUSY_MARKER in str(error) and attempt < _BUSY_ATTEMPTS:
+            time.sleep(_BUSY_BACKOFF_SECONDS * attempt)
+            continue
+        break
 
-    if proc.returncode != 0:
+    if proc.returncode != 0 or (
+        isinstance(payload, dict) and payload.get("ok") is False
+    ):
+        # On failure the CLI prints its JSON error on stdout and only a generic
+        # "The CLI command failed." on stderr; report the specific one.
+        detail = (error or {}).get("message") if isinstance(error, dict) else error
         raise OpenClawCLIError(
-            proc.stderr.strip() or f"openclaw exit {proc.returncode}"
+            f"openclaw reported failure: {detail}"
+            if detail
+            else proc.stderr.strip() or f"openclaw exit {proc.returncode}"
         )
-
-    try:
-        payload = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        raise OpenClawCLIError(
-            f"openclaw returned non-JSON: {proc.stdout[:200]}"
-        ) from exc
+    if payload is None:
+        raise OpenClawCLIError(f"openclaw returned non-JSON: {proc.stdout[:200]}")
 
     text = _extract_text(payload)
     if not text:
@@ -190,15 +241,29 @@ class OpenClawLLM(CustomLLM):
         # would yield the literal "None" and skip the default-model fallback.
         raw_model = kwargs.get("model")
         model_kwarg = "" if raw_model is None else str(raw_model)
-        if "/" in model_kwarg:
-            model = model_kwarg.split("/", 1)[1] or None
-        else:
-            model = model_kwarg or None
+        # LiteLLM hands a custom handler the model with its provider prefix
+        # already removed ("openclaw/openai/gpt-x" arrives as "openai/gpt-x"),
+        # and OpenClaw needs that provider/model pair intact. Splitting off the
+        # first segment unconditionally left a bare model OpenClaw rejects.
+        model = model_kwarg.removeprefix(f"{PROVIDER_KEY}/") or None
+        # `openclaw/default` (the auto-detected model) means "whatever model
+        # OpenClaw is configured to use", like `claude-code/default`.
+        if model == "default":
+            model = None
         if not model:
             model = os.environ.get(ENV_DEFAULT_MODEL) or None
 
         messages = kwargs.get("messages", [])
-        prompt = _messages_to_prompt(messages)
+        # Tools and response_format arrive in optional_params (LiteLLM's
+        # custom-provider plumbing) or as top-level kwargs; read both.
+        optional_params = kwargs.get("optional_params") or {}
+        tools = optional_params.get("tools") or kwargs.get("tools")
+        response_format = optional_params.get("response_format") or kwargs.get(
+            "response_format"
+        )
+        prompt = _messages_to_prompt(
+            messages, tools=tools, response_format=response_format
+        )
         # An invalid OPENCLAW_CLI_TIMEOUT must not crash the completion path —
         # fall back to the default with a warning so misconfiguration degrades
         # to working-but-slow rather than working-then-erroring.
@@ -220,32 +285,92 @@ class OpenClawLLM(CustomLLM):
 
         text = _call_cli(prompt=prompt, model=model, timeout_s=timeout_s)
 
+        if tools:
+            names = tool_names(tools)
+            tool_use = parse_tool_use(text, names)
+            if tool_use is not None:
+                return _tool_call_response(model_kwarg or PROVIDER_KEY, tool_use)
+            # Metadata only: the reply can carry user content.
+            _LOGGER.warning(
+                "openclaw provider: tools=%s were provided but the reply held no "
+                "tool-call JSON; the tool loop will end without its finish tool.",
+                sorted(names),
+            )
         return ModelResponse(
             choices=[Choices(message=Message(content=text, role="assistant"))],
             usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
-            model=model_kwarg or "openclaw",
+            model=model_kwarg or PROVIDER_KEY,
         )
 
 
-def _messages_to_prompt(messages: list[dict[str, Any]]) -> str:
-    """Flatten chat messages into a single prompt string.
+def _tool_call_response(model: str, tool_use: dict[str, Any]) -> ModelResponse:
+    """Shape a parsed ``{"name", "args"}`` tool use as an OpenAI-style tool call."""
+    call = ChatCompletionMessageToolCall(
+        id=f"call_{time.time_ns()}",
+        type="function",
+        function=Function(
+            name=tool_use["name"], arguments=json.dumps(tool_use["args"])
+        ),
+    )
+    message = Message(role="assistant", content=None, tool_calls=[call])
+    return ModelResponse(
+        choices=[Choices(index=0, message=message, finish_reason="tool_calls")],
+        usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+        model=model,
+    )
 
-    ``openclaw infer model run`` takes a single ``--prompt``; we serialize
-    the chat as ``role: content`` lines separated by blank lines. Content
-    blocks (lists) are flattened to text.
+
+def _text(content: Any) -> str:
+    if isinstance(content, list):
+        return "".join(c.get("text", "") for c in content if isinstance(c, dict))
+    return "" if content is None else str(content)
+
+
+def _messages_to_prompt(
+    messages: list[dict[str, Any]],
+    *,
+    tools: list[Any] | None = None,
+    response_format: Any = None,
+) -> str:
+    """Flatten chat messages into the single ``--prompt`` the CLI accepts.
+
+    System messages come first, followed by the tool-calling or schema
+    instructions (``cli_tool_protocol``), then the dialogue as ``role:
+    content`` blocks. Earlier tool calls and their results are kept as
+    breadcrumbs: without them a multi-step tool loop never sees what it
+    already did and cannot converge.
 
     Args:
         messages (list[dict[str, Any]]): LiteLLM-style chat messages.
+        tools (list[Any] | None): LiteLLM tools spec, if the caller is a tool loop.
+        response_format (Any): Pydantic class or JSON-schema dict to ask for.
 
     Returns:
-        str: Newline-joined role:content lines.
+        str: The prompt.
     """
-    parts: list[str] = []
+    system = "\n\n".join(
+        _text(m.get("content")) for m in messages if m.get("role") == "system"
+    )
+    system = (
+        append_tools_instruction(system, tools)
+        if tools
+        else append_schema_instruction(system, response_format)
+    )
+    parts = [f"system: {system}"] if system else []
     for m in messages:
         role = m.get("role", "user")
-        content = m.get("content", "")
-        if isinstance(content, list):
-            content = "".join(c.get("text", "") for c in content if isinstance(c, dict))
+        if role == "system":
+            continue
+        content = _text(m.get("content"))
+        if role == "assistant" and m.get("tool_calls"):
+            calls = "; ".join(
+                f"called {tool_call_attr(tc, 'name') or '?'} with "
+                f"{tool_call_attr(tc, 'arguments') or '{}'}"
+                for tc in m["tool_calls"]
+            )
+            content = f"{content}\n[tools: {calls}]" if content else f"[tools: {calls}]"
+        elif role == "tool":
+            role = f"tool[{m.get('tool_call_id') or '?'}]"
         parts.append(f"{role}: {content}")
     return "\n\n".join(parts)
 

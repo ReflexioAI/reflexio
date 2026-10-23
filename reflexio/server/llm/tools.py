@@ -306,6 +306,9 @@ _TOOL_CALLING_OVERRIDES: tuple[str, ...] = (
     # and parsing the model's JSON output back into ChatCompletionMessageToolCall
     # blocks. Verified end-to-end against the resumable extraction tool loop.
     "claude-code/",
+    # openclaw/* routes through `openclaw infer` (providers/openclaw_provider.py)
+    # with the same prompt-level protocol, shared via cli_tool_protocol.
+    "openclaw/",
 )
 
 
