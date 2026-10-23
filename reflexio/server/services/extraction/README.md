@@ -160,6 +160,15 @@ provider itself raises, the scheduler still attempts the last bootstrap org for
 that tick. Before draining each discovered org context, it expires pending tool
 calls on that context's storage ref; separate refs have separate queues.
 
+A provider's empty list is read as proof that the fleet is idle, which is what
+lets the wait double towards `IDLE_BACKOFF_CAP_SECONDS`. A provider that catches
+its own discovery failures must therefore never answer one with `[]`: it reports
+the failure as it already does and raises `ResumeDiscoveryIncomplete`, carrying
+whatever orgs it did find. Those orgs are drained (or the last bootstrap org,
+when there are none), the tick is never counted as idle, and the scheduler does
+not report the failure again -- any other exception is treated as an unreported
+provider failure and is reported there.
+
 ### Selected recovery and progress
 
 `ExtractionResumeWorker.recover_selected` uses an exact-ID storage claim, then
