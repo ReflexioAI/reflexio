@@ -9,6 +9,7 @@ between old and new names remains.
 
 | Removed name | Canonical name / effective policy |
 | --- | --- |
+| PUBLIC_SCHEMA_AUDIT_ENABLED | PUBLIC_SCHEMA_AUDIT_INTERVAL_SECONDS; zero disables periodic audits, positive seconds enable them |
 | REFLEXIO_SEARCH_RECENCY_ENABLED | REFLEXIO_SEARCH_RECENCY_POOL_SIZE; zero disables, positive enables scored recency retrieval and ranking |
 | DATA_SUPABASE_DB_URL, POSTGRES_DB_URL | DATA_DB_URL; preserve the exact database target |
 | WEB_CONCURRENCY | Explicit server `--workers N`; `REFLEXIO_SERVER_WORKERS` is diagnostic metadata, not a Uvicorn worker selector |
@@ -58,3 +59,13 @@ explicitly choose one to preserve that old effective policy. The fractional and
 logit penalty scales remain independent and configurable. Zero penalties do not
 disable a positive candidate pool. Temporal query signals, session deduplication
 and relevance-floor budgets retain their own policies.
+
+Enterprise schema-audit admission belongs to its cadence. Remove the old
+`PUBLIC_SCHEMA_AUDIT_ENABLED` assignment, including blanks or coexistence with
+the canonical setting. Former false becomes zero; true/unset preserves a
+positive custom cadence or the unchanged 86400-second default. Role restrictions
+and UTC scheduling remain independent. An explicit manual audit with periodic
+scheduling disabled must supply its existing positive `interval_seconds`
+argument; no hidden manual cadence is substituted. Adopt the matched enterprise
+implementation before selecting zero; the preceding enterprise reader accepts
+only positive intervals.

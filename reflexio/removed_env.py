@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "PUBLIC_SCHEMA_AUDIT_ENABLED": "PUBLIC_SCHEMA_AUDIT_INTERVAL_SECONDS",
     "REFLEXIO_SEARCH_RECENCY_ENABLED": "REFLEXIO_SEARCH_RECENCY_POOL_SIZE",
     "REFLEXIO_LLM_FAIL_CLOSED_PROVIDERS": "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY",
     "DEBUG_LOG_TO_CONSOLE": "REFLEXIO_LOG_PROFILE",
@@ -59,6 +60,12 @@ def reject_removed_env(
                 "; a zero recency pool disables scored recency retrieval and "
                 "ranking; preserve positive pool sizes to enable it, with "
                 "20 as the unchanged default"
+            )
+        if "PUBLIC_SCHEMA_AUDIT_ENABLED" in obsolete:
+            migration += (
+                "; zero audit cadence disables periodic schema audits; preserve "
+                "a positive cadence to enable them, with 86400 as the unchanged "
+                "default. Values are seconds, not booleans"
             )
         raise ValueError(
             f"Removed environment names: {migration}. Migrate the effective "
