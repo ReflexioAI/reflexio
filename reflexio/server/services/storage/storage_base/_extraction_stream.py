@@ -288,10 +288,15 @@ class ExtractionStreamStore:
         """
         with self._stream_sql() as db:
             work = db.table("learning_work")
+            now = db.now()
+            # New input makes the stream due for inspection now (``due_at=0``),
+            # so a backlog clock parked on a future idle deadline
+            # (``prepare_extraction``) is pulled back to now; the next
+            # inspection parks it again if the input is still policy-held.
             rows = db.query(
                 f"UPDATE {work} SET highwater=highwater+?, revision=revision+1, "
-                "due_at=0,pending_since=CASE WHEN pending_since=0 THEN ? ELSE pending_since END WHERE org_id=? AND user_id=? RETURNING highwater",
-                (len(interaction_ids), db.now(), self.org_id, user_id),
+                "due_at=0,pending_since=CASE WHEN pending_since=0 OR pending_since>? THEN ? ELSE pending_since END WHERE org_id=? AND user_id=? RETURNING highwater",
+                (len(interaction_ids), now, now, self.org_id, user_id),
             )
             end = int(rows[0]["highwater"])
             start = end - len(interaction_ids) + 1
@@ -450,10 +455,14 @@ class ExtractionStreamStore:
                 "WHERE user_id=? AND request_id=?",
                 (json.dumps(admission), user_id, row["request_id"]),
             )
+            # A finish makes the session runnable now: pull back a backlog
+            # clock parked on its idle deadline (``prepare_extraction``).
+            now = db.now()
             db.query(
-                f"UPDATE {db.table('learning_work')} SET due_at=0,revision=revision+1 "
+                f"UPDATE {db.table('learning_work')} SET due_at=0,revision=revision+1,"
+                "pending_since=CASE WHEN pending_since>? THEN ? ELSE pending_since END "
                 "WHERE org_id=? AND user_id=?",
-                (self.org_id, user_id),
+                (now, now, self.org_id, user_id),
             )
             return True
 
@@ -603,9 +612,13 @@ class ExtractionStreamStore:
                 (user_id,),
             )[0]["due"]
             next_due = float(effects_due) if effects_due is not None else float("inf")
+            # Owed effects or a cursor in retry backoff (or held) mean the user
+            # waits on a failure, not on policy.
+            waiting_on_failure = effects_due is not None
             for cursor in cursors:
                 if cursor["retry_at"] > now:
                     next_due = min(next_due, cursor["retry_at"])
+                    waiting_on_failure = True
                     continue
                 if cursor["window_id"]:
                     rows = db.query(
@@ -648,10 +661,26 @@ class ExtractionStreamStore:
                 return replace(window, attempts=int(cursor["attempts"] or 0))
             # Same row lock as ingestion: publication either precedes this
             # inspection or follows this update and sets due_at=0 again.
+            #
+            # ``pending_since`` is the backlog clock behind the age alarm: how
+            # long work has been DUE without progress. Nothing is runnable now:
+            # - nothing will ever become due (``inf``): the clock clears;
+            # - waiting on a failure: the clock keeps running. A retry backoff
+            #   parks ``due_at`` up to five minutes ahead on every attempt, and
+            #   that must never hide a stuck item;
+            # - waiting on policy alone (an idle-finalization deadline): the
+            #   clock parks at that deadline, so work held on purpose does not
+            #   age until it is due. Admission and session finish pull it back.
+            if next_due == float("inf"):
+                clock, clock_args = "0", ()
+            elif waiting_on_failure:
+                clock, clock_args = "pending_since", ()
+            else:
+                clock, clock_args = "?", (next_due,)
             db.query(
-                f"UPDATE {db.table('learning_work')} SET due_at=?,pending_since=CASE WHEN ?=1 THEN 0 ELSE pending_since END,lease_until=0,lease_token=NULL "
+                f"UPDATE {db.table('learning_work')} SET due_at=?,pending_since={clock},lease_until=0,lease_token=NULL "
                 "WHERE org_id=? AND user_id=?",
-                (next_due, int(next_due == float("inf")), self.org_id, user_id),
+                (next_due, *clock_args, self.org_id, user_id),
             )
             return None
 
@@ -1173,12 +1202,16 @@ class ExtractionStreamStore:
             ]
 
     def oldest_extraction_backlog_age(self) -> float | None:
-        """Seconds the longest-stalled user has had work pending without progress.
+        """Seconds the longest-stalled user has had work DUE without progress.
 
         ``pending_since`` is set by the first admission after a drain, restarted
         by every completed window (``complete_extraction``), and cleared when
         nothing is left. Measuring "since the queue was last empty" instead
         alarmed on any user who publishes faster than the queue ever drains.
+        Work held only by an idle-finalization deadline parks the clock at that
+        deadline, so scheduled work is not late until it is due; a retry
+        backoff never moves it, so a repeatedly failing item keeps aging
+        (``prepare_extraction``). A clock parked in the future reads as 0.
 
         Non-goals: a user who progresses but falls further behind does not age
         here; a failing sibling cursor blocks the restart only within the

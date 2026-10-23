@@ -24,6 +24,7 @@ def publish(
     session="s",
     finished=False,
     idle_timeout=0,
+    playbook_width=None,
 ):
     items = [
         Interaction(
@@ -54,7 +55,11 @@ def publish(
             [i.interaction_id for i in items],
             {
                 "profile": policy,
-                "playbook": {**policy, "eligible": playbook},
+                "playbook": {
+                    **policy,
+                    "eligible": playbook,
+                    "window_size": playbook_width or width,
+                },
                 "force": force,
                 "session_finished": finished,
                 "idle_timeout_seconds": idle_timeout,
@@ -211,6 +216,116 @@ def test_failing_sibling_cursor_keeps_the_backlog_aging(storage):
     assert sibling.kind != failed.kind
     storage.complete_extraction(sibling, token, {})
     assert storage.oldest_extraction_backlog_age() >= 7200
+
+
+def _clock(monkeypatch, start):
+    from reflexio.server.services.storage.sqlite_storage._extraction_stream import (
+        SQLiteStreamSQL,
+    )
+
+    clock = [float(start)]
+    monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: clock[0])
+    return clock
+
+
+def _due_at(storage, user="u"):
+    with storage._stream_sql(read_only=True) as db:
+        return db.query(
+            f"SELECT due_at FROM {db.table('learning_work')} WHERE user_id=?",  # noqa: S608 -- registered identifier; bound values.
+            (user,),
+        )[0]["due_at"]
+
+
+def _fail_repeatedly(storage, clock, *, attempts, gap):
+    """Fail the runnable window ``attempts`` times, ``gap`` seconds apart.
+
+    After each failure the stream is re-inspected, which parks ``due_at`` on
+    the retry backoff AHEAD of now -- the shape of a stuck item whose
+    ``due_at`` keeps moving forward (prod org 133, 2026-10-22).
+    """
+    for _ in range(attempts):
+        clock[0] += gap
+        user, token = storage.claim_extraction("worker", 300)
+        window = storage.prepare_extraction(user, token)
+        assert window is not None
+        storage.retry_extraction(window, token, "ProviderUnavailable")
+        user, token = storage.claim_extraction("worker", 300)
+        assert storage.prepare_extraction(user, token) is None
+        assert _due_at(storage) > clock[0]
+
+
+def test_idle_held_work_is_not_late_until_its_deadline(storage, monkeypatch):
+    # Prod org 48, 2026-10-22: sessions below one window, held on the 6h idle
+    # deadline, read as hours "old" and alarmed although nothing was late.
+    clock = _clock(monkeypatch, 1000)
+    publish(storage, 2, idle_timeout=21600)
+    assert drain(storage) == []
+    assert _due_at(storage) == 1000 + 21600
+    clock[0] = 1000 + 21599
+    assert storage.oldest_extraction_backlog_age() == 0
+    # Due and not picked up: late from the deadline, not from admission.
+    clock[0] = 1000 + 21600 + 7200
+    assert storage.oldest_extraction_backlog_age() == 7200
+
+
+def test_due_work_never_attempted_ages_from_admission(storage, monkeypatch):
+    clock = _clock(monkeypatch, 1000)
+    publish(storage, 3)
+    clock[0] = 1000 + 7200
+    assert storage.oldest_extraction_backlog_age() == 7200
+
+
+def test_retry_pushed_due_at_never_hides_a_stuck_item(storage, monkeypatch):
+    clock = _clock(monkeypatch, 1000)
+    publish(storage, 10)
+    _fail_repeatedly(storage, clock, attempts=11, gap=330)
+    # ``now - due_at`` would read 0 here; the stuck item ages from admission.
+    assert storage.oldest_extraction_backlog_age() == 11 * 330 > 3600
+
+
+def test_failing_cursor_beside_an_idle_held_one_keeps_aging(storage, monkeypatch):
+    # The profile window fails while the playbook cursor waits on its idle
+    # deadline: a failure dominates policy, so the clock must not park.
+    clock = _clock(monkeypatch, 1000)
+    publish(storage, 10, playbook=True, playbook_width=20, idle_timeout=21600)
+    _fail_repeatedly(storage, clock, attempts=11, gap=330)
+    assert _due_at(storage) < 1000 + 21600
+    assert storage.oldest_extraction_backlog_age() == 11 * 330
+
+
+def test_owed_effects_keep_the_clock_although_the_rest_is_idle_held(
+    storage, monkeypatch
+):
+    clock = _clock(monkeypatch, 1000)
+    publish(storage, 12, idle_timeout=21600)
+    user, token = storage.claim_extraction("worker", 300)
+    window = storage.prepare_extraction(user, token)
+    assert window is not None and window.end_seq == 10
+    storage.complete_extraction(window, token, {})
+    # Effects never acknowledged; seqs 11-12 wait on the idle deadline.
+    user, token = storage.claim_extraction("worker", 300)
+    assert storage.prepare_extraction(user, token) is None
+    clock[0] = 1000 + 7200
+    assert storage.oldest_extraction_backlog_age() == 7200
+
+
+def test_new_input_or_finish_pulls_a_parked_clock_back(storage, monkeypatch):
+    clock = _clock(monkeypatch, 1000)
+    publish(storage, 2, idle_timeout=21600)
+    assert drain(storage) == []
+    # New input pulls the parked clock back: unserved, it ages from admission.
+    clock[0] = 2000
+    publish(storage, 1, request_id="r2", idle_timeout=21600)
+    clock[0] = 2000 + 7200
+    assert storage.oldest_extraction_backlog_age() == 7200
+    assert drain(storage) == []
+    assert storage.oldest_extraction_backlog_age() == 0
+    # An explicit finish is runnable now as well.
+    clock[0] = 20000
+    assert storage.finalize_session("u", "s")
+    clock[0] = 20000 + 3600
+    assert storage.oldest_extraction_backlog_age() == 3600
+    assert [w.end_seq for w in drain(storage)] == [3]
 
 
 def test_negative_receipt_and_stale_fence(storage):
