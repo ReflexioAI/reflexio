@@ -586,11 +586,13 @@ class AgentSuccessConfig(BaseModel):
         ge=0.0,
         le=1.0,
         description=(
-            "Fraction of sessions to judge for retrieved-learning relevance and"
-            " impact. None inherits sampling_rate. Set this independently when"
-            " the retrieved-learning verdicts feed a downstream consumer (e.g."
-            " the offline playbook tuner) that needs denser coverage than the"
-            " session-success judge."
+            "Fraction of sessions on which the retrieved-learning relevance and"
+            " impact judge runs. None inherits sampling_rate. Its verdicts back"
+            " the retrieved-learning evaluation API and the Evaluations page;"
+            " set it independently to grade served learnings more or less"
+            " densely than the session-success judge. The offline playbook"
+            " tuner samples and judges its own sessions and does not read"
+            " these verdicts, so this rate does not affect tuning."
         ),
     )
 

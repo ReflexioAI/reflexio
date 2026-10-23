@@ -2,11 +2,14 @@
 
 A scheduled group evaluation runs two independent judge families over the same
 session: **agent success** (one session-level verdict) and **retrieved learning**
-(one relevance/impact verdict per served learning). They are sampled separately,
-because their consumers need different coverage: the retrieved-learning verdicts
-feed the offline playbook tuner, which needs enough sessions per playbook to
-clear its evidence floors, while the session-success judge is a product signal
-that is fine at a low rate.
+(one relevance/impact verdict per served learning). They are sampled separately
+so an org can pay for denser coverage of one family without paying for the
+other: both verdict sets back the evaluation read APIs and the dashboard
+Evaluations page, and each family's cost scales with its own rate.
+
+Neither rate gates the enterprise offline playbook tuner. It selects its own
+bounded sample of version-matched sessions per playbook and runs its own judge
+over them; it does not read these verdicts.
 
 This module is imported by exactly ONE caller: the publish scheduler gate in
 `generation_service`. It samples both families once, admits the session if either
