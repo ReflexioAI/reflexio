@@ -1,9 +1,11 @@
 """Subprocess-isolation helpers for the hard-timeout completion path (Tier-2.5 leaf).
 
-Stateless leaf module: the picklable ``_Completion*Snapshot`` dataclasses plus the
+The picklable ``_Completion*Snapshot`` dataclasses plus the
 snapshot builders and the ``_litellm_completion_worker`` that runs
 ``litellm.completion`` inside a child process. Used by ``TextGenerationMixin``'s
-``_completion_with_hard_timeout`` (Task 4) which sizes and kills the subprocess.
+``_completion_with_hard_timeout`` which sizes the subprocess deadline. The parent
+retires every worker through one helper; asynchronous reaping retains its existing
+provider permit until process exit, without extending caller latency.
 
 LLM-mock: the worker calls ``litellm.completion`` via the MODULE ATTR (never
 ``from litellm import completion``) so the global ``patch("litellm.completion")``
@@ -15,9 +17,12 @@ re-exported by import binding from the facade — they must be the SAME class/ob
 the worker constructs and tests ``isinstance``-check. Bodies moved VERBATIM.
 """
 
+import logging
 import multiprocessing
 import pickle
+import threading
 from dataclasses import dataclass, field
+from multiprocessing.process import BaseProcess
 from typing import Any
 
 import litellm
@@ -25,6 +30,64 @@ from litellm.exceptions import ContextWindowExceededError
 
 from reflexio.server.llm._litellm_types import completion_metadata
 from reflexio.server.llm._model_compat import model_completion
+from reflexio.server.llm._provider_concurrency import retain_current_provider_slot
+
+logger = logging.getLogger(__name__)
+
+
+def retire_completion_worker(
+    process: BaseProcess, result_queue: multiprocessing.Queue
+) -> None:
+    """Stop a completed/abandoned call; hold admission until its worker is reaped.
+
+    No cleanup grace extends caller latency. Only a still-live process needs an
+    asynchronous reaper; it retains the existing permit, not another capacity
+    budget. The caller has already drained the response or abandoned the read.
+    """
+
+    def close_handles() -> None:
+        try:
+            result_queue.close()
+            result_queue.join_thread()
+        finally:
+            process.close()
+
+    if process.pid is None:
+        close_handles()
+        return
+    if not process.is_alive():
+        process.join()
+        close_handles()
+        return
+
+    release = retain_current_provider_slot()
+
+    def reap() -> None:
+        try:
+            process.join()
+        except Exception:
+            logger.exception(
+                "Completion worker could not be reaped; admission retained"
+            )
+            return
+        try:
+            close_handles()
+        finally:
+            release()
+
+    try:
+        process.kill()
+        threading.Thread(
+            target=reap, name="reflexio-completion-reaper", daemon=True
+        ).start()
+    except Exception:
+        # Do not free a possibly live worker's capacity if cleanup cannot start.
+        # If the kill already completed, no asynchronous owner is needed.
+        if not process.is_alive():
+            reap()
+        else:
+            logger.exception("Completion worker cleanup failed; admission retained")
+            raise
 
 
 @dataclass
