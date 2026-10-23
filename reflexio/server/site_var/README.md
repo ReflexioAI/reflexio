@@ -24,8 +24,12 @@ an override, OSS uses `local/minilm-l6-v2`. The former
 advertised. Existing copies containing that key remain harmless. Generation,
 evaluation, should-run and pre-retrieval model sitevars remain supported.
 
-Recency uses `RecencyConfig.from_env()` and the four existing
-`REFLEXIO_SEARCH_RECENCY_*` variables. `RecencyConfig.with_overrides` has been
+Recency uses `RecencyConfig.from_env()` and three
+`REFLEXIO_SEARCH_RECENCY_*` variables: pool size and the two penalty scales.
+A zero pool disables scored recency retrieval and ranking; positive pools retain
+their configured candidate capacity. Remove the retired
+`REFLEXIO_SEARCH_RECENCY_ENABLED` assignment; false maps to pool zero, while
+true keeps a positive pool (default 20). `RecencyConfig.with_overrides` has been
 removed; enterprise adapters reject the former `search_settings.recency_*`
 keys with migration instructions. Search mode and vector/FTS weight sitevars
 remain supported.

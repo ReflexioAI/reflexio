@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from reflexio.server.env_utils import env_str, env_truthy
+from reflexio.removed_env import reject_removed_env
+from reflexio.server.env_utils import env_str
 
 logger = logging.getLogger(__name__)
 
@@ -25,17 +27,20 @@ class ScoredItem[T]:
 
 @dataclass(frozen=True)
 class RecencyConfig:
-    enabled: bool = True
     max_penalty_frac: float = 0.15
     max_penalty_logit: float = 0.2
     pool_size: int = 20
 
+    @property
+    def enabled(self) -> bool:
+        """A positive candidate budget admits scored retrieval and adjustment."""
+        return self.pool_size > 0
+
     @classmethod
     def from_env(cls, *, env: Mapping[str, str] | None = None) -> RecencyConfig:
+        env = os.environ if env is None else env
+        reject_removed_env(env, canonical="REFLEXIO_SEARCH_RECENCY_POOL_SIZE")
         return cls(
-            enabled=env_truthy(
-                env_str("REFLEXIO_SEARCH_RECENCY_ENABLED", "true", env=env)
-            ),
             max_penalty_frac=_float_env(
                 "REFLEXIO_SEARCH_RECENCY_MAX_PENALTY_FRAC",
                 cls.max_penalty_frac,
@@ -53,7 +58,7 @@ class RecencyConfig:
                 "REFLEXIO_SEARCH_RECENCY_POOL_SIZE",
                 cls.pool_size,
                 env=env,
-                minimum=1,
+                minimum=0,
             ),
         )
 

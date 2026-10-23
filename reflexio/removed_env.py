@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "REFLEXIO_SEARCH_RECENCY_ENABLED": "REFLEXIO_SEARCH_RECENCY_POOL_SIZE",
     "REFLEXIO_LLM_FAIL_CLOSED_PROVIDERS": "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY",
     "DEBUG_LOG_TO_CONSOLE": "REFLEXIO_LOG_PROFILE",
     "DATA_SUPABASE_DB_URL": "DATA_DB_URL",
@@ -52,6 +53,12 @@ def reject_removed_env(
                 "; capacities now apply to every resolved provider; preserve "
                 "per-provider sizes with REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY_OVERRIDES. "
                 "Dispatch without a permit is no longer supported"
+            )
+        if "REFLEXIO_SEARCH_RECENCY_ENABLED" in obsolete:
+            migration += (
+                "; a zero recency pool disables scored recency retrieval and "
+                "ranking; preserve positive pool sizes to enable it, with "
+                "20 as the unchanged default"
             )
         raise ValueError(
             f"Removed environment names: {migration}. Migrate the effective "

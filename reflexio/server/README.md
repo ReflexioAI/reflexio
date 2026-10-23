@@ -677,6 +677,12 @@ Reformulates user search queries into clean, normalized natural language for imp
 
 ### Unified Search Service
 
+Recency ranking uses `REFLEXIO_SEARCH_RECENCY_POOL_SIZE` for admission and
+candidate capacity: zero disables its scored retrieval, overfetch and ranking;
+positive values enable it (default 20). Both penalty scales remain configurable.
+Remove the retired `REFLEXIO_SEARCH_RECENCY_ENABLED` assignment; see the
+[configuration upgrade guide](../../docs/configuration-upgrade.md).
+
 
 **File**: `services/unified_search_service.py` - `run_unified_search()`
 

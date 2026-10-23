@@ -250,7 +250,7 @@ class TestRunUnifiedSearch(unittest.TestCase):
                 llm_client=MagicMock(),
                 prompt_manager=MagicMock(),
                 retrieval_floor=RetrievalFloorConfig(enabled=False),
-                recency=RecencyConfig(enabled=True, max_penalty_frac=1.0, pool_size=2),
+                recency=RecencyConfig(max_penalty_frac=1.0, pool_size=2),
             )
 
         self.assertTrue(result.success)
@@ -301,7 +301,7 @@ class TestRunUnifiedSearch(unittest.TestCase):
                 llm_client=MagicMock(),
                 prompt_manager=MagicMock(),
                 retrieval_floor=RetrievalFloorConfig(enabled=False),
-                recency=RecencyConfig(enabled=True, max_penalty_frac=0.15, pool_size=2),
+                recency=RecencyConfig(max_penalty_frac=0.15, pool_size=2),
             )
 
         self.assertEqual(
@@ -350,7 +350,7 @@ class TestRunUnifiedSearch(unittest.TestCase):
                 llm_client=MagicMock(),
                 prompt_manager=MagicMock(),
                 retrieval_floor=RetrievalFloorConfig(enabled=False),
-                recency=RecencyConfig(enabled=True, pool_size=2),
+                recency=RecencyConfig(pool_size=2),
             )
 
         self.assertTrue(seen.get("recency_on"))

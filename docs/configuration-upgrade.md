@@ -9,6 +9,7 @@ between old and new names remains.
 
 | Removed name | Canonical name / effective policy |
 | --- | --- |
+| REFLEXIO_SEARCH_RECENCY_ENABLED | REFLEXIO_SEARCH_RECENCY_POOL_SIZE; zero disables, positive enables scored recency retrieval and ranking |
 | DATA_SUPABASE_DB_URL, POSTGRES_DB_URL | DATA_DB_URL; preserve the exact database target |
 | WEB_CONCURRENCY | Explicit server `--workers N`; `REFLEXIO_SERVER_WORKERS` is diagnostic metadata, not a Uvicorn worker selector |
 | INTERACTION_CLEANUP_THRESHOLD | REFLEXIO_ROW_LIMIT_INTERACTIONS |
@@ -48,3 +49,12 @@ For direct Uvicorn starts that previously used `WEB_CONCURRENCY=N`, pass
 launcher also accepts `--workers N` (with `--no-reload` for multiple workers).
 Renaming the old input to `REFLEXIO_SERVER_WORKERS` alone does not preserve the
 worker count: the latter records diagnostics and the launcher overwrites it.
+
+Recency admission belongs to the candidate-pool budget. Remove the old enable
+assignment even if blank or a canonical pool is present. Former false maps to
+zero; true/unset retains a valid positive custom pool or the unchanged default
+20. Former invalid zero/negative pool values were clamped to one while enabled;
+explicitly choose one to preserve that old effective policy. The fractional and
+logit penalty scales remain independent and configurable. Zero penalties do not
+disable a positive candidate pool. Temporal query signals, session deduplication
+and relevance-floor budgets retain their own policies.
