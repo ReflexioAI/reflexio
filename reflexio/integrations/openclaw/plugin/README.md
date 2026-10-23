@@ -30,7 +30,7 @@ The native plugin retains these existing configuration names:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `search.top_k` | 3 | Positive result count requested per search arm. |
+| `search.top_k` | 3 | Result count per search arm, from 1 through the API maximum of 100. |
 | `search.min_prompt_length` | 5 | Minimum trimmed prompt length; zero admits every nonempty prompt. |
 | `search.timeout_ms` | 3000 | Positive search deadline, with an additional second reserved by the host hook. |
 | `publish.max_content_length` | 10000 | Positive maximum redacted characters retained per published message; a truncation marker may follow. |
@@ -55,3 +55,9 @@ settings and the separate `reflexio-embedded` plugin entry. The four policy fiel
 above keep their existing spelling. Extraction model selection belongs to the
 backend's configured model (`openclaw/<model>`), not this transport plugin.
 Keep an operator copy of the old configuration before removing retired fields.
+
+Numeric defaults and bounds come from the shipped plugin manifest, shared by
+registration and runtime validation. The per-message retained prefix is capped
+at 999988 code points so its 12-code-point truncation marker fits the backend's
+1000000-character field limit. An API-contract test checks both this bound and
+the search maximum against the actual route models.

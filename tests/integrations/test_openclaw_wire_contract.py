@@ -83,3 +83,33 @@ def test_plugin_request_binds_to_route_model(route_path: str) -> None:
     model.model_validate(payload)
     undeclared = _undeclared_keys(payload, model, model.__name__)
     assert not undeclared, f"keys the server would drop: {undeclared}"  # noqa: S101
+
+
+def test_native_numeric_policy_matches_actual_route_limits() -> None:
+    manifest = json.loads(
+        (
+            _REPO_ROOT / "reflexio/integrations/openclaw/plugin/openclaw.plugin.json"
+        ).read_text()
+    )["configSchema"]["properties"]
+    models = _route_models()
+    search = models["/api/search"].model_json_schema()["properties"]["top_k"]
+    integer = next(
+        variant for variant in search["anyOf"] if variant.get("type") == "integer"
+    )
+    native_search = manifest["search"]["properties"]["top_k"]
+    assert native_search["maximum"] == integer["maximum"]
+    assert native_search["minimum"] > integer["exclusiveMinimum"]
+    models["/api/search"].model_validate(
+        {**_FIXTURE["/api/search"], "top_k": native_search["maximum"]}
+    )
+    interaction = _nested_model(
+        models["/api/publish_interaction"]
+        .model_fields["interaction_data_list"]
+        .annotation
+    )
+    assert interaction is not None
+    backend_maximum = interaction.model_json_schema()["properties"]["content"][
+        "maxLength"
+    ]
+    native_content = manifest["publish"]["properties"]["max_content_length"]
+    assert native_content["maximum"] + len("…(truncated)") == backend_maximum

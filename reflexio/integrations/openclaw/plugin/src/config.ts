@@ -2,8 +2,25 @@
 // wins over environment fallbacks; search and publication remain separate
 // policies. Hook-owned deadlines are supplied to the client by the caller.
 
+import { createRequire } from "node:module";
+
+type IntegerPolicy = { default: number; minimum: number; maximum: number };
+type Manifest = {
+  configSchema: {
+    properties: {
+      search: { properties: Record<"top_k" | "min_prompt_length" | "timeout_ms", IntegerPolicy> };
+      publish: { properties: { max_content_length: IntegerPolicy } };
+    };
+  };
+};
+
+// Both src/ and packaged dist/ live beside the authoritative plugin manifest.
+const manifest = createRequire(import.meta.url)("../openclaw.plugin.json") as Manifest;
+const searchPolicy = manifest.configSchema.properties.search.properties;
+const publishPolicy = manifest.configSchema.properties.publish.properties;
+
 export const DEFAULT_URL = "http://127.0.0.1:8061/";
-export const DEFAULT_MAX_CONTENT_LENGTH = 10_000;
+export const DEFAULT_MAX_CONTENT_LENGTH = publishPolicy.max_content_length.default;
 
 export interface Settings {
   url: string;
@@ -30,17 +47,15 @@ function section(config: Record<string, unknown>, name: string): Record<string, 
 function integer(
   config: Record<string, unknown>,
   key: string,
-  fallback: number,
-  minimum: number,
+  policy: IntegerPolicy,
   path: string,
-  maximum = Number.MAX_SAFE_INTEGER,
 ): number {
-  const value = config[key] === undefined ? fallback : config[key];
+  const value = config[key] === undefined ? policy.default : config[key];
   if (
     typeof value !== "number" ||
     !Number.isSafeInteger(value) ||
-    value < minimum ||
-    value > maximum
+    value < policy.minimum ||
+    value > policy.maximum
   ) {
     throw new Error(`Invalid Reflexio ${path}.${key} policy`);
   }
@@ -58,15 +73,13 @@ export function resolveSettings(
   return {
     url: url.endsWith("/") ? url : `${url}/`,
     apiKey: str(cfg.apiKey) || str(env.REFLEXIO_API_KEY),
-    topK: integer(search, "top_k", 3, 1, "search"),
-    minPromptLength: integer(search, "min_prompt_length", 5, 0, "search"),
-    // Registration adds 1s of host overhead; keep its timer in the signed range.
-    searchTimeoutMs: integer(search, "timeout_ms", 3000, 1, "search", 2 ** 31 - 1001),
+    topK: integer(search, "top_k", searchPolicy.top_k, "search"),
+    minPromptLength: integer(search, "min_prompt_length", searchPolicy.min_prompt_length, "search"),
+    searchTimeoutMs: integer(search, "timeout_ms", searchPolicy.timeout_ms, "search"),
     maxContentLength: integer(
       publish,
       "max_content_length",
-      DEFAULT_MAX_CONTENT_LENGTH,
-      1,
+      publishPolicy.max_content_length,
       "publish",
     ),
   };

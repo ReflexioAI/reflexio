@@ -272,3 +272,9 @@ it("retains whole Unicode code points in citation titles", () => {
   const { registry } = renderInjection({ profiles: [{ profile_id: "unicode", content: "😀".repeat(80) + "x" }], user_playbooks: [], agent_playbooks: [] });
   expect(registry[0]?.title).toBe("😀".repeat(79) + "…");
 });
+
+it("rejects policies that cannot fit backend field limits", () => {
+  expect(resolveSettings({ search: { top_k: 100 } }, {}).topK).toBe(100);
+  expect(() => resolveSettings({ search: { top_k: 101 } }, {})).toThrow("search.top_k");
+  expect(() => resolveSettings({ publish: { max_content_length: 1_000_000 } }, {})).toThrow("publish.max_content_length");
+});
