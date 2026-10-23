@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "REFLEXIO_LLM_FAIL_CLOSED_PROVIDERS": "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY",
     "DEBUG_LOG_TO_CONSOLE": "REFLEXIO_LOG_PROFILE",
     "DATA_SUPABASE_DB_URL": "DATA_DB_URL",
     "POSTGRES_DB_URL": "DATA_DB_URL",
@@ -45,6 +46,12 @@ def reject_removed_env(
             migration += (
                 "; preserve the actual worker count with explicit server --workers N; "
                 "REFLEXIO_SERVER_WORKERS is diagnostic metadata only"
+            )
+        if "REFLEXIO_LLM_FAIL_CLOSED_PROVIDERS" in obsolete:
+            migration += (
+                "; capacities now apply to every resolved provider; preserve "
+                "per-provider sizes with REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY_OVERRIDES. "
+                "Dispatch without a permit is no longer supported"
             )
         raise ValueError(
             f"Removed environment names: {migration}. Migrate the effective "

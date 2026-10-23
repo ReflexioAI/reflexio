@@ -27,11 +27,12 @@ def test_caps_concurrent_holders_per_provider(monkeypatch):
     # Hold both permits.
     with pc.provider_slot("gpt-x"), pc.provider_slot("gpt-x"):
         assert sem._value == 0
-        # A third acquire must FAIL OPEN after the bounded timeout (not block forever).
+        # A third caller cannot dispatch without an available permit.
         t0 = time.monotonic()
-        with pc.provider_slot("gpt-x"):
-            waited = time.monotonic() - t0
-        assert waited >= 0.3  # waited the bounded timeout, then proceeded
+        with pytest.raises(pc.ProviderCapSaturatedError), pc.provider_slot("gpt-x"):
+            pytest.fail("saturated provider dispatched")
+        waited = time.monotonic() - t0
+        assert waited >= 0.3  # admission remains bounded
 
 
 def test_second_provider_independent(monkeypatch):
@@ -60,25 +61,20 @@ def test_unknown_provider_not_capped(monkeypatch):
         pass
 
 
-def test_fail_open_emits_log(monkeypatch, caplog):
+def test_saturation_is_logged_without_dispatch(monkeypatch, caplog):
     monkeypatch.setattr(pc, "_provider_key", lambda _m: "openai")
-    monkeypatch.setattr(pc, "_ACQUIRE_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(pc, "_ACQUIRE_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(pc, "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY", 1)
-    # rebuild the semaphore registry to pick up cap=1
-    pc._semaphores.clear()
-    # Enter left-to-right: the first slot takes the lone permit, then the
-    # second slot saturates and fails open (emitting the WARNING).
+    monkeypatch.setattr(pc, "_semaphores", {})
     with (
         pc.provider_slot("gpt-x"),
         caplog.at_level("WARNING"),
-        pc.provider_slot("gpt-x"),  # saturated → fail open
+        pytest.raises(pc.ProviderCapSaturatedError),
+        pc.provider_slot("gpt-x"),
     ):
-        pass
-    assert any(
-        "provider_cap_saturated" in r.message or "saturat" in r.message.lower()
-        for r in caplog.records
-    )
-    pc._semaphores.clear()
+        pytest.fail("saturated provider dispatched")
+    assert "provider_cap_saturated" in caplog.text
+    assert "request not admitted" in caplog.text
 
 
 def _reset_registry():
@@ -86,32 +82,19 @@ def _reset_registry():
         pc._semaphores.clear()
 
 
-def test_fail_open_provider_proceeds_on_saturation(monkeypatch, caplog):
+@pytest.mark.parametrize("provider", ["openai", "zai"])
+def test_every_resolved_provider_requires_a_permit(monkeypatch, provider):
     _reset_registry()
     monkeypatch.setattr(pc, "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY", 1)
-    monkeypatch.setattr(pc, "_ACQUIRE_TIMEOUT_SECONDS", 0.05)
-    monkeypatch.setattr(pc, "_fail_closed_providers", frozenset())
+    monkeypatch.setattr(pc, "_ACQUIRE_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(pc, "_per_provider_cap", {})
-    monkeypatch.setattr(pc, "_provider_key", lambda _m: "openai")
-    # Holds the only permit, then a second acquire saturates → fail-open
-    # (proceeds, no raise).
-    with pc.provider_slot("openai/gpt-4o"), pc.provider_slot("openai/gpt-4o"):
-        pass
-
-
-def test_fail_closed_provider_raises_on_saturation(monkeypatch):
-    _reset_registry()
-    monkeypatch.setattr(pc, "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY", 1)
-    monkeypatch.setattr(pc, "_ACQUIRE_TIMEOUT_SECONDS", 0.05)
-    monkeypatch.setattr(pc, "_fail_closed_providers", frozenset({"zai"}))
-    monkeypatch.setattr(pc, "_per_provider_cap", {})
-    monkeypatch.setattr(pc, "_provider_key", lambda _m: "zai")
+    monkeypatch.setattr(pc, "_provider_key", lambda _m: provider)
     with (
-        pc.provider_slot("zai/glm-5.2"),
+        pc.provider_slot("example"),
         pytest.raises(pc.ProviderCapSaturatedError),
-        pc.provider_slot("zai/glm-5.2"),
+        pc.provider_slot("example"),
     ):
-        pass
+        pytest.fail("saturated provider dispatched")
 
 
 def test_per_provider_cap_override(monkeypatch):
@@ -122,8 +105,7 @@ def test_per_provider_cap_override(monkeypatch):
     assert pc._max_concurrency_for_provider("openai") == 8
 
 
-@pytest.mark.parametrize("fail_closed", [False, True])
-def test_search_deadline_bounds_saturated_provider_wait(monkeypatch, fail_closed):
+def test_search_deadline_bounds_saturated_provider_wait(monkeypatch):
     import threading
 
     from reflexio.server import search_runtime
@@ -133,11 +115,6 @@ def test_search_deadline_bounds_saturated_provider_wait(monkeypatch, fail_closed
     monkeypatch.setattr(pc, "_provider_key", lambda _model: "test")
     monkeypatch.setattr(pc, "_get_semaphore", lambda _provider: sem)
     monkeypatch.setattr(pc, "_ACQUIRE_TIMEOUT_SECONDS", 0.8)
-    monkeypatch.setattr(
-        pc,
-        "_fail_closed_providers",
-        frozenset({"test"}) if fail_closed else frozenset(),
-    )
     scope = search_runtime.SearchScope(deadline=time.monotonic() + 0.04)
     token = search_runtime._scope.set(scope)
     started = time.monotonic()
@@ -184,7 +161,7 @@ def test_provider_acquired_at_deadline_releases_its_permit(monkeypatch):
 
 
 @pytest.mark.parametrize("scoped", [False, True])
-def test_provider_wait_preserves_unscoped_and_disabled_behavior(monkeypatch, scoped):
+def test_provider_wait_is_bounded_without_a_search_deadline(monkeypatch, scoped):
     from reflexio.server import search_runtime
 
     waits = []
@@ -196,12 +173,11 @@ def test_provider_wait_preserves_unscoped_and_disabled_behavior(monkeypatch, sco
 
     monkeypatch.setattr(pc, "_provider_key", lambda _model: "test")
     monkeypatch.setattr(pc, "_get_semaphore", lambda _provider: Semaphore())
-    monkeypatch.setattr(pc, "_fail_closed_providers", frozenset())
     scope = search_runtime.SearchScope() if scoped else None
     token = search_runtime._scope.set(scope)
     try:
-        with pc.provider_slot("test"):
-            pass
+        with pytest.raises(pc.ProviderCapSaturatedError), pc.provider_slot("test"):
+            pytest.fail("saturated provider dispatched")
         assert waits == [pc._ACQUIRE_TIMEOUT_SECONDS]
     finally:
         search_runtime._scope.reset(token)
@@ -285,3 +261,121 @@ def test_unregistered_prefix_stays_uncapped(monkeypatch) -> None:
 
     monkeypatch.setattr(litellm, "custom_provider_map", [])
     assert pc._provider_key("not-a-provider/whatever") is None
+
+
+def test_saturated_primary_advances_real_ladder_without_dispatch(monkeypatch):
+    """The real semaphore and fallback walk share the dispatch admission contract."""
+    from unittest.mock import MagicMock
+
+    import litellm
+
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+    monkeypatch.setattr(pc, "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(pc, "_per_provider_cap", {})
+    monkeypatch.setattr(pc, "_semaphores", {})
+    monkeypatch.setattr(pc, "_ACQUIRE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(pc, "_provider_key", lambda model: model.split("/")[0])
+    calls = []
+
+    def completion(**params):
+        calls.append(params["model"])
+        response = MagicMock()
+        response.choices[0].message.content = "admitted"
+        response.choices[0].finish_reason = "stop"
+        response.usage = None
+        return response
+
+    monkeypatch.setattr(litellm, "completion", completion)
+    client = LiteLLMClient(
+        LiteLLMConfig(model="primary/a", fallback_models=["backup/b"])
+    )
+    with pc.provider_slot("primary/a"):
+        assert (
+            client.generate_chat_response([{"role": "user", "content": "hello"}])
+            == "admitted"
+        )
+        assert calls == ["backup/b"]
+        assert pc._get_semaphore("primary")._value == 0
+    assert pc._get_semaphore("primary")._value == 1
+    assert pc._get_semaphore("backup")._value == 1
+
+
+def test_saturated_embedding_never_dispatches_and_preserves_held_permit(monkeypatch):
+    from unittest.mock import MagicMock
+
+    import litellm
+
+    from reflexio.server.llm import _litellm_embedding as embedding
+    from reflexio.server.llm.litellm_client import (
+        LiteLLMClient,
+        LiteLLMClientError,
+        LiteLLMConfig,
+    )
+
+    monkeypatch.setattr(pc, "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(pc, "_per_provider_cap", {})
+    monkeypatch.setattr(pc, "_semaphores", {})
+    monkeypatch.setattr(pc, "_ACQUIRE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(pc, "_provider_key", lambda _model: "openai")
+    monkeypatch.setattr(embedding, "embedding_provider_mode", lambda _model: "cloud")
+    monkeypatch.setattr(embedding, "should_use_embedding_service", lambda _model: False)
+    monkeypatch.setattr(embedding, "_truncate_for_embedding", lambda text, _model: text)
+    provider = MagicMock(
+        return_value=MagicMock(data=[{"index": 0, "embedding": [1.0]}])
+    )
+    monkeypatch.setattr(litellm, "embedding", provider)
+    client = LiteLLMClient(LiteLLMConfig(model="openai/example"))
+    with pc.provider_slot("openai/text-embedding-3-small"):
+        with pytest.raises(LiteLLMClientError) as failure:
+            client.get_embedding("hello", model="openai/text-embedding-3-small")
+        assert isinstance(failure.value.__cause__, pc.ProviderCapSaturatedError)
+        provider.assert_not_called()
+        assert pc._get_semaphore("openai")._value == 0
+    assert pc._get_semaphore("openai")._value == 1
+
+
+def test_live_holders_keep_capacity_until_their_work_finishes(monkeypatch):
+    import threading
+
+    monkeypatch.setattr(pc, "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY", 2)
+    monkeypatch.setattr(pc, "_per_provider_cap", {})
+    monkeypatch.setattr(pc, "_semaphores", {})
+    monkeypatch.setattr(pc, "_ACQUIRE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(pc, "_provider_key", lambda _model: "provider")
+    release = threading.Event()
+    started = [threading.Event(), threading.Event()]
+    results = {}
+    threads = [
+        threading.Thread(target=_hold, args=("model", started[i], release, results, i))
+        for i in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        assert all(event.wait(timeout=2) for event in started)
+        assert results == {0: True, 1: True}
+        with pytest.raises(pc.ProviderCapSaturatedError), pc.provider_slot("model"):
+            pytest.fail("a third caller bypassed the live holders")
+        assert pc._get_semaphore("provider")._value == 0
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(timeout=2)
+    assert not any(thread.is_alive() for thread in threads)
+    assert pc._get_semaphore("provider")._value == 2
+
+
+@pytest.mark.parametrize("legacy", ["", "openai", "private-provider-list"])
+def test_direct_provider_policy_rejects_the_retired_selector(monkeypatch, legacy):
+    import runpy
+
+    monkeypatch.setenv("REFLEXIO_LLM_FAIL_CLOSED_PROVIDERS", legacy)
+    monkeypatch.setenv("REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY", "16")
+    with pytest.raises(
+        ValueError, match="REFLEXIO_LLM_FAIL_CLOSED_PROVIDERS"
+    ) as failure:
+        runpy.run_path(pc.__file__)
+    assert "every resolved provider" in str(failure.value)
+    assert "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY_OVERRIDES" in str(failure.value)
+    assert "private-provider-list" not in str(failure.value)
