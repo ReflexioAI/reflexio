@@ -112,7 +112,7 @@ def test_an_org_that_never_opted_in_keeps_its_previous_behavior() -> None:
 
 
 def test_retrieved_learning_can_sample_denser_than_agent_success() -> None:
-    """The whole point: dense tuner coverage without paying the success judge."""
+    """The whole point: dense learning coverage without paying the success judge."""
     config = _config(0.0, retrieved=1.0)
 
     assert samples_agent_success(config, **SCOPE) is False

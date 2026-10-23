@@ -27,8 +27,8 @@ RETRIEVED_LEARNING_STATE_PREFIX = "retrieved_learning_eval"
 RETRIEVED_LEARNING_EVALUATION_VERSION = 2
 
 # Statuses persisted in _operation_state. "complete" and "not_applicable" are
-# terminal (the fast path may short-circuit on them, and consumers such as the
-# offline tuner read TERMINAL only). "degraded" is an APPLIED commit with a
+# terminal (the runner's fast path may short-circuit on them, and the
+# grade-on-demand cache reuses TERMINAL only). "degraded" is an APPLIED commit with a
 # partial row set; it is not terminal and is re-judged fresh on the next
 # scheduled run, self-healing to "complete" once the transient failure clears.
 # "failed" and "pending" committed nothing and are retried by the next scheduled

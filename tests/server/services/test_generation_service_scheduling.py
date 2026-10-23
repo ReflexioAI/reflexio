@@ -354,7 +354,7 @@ def _schedule_and_capture(
 def test_retrieved_only_sampling_schedules_but_skips_the_success_judge(
     service: GenerationService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The core coverage guarantee: dense tuner signal without the success bill.
+    """The core coverage guarantee: dense learning verdicts without the success bill.
 
     A session sampled ONLY for retrieved-learning must still be scheduled, and
     the runner must be told to skip the session-success judge.

@@ -737,9 +737,10 @@ def test_window_read_is_empty_when_no_verdicts_exist(storage) -> None:
 def test_window_read_is_exhaustive_past_the_paged_readers_cap(storage, count) -> None:
     """The paged reader caps at limit=100 with no cursor; this one must not.
 
-    The offline tuner treats the window read as the COMPLETE set of verdicts, so
-    a silently short read drops real playbook signal rather than merely
-    paginating it.
+    The window read's contract is the COMPLETE set of verdicts for the window,
+    so a silently short read drops real signal rather than merely paginating
+    it. (Its original consumer, the retired impact-linkage tuner, is gone; the
+    current offline tuner does not read these verdicts.)
     """
     refs = _seed_many_profiles(storage, count)
     _seed_session(storage, refs=refs)
