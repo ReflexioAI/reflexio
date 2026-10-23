@@ -155,7 +155,7 @@ install_plugin() {
   log "building the SDK wheel and installing its bundled plugin through setup"
   # Import the built wheel outside the source checkout. This is the customer
   # installation door, including bundle compilation and host config migration.
-  uv build --wheel --out-dir "$LAB/wheel" "$REPO_ROOT" >/dev/null
+  uv build --wheel --clear --out-dir "$LAB/wheel" "$REPO_ROOT" >/dev/null
   local wheel
   wheel=$(find "$LAB/wheel" -name '*.whl' -print -quit)
   rm -rf "$LAB/sdk"
