@@ -2,7 +2,9 @@
 
 from copy import deepcopy
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -336,3 +338,58 @@ def test_retired_warning_value_still_requires_original_witness_hash():
     prior, expected, frozen = _records()
     frozen["deduplication_config"]["max_unified_content_chars"] += 1
     assert not matches_frozen_extractor_binding(prior, expected, frozen)
+
+
+@pytest.mark.parametrize("retired_context", [None, "Historical playbook instructions"])
+def test_retired_playbook_context_keeps_frozen_binding(
+    retired_context: str | None,
+) -> None:
+    prior, expected, frozen = _records("playbook")
+    frozen["context_prompt"] = retired_context
+    prior = replace(
+        prior,
+        binding=replace(prior.binding, extractor_config_hash=build_scope_hash(frozen)),
+        generation_request_snapshot={
+            **prior.generation_request_snapshot,
+            "extractor_config": deepcopy(frozen),
+        },
+    )
+    before = deepcopy((prior, expected, frozen))
+    assert matches_frozen_extractor_binding(prior, expected, frozen)
+    assert (prior, expected, frozen) == before
+
+
+def test_live_profile_context_still_invalidates_frozen_binding() -> None:
+    prior, expected, frozen = _records("profile")
+    frozen["context_prompt"] = "Customer profile policy must remain strict"
+    prior = replace(
+        prior,
+        binding=replace(prior.binding, extractor_config_hash=build_scope_hash(frozen)),
+        generation_request_snapshot={"extractor_config": deepcopy(frozen)},
+    )
+    assert not matches_frozen_extractor_binding(prior, expected, frozen)
+
+
+@pytest.mark.parametrize("witness", ["snapshot", "window"])
+@pytest.mark.parametrize("changed", [None, "malformed", {"context_prompt": "tampered"}])
+def test_equal_parent_binding_authenticates_identity_witnesses(
+    witness, changed
+) -> None:
+    from reflexio.server.services.extraction.resumable_agent import (
+        _require_overflow_parent,
+    )
+
+    prior, _, frozen = _records()
+    storage = Mock()
+    storage.get_agent_run.return_value = prior
+    coordinator = Mock()
+    coordinator.window = SimpleNamespace(
+        window_id="original", policy={"extractor": deepcopy(frozen)}
+    )
+    assert _require_overflow_parent(storage, coordinator, prior) == prior
+    if witness == "snapshot":
+        prior.generation_request_snapshot["extractor_config"] = changed
+    else:
+        coordinator.window.policy["extractor"] = changed
+    with pytest.raises(RuntimeError, match="child parent binding changed"):
+        _require_overflow_parent(storage, coordinator, prior)

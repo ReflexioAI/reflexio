@@ -206,7 +206,7 @@ def _extractor_snapshot(
         effective_frozen_extractor_config,
     )
 
-    effective = effective_frozen_extractor_config(frozen)
+    effective = effective_frozen_extractor_config(frozen, extractor_kind="profile")
     if canonical_json(effective) != canonical_json(current):
         raise InputBudgetConfigurationError("Frozen profile configuration changed")
     return copy.deepcopy(frozen)

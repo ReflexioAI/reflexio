@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from reflexio.pending_tool_policy import resolve_resume_timing
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.services.extraction.agent_run_records import (
+    matches_frozen_extractor_config,
     source_interaction_digest,
 )
 from reflexio.server.services.extraction.resumable_agent import (
@@ -225,7 +226,18 @@ def inspect_run(
     config_hash = (
         build_scope_hash(extractor.model_dump(mode="json")) if extractor else None
     )
-    if not config_hash or config_hash != run.binding.extractor_config_hash:
+    saved = run.generation_request_snapshot.get("extractor_config")
+    unchanged = config_hash and config_hash == run.binding.extractor_config_hash
+    if not unchanged and not (
+        extractor is not None
+        and isinstance(saved, dict)
+        and matches_frozen_extractor_config(
+            saved,
+            extractor.model_dump(mode="json"),
+            extractor_kind=run.binding.extractor_kind,
+            original_hash=run.binding.extractor_config_hash,
+        )
+    ):
         blockers.append("configuration_changed")
     blockers.extend(_saved_output_blockers(run))
     return {

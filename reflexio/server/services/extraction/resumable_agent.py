@@ -44,6 +44,7 @@ from reflexio.server.services.storage.storage_base import (
     AgentRunStatus,
     BaseStorage,
     PendingToolCallRecord,
+    build_scope_hash,
 )
 from reflexio.server.site_var.feature_flags import (
     is_resumable_extraction_agent_enabled as is_resumable_extraction_agent_feature_enabled,
@@ -267,9 +268,20 @@ def _require_overflow_parent(
     storage: BaseStorage, coordinator: OverflowCoordinator, run: AgentRunRecord
 ) -> AgentRunRecord:
     existing = storage.get_agent_run(run.id)
+    frozen = (
+        existing.generation_request_snapshot.get("extractor_config")
+        if existing is not None
+        else None
+    )
     if (
         run.id != f"window:{coordinator.window.window_id}"
         or existing is None
+        # Identity reconstruction consumes this snapshot even for equal bindings.
+        # Authenticate both original witnesses before using historical metadata.
+        or not isinstance(frozen, dict)
+        or build_scope_hash(frozen) != existing.binding.extractor_config_hash
+        or build_scope_hash(coordinator.window.policy["extractor"])
+        != existing.binding.extractor_config_hash
         or not matches_frozen_extractor_binding(
             existing, run, coordinator.window.policy["extractor"]
         )
@@ -373,16 +385,10 @@ def run_resumable_extraction_agent(
         config_identity = None
         if coordinator is not None:
             parent = _require_overflow_parent(storage, coordinator, run)
-            if (
-                parent.binding.extractor_config_hash
-                != run.binding.extractor_config_hash
-            ):
-                # Preserve the v1 lookup identity only after the frozen proof;
-                # queries and prompts still use the validated current config.
-                frozen = parent.generation_request_snapshot["extractor_config"]
-                config_identity = frozen_extractor_config_identity(
-                    extractor_config, frozen
-                )
+            # Preserve the v1 lookup identity after frozen binding validation,
+            # including when a stable snapshot layout makes the hashes equal.
+            frozen = parent.generation_request_snapshot["extractor_config"]
+            config_identity = frozen_extractor_config_identity(extractor_config, frozen)
         messages = append_prior_knowledge_context(
             messages=messages,
             storage=storage,

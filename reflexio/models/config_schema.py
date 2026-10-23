@@ -506,7 +506,6 @@ class UserPlaybookExtractorConfig(BaseModel):
     model_config = ConfigDict(hide_input_in_errors=True)
 
     extraction_definition_prompt: SanitizedNonEmptyStr
-    context_prompt: str | None = None
     tagging_definition_prompt: str | None = None
     aggregation_config: PlaybookAggregatorConfig = Field(
         default_factory=PlaybookAggregatorConfig

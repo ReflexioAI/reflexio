@@ -4,6 +4,9 @@ from typing import Any
 
 from reflexio.models.api_schema.domain.entities import PublishUserInteractionRequest
 from reflexio.models.config_schema import Config
+from reflexio.server.services.extraction.agent_run_records import (
+    snapshot_extractor_config,
+)
 from reflexio.server.services.extractor_interaction_utils import (
     get_extractor_window_params,
 )
@@ -45,7 +48,7 @@ def extraction_admission(
             "window_size": width,
             "stride_size": stride,
             # Extractor policy contains prompts and window controls, never API keys.
-            "extractor": extractor.model_dump(mode="json"),
+            "extractor": snapshot_extractor_config(extractor),
             "skip_should_run_check": config.skip_should_run_check,
         }
     return admission

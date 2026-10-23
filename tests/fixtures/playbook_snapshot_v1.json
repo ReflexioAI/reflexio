@@ -1,0 +1,15 @@
+{
+  "extraction_definition_prompt": "Extract rules",
+  "context_prompt": null,
+  "tagging_definition_prompt": null,
+  "aggregation_config": {
+    "min_cluster_size": 2,
+    "reaggregation_trigger_count": 2,
+    "clustering_similarity": null,
+    "direction_overlap_threshold": 0.6
+  },
+  "deduplication_config": null,
+  "request_sources_enabled": null,
+  "window_size_override": null,
+  "stride_size_override": null
+}

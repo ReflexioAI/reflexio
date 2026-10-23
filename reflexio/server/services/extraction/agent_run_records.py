@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import Interaction
+from reflexio.models.config_schema import UserPlaybookExtractorConfig
 from reflexio.server.services.storage.storage_base import (
     AgentBinding,
     AgentRunRecord,
@@ -51,7 +52,26 @@ def source_interaction_digest(interaction: Interaction) -> str:
     )
 
 
-def effective_frozen_extractor_config(frozen: dict[str, Any]) -> dict[str, Any]:
+def snapshot_extractor_config(
+    config: BaseModel, *, frozen: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Keep the durable v1 wire layout independent of public configuration.
+
+    Old workers materialize this inert slot when hashing playbook snapshots.
+    Its null placeholder is compatibility metadata, never prompt policy. A
+    historical continuation retains its witnessed value for hashes/lookups.
+    """
+    snapshot = config.model_dump(mode="json")
+    if isinstance(config, UserPlaybookExtractorConfig):
+        snapshot["context_prompt"] = (
+            deepcopy(frozen.get("context_prompt")) if frozen else None
+        )
+    return snapshot
+
+
+def effective_frozen_extractor_config(
+    frozen: dict[str, Any], *, extractor_kind: str
+) -> dict[str, Any]:
     """Apply only known behavior-preserving deployed schema transitions.
 
     Do not round-trip this witness through a model: that would silently accept
@@ -59,12 +79,30 @@ def effective_frozen_extractor_config(frozen: dict[str, Any]) -> dict[str, Any]:
     """
     effective = deepcopy(frozen)
     effective.pop("extractor_name", None)
+    if extractor_kind == "playbook":
+        effective.pop("context_prompt", None)
     dedup = effective.get("deduplication_config")
     if isinstance(dedup, dict):
         dedup.pop("max_unified_content_chars", None)
         if "strategy" not in dedup:
             dedup["strategy"] = "legacy"
     return effective
+
+
+def matches_frozen_extractor_config(
+    frozen: dict[str, Any],
+    current: dict[str, Any],
+    *,
+    extractor_kind: str,
+    original_hash: str | None,
+) -> bool:
+    """Require an authentic historical snapshot before normalizing inert fields."""
+    comparison = deepcopy(current)
+    if extractor_kind == "playbook":
+        comparison.pop("context_prompt", None)
+    return build_scope_hash(frozen) == original_hash and build_scope_hash(
+        effective_frozen_extractor_config(frozen, extractor_kind=extractor_kind)
+    ) == build_scope_hash(comparison)
 
 
 def frozen_extractor_config_identity(config: BaseModel, frozen: dict[str, Any]) -> str:
@@ -76,7 +114,7 @@ def frozen_extractor_config_identity(config: BaseModel, frozen: dict[str, Any]) 
     Only the lookup identity uses this representation, never requests or policy.
     """
     fields = []
-    if "extractor_name" in frozen:
+    if "extractor_name" in frozen and "extractor_name" not in type(config).model_fields:
         fields.append(f"extractor_name={frozen['extractor_name']!r}")
     for name, value in config.__repr_args__():
         if name == "deduplication_config" and isinstance(value, BaseModel):
@@ -97,6 +135,14 @@ def frozen_extractor_config_identity(config: BaseModel, frozen: dict[str, Any]) 
                 fields.append(f"{name}={type(value).__name__}({', '.join(args)})")
                 continue
         fields.append(f"{name}={value!r}")
+        if (
+            name == "extraction_definition_prompt"
+            and "context_prompt" in frozen
+            and isinstance(config, UserPlaybookExtractorConfig)
+            and "context_prompt" not in type(config).model_fields
+        ):
+            # Reconstruct only the witnessed old lookup key, never live policy.
+            fields.append(f"context_prompt={frozen['context_prompt']!r}")
     return " ".join(fields)
 
 
@@ -125,10 +171,14 @@ def matches_frozen_extractor_binding(
         or build_scope_hash(frozen_config) != original_hash
     ):
         return False
-    normalized = effective_frozen_extractor_config(saved)
     current_hash = build_scope_hash(current)
     if (
-        build_scope_hash(normalized) != current_hash
+        not matches_frozen_extractor_config(
+            saved,
+            current,
+            extractor_kind=prior.binding.extractor_kind,
+            original_hash=original_hash,
+        )
         or expected.binding.extractor_config_hash != current_hash
     ):
         return False
@@ -179,7 +229,10 @@ def build_extractor_agent_run_record(
     source_interaction_ids = extract_source_interaction_ids(
         request_interaction_data_models
     )
-    extractor_config_snapshot = extractor_config.model_dump(mode="json")
+    frozen = getattr(service_config, "frozen_extractor_config", None)
+    extractor_config_snapshot = snapshot_extractor_config(
+        extractor_config, frozen=frozen if isinstance(frozen, dict) else None
+    )
 
     return AgentRunRecord(
         id=f"ar_{uuid.uuid4().hex}",
