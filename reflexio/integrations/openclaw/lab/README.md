@@ -30,11 +30,12 @@ version the plugin was last qualified on).
 - `stub_llm.py`, an OpenAI-compatible endpoint registered as the agent's model.
   It records every request to `llm-requests.jsonl` and cites any `[oc:…]` tags
   in the latest user message, so tests can see exactly what reached the model.
-- The plugin, **installed from its packed `.tgz`**, never in place: the
-  previous plugin worked only from inside the monorepo, and an in-place install
-  is what hid that.
+- The plugin, installed through the **built SDK wheel’s production setup path**,
+  outside the source checkout. This verifies bundled source, compilation, host
+  configuration migration and actual plugin load together. No npm plugin release
+  or in-place source installation is used.
 
-`lab.sh reinstall` repacks and reinstalls after a plugin change.
+`lab.sh reinstall` rebuilds the SDK wheel and reinstalls after a plugin change.
 `lab.sh turn "…"` runs one embedded turn; `lab.sh oc …` runs any `openclaw`
 command against the lab; `eval "$(lab.sh env)"` gives you the same from a shell.
 `lab.sh gateway [stop]` runs a Gateway, which `session_end` (e.g. `/new`) needs;

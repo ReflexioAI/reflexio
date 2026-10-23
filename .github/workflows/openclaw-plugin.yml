@@ -20,6 +20,9 @@ env:
 
 jobs:
   plugin:
+    strategy:
+      matrix:
+        node: ["24.22.1", "26.12.1"]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -31,7 +34,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: reflexio/integrations/openclaw/plugin/package-lock.json
       - run: npm ci --no-fund --no-audit
@@ -40,8 +43,8 @@ jobs:
       - run: npm run typecheck
       - run: npm test
 
-  # Drives a real OpenClaw against a real Reflexio backend through the packed
-  # plugin. See reflexio/integrations/openclaw/lab/README.md.
+  # Drives real OpenClaw against a real Reflexio backend through the built SDK
+  # wheel and its production plugin installer. See reflexio/integrations/openclaw/lab/README.md.
   lab:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -64,6 +67,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync
+      - name: SDK setup and wire contracts
+        run: uv run --no-sync pytest -o 'addopts=' tests/cli/test_setup_cmd.py tests/integrations/test_openclaw_wire_contract.py
       - run: reflexio/integrations/openclaw/lab/lab.sh up
       - run: uv run --no-sync python reflexio/integrations/openclaw/lab/scenarios.py
       - name: Lab logs

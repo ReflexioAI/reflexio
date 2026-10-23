@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Annotated
 
@@ -548,7 +549,9 @@ def _prompt_storage(env_path: Path) -> str:
 
 
 _OPENCLAW_PLUGIN_ID = "reflexio-openclaw-smart"
-_OPENCLAW_PLUGIN_NPM_SPEC = "@reflexioai/openclaw-smart"
+_OPENCLAW_PLUGIN_DIR = (
+    Path(__file__).resolve().parents[2] / "integrations/openclaw/plugin"
+)
 # Keys the pre-0.2 plugin wrote; removed on uninstall so they stop
 # registering the server-side `openclaw` LLM provider by accident.
 _LEGACY_OPENCLAW_ENV_KEYS = ("OPENCLAW_BIN", "OPENCLAW_SMART_USE_LOCAL_CLI")
@@ -610,6 +613,48 @@ def _openclaw_plugin_loaded(cli: str) -> bool:
     )
 
 
+def _build_openclaw_plugin(destination: Path) -> None:
+    """Compile the SDK's bundled plugin using OpenClaw's existing Node runtime."""
+    node = shutil.which("node")
+    if not node:
+        typer.echo("Error: Node.js is required by the OpenClaw plugin")
+        raise typer.Exit(1)
+    result = subprocess.run(  # noqa: S603 — shipped builder and owned output path.
+        [node, str(_OPENCLAW_PLUGIN_DIR / "build.mjs"), str(destination)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode:
+        typer.echo(
+            "Error: could not build the bundled OpenClaw plugin: " + result.stderr
+        )
+        raise typer.Exit(1)
+
+
+def _openclaw_existing_config(cli: str, path: str) -> dict[str, object]:
+    """Read authored plugin settings before replacing obsolete fields."""
+    result = _openclaw_run(cli, "config", "get", path, "--json")
+    try:
+        config = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        config = None
+    if result.returncode:
+        error = config.get("error") if isinstance(config, dict) else None
+        message = error.get("message", "") if isinstance(error, dict) else result.stderr
+        if isinstance(message, str) and any(
+            message.startswith(f"{prefix}: {path}")
+            for prefix in ("Config path not found", "Config path is valid but unset")
+        ):
+            return {}
+        typer.echo("Error: could not read existing OpenClaw plugin settings")
+        raise typer.Exit(1)
+    if not isinstance(config, dict):
+        typer.echo("Error: existing OpenClaw plugin settings are not a JSON object")
+        raise typer.Exit(1)
+    return config
+
+
 def _install_openclaw_integration(
     env_path: Path, plugin_source: str | None = None
 ) -> bool:
@@ -623,7 +668,7 @@ def _install_openclaw_integration(
     Args:
         env_path (Path): ``~/.reflexio/.env`` written by the earlier setup steps.
         plugin_source (str | None): Local plugin path or archive for development;
-            defaults to the published npm package.
+            defaults to the runtime bundled with this SDK.
 
     Returns:
         bool: True if the gateway loads the plugin with its hooks registered.
@@ -638,13 +683,42 @@ def _install_openclaw_integration(
         typer.echo("Error: openclaw CLI not found. Install from https://openclaw.ai")
         raise typer.Exit(1)
 
-    source = plugin_source or _OPENCLAW_PLUGIN_NPM_SPEC
+    if plugin_source is None:
+        with tempfile.TemporaryDirectory(prefix="reflexio-openclaw-") as directory:
+            artifact = Path(directory) / "plugin"
+            _build_openclaw_plugin(artifact)
+            return _install_openclaw_integration(env_path, str(artifact))
+    source = plugin_source
     entry = f"plugins.entries.{_OPENCLAW_PLUGIN_ID}"
     url = _read_env_key(env_path, "REFLEXIO_URL") or _LOCAL_SERVER_URL
     api_key = _read_env_key(env_path, "REFLEXIO_API_KEY")
     # Running `reflexio setup openclaw` is the operator's consent to the
     # plugin's capabilities; --force replaces an earlier install in place.
+    previous = _openclaw_existing_config(cli, f"{entry}.config")
+    properties = json.loads(
+        (_OPENCLAW_PLUGIN_DIR / "openclaw.plugin.json").read_text()
+    )["configSchema"]["properties"]
     config: dict[str, object] = {"url": url}
+    for section, policy in properties.items():
+        if "properties" not in policy or section not in previous:
+            continue
+        value = previous[section]
+        if not isinstance(value, dict):
+            typer.echo(f"Error: invalid OpenClaw {section} policy")
+            raise typer.Exit(1)
+        retained: dict[str, object] = {}
+        for key, item in value.items():
+            field = policy["properties"].get(key)
+            if field is None:
+                continue
+            if (
+                type(item) is not int
+                or not field["minimum"] <= item <= field["maximum"]
+            ):
+                typer.echo(f"Error: invalid OpenClaw {section}.{key} policy")
+                raise typer.Exit(1)
+            retained[key] = item
+        config[section] = retained
     if api_key:
         config["apiKey"] = api_key
     # One validated merge write, fed on stdin so the API key never appears in
@@ -659,11 +733,14 @@ def _install_openclaw_integration(
             }
         }
     }
-    # Settings an older plugin version accepted (search/publish/server/...) fail
-    # the new manifest's schema, and OpenClaw refuses the install while they
-    # are present. Plugin config is fully rewritten below, so drop it first;
-    # absent is not an error.
-    _openclaw_run(cli, "config", "unset", f"{entry}.config")
+    # Obsolete fields fail the new schema and prevent installation. Keep all
+    # supported policies in the replacement, and restore the original settings
+    # on a failed install instead of losing them after clearing the old schema.
+    if previous:
+        result = _openclaw_run(cli, "config", "unset", f"{entry}.config")
+        if result.returncode:
+            typer.echo("Error: could not prepare existing OpenClaw plugin settings")
+            raise typer.Exit(1)
     steps: list[tuple[tuple[str, ...], str | None]] = [
         (("plugins", "install", source, "--force", "--accept-capabilities"), None),
         (("config", "patch", "--stdin"), json.dumps(patch)),
@@ -675,6 +752,15 @@ def _install_openclaw_integration(
             detail = result.stderr or result.stdout
             if api_key:
                 detail = detail.replace(api_key, "<redacted>")
+            if previous:
+                rollback = {
+                    "plugins": {"entries": {_OPENCLAW_PLUGIN_ID: {"config": previous}}}
+                }
+                restored = _openclaw_run(
+                    cli, "config", "patch", "--stdin", stdin=json.dumps(rollback)
+                )
+                if restored.returncode:
+                    typer.echo("Error: could not restore previous plugin settings")
             typer.echo(f"Error: 'openclaw {' '.join(args[:2])}' failed: {detail}")
             raise typer.Exit(1)
 
@@ -747,8 +833,8 @@ def openclaw(
         typer.Option(
             "--plugin-path",
             help=(
-                "Install the plugin from a local directory or .tgz instead of "
-                f"npm ({_OPENCLAW_PLUGIN_NPM_SPEC}); for plugin development."
+                "Install a local directory or .tgz instead of the plugin "
+                "bundled with this SDK; for plugin development."
             ),
         ),
     ] = None,

@@ -51,12 +51,22 @@ export class ReflexioHooks {
   readonly stats: Stats = { injections: 0, publishes: 0, failures: {} };
   private readonly lastWarn = new Map<string, number>();
 
+  private readonly settings: Settings;
+  private readonly client: ReflexioClient;
+  private readonly log: Logger;
+  private readonly isIncognito: IncognitoCheck;
+
   constructor(
-    private readonly settings: Settings,
-    private readonly client: ReflexioClient,
-    private readonly log: Logger,
-    private readonly isIncognito: IncognitoCheck = () => false,
-  ) {}
+    settings: Settings,
+    client: ReflexioClient,
+    log: Logger,
+    isIncognito: IncognitoCheck = () => false,
+  ) {
+    this.settings = settings;
+    this.client = client;
+    this.log = log;
+    this.isIncognito = isIncognito;
+  }
 
   async beforePromptBuild(
     event: { prompt?: string; currentUserMessage?: string; messages?: unknown[] },

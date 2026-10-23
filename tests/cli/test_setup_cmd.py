@@ -645,9 +645,14 @@ class TestOpenclawSetup:
                 return _Result(returncode=1)
             if argv[1:3] == ["plugins", "inspect"]:
                 return _Result(_json.dumps({"plugin": inspect_plugin}))
+            if argv[1:3] == ["config", "get"]:
+                return _Result("{}")
             return _Result()
 
         monkeypatch.setattr(setup_cmd.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            setup_cmd, "_build_openclaw_plugin", lambda path: path.mkdir()
+        )
         return calls
 
     def test_install_points_plugin_at_configured_backend(
@@ -667,14 +672,11 @@ class TestOpenclawSetup:
         assert setup_cmd._install_openclaw_integration(env_path) is True
 
         argvs = [argv for argv, _ in calls]
-        assert [
-            "/usr/bin/openclaw",
-            "plugins",
-            "install",
-            "@reflexioai/openclaw-smart",
-            "--force",
-            "--accept-capabilities",
-        ] in argvs
+        install = next(argv for argv in argvs if argv[1:3] == ["plugins", "install"])
+        assert install[:3] == ["/usr/bin/openclaw", "plugins", "install"]
+        assert Path(install[3]).name == "plugin"
+        assert not Path(install[3]).exists()  # temporary artifact was cleaned up
+        assert install[4:] == ["--force", "--accept-capabilities"]
         patches = [
             _json.loads(stdin)
             for argv, stdin in calls
@@ -706,11 +708,11 @@ class TestOpenclawSetup:
         assert setup_cmd._install_openclaw_integration(
             env_path, plugin_source="/src/plugin"
         )
-        # Old settings are cleared before install: the new schema rejects them.
         assert calls[0][0][1:] == [
             "config",
-            "unset",
+            "get",
             "plugins.entries.reflexio-openclaw-smart.config",
+            "--json",
         ]
         assert calls[1][0][1:4] == ["plugins", "install", "/src/plugin"]
         patch = next(
@@ -720,6 +722,106 @@ class TestOpenclawSetup:
         )
         config = patch["plugins"]["entries"]["reflexio-openclaw-smart"]["config"]
         assert config == {"url": setup_cmd._LOCAL_SERVER_URL}
+
+    def test_reinstall_preserves_supported_policy_and_removes_obsolete_fields(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import json
+
+        from reflexio.cli.commands import setup_cmd
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        calls = self._fake_openclaw(monkeypatch, {"status": "loaded", "hookCount": 3})
+        previous = {
+            "search": {"top_k": 7, "timeout_ms": 5000, "min_prompt_length": 0},
+            "publish": {"max_content_length": 4000, "batch_size": 10},
+            "server": {"enabled": True},
+        }
+        monkeypatch.setattr(setup_cmd, "_openclaw_existing_config", lambda *_: previous)
+        assert setup_cmd._install_openclaw_integration(env_path)
+        patch = next(
+            json.loads(i)
+            for a, i in calls
+            if a[1:3] == ["config", "patch"] and i is not None
+        )
+        config = patch["plugins"]["entries"]["reflexio-openclaw-smart"]["config"]
+        assert config == {
+            "url": setup_cmd._LOCAL_SERVER_URL,
+            "search": previous["search"],
+            "publish": {"max_content_length": 4000},
+        }
+
+    @pytest.mark.parametrize("policy", [{"search": {"top_k": 101}}, {"publish": False}])
+    def test_invalid_policy_stops_before_configuration_mutation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, policy: dict
+    ) -> None:
+        from reflexio.cli.commands import setup_cmd
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        calls = self._fake_openclaw(monkeypatch, {"status": "loaded", "hookCount": 3})
+        monkeypatch.setattr(setup_cmd, "_openclaw_existing_config", lambda *_: policy)
+        with pytest.raises(typer.Exit):
+            setup_cmd._install_openclaw_integration(env_path)
+        assert calls == []
+
+    @pytest.mark.parametrize(
+        "message", ["Config path not found", "Config path is valid but unset"]
+    )
+    def test_fresh_install_accepts_structured_unset_response(
+        self, monkeypatch: pytest.MonkeyPatch, message: str
+    ) -> None:
+        import json
+        import subprocess
+
+        from reflexio.cli.commands import setup_cmd
+
+        path = "plugins.entries.reflexio-openclaw-smart.config"
+        result = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=json.dumps(
+                {"ok": False, "error": {"message": f"{message}: {path}."}}
+            ),
+            stderr="",
+        )
+        monkeypatch.setattr(setup_cmd, "_openclaw_run", lambda *_: result)
+        assert setup_cmd._openclaw_existing_config("openclaw", path) == {}
+
+    def test_config_read_failure_stops_without_mutation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from reflexio.cli.commands import setup_cmd
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        calls = self._fake_openclaw(monkeypatch, {}, fail_on=("config", "get"))
+        with pytest.raises(typer.Exit):
+            setup_cmd._install_openclaw_integration(env_path)
+        assert len(calls) == 1
+        assert calls[0][0][1:3] == ["config", "get"]
+
+    def test_failed_install_restores_previous_settings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import json
+
+        from reflexio.cli.commands import setup_cmd
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        calls = self._fake_openclaw(monkeypatch, {}, fail_on=("plugins", "install"))
+        previous = {"search": {"top_k": 7}, "server": {"enabled": True}}
+        monkeypatch.setattr(setup_cmd, "_openclaw_existing_config", lambda *_: previous)
+        with pytest.raises(typer.Exit):
+            setup_cmd._install_openclaw_integration(env_path)
+        rollback_input = calls[-1][1]
+        assert rollback_input is not None
+        patch = json.loads(rollback_input)
+        assert (
+            patch["plugins"]["entries"]["reflexio-openclaw-smart"]["config"] == previous
+        )
 
     def test_install_reports_unverified_when_hooks_missing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

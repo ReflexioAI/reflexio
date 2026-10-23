@@ -37,15 +37,16 @@ reflexio setup openclaw          # provider + storage, then installs and configu
 reflexio services start          # local backend (skip for managed / self-hosted Reflexio)
 ```
 
-Manually:
+The plugin ships in the Python SDK. Setup compiles its TypeScript with the
+Node runtime OpenClaw already requires, then installs the resulting directory.
+There is one source and build path for SDK setup and npm development packing;
+a separate registry publication is not a release prerequisite.
 
-```bash
-openclaw plugins install @reflexioai/openclaw-smart --accept-capabilities
-openclaw config set plugins.entries.reflexio-openclaw-smart.hooks.allowConversationAccess true
-openclaw config set plugins.entries.reflexio-openclaw-smart.config.url https://your-reflexio/
-openclaw config set plugins.entries.reflexio-openclaw-smart.config.apiKey '${REFLEXIO_API_KEY}'
-openclaw gateway restart
-```
+Setup preserves supported search and publication policy across reinstalls and
+removes obsolete fields. It builds before changing host configuration, rejects
+invalid supported policy, and attempts to restore the previous settings if
+installation fails. For development, `--plugin-path` selects an explicit local
+directory or archive instead of the bundled runtime.
 
 `allowConversationAccess` is required: OpenClaw blocks conversation hooks for
 plugins it did not bundle. Without `url`, the plugin uses `REFLEXIO_URL`, then

@@ -6,15 +6,14 @@ this agent workspace; after each turn it publishes the conversation so Reflexio
 can learn from it.
 
 ```bash
-openclaw plugins install @reflexioai/openclaw-smart --accept-capabilities
-openclaw config set plugins.entries.reflexio-openclaw-smart.hooks.allowConversationAccess true
-openclaw config set plugins.entries.reflexio-openclaw-smart.config.url http://127.0.0.1:8061/
-openclaw gateway restart
+reflexio setup openclaw
 ```
 
-For managed or self-hosted Reflexio also set `config.apiKey` (a secret
-reference such as `'${REFLEXIO_API_KEY}'` keeps the key out of the config file).
-`reflexio setup openclaw` does all of this for you.
+Setup installs the native plugin bundled with the installed Reflexio SDK,
+points it at the selected backend, and grants conversation-hook access.
+It uses OpenClaw's existing Node runtime to build a temporary JavaScript
+artifact; no npm package release or compiler download is required. URL and API
+key come from the SDK environment selected during setup.
 
 In a conversation, `/reflexio status` shows whether the backend is reachable
 and how many searches or publishes failed; `/reflexio show` lists what has been
@@ -49,7 +48,8 @@ An unacknowledged publication remains queued for a later event with its original
 request identity, rather than spinning through configurable retries or releasing
 later turns out of order.
 
-Before upgrading an older Python/embedded installation, remove the obsolete
+Setup preserves the four supported policies and removes obsolete fields when
+reinstalling. For a manual upgrade, remove the obsolete
 `publish.batch_size`, `publish.max_retries`, `server` and `extraction` plugin
 settings and the separate `reflexio-embedded` plugin entry. The four policy fields
 above keep their existing spelling. Extraction model selection belongs to the

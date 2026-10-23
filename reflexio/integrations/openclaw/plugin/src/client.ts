@@ -68,11 +68,14 @@ export interface PublishRequest {
 }
 
 export class ReflexioError extends Error {
+  readonly status?: number;
+
   constructor(
     message: string,
-    readonly status?: number,
+    status?: number,
   ) {
     super(message);
+    this.status = status;
   }
 
   // A 4xx other than timeout/throttling will fail the same way on every
@@ -89,7 +92,11 @@ export class ReflexioError extends Error {
 const ALREADY_ADMITTED = /request_id .* already exists/;
 
 export class ReflexioClient {
-  constructor(private readonly settings: Settings) {}
+  private readonly settings: Settings;
+
+  constructor(settings: Settings) {
+    this.settings = settings;
+  }
 
   get baseUrl(): string {
     return this.settings.url;
