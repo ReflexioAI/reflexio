@@ -95,20 +95,6 @@ if TYPE_CHECKING:
     from reflexio.server.llm._litellm_types import LiteLLMConfig
 
 
-# Per-model provider-timeout floors. Values are floors, not overrides: the
-# effective timeout is max(configured, floor), and an explicit per-call timeout
-# kwarg always wins.
-#
-# MiniMax-M3 was pinned to 240s when it was the sole model. That let a *hung*
-# primary block ~240s before falling back, dominating the wasted time behind
-# a production timeout incident. It is now floored at the 120s default so a hang is
-# abandoned sooner and the fallback (e.g. gpt-5-mini) is reached faster. This is
-# the key post-deploy tuning knob: raise it if legitimately-slow calls start
-# timing out, lower it to cut more waste.
-_MODEL_TIMEOUT_FLOOR_SECONDS: dict[str, int] = {
-    "minimax/MiniMax-M3": 120,
-}
-
 _ZAI_CODING_API_BASE = "https://api.z.ai/api/coding/paas/v4"
 
 
@@ -936,9 +922,7 @@ class TextGenerationMixin:
         params: dict[str, Any] = {
             "model": actual_model,
             "messages": messages,
-            "timeout": kwargs.pop(
-                "timeout", self._effective_timeout_for_model(actual_model)
-            ),
+            "timeout": kwargs.pop("timeout", self.config.timeout),
         }
 
         # Drop any fallback entry that points back at the primary — sending the
@@ -1367,18 +1351,6 @@ class TextGenerationMixin:
         finally:
             result_queue.close()
             result_queue.join_thread()
-
-    def _effective_timeout_for_model(self, model: str) -> int:
-        """Return the configured timeout, raised to the model's floor if one exists.
-
-        Args:
-            model: Resolved model name (e.g. 'minimax/MiniMax-M3').
-
-        Returns:
-            int: max(config.timeout, per-model floor). Callers that pass an
-            explicit timeout kwarg bypass this entirely.
-        """
-        return max(self.config.timeout, _MODEL_TIMEOUT_FLOOR_SECONDS.get(model, 0))
 
     def _hard_timeout_grace_seconds(self) -> float:
         raw = os.environ.get("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5") or "5"

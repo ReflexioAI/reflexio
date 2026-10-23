@@ -3180,21 +3180,24 @@ class TestBuildCompletionParams:
         call_kwargs = mock_completion.call_args.kwargs
         assert "top_p" not in call_kwargs
 
+    @pytest.mark.parametrize("configured_timeout", [15, 120, 400])
     @patch("reflexio.server.llm.litellm_client.litellm.completion")
-    def test_minimax_m3_floor_is_120(self, mock_completion):
-        """MiniMax-M3's floor was lowered from 240s to the 120s default
-        so a hung primary is abandoned sooner and the
-        fallback is reached faster."""
+    def test_minimax_respects_the_configured_timeout(
+        self, mock_completion, configured_timeout
+    ):
+        """Changing provider must not silently lengthen the caller's budget."""
         mock_completion.return_value = _make_completion_response("ok")
-        client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
+        client = LiteLLMClient(
+            LiteLLMConfig(model="minimax/MiniMax-M3", timeout=configured_timeout)
+        )
 
         client.generate_response("hi")
 
-        assert mock_completion.call_args.kwargs["timeout"] == 120
+        assert mock_completion.call_args.kwargs["timeout"] == configured_timeout
 
     @patch("reflexio.server.llm.litellm_client.litellm.completion")
-    def test_model_timeout_floor_does_not_lower_higher_config(self, mock_completion):
-        """A configured timeout above the floor is preserved.
+    def test_high_config_timeout_is_preserved(self, mock_completion):
+        """A caller's larger configured timeout is preserved.
 
         Below the ladder's wall-clock budget: a timeout at or above the budget
         is clamped to what the walk has left (``test_ladder_deadline.py``).
@@ -3207,8 +3210,8 @@ class TestBuildCompletionParams:
         assert mock_completion.call_args.kwargs["timeout"] == 400
 
     @patch("reflexio.server.llm.litellm_client.litellm.completion")
-    def test_explicit_timeout_kwarg_beats_model_floor(self, mock_completion):
-        """A per-call timeout kwarg bypasses the floor entirely."""
+    def test_explicit_timeout_kwarg_beats_client_default(self, mock_completion):
+        """An explicit per-call timeout takes precedence over the client default."""
         mock_completion.return_value = _make_completion_response("ok")
         client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
 
@@ -4189,14 +4192,21 @@ class TestLitellmIntegration:
             client.generate_chat_response(self._messages())
         assert len(attempts) == 1
 
-    def test_hard_timeout_is_per_rung_single_attempt(self, monkeypatch):
+    @pytest.mark.parametrize("configured_timeout", [15, 120])
+    def test_hard_timeout_is_per_rung_single_attempt(
+        self, monkeypatch, configured_timeout
+    ):
         """Each rung now owns a per-SINGLE-ATTEMPT hard timeout (not the old
         ladder-wide ``(1 + len(fallbacks)) * per_attempt``). num_retries is 0 and
         no ``fallbacks`` kwarg is delegated — the walk advances between rungs.
         """
         monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
         client = LiteLLMClient(
-            LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["gpt-5-mini"])
+            LiteLLMConfig(
+                model="minimax/MiniMax-M3",
+                timeout=configured_timeout,
+                fallback_models=["gpt-5-mini"],
+            )
         )
         captured: dict[str, Any] = {}
 
@@ -4210,12 +4220,12 @@ class TestLitellmIntegration:
         monkeypatch.setattr(client, "_completion_with_hard_timeout", _capture)
         client.generate_chat_response(self._messages())
 
-        # MiniMax-M3 floor is 120s; the primary rung's hard timeout is a SINGLE
+        # The primary rung uses its configured timeout for a SINGLE
         # attempt plus one grace buffer — it does NOT scale with fallback count.
-        assert captured["timeout"] == 120
+        assert captured["timeout"] == configured_timeout
         assert captured["num_retries"] == 0
         assert captured["fallbacks"] is None
-        assert captured["hard_timeout"] == pytest.approx(120 + 5)
+        assert captured["hard_timeout"] == pytest.approx(configured_timeout + 5)
 
     @pytest.mark.parametrize("fallback_models", [[], ["a"], ["a", "b"]])
     def test_hard_timeout_does_not_scale_with_rung_count(
