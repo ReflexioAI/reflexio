@@ -103,6 +103,7 @@ def _overflow_coordinator(pipeline, *, attempts=(), actual_source=False, legacy=
         AgentBinding,
         AgentRunRecord,
         AgentRunStatus,
+        build_scope_hash,
     )
 
     engine, _, client = pipeline
@@ -142,10 +143,12 @@ def _overflow_coordinator(pipeline, *, attempts=(), actual_source=False, legacy=
                 request_id="overflow-checkpoint",
                 agent_version=None,
                 source="test",
+                extractor_config_hash=build_scope_hash(window.policy["extractor"]),
             ),
             status=AgentRunStatus.AGENT_COMPLETED if legacy else AgentRunStatus.RUNNING,
             committed_output={"profiles": []} if legacy else None,
             generation_request_snapshot={
+                "extractor_config": window.policy["extractor"],
                 "source_interaction_ids": [
                     item["interaction_id"] for item in window.manifest
                 ],
