@@ -2569,6 +2569,50 @@ class TestStructuredOutputRepair:
 
         assert exc_info.value.failure_kind == "parse"
 
+    def test_repair_exhausted_on_blank_body_keeps_final_diagnostics(self, caplog):
+        """A blank repair body has no validation errors, so its per-attempt
+        validation log is skipped; the exhaustion warning must still carry the
+        final response's content-free diagnostics."""
+        calls: list[dict[str, Any]] = []
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs)
+            resp = self._make_mock_response("   ", finish_reason="length")
+            resp.usage.completion_tokens = 4096
+            resp.usage.completion_tokens_details = MagicMock(reasoning_tokens=4090)
+            return resp
+
+        client = _build_client(LiteLLMConfig(model="primary-model"))
+
+        with (
+            patch("litellm.completion", side_effect=fake_completion),
+            caplog.at_level(logging.WARNING),
+            pytest.raises(StructuredOutputRepairError),
+        ):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                structured_output_validator=self._score_validator,
+                max_tokens=4096,
+            )
+
+        assert len(calls) == 2
+        messages = [r.getMessage() for r in caplog.records]
+        assert not any(
+            "event=llm_structured_schema_validation_failed " in m for m in messages
+        )
+        exhausted = [
+            m for m in messages if "event=llm_structured_repair_exhausted " in m
+        ]
+        assert len(exhausted) == 1
+        line = exhausted[0]
+        assert "failure_kind=reasoning_exhausted " in line
+        assert "finish_reason=length " in line
+        assert "completion_tokens=4096 " in line
+        assert "reasoning_tokens=4090 " in line
+        assert "max_tokens=4096 " in line
+        assert line.endswith("content_len=3")
+
     def test_parse_failure_log_lines_never_carry_content(self, caplog):
         secret = "CUSTOMER-SECRET-7f3a"
         responses = [

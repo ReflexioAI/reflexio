@@ -219,7 +219,9 @@ def _search_tool_result(call: dict[str, Any], collections: dict[str, list]) -> s
     function = call.get("function")
     name = function.get("name") if isinstance(function, dict) else None
     raw = function.get("arguments") if isinstance(function, dict) else None
-    if name not in collections:
+    # ``name`` is model-authored: an unhashable list/dict would make the
+    # dict membership test raise TypeError instead of a correctable error.
+    if not isinstance(name, str) or name not in collections:
         return _tool_error(f"Unknown tool; use one of: {', '.join(collections)}")
     try:
         args = json.loads(raw) if isinstance(raw, str) else raw

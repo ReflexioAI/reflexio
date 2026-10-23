@@ -2235,6 +2235,10 @@ class TextGenerationMixin:
                 failure_kind,
                 parse_diagnostics,
             )
+            # Content-free diagnostics of the final repair response, carried to
+            # the unconditional exhaustion warning: a blank body has no
+            # validation errors, so the per-attempt validation log is skipped.
+            repair_diagnostics = ""
             try:
                 repair_attempt = _call_and_parse(
                     repair_params,
@@ -2254,6 +2258,7 @@ class TextGenerationMixin:
                 )
                 errors = exc.validation_errors or (str(exc),)
                 failure_kind = exc.failure_kind
+                repair_diagnostics = f" {exc.log_fields()}"
                 if exc.validation_errors:
                     self.logger.warning(
                         "event=llm_structured_schema_validation_failed model=%s schema=%s failure_kind=%s %s errors=%s",
@@ -2290,10 +2295,11 @@ class TextGenerationMixin:
                 repair_attempt.parsed_output or latest_parsed_output
             )
             self.logger.warning(
-                "event=llm_structured_repair_exhausted model=%s schema=%s failure_kind=%s",
+                "event=llm_structured_repair_exhausted model=%s schema=%s failure_kind=%s%s",
                 repair_attempt.model,
                 schema_name,
                 failure_kind,
+                repair_diagnostics,
             )
             raise _repair_error(
                 failure_kind=failure_kind,

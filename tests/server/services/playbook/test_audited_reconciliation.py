@@ -393,6 +393,25 @@ def test_malformed_tool_arguments_are_returned_to_the_model(arguments, name, err
     assert engine.calls == 3
 
 
+@pytest.mark.parametrize("name", [["search_playbooks"], {"name": "x"}, None, 7])
+def test_non_string_tool_name_is_returned_to_the_model(name):
+    """An unhashable model-authored tool name must not raise TypeError from
+    the collection lookup; it is a correctable unknown-tool error."""
+    client = ToolScriptedClient(
+        [
+            _tool_turn('{"query": "auth"}', name),
+            {"decisions": [replacement()]},
+            {"findings": []},
+        ]
+    )
+    engine = Reconciler(cast(LiteLLMClient, client), "scripted")
+    batch = engine.run(payload(), {("request", 17): object()})
+
+    assert [d.kind for d in batch.decisions] == ["replace"]
+    tool = next(m for m in client.requests[1]["messages"] if m.get("role") == "tool")
+    assert "Unknown tool" in json.loads(tool["content"])["error"]
+
+
 def test_well_formed_tool_call_still_searches_the_collection():
     client = ToolScriptedClient(
         [
