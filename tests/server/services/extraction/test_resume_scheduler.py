@@ -594,6 +594,124 @@ def test_provider_failure_returns_to_the_poll_interval(monkeypatch):
     assert waits == [5.0, 10.0, 20.0, 5.0, 5.0]
 
 
+def test_incomplete_discovery_returns_to_the_poll_interval(monkeypatch):
+    """A provider that swallowed its outage must not read as an idle fleet."""
+    answers: list[list[str] | Exception] = [
+        [],
+        [],
+        [],
+        resume_scheduler.ResumeDiscoveryIncomplete(),
+        resume_scheduler.ResumeDiscoveryIncomplete(),
+        [],
+        [],
+    ]
+
+    def provider() -> list[str]:
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    scheduler = _idle_provider_scheduler(provider, monkeypatch)
+
+    waits = [scheduler._run_once() for _ in range(7)]
+
+    # Outage ticks poll, and the idle streak restarts after recovery.
+    assert waits == [5.0, 10.0, 20.0, 5.0, 5.0, 5.0, 10.0]
+
+
+def test_incomplete_discovery_is_not_reported_again(monkeypatch):
+    """The provider already reported its failure: no second report, no success."""
+    failures = MagicMock()
+    successes = MagicMock()
+    monkeypatch.setattr(resume_scheduler, "report_background_failure", failures)
+    monkeypatch.setattr(resume_scheduler, "report_background_success", successes)
+
+    def provider() -> list[str]:
+        raise resume_scheduler.ResumeDiscoveryIncomplete()
+
+    scheduler = _idle_provider_scheduler(provider, monkeypatch)
+    scheduler._run_once()
+
+    failures.assert_not_called()
+    assert "extraction-resume-org-discovery" not in [
+        call.args[0] for call in successes.call_args_list
+    ]
+
+
+def test_empty_incomplete_discovery_still_drains_bootstrap(monkeypatch):
+    drained: list[str] = []
+
+    class FakeWorker:
+        def __init__(self, *, request_context):
+            self.request_context = request_context
+
+        def drain(self, *, max_runs: int) -> int:
+            drained.append(self.request_context.org_id)
+            return 0
+
+    def provider() -> list[str]:
+        raise resume_scheduler.ResumeDiscoveryIncomplete()
+
+    monkeypatch.setattr(resume_scheduler, "pending_tool_calls_enabled", lambda _: True)
+    monkeypatch.setattr(resume_scheduler, "ExtractionResumeWorker", FakeWorker)
+    scheduler = resume_scheduler.ExtractionResumeScheduler(
+        request_context_factory=cast(
+            Callable[[str], RequestContext],
+            lambda org_id: _request_context(
+                org_id,
+                storage=SimpleNamespace(
+                    expire_pending_tool_calls=MagicMock(return_value=0)
+                ),
+            ),
+        ),
+        bootstrap_org_id="org_1",
+        org_id_provider=provider,
+    )
+
+    scheduler._run_once()
+
+    assert drained == ["org_1"]
+
+
+def test_partial_discovery_drains_what_it_found_without_backing_off(monkeypatch):
+    drained: list[str] = []
+
+    class FakeWorker:
+        def __init__(self, *, request_context):
+            self.request_context = request_context
+
+        def drain(self, *, max_runs: int) -> int:
+            drained.append(self.request_context.org_id)
+            return 0
+
+    def provider() -> list[str]:
+        raise resume_scheduler.ResumeDiscoveryIncomplete(
+            ["org_2", DEFAULT_ORG_ID, "org_2"]
+        )
+
+    monkeypatch.setenv("REFLEXIO_RESUME_POLL_INTERVAL_SECONDS", "5")
+    monkeypatch.setattr(resume_scheduler, "pending_tool_calls_enabled", lambda _: True)
+    monkeypatch.setattr(resume_scheduler, "ExtractionResumeWorker", FakeWorker)
+    scheduler = resume_scheduler.ExtractionResumeScheduler(
+        request_context_factory=cast(
+            Callable[[str], RequestContext],
+            lambda org_id: _request_context(
+                org_id,
+                storage=SimpleNamespace(
+                    expire_pending_tool_calls=MagicMock(return_value=0)
+                ),
+            ),
+        ),
+        bootstrap_org_id="org_1",
+        org_id_provider=provider,
+    )
+
+    assert [scheduler._run_once() for _ in range(3)] == [5.0, 5.0, 5.0]
+    assert drained == ["org_2", "org_2", "org_2"]
+    assert scheduler.bootstrap_org_id == "org_2"
+
+
 def test_tick_failure_returns_to_the_poll_interval(monkeypatch):
     scheduler = _idle_provider_scheduler(lambda: [], monkeypatch)
     scheduler.org_id_provider = None
