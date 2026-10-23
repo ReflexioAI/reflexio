@@ -365,3 +365,28 @@ describe("ReflexioHooks", () => {
     expect(client.finalized.map(([, session]) => session)).toEqual(["sess-1"]);
   });
 });
+
+describe("host deadline ownership", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("gives publication the actual remaining hook budget, without a second fixed cap", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const { client, hooks } = setup();
+    const timeouts: (number | undefined)[] = [];
+    client.publish = async (_req: PublishRequest, timeoutMs?: number) => {
+      timeouts.push(timeoutMs);
+    };
+    await hooks.agentEnd({ success: true, messages: turn("question", "answer") }, ctx("r1"));
+    expect(timeouts).toEqual([25_000]);
+  });
+});
+
+it("measures prompt admission in Unicode code points", async () => {
+  const client = new FakeClient();
+  const hooks = new ReflexioHooks(resolveSettings({ search: { min_prompt_length: 2 } }, {}), client as unknown as ReflexioClient, {});
+  await hooks.beforePromptBuild({ prompt: "😀" }, ctx("short-unicode"));
+  expect(client.searches).toHaveLength(0);
+  await hooks.beforePromptBuild({ prompt: "😀x" }, ctx("long-unicode"));
+  expect(client.searches).toHaveLength(1);
+});

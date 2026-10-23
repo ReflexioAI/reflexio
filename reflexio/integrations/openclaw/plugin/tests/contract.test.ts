@@ -41,8 +41,8 @@ describe("wire contract", () => {
           retrieved_learnings: [{ kind: "user_playbook", learning_id: "1", exposure_receipt: "x" }],
         },
       ],
-    });
-    await client.finalizeSession("u", "s");
+    }, 1000);
+    await client.finalizeSession("u", "s", 1000);
     await client.listLearnings("u", 20);
 
     expect(sent["/api/search"]?.headers.Authorization).toBe("Bearer k");

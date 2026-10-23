@@ -5,6 +5,7 @@
 // OpenAPI document.
 
 import type { Settings } from "./config.js";
+import { characterPrefix } from "./text.js";
 
 export const AGENT_VERSION = "openclaw";
 export const SOURCE = "openclaw";
@@ -126,7 +127,7 @@ export class ReflexioClient {
     };
   }
 
-  async publish(req: PublishRequest, timeoutMs = this.settings.publishTimeoutMs): Promise<void> {
+  async publish(req: PublishRequest, timeoutMs: number): Promise<void> {
     try {
       await this.post(
         "api/publish_interaction",
@@ -149,7 +150,7 @@ export class ReflexioClient {
   async finalizeSession(
     userId: string,
     sessionId: string,
-    timeoutMs = this.settings.publishTimeoutMs,
+    timeoutMs: number,
   ): Promise<void> {
     await this.post("api/finalize_session", { user_id: userId, session_id: sessionId }, timeoutMs);
   }
@@ -198,7 +199,7 @@ export class ReflexioClient {
     const text = await res.text();
     if (!res.ok) {
       throw new ReflexioError(
-        `${path} -> HTTP ${res.status}: ${text.slice(0, 200)}`,
+        `${path} -> HTTP ${res.status}: ${text.slice(0, characterPrefix(text, 200).end)}`,
         res.status,
       );
     }

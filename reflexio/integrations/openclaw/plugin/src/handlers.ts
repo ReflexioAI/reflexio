@@ -13,7 +13,8 @@ import { type Interaction, type PublishRequest, type ReflexioClient, ReflexioErr
 import type { Settings } from "./config.js";
 import { requestIdFor, resolveUserId } from "./identity.js";
 import { renderInjection, resolveCitations, retrievedLearnings } from "./render.js";
-import { Sessions, type SessionState } from "./sessions.js";
+import { type SessionState, Sessions } from "./sessions.js";
+import { characterPrefix } from "./text.js";
 import { currentTurn, runStartIn } from "./transcript.js";
 
 export interface Logger {
@@ -68,7 +69,7 @@ export class ReflexioHooks {
     // words; search on what the user actually wrote when the host gives it.
     const query = (event.currentUserMessage ?? event.prompt ?? "").trim();
     if (Array.isArray(event.messages)) run.start = runStartIn(event.messages, query);
-    if (query.length < this.settings.minPromptLength) return undefined;
+    if (!query || characterPrefix(query, this.settings.minPromptLength).count < this.settings.minPromptLength) return undefined;
     try {
       const hits = await this.client.search({
         query,
@@ -98,7 +99,7 @@ export class ReflexioHooks {
     const run = state.runs.get(runId);
     state.runs.delete(runId);
     // A failed run's transcript ends mid-turn; there is nothing to learn from.
-    const turn = event.success === false ? undefined : currentTurn(event.messages ?? [], run?.start);
+    const turn = event.success === false ? undefined : currentTurn(event.messages ?? [], run?.start, this.settings.maxContentLength);
     if (!turn) {
       await this.sessions.exclusive(state, () => this.flush(state, deadline));
       return;
@@ -194,8 +195,8 @@ export class ReflexioHooks {
 
   // Callers hold the session's queue (Sessions.exclusive).
   private async flush(state: SessionState, deadline: number): Promise<void> {
-    // Drain in order while the hook's budget lasts; send() refuses to start
-    // an attempt it cannot finish, so a backlog cannot overrun the budget.
+    // Drain in order within one hook deadline. Every request receives the time
+    // left; an unacknowledged publication keeps its identity for the next event.
     while (state.pending.length) {
       const req = state.pending[0] as PublishRequest;
       if ((await this.send(req, deadline)) === "retry") return; // still down; keep order
@@ -203,8 +204,8 @@ export class ReflexioHooks {
     }
     if (state.pending.length) return;
     for (const sessionId of [...state.pendingFinalize]) {
-      // Like send(): never start a request the hook's budget cannot cover.
-      const remaining = Math.min(this.settings.publishTimeoutMs, deadline - Date.now());
+      // Finalization receives only the time left by earlier publications.
+      const remaining = deadline - Date.now();
       if (remaining < MIN_ATTEMPT_MS) return;
       if (!(await this.finalize(state.userId, sessionId, remaining))) return;
       state.pendingFinalize.delete(sessionId);
@@ -219,7 +220,7 @@ export class ReflexioHooks {
   }
 
   private async send(req: PublishRequest, deadline: number): Promise<"sent" | "dropped" | "retry"> {
-    const remaining = Math.min(this.settings.publishTimeoutMs, deadline - Date.now());
+    const remaining = deadline - Date.now();
     if (remaining < MIN_ATTEMPT_MS) return "retry";
     try {
       await this.client.publish(req, remaining);

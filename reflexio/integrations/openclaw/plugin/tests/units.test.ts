@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ReflexioClient, ReflexioError } from "../src/client.js";
+import { ReflexioClient, type ReflexioError } from "../src/client.js";
 import { resolveSettings } from "../src/config.js";
 import { requestIdFor, resolveUserId } from "../src/identity.js";
 import { renderInjection, resolveCitations } from "../src/render.js";
@@ -190,15 +190,91 @@ describe("client", () => {
 
   it("reports a request the server already admitted as delivered", async () => {
     respond(200, { success: false, message: "request_id 'r' already exists" });
-    await expect(client().publish(req)).resolves.toBeUndefined();
+    await expect(client().publish(req, 1000)).resolves.toBeUndefined();
   });
 
   it("marks 4xx (but not 408/429) as rejected and other failures as retryable", async () => {
     respond(422, { detail: "bad" });
-    await expect(client().publish(req)).rejects.toSatisfy((e: ReflexioError) => e.rejected);
+    await expect(client().publish(req, 1000)).rejects.toSatisfy((e: ReflexioError) => e.rejected);
     respond(429, { detail: "slow down" });
-    await expect(client().publish(req)).rejects.toSatisfy((e: ReflexioError) => !e.rejected);
+    await expect(client().publish(req, 1000)).rejects.toSatisfy((e: ReflexioError) => !e.rejected);
     respond(200, { success: false, message: "storage unavailable" });
-    await expect(client().publish(req)).rejects.toSatisfy((e: ReflexioError) => !e.rejected);
+    await expect(client().publish(req, 1000)).rejects.toSatisfy((e: ReflexioError) => !e.rejected);
   });
+});
+
+describe("installation policy ownership", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("retains independent search and publication choices", async () => {
+    const settings = resolveSettings(
+      {
+        search: { top_k: 7, min_prompt_length: 1, timeout_ms: 1700 },
+        publish: { max_content_length: 23 },
+      },
+      {},
+    );
+    expect(settings).toMatchObject({
+      topK: 7,
+      minPromptLength: 1,
+      searchTimeoutMs: 1700,
+      maxContentLength: 23,
+    });
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({ success: true, profiles: [], user_playbooks: [], agent_playbooks: [] }),
+        ),
+    );
+    vi.stubGlobal("fetch", fetch);
+    await new ReflexioClient(settings).search({
+      query: "why",
+      userId: "u",
+      sessionId: "s",
+      requestId: "r",
+    });
+    expect(JSON.parse(fetch.mock.calls[0]![1]!.body as string).top_k).toBe(7);
+  });
+
+  it("applies the selected content limit without clipping citation identity", () => {
+    const selected = resolveSettings({ publish: { max_content_length: 4 } }, {});
+    const turn = currentTurn(
+      [
+        { role: "user", content: "question" },
+        { role: "assistant", content: "answer [oc:p-abcd12]" },
+      ],
+      undefined,
+      selected.maxContentLength,
+    )!;
+    expect(turn.user).toBe("ques…(truncated)");
+    expect(turn.assistant).toBe("answ…(truncated)");
+    expect(turn.fullAssistant).toBe("answer [oc:p-abcd12]");
+  });
+
+  it.each([-1, 1.5, true, "7", null])("rejects malformed custom policy %s", (value) => {
+    expect(() => resolveSettings({ search: { top_k: value } }, {})).toThrow();
+  });
+});
+
+describe("search timer bounds", () => {
+  it.each([0, 1.5, 2147482648, Number.NaN, Number.POSITIVE_INFINITY])("rejects an invalid hook deadline %s", (timeout_ms) => {
+    expect(() => resolveSettings({ search: { timeout_ms } }, {})).toThrow("search.timeout_ms");
+  });
+});
+
+it("clips whole Unicode code points without introducing unpaired surrogates", () => {
+  const turn = currentTurn([{ role: "user", content: "😀x" }, { role: "assistant", content: "🐦" }], undefined, 1);
+  expect(turn?.user).toBe("😀…(truncated)");
+  expect(turn?.assistant).toBe("🐦");
+});
+
+it("retains whole Unicode code points in citation titles", () => {
+  const { registry } = renderInjection({ profiles: [{ profile_id: "unicode", content: "😀".repeat(80) + "x" }], user_playbooks: [], agent_playbooks: [] });
+  expect(registry[0]?.title).toBe("😀".repeat(79) + "…");
+});
+
+it("rejects policies that cannot fit backend field limits", () => {
+  expect(resolveSettings({ search: { top_k: 100 } }, {}).topK).toBe(100);
+  expect(() => resolveSettings({ search: { top_k: 101 } }, {})).toThrow("search.top_k");
+  expect(() => resolveSettings({ publish: { max_content_length: 1_000_000 } }, {})).toThrow("publish.max_content_length");
 });

@@ -11,10 +11,11 @@
 // `__openclaw.modelPromptProjection`, separate from the user's own text.
 
 import type { ToolUsed } from "./client.js";
+import { DEFAULT_MAX_CONTENT_LENGTH } from "./config.js";
+import { characterPrefix } from "./text.js";
 
 const TOOL_STRING_MAX = 256;
 const TOOL_DATA_MAX = 2048;
-const CONTENT_MAX = 10_000;
 
 type Block = { type?: unknown; text?: unknown; name?: unknown; id?: unknown; arguments?: unknown };
 type Message = {
@@ -58,7 +59,8 @@ export function redact(text: string): string {
 }
 
 function clip(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max)}…(truncated)` : text;
+  const { end } = characterPrefix(text, max);
+  return end < text.length ? `${text.slice(0, end)}…(truncated)` : text;
 }
 
 // A key that names a credential (DATABASE_PASSWORD, apiKey, x-auth-token,
@@ -140,7 +142,7 @@ function runStart(list: Message[], recordedStart: number | undefined): number {
   return -1;
 }
 
-export function currentTurn(messages: unknown[], recordedStart?: number): TurnContent | undefined {
+export function currentTurn(messages: unknown[], recordedStart?: number, maxContentLength = DEFAULT_MAX_CONTENT_LENGTH): TurnContent | undefined {
   const list = messages.filter((m): m is Message => typeof m === "object" && m !== null);
   const start = runStart(list, recordedStart);
   if (start < 0) return undefined;
@@ -175,8 +177,8 @@ export function currentTurn(messages: unknown[], recordedStart?: number): TurnCo
   const assistant = assistantParts.join("\n\n");
   if (!user && !assistant) return undefined;
   return {
-    user: clip(redact(user), CONTENT_MAX),
-    assistant: clip(redact(assistant), CONTENT_MAX),
+    user: clip(redact(user), maxContentLength),
+    assistant: clip(redact(assistant), maxContentLength),
     fullAssistant: assistant,
     tools: [...tools.values()].map((t) => ({ ...t, tool_data: bounded(t.tool_data ?? {}) })),
   };
