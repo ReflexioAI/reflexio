@@ -47,7 +47,10 @@ from pydantic import BaseModel
 
 from reflexio.server import search_runtime
 from reflexio.server.error_reporting import set_error_tags
-from reflexio.server.llm._litellm_subprocess import _litellm_completion_worker
+from reflexio.server.llm._litellm_subprocess import (
+    _litellm_completion_worker,
+    retire_completion_worker,
+)
 from reflexio.server.llm._litellm_types import (
     CompletionResult,
     LiteLLMClientError,
@@ -1252,8 +1255,8 @@ class TextGenerationMixin:
             args=(params, result_queue),
             daemon=True,
         )
-        process.start()
         try:
+            process.start()
             # Drain the result queue BEFORE joining the child. A large completion
             # payload overflows the OS pipe buffer, so the child's queue-feeder
             # thread blocks on ``put`` until a reader drains it — and the child
@@ -1279,11 +1282,6 @@ class TextGenerationMixin:
                         # alive) and surface the timeout; a child that exited
                         # without a result is a distinct failure.
                         if process.is_alive():
-                            process.terminate()
-                            process.join(timeout=1.0)
-                            if process.is_alive():
-                                process.kill()
-                                process.join(timeout=1.0)
                             raise LLMHardTimeoutError(
                                 f"LLM request exceeded hard timeout of {hard_timeout:.3f}s "
                                 f"(provider timeout={provider_timeout!r})"
@@ -1316,13 +1314,6 @@ class TextGenerationMixin:
             # above raises); the assert makes that invariant explicit for pyright.
             assert result is not None  # noqa: S101
             status, payload = result
-            # The payload is drained, so the feeder is unblocked and the child can
-            # exit. Reap it (terminating if it lingers) to avoid a zombie.
-            process.join(timeout=1.0)
-            if process.is_alive():
-                process.terminate()
-                process.join(timeout=1.0)
-
             if status == "ok":
                 return payload
             if (
@@ -1349,8 +1340,7 @@ class TextGenerationMixin:
                 upstream_status_code=payload.status_code,
             )
         finally:
-            result_queue.close()
-            result_queue.join_thread()
+            retire_completion_worker(process, result_queue)
 
     def _hard_timeout_grace_seconds(self) -> float:
         raw = os.environ.get("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5") or "5"

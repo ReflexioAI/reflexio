@@ -1,7 +1,7 @@
 """Per-provider admission for remote LLM calls in one process.
 
 Every resolved-provider call holds its provider's bounded semaphore until the
-call finishes. Saturation fails within the caller's remaining deadline and
+call and any retiring isolated worker finish. Saturation fails within the caller's remaining deadline and
 raises ProviderCapSaturatedError; the generation fallback walk may advance to
 another independently admitted provider. Capacity is never bypassed.
 """
@@ -9,8 +9,9 @@ another independently admitted provider. Capacity is never bypassed.
 import logging
 import os
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 import litellm
@@ -77,6 +78,39 @@ def _max_concurrency_for_provider(provider: str) -> int:
 
 _semaphores: dict[str, threading.BoundedSemaphore] = {}
 _registry_lock = threading.Lock()
+
+
+class _ProviderLease:
+    """The caller and a retiring isolated worker share one admission permit."""
+
+    def __init__(self, release: Callable[[], None]) -> None:
+        self._release = release
+        self._references = 1
+        self._lock = threading.Lock()
+
+    def retain(self) -> Callable[[], None]:
+        with self._lock:
+            if self._references == 0:
+                raise RuntimeError("Cannot retain a released provider permit")
+            self._references += 1
+        return self.release
+
+    def release(self) -> None:
+        with self._lock:
+            self._references -= 1
+            if self._references == 0:
+                self._release()
+
+
+_current_provider_lease: ContextVar[_ProviderLease | None] = ContextVar(
+    "current_provider_lease", default=None
+)
+
+
+def retain_current_provider_slot() -> Callable[[], None]:
+    """Transfer worker ownership before leaving its caller's admission scope."""
+    lease = _current_provider_lease.get()
+    return lease.retain() if lease is not None else lambda: None
 
 
 def _registered_custom_provider(model: str) -> str | None:
@@ -146,7 +180,11 @@ def provider_slot(model: str, *, max_wait: float | None = None) -> Iterator[None
     search_runtime.checkpoint()
     provider = _provider_key(model)
     if provider is None:
-        yield  # unknown provider → do not cap
+        token = _current_provider_lease.set(None)
+        try:
+            yield  # unknown provider → do not cap or retain an outer permit
+        finally:
+            _current_provider_lease.reset(token)
         return
     sem = _get_semaphore(provider)
     with search_runtime.phase("llm.provider_queue"):
@@ -167,8 +205,11 @@ def provider_slot(model: str, *, max_wait: float | None = None) -> Iterator[None
         raise ProviderCapSaturatedError(
             f"provider {provider} concurrency cap {cap} saturated"
         )
+    lease = _ProviderLease(sem.release)
+    token = _current_provider_lease.set(lease)
     try:
         search_runtime.checkpoint()
         yield
     finally:
-        sem.release()
+        _current_provider_lease.reset(token)
+        lease.release()
