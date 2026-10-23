@@ -438,6 +438,9 @@ def create_app(  # noqa: C901
             authoritative, allowing a multi-tenant deployment to recover when the
             prior bootstrap org disappears and to discover work across data refs.
             The OSS default remains unchanged when no provider is supplied.
+            A provider that reports its own failures raises
+            ``ResumeDiscoveryIncomplete`` (``resume_scheduler``) rather than
+            returning ``[]``, so an outage is never mistaken for an idle fleet.
         resume_start_gate: Optional zero-arg callable that holds the resume
             scheduler's FIRST tick until it returns True (later ticks never
             consult it). A multi-process deployment uses it to stop a newly

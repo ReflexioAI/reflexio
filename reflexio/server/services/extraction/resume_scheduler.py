@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import threading
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 
 from reflexio.pending_tool_policy import resolve_resume_timing
@@ -38,6 +38,28 @@ logger = logging.getLogger(__name__)
 # latency well inside the claim TTL and the expiry deadlines the sweep serves.
 # An operator poll interval above it is honoured as-is (never shortened).
 IDLE_BACKOFF_CAP_SECONDS = 60.0
+
+
+class ResumeDiscoveryIncomplete(Exception):  # noqa: N818 -- a result, not an error
+    """Raised by an ``org_id_provider`` whose discovery did not cover the fleet.
+
+    A provider that swallows its own failures and returns ``[]`` makes an
+    outage look like an idle fleet, and the scheduler would back off to the
+    idle cap exactly when it should keep polling. Raising this instead says
+    "the list is incomplete": the scheduler drains ``org_ids`` (or, when empty,
+    falls back to the last known bootstrap org, as for any provider failure),
+    never counts the tick as idle, and does NOT report it again -- the provider
+    raising this has already reported the failure itself. Any other exception
+    is an unreported provider failure and is reported by the scheduler.
+
+    Args:
+        org_ids (Iterable[str]): Orgs the partial discovery did find with work.
+    """
+
+    def __init__(self, org_ids: Iterable[str] = ()) -> None:
+        self.org_ids = list(org_ids)
+        super().__init__(f"resume org discovery incomplete ({len(self.org_ids)} found)")
+
 
 _live_schedulers: weakref.WeakSet[ExtractionResumeScheduler] = weakref.WeakSet()
 _live_lock = threading.Lock()
@@ -149,17 +171,24 @@ class ExtractionResumeScheduler(ThreadedScheduler):
         return list(dict.fromkeys(org_ids)), known_work
 
     def _discover_provider_org_ids(self) -> list[str] | None:
-        """Return the provider's authoritative list, or ``None`` on failure."""
+        """Return the provider's org list, or ``None`` when it proves nothing.
+
+        ``None`` means discovery failed with nothing to drain: the caller falls
+        back to the bootstrap org and never treats the tick as idle. An empty
+        list is returned only from a COMPLETE discovery, so it alone may be
+        read as idle. A :class:`ResumeDiscoveryIncomplete` with orgs returns
+        those orgs (drained, so never idle either).
+        """
         if self.org_id_provider is None:
             return None
+        complete = True
         try:
-            discovered = list(
-                dict.fromkeys(
-                    org_id
-                    for org_id in self.org_id_provider()
-                    if org_id != DEFAULT_ORG_ID
-                )
-            )
+            raw = self.org_id_provider()
+        except ResumeDiscoveryIncomplete as incomplete:
+            # Reported by the provider; reporting it here too would double the
+            # signal. Not a success either, so the failure streak stays open.
+            raw = incomplete.org_ids
+            complete = False
         except Exception as exc:
             with error_tags(
                 subsystem="extraction",
@@ -173,6 +202,11 @@ class ExtractionResumeScheduler(ThreadedScheduler):
                     scope="extraction-resume-org-discovery",
                 )
             return None
+        discovered = list(
+            dict.fromkeys(org_id for org_id in raw if org_id != DEFAULT_ORG_ID)
+        )
+        if not complete:
+            return discovered or None
         report_background_success("extraction-resume-org-discovery")
         return discovered
 
@@ -266,8 +300,9 @@ class ExtractionResumeScheduler(ThreadedScheduler):
         # and no drain inspected a claim. The bootstrap org that local
         # discovery prepends unconditionally is not evidence of work, but its
         # drain result is -- a backend without discovery still reports work
-        # through the drain. A provider failure or a tick failure is never
-        # idle, so a broken discovery keeps polling at ``poll_seconds``.
+        # through the drain. A provider failure (raised, or signalled as
+        # ResumeDiscoveryIncomplete) or a tick failure is never idle, so a
+        # broken discovery keeps polling at ``poll_seconds``.
         idle = False
         try:
             provider_org_ids = self._discover_provider_org_ids()
