@@ -362,7 +362,10 @@ class DurableLearningWorker:
             park = reason == "input_budget_configuration_error" and (
                 _parks_configuration_hold(exc)
             )
-            if park:
+            park = storage.fail_extraction_input_budget(
+                window, token, reason, park=park
+            )
+            if park and reason == "input_budget_configuration_error":
                 # Parked until an operator re-arms it, so this logs once per
                 # park rather than on every backoff retry.
                 logger.error(
@@ -380,7 +383,6 @@ class DurableLearningWorker:
                     type(exc).__name__,
                     exception_locator(exc),
                 )
-            storage.fail_extraction_input_budget(window, token, reason, park=park)
             record_health("worker.input_budget_failures", reason=reason)
             return "input_budget_failure"
         where = exception_locator(exc)

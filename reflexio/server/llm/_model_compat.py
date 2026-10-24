@@ -93,8 +93,30 @@ def ensure_model_capabilities(model: str) -> None:
     litellm.register_model({name: capabilities}, persist_across_reloads=False)
 
 
+def _apply_minimax_thinking(params: dict[str, Any]) -> None:
+    # MiniMax's OpenAI endpoint accepts adaptive/disabled, not Anthropic's
+    # enabled + budget_tokens. LiteLLM 1.103.1 forwards the latter verbatim
+    # (and converts thinking=True to it). Normalize before that adapter,
+    # including extra_body which wins over top-level request fields.
+    # https://platform.minimax.io/docs/api-reference/text-openai-api
+    for overrides in (params, params.get("extra_body") or {}):
+        thinking = overrides.get("thinking")
+        if thinking is True or (
+            isinstance(thinking, dict) and thinking.get("type") == "enabled"
+        ):
+            if overrides is params:
+                params["thinking"] = {"type": "adaptive"}
+            else:
+                params["extra_body"] = {
+                    **overrides,
+                    "thinking": {"type": "adaptive"},
+                }
+
+
 def apply_model_request_policy(params: dict[str, Any]) -> None:
     """Apply documented sampling, reasoning, and tool constraints."""
+    if params["model"] == "minimax/MiniMax-M3":
+        _apply_minimax_thinking(params)
     qualified = qualified_model_id(params["model"])
     if qualified is None:
         return

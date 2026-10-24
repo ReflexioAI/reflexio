@@ -379,3 +379,117 @@ def test_direct_provider_policy_rejects_the_retired_selector(monkeypatch, legacy
     assert "every resolved provider" in str(failure.value)
     assert "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY_OVERRIDES" in str(failure.value)
     assert "private-provider-list" not in str(failure.value)
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_provider_timings_separate_admission_execution_and_retirement(
+    monkeypatch, fails
+):
+    import threading
+    from types import SimpleNamespace
+
+    now = [0.0]
+    measurements = []
+    sem = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(pc, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(pc, "_provider_key", lambda _: "test")
+    monkeypatch.setattr(pc, "_get_semaphore", lambda _: sem)
+    monkeypatch.setattr(
+        pc,
+        "record_health",
+        lambda name, value, **attrs: measurements.append((name, value, attrs)),
+    )
+    try:
+        with pc.provider_slot("test"):
+            # A timed-out caller transfers its worker reference before unwinding.
+            release_worker = pc.retain_current_provider_slot()
+            now[0] = 7.0
+            if fails:
+                raise RuntimeError("fake timed-out caller")
+    except RuntimeError:
+        pass
+    assert not sem.acquire(blocking=False), (
+        "caller exit must not release live worker capacity"
+    )
+    phases = {attrs["phase"]: value for _, value, attrs in measurements}
+    assert phases == {"admission": 0, "execution": 7}
+    now[0] = 12.0
+    release_worker()
+    assert sem.acquire(blocking=False)
+    phases = {attrs["phase"]: value for _, value, attrs in measurements}
+    assert phases == {"admission": 0, "execution": 7, "retirement": 5}
+    assert {name for name, _, _ in measurements} == {"llm.provider.duration"}
+    assert all(
+        set(attrs) <= {"kind", "unit", "phase", "outcome"}
+        for _, _, attrs in measurements
+    )
+
+
+def test_provider_timeout_reports_admission_without_execution(monkeypatch):
+    import threading
+
+    measurements = []
+    sem = threading.BoundedSemaphore(1)
+    sem.acquire()
+    monkeypatch.setattr(pc, "_provider_key", lambda _: "test")
+    monkeypatch.setattr(pc, "_get_semaphore", lambda _: sem)
+    monkeypatch.setattr(
+        pc,
+        "record_health",
+        lambda _name, value, **attrs: measurements.append((value, attrs)),
+    )
+    with (
+        pytest.raises(pc.ProviderCapSaturatedError),
+        pc.provider_slot("test", max_wait=0.02),
+    ):
+        pytest.fail("full owner dispatched work")
+    assert len(measurements) == 1
+    duration, attrs = measurements[0]
+    assert duration >= 0.02
+    assert attrs["phase"] == "admission" and attrs["outcome"] == "timeout"
+
+
+def test_contended_provider_records_queue_before_execution(monkeypatch):
+    import threading
+
+    sem = threading.BoundedSemaphore(1)
+    sem.acquire()
+    queued = threading.Event()
+    entered = threading.Event()
+    finish = threading.Event()
+    measurements = []
+    monkeypatch.setattr(pc, "_provider_key", lambda _: "test")
+    monkeypatch.setattr(pc, "_get_semaphore", lambda _: sem)
+    monkeypatch.setattr(
+        pc,
+        "record_health",
+        lambda _name, value, **attrs: measurements.append((value, attrs)),
+    )
+
+    def call():
+        queued.set()
+        with pc.provider_slot("test"):
+            entered.set()
+            finish.wait(2)
+
+    thread = threading.Thread(target=call)
+    thread.start()
+    assert queued.wait(2)
+    assert not entered.wait(0.03)
+    sem.release()
+    try:
+        assert entered.wait(2)
+        assert len(measurements) == 1
+        duration, attrs = measurements[0]
+        assert attrs["phase"] == "admission" and attrs["outcome"] == "admitted"
+        assert duration >= 0.02
+    finally:
+        finish.set()
+        thread.join(2)
+    assert not thread.is_alive()
+    assert {attrs["phase"] for _, attrs in measurements} == {
+        "admission",
+        "execution",
+        "retirement",
+    }
+    assert sem.acquire(blocking=False)
