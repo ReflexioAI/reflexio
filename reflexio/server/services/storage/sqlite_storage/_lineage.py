@@ -8,22 +8,15 @@ from typing import Any, Literal
 from reflexio.models.api_schema.domain.entities import LineageContext, LineageEvent
 from reflexio.models.api_schema.domain.enums import Status
 from reflexio.server.error_reporting import capture_anomaly
+from reflexio.server.services.storage.lifecycle_filters import (
+    GC_ELIGIBLE_STATUSES,
+    GC_HARD_DELETE_REASON,
+)
 
 from ._base import _epoch_now
 
 EntityType = Literal["user_playbook", "agent_playbook", "profile"]
 
-# GC-eligible statuses — rows with these statuses may be hard-deleted by TTL GC.
-# Also used as the merge guard: a source that already carries any of these
-# statuses is skipped (no re-tombstone, no clock reset).
-_GC_ELIGIBLE_STATUSES: frozenset[str] = frozenset(
-    {
-        Status.MERGED.value,
-        Status.SUPERSEDED.value,
-        Status.ARCHIVED.value,
-        Status.EXPIRED.value,
-    }
-)
 
 # Mapping from entity_type string to (table_name, primary_key_column).
 _TABLE: dict[str, tuple[str, str]] = {
@@ -342,8 +335,8 @@ class SQLiteLineageMixin:
             raise ValueError(f"lineage merge: {_EMPTY_REQUEST_ID_MSG}")
         table, pk = _resolve_table(entity_type)
         now = _epoch_now()
-        eligible_ph = ",".join("?" * len(_GC_ELIGIBLE_STATUSES))
-        eligible_vals = list(_GC_ELIGIBLE_STATUSES)
+        eligible_ph = ",".join("?" * len(GC_ELIGIBLE_STATUSES))
+        eligible_vals = list(GC_ELIGIBLE_STATUSES)
         with self._lock:
             # Only the sources this call actually tombstoned, in sorted order.
             # ``source_ids`` on a
@@ -635,8 +628,8 @@ class SQLiteLineageMixin:
             return 0
         table, pk = _resolve_table(entity_type)
 
-        eligible_ph = ",".join("?" * len(_GC_ELIGIBLE_STATUSES))
-        eligible_vals = list(_GC_ELIGIBLE_STATUSES)
+        eligible_ph = ",".join("?" * len(GC_ELIGIBLE_STATUSES))
+        eligible_vals = list(GC_ELIGIBLE_STATUSES)
 
         # ORDER BY retired_at ASC for deterministic forward progress.
         # No SQL LIMIT here — the limit is applied after the legal-hold filter
@@ -691,7 +684,7 @@ class SQLiteLineageMixin:
                         source_ids=[],
                         actor="system",
                         request_id=batch_request_id,
-                        reason="ttl-gc",
+                        reason=GC_HARD_DELETE_REASON,
                     )
 
                 # Inline FTS/vec cleanup — raw DELETE to preserve atomicity.

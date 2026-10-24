@@ -319,7 +319,9 @@ class SearchUserPlaybookRequest(BaseModel):
         source (str, optional): Filter by exact interaction source
         start_time (datetime, optional): Start time for created_at filter
         end_time (datetime, optional): End time for created_at filter
-        status_filter (list[Optional[Status]], optional): Filter by status (None for CURRENT, PENDING, ARCHIVED)
+        status_filter (list[Optional[Status]], optional): Filter by lifecycle status
+            (None for CURRENT, PENDING, ARCHIVED). When omitted, only CURRENT
+            playbooks are returned.
         top_k (int, optional): Maximum results to return, up to 100. Defaults to 10
         threshold (float, optional): Similarity threshold for vector search.
             When omitted, the embedding model's default is used.

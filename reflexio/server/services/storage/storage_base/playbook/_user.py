@@ -511,6 +511,9 @@ class UserPlaybookStoreMixin:
     ) -> list[UserPlaybook]:
         """Search user playbooks with advanced filtering including semantic search.
 
+        Without ``request.status_filter`` only CURRENT (``status IS NULL``)
+        playbooks match, with or without a query, on every backend.
+
         Args:
             request (SearchUserPlaybookRequest): Search request with query, filters, and pagination
             options (SearchOptions, optional): Engine-level search parameters (e.g. pre-computed embedding)
