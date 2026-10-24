@@ -55,16 +55,16 @@ def service_config_snapshot(service_config: Any) -> Any:
     never copied, let alone written, for any run shape (classic, overflow or
     package parent, child).
     """
+    if isinstance(service_config, BaseModel):
+        return service_config.model_dump(
+            mode="json", exclude=set(UNPERSISTED_SERVICE_CONFIG_FIELDS)
+        )
     if is_dataclass(service_config) and not isinstance(service_config, type):
         return {
             field.name: _jsonable(getattr(service_config, field.name))
             for field in fields(service_config)
             if field.name not in UNPERSISTED_SERVICE_CONFIG_FIELDS
         }
-    if isinstance(service_config, BaseModel):
-        return service_config.model_dump(
-            mode="json", exclude=set(UNPERSISTED_SERVICE_CONFIG_FIELDS)
-        )
     if isinstance(service_config, dict):
         return {
             str(key): _jsonable(value)
