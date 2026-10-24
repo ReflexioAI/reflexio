@@ -9,6 +9,7 @@ import logging
 import sqlite3
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from typing import Any, Literal
 
 from reflexio.models.api_schema.domain.entities import LineageContext
@@ -236,8 +237,12 @@ class ProfileStoreMixin:
             embedding_text = "\n".join([profile.content, str(profile.custom_features)])
             if self._should_expand_documents():
                 with ThreadPoolExecutor(max_workers=2) as executor:
-                    emb_future = executor.submit(self._get_embedding, embedding_text)
-                    exp_future = executor.submit(self._expand_document, profile.content)
+                    emb_future = executor.submit(
+                        copy_context().run, self._get_embedding, embedding_text
+                    )
+                    exp_future = executor.submit(
+                        copy_context().run, self._expand_document, profile.content
+                    )
                     profile.embedding = emb_future.result(timeout=15)
                     profile.expanded_terms = exp_future.result(timeout=15)
             else:
