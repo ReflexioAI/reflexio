@@ -8,6 +8,7 @@ the aggregator, and the response payload is covered end-to-end.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -17,6 +18,7 @@ from reflexio.models.api_schema.eval_overview_schema import (
     ShadowComparisonVerdict,
 )
 from reflexio.models.config_schema import Config, StorageConfigSQLite
+from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.evaluation_overview.service import (
     EvaluationOverviewService,
 )
@@ -32,11 +34,9 @@ def storage(tmp_path, worker_id):
     return SQLiteStorage(org_id=worker_id, db_path=str(db_path))
 
 
-# Pinned to the Config default — a stale hardcoded literal is exactly how this
-# suite went red when the judge prompt version was bumped.
-_PINNED_VERSION = Config(
-    storage_config=StorageConfigSQLite()
-).shadow_comparison_judge_prompt_version
+from reflexio.server.services.shadow_comparison.rubric import ShadowComparisonRubric
+
+_PINNED_VERSION = ShadowComparisonRubric(PromptManager()).key
 
 
 def _verdict(
@@ -89,6 +89,7 @@ def test_service_returns_populated_shadow_win_rate_trend(storage) -> None:
     service = EvaluationOverviewService(
         storage=storage,
         config=Config(storage_config=StorageConfigSQLite()),
+        prompt_manager=PromptManager(),
     )
     response = service.run(
         GetEvaluationOverviewRequest(from_ts=base_ts - 1, to_ts=base_ts + 1)
@@ -110,12 +111,29 @@ def test_service_empty_window_returns_empty_trend(storage) -> None:
     service = EvaluationOverviewService(
         storage=storage,
         config=Config(storage_config=StorageConfigSQLite()),
+        prompt_manager=PromptManager(),
     )
     response = service.run(GetEvaluationOverviewRequest(from_ts=0, to_ts=1))
     trend = response.shadow_win_rate_trend
     assert trend.daily == []
     assert trend.window_total.n == 0
     assert trend.judge_prompt_version == _PINNED_VERSION
+
+
+def test_unrequested_shadow_does_not_resolve_or_invent_a_rubric(storage):
+    manager = MagicMock(spec=PromptManager)
+    manager.get_prompt_template_identity.side_effect = AssertionError("not requested")
+    service = EvaluationOverviewService(
+        storage=storage,
+        config=Config(storage_config=StorageConfigSQLite()),
+        prompt_manager=manager,
+    )
+    response = service.run(
+        GetEvaluationOverviewRequest(from_ts=0, to_ts=1, include_shadow=False)
+    )
+    assert response.shadow_win_rate_trend.window_total.n == 0
+    assert response.shadow_win_rate_trend.judge_prompt_version == ""
+    manager.get_prompt_template_identity.assert_not_called()
 
 
 def test_service_filters_out_stale_prompt_versions(storage) -> None:
@@ -144,6 +162,7 @@ def test_service_filters_out_stale_prompt_versions(storage) -> None:
     service = EvaluationOverviewService(
         storage=storage,
         config=Config(storage_config=StorageConfigSQLite()),
+        prompt_manager=PromptManager(),
     )
     response = service.run(
         GetEvaluationOverviewRequest(from_ts=base_ts - 1, to_ts=base_ts + 1)

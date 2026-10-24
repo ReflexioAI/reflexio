@@ -17,6 +17,7 @@ from reflexio.models.api_schema.internal_schema import (
     SessionFirstRequest,
 )
 from reflexio.models.config_schema import Config, StorageConfigSQLite
+from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.evaluation_overview.service import (
     EvaluationOverviewService,
 )
@@ -76,7 +77,9 @@ def test_service_returns_full_response_with_shadow_enabled_and_data() -> None:
     )
     config = Config(storage_config=StorageConfigSQLite())
 
-    svc = EvaluationOverviewService(storage=storage, config=config)
+    svc = EvaluationOverviewService(
+        storage=storage, config=config, prompt_manager=PromptManager()
+    )
     response = svc.run(GetEvaluationOverviewRequest(from_ts=0, to_ts=int(time.time())))
 
     assert response.hero.state in ("full", "early", "shadow_off", "empty")
@@ -100,7 +103,9 @@ def test_service_hero_shadow_fields_always_null_after_direct_grade_removal() -> 
     )
     config = Config(storage_config=StorageConfigSQLite())
 
-    svc = EvaluationOverviewService(storage=storage, config=config)
+    svc = EvaluationOverviewService(
+        storage=storage, config=config, prompt_manager=PromptManager()
+    )
     response = svc.run(GetEvaluationOverviewRequest(from_ts=0, to_ts=int(time.time())))
 
     assert response.hero.shadow_success_rate_pp is None
@@ -114,7 +119,9 @@ def test_service_returns_empty_state_when_no_results() -> None:
     storage = _storage_with_results([])
     config = Config(storage_config=StorageConfigSQLite())
 
-    svc = EvaluationOverviewService(storage=storage, config=config)
+    svc = EvaluationOverviewService(
+        storage=storage, config=config, prompt_manager=PromptManager()
+    )
     response = svc.run(GetEvaluationOverviewRequest(from_ts=0, to_ts=int(time.time())))
 
     assert response.hero.state == "empty"
@@ -138,7 +145,9 @@ def test_service_returns_newest_100_embedding_free_results() -> None:
     storage = _storage_with_results(list(reversed(results[::2])) + results[1::2])
     config = Config(storage_config=StorageConfigSQLite())
 
-    response = EvaluationOverviewService(storage=storage, config=config).run(
+    response = EvaluationOverviewService(
+        storage=storage, config=config, prompt_manager=PromptManager()
+    ).run(
         GetEvaluationOverviewRequest(
             from_ts=1_700_000_000,
             to_ts=1_700_000_200,
@@ -170,7 +179,9 @@ def test_service_reports_single_recent_success_as_100_percent() -> None:
     )
     config = Config(storage_config=StorageConfigSQLite())
 
-    svc = EvaluationOverviewService(storage=storage, config=config)
+    svc = EvaluationOverviewService(
+        storage=storage, config=config, prompt_manager=PromptManager()
+    )
     response = svc.run(
         GetEvaluationOverviewRequest(from_ts=now - 3600, to_ts=now, bucket="day")
     )
@@ -208,9 +219,9 @@ def test_service_reports_task_and_behavior_success_separately() -> None:
     )
     config = Config(storage_config=StorageConfigSQLite())
 
-    response = EvaluationOverviewService(storage=storage, config=config).run(
-        GetEvaluationOverviewRequest(from_ts=now - 3600, to_ts=now, bucket="day")
-    )
+    response = EvaluationOverviewService(
+        storage=storage, config=config, prompt_manager=PromptManager()
+    ).run(GetEvaluationOverviewRequest(from_ts=now - 3600, to_ts=now, bucket="day"))
 
     assert response.hero.regular_success_rate_pp == pytest.approx(100 / 3)
     assert response.context_tiles.success.current == pytest.approx(100 / 3)
@@ -234,9 +245,9 @@ def test_behavior_success_is_null_when_all_rows_are_system_errors() -> None:
     )
     config = Config(storage_config=StorageConfigSQLite())
 
-    response = EvaluationOverviewService(storage=storage, config=config).run(
-        GetEvaluationOverviewRequest(from_ts=now - 3600, to_ts=now)
-    )
+    response = EvaluationOverviewService(
+        storage=storage, config=config, prompt_manager=PromptManager()
+    ).run(GetEvaluationOverviewRequest(from_ts=now - 3600, to_ts=now))
 
     assert response.context_tiles.success.current == 0.0
     assert response.context_tiles.behavior_success.current is None
@@ -260,7 +271,9 @@ def test_service_shows_recent_evaluations_immediately() -> None:
     )
     config = Config(storage_config=StorageConfigSQLite())
 
-    svc = EvaluationOverviewService(storage=storage, config=config)
+    svc = EvaluationOverviewService(
+        storage=storage, config=config, prompt_manager=PromptManager()
+    )
     response = svc.run(
         GetEvaluationOverviewRequest(from_ts=now - 3600, to_ts=now, bucket="day")
     )
@@ -291,7 +304,9 @@ def test_service_honors_day_bucket_for_hero_trend() -> None:
     )
     config = Config(storage_config=StorageConfigSQLite())
 
-    svc = EvaluationOverviewService(storage=storage, config=config)
+    svc = EvaluationOverviewService(
+        storage=storage, config=config, prompt_manager=PromptManager()
+    )
     response = svc.run(
         GetEvaluationOverviewRequest(from_ts=0, to_ts=3 * day, bucket="day")
     )
@@ -319,7 +334,9 @@ def test_service_uses_bulk_storage_methods_without_per_session_reads() -> None:
     ]
     config = Config(storage_config=StorageConfigSQLite())
 
-    svc = EvaluationOverviewService(storage=storage, config=config)
+    svc = EvaluationOverviewService(
+        storage=storage, config=config, prompt_manager=PromptManager()
+    )
     response = svc.run(GetEvaluationOverviewRequest(from_ts=0, to_ts=int(time.time())))
 
     assert response.rule_attribution[0].rule_id == "42"
@@ -366,7 +383,9 @@ def test_service_limits_source_lookup_to_window_when_no_source_sets() -> None:
     }
     config = Config(storage_config=StorageConfigSQLite())
 
-    svc = EvaluationOverviewService(storage=storage, config=config)
+    svc = EvaluationOverviewService(
+        storage=storage, config=config, prompt_manager=PromptManager()
+    )
     response = svc.run(
         GetEvaluationOverviewRequest(
             from_ts=now - 60,
@@ -418,6 +437,7 @@ def test_service_groups_source_sessions_without_duplicate_session_ids() -> None:
     response = EvaluationOverviewService(
         storage=storage,
         config=Config(storage_config=StorageConfigSQLite()),
+        prompt_manager=PromptManager(),
     ).run(
         GetEvaluationOverviewRequest(
             from_ts=now - 60,
@@ -479,6 +499,7 @@ def test_service_preserves_user_identity_when_session_ids_collide() -> None:
     response = EvaluationOverviewService(
         storage=storage,
         config=Config(storage_config=StorageConfigSQLite()),
+        prompt_manager=PromptManager(),
     ).run(
         GetEvaluationOverviewRequest(
             from_ts=now - 60,
@@ -532,7 +553,9 @@ def test_service_loads_baseline_sources_when_source_sets_requested() -> None:
     }
     config = Config(storage_config=StorageConfigSQLite())
 
-    svc = EvaluationOverviewService(storage=storage, config=config)
+    svc = EvaluationOverviewService(
+        storage=storage, config=config, prompt_manager=PromptManager()
+    )
     response = svc.run(
         GetEvaluationOverviewRequest(
             from_ts=now - 7 * day,
@@ -558,7 +581,9 @@ def test_service_skips_shadow_storage_when_shadow_excluded() -> None:
     )
     config = Config(storage_config=StorageConfigSQLite())
 
-    svc = EvaluationOverviewService(storage=storage, config=config)
+    svc = EvaluationOverviewService(
+        storage=storage, config=config, prompt_manager=PromptManager()
+    )
     response = svc.run(
         GetEvaluationOverviewRequest(
             from_ts=0,
@@ -586,7 +611,9 @@ def test_service_handles_5k_sessions_with_bulk_call_shape() -> None:
     storage = _storage_with_results(results)
     config = Config(storage_config=StorageConfigSQLite())
 
-    svc = EvaluationOverviewService(storage=storage, config=config)
+    svc = EvaluationOverviewService(
+        storage=storage, config=config, prompt_manager=PromptManager()
+    )
     response = svc.run(
         GetEvaluationOverviewRequest(
             from_ts=now - 7200,

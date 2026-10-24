@@ -43,6 +43,7 @@ from reflexio.models.api_schema.eval_overview_schema import (
 )
 from reflexio.models.api_schema.ui.converters import to_evaluation_result_view
 from reflexio.models.config_schema import Config
+from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.evaluation_overview.components.distribution import (
     BUCKET_LABELS,
     bucket_corrections,
@@ -57,6 +58,7 @@ from reflexio.server.services.evaluation_overview.components.rule_attribution im
 from reflexio.server.services.evaluation_overview.components.shadow_aggregation import (
     compute_shadow_win_rate_trend,
 )
+from reflexio.server.services.shadow_comparison.rubric import ShadowComparisonRubric
 from reflexio.server.tracing import profile_step
 
 _DAY_SECONDS = 24 * 60 * 60
@@ -77,6 +79,7 @@ class EvaluationOverviewService:
 
     storage: Any
     config: Config
+    prompt_manager: PromptManager
 
     def run(
         self, request: GetEvaluationOverviewRequest
@@ -182,11 +185,13 @@ class EvaluationOverviewService:
         start = time.perf_counter()
         with profile_step("evaluation_overview.shadow"):
             shadow_win_rate_trend = (
-                self._build_shadow_win_rate_trend(request.from_ts, request.to_ts)
-                if request.include_shadow
-                else ShadowWinRateTrend(
-                    judge_prompt_version=self.config.shadow_comparison_judge_prompt_version
+                self._build_shadow_win_rate_trend(
+                    request.from_ts,
+                    request.to_ts,
+                    ShadowComparisonRubric(self.prompt_manager),
                 )
+                if request.include_shadow
+                else ShadowWinRateTrend()
             )
         self._log_phase("shadow", start, enabled=request.include_shadow)
         source_set_comparison = self._build_source_set_comparison(
@@ -507,12 +512,12 @@ class EvaluationOverviewService:
         self,
         from_ts: int,
         to_ts: int,
+        rubric: ShadowComparisonRubric,
     ) -> ShadowWinRateTrend:
         """Fetch shadow verdicts in the window and aggregate them per day.
 
-        Filters verdicts to the org's pinned ``shadow_comparison`` prompt
-        version (``Config.shadow_comparison_judge_prompt_version``) so a
-        future rubric bump never silently mixes epochs into the headline.
+        Filters verdicts to the exact active template identity so a template
+        change never silently mixes rubric epochs into the headline.
         Backends that don't yet implement the verdicts table raise
         ``NotImplementedError``; we degrade to the empty trend default so
         the dashboard still renders the rest of the overview.
@@ -526,7 +531,7 @@ class EvaluationOverviewService:
                 the window has no verdicts or the backend doesn't support
                 verdict storage.
         """
-        pinned_version = self.config.shadow_comparison_judge_prompt_version
+        pinned_version = rubric.key
         try:
             verdicts = self.storage.get_shadow_comparison_verdicts(  # type: ignore[attr-defined]
                 from_ts=from_ts,

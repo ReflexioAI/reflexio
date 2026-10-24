@@ -983,35 +983,26 @@ to a fleet policy; a bootstrap org is not a schedule authority for every org.
 
 ## Stored configuration upgrades
 
-`models/config_schema.py::canonicalize_stored_config_fields` rewrites legacy
-extraction/aggregation field names and list shapes in raw saved dictionaries.
-It preserves unknown metadata and does not materialize schema defaults. It is
-idempotent and does not mutate its input. Use it when a raw upgrade must retain
-extensions that typed serialization would omit; still validate with
-`validate_stored_config` before writing or using the result. Storage identity and
-credentials retain their separate strict validation path.
+`reflexio/config_migration.py::canonicalize_config_document` explicitly rewrites
+historical names, shapes and retired controls before validating a canonical
+saved document. It preserves unknown metadata and does not materialize schema
+defaults. Conversion is idempotent and does not mutate its input. Storage
+identity and credentials retain their separate strict validation path.
 
-`validate_stored_config` shares this raw normalization before applying typed
-validation. API model validation still accepts its existing aliases; introducing
-the migration helper does not retire any supported configuration input.
+Normal API validation and `validate_stored_config` validate current names; they
+do not invoke the explicit converter. In particular, current reads and writes
+reject the retired `shadow_comparison_judge_prompt_version` label. Conversion
+validates its historical nonempty-string shape and removes it. It never selected
+the rendered template: `ShadowComparisonRubric` now derives verdict provenance
+and current dashboard cohorts from the actual PromptManager template version
+and content digest. Historical verdict labels remain unchanged and are not
+relabelled as verified template identities. Explicit PromptManager overrides
+remain actual prompt-selection policy.
 
-For an explicit offline file conversion, run
-`reflexio config upgrade-file old.json --output canonical.json`. The input must
-be a complete saved organization configuration and is retained unchanged. The
-command replaces the explicitly selected output atomically, uses restrictive
-temporary-file permissions and never calls the backend or edits `.env`.
-Historical rename maps, list/preset decoding, optimizer compatibility and backend
-disambiguation live in `reflexio/config_migration.py`. The compatible runtime
-schema temporarily imports these same helpers; explicit conversion imports only
-canonical validation and canonical optimizer policy from the schema, so deleting
-runtime rewrite hooks will not delete the upgrade algorithm. Historical preset
-geometry is frozen in the migration decoder; current `window_size`, `stride_size`
-and optimizer settings remain independently configurable. This relocation does
-not remove any accepted input.
-
-`config_migration.canonicalize_config_document` translates historical fields and
-makes storage identity explicit before validating only the canonical document.
-It does not require runtime validation to accept old input spellings. Policy
-equivalence is protected by migration-contract tests, including custom settings;
-`cli/config_upgrade.py` owns only file I/O. Neither operation activates the copy
-or removes runtime compatibility.
+For standalone saved files, run
+`reflexio config upgrade-file old.json --output canonical.json`. The complete
+input is retained unchanged; the output is replaced atomically with restrictive
+temporary-file permissions. The command never calls the backend or edits `.env`.
+Hosts loading stored organization/project settings must own a versioned startup
+upgrade and close incompatible writers before admitting the new strict reader.
+A copied document or schema change alone does not perform that deployment.

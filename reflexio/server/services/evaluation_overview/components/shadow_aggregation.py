@@ -32,7 +32,7 @@ _OUTCOME_TO_KEY: dict[Outcome, str] = {
 
 def compute_shadow_win_rate_trend(
     verdicts: Iterable[ShadowComparisonVerdict],
-    judge_prompt_version: str = "v1.0.0",
+    judge_prompt_version: str,
 ) -> ShadowWinRateTrend:
     """
     Bucket verdicts by UTC date, derive win/loss/tie per verdict, sum.
@@ -43,7 +43,7 @@ def compute_shadow_win_rate_trend(
             already filtered to the pinned prompt version.
         judge_prompt_version (str): Informational; echoed on the response
             so the dashboard knows which rubric epoch the numbers came
-            from. Defaults to ``"v1.0.0"``.
+            from. Callers must supply the resolved rubric identity.
 
     Returns:
         ShadowWinRateTrend: Daily buckets sorted ascending by date, plus

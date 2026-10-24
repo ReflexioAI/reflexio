@@ -17,6 +17,7 @@ from reflexio.models.api_schema.eval_overview_schema import (
     ShadowComparisonVerdict,
 )
 from reflexio.server.services.shadow_comparison.outcome import assign_positions
+from reflexio.server.services.shadow_comparison.rubric import ShadowComparisonRubric
 
 if TYPE_CHECKING:
     from reflexio.models.api_schema.domain.entities import Interaction
@@ -25,8 +26,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
-
-_PROMPT_ID = "shadow_comparison"
 
 
 class ShadowComparisonJudge:
@@ -43,7 +42,6 @@ class ShadowComparisonJudge:
         self,
         llm_client: LiteLLMClient,
         prompt_manager: PromptManager,
-        prompt_version: str,
     ):
         """
         Initialize the judge.
@@ -53,17 +51,11 @@ class ShadowComparisonJudge:
                 the verdict via ``generate_chat_response`` with a Pydantic
                 ``response_format``.
             prompt_manager (PromptManager): Prompt manager for the
-                ``shadow_comparison`` prompt. Prompt-version selection is
-                governed by the manager's ``version_override`` dict;
-                ``prompt_version`` below is recorded on the verdict for
-                later filtering but does not affect rendering.
-            prompt_version (str): Semver of the active shadow_comparison
-                prompt. Stamped onto every verdict so the dashboard can
-                exclude verdicts from a stale rubric.
+                ``shadow_comparison`` prompt. Its active version and template
+                content bind both rendering and the verdict cohort identity.
         """
         self._llm_client = llm_client
-        self._prompt_manager = prompt_manager
-        self._prompt_version = prompt_version
+        self._rubric = ShadowComparisonRubric(prompt_manager)
 
     # ===============================
     # public methods
@@ -119,9 +111,8 @@ class ShadowComparisonJudge:
             rng=rng,
         )
 
-        prompt = self._prompt_manager.render_prompt(
-            prompt_id=_PROMPT_ID,
-            variables={
+        prompt = self._rubric.render(
+            {
                 # ``user_message`` is retained only for explicit v1.0.0
                 # prompt-version overrides; the active v1.1+ template reads
                 # ``conversation_context`` instead. Do not drop it as "unused".
@@ -145,7 +136,7 @@ class ShadowComparisonJudge:
             agent_version=agent_version,
             reflexio_is_request_1=reflexio_is_request_1,
             output=output,
-            judge_prompt_version=self._prompt_version,
+            judge_prompt_version=self._rubric.key,
             created_at=datetime.now(UTC),
         )
 
