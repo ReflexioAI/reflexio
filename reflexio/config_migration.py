@@ -13,14 +13,12 @@ from reflexio.config_env import (
     ConfigurationMigrationError as ConfigurationMigrationError,
 )
 from reflexio.config_env import StoredConfigurationError as StoredConfigurationError
-from reflexio.models.api_schema.validators import NonEmptyStr
 
 _LEGACY_OPTIMIZER_BOOL = TypeAdapter(bool)
 _LEGACY_MERGE_LIMIT = TypeAdapter(Annotated[int, Field(ge=0)])
 _LEGACY_STOP_SCORE = TypeAdapter(
     Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 )
-_LEGACY_SHADOW_RUBRIC_LABEL = TypeAdapter(NonEmptyStr)
 
 
 def strip_retired_optimizer_stop_score(data: Any) -> Any:
@@ -220,8 +218,11 @@ def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
 
     payload = strip_legacy_housekeeping_fields(data)
     if "shadow_comparison_judge_prompt_version" in payload:
+        # Bootstrap-only inference images do not package model schemas.
+        from reflexio.models.api_schema.validators import NonEmptyStr
+
         try:
-            _LEGACY_SHADOW_RUBRIC_LABEL.validate_python(
+            TypeAdapter(NonEmptyStr).validate_python(
                 payload["shadow_comparison_judge_prompt_version"]
             )
         except ValidationError:
