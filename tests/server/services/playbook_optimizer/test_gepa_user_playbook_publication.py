@@ -422,7 +422,6 @@ def test_gepa_user_job_creation_freezes_complete_sanitized_authority(tmp_path):
     config = _optimizer_config(tmp_path)
     config.playbook_optimizer_config.max_metric_calls = 37
     config.playbook_optimizer_config.max_turns = 6
-    config.playbook_optimizer_config.early_stop_score = 0.1 + 0.2
     config.playbook_optimizer_config.reflection_minibatch_size = 3
     config.playbook_optimizer_config.max_validation_windows = 1
     config.playbook_optimizer_config.max_merge_invocations = 0
@@ -457,10 +456,11 @@ def test_gepa_user_job_creation_freezes_complete_sanitized_authority(tmp_path):
         "use_merge": False,
     }
     assert authority["stop_settings"] == {
-        "early_stop_score": repr(0.1 + 0.2),
-        "stopper_class": "gepa.utils.stop_condition.ScoreThresholdStopper",
+        "quality_predicate": "reflexio.server.services.playbook_optimizer.gepa_publication.gepa_winner_adoption_result",
+        "winner_selection": "gepa.core.result.GEPAResult.best_idx",
     }
     assert authority["gepa_algorithm"] == {
+        "data_id_namespace": "train_then_validation",
         "batch_sampler": "epoch_shuffled",
         "cache_evaluation": True,
         "candidate_selection_strategy": "pareto",

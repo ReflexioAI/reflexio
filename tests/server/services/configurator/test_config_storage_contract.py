@@ -348,3 +348,37 @@ def test_invalid_recognized_policy_preserves_file_and_blocks_cli_fallback(
     reloaded = storage.load_config()
     assert reloaded.lineage_gc.enabled is False
     assert reloaded.governance_retention.audit_events_delete_batch_limit == 2
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_saved_optimizer_stopping_adoption_never_rewrites_on_read(tmp_path, enabled):
+    storage = LocalFileConfigStorage(org_id="quality-policy", base_dir=str(tmp_path))
+    path = Path(storage.config_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "storage_config": None,
+        "playbook_optimizer_config": {
+            "enabled": enabled,
+            "early_stop_score": 0.9,
+            "max_metric_calls": 37,
+        },
+    }
+    encoded = json.dumps(payload).encode()
+    path.write_bytes(encoded)
+    if enabled:
+        with pytest.raises(ValueError):
+            storage.load_config()
+        assert path.read_bytes() == encoded
+        return
+    config = storage.load_config()
+    assert path.read_bytes() == encoded
+    assert "early_stop_score" not in config.playbook_optimizer_config.model_dump()
+    storage.save_config(config)
+    assert (
+        "early_stop_score"
+        not in json.loads(path.read_text())["playbook_optimizer_config"]
+    )
+    config.playbook_optimizer_config.enabled = True
+    storage.save_config(config)
+    loaded = storage.load_config().playbook_optimizer_config
+    assert loaded.enabled is True and loaded.max_metric_calls == 37

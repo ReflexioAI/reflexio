@@ -19,7 +19,10 @@ from reflexio.config_env import (
     DEFAULT_STORAGE_POOL_ACQUIRE_TIMEOUT,
     DEFAULT_STORAGE_POOL_SIZE,
 )
-from reflexio.config_migration import StoredConfigurationError
+from reflexio.config_migration import (
+    StoredConfigurationError,
+    strip_retired_optimizer_stop_score,
+)
 from reflexio.housekeeping_policy import strip_legacy_housekeeping_fields
 from reflexio.pending_tool_policy import (
     strip_legacy_pending_tool_timing,
@@ -642,7 +645,6 @@ class PlaybookOptimizerConfig(BaseModel):
     # --- GEPA budget -------------------------------------------------------
     max_metric_calls: int = Field(default=20, gt=0)
     max_turns: int = Field(default=4, gt=0)
-    early_stop_score: float = Field(default=0.9, ge=0.0, le=1.0)
     reflection_minibatch_size: int = Field(default=2, gt=0)
     max_validation_windows: int = Field(default=2, gt=0)
     min_commit_windows: int = Field(default=2, gt=0)
@@ -691,6 +693,7 @@ class PlaybookOptimizerConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def reject_obsolete_policy(cls, data: Any) -> Any:
+        data = strip_retired_optimizer_stop_score(data)
         return _reject_obsolete_fields(
             data,
             (

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import uuid
+from collections.abc import Sequence
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -380,15 +381,18 @@ class PlaybookOptimizer:
         adapter: ReflexioPlaybookGEPAAdapter,
     ) -> Any:
         from gepa.api import optimize as gepa_optimize
-        from gepa.utils.stop_condition import ScoreThresholdStopper
+
+        authority = gepa_adoption_authority_from_config(
+            config=config, validation_windows=validation_windows, adoption_enabled=True
+        )
 
         reflection_lm = config.reflection_model or self.llm_client.config.model
         return gepa_optimize(
             seed_candidate={PLAYBOOK_CONTENT_COMPONENT: seed_content},
-            trainset=train_windows,
+            trainset=_ScenarioWindowLoader(train_windows, offset=0),
             valset=None
             if _same_window_sequence(train_windows, validation_windows)
-            else validation_windows,
+            else _ScenarioWindowLoader(validation_windows, offset=len(train_windows)),
             adapter=adapter,
             reflection_lm=reflection_lm,
             candidate_selection_strategy="pareto",
@@ -398,7 +402,11 @@ class PlaybookOptimizer:
             use_merge=config.max_merge_invocations > 0,
             max_merge_invocations=config.max_merge_invocations,
             max_metric_calls=config.max_metric_calls,
-            stop_callbacks=[ScoreThresholdStopper(config.early_stop_score)],
+            stop_callbacks=[
+                lambda gepa_state: adapter.should_stop_on_quality(
+                    gepa_state, authority=authority
+                )
+            ],
             raise_on_exception=False,
             display_progress_bar=False,
             cache_evaluation=True,
@@ -1071,6 +1079,7 @@ def _gepa_publication_authority(
             ),
         },
         "gepa_algorithm": {
+            "data_id_namespace": "train_then_validation",
             "batch_sampler": "epoch_shuffled",
             "cache_evaluation": True,
             "candidate_selection_strategy": "pareto",
@@ -1097,8 +1106,8 @@ def _gepa_publication_authority(
             "max_validation_windows": config.max_validation_windows,
         },
         "stop_settings": {
-            "early_stop_score": _decimal_string(config.early_stop_score),
-            "stopper_class": "gepa.utils.stop_condition.ScoreThresholdStopper",
+            "quality_predicate": _code_identity(gepa_winner_adoption_result),
+            "winner_selection": "gepa.core.result.GEPAResult.best_idx",
         },
         "train_manifest": {
             "digest": _window_manifest_digest(train_windows),
@@ -1218,3 +1227,20 @@ def _result_metadata(result: Any, split_metadata: dict[str, Any]) -> dict[str, A
 
 def _window_eval_key(window: ScenarioWindow) -> tuple[int | None, tuple[int, ...]]:
     return window.user_playbook_id, tuple(window.source_interaction_ids)
+
+
+class _ScenarioWindowLoader:
+    """Keep GEPA's shared evaluation cache from aliasing train and holdout IDs."""
+
+    def __init__(self, windows: list[ScenarioWindow], *, offset: int) -> None:
+        self.windows = windows
+        self.offset = offset
+
+    def all_ids(self) -> Sequence[int]:
+        return range(self.offset, self.offset + len(self.windows))
+
+    def fetch(self, ids: Sequence[int]) -> list[ScenarioWindow]:
+        return [self.windows[index - self.offset] for index in ids]
+
+    def __len__(self) -> int:
+        return len(self.windows)

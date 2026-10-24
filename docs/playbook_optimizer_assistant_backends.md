@@ -336,8 +336,34 @@ need deeper exploration.
 | `webhook_backoff_base_seconds` | `float >= 0` | 1.0 | Exponential base — both backends |
 | `max_metric_calls` | `int > 0` | 20 | GEPA metric-call budget per optimization run |
 | `max_turns` | `int > 0` | 4 | Maximum user turns replayed per source window rollout |
-| `early_stop_score` | `float [0, 1]` | 0.9 | Stops GEPA early once the current best validation score reaches this threshold |
 | `reflection_minibatch_size` | `int > 0` | 2 | Number of training windows GEPA samples for each reflection minibatch |
+
+Search stops when GEPA's current winner satisfies the publication quality policy:
+aggregate `min_commit_score`, and `min_commit_windows` distinct validation windows
+with a candidate verdict meeting both `min_commit_score` and `min_commit_likert`.
+The first candidate wins score ties, matching GEPA's returned winner. Any recorded
+assistant abort prevents early success. Only persisted evaluations can satisfy the
+policy; the stopping callback performs no database reads or new evaluations.
+Training and held-out windows receive disjoint GEPA cache IDs, so a cached
+training judgement cannot substitute for a different validation window.
+
+The independent `max_metric_calls` budget remains GEPA's search limit. This is a
+satisficing search, not a guarantee of the globally best candidate. A publishable
+0.8 can stop before the former default aspiration of 0.9; a 0.95 candidate with
+insufficient absolute quality continues within the existing budget. Final
+publication still performs its own durable quality, authorization and approval
+checks. Old job authority snapshots are immutable.
+
+`early_stop_score` is retired without a replacement numeric threshold. A valid
+old field on a disabled optimizer is inert and omitted from canonical output.
+When the master `enabled` switch is on, old input refuses to load until explicit
+adoption. Before upgrading an active deployment, use
+`reflexio config upgrade-file old.json --output canonical.json`, review the
+quality thresholds and call budget, then select the converted configuration.
+This conversion explicitly adopts quality-owned stopping; it cannot preserve the
+former independent aspiration. It leaves the input unchanged and does not publish
+to organization storage. Malformed old values fail even when disabled. No startup
+or fleet conversion is performed automatically.
 
 ### 6.3 Validator
 
