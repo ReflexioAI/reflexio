@@ -892,20 +892,24 @@ def test_run_gepa_reuses_trainset_for_single_window_validation(tmp_path, merge_l
     _, kwargs = gepa_optimize.call_args
     assert kwargs["use_merge"] is (merge_limit > 0)
     assert kwargs["max_merge_invocations"] == merge_limit
-    assert kwargs["trainset"] == [window]
+    assert kwargs["trainset"].fetch(kwargs["trainset"].all_ids()) == [window]
     assert kwargs["valset"] is None
     assert kwargs["cache_evaluation"] is True
     [stopper] = kwargs["stop_callbacks"]
-    assert stopper.threshold == 0.9
+    state = SimpleNamespace()
+    stopper(state)
+    adapter.should_stop_on_quality.assert_called_once()
 
 
-def test_run_gepa_forwards_configured_early_stop_score(tmp_path):
+def test_run_gepa_binds_complete_quality_policy(tmp_path):
     storage = _sqlite_storage(tmp_path)
     config = PlaybookOptimizerConfig(
         enabled=True,
         optimize_agent_playbooks=True,
         webhook_url="https://assistant.example.test/rollout",
-        early_stop_score=0.5,
+        min_commit_score=0.5,
+        min_commit_likert=5,
+        min_commit_windows=1,
     )
     optimizer = _optimizer_for_test(
         storage,
@@ -923,7 +927,16 @@ def test_run_gepa_forwards_configured_early_stop_score(tmp_path):
 
     _, kwargs = gepa_optimize.call_args
     [stopper] = kwargs["stop_callbacks"]
-    assert stopper.threshold == 0.5
+    state = SimpleNamespace()
+    stopper(state)
+    call = adapter.should_stop_on_quality.call_args
+    assert call.args == (state,)
+    assert call.kwargs["authority"]["adoption_policy"] == {
+        "auto_update_user_playbooks": True,
+        "min_commit_score": "0.5",
+        "min_commit_likert": 5,
+        "min_commit_windows": 1,
+    }
 
 
 def test_run_gepa_keeps_distinct_validation_holdout(tmp_path):
@@ -951,8 +964,9 @@ def test_run_gepa_keeps_distinct_validation_holdout(tmp_path):
         )
 
     _, kwargs = gepa_optimize.call_args
-    assert kwargs["trainset"] == train_windows
-    assert kwargs["valset"] == validation_windows
+    assert kwargs["trainset"].fetch(kwargs["trainset"].all_ids()) == train_windows
+    assert kwargs["valset"].fetch(kwargs["valset"].all_ids()) == validation_windows
+    assert set(kwargs["trainset"].all_ids()).isdisjoint(kwargs["valset"].all_ids())
     assert kwargs["cache_evaluation"] is True
 
 

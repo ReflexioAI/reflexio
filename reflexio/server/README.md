@@ -674,6 +674,17 @@ Key files:
 - `playbook_optimizer/assistant_webhook.py`: Assistant-facing webhook entry point for optimizer runs
 - `braintrust/service.py`, `braintrust/client.py`, `_cron.py`: Braintrust export/sync support
 
+GEPA search and publication share `gepa_winner_adoption_result` for quality.
+The adapter retains successfully persisted evaluation facts for its run-local
+stopping callback; it does not reread storage or score another rollout there.
+Train and validation loaders use disjoint IDs in GEPA's shared evaluation cache.
+Search returns its current eligible winner or exhausts the existing metric
+budget. `early_stop_score` is retired; active saved policies require explicit
+adoption through the offline config converter. Disabled legacy values remain
+inert, malformed values fail, and old job-authority snapshots are unchanged.
+See `docs/playbook_optimizer_assistant_backends.md` for the exploration change
+and rollout requirements.
+
 **Pattern**: These are evaluation/optimization integrations around the core playbook pipeline. Keep production extraction changes in `services/playbook/`; use optimizer/Braintrust modules for experiments, rollouts, and external eval sync.
 
 ### Lineage

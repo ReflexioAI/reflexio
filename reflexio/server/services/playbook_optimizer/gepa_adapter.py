@@ -13,6 +13,7 @@ from reflexio.server.error_reporting import error_tags
 from reflexio.server.services.storage.storage_base import BaseStorage
 
 from .assistant_webhook import AssistantFailedError
+from .gepa_publication import gepa_winner_adoption_result
 from .judge import PairwiseJudge
 from .models import (
     CandidateEvaluationOutput,
@@ -23,6 +24,7 @@ from .rollout import MultiTurnRollout
 
 if TYPE_CHECKING:
     from gepa.core.adapter import EvaluationBatch, ProposalFn
+    from gepa.core.state import GEPAState
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +91,31 @@ class ReflexioPlaybookGEPAAdapter:
         self._evaluation_cache: dict[
             _EvaluationCacheKey, CandidateEvaluationOutput
         ] = {}
+        self._persisted_evaluations: list[PlaybookOptimizationEvaluation] = []
+
+    def should_stop_on_quality(
+        self, state: GEPAState[Any, Any], *, authority: dict[str, Any]
+    ) -> bool:
+        """Use the actual GEPA winner and only successfully persisted evidence."""
+        scores = state.program_full_scores_val_set
+        if not scores or any(
+            row.verdict == "aborted" for row in self._persisted_evaluations
+        ):
+            return False
+        # Match GEPAResult.best_idx exactly, including the earliest-index tie.
+        best_index = max(range(len(scores)), key=lambda index: scores[index])
+        content = state.program_candidates[best_index].get(PLAYBOOK_CONTENT_COMPONENT)
+        candidate_id = self._candidate_ids_by_content.get(content or "")
+        if candidate_id is None:
+            return False
+        return bool(
+            gepa_winner_adoption_result(
+                winner_candidate_id=candidate_id,
+                aggregate_score=scores[best_index],
+                evaluations=self._persisted_evaluations,
+                authority=authority,
+            )["passes"]
+        )
 
     def evaluate(
         self,
@@ -119,7 +146,7 @@ class ReflexioPlaybookGEPAAdapter:
                 )
             else:
                 output = self._evaluate_one(window, candidate_content)
-                self.storage.insert_playbook_optimization_evaluation(
+                persisted_evaluation = self.storage.insert_playbook_optimization_evaluation(
                     PlaybookOptimizationEvaluation(
                         job_id=self.job_id,
                         candidate_id=persisted_candidate.candidate_id,
@@ -136,6 +163,7 @@ class ReflexioPlaybookGEPAAdapter:
                         candidate_rollout_json=output.candidate_rollout.model_dump_json(),
                     )
                 )
+                self._persisted_evaluations.append(persisted_evaluation)
                 # Persist before caching so a failed insert does not leave a
                 # phantom result behind; skip caching transient assistant-
                 # backend aborts so the next iteration retries the rollout.

@@ -77,7 +77,7 @@ def test_actual_model_float_and_opaque_decimal_have_stable_readback(score):
 
     payload = {
         "playbook_optimizer_config": PlaybookOptimizerConfig(
-            early_stop_score=score
+            min_commit_score=score
         ).model_dump(mode="json"),
         "extension": {"fraction": Decimal("0.12345678901234567890123456789")},
     }
@@ -87,7 +87,7 @@ def test_actual_model_float_and_opaque_decimal_have_stable_readback(score):
     assert (
         PlaybookOptimizerConfig.model_validate(
             decoded["playbook_optimizer_config"]
-        ).early_stop_score
+        ).min_commit_score
         == score
     )
     assert (

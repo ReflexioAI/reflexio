@@ -457,3 +457,37 @@ def test_real_cli_sanitizes_parser_limits_without_writes(tmp_path, raw):
     assert "Input is not a valid configuration for safe conversion." in result.output
     assert source.read_text() == raw
     assert output.read_bytes() == b"existing-output"
+
+
+def test_upgrade_file_explicitly_adopts_quality_owned_optimizer_stopping(tmp_path):
+    source, output = tmp_path / "active-old.json", tmp_path / "adopted.json"
+    payload = {
+        "storage_config": None,
+        "playbook_optimizer_config": {
+            "enabled": True,
+            "early_stop_score": 0.9,
+            "max_metric_calls": 37,
+            "min_commit_likert": 5,
+        },
+        "extension": {"keep": True},
+    }
+    encoded = json.dumps(payload).encode()
+    source.write_bytes(encoded)
+    with pytest.raises(ValueError):
+        validate_stored_config(payload)
+    with patch(
+        "reflexio.cli.commands.config_cmd.get_client",
+        side_effect=AssertionError("offline only"),
+    ):
+        result = CliRunner().invoke(
+            create_app(),
+            ["config", "upgrade-file", str(source), "--output", str(output)],
+        )
+    assert result.exit_code == 0, result.output
+    converted = json.loads(output.read_text())
+    assert source.read_bytes() == encoded
+    assert converted["extension"] == {"keep": True}
+    config = validate_stored_config(converted).playbook_optimizer_config
+    assert config.enabled is True
+    assert config.max_metric_calls == 37 and config.min_commit_likert == 5
+    assert "early_stop_score" not in converted["playbook_optimizer_config"]
