@@ -67,10 +67,6 @@ def test_http_oversized_answer_preserves_qualifier_and_fails_without_dispatch(
         "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
         '{"minimax/MiniMax-M3":1000000,"gpt-4o":65536}',
     )
-    monkeypatch.setattr(
-        "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
-        lambda _: True,
-    )
     if kind == "profile":
         # Profile extraction attaches a real pre-existing question; only playbook
         # extraction offers the native ask_human creation tool.

@@ -25,7 +25,7 @@ from reflexio.server.background_work import (
 )
 from reflexio.server.error_reporting import error_tags
 from reflexio.server.scheduling import ThreadedScheduler
-from reflexio.server.services.extraction.resumable_agent import (
+from reflexio.server.services.extraction.pending_tool_admission import (
     pending_tool_calls_disabled_reason,
     pending_tool_calls_enabled,
 )

@@ -70,10 +70,6 @@ def test_http_mixed_image_keeps_native_prompt_and_persistence_without_overflow(
 ):
     engine, worker, _ = pipeline
     expected_image = _publish_mixed(pipeline, monkeypatch, kind, image_kind)
-    monkeypatch.setattr(
-        "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
-        lambda _: True,
-    )
     storage = engine.get_storage()
     monkeypatch.setattr(
         storage, "_get_embedding", lambda *_args, **_kwargs: [0.1] * 512

@@ -75,7 +75,7 @@ def _tool_context(
         org_id="org_1",
         extractor_kind="profile",
         user_id=user_id,
-        config=config or PendingToolCallConfig(),
+        config=config or PendingToolCallConfig(enabled=True),
         dispatcher=NoopPendingToolCallDispatcher(),
     )
 
@@ -163,7 +163,7 @@ def test_admission_does_not_depend_on_observational_backlog_read(storage, monkey
     storage.create_agent_run(_agent_run("run_3"))
     tool = create_ask_human_tool()
     config = PendingToolCallConfig.model_validate(
-        {"max_pending_followups_per_scope": 1}
+        {"enabled": True, "max_pending_followups_per_scope": 1}
     )
     from unittest.mock import Mock
 
@@ -270,3 +270,24 @@ def test_attach_pending_info_request_returns_resolved_result_without_dependency(
     assert result["status"] == "already_resolved"
     assert result["result"] == {"answer": "AWS ECS"}
     assert storage.list_run_tool_dependencies("run_1") == []
+
+
+@pytest.mark.parametrize("tool_name", ["ask_human", "attach_pending_info_request"])
+def test_direct_handler_opt_out_refuses_before_storage_or_dispatch(storage, tool_name):
+    from unittest.mock import MagicMock
+
+    ctx = _tool_context(
+        storage, run_id="disabled-handler", config=PendingToolCallConfig(enabled=False)
+    )
+    ctx.storage = MagicMock()
+    ctx.dispatcher = MagicMock()
+    if tool_name == "ask_human":
+        tool = create_ask_human_tool()
+        args = AskHumanArgs(question="Must not dispatch this question")
+    else:
+        tool = create_attach_pending_info_request_tool()
+        args = AttachPendingInfoRequestArgs(pending_tool_call_id="not-to-be-read")
+    with pytest.raises(ValueError, match="pending_tool_call_config.enabled is false"):
+        tool.handler(args, ctx)
+    assert ctx.storage.mock_calls == []
+    ctx.dispatcher.dispatch.assert_not_called()

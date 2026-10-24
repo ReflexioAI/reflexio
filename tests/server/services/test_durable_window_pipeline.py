@@ -506,6 +506,7 @@ def test_waiting_overflow_child_resumes_saved_messages_and_consumes_only_its_ans
 def test_overflow_human_tools_wait_for_pending_and_reuse_complete_resolved_answers(
     pipeline,
 ):
+    from reflexio.models.config_schema import PendingToolCallConfig
     from reflexio.server.llm.tools import AsyncAccepted, Completed, ToolRegistry
     from reflexio.server.services.extraction.overflow_coordinator import (
         OverflowCoordinator,
@@ -532,6 +533,7 @@ def test_overflow_human_tools_wait_for_pending_and_reuse_complete_resolved_answe
         org_id=storage.org_id,
         extractor_kind="profile",
         user_id=window.user_id,
+        config=PendingToolCallConfig(enabled=True),
     )
     registry = ToolRegistry(
         [create_ask_human_tool(), create_attach_pending_info_request_tool()]
@@ -3269,10 +3271,6 @@ def test_http_overflow_human_answer_resumes_same_window_and_commits_once(
     monkeypatch.setenv(
         "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
         '{"minimax/MiniMax-M3":1000000,"gpt-4o":65536}',
-    )
-    monkeypatch.setattr(
-        "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
-        lambda _: True,
     )
     requested = False
     answered_messages = []

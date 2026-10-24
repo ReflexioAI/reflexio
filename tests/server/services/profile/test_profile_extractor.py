@@ -741,10 +741,6 @@ class TestResumableAgentPath:
 
         with (
             patch("litellm.completion", side_effect=[response]),
-            patch(
-                "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
-                return_value=True,
-            ),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
             raw_profiles = extractor._generate_raw_updates_from_sessions(
@@ -773,7 +769,7 @@ class TestResumableAgentPath:
         sample_request_interaction_models,
         tool_call_completion,
     ):
-        """The extraction loop is always-on. When the pending-tool feature flag
+        """The extraction loop is always-on. When the org pending-tool opt-in
         is disabled, the loop still runs (only ask_human/attach_pending_info
         tools are withheld) and produces profiles via finish_extraction.
         """
@@ -783,7 +779,7 @@ class TestResumableAgentPath:
         request_context.configurator.get_config = MagicMock(
             return_value=Config(
                 storage_config=StorageConfigSQLite(),
-                pending_tool_call_config=PendingToolCallConfig(enabled=True),
+                pending_tool_call_config=PendingToolCallConfig(enabled=False),
             )
         )
         request_context.prompt_manager = MagicMock()
@@ -812,10 +808,6 @@ class TestResumableAgentPath:
 
         with (
             patch("litellm.completion", side_effect=[response]),
-            patch(
-                "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
-                return_value=False,
-            ),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
             raw_profiles = extractor._generate_raw_updates_from_sessions(
@@ -911,10 +903,6 @@ class TestResumableAgentPath:
 
         with (
             patch("litellm.completion", side_effect=[attach_response, finish_response]),
-            patch(
-                "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
-                return_value=True,
-            ),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
             raw_profiles = extractor._generate_raw_updates_from_sessions(

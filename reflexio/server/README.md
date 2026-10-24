@@ -300,16 +300,18 @@ Key components:
 
 **Directory**: `site_var/`
 
-**Detailed Documentation**: See [`site_var/README.md`](site_var/README.md) for the full configuration and feature flag system.
+**Detailed Documentation**: See [`site_var/README.md`](site_var/README.md) for model/retrieval defaults and the retired rollout-policy adoption path.
 
 | File | Purpose |
 |------|---------|
-| `site_var_manager.py` | SiteVarManager (singleton) - loads JSON/TXT configs |
-| `feature_flags.py` | Per-org feature gating (`is_feature_enabled()`, `get_all_feature_flags()`) |
+| `site_var_manager.py` | SiteVarManager with a per-instance cache - loads JSON/TXT configs |
 
-**Feature Flags**: Config in `site_var_sources/feature_flags.json`. Each flag has global `enabled` toggle and per-org `enabled_org_ids` allowlist. Unknown flags default to enabled (fail-open). Current flags: `resumable_extraction_agent`.
+Pending tools use `pending_tool_call_config.enabled`; shared admission in
+`services/extraction/pending_tool_admission.py` protects fresh and resumed tool
+construction. Legacy non-neutral rollout files require explicit org-policy
+adoption; no constant enabled flag replaces their resolver.
 
-Access: `SiteVarManager().get_site_var(key)` for raw values, `feature_flags.is_feature_enabled(org_id, name)` for flag checks
+Access model/retrieval defaults with `SiteVarManager().get_site_var(key)`.
 
 ## Services
 
@@ -836,7 +838,7 @@ Generation services follow `BaseGenerationService`; focused search and read-side
 - [Services README](services/README.md) -- per-directory index of the business-logic layer
 - [Prompt Bank README](prompt/prompt_bank/README.md) -- versioned prompt template system
 - [Playbook Service README](services/playbook/README.md) -- playbook extraction, aggregation, and deduplication pipeline
-- [Site Variables README](site_var/README.md) -- global configuration and feature flags
+- [Site Variables README](site_var/README.md) -- global model and retrieval defaults
 
 ## Cached host readiness
 

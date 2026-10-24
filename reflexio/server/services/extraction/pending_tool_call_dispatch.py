@@ -19,6 +19,9 @@ from reflexio.server.llm.tools import (
     Completed,
     Tool,
 )
+from reflexio.server.services.extraction.pending_tool_admission import (
+    require_pending_tool_admission,
+)
 from reflexio.server.services.storage.storage_base import (
     BaseStorage,
     PendingToolCallRecord,
@@ -136,6 +139,7 @@ def handle_ask_human(
 ) -> AsyncAccepted | Completed:
     if not ctx.run_id:
         raise ValueError("ask_human requires a durable agent run_id")
+    require_pending_tool_admission(ctx.config, ctx.storage)
 
     current = datetime.now(UTC)
     spec = _build_async_request_spec(args=args, ctx=ctx)
@@ -244,6 +248,7 @@ def handle_attach_pending_info_request(
 ) -> dict[str, Any] | AsyncAccepted:
     if not ctx.run_id:
         raise ValueError("attach_pending_info_request requires a durable agent run_id")
+    require_pending_tool_admission(ctx.config, ctx.storage)
 
     record = ctx.storage.get_pending_tool_call(args.pending_tool_call_id)
     expected_scope = human_feedback_scope(ctx.org_id)

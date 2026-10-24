@@ -1,22 +1,20 @@
 # /reflexio/server/site_var
-Description: Global configuration manager for site-wide variables and per-org feature flags
+Description: File-backed model and retrieval defaults with optional Redis caching.
 
 > Part of the [Reflexio Server](../README.md).
 
 ## Main Entry Points
 
 
-- **Manager**: `site_var_manager.py` - `SiteVarManager` (singleton)
-- **Feature Flags**: `feature_flags.py` - Per-org feature gating helpers
+- **Manager**: `site_var_manager.py` - `SiteVarManager` (per-instance cache)
 - **Sources**: `site_var_sources/` - JSON/TXT config files
 
 ## Purpose
 
 
 1. **Global settings** - Text model names and retrieval defaults
-2. **Feature flags** - Per-org feature gating (global enable or per-org allowlist)
-3. **Dual storage** - File-based with optional Redis caching
-4. **Auto-fallback** - Redis → File system graceful degradation
+2. **Dual storage** - File-based with optional Redis caching
+3. **Auto-fallback** - Redis → File system graceful degradation
 
 Embedding model selection belongs to `LLMConfig.embedding_model_name`; without
 an override, OSS uses `local/minilm-l6-v2`. The former
@@ -34,34 +32,22 @@ removed; enterprise adapters reject the former `search_settings.recency_*`
 keys with migration instructions. Search mode and vector/FTS weight sitevars
 remain supported.
 
-## Feature Flags
+## Pending-tool admission
 
+Pending-info tools use the existing organization setting
+`pending_tool_call_config.enabled` and require storage. Fresh extraction,
+scheduled resumes and direct continuation tool construction share
+[`pending_tool_admission.py`](../services/extraction/pending_tool_admission.py).
+The extraction loop itself remains permanent. Per-tool TTL, answer freshness
+and deduplication policy remain independent.
 
-**File**: `feature_flags.py`
-**Config**: `site_var_sources/feature_flags.json`
-
-Per-org feature gating with fail-open defaults. Each flag supports global enable or per-org allowlist.
-
-```python
-from reflexio.server.site_var.feature_flags import is_feature_enabled, get_all_feature_flags
-
-is_feature_enabled(org_id, "resumable_extraction_agent")  # Single flag check
-get_all_feature_flags(org_id)               # All flags as dict[str, bool]
-```
-
-**Config format** (`feature_flags.json`):
-```json
-{
-    "resumable_extraction_agent": {
-        "enabled": true,
-        "enabled_org_ids": []
-    }
-}
-```
-
-**Resolution logic**: Enabled if `enabled=True` (global) OR `org_id` in `enabled_org_ids`. Unknown flags default to enabled (fail-open).
-
-**Current flags**: `resumable_extraction_agent`.
+The former `feature_flags.py` resolver and bundled `feature_flags.json` are
+retired. A missing legacy file or a provably neutral globally enabled policy
+requires no rewrite. A non-neutral or ambiguous legacy JSON/TXT file is refused
+before enabling tools; it is not interpreted as an accepted cohort switch.
+An org that is already opted out remains off. See the [adoption
+recipe](../services/extraction/README.md#retiring-a-pending-tool-rollout-policy)
+before removing a saved denial policy.
 
 ## Usage
 
@@ -78,12 +64,10 @@ config = manager.get_site_var("llm_model_setting")  # Returns dict or string
 
 ```
 site_var/
-├── site_var_manager.py        # SiteVarManager (singleton)
-├── feature_flags.py           # Per-org feature flag helpers
+├── site_var_manager.py        # SiteVarManager (per-instance cache)
 └── site_var_sources/
     ├── llm_model_setting.json # Provider/model defaults
-    ├── search_settings.json   # Default retrieval mode and hybrid search weights
-    └── feature_flags.json     # Feature flag config (per-flag enable + org allowlist)
+    └── search_settings.json   # Default retrieval mode and hybrid search weights
 ```
 
 ## Architecture Pattern
@@ -92,12 +76,11 @@ site_var/
 - **JSON priority**: `.json` files take precedence over `.txt`
 - **Variable name**: Filename without extension
 - **Redis optional**: Enable via `SiteVarManager(enable_redis=True)`
-- **Feature flags**: Loaded via SiteVarManager, resolved per-org at request time
 
 ## Requirements / Problems to Avoid
 
 
-- **Unknown flags are enabled by default**; do not use feature flags as an authorization boundary.
+- Pending-tool admission is not authentication or authorization. Preserve the existing org, project and tenant checks.
 - **Keep source names aligned with lookup keys**; a JSON filename without its extension is the site-variable key.
 
 ## See Also

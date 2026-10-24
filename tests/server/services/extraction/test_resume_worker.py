@@ -497,14 +497,19 @@ def _seed_ready_run(storage: SQLiteStorage) -> None:
     )
 
 
+@pytest.mark.parametrize("pending_enabled", [False, True])
 def test_resume_worker_resumes_profile_run_and_consumes_dependency(
     monkeypatch,
     request_context,
     storage,
     tool_call_completion,
+    pending_enabled,
 ):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    request_context.configurator.get_config().pending_tool_call_config.enabled = (
+        pending_enabled
+    )
     _seed_interactions(storage)
     _seed_ready_run(storage)
     _make_tc, make_stop = tool_call_completion
@@ -523,7 +528,7 @@ def test_resume_worker_resumes_profile_run_and_consumes_dependency(
     worker = ExtractionResumeWorker(request_context=request_context)
 
     with (
-        patch("litellm.completion", side_effect=[response]),
+        patch("litellm.completion", side_effect=[response]) as completion,
         patch(
             "reflexio.server.services.profile.components.consolidator.ProfileConsolidator",
         ) as mock_consolidator_cls,
@@ -533,6 +538,10 @@ def test_resume_worker_resumes_profile_run_and_consumes_dependency(
         )
         resumed = worker.drain(max_runs=1)
 
+    requested_tools = completion.call_args.kwargs.get("tools") or []
+    names = {tool["function"]["name"] for tool in requested_tools}
+    assert ("attach_pending_info_request" in names) is pending_enabled
+    assert "ask_human" not in names
     assert resumed == 1
     run = storage.get_agent_run("run_1")
     assert run is not None
@@ -2325,3 +2334,22 @@ def test_resume_admission_wait_respects_configured_claim_lifetime(
     assert saved is not None and saved.status == AgentRunStatus.RESUMING
     assert saved.claimed_by == worker.worker_id and saved.claimed_at is not None
     assert saved.resume_attempts == 0
+
+
+@pytest.mark.parametrize("extractor_kind", ["profile", "playbook"])
+def test_direct_continuation_cannot_reopen_pending_tools_after_org_opt_out(
+    request_context, extractor_kind
+):
+    config = request_context.configurator.get_config()
+    config.pending_tool_call_config.enabled = False
+    worker = ExtractionResumeWorker(
+        request_context=request_context, llm_client=MagicMock()
+    )
+    run = _finalizing_run(
+        run_id="opted-out-continuation",
+        extractor_kind=extractor_kind,
+        request_id="request-opted-out-continuation",
+    )
+    tools, tool_context = worker._extra_tools_for_run(run)
+    assert tools == []
+    assert tool_context is None
