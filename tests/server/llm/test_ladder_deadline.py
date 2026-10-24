@@ -20,6 +20,7 @@ import pytest
 from pydantic import BaseModel
 
 from reflexio.server.llm import _litellm_text_generation as ttg
+from reflexio.server.llm import call_deadline
 from reflexio.server.llm.call_deadline import llm_deadline
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
@@ -234,6 +235,8 @@ def _repair_walk(
     the caller's absolute deadline (None when no caller deadline is installed).
     """
     clock = _Clock()
+    # Admission now checks this same caller deadline; use one clock domain.
+    monkeypatch.setattr(call_deadline, "monotonic", clock.monotonic)
     monkeypatch.setattr(
         ttg,
         "time",

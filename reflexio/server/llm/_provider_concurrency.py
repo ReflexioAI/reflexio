@@ -19,6 +19,7 @@ import litellm
 
 from reflexio.removed_env import reject_removed_env
 from reflexio.server.env_utils import env_str
+from reflexio.server.llm.call_deadline import remaining_call_time
 from reflexio.server.llm.llm_utils import positive_int_env
 from reflexio.server.operational_metrics import record_health
 
@@ -208,10 +209,12 @@ def provider_slot(model: str, *, max_wait: float | None = None) -> Iterator[None
     from reflexio.server import search_runtime
 
     search_runtime.checkpoint()
+    remaining_call_time()
     provider = _provider_key(model)
     if provider is None:
         token = _current_provider_lease.set(None)
         try:
+            remaining_call_time()
             yield  # unknown provider → do not cap or retain an outer permit
         finally:
             _current_provider_lease.reset(token)
@@ -222,7 +225,9 @@ def provider_slot(model: str, *, max_wait: float | None = None) -> Iterator[None
     admission_outcome = "aborted"
     try:
         with search_runtime.phase("llm.provider_queue"):
-            wait = search_runtime.remaining(_ACQUIRE_TIMEOUT_SECONDS)
+            wait = remaining_call_time(
+                search_runtime.remaining(_ACQUIRE_TIMEOUT_SECONDS)
+            )
             if max_wait is not None:
                 wait = min(wait, max_wait)
             acquired = sem.acquire(timeout=wait)
@@ -233,6 +238,7 @@ def provider_slot(model: str, *, max_wait: float | None = None) -> Iterator[None
         )
     if not acquired:
         search_runtime.checkpoint()
+        remaining_call_time()
         cap = _max_concurrency_for_provider(provider)
         logger.warning(
             "event=llm_provider_cap_saturated provider=%s cap=%d "
@@ -249,6 +255,7 @@ def provider_slot(model: str, *, max_wait: float | None = None) -> Iterator[None
     outcome = "success"
     try:
         search_runtime.checkpoint()
+        remaining_call_time()
         yield
     except Exception:
         outcome = "failure"
