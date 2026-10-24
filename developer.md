@@ -754,3 +754,13 @@ failures are recorded against the admitted attempt. Cancellation requested durin
 selection survives batch initialization; stale workers cannot replace newer progress.
 Exact attempt IDs tolerate client/server clock skew and remain in final SDK responses.
 Asynchronous submission remains fire-and-forget.
+
+### Audited playbook consolidation search limits
+
+The native reconciler advertises its local read-only search contract in every
+method, audit and revision prompt: at most three tool calls in one response and
+two tool-use rounds, followed by a final structured response. All responses still
+share the physical-request allowance. The runtime withholds an unaudited batch
+when a tool or physical-request limit is exceeded; prompt wording does not relax
+those limits or guarantee that a model complies. This avoids a hidden execution
+constraint while preserving the required final audit before persistence.
