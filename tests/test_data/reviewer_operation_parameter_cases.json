@@ -1,0 +1,108 @@
+[
+  {
+    "provenance": "Prospective synthetic development contrast for independent pre-output review; not customer data, holdout or a relabeled old control.",
+    "domain": "poster_resizing",
+    "split": "development",
+    "agent_context": "The agent prepares poster resize jobs from user instructions and assigned job inputs.",
+    "existing": [],
+    "id": "operation-wrapped-historical-width-default",
+    "turns": [
+      {
+        "role": "User",
+        "source": "",
+        "content": "For this poster resize job, resize the poster to width 960 pixels."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "Resize every future poster to width 960 pixels as the default width.",
+        "trigger": "When preparing any future poster resize job for this user",
+        "rationale": "The user has a standing preference for a default poster width of 960 pixels.",
+        "evidence": [
+          1
+        ],
+        "decision": "reject",
+        "reason_code": "speculative",
+        "preserve": [],
+        "preserve_any": [],
+        "remove": [
+          "Inferred standing width preference from one job",
+          "960-pixel default for all future poster jobs",
+          "Any manufactured conditional task-input-use replacement"
+        ]
+      }
+    ]
+  },
+  {
+    "provenance": "Prospective synthetic development contrast for independent pre-output review; not customer data, holdout or a relabeled old control.",
+    "domain": "poster_resizing",
+    "split": "development",
+    "agent_context": "The agent prepares poster resize jobs from user instructions and assigned job inputs.",
+    "existing": [],
+    "id": "operation-wrapped-explicit-future-width-default",
+    "turns": [
+      {
+        "role": "User",
+        "source": "",
+        "content": "For all my future poster resize jobs, always resize each poster to width 960 pixels as the default width."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "Resize every future poster to width 960 pixels as the default width.",
+        "trigger": "When preparing any future poster resize job for this user",
+        "rationale": "The user explicitly requested a default width of 960 pixels for all future poster resize jobs.",
+        "evidence": [
+          1
+        ],
+        "decision": "accept",
+        "reason_code": "grounded_useful",
+        "preserve": [
+          "Default width of 960 pixels",
+          "All future poster resize jobs within the user scope",
+          "Unconditional fixed-width instruction within that scope"
+        ],
+        "preserve_any": [],
+        "remove": [
+          "Any new assignment/availability condition",
+          "Any replacement variable-input-use lesson"
+        ]
+      }
+    ]
+  },
+  {
+    "provenance": "Prospective synthetic development contrast for independent pre-output review; not customer data, holdout or a relabeled old control.",
+    "domain": "poster_resizing",
+    "split": "development",
+    "agent_context": "The agent prepares poster resize jobs from user instructions and assigned job inputs.",
+    "existing": [],
+    "id": "partial-width-supply-unsupported-ratio-resize",
+    "turns": [
+      {
+        "role": "User",
+        "source": "",
+        "content": "For this poster resize job, I assigned a width of 960 pixels."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "Compute the width-to-height ratio from this job's supplied width and height, then resize the poster into a square using that ratio as the scale factor.",
+        "trigger": "When resizing a poster using the job's supplied dimensions",
+        "rationale": "The user supplied both dimensions and requested a ratio-based square resize.",
+        "evidence": [
+          1
+        ],
+        "decision": "reject",
+        "reason_code": "speculative",
+        "preserve": [],
+        "preserve_any": [],
+        "remove": [
+          "Unsupported height assignment",
+          "Unsupported ratio calculation and square-resize operation",
+          "Claim that the user requested this larger procedure",
+          "Any invented standalone action obtained by clipping the width operand"
+        ]
+      }
+    ]
+  }
+]

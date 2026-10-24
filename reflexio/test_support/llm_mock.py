@@ -223,10 +223,12 @@ _litellm_patcher = None
 
 
 def configure_llm_mock(config: Any) -> None:
-    """Call from ``pytest_configure`` to patch litellm for non-e2e tests."""
+    """Patch once, even when both OSS and enterprise pytest hooks call it."""
     global _litellm_patcher  # noqa: PLW0603
 
     if _is_e2e_test_run(config):
+        return
+    if _litellm_patcher is not None:
         return
 
     os.environ["MOCK_LLM_RESPONSE"] = "true"

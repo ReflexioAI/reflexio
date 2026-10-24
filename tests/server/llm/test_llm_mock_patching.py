@@ -39,6 +39,19 @@ def test_suspends_the_patch_then_restores_it() -> None:
     assert litellm_is_patched(), "the session patch must be restored on exit"
 
 
+def test_repeated_session_configuration_keeps_one_suspendable_patch(
+    request: pytest.FixtureRequest,
+) -> None:
+    patcher = llm_mock._litellm_patcher
+    assert patcher is not None
+    llm_mock.configure_llm_mock(request.config)
+    llm_mock.configure_llm_mock(request.config)
+    assert llm_mock._litellm_patcher is patcher
+    with unpatched_litellm():
+        assert_litellm_unpatched()
+    assert litellm_is_patched()
+
+
 def test_restores_the_patch_when_the_body_raises() -> None:
     """A failing live test must not leave the rest of the session unmocked."""
     with pytest.raises(RuntimeError, match="boom"), unpatched_litellm():
