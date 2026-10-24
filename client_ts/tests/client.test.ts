@@ -198,6 +198,40 @@ describe("failures", () => {
     await expect(pending).rejects.toThrow("user cancelled");
   });
 
+  it("report a connection dropped mid-body as a ReflexioError", async () => {
+    const dropped = () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"success":'));
+            controller.error(new Error("socket hang up"));
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    const err = await call(dropped).catch((e) => e);
+    expect(err).toBeInstanceOf(ReflexioError);
+    expect(err.message).toContain("socket hang up");
+  });
+
+  it("report a timeout while the body is still arriving as one", async () => {
+    const stalled = (_: URL | RequestInfo, init: RequestInit = {}) =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              init.signal?.addEventListener("abort", () => controller.error(init.signal?.reason), { once: true });
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
+      );
+    const client = new ReflexioClient({ url: "http://h/", fetch: stalled as typeof fetch });
+    const err = await client.search({ query: "q" }, { timeoutMs: 20 }).catch((e) => e);
+    expect(err).toBeInstanceOf(ReflexioError);
+    expect(err.message).toContain("timed out after 20 ms");
+  });
+
   it("return an empty object for an empty 2xx", async () => {
     await expect(call(() => new Response(null, { status: 204 }))).resolves.toEqual({});
   });

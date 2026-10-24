@@ -163,6 +163,12 @@ export class ReflexioClient {
     const timeout = AbortSignal.timeout(timeoutMs);
     const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
     const target = `${method} ${url.origin}${url.pathname}`;
+    // The connection can drop, time out or be aborted while the body is still
+    // arriving, so reading it is as much a transport step as the fetch itself.
+    const transportError = (err: unknown) =>
+      timeout.aborted
+        ? new ReflexioError(`${target} timed out after ${timeoutMs} ms`, { cause: err })
+        : new ReflexioError(`${target} failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
 
     let res: Response;
     try {
@@ -176,8 +182,7 @@ export class ReflexioClient {
         redirect: "manual",
       });
     } catch (err) {
-      if (timeout.aborted) throw new ReflexioError(`${target} timed out after ${timeoutMs} ms`, { cause: err });
-      throw new ReflexioError(`${target} failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+      throw transportError(err);
     }
 
     if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
@@ -187,7 +192,12 @@ export class ReflexioClient {
         { status: res.status || undefined },
       );
     }
-    const text = await res.text();
+    let text: string;
+    try {
+      text = await res.text();
+    } catch (err) {
+      throw transportError(err);
+    }
     const isJson = (res.headers.get("content-type") ?? "").toLowerCase().includes("json");
     let body: unknown = text;
     if (isJson && text) {
