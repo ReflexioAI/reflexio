@@ -18,7 +18,11 @@ from reflexio.models.api_schema.domain.entities import (
     UserPlaybook,
     UserProfile,
 )
-from reflexio.models.api_schema.domain.enums import PlaybookStatus, ProfileTimeToLive
+from reflexio.models.api_schema.domain.enums import (
+    PlaybookStatus,
+    ProfileTimeToLive,
+    Status,
+)
 from reflexio.models.api_schema.retriever_schema import (
     SearchAgentPlaybookRequest,
     SearchUserPlaybookRequest,
@@ -164,3 +168,51 @@ def test_search_excludes_merged_profiles(storage):
     )
 
     assert _search_profiles(storage) == ["survivor"]
+
+
+@pytest.mark.parametrize("query", ["currency status rule", None])
+def test_default_user_playbook_search_returns_current_rows_only(storage, query):
+    """No status_filter means CURRENT only, with or without a query.
+
+    One row per lifecycle status, so a backend that also returns archived,
+    pending or in-flight rows by default fails here (lifecycle_filters.py).
+    """
+    statuses = [
+        None,
+        Status.PENDING,
+        Status.ARCHIVED,
+        Status.ARCHIVE_IN_PROGRESS,
+        Status.MERGED,
+        Status.SUPERSEDED,
+    ]
+    playbooks = [
+        UserPlaybook(
+            user_id=_USER,
+            agent_version="v1",
+            request_id="r-status",
+            trigger="currency status trigger",
+            content=f"currency status rule {status.value if status else 'current'}",
+            created_at=_NOW - 10 * _DAY,
+            status=status,
+        )
+        for status in statuses
+    ]
+    storage.save_user_playbooks(playbooks)
+    stored = storage.get_user_playbooks(
+        user_id=_USER, status_filter=statuses, limit=100
+    )
+    assert sorted(p.status.value if p.status else "" for p in stored) == sorted(
+        s.value if s else "" for s in statuses
+    ), "every status must be seeded for the default to be tested"
+
+    hits = storage.search_user_playbooks(
+        SearchUserPlaybookRequest(
+            query=query,
+            user_id=_USER,
+            top_k=10,
+            threshold=0.0,
+            search_mode=SearchMode.FTS,
+        ),
+        None,
+    )
+    assert [p.user_playbook_id for p in hits] == [playbooks[0].user_playbook_id]

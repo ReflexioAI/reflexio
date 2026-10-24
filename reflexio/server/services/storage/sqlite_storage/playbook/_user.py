@@ -27,11 +27,12 @@ from reflexio.server.services.playbook.publication import (
 )
 from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.lifecycle_filters import (
+    GC_ELIGIBLE_STATUSES,
+    TOMBSTONE_STATUS_VALUES,
     validate_include_inactive,
 )
 
 from .._base import (
-    _TOMBSTONE_STATUS_VALUES,
     SQLiteStorageBase,
     _build_status_sql,
     _effective_search_mode,
@@ -47,7 +48,7 @@ from .._base import (
     _uses_unicode_lexical_fallback,
     _vector_rank_rows,
 )
-from .._lineage import _GC_ELIGIBLE_STATUSES, _append_event_stmt
+from .._lineage import _append_event_stmt
 from .._playbook import _build_tags_sql, _emit_hard_delete_playbook
 
 
@@ -963,9 +964,9 @@ class UserPlaybookStoreMixin:
             params.extend(sparams)
         else:
             # Default: exclude tombstone statuses (MERGED/SUPERSEDED)
-            _ph = ",".join("?" * len(_TOMBSTONE_STATUS_VALUES))
+            _ph = ",".join("?" * len(TOMBSTONE_STATUS_VALUES))
             sql += f" AND (status IS NULL OR status NOT IN ({_ph}))"
-            params.extend(_TOMBSTONE_STATUS_VALUES)
+            params.extend(TOMBSTONE_STATUS_VALUES)
         tag_frag, tag_params = _build_tags_sql("user_playbooks", tags)
         if tag_frag:
             sql += f" AND {tag_frag}"
@@ -1012,22 +1013,22 @@ class UserPlaybookStoreMixin:
             params.extend(sparams)
         else:
             # Default: exclude tombstone statuses (MERGED/SUPERSEDED)
-            _ph = ",".join("?" * len(_TOMBSTONE_STATUS_VALUES))
+            _ph = ",".join("?" * len(TOMBSTONE_STATUS_VALUES))
             sql += f" AND (status IS NULL OR status NOT IN ({_ph}))"
-            params.extend(_TOMBSTONE_STATUS_VALUES)
+            params.extend(TOMBSTONE_STATUS_VALUES)
 
         row = self._fetchone(sql, params)
         return row["cnt"] if row else 0
 
     @SQLiteStorageBase.handle_exceptions
     def count_user_playbooks_by_session(self, session_id: str) -> int:
-        _ph = ",".join("?" * len(_TOMBSTONE_STATUS_VALUES))
+        _ph = ",".join("?" * len(TOMBSTONE_STATUS_VALUES))
         row = self._fetchone(
             f"""SELECT COUNT(*) as cnt FROM user_playbooks up
                JOIN requests r ON up.request_id = r.request_id
                WHERE r.session_id = ?
                  AND (up.status IS NULL OR up.status NOT IN ({_ph}))""",  # noqa: S608
-            (session_id, *_TOMBSTONE_STATUS_VALUES),
+            (session_id, *TOMBSTONE_STATUS_VALUES),
         )
         return row["cnt"] if row else 0
 
@@ -1168,7 +1169,7 @@ class UserPlaybookStoreMixin:
             extra_params.append(playbook_name)
 
         # Set retired_at = now when transitioning to a GC-eligible status; clear to NULL otherwise.
-        retired_at_val = now_ts if new_val in _GC_ELIGIBLE_STATUSES else None
+        retired_at_val = now_ts if new_val in GC_ELIGIBLE_STATUSES else None
 
         batch_request_id = uuid.uuid4().hex
         with self._lock:
@@ -1404,10 +1405,8 @@ class UserPlaybookStoreMixin:
             conditions.append(frag)
             params.extend(sparams)
         else:
-            # Default: exclude tombstone statuses (MERGED/SUPERSEDED)
-            _ph = ",".join("?" * len(_TOMBSTONE_STATUS_VALUES))
-            conditions.append(f"(up.status IS NULL OR up.status NOT IN ({_ph}))")
-            params.extend(_TOMBSTONE_STATUS_VALUES)
+            # Default: current rows only, as on Supabase (lifecycle_filters.py).
+            conditions.append("up.status IS NULL")
         tag_frag, tag_params = _build_tags_sql("up", request.tags)
         if tag_frag:
             conditions.append(tag_frag)
@@ -1522,9 +1521,9 @@ class UserPlaybookStoreMixin:
     ) -> UserPlaybook | None:
         sql = "SELECT * FROM user_playbooks WHERE user_playbook_id = ?"
         if not include_tombstones:
-            _ph = ",".join("?" * len(_TOMBSTONE_STATUS_VALUES))
+            _ph = ",".join("?" * len(TOMBSTONE_STATUS_VALUES))
             sql += f" AND (status IS NULL OR status NOT IN ({_ph}))"
-            row = self._fetchone(sql, (user_playbook_id, *_TOMBSTONE_STATUS_VALUES))
+            row = self._fetchone(sql, (user_playbook_id, *TOMBSTONE_STATUS_VALUES))
         else:
             row = self._fetchone(sql, (user_playbook_id,))
         return _row_to_user_playbook(row) if row else None
@@ -1646,7 +1645,7 @@ class UserPlaybookStoreMixin:
                     self._subject_ref_from_user_playbook_row(row)
                 )
                 old_status = row["status"]
-                _ph = ",".join("?" * len(_TOMBSTONE_STATUS_VALUES))
+                _ph = ",".join("?" * len(TOMBSTONE_STATUS_VALUES))
                 cur = self.conn.execute(
                     "UPDATE user_playbooks SET status = ?, retired_at = ?"
                     " WHERE user_playbook_id = ?"
@@ -1655,7 +1654,7 @@ class UserPlaybookStoreMixin:
                         Status.SUPERSEDED.value,
                         now_ts,
                         upid,
-                        *_TOMBSTONE_STATUS_VALUES,
+                        *TOMBSTONE_STATUS_VALUES,
                     ),
                 )
                 if cur.rowcount > 0:

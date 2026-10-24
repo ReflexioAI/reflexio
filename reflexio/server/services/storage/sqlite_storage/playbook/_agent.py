@@ -26,11 +26,12 @@ from reflexio.server.services.embedding_text import (
     resolve_retrieval_threshold,
 )
 from reflexio.server.services.storage.lifecycle_filters import (
+    AGENT_PLAYBOOK_DEFAULT_EXCLUDED_STATUSES,
+    TOMBSTONE_STATUS_VALUES,
     validate_include_inactive,
 )
 
 from .._base import (
-    _TOMBSTONE_STATUS_VALUES,
     SQLiteStorageBase,
     _build_status_sql,
     _effective_search_mode,
@@ -49,11 +50,6 @@ from .._base import (
 )
 from .._lineage import _append_event_stmt
 from .._playbook import _build_tags_sql, _emit_hard_delete_playbook
-
-_AGENT_PLAYBOOK_DEFAULT_EXCLUDED_STATUSES = (
-    *_TOMBSTONE_STATUS_VALUES,
-    Status.ARCHIVE_IN_PROGRESS.value,
-)
 
 
 def _emit_supersede_playbook(
@@ -382,11 +378,11 @@ class AgentPlaybookStoreMixin:
     ) -> AgentPlaybook | None:
         sql = "SELECT * FROM agent_playbooks WHERE agent_playbook_id = ?"
         if not include_tombstones:
-            _ph = ",".join("?" * len(_AGENT_PLAYBOOK_DEFAULT_EXCLUDED_STATUSES))
+            _ph = ",".join("?" * len(AGENT_PLAYBOOK_DEFAULT_EXCLUDED_STATUSES))
             sql += f" AND (status IS NULL OR status NOT IN ({_ph}))"
             row = self._fetchone(
                 sql,
-                (agent_playbook_id, *_AGENT_PLAYBOOK_DEFAULT_EXCLUDED_STATUSES),
+                (agent_playbook_id, *AGENT_PLAYBOOK_DEFAULT_EXCLUDED_STATUSES),
             )
         else:
             row = self._fetchone(sql, (agent_playbook_id,))
@@ -786,11 +782,11 @@ class AgentPlaybookStoreMixin:
                 # NOTE (M3): The model supersede_profiles_by_ids adds an eligible-check
                 # `if old_status_val not in eligible: continue` before the UPDATE. For
                 # agent_playbooks the ineligible condition spans two columns (status in
-                # _TOMBSTONE_STATUS_VALUES OR playbook_status == APPROVED), so aligning
+                # TOMBSTONE_STATUS_VALUES OR playbook_status == APPROVED), so aligning
                 # would require adding playbook_status to the SELECT. The UPDATE WHERE
                 # clause already excludes those rows atomically; the extra continue here
                 # would be a no-op and not worth the added complexity.
-                _ph = ",".join("?" * len(_TOMBSTONE_STATUS_VALUES))
+                _ph = ",".join("?" * len(TOMBSTONE_STATUS_VALUES))
                 cur = self.conn.execute(
                     "UPDATE agent_playbooks SET status = ?, retired_at = ?"
                     " WHERE agent_playbook_id = ? AND playbook_status != ?"
@@ -800,7 +796,7 @@ class AgentPlaybookStoreMixin:
                         now_ts,
                         apid,
                         PlaybookStatus.APPROVED.value,
-                        *_TOMBSTONE_STATUS_VALUES,
+                        *TOMBSTONE_STATUS_VALUES,
                     ),
                 )
                 if cur.rowcount > 0:

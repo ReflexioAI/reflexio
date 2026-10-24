@@ -18,11 +18,12 @@ from reflexio.models.api_schema.service_schemas import (
     UserProfile,
 )
 from reflexio.server.services.storage.lifecycle_filters import (
+    GC_ELIGIBLE_STATUSES,
+    PROFILE_TOMBSTONE_STATUS_VALUES,
     validate_include_inactive,
 )
 
 from .._base import (
-    _PROFILE_TOMBSTONE_STATUS_VALUES,
     SQLiteStorageBase,
     _build_status_sql,
     _epoch_now,
@@ -31,7 +32,7 @@ from .._base import (
     _json_dumps,
     _row_to_profile,
 )
-from .._lineage import _GC_ELIGIBLE_STATUSES, _append_event_stmt
+from .._lineage import _append_event_stmt
 from .._profiles import _build_tags_sql
 
 logger = logging.getLogger(__name__)
@@ -599,7 +600,7 @@ class ProfileStoreMixin:
             extra_params.extend(user_ids)
 
         # Set retired_at = now when transitioning to a GC-eligible status; clear to NULL otherwise.
-        retired_at_val = now_ts if new_val in _GC_ELIGIBLE_STATUSES else None
+        retired_at_val = now_ts if new_val in GC_ELIGIBLE_STATUSES else None
 
         batch_request_id = uuid.uuid4().hex
         with self._lock:
@@ -756,9 +757,9 @@ class ProfileStoreMixin:
         """
         sql = "SELECT * FROM profiles WHERE profile_id = ?"
         if not include_tombstones:
-            ph = ",".join("?" * len(_PROFILE_TOMBSTONE_STATUS_VALUES))
+            ph = ",".join("?" * len(PROFILE_TOMBSTONE_STATUS_VALUES))
             sql += f" AND (status IS NULL OR status NOT IN ({ph}))"
-            row = self._fetchone(sql, (profile_id, *_PROFILE_TOMBSTONE_STATUS_VALUES))
+            row = self._fetchone(sql, (profile_id, *PROFILE_TOMBSTONE_STATUS_VALUES))
         else:
             row = self._fetchone(sql, (profile_id,))
         return _row_to_profile(row) if row else None

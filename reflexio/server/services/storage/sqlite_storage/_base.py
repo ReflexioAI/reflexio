@@ -681,22 +681,6 @@ def _true_rrf_merge(
     return [row for row, _ in scored[:match_count]]
 
 
-# Tombstone statuses: rows with these values are excluded from default reads.
-# Tasks 5/9/10 create tombstones; this constant ensures they stay hidden unless
-# explicitly requested via include_tombstones=True on by-id getters, or an
-# explicit status_filter on list/count methods.
-_TOMBSTONE_STATUS_VALUES = (Status.MERGED.value, Status.SUPERSEDED.value)
-
-# Profile reads also treat EXPIRED (TTL-expired tombstone) as non-current. Kept
-# separate from _TOMBSTONE_STATUS_VALUES because that tuple is shared with playbook
-# queries (which never carry EXPIRED) via hardcoded placeholders.
-_PROFILE_TOMBSTONE_STATUS_VALUES = (
-    Status.MERGED.value,
-    Status.SUPERSEDED.value,
-    Status.EXPIRED.value,
-)
-
-
 def parse_status(value: str | None) -> Status | None:
     """Parse a stored status string into a Status, tolerating unknown values.
 

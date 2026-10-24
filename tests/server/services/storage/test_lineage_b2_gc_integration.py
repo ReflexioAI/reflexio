@@ -140,7 +140,7 @@ def test_gc_deletes_aged_merged_tombstone(tmp_path):
     events = _hard_delete_events(s, str(pid))
     assert len(events) == 1
     assert events[0].actor == "system"
-    assert events[0].reason == "ttl-gc"
+    assert events[0].reason == "retention_gc"
 
 
 # ---------------------------------------------------------------------------
