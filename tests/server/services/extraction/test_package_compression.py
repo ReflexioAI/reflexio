@@ -109,8 +109,8 @@ def prepared_package(package_pipeline, monkeypatch, *, passthrough=False):
     )
     parent = replace(parent, id=f"window:{window.window_id}")
     parent.generation_request_snapshot["overflow"] = manifest
-    if parent.service_config_snapshot is not None:
-        parent.service_config_snapshot.pop("window_interactions", None)
+    assert parent.service_config_snapshot is not None
+    assert "window_interactions" not in parent.service_config_snapshot
     with storage.commit_scope():
         storage.fence_user_extraction(user, token)
         storage.validate_extraction_source_digest(window, plan.source_digest)

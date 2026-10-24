@@ -19,6 +19,9 @@ from reflexio.models.config_schema import (
 from reflexio.server.api import create_app
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
 from reflexio.server.services.durable_learning.worker import DurableLearningWorker
+from reflexio.server.services.extraction.agent_run_records import (
+    UNPERSISTED_SERVICE_CONFIG_FIELDS,
+)
 from reflexio.server.services.profile.service import ProfileGenerationService
 
 pytestmark = pytest.mark.integration
@@ -3226,6 +3229,8 @@ def test_enabled_overflow_profile_uses_real_window_commit_once(
     assert len(rows) == 1
     run = storage.get_agent_run(rows[0]["id"])
     assert run.status.value == ("finalized" if gate_negative else "agent_completed")
+    assert run.service_config_snapshot is not None
+    assert UNPERSISTED_SERVICE_CONFIG_FIELDS.isdisjoint(run.service_config_snapshot)
     attempts = run.generation_request_snapshot["overflow"]["attempts"]
     assert len(attempts) == expected_calls
     assert (
@@ -3420,6 +3425,9 @@ def test_http_overflow_human_answer_resumes_same_window_and_commits_once(
         assert len(pending) == 1 and pending[0]["status"] == "pending"
         parent_id = db.query("SELECT id FROM _agent_runs LIMIT 2")[0]["id"]
     parent = storage.get_agent_run(parent_id)
+    # Overflow parents (profile and playbook) persist no copied content.
+    assert parent.service_config_snapshot is not None
+    assert UNPERSISTED_SERVICE_CONFIG_FIELDS.isdisjoint(parent.service_config_snapshot)
     assert parent.generation_request_snapshot["output_schema_name"] == (
         "StructuredReferencedExtractedPlaybookList"
         if kind == "playbook"
