@@ -106,24 +106,23 @@ class LocalFileConfigStorage(ConfigStorage):
             )
 
     def get_version(self) -> tuple[str, Any] | None:
-        """Return the on-disk mtime of the org's config file, if it exists.
+        """Return the on-disk mtime or a supported missing-file stamp.
 
         The Reflexio cache uses this to detect out-of-band edits to
         ``~/.reflexio/configs/config_<org-id>.json`` (e.g. an operator
         editing the file directly while the server is running). If the
-        file is missing — for example, before the first ``set_config``
-        write — return None so the cache leaves the entry alone rather
-        than thrashing every request.
+        file is missing, stamp that absence so initialization during loading
+        cannot permanently disable version probing.
 
         Returns:
-            tuple[str, float] | None: ``("file", mtime_seconds)`` when
-            the config file exists, ``None`` otherwise (missing file or
-            stat failure).
+            tuple[str, float | None]: ``("file", mtime_seconds)`` when the
+            file exists, ``("file", None)`` when absent. Other stat failures
+            raise and remain retryable.
         """
         try:
             return ("file", Path(self.config_file).stat().st_mtime)
-        except OSError:
-            return None
+        except FileNotFoundError:
+            return ("file", None)
 
     def _save_config_to_local_dir(self, config: Config) -> None:
         """Publish an explicitly supplied full configuration by atomic replace."""

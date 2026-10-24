@@ -4,6 +4,7 @@ from reflexio.lib._base import ReflexioBase
 from reflexio.models.api_schema.retriever_schema import SetConfigResponse
 from reflexio.models.config_schema import Config, StorageConfigManagedSupabase
 from reflexio.server.services.configurator.config_storage import (
+    ConfigVersionProbe,
     ConfigWriteConflictError,
 )
 
@@ -87,6 +88,14 @@ class ConfigMixin(ReflexioBase):
         """
         return self.request_context.configurator.get_config()
 
+    def loaded_config_version(self) -> ConfigVersionProbe:
+        """Return the revision captured before this instance loaded its config.
+
+        None identifies unsupported probing or explicitly supplied config. A
+        failed probe makes the instance unsuitable for caching until a retry.
+        """
+        return self.request_context.configurator.loaded_config_version
+
     def current_config_version(self) -> tuple[str, Any] | None:
         """Cheap probe of the persisted config version.
 
@@ -98,7 +107,7 @@ class ConfigMixin(ReflexioBase):
         Returns:
             tuple[str, Any] | None: ``("file", mtime)`` for file-backed
             storage, ``("db", version)`` for DB-backed storage, or
-            ``None`` when probing is unsupported / fails (the cache
-            treats ``None`` as "still fresh").
+            ``None`` only when probing is unsupported. Probe failures raise
+            and the cache retains its existing stamp for a later retry.
         """
         return self.request_context.configurator.config_storage.get_version()
