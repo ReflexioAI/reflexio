@@ -6,18 +6,18 @@ import pytest
 from pydantic import ValidationError
 
 from reflexio.server.services.playbook.rule_evidence import (
-    apply_proposal,
     run_rule_evidence,
     validate_diagnostic,
 )
 from reflexio.server.services.playbook.rule_evidence.models import (
     Diagnostic,
-    Proposal,
     RuleEvidenceInput,
 )
 from reflexio.server.services.playbook.rule_evidence.wire import (
-    IndexedDiagnostic,
-    exact_edit,
+    BoundedTargetDiagnostic,
+    catalog,
+    generation_profile,
+    tune_schema,
 )
 
 
@@ -86,84 +86,111 @@ def diagnostic() -> Diagnostic:
     )
 
 
-def repair() -> Proposal:
-    return Proposal(
-        decision="hypothesis",
-        gap_index=0,
-        hypothesis="Report service status faithfully",
-        replacement="Report queued as queued, not delivered.",
-        uncertainties=[],
-        abstention_reason="",
-    )
-
-
-def wire_diagnostic(diagnostic):
+def wire_diagnostic(diagnostic, *, attribution="instruction_conflicts_requirement"):
     body = diagnostic.model_dump(mode="json")
-    body["rule_assessment"].pop("incumbent_quote")
-    body["rule_assessment"].update(clause_start="CLAUSE_2", clause_end="CLAUSE_2")
-    return IndexedDiagnostic.model_validate_json(json.dumps(body))
-
-
-def test_source_first_whole_rule_and_inherited_citations(data, diagnostic):
-    calls = []
-    revised = data.incumbent.content.replace(
-        "Report queued as delivered.", repair().replacement
+    for observation in body["observations"]:
+        observation["evidence_refs"] = {
+            f"r{i}": r["turn"] for i, r in enumerate(observation["evidence_refs"], 1)
+        }
+    assessment = body["rule_assessment"]
+    assessment.pop("incumbent_quote")
+    assessment.pop("disposition")
+    assessment["evidence_refs"] = {
+        f"r{i}": r["turn"] for i, r in enumerate(assessment["evidence_refs"], 1)
+    }
+    assessment.update(
+        attribution=attribution,
+        target_scope="Delivery-state reporting",
+        counterevidence_refs={},
+        clause_start="CLAUSE_2",
+        clause_end="CLAUSE_2",
     )
+    return body
+
+
+def repair(**updates):
+    body = {
+        "hypothesis": "Report actual status",
+        "edits": [
+            {
+                "clause_start": "CLAUSE_2",
+                "clause_end": "CLAUSE_2",
+                "replacement": "Report queued as queued.",
+                "defect": "Queued receipt does not establish delivery",
+                "evidence_refs": {"r1": "REF_1", "r2": "REF_2"},
+            }
+        ],
+        "abstention_reason": "",
+    }
+    body.update(updates)
+    return body
+
+
+def execute(
+    data, diagnostic, audit=None, *, attribution="instruction_conflicts_requirement"
+):
+    calls = []
 
     def invoke(system, payload, schema):
         calls.append((system, payload, schema))
-        if schema is IndexedDiagnostic:
-            return wire_diagnostic(diagnostic)
-        assert payload["original_source"] == data.model_dump(mode="json")
-        assert "untrusted_draft" not in payload
-        return schema.model_validate_json(
-            json.dumps(
-                {
-                    "corrections": [],
-                    "edit_session_id": "s",
-                    "hypothesis": repair().hypothesis,
-                    "replacement": revised,
-                    "abstention_reason": "",
-                }
-            )
+        body = (
+            wire_diagnostic(diagnostic, attribution=attribution)
+            if issubclass(schema, BoundedTargetDiagnostic)
+            else (audit if audit is not None else repair())
         )
+        if issubclass(schema, BoundedTargetDiagnostic):
+            target = next(
+                e
+                for e in payload["incumbent"]["content_clauses"]
+                if diagnostic.rule_assessment.incumbent_quote in e["text"]
+            )
+            body["rule_assessment"].update(
+                clause_start=target["id"], clause_end=target["id"]
+            )
+        return schema.model_validate_json(json.dumps(body))
 
-    result = run_rule_evidence(data, invoke)
-    assert result.revised_content == revised
+    return run_rule_evidence(data, invoke), calls
+
+
+def test_global_audit_source_first_and_immutable_diagnostics(data, diagnostic):
+    result, calls = execute(data, diagnostic)
+    assert (
+        result.revised_content
+        == "Send once. Report queued as queued. Keep the recipient."
+    )
+    assert result.diagnostics == [diagnostic]
     assert result.evidence_refs == diagnostic.rule_assessment.evidence_refs
     assert len(calls) == 2
-    assert calls[0][1]["messages"][0]["turn"] == 3
-    assert "is_success" not in result.model_dump_json()
+    assert calls[1][1]["original_source"] == data.model_dump(mode="json")
+    assert "correctable_fields" not in calls[1][1]
+    assert not hasattr(result, "proposal")
+    assert result.rule_audit.edits[0].defect
 
 
 @pytest.mark.parametrize(
-    "disposition", ["adherence_failure", "no_issue", "not_applicable", "unknown"]
+    "attribution",
+    [
+        "adequate_guidance_ignored",
+        "no_supported_target_defect",
+        "trigger_not_established",
+    ],
 )
-def test_non_gap_is_audited_then_abstains(data, diagnostic, disposition):
-    value = wire_diagnostic(diagnostic).model_dump(mode="json")
-    value["rule_assessment"]["disposition"] = disposition
-    value["missing_information"] = ["Need receipt"] if disposition == "unknown" else []
-    calls = []
+def test_global_repair_does_not_require_local_gap(data, diagnostic, attribution):
+    result, calls = execute(data, diagnostic, attribution=attribution)
+    assert result.decision == "proposal" and len(calls) == 2
+    assert result.diagnostics[0].rule_assessment.disposition != "rule_gap"
 
-    def invoke(system, payload, schema):
-        calls.append(schema)
-        if schema is IndexedDiagnostic:
-            return schema.model_validate_json(json.dumps(value))
-        return schema.model_validate_json(
-            json.dumps(
-                {
-                    "corrections": [],
-                    "edit_session_id": None,
-                    "hypothesis": "",
-                    "replacement": "",
-                    "abstention_reason": "No grounded defect",
-                }
-            )
-        )
 
-    result = run_rule_evidence(data, invoke)
+def test_healthy_abstention_keeps_diagnostics(data, diagnostic):
+    result, calls = execute(
+        data,
+        diagnostic,
+        repair(hypothesis="", edits=[], abstention_reason="No supported global defect"),
+        attribution="no_supported_target_defect",
+    )
     assert result.decision == "abstain" and result.revised_content is None
-    assert len(calls) == 2
+    assert result.evidence_refs == [] and len(calls) == 2
+    assert result.diagnostics[0].observations == diagnostic.observations
 
 
 @pytest.mark.parametrize(
@@ -194,25 +221,6 @@ def test_cannot_cite_unseen_or_foreign_turn(data, diagnostic, session_id, turn):
         validate_diagnostic(Diagnostic.model_validate(value), data, data.sessions[0])
 
 
-def test_repeated_quote_cannot_be_edited(data, diagnostic):
-    value = data.model_dump(mode="json")
-    value["incumbent"]["content"] += " Report queued as delivered."
-    data = RuleEvidenceInput.model_validate(value)
-    with pytest.raises(ValueError, match="exactly once"):
-        apply_proposal(data, [diagnostic], repair())
-
-
-@pytest.mark.parametrize(
-    "field,value", [("gap_index", 1), ("replacement", "Report queued as delivered.")]
-)
-def test_tuner_cannot_select_unadmitted_gap_or_return_noop(
-    data, diagnostic, field, value
-):
-    proposal = repair().model_copy(update={field: value})
-    with pytest.raises(ValueError, match="admitted gap|change the quoted"):
-        apply_proposal(data, [diagnostic], proposal)
-
-
 def test_provider_failure_is_not_abstention(data):
     def invoke(*_):
         raise TimeoutError("provider unavailable")
@@ -235,107 +243,69 @@ def test_large_payload_refused_before_model(data):
     assert calls == []
 
 
-def test_tuner_may_abstain_after_admitted_diagnosis(data, diagnostic):
-    result = apply_proposal(
-        data,
-        [diagnostic],
-        Proposal(
-            decision="abstain",
-            gap_index=None,
-            hypothesis="",
-            replacement="",
-            uncertainties=[],
-            abstention_reason="Receipt does not establish the root cause",
-        ),
-    )
-    assert result.decision == "abstain"
-
-
 @pytest.mark.parametrize(
-    "original,revised",
-    [
-        ("prefix " * 200 + "OLD. end", "prefix " * 200 + "NEW. end"),
-        ("x" * 1300 + "END", "x" * 1300 + "INSERTEND"),
-        ("START" + "x" * 1300, "INSERTSTART" + "x" * 1300),
-        ("x" * 1300 + "DELETEEND", "x" * 1300 + "END"),
-        ("  DELETE" + "x" * 1300, "  " + "x" * 1300),
-        ("x" * 1300 + " end", "x" * 1300 + "  end"),
-        ("OLD repeated " * 100 + "OLD END", "OLD repeated " * 100 + "NEW END"),
-        ("  rule  ", "  revised rule  "),
-    ],
+    "bad", ["foreign", "seventh", "overlap", "reversed", "noop", "blank", "overlong"]
 )
-def test_full_generation_is_represented_by_exact_bounded_edit(original, revised):
-    quote, replacement = exact_edit(original, revised)
-    assert 0 < len(quote) <= 1200 and quote == quote.strip()
-    assert original.find(quote) == original.rfind(quote)
-    assert original.replace(quote, replacement, 1) == revised
-
-
-@pytest.mark.parametrize(
-    "original,revised", [("same", "same"), ("rule", " "), ("x" * 1300, "y" * 1300)]
-)
-def test_inadmissible_full_edit_is_explicit_failure(original, revised):
+def test_global_edit_contract_rejects_invalid_atomic_set(data, bad):
+    value = repair()
+    if bad == "foreign":
+        value["edits"][0]["evidence_refs"]["r1"] = "FOREIGN"
+    elif bad == "seventh":
+        value["edits"][0]["evidence_refs"]["r7"] = "REF_1"
+    elif bad == "overlap":
+        value["edits"] *= 2
+    elif bad == "reversed":
+        value["edits"][0].update(clause_start="CLAUSE_3", clause_end="CLAUSE_1")
+    elif bad == "noop":
+        value["edits"][0]["replacement"] = "Report queued as delivered."
+    elif bad == "blank":
+        value["edits"][0].update(
+            clause_start="CLAUSE_1", clause_end="CLAUSE_3", replacement=""
+        )
+    else:
+        data = data.model_copy(
+            update={
+                "incumbent": data.incumbent.model_copy(update={"content": "A" * 1300})
+            }
+        )
+        value["edits"][0].update(clause_start="CLAUSE_1", clause_end="CLAUSE_3")
     with pytest.raises(ValueError):
-        exact_edit(original, revised)
+        tune_schema(data).model_validate_json(json.dumps(value))
 
 
-def test_session_enum_is_stable_across_source_order_and_prior_schema_cache(data):
-    from reflexio.server.services.playbook.rule_evidence.wire import tune_schema
-
-    second = data.sessions[0].model_copy(update={"session_id": "a"})
-    forward = data.model_copy(update={"sessions": [data.sessions[0], second]})
-    backward = data.model_copy(update={"sessions": [second, data.sessions[0]]})
-    assert (
-        tune_schema(forward, []).model_json_schema()
-        == tune_schema(backward, []).model_json_schema()
+@pytest.mark.parametrize("padding", [" ", "\n", "\n\n", "\t"])
+def test_boundary_whitespace_is_code_preserved(data, diagnostic, padding):
+    original = (
+        "Send once."
+        + padding
+        + "Report queued as delivered."
+        + padding
+        + "Keep recipient."
     )
-    assert (
-        forward.sessions[0].session_id == "s" and backward.sessions[0].session_id == "a"
+    data = data.model_copy(
+        update={"incumbent": data.incumbent.model_copy(update={"content": original})}
+    )
+    target = next(
+        e for e in catalog(original) if "Report queued as delivered." in e["text"]
+    )
+    value = repair()
+    value["edits"][0].update(clause_start=target["id"], clause_end=target["id"])
+    result, _ = execute(data, diagnostic, value)
+    assert result.revised_content == original.replace(
+        "Report queued as delivered.", "Report queued as queued."
     )
 
 
-def test_asymmetric_context_avoids_whitespace_alignment_rejection():
-    original = "qOLD " + "a " * 700 + "OLD" + "b " * 700
-    revised = (
-        original[: original.rfind("OLD")]
-        + "NEW"
-        + original[original.rfind("OLD") + 3 :]
-    )
-    quote, replacement = exact_edit(original, revised)
-    assert len(quote) <= 5
-    assert original.find(quote) == original.rfind(quote)
-    assert original.replace(quote, replacement, 1) == revised
+def test_empty_problem_cannot_manufacture_local_gap(data, diagnostic):
+    diagnostic = diagnostic.model_copy(update={"observations": []})
+    with pytest.raises(ValueError, match="observed problem"):
+        execute(data, diagnostic)
 
 
-@pytest.mark.parametrize("padding", ["before", "after"])
-def test_whitespace_boundaries_do_not_force_an_invalid_left_anchor(padding):
-    prefix = " " * 1300 if padding == "before" else ""
-    suffix = "x" * 1300 if padding == "after" else ""
-    original = prefix + " b  bb  b  ba a" + suffix
-    revised = prefix + " b abb  b  ba a" + suffix
-    quote, replacement = exact_edit(original, revised)
-    assert len(quote) <= 12
-    assert original.find(quote) == original.rfind(quote)
-    assert original.replace(quote, replacement, 1) == revised
-
-
-@pytest.mark.parametrize(
-    "original,revised",
-    [
-        ("ab  a    aabb ", "ab  a    aabb    "),
-        (" ab ", " ab  ab "),
-        (" ab  ab ", " ab "),
-    ],
-)
-def test_equivalent_whitespace_and_repeated_edit_alignments(original, revised):
-    quote, replacement = exact_edit(original, revised)
-    assert quote == quote.strip() and original.find(quote) == original.rfind(quote)
-    assert original.replace(quote, replacement, 1) == revised
-
-
-def test_newline_terminated_instruction_can_be_deleted_exactly():
-    original = "Keep this.\nRemove this.\n"
-    revised = "Keep this.\n"
-    quote, replacement = exact_edit(original, revised)
-    assert quote == quote.strip() and len(quote) <= 1200
-    assert original.replace(quote, replacement, 1) == revised
+def test_generation_uses_measured_compact_profile():
+    for stage in ("judge", "tune"):
+        assert generation_profile(stage, provider="minimax") == {
+            "max_tokens": 4096,
+            "extra_body": {"thinking": {"type": "disabled"}},
+        }
+        assert generation_profile(stage, provider="openai") == {"max_tokens": 4096}

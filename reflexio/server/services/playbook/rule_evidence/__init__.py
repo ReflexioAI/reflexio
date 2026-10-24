@@ -14,7 +14,6 @@ from reflexio.models.structured_output import StrictStructuredOutput
 
 from .models import (
     Diagnostic,
-    Proposal,
     RuleEvidenceInput,
     RuleEvidenceResult,
     Session,
@@ -105,82 +104,24 @@ def validate_diagnostic(
 
 
 def run_rule_evidence(data: RuleEvidenceInput, invoke: Invoke) -> RuleEvidenceResult:
-    """Generate diagnostics and a proposal without reading or writing storage.
-
-    Raises on provider/invalid-output failures; batch callers must record those
-    failures explicitly rather than treating them as successful abstentions.
-    """
-    # Revalidate even model_copy/model_construct inputs and detach mutable lists
-    # before invoking caller code. The same snapshot feeds both stages.
+    """Run the promoted V7 method; failures remain explicit, not abstentions."""
     data = RuleEvidenceInput.model_validate_json(data.model_dump_json())
-    from .wire import diagnose, field_catalog, rebuild, tune_schema
+    from .wire import catalog, diagnose, rebuild, reference_catalog, tune_schema
 
-    diagnostics = diagnose(data, invoke)
+    diagnostics, audits = diagnose(data, invoke)
     payload = {
         "original_source": data.model_dump(mode="json"),
-        "diagnostics": [item.model_dump(mode="json") for item in diagnostics],
-        "correctable_fields": list(
-            field_catalog([item.model_dump(mode="json") for item in diagnostics])
-        ),
-        "editable_scope": "Complete nonblank incumbent content, selected by code; no span selection",
+        "diagnostics": [d.model_dump(mode="json") for d in diagnostics],
+        "target_audits": audits,
+        "original_clauses": [
+            {"id": e["id"], "text": e["text"]} for e in catalog(data.incumbent.content)
+        ],
+        "source_references": reference_catalog(data),
     }
-    schema = tune_schema(data, diagnostics)
+    schema = tune_schema(data)
     system = prompt("tune")
     _check_budget(system, payload, schema)
     value = invoke(system, payload, schema)
     return rebuild(
         data, diagnostics, schema.model_validate_json(value.model_dump_json())
-    )
-
-
-def apply_proposal(
-    data: RuleEvidenceInput, diagnostics: list[Diagnostic], proposal: Proposal
-) -> RuleEvidenceResult:
-    """Validate corrected source evidence and apply exactly one code-owned edit."""
-    if len(diagnostics) != len(data.sessions):
-        raise ValueError("diagnostics must cover every source session")
-    for diagnostic, session in zip(diagnostics, data.sessions, strict=True):
-        validate_diagnostic(diagnostic, data, session)
-    admitted = [
-        diagnostic.rule_assessment
-        for diagnostic in diagnostics
-        if diagnostic.rule_assessment.disposition == "rule_gap"
-    ]
-    if not admitted:
-        if proposal.decision != "abstain":
-            raise ValueError("repair requires an admitted source gap")
-        return RuleEvidenceResult(
-            decision="abstain",
-            reason="No incumbent rule gap was admitted",
-            diagnostics=diagnostics,
-            proposal=None,
-            revised_content=None,
-            evidence_refs=[],
-        )
-    if proposal.decision == "abstain":
-        return RuleEvidenceResult(
-            decision="abstain",
-            reason=proposal.abstention_reason,
-            diagnostics=diagnostics,
-            proposal=proposal,
-            revised_content=None,
-            evidence_refs=[],
-        )
-    index = proposal.gap_index
-    if index is None or index >= len(admitted):
-        raise ValueError("tuner must select an admitted gap index")
-    gap = admitted[index]
-    if gap.incumbent_quote == proposal.replacement:
-        raise ValueError("repair must change the quoted clause")
-    # The unique quote was validated above; the model supplies only replacement.
-    content = data.incumbent.content.replace(
-        gap.incumbent_quote, proposal.replacement, 1
-    )
-    return RuleEvidenceResult(
-        decision="proposal",
-        reason="Grounded proposal only; qualification is required before adoption",
-        diagnostics=diagnostics,
-        proposal=proposal,
-        revised_content=content,
-        evidence_refs=gap.evidence_refs,
     )

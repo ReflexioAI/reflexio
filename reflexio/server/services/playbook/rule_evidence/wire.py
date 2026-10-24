@@ -1,16 +1,15 @@
-"""Promoted source-first judge/tuner wire contracts and deterministic exact application.
+"""V7 source-bound diagnostic and global-audit wire contracts.
 
-Input-specific tuner enums are code-owned. Raw wire outputs remain distinct from
-resolved/corrected diagnostics and the final exact-span Proposal.
+Raw observations stay distinct from immutable resolved diagnostic/application views.
+Dynamic input enums and deterministic validators use the existing correction turn.
 """
 
 import json
 import re
-from copy import deepcopy
-from types import GenericAlias
+from enum import IntEnum
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, Field, create_model, model_validator
 
 import reflexio.server.services.playbook.rule_evidence as core
 
@@ -46,325 +45,345 @@ def selected_quote(
     return quote
 
 
-class IndexedRuleAssessment(models.EvidenceModel):
-    disposition: Literal[
-        "rule_gap", "adherence_failure", "no_issue", "not_applicable", "unknown"
+ATTRIBUTIONS = {
+    "instruction_conflicts_requirement": "rule_gap",
+    "observed_instruction_failure": "rule_gap",
+    "missing_required_step": "rule_gap",
+    "adequate_guidance_ignored": "adherence_failure",
+    "no_supported_target_defect": "no_issue",
+    "trigger_not_established": "not_applicable",
+    "deciding_evidence_missing": "unknown",
+}
+
+
+class SupportTurns(models.EvidenceModel):
+    r1: int
+    r2: int | None = None
+    r3: int | None = None
+    r4: int | None = None
+    r5: int | None = None
+    r6: int | None = None
+
+
+class CounterTurns(models.EvidenceModel):
+    r1: int | None = None
+    r2: int | None = None
+    r3: int | None = None
+    r4: int | None = None
+
+
+class SlotObservation(models.EvidenceModel):
+    dimension: Literal[
+        "task_completion",
+        "constraint_compliance",
+        "evidence_grounding",
+        "execution_effectiveness",
+    ]
+    kind: Literal["strength", "problem", "uncertainty"]
+    observation: models.Text
+    consequence: models.Text
+    evidence_refs: SupportTurns
+
+
+class BoundedSlotAssessment(models.EvidenceModel):
+    attribution: Literal[
+        "instruction_conflicts_requirement",
+        "observed_instruction_failure",
+        "missing_required_step",
+        "adequate_guidance_ignored",
+        "no_supported_target_defect",
+        "trigger_not_established",
+        "deciding_evidence_missing",
     ]
     expected_if_followed: models.Text
     reason: models.Text
-    evidence_refs: list[models.Reference] = Field(min_length=1, max_length=6)
+    evidence_refs: SupportTurns
     clause_start: str | None
     clause_end: str | None
+    target_scope: models.Text
+    counterevidence_refs: CounterTurns
 
 
-class IndexedDiagnostic(models.EvidenceModel):
+class BoundedTargetDiagnostic(models.EvidenceModel):
     session_id: models.Text
     user_id: models.Text
-    observations: list[models.Observation] = Field(max_length=8)
+    observations: list[SlotObservation] = Field(max_length=8)
     missing_information: list[models.Text] = Field(max_length=4)
-    rule_assessment: IndexedRuleAssessment
+    rule_assessment: BoundedSlotAssessment
 
 
-def selected_schema() -> type[IndexedDiagnostic]:
-    return IndexedDiagnostic
+class GlobalSourceSlots(models.EvidenceModel):
+    r1: str
+    r2: str | None = None
+    r3: str | None = None
+    r4: str | None = None
+    r5: str | None = None
+    r6: str | None = None
 
 
-def resolve(
-    value: BaseModel, content: str, entries: list[dict[str, Any]]
-) -> models.Diagnostic:
+class GlobalAuditEdit(models.EvidenceModel):
+    clause_start: str
+    clause_end: str
+    replacement: str
+    defect: models.Text
+    evidence_refs: GlobalSourceSlots
+
+
+class GlobalRuleAudit(models.EvidenceModel):
+    hypothesis: str
+    edits: list[GlobalAuditEdit] = Field(max_length=4)
+    abstention_reason: str
+
+
+def references(source: models.Session, slots: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {"session_id": source.session_id, "turn": t}
+        for t in dict.fromkeys(v for v in slots.values() if v is not None)
+    ]
+
+
+def resolve_diagnostic(
+    value: Any, data: models.RuleEvidenceInput, source: models.Session
+) -> tuple[models.Diagnostic, dict[str, Any]]:
     body = value.model_dump(mode="json")
+    for observation in body["observations"]:
+        observation["evidence_refs"] = references(source, observation["evidence_refs"])
     assessment = body["rule_assessment"]
+    assessment["evidence_refs"] = references(source, assessment["evidence_refs"])
+    attribution = assessment.pop("attribution")
+    audit = {
+        "session_id": source.session_id,
+        "attribution": attribution,
+        "target_scope": assessment.pop("target_scope"),
+        "counterevidence_refs": references(
+            source, assessment.pop("counterevidence_refs")
+        ),
+    }
+    assessment["disposition"] = ATTRIBUTIONS[attribution]
     assessment["incumbent_quote"] = selected_quote(
-        content, entries, assessment.pop("clause_start"), assessment.pop("clause_end")
+        data.incumbent.content,
+        catalog(data.incumbent.content),
+        assessment.pop("clause_start"),
+        assessment.pop("clause_end"),
     )
-    return models.Diagnostic.model_validate_json(json.dumps(body))
-
-
-def field_catalog(
-    diagnostics: list[dict[str, Any]],
-) -> dict[str, tuple[dict[str, Any], str]]:
-    """Only these existing scalar fields may change; IDs are code-owned."""
-    result = {}
-    for si, diagnostic in enumerate(diagnostics, 1):
-        for oi, observation in enumerate(diagnostic["observations"], 1):
-            for field in ("observation", "consequence"):
-                result[f"S{si}.O{oi}.{field}"] = (observation, field)
-        for field in ("reason", "expected_if_followed", "disposition"):
-            result[f"S{si}.A.{field}"] = (diagnostic["rule_assessment"], field)
-        # Missing facts are retained; this contract cannot silently drop them.
-    return result
-
-
-def _edit_bounds(original: str, revised: str) -> list[tuple[int, int, int]]:
-    """Canonical and opposite alignments of a repeated insertion/deletion."""
-    start = 0
-    while (
-        start < min(len(original), len(revised)) and original[start] == revised[start]
+    diagnostic = models.Diagnostic.model_validate_json(json.dumps(body))
+    core.validate_diagnostic(diagnostic, data, source)
+    coordinates = {(source.session_id, m.turn) for m in source.messages}
+    if any(
+        (r["session_id"], r["turn"]) not in coordinates
+        for r in audit["counterevidence_refs"]
     ):
-        start += 1
-    suffix = 0
-    while (
-        suffix < min(len(original), len(revised)) - start
-        and original[-suffix - 1] == revised[-suffix - 1]
-    ):
-        suffix += 1
-    end = len(original) - suffix
-    new_end = len(revised) - suffix
-    bounds = [(start, end, new_end)]
-    # Repeated insertions/deletions can align at either end of a shared run.
-    # Considering the opposite alignment avoids trapping edits outside trailing
-    # whitespace; an interior nonblank anchor handles whitespace at both ends.
-    shared_suffix = suffix
-    while (
-        shared_suffix < min(len(original), len(revised))
-        and original[-shared_suffix - 1] == revised[-shared_suffix - 1]
-    ):
-        shared_suffix += 1
-    if shared_suffix > suffix:
-        first = min(len(original), len(revised)) - shared_suffix
-        positions = [first]
-        anchor = first
-        while anchor < start and original[anchor].isspace():
-            anchor += 1
-        if first < anchor < start:
-            positions.append(anchor)
-        bounds.extend(
-            (
-                position,
-                position + max(0, len(original) - len(revised)),
-                position + max(0, len(revised) - len(original)),
-            )
-            for position in positions
+        raise ValueError("Counterevidence must cite the original session")
+    return diagnostic, audit
+
+
+def judge_schema(data: models.RuleEvidenceInput, source: models.Session) -> Any:
+    turn: Any = IntEnum(
+        "OriginalTurn", {"TURN_" + str(m.turn): m.turn for m in source.messages}
+    )
+    fields: dict[str, Any] = {
+        "r1": (turn, ...),
+        **{f"r{i}": (turn | None, None) for i in range(2, 7)},
+    }
+    support = create_model("SupportTurns", __base__=models.EvidenceModel, **fields)
+    contrary = create_model(
+        "CounterTurns",
+        __base__=models.EvidenceModel,
+        **cast(dict[str, Any], {f"r{i}": (turn | None, None) for i in range(1, 5)}),
+    )
+    observation = create_model(
+        "SlotObservation",
+        __base__=models.EvidenceModel,
+        **cast(
+            dict[str, Any],
+            {
+                k: (f.annotation, f)
+                for k, f in models.Observation.model_fields.items()
+                if k != "evidence_refs"
+            },
+        ),
+        evidence_refs=(support, ...),
+    )
+    entries = catalog(data.incumbent.content)
+    clause: Any = cast(Any, Literal)[tuple(e["id"] for e in entries)]
+    assessment = create_model(
+        "BoundedSlotAssessment",
+        __base__=BoundedSlotAssessment,
+        evidence_refs=(support, ...),
+        counterevidence_refs=(contrary, ...),
+        clause_start=(clause | None, ...),
+        clause_end=(clause | None, ...),
+    )
+
+    def validate(value: Any) -> Any:
+        resolve_diagnostic(value, data, source)
+        return value
+
+    return create_model(
+        "BoundedTargetDiagnostic",
+        __base__=BoundedTargetDiagnostic,
+        observations=(list[observation], Field(max_length=8)),
+        rule_assessment=(assessment, ...),
+        __validators__=cast(
+            dict[str, Any], {"validate_source": model_validator(mode="after")(validate)}
+        ),
+    )
+
+
+def diagnose(
+    data: models.RuleEvidenceInput, invoke: core.Invoke
+) -> tuple[list[models.Diagnostic], list[dict[str, Any]]]:
+    entries = catalog(data.incumbent.content)
+    diagnostics, audits = [], []
+    for source in data.sessions:
+        incumbent = data.incumbent.model_dump(mode="json")
+        incumbent.pop("content")
+        incumbent["content_clauses"] = [
+            {"id": e["id"], "text": e["text"]} for e in entries
+        ]
+        payload = {**core._source(data, source), "incumbent": incumbent}
+        schema = judge_schema(data, source)
+        system = core.prompt("judge")
+        core._check_budget(system, payload, schema)
+        value = invoke(system, payload, schema)
+        diagnostic, audit = resolve_diagnostic(
+            schema.model_validate_json(value.model_dump_json()), data, source
         )
-    return bounds
+        diagnostics.append(diagnostic)
+        audits.append(audit)
+    return diagnostics, audits
 
 
-def exact_edit(original: str, revised: str) -> tuple[str, str]:
-    """Keep full short-rule edits; bound long-rule edits without changing their result.
-
-    Common prefix/suffix removal locates all changes. Expand context until the
-    quote is unique, nonblank and trim-stable and the replacement is nonblank.
-    Never truncate an edit or silently apply only some of the generated changes.
-    """
-    if original == revised:
-        raise ValueError("Whole-rule repair must change the incumbent")
-    if not revised.strip():
-        raise ValueError("Whole-rule repair must retain nonblank guidance")
-    if len(original) <= 1200 and original == original.strip():
-        return original, revised
-    best: tuple[str, str] | None = None
-    # Enumerate bounded left anchors. Uniqueness is monotone as the right
-    # boundary grows, so binary search avoids enumerating every possible span.
-    for start, end, new_end in _edit_bounds(original, revised):
-        for left in range(start, max(-1, end - 1201), -1):
-            if best is not None and end - left >= len(best[0]):
-                break
-            if left >= len(original) or original[left].isspace():
-                continue
-            maximum = min(
-                len(original), left + (1200 if best is None else len(best[0]) - 1)
-            )
-            while maximum > left and original[maximum - 1].isspace():
-                maximum -= 1
-            low = max(end, left + 1)
-            if maximum < low:
-                continue
-            quote = original[left:maximum]
-            if original.find(quote) != original.rfind(quote):
-                continue
-            high = maximum
-            while low < high:
-                middle = (low + high) // 2
-                quote = original[left:middle]
-                if original.find(quote) == original.rfind(quote):
-                    high = middle
-                else:
-                    low = middle + 1
-            for right in range(low, maximum + 1):
-                if original[right - 1].isspace():
-                    continue
-                replacement = (
-                    original[left:start] + revised[start:new_end] + original[end:right]
-                )
-                if replacement.strip():
-                    best = original[left:right], replacement
-                    break
-    if best is None:
-        raise ValueError(
-            "Complete generated rule cannot be represented by a unique1200-character edit"
+def reference_catalog(data: models.RuleEvidenceInput) -> dict[str, dict[str, Any]]:
+    return {
+        f"REF_{i}": {"session_id": s.session_id, "turn": m.turn}
+        for i, (s, m) in enumerate(
+            ((s, m) for s in data.sessions for m in s.messages), 1
         )
-    if original.replace(best[0], best[1], 1) != revised:
-        raise ValueError("Derived edit does not reproduce the complete generated rule")
-    return best
+    }
+
+
+def resolve_audit(
+    data: models.RuleEvidenceInput, value: Any
+) -> tuple[models.SourceLinkedAudit, str]:
+    body = value.model_dump(mode="json")
+    refs = reference_catalog(data)
+    entries = catalog(data.incumbent.content)
+    by_id = {e["id"]: (i, e) for i, e in enumerate(entries)}
+    spans = []
+    for edit in body["edits"]:
+        selected = list(
+            dict.fromkeys(v for v in edit["evidence_refs"].values() if v is not None)
+        )
+        if not selected or any(k not in refs for k in selected):
+            raise ValueError("Every edit requires supplied source references")
+        edit["evidence_refs"] = [refs[k] for k in selected]
+        selected_quote(
+            data.incumbent.content, entries, edit["clause_start"], edit["clause_end"]
+        )
+        _, first = by_id[edit["clause_start"]]
+        _, last = by_id[edit["clause_end"]]
+        start = first["start"]
+        end = last["start"] + len(last["text"])
+        original = data.incumbent.content[start:end]
+        leading = original[: len(original) - len(original.lstrip())]
+        trailing = original[len(original.rstrip()) :]
+        edit["replacement"] = leading + edit["replacement"].strip() + trailing
+        if original == edit["replacement"]:
+            raise ValueError("Every edit must change its original span")
+        spans.append((start, end, edit["replacement"]))
+    audit = models.SourceLinkedAudit.model_validate(body)
+    if audit.edits:
+        if not audit.hypothesis.strip() or audit.abstention_reason.strip():
+            raise ValueError("Proposal requires hypothesis and no abstention reason")
+    elif audit.hypothesis.strip() or not audit.abstention_reason.strip():
+        raise ValueError("Abstention requires a reason and no hypothesis")
+    pieces = []
+    position = 0
+    for start, end, replacement in sorted(spans):
+        if start < position:
+            raise ValueError("Edits must not overlap or repeat original spans")
+        pieces.extend([data.incumbent.content[position:start], replacement])
+        position = end
+    pieces.append(data.incumbent.content[position:])
+    revised = "".join(pieces)
+    if audit.edits and not revised.strip():
+        raise ValueError("Complete repair must retain nonblank guidance")
+    return audit, revised
+
+
+def tune_schema(data: models.RuleEvidenceInput) -> Any:
+    clause: Any = cast(Any, Literal)[
+        tuple(e["id"] for e in catalog(data.incumbent.content))
+    ]
+    reference: Any = cast(Any, Literal)[tuple(reference_catalog(data))]
+    slots = create_model(
+        "GlobalSourceSlots",
+        __base__=models.EvidenceModel,
+        r1=(reference, ...),
+        **cast(
+            dict[str, Any], {f"r{i}": (reference | None, None) for i in range(2, 7)}
+        ),
+    )
+    edit = create_model(
+        "GlobalAuditEdit",
+        __base__=models.EvidenceModel,
+        clause_start=(clause, ...),
+        clause_end=(clause, ...),
+        replacement=(str, ...),
+        defect=(models.Text, ...),
+        evidence_refs=(slots, ...),
+    )
+
+    def validate(value: Any) -> Any:
+        resolve_audit(data, value)
+        return value
+
+    return create_model(
+        "GlobalRuleAudit",
+        __base__=GlobalRuleAudit,
+        edits=(list[edit], Field(max_length=4)),
+        __validators__=cast(
+            dict[str, Any], {"validate_audit": model_validator(mode="after")(validate)}
+        ),
+    )
 
 
 def rebuild(
     data: models.RuleEvidenceInput, diagnostics: list[models.Diagnostic], value: Any
 ) -> models.RuleEvidenceResult:
-    """Correct bounded evidence, derive one exact edit and rerun source validation."""
-    value = tune_schema(data, diagnostics).model_validate_json(value.model_dump_json())
-    bodies = deepcopy([item.model_dump(mode="json") for item in diagnostics])
-    if [item["session_id"] for item in bodies] != [
-        session.session_id for session in data.sessions
-    ]:
-        raise ValueError("Diagnostics must cover source sessions once, in order")
-    fields = field_catalog(bodies)
-    seen = set()
-    citation_sets = {}
-    for correction in value.corrections:
-        if correction.target_id not in fields or correction.target_id in seen:
-            raise ValueError("Correction must select a unique supplied field ID")
-        seen.add(correction.target_id)
-        target, field = fields[correction.target_id]
-        target[field] = correction.text
-        # Replace the item's complete set: merging can retain obsolete references
-        # or overflow the native six-reference bound.
-        refs = [r.model_dump(mode="json") for r in correction.evidence_refs]
-        refs = [r for i, r in enumerate(refs) if r not in refs[:i]]
-        canonical = frozenset((r["session_id"], r["turn"]) for r in refs)
-        if id(target) in citation_sets and citation_sets[id(target)] != canonical:
-            raise ValueError(
-                "Corrections to the same item must agree on its complete citations"
-            )
-        citation_sets[id(target)] = canonical
-        target["evidence_refs"] = refs
-    admitted = [d for d in bodies if d["rule_assessment"]["disposition"] == "rule_gap"]
-    if value.edit_session_id is None:
-        if value.replacement:
-            raise ValueError("Abstention cannot carry an edit")
-        proposal = models.Proposal(
-            decision="abstain",
-            gap_index=None,
-            hypothesis="",
-            replacement="",
-            uncertainties=[],
-            abstention_reason=value.abstention_reason,
-        )
-    else:
-        matches = [
-            i
-            for i, d in enumerate(admitted)
-            if d["session_id"] == value.edit_session_id
-        ]
-        if len(matches) != 1:
-            raise ValueError("Edit requires one admitted source session gap")
-        quote, replacement = exact_edit(data.incumbent.content, value.replacement)
-        admitted[matches[0]]["rule_assessment"]["incumbent_quote"] = quote
-        proposal = models.Proposal(
-            decision="hypothesis",
-            gap_index=matches[0],
-            hypothesis=value.hypothesis,
-            replacement=replacement,
-            uncertainties=[],
-            abstention_reason="",
-        )
-    resolved = [
-        models.Diagnostic.model_validate_json(json.dumps(item)) for item in bodies
-    ]
-    return core.apply_proposal(data, resolved, proposal)
-
-
-def diagnose(
-    data: models.RuleEvidenceInput, invoke: core.Invoke
-) -> list[models.Diagnostic]:
-    entries = catalog(data.incumbent.content)
-    diagnostics = []
-    for session in data.sessions:
-        payload = {
-            **core._source(data, session),
-            "incumbent": data.incumbent.model_dump(mode="json"),
-        }
-        payload["incumbent"].pop("content")
-        payload["incumbent"]["content_clauses"] = [
-            {"id": item["id"], "text": item["text"]} for item in entries
-        ]
-        system = core.prompt("judge")
-        output_schema = selected_schema()
-        core._check_budget(system, payload, output_schema)
-        value = output_schema.model_validate_json(
-            invoke(system, payload, output_schema).model_dump_json()
-        )
-        diagnostic = resolve(value, data.incumbent.content, entries)
-        core.validate_diagnostic(diagnostic, data, session)
-        diagnostics.append(diagnostic)
-    return diagnostics
-
-
-class FieldCorrection(models.EvidenceModel):
-    target_id: str
-    text: str = Field(min_length=1, pattern=r"\S")
-    evidence_refs: list[models.Reference] = Field(min_length=1, max_length=6)
-
-
-class WholeRuleTune(models.EvidenceModel):
-    """Raw tuner output; input-specific enum constraints bind each invocation."""
-
-    corrections: list[FieldCorrection] = Field(max_length=3)
-    edit_session_id: str | None
-    hypothesis: str
-    replacement: str
-    abstention_reason: str
+    audit, revised = resolve_audit(data, value)
+    refs = {(r.session_id, r.turn): r for e in audit.edits for r in e.evidence_refs}
+    return models.RuleEvidenceResult(
+        decision="proposal" if audit.edits else "abstain",
+        reason="Source-grounded global rule hypothesis; qualification required"
+        if audit.edits
+        else audit.abstention_reason,
+        diagnostics=diagnostics,
+        rule_audit=audit,
+        revised_content=revised if audit.edits else None,
+        evidence_refs=list(refs.values()),
+    )
 
 
 def output_kind(schema: type[BaseModel]) -> Literal["judge", "tune"]:
-    if schema is selected_schema():
+    if issubclass(schema, BoundedTargetDiagnostic):
         return "judge"
-    if issubclass(schema, WholeRuleTune):
+    if issubclass(schema, GlobalRuleAudit):
         return "tune"
     raise TypeError("unsupported rule-evidence wire schema")
 
 
 def contract_schema(stage: Literal["judge", "tune"]) -> type[BaseModel]:
-    """Stable schema template; actual enumerations are bound per invocation."""
-    return selected_schema() if stage == "judge" else tune_schema_template()
-
-
-def tune_schema(
-    data: models.RuleEvidenceInput, diagnostics: list[models.Diagnostic]
-) -> type[WholeRuleTune]:
-    return _tune_schema(
-        tuple(field_catalog([item.model_dump(mode="json") for item in diagnostics])),
-        tuple(session.session_id for session in data.sessions),
-    )
-
-
-def _tune_schema(
-    target_ids: tuple[str, ...], session_ids: tuple[str, ...]
-) -> type[WholeRuleTune]:
-    def choice(values: tuple[str, ...]) -> Any:
-        return cast(Any, Literal)[values] if values else str
-
-    correction = create_model(
-        "FieldCorrection",
-        __base__=models.EvidenceModel,
-        target_id=(choice(target_ids), ...),
-        text=(str, Field(min_length=1, pattern=r"\S")),
-        evidence_refs=(
-            GenericAlias(list, models.Reference),
-            Field(min_length=1, max_length=6),
-        ),
-    )
-    fields: dict[str, Any] = {
-        "corrections": (GenericAlias(list, correction), Field(max_length=3)),
-        "edit_session_id": (choice(tuple(sorted(session_ids))) | None, ...),
-        "hypothesis": (str, ...),
-        "replacement": (str, ...),
-        "abstention_reason": (str, ...),
-    }
-    return create_model("WholeRuleTune", __base__=WholeRuleTune, **fields)
-
-
-def tune_schema_template() -> type[WholeRuleTune]:
-    return _tune_schema((), ())
+    return BoundedTargetDiagnostic if stage == "judge" else GlobalRuleAudit
 
 
 def generation_profile(
     stage: Literal["judge", "tune"], *, provider: str
 ) -> dict[str, Any]:
-    """Measured MiniMax stage settings; keep other configured providers usable."""
-    profile: dict[str, Any] = {"max_tokens": 12288 if stage == "judge" else 4096}
+    if stage not in {"judge", "tune"}:
+        raise ValueError("unsupported rule-evidence stage")
+    profile: dict[str, Any] = {"max_tokens": 4096}
     if "minimax" in provider.casefold().split(":"):
-        profile["extra_body"] = {
-            "thinking": {"type": "enabled" if stage == "judge" else "disabled"}
-        }
+        profile["extra_body"] = {"thinking": {"type": "disabled"}}
     return profile

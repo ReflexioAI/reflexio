@@ -105,34 +105,24 @@ class Diagnostic(EvidenceModel):
     missing_information: list[Text] = Field(max_length=4)
 
 
-class Proposal(EvidenceModel):
-    decision: Literal["hypothesis", "abstain"]
-    gap_index: int | None = Field(ge=0)
-    hypothesis: str
+class SourceLinkedEdit(EvidenceModel):
+    clause_start: Text
+    clause_end: Text
     replacement: str
-    uncertainties: list[Text] = Field(max_length=3)
-    abstention_reason: str
+    defect: Text
+    evidence_refs: list[Reference] = Field(min_length=1, max_length=6)
 
-    @model_validator(mode="after")
-    def check_decision(self) -> Self:
-        if self.decision == "abstain":
-            if self.gap_index is not None or self.replacement:
-                raise ValueError("abstention cannot select a gap or carry an edit")
-            if not self.abstention_reason.strip():
-                raise ValueError("abstention requires a reason")
-        elif (
-            self.gap_index is None
-            or not self.hypothesis.strip()
-            or not self.replacement.strip()
-        ):
-            raise ValueError("repair requires a gap, hypothesis and replacement")
-        return self
+
+class SourceLinkedAudit(EvidenceModel):
+    hypothesis: str
+    edits: list[SourceLinkedEdit] = Field(max_length=4)
+    abstention_reason: str
 
 
 class RuleEvidenceResult(EvidenceModel):
     decision: Literal["proposal", "abstain"]
     reason: Text
     diagnostics: list[Diagnostic]
-    proposal: Proposal | None
+    rule_audit: SourceLinkedAudit
     revised_content: str | None
-    evidence_refs: list[Reference]
+    evidence_refs: list[Reference] = Field(max_length=24)
