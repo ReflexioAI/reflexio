@@ -1,5 +1,6 @@
 """Selected recovery invariants exercised through real SQLite and the worker."""
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
@@ -15,18 +16,22 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.services.extraction.agent_run_records import (
+    UNPERSISTED_SERVICE_CONFIG_FIELDS,
+    service_config_snapshot,
     source_interaction_digest,
 )
 from reflexio.server.services.extraction.recovery import (
     RecoveryRefusedError,
     _require_preserved_output_fields,
     inspect_run,
+    payload_fingerprint,
     selection_from_report,
 )
 from reflexio.server.services.extraction.resume_worker import ExtractionResumeWorker
 from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredReferencedExtractedPlaybookList,
 )
+from reflexio.server.services.profile.service import ProfileGenerationServiceConfig
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import (
     AgentBinding,
@@ -84,7 +89,7 @@ def context(tmp_path, monkeypatch):
     store.conn.close()
 
 
-def seed(ctx, identifier="selected"):
+def seed(ctx, identifier="selected", service_snapshot=None):
     config = ctx.configurator.get_config().profile_extractor_config
     run = AgentRunRecord(
         id=identifier,
@@ -108,6 +113,7 @@ def seed(ctx, identifier="selected"):
             },
         },
         committed_output={"profiles": []},
+        service_config_snapshot=service_snapshot,
     )
     ctx.storage.create_agent_run(run)
     old = (datetime.now(UTC) - timedelta(days=1)).isoformat()
@@ -134,6 +140,67 @@ def test_recovery_selects_only_named_run_with_disabled_resume(context):
     assert not context.configurator.get_config().pending_tool_call_config.enabled
     with pytest.raises(RecoveryRefusedError):
         worker.recover_selected(selection, operation_id="again")
+
+
+# A row written before the snapshot stopped copying content (legacy) and one
+# written after (trimmed). Stored rows are never rewritten, so each row's
+# payload fingerprint is a hash of what that row already stores.
+_LEGACY_SERVICE_SNAPSHOT = {
+    "user_id": "user",
+    "request_id": "request",
+    "existing_data": [{"content": "OLD PROFILE"}],
+    "window_interactions": [{"interactions": [{"content": "PRIVATE SOURCE"}]}],
+    "frozen_extractor_config": {"extraction_definition_prompt": "test"},
+}
+
+
+@pytest.mark.parametrize("shape", ["legacy", "trimmed"])
+def test_recovery_accepts_legacy_and_trimmed_service_snapshots(context, shape):
+    snapshot = (
+        _LEGACY_SERVICE_SNAPSHOT
+        if shape == "legacy"
+        else service_config_snapshot(
+            ProfileGenerationServiceConfig(
+                user_id="user",
+                request_id="request",
+                existing_data=[{"content": "OLD PROFILE"}],
+                frozen_extractor_config={"extraction_definition_prompt": "test"},
+            )
+        )
+    )
+    run = seed(context, service_snapshot=snapshot)
+    assert run.service_config_snapshot == snapshot
+    if shape == "trimmed":
+        assert UNPERSISTED_SERVICE_CONFIG_FIELDS.isdisjoint(snapshot)
+    selection = selection_from_report(inspect_run(context, run))
+    # Re-reading the untouched row reproduces the preview's fingerprint.
+    reread = context.storage.get_agent_run(run.id)
+    assert payload_fingerprint(reread) == selection.payload_fingerprint
+    worker = ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
+    result = worker.recover_selected(selection, operation_id="op")
+    assert result.status == AgentRunStatus.FINALIZED
+    # Recovery never rewrites the stored snapshot of either shape.
+    assert context.storage.get_agent_run(run.id).service_config_snapshot == snapshot
+
+
+def test_recovery_preview_binds_the_stored_snapshot_shape(context):
+    """A preview hashes the row's stored snapshot, so a changed shape refuses."""
+    run = seed(context, service_snapshot=_LEGACY_SERVICE_SNAPSHOT)
+    selection = selection_from_report(inspect_run(context, run))
+    trimmed = {
+        key: value
+        for key, value in _LEGACY_SERVICE_SNAPSHOT.items()
+        if key not in UNPERSISTED_SERVICE_CONFIG_FIELDS
+    }
+    context.storage.conn.execute(
+        "UPDATE _agent_runs SET service_config_snapshot=? WHERE id=?",
+        (json.dumps(trimmed), run.id),
+    )
+    context.storage.conn.commit()
+    with pytest.raises(RecoveryRefusedError, match="preview_changed"):
+        ExtractionResumeWorker(
+            request_context=context, llm_client=MagicMock()
+        ).recover_selected(selection, operation_id="op")
 
 
 def test_stale_preview_never_claims(context):

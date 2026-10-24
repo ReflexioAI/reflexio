@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from copy import deepcopy
-from dataclasses import asdict, is_dataclass, replace
+from dataclasses import asdict, fields, is_dataclass, replace
 from typing import Any
 
 from pydantic import BaseModel
@@ -32,6 +32,46 @@ def _jsonable(value: Any) -> Any:
     if value is None or isinstance(value, str | int | float | bool):
         return value
     return str(value)
+
+
+# Runtime-only service-config fields that are never persisted in
+# ``service_config_snapshot``. Nothing reads them back from a stored row:
+# ``window_interactions`` duplicates the source rows (authoritative, and
+# witnessed by ``generation_request_snapshot["source_interaction_digests"]``),
+# ``existing_data`` copies every existing profile of the user, and
+# ``frozen_extractor_config`` repeats ``generation_request_snapshot
+# ["extractor_config"]``, the binding witness that resume actually checks.
+# Rows written before this exclusion keep their content; recovery fingerprints
+# hash whatever a row stores, so both shapes stay verifiable.
+UNPERSISTED_SERVICE_CONFIG_FIELDS = frozenset(
+    {"window_interactions", "existing_data", "frozen_extractor_config"}
+)
+
+
+def service_config_snapshot(service_config: Any) -> Any:
+    """Return the persisted audit snapshot of a runtime service config.
+
+    The excluded fields are dropped before serialization, so their content is
+    never copied, let alone written, for any run shape (classic, overflow or
+    package parent, child).
+    """
+    if isinstance(service_config, BaseModel):
+        return service_config.model_dump(
+            mode="json", exclude=set(UNPERSISTED_SERVICE_CONFIG_FIELDS)
+        )
+    if is_dataclass(service_config) and not isinstance(service_config, type):
+        return {
+            field.name: _jsonable(getattr(service_config, field.name))
+            for field in fields(service_config)
+            if field.name not in UNPERSISTED_SERVICE_CONFIG_FIELDS
+        }
+    if isinstance(service_config, dict):
+        return {
+            str(key): _jsonable(value)
+            for key, value in service_config.items()
+            if str(key) not in UNPERSISTED_SERVICE_CONFIG_FIELDS
+        }
+    return _jsonable(service_config)
 
 
 def extract_source_interaction_ids(
@@ -274,6 +314,6 @@ def build_extractor_agent_run_record(
             # changes before a pending tool call is resolved.
             "output_schema_name": output_schema_name,
         },
-        service_config_snapshot=_jsonable(service_config),
+        service_config_snapshot=service_config_snapshot(service_config),
         agent_context_snapshot=agent_context,
     )

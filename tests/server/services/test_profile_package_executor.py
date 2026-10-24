@@ -511,6 +511,7 @@ def test_frozen_old_projection_replays_without_vectors_or_new_search(
     assert parent.service_config_snapshot is not None
     assert "existing_data" not in parent.service_config_snapshot
     assert "window_interactions" not in parent.service_config_snapshot
+    assert "frozen_extractor_config" not in parent.service_config_snapshot
     context = parent.generation_request_snapshot["profile_package_preparation"][
         "context_profiles"
     ]

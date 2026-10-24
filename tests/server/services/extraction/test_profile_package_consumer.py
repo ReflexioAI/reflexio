@@ -173,7 +173,7 @@ def prepare_consumer(
         overflow=manifest, profile_package_preparation=snapshot
     )
     assert parent.service_config_snapshot is not None
-    parent.service_config_snapshot.pop("window_interactions", None)
+    assert "window_interactions" not in parent.service_config_snapshot
     with storage.commit_scope():
         storage.fence_user_extraction(user, token)
         storage.validate_extraction_source_digest(window, plan.source_digest)

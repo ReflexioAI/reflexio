@@ -312,11 +312,6 @@ class ProfilePackageWindowExecutor(WindowExecutor):
                     profile_package_preparation=preparation.snapshot,
                     profile_dedup_template=template,
                 )
-                if expected.service_config_snapshot is not None:
-                    expected.service_config_snapshot.pop("window_interactions", None)
-                    # The selected prompt context already has its own frozen
-                    # witness. Do not rewrite every other OLD row on each CAS.
-                    expected.service_config_snapshot.pop("existing_data", None)
                 known = self.storage.create_agent_run(expected)
                 if (
                     known.generation_request_snapshot

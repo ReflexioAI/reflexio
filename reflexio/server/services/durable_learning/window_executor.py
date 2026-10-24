@@ -336,10 +336,6 @@ class WindowExecutor:
                 if known is None:
                     run = replace(expected_run, id=f"window:{window.window_id}")
                     run.generation_request_snapshot["overflow"] = manifest
-                    # Source rows remain authoritative; do not repeat giant input
-                    # blobs inside a parent snapshot for every provider attempt.
-                    if run.service_config_snapshot is not None:
-                        run.service_config_snapshot.pop("window_interactions", None)
                     known = self.storage.create_agent_run(run)
                 else:
                     digests = {
