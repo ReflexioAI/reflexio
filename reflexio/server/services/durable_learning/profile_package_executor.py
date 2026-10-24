@@ -31,6 +31,9 @@ from reflexio.server.services.extraction.overflow_coordinator import (
     OverflowCoordinator,
     OverflowSuspendedError,
 )
+from reflexio.server.services.extraction.pending_tool_admission import (
+    pending_tool_calls_enabled,
+)
 from reflexio.server.services.extraction.prior_answer_search import (
     CapturedPriorKnowledge,
     capture_prior_knowledge_context,
@@ -49,7 +52,6 @@ from reflexio.server.services.extraction.profile_package_preparation import (
 from reflexio.server.services.extraction.profile_package_state import profile_witness
 from reflexio.server.services.extraction.resumable_agent import (
     encode_committed_output,
-    pending_tool_calls_enabled,
 )
 from reflexio.server.services.extractor_config_utils import get_extractor_name
 from reflexio.server.services.profile.components.extractor import (

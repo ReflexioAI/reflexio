@@ -18,6 +18,9 @@ from reflexio.server.services.extraction.package_compression import (
     CompressedSourcePackage,
     compress_source_package,
 )
+from reflexio.server.services.extraction.pending_tool_admission import (
+    require_pending_tool_admission,
+)
 from reflexio.server.services.extraction.pending_tool_call_dispatch import (
     PendingToolCallToolContext,
 )
@@ -138,6 +141,7 @@ def _pending_tools(
     if pending_tool_config is None:
         raise InputBudgetConfigurationError("Profile pending tool secrets unavailable")
     pending_tool_policy_snapshot(pending_tool_config, tools_config)
+    require_pending_tool_admission(pending_tool_config, coordinator.storage)
     return create_pending_info_tools_for_extractor_kind(
         "profile"
     ), PendingToolCallToolContext(

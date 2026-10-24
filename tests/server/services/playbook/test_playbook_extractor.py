@@ -1044,10 +1044,6 @@ class TestResumableAgentPath:
 
         with (
             patch("litellm.completion", side_effect=[response]),
-            patch(
-                "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
-                return_value=True,
-            ),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
             playbooks = extractor.extract_playbook_entries(
@@ -1150,10 +1146,6 @@ class TestStructuredPlaybookExtraction:
 
         with (
             patch("litellm.completion", side_effect=[response]),
-            patch(
-                "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
-                return_value=True,
-            ),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
             result = extractor.extract_playbook_entries(
@@ -1199,10 +1191,6 @@ class TestStructuredPlaybookExtraction:
 
         with (
             patch("litellm.completion", side_effect=[response]),
-            patch(
-                "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
-                return_value=True,
-            ),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
             result = extractor.extract_playbook_entries(
@@ -1235,10 +1223,6 @@ class TestStructuredPlaybookExtraction:
 
         with (
             patch("litellm.completion", side_effect=[response]),
-            patch(
-                "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
-                return_value=True,
-            ),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
             result = extractor.extract_playbook_entries(
@@ -1271,10 +1255,6 @@ class TestStructuredPlaybookExtraction:
 
         with (
             patch("litellm.completion", side_effect=[response]),
-            patch(
-                "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
-                return_value=True,
-            ),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
             pytest.raises(
                 RuntimeError,
@@ -1322,10 +1302,6 @@ class TestStructuredPlaybookExtraction:
         )
 
         with (
-            patch(
-                "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
-                return_value=True,
-            ),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
             pytest.raises(RuntimeError) as raised,
         ):
@@ -2243,10 +2219,6 @@ class TestRationaleRoundTrip:
 
         with (
             patch("litellm.completion", side_effect=[response]),
-            patch(
-                "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
-                return_value=True,
-            ),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
             result = extractor.extract_playbook_entries(
@@ -2422,10 +2394,6 @@ class TestPlaybookContentExtraction:
 
         with (
             patch("litellm.completion", side_effect=[response]),
-            patch(
-                "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
-                return_value=True,
-            ),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
             result = extractor.extract_playbook_entries(

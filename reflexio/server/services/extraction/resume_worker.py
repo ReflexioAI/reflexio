@@ -27,6 +27,9 @@ from reflexio.server.metering_events import (
 )
 from reflexio.server.services.deferred_learning_plan import FinalizationResult
 from reflexio.server.services.extraction.agent_run_records import build_scope_hash
+from reflexio.server.services.extraction.pending_tool_admission import (
+    pending_tool_calls_enabled,
+)
 from reflexio.server.services.extraction.pending_tool_call_dispatch import (
     PendingToolCallToolContext,
 )
@@ -830,6 +833,8 @@ class ExtractionResumeWorker:
         self,
         run: AgentRunRecord,
     ) -> tuple[list[Any], PendingToolCallToolContext | None]:
+        if not pending_tool_calls_enabled(self.request_context):
+            return [], None
         pending_config = (
             self.request_context.configurator.get_config().pending_tool_call_config
         )

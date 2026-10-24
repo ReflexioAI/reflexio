@@ -10,7 +10,6 @@ import argparse
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
@@ -92,34 +91,28 @@ def main() -> int:
 
     predictions = []
     client = LiteLLMClient(LiteLLMConfig(model=model, temperature=0.0, timeout=180))
-    with patch(
-        "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
-        return_value=True,
-    ):
-        for idx, case in enumerate(cases, start=1):
-            # Use fresh storage per case so a prior-pending fixture cannot leak
-            # into later cases as Prior Knowledge.
-            with tempfile.TemporaryDirectory(
-                prefix=f"ask-human-eval-{case.id}-"
-            ) as tmp:
-                request_context = RequestContext(
-                    org_id=f"ask-human-eval-{case.id}",
-                    storage_base_dir=tmp,
-                )
-                provider = make_ask_human_prediction_provider(
-                    llm_client=client,
-                    request_context=request_context,
-                )
-                prediction = provider(case)
-                predictions.append(prediction)
-                print(
-                    f"[{idx:02d}/{len(cases)}] {case.id} "
-                    f"expected={case.expected_ask_human} "
-                    f"actual={prediction.asked_human} "
-                    f"tools={prediction.tool_names} "
-                    f"playbooks={prediction.playbook_count}",
-                    flush=True,
-                )
+    for idx, case in enumerate(cases, start=1):
+        # Use fresh storage per case so a prior-pending fixture cannot leak
+        # into later cases as Prior Knowledge.
+        with tempfile.TemporaryDirectory(prefix=f"ask-human-eval-{case.id}-") as tmp:
+            request_context = RequestContext(
+                org_id=f"ask-human-eval-{case.id}",
+                storage_base_dir=tmp,
+            )
+            provider = make_ask_human_prediction_provider(
+                llm_client=client,
+                request_context=request_context,
+            )
+            prediction = provider(case)
+            predictions.append(prediction)
+            print(
+                f"[{idx:02d}/{len(cases)}] {case.id} "
+                f"expected={case.expected_ask_human} "
+                f"actual={prediction.asked_human} "
+                f"tools={prediction.tool_names} "
+                f"playbooks={prediction.playbook_count}",
+                flush=True,
+            )
 
     results = run_eval(cases=cases, predictions=predictions)
     print()

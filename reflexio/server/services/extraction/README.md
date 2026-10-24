@@ -15,6 +15,7 @@ information, and resumes outside the request path.
 | File | Responsibility |
 |------|----------------|
 | `resumable_agent.py` | Runs extraction agents, records agent usage, injects resolved pending-tool context, and exposes pending tool-call helpers. |
+| `pending_tool_admission.py` | Owns org/storage admission at fresh/resume construction and direct tool effects; rejects unadopted rollout vetoes. |
 | `pending_tool_call_dispatch.py` | Implements the `ask_human` and pending-info tool dispatch flow. |
 | `prior_answer_search.py` | Finds and formats previous human answers; captures immutable complete prior context before package planning, without admission or journal writes. |
 | `agent_run_records.py` | Builds durable extraction-agent run records and source interaction identity. |
@@ -562,3 +563,43 @@ stored schema selection through to message construction; overflow calls use the
 actual adopted schema where present. Exact-span and quoted-evidence modes remain
 distinct, while the existing structured repair inherits the same contract. See
 [`playbook/README.md`](../playbook/README.md#extraction-citation-contract).
+
+
+## Retiring a pending-tool rollout policy
+
+The former `resumable_extraction_agent.enabled` and `enabled_org_ids` sitevar
+fields no longer select execution. Their framework is removed; the existing
+org `pending_tool_call_config.enabled` owns pending-tool admission. Storage is
+still required. Disabling new tools does not disable the permanent extraction
+loop or change the existing resume scheduler/finalization policy.
+
+Stock installations need no change: the shipped legacy policy was globally
+`enabled: true`, and a missing file is neutral. A retained globally true JSON
+policy is verified as neutral without rewriting it; its allowlist had no effect.
+Non-neutral, unreadable or ambiguous legacy files are refused before tools can
+be enabled, including during direct continuations and direct tool handlers. JSON retains priority over
+TXT. An org already configured off stays off without needing the old file.
+
+For an operator-managed legacy cohort policy, adopt it explicitly before upgrade
+or before enabling pending tools:
+
+1. Preserve the original policy and org configurations privately. Enumerate all
+   orgs and any custom defaults used to create future orgs; this process does
+   not discover or rewrite customer configuration automatically.
+2. With the old valid policy, an org was allowed when global `enabled` was true
+   or its ID was in `enabled_org_ids`. For every denied org, set the existing
+   `pending_tool_call_config.enabled` to false through the normal config update
+   path. For allowed orgs, preserve their current opt-in value. If a custom
+   future-org template opts in despite a global/cohort denial, make that
+   template opt out too. Enterprise project overlays cannot override this org setting; other hosts must
+   adopt any custom policy overrides too.
+3. Read back the effective org settings and verify workers have refreshed their
+   config. Preserve existing per-tool settings and stored extraction evidence.
+4. Remove the retired rollout policy only after adopting every denial. Removing
+   it alone is not proof of adoption. No automatic value copy or live migration
+   runs when importing or invoking extraction.
+
+A non-neutral file cannot be used to authorize an allowlisted org after
+retirement; it requires the explicit adoption above. Missing configs and absent
+storage remain closed. Do not replace the deleted resolver with a helper that
+returns true, or reuse auth/tenant checks as a rollout gate.

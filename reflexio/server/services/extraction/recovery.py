@@ -20,9 +20,11 @@ from reflexio.server.services.extraction.agent_run_records import (
     matches_frozen_extractor_config,
     source_interaction_digest,
 )
+from reflexio.server.services.extraction.pending_tool_admission import (
+    pending_tool_calls_disabled_reason,
+)
 from reflexio.server.services.extraction.resumable_agent import (
     decode_committed_output,
-    pending_tool_calls_disabled_reason,
 )
 from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredExtractedPlaybookList,

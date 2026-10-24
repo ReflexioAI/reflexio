@@ -5,11 +5,13 @@ import tempfile
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from reflexio.models.config_schema import PendingToolCallConfig
+from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMConfig,
@@ -789,3 +791,38 @@ def test_a_stale_resume_worker_cannot_finish_a_reclaimed_run(
     assert stored.last_error is None
     if outcome == "agent_completed":
         assert result.finished_reason == "late_output_discarded"
+
+
+@pytest.mark.parametrize("allowed_orgs", [[], ["org_1"]])
+def test_non_neutral_rollout_requires_explicit_org_policy_adoption(
+    monkeypatch, tmp_path, allowed_orgs
+):
+    from reflexio.server.site_var.site_var_manager import SiteVarManager
+
+    (tmp_path / "feature_flags.json").write_text(
+        json.dumps(
+            {
+                "resumable_extraction_agent": {
+                    "enabled": False,
+                    "enabled_org_ids": allowed_orgs,
+                }
+            }
+        )
+    )
+    original_init = SiteVarManager.__init__
+    monkeypatch.setattr(
+        SiteVarManager,
+        "__init__",
+        lambda self: original_init(self, source_dir=str(tmp_path)),
+    )
+    context = SimpleNamespace(
+        org_id="org_1",
+        storage=object(),
+        configurator=SimpleNamespace(
+            get_config=lambda: SimpleNamespace(
+                pending_tool_call_config=PendingToolCallConfig(enabled=True)
+            )
+        ),
+    )
+    with pytest.raises(ValueError, match="pending_tool_call_config.enabled"):
+        resumable_agent_module.pending_tool_calls_enabled(cast(RequestContext, context))
