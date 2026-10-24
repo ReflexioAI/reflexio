@@ -18,10 +18,7 @@ from pydantic import (
 from reflexio.config_env import (
     DEFAULT_STORAGE_POOL_ACQUIRE_TIMEOUT,
     DEFAULT_STORAGE_POOL_SIZE,
-)
-from reflexio.config_migration import (
     StoredConfigurationError,
-    strip_retired_optimizer_stop_score,
 )
 from reflexio.housekeeping_policy import strip_legacy_housekeeping_fields
 from reflexio.pending_tool_policy import (
@@ -693,13 +690,13 @@ class PlaybookOptimizerConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def reject_obsolete_policy(cls, data: Any) -> Any:
-        data = strip_retired_optimizer_stop_score(data)
         return _reject_obsolete_fields(
             data,
             (
                 "optimize_user_playbooks",
                 "auto_update_user_playbooks",
                 "use_merge",
+                "early_stop_score",
             ),
         )
 

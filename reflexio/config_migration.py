@@ -21,24 +21,17 @@ _LEGACY_STOP_SCORE = TypeAdapter(
 )
 
 
-def strip_retired_optimizer_stop_score(
-    data: Any, *, explicit_upgrade: bool = False
-) -> Any:
-    """Discard inert history; active search-policy changes need explicit adoption."""
+def strip_retired_optimizer_stop_score(data: Any) -> Any:
+    """Validate and retire historical policy only during explicit conversion."""
     if not isinstance(data, dict) or "early_stop_score" not in data:
         return data
     try:
         _LEGACY_STOP_SCORE.validate_python(data["early_stop_score"])
-        enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(data.get("enabled", False))
+        _LEGACY_OPTIMIZER_BOOL.validate_python(data.get("enabled", False))
     except ValidationError:
         raise ConfigurationMigrationError(
             "Invalid obsolete optimizer early_stop_score or enabled setting."
         ) from None
-    if enabled and not explicit_upgrade:
-        raise ConfigurationMigrationError(
-            "Active optimizer early_stop_score is obsolete. Explicitly upgrade "
-            "saved configuration to adopt publication-quality stopping."
-        )
     return {key: value for key, value in data.items() if key != "early_stop_score"}
 
 
@@ -87,7 +80,7 @@ def _normalize_optimizer_policy(data: Any) -> Any:
         )
         normalized.pop("use_merge")
         normalized["max_merge_invocations"] = limit if enabled else 0
-    return strip_retired_optimizer_stop_score(normalized, explicit_upgrade=True)
+    return strip_retired_optimizer_stop_score(normalized)
 
 
 class ExtractionPreset(StrEnum):
