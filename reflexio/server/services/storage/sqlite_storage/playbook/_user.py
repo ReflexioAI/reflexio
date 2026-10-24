@@ -4,6 +4,7 @@ import json
 import sqlite3
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from hashlib import sha256
 from typing import Any
 
@@ -783,8 +784,12 @@ class UserPlaybookStoreMixin:
             if text:
                 if expand_documents and self._should_expand_documents():
                     with ThreadPoolExecutor(max_workers=2) as executor:
-                        emb_future = executor.submit(self._get_embedding, text)
-                        exp_future = executor.submit(self._expand_document, text)
+                        emb_future = executor.submit(
+                            copy_context().run, self._get_embedding, text
+                        )
+                        exp_future = executor.submit(
+                            copy_context().run, self._expand_document, text
+                        )
                         up.embedding = emb_future.result(timeout=15)
                         up.expanded_terms = exp_future.result(timeout=15)
                 else:

@@ -603,7 +603,6 @@ Key files:
 
 ### Durable Learning Queue
 
-
 **Directory**: `services/durable_learning/`
 
 Key files:
@@ -735,6 +734,10 @@ Pre-computed embeddings passed to storage methods via `query_embedding` paramete
 
 ### Storage
 
+SQLite storage preparation gives each embedding and expansion task its own copy
+of the caller's context. Existing model deadlines and correlation scope survive
+the thread handoff; task-local mutations remain isolated. Preparation adds no new
+deadline or cancellation policy and retains its existing waits and cleanup.
 
 **Directory**: `services/storage/`
 

@@ -6,6 +6,7 @@ import sqlite3
 import uuid
 import weakref
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -184,8 +185,12 @@ class AgentPlaybookStoreMixin:
             text = embedding_text(ap)
             if text and self._should_expand_documents():
                 with ThreadPoolExecutor(max_workers=2) as executor:
-                    emb_future = executor.submit(self._get_embedding, text)
-                    exp_future = executor.submit(self._expand_document, text)
+                    emb_future = executor.submit(
+                        copy_context().run, self._get_embedding, text
+                    )
+                    exp_future = executor.submit(
+                        copy_context().run, self._expand_document, text
+                    )
                     ap.embedding = emb_future.result(timeout=15)
                     ap.expanded_terms = exp_future.result(timeout=15)
             elif text:
