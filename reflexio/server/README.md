@@ -243,6 +243,21 @@ Key files:
   Legacy hashes can explicitly select the ten fields. API keys
   and messages are excluded; endpoint URLs may contain credentials, so the
   descriptor is internal and must not be logged or exposed.
+- MiniMax-M3 direct OpenAI calls normalize generic `thinking=True` / Anthropic
+  `type=enabled` to MiniMax's `type=adaptive`, including `extra_body` overrides.
+  Explicit `adaptive` and `disabled` remain intact; other models are unchanged.
+  The installed LiteLLM adapter is exercised offline with captured HTTP bodies.
+  See [MiniMax thinking control](https://platform.minimax.io/docs/api-reference/text-openai-api).
+- Provider timing uses the existing optional health sink:
+  `reflexio.health.llm.provider.duration` (seconds), with bounded `phase` and
+  `outcome` labels. `admission` measures permit wait; `execution` measures the
+  admitted caller through its scope exit (including dispatch/response handling,
+  not pure provider compute); `retirement` measures capacity retained after that
+  exit until the final underlying worker releases it. Retirement is near zero
+  for synchronous completion. The three phases are sequential per attempt;
+  outer LLM request/worker durations include them and must not be added to them.
+  Retries/fallbacks each enter the same owner. No models, arguments, tenant IDs
+  or credentials become labels; no tracing or capacity policy is enabled.
 - `get_completion_model_ladder()` returns an immutable ordered tuple from the
   native generation resolver, applying role precedence, custom endpoint pinning
   and fallback deduplication. Pass the same effective overrides as generation;
@@ -606,6 +621,15 @@ Model calls run outside writer transactions; outputs, cursor advancement and eff
 receipts commit together under a lease fence. Incomplete tails wait for input or a
 force barrier. Billing/finalization retry durably; derived dispatch remains best
 effort. `GET /api/learning_status` reads required cursor coverage.
+
+Repeated configuration failures, including an incomplete checkpoint policy
+mismatch, share the 12-attempt window ceiling. They park as `retry_exhausted`
+with the original configuration reason in the stored error suffix. The existing
+fenced recovery receipt gives a corrected configuration one more attempt without
+resetting frozen evidence, output, provider quota or billing receipts; unchanged
+failures park again. Immediate input-budget/incompatible-output holds keep their
+existing stricter recovery path. Other users and sibling extractors retain their
+normal turns.
 
 ### Async Extraction
 

@@ -224,3 +224,134 @@ def test_backoff_configuration_failure_is_not_operator_recoverable(pipeline):
     )
     receipt = plan_input_budget_recovery(storage, window.window_id)
     assert receipt["reason"] == "not_held" and not receipt["recoverable"]
+
+
+@pytest.mark.parametrize("after_rearm", ["unchanged", "corrected"])
+def test_incomplete_policy_mismatch_stops_retrying_without_resetting_evidence(
+    pipeline, monkeypatch, after_rearm
+):
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        MAX_EXTRACTION_WINDOW_ATTEMPTS,
+    )
+
+    engine, worker, client = pipeline
+    storage = engine.get_storage()
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
+    monkeypatch.setenv(
+        "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
+        '{"minimax/MiniMax-M3":1000000,"gpt-4o":65536}',
+    )
+    monkeypatch.setattr(
+        "reflexio.server.llm.input_budget.litellm.token_counter", lambda **_: 100
+    )
+    dispatch = Mock(side_effect=_respond)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
+    original_extract = overflow_pipeline.extract_overflow_window
+    first = True
+
+    def interrupt_incomplete(**kwargs):
+        nonlocal first
+        if first:
+            first = False
+
+            def interrupt(_call):
+                raise RuntimeError("interrupted before a child output was committed")
+
+            kwargs["execute_call"] = interrupt
+        return original_extract(**kwargs)
+
+    monkeypatch.setattr(
+        overflow_pipeline, "extract_overflow_window", interrupt_incomplete
+    )
+    assert client.post(
+        "/api/publish_interaction", json=payload("incomplete", force=True)
+    ).json()["success"]
+    assert worker.drain_org(storage.org_id, 1, 300) == 0
+    with storage._stream_sql(read_only=True) as db:
+        window_id = db.query(
+            "SELECT window_id FROM extraction_cursors WHERE user_id='u' AND kind='profile'"
+        )[0]["window_id"]
+    _, initial_run, initial_checkpoint = _state(storage, window_id)
+    frozen = deepcopy(initial_run.generation_request_snapshot["overflow"])
+    assert initial_checkpoint["extraction_policy"]
+    assert initial_run.committed_output is None
+    instruction = profile_extractor.PROFILE_SOURCE_EVIDENCE_INSTRUCTION
+    monkeypatch.setattr(
+        profile_extractor,
+        "PROFILE_SOURCE_EVIDENCE_INSTRUCTION",
+        instruction + " Quote exactly.",
+    )
+    for _ in range(MAX_EXTRACTION_WINDOW_ATTEMPTS + 3):
+        _make_due(storage, cursor=False)
+        with storage._stream_sql() as db:
+            db.query("UPDATE extraction_cursors SET retry_at=0 WHERE retry_at<1e300")
+        worker.drain_org(storage.org_id, 1, 300)
+    cursor, run, checkpoint = _state(storage, window_id)
+    assert cursor["retry_at"] == float("inf")
+    assert cursor["attempts"] == MAX_EXTRACTION_WINDOW_ATTEMPTS
+    assert cursor["completed_seq"] == 0 and cursor["window_id"] == window_id
+    assert checkpoint == frozen["checkpoint"]
+    assert run.generation_request_snapshot["overflow"]["attempts"] == frozen["attempts"]
+    assert run.committed_output is None and storage.count_all_profiles() == 0
+    dispatch.assert_not_called()
+    assert storage.extraction_status("u", "incomplete") == {
+        "status": "failed",
+        "reason": "retry_exhausted",
+    }
+    receipt = plan_input_budget_recovery(storage, window_id)
+    assert receipt["recoverable"], receipt
+    apply_input_budget_recovery(storage, receipt)
+    if after_rearm == "corrected":
+        monkeypatch.setattr(
+            profile_extractor, "PROFILE_SOURCE_EVIDENCE_INSTRUCTION", instruction
+        )
+    _make_due(storage)
+    worker.drain_org(storage.org_id, 1, 300)
+    cursor, run, checkpoint = _state(storage, window_id)
+    if after_rearm == "unchanged":
+        assert cursor["retry_at"] == float("inf")
+        assert cursor["completed_seq"] == 0
+        assert checkpoint == frozen["checkpoint"]
+        dispatch.assert_not_called()
+    else:
+        assert storage.extraction_status("u", "incomplete")["status"] == "done"
+        assert storage.count_all_profiles() == 1
+
+
+def test_policy_change_between_chunks_preserves_completed_child():
+    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+    from tests.server.services.test_overflow_carried_evidence import coordinator_fixture
+
+    coordinator, build, execute = coordinator_fixture()
+    saved = []
+
+    def build_changed():
+        call = build()
+        if saved:
+            call.messages.append(
+                {"role": "system", "content": "A changed extraction contract"}
+            )
+        return call
+
+    def execute_first(call):
+        result = execute(call)
+        saved.append(deepcopy(coordinator.checkpoint))
+        return result
+
+    client = Mock(spec=LiteLLMClient)
+    with pytest.raises(
+        InputBudgetConfigurationError, match="policy changed after checkpoint"
+    ):
+        overflow_pipeline.extract_overflow_window(
+            coordinator=coordinator,
+            client=client,
+            build_call=build_changed,
+            execute_call=execute_first,
+            final_validator=None,
+        )
+    assert len(saved) == 1
+    assert coordinator.checkpoint == saved[0]
+    assert coordinator.checkpoint["extraction_children"]
+    assert coordinator.checkpoint["completed_steps"]
+    assert not client.mock_calls

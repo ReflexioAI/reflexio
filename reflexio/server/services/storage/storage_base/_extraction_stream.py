@@ -798,12 +798,17 @@ class ExtractionStreamStore:
 
     def fail_extraction_input_budget(
         self, window: Window, token: str, reason: str, *, park: bool = False
-    ) -> None:
+    ) -> bool:
         """Retry correctable configuration; hold capacity failures without replay.
 
         ``park`` holds a configuration failure that no retry can fix (a saved
         output failing the current contract) the same way as a capacity hold:
         ``retry_at=inf`` until ``recover_extraction_input_budget`` re-arms it.
+        Repeated configuration failures share the ordinary window attempt
+        ceiling. Return whether the cursor is parked. Ceiling holds use the
+        existing retry-exhausted re-arm (which changes only the due time), even
+        when configuration failed before a parent journal could be created.
+        Extraction still validates frozen evidence and provider quota on retry.
         """
         if reason not in {"input_budget_exceeded", "input_budget_configuration_error"}:
             raise ValueError("Unknown extraction input failure reason")
@@ -812,6 +817,7 @@ class ExtractionStreamStore:
         with self._stream_sql() as db:
             self._fence(db, window.user_id, token)
             retry_at = float("inf")
+            cursor_error = reason
             if reason == "input_budget_configuration_error" and not park:
                 rows = db.query(
                     f"SELECT attempts FROM {db.table('extraction_cursors')} "
@@ -823,7 +829,10 @@ class ExtractionStreamStore:
                         "Extraction configuration retry lost its active cursor"
                     )
                 attempts = int(rows[0]["attempts"]) + 1
-                retry_at = db.now() + min(300, 2 ** min(attempts - 1, 9))
+                if attempts < MAX_EXTRACTION_WINDOW_ATTEMPTS:
+                    retry_at = db.now() + min(300, 2 ** min(attempts - 1, 9))
+                else:
+                    cursor_error = RETRY_EXHAUSTED_PREFIX + reason
             updated = db.query(
                 f"UPDATE {db.table('extraction_cursors')} SET attempts=attempts+1,retry_at=?,last_error=?,last_turn=? "
                 "WHERE user_id=? AND kind=? AND project_id=? AND window_id=? AND EXISTS ("
@@ -831,7 +840,7 @@ class ExtractionStreamStore:
                 "RETURNING window_id",
                 (
                     retry_at,
-                    reason,
+                    cursor_error,
                     db.now(),
                     window.user_id,
                     window.kind,
@@ -860,6 +869,7 @@ class ExtractionStreamStore:
                 "WHERE org_id=? AND user_id=?",
                 (self.org_id, window.user_id),
             )
+            return retry_at == float("inf")
 
     def discard_extraction_computation(self, window: Window, token: str) -> None:
         """Drop a computation whose historical evidence changed, then retry it.

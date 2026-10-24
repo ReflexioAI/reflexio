@@ -5,6 +5,7 @@ import pickle
 from inspect import getattr_static
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import httpx
@@ -887,3 +888,44 @@ def test_secondary_tool_loop_through_actual_subprocess(model, monkeypatch):
     assert assistant["reasoning_content"] == "Retain this reasoning."
     assert assistant["content"] == "Looking up the key."
     assert assistant["tool_calls"][0]["id"] == "call_1"
+
+
+@pytest.mark.parametrize("location", ["top_level", "extra_body"])
+@pytest.mark.parametrize("thinking", [True, {"type": "enabled", "budget_tokens": 1024}])
+def test_minimax_m3_thinking_uses_adaptive_in_actual_adapter(
+    transport, monkeypatch, location, thinking
+):
+    requests, responses = transport
+    model = "minimax/MiniMax-M3"
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-placeholder")
+    responses.append(_chat_response(model, "done"))
+    options: dict[str, Any] = {"thinking": thinking}
+    if location == "extra_body":
+        options = {"extra_body": options}
+    original = json.dumps(options, sort_keys=True)
+    client = LiteLLMClient(LiteLLMConfig(model=model))
+    assert (
+        client.generate_chat_response([{"role": "user", "content": "hello"}], **options)
+        == "done"
+    )
+    assert len(requests) == 1
+    assert requests[0][1]["thinking"] == {"type": "adaptive"}
+    assert json.dumps(options, sort_keys=True) == original
+
+
+@pytest.mark.parametrize("thinking", [{"type": "adaptive"}, {"type": "disabled"}])
+def test_minimax_m3_documented_thinking_modes_are_preserved(
+    transport, monkeypatch, thinking
+):
+    requests, responses = transport
+    model = "minimax/MiniMax-M3"
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-placeholder")
+    responses.append(_chat_response(model, "done"))
+    client = LiteLLMClient(LiteLLMConfig(model=model))
+    assert (
+        client.generate_chat_response(
+            [{"role": "user", "content": "hello"}], thinking=thinking
+        )
+        == "done"
+    )
+    assert requests[0][1]["thinking"] == thinking

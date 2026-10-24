@@ -9,6 +9,7 @@ another independently admitted provider. Capacity is never bypassed.
 import logging
 import os
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -19,6 +20,7 @@ import litellm
 from reflexio.removed_env import reject_removed_env
 from reflexio.server.env_utils import env_str
 from reflexio.server.llm.llm_utils import positive_int_env
+from reflexio.server.operational_metrics import record_health
 
 if TYPE_CHECKING:
     from reflexio.server.llm._litellm_types import ModelProvenance
@@ -87,6 +89,9 @@ class _ProviderLease:
         self._release = release
         self._references = 1
         self._lock = threading.Lock()
+        self._started = time.monotonic()
+        self._caller_finished: float | None = None
+        self._outcome = "success"
 
     def retain(self) -> Callable[[], None]:
         with self._lock:
@@ -96,10 +101,35 @@ class _ProviderLease:
         return self.release
 
     def release(self) -> None:
+        retirement = None
         with self._lock:
             self._references -= 1
             if self._references == 0:
                 self._release()
+                if self._caller_finished is not None:
+                    retirement = time.monotonic() - self._caller_finished
+        if retirement is not None:
+            _record_duration(retirement, phase="retirement", outcome=self._outcome)
+
+    def finish(self, outcome: str) -> None:
+        """Finish the caller while retained workers still own their permits."""
+        with self._lock:
+            self._caller_finished = time.monotonic()
+            elapsed = self._caller_finished - self._started
+            self._outcome = outcome
+        self.release()
+        _record_duration(elapsed, phase="execution", outcome=outcome)
+
+
+def _record_duration(elapsed: float, *, phase: str, outcome: str) -> None:
+    record_health(
+        "llm.provider.duration",
+        elapsed,
+        kind="distribution",
+        unit="second",
+        phase=phase,
+        outcome=outcome,
+    )
 
 
 _current_provider_lease: ContextVar[_ProviderLease | None] = ContextVar(
@@ -187,11 +217,20 @@ def provider_slot(model: str, *, max_wait: float | None = None) -> Iterator[None
             _current_provider_lease.reset(token)
         return
     sem = _get_semaphore(provider)
-    with search_runtime.phase("llm.provider_queue"):
-        wait = search_runtime.remaining(_ACQUIRE_TIMEOUT_SECONDS)
-        if max_wait is not None:
-            wait = min(wait, max_wait)
-        acquired = sem.acquire(timeout=wait)
+    started = time.monotonic()
+    acquired = False
+    admission_outcome = "aborted"
+    try:
+        with search_runtime.phase("llm.provider_queue"):
+            wait = search_runtime.remaining(_ACQUIRE_TIMEOUT_SECONDS)
+            if max_wait is not None:
+                wait = min(wait, max_wait)
+            acquired = sem.acquire(timeout=wait)
+            admission_outcome = "admitted" if acquired else "timeout"
+    finally:
+        _record_duration(
+            time.monotonic() - started, phase="admission", outcome=admission_outcome
+        )
     if not acquired:
         search_runtime.checkpoint()
         cap = _max_concurrency_for_provider(provider)
@@ -207,9 +246,16 @@ def provider_slot(model: str, *, max_wait: float | None = None) -> Iterator[None
         )
     lease = _ProviderLease(sem.release)
     token = _current_provider_lease.set(lease)
+    outcome = "success"
     try:
         search_runtime.checkpoint()
         yield
+    except Exception:
+        outcome = "failure"
+        raise
+    except BaseException:
+        outcome = "aborted"
+        raise
     finally:
         _current_provider_lease.reset(token)
-        lease.release()
+        lease.finish(outcome)

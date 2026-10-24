@@ -72,6 +72,7 @@ def _drain_once(worker, storage) -> None:
     with storage._stream_sql() as db:
         # Skip backoff, never a park: a parked cursor must stay parked.
         db.query("UPDATE extraction_cursors SET retry_at=0 WHERE retry_at<1e300")
+        db.query("UPDATE learning_work SET due_at=0 WHERE user_id='u'")
 
 
 @pytest.mark.parametrize("after_rearm", ["succeeds", "fails_again"])
@@ -142,3 +143,49 @@ def test_window_failures_park_at_the_ceiling_with_locator_and_rearm(
         assert again["retry_at"] == float("inf")
         assert again["attempts"] == MAX_EXTRACTION_WINDOW_ATTEMPTS + 1
         assert again["last_error"].startswith(RETRY_EXHAUSTED_PREFIX)
+
+
+def test_configuration_hold_keeps_other_users_progressing_after_worker_restart(
+    pipeline, monkeypatch
+):
+    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+
+    engine, worker, client = pipeline
+    storage = engine.get_storage()
+
+    def gate(service, _config):
+        if service.service_config.user_id == "u":
+            raise InputBudgetConfigurationError("test checkpoint mismatch")
+        return False
+
+    monkeypatch.setattr(ProfileGenerationService, "_should_run_before_extraction", gate)
+    assert client.post("/api/publish_interaction", json=payload("bad-policy")).json()[
+        "success"
+    ]
+    worker.drain_org(storage.org_id, 1, 300)
+    assert client.post(
+        "/api/publish_interaction", json=payload("other-user", user_id="v")
+    ).json()["success"]
+    worker.drain_org(storage.org_id, 1, 300)
+    assert storage.extraction_status("v", "other-user")["status"] == "done"
+    for _ in range(MAX_EXTRACTION_WINDOW_ATTEMPTS + 3):
+        _drain_once(worker, storage)
+    assert storage.extraction_status("u", "bad-policy") == {
+        "status": "failed",
+        "reason": "retry_exhausted",
+    }
+    restarted = worker_module.DurableLearningWorker(lambda _: engine.request_context)
+    for _ in range(3):
+        _drain_once(restarted, storage)
+    assert _cursor(storage)["attempts"] == MAX_EXTRACTION_WINDOW_ATTEMPTS
+    assert _cursor(storage)["retry_at"] == float("inf")
+    assert storage.count_all_profiles() == 0
+    # A pre-parent configuration error must remain recoverable after correction.
+    receipt = plan_input_budget_recovery(storage, _cursor(storage)["window_id"])
+    assert receipt["recoverable"] and receipt["hold"] == "retry_exhausted"
+    apply_input_budget_recovery(storage, receipt)
+    monkeypatch.setattr(
+        ProfileGenerationService, "_should_run_before_extraction", lambda *_: False
+    )
+    _drain_once(restarted, storage)
+    assert storage.extraction_status("u", "bad-policy")["status"] == "done"
