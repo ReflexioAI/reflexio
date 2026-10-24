@@ -18,6 +18,8 @@ from reflexio.server.services.configurator.local_file_config_storage import (
     LocalFileConfigStorage,
 )
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def policy(monkeypatch):
