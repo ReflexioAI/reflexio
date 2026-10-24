@@ -322,29 +322,3 @@ class AgentEvaluationResultStoreMixin:
             list[RetrievedLearningEvaluationResult]: Matching rows.
         """
         raise NotImplementedError
-
-    @abstractmethod
-    def get_retrieved_learning_evaluation_results_in_window(
-        self,
-        from_ts: int,
-        to_ts: int,
-        *,
-        agent_version: str | None = None,
-    ) -> list[RetrievedLearningEvaluationResult]:
-        """Read every verdict whose ``created_at`` falls in a closed window.
-
-        Unlike :meth:`get_retrieved_learning_evaluation_results`, this read is
-        exhaustive: it has no ``limit`` and must not truncate. Consumers treat
-        the result as the complete set of verdicts for the window, so a silently
-        short read would drop real signal rather than merely paginate it.
-
-        Args:
-            from_ts (int): Inclusive lower bound on ``created_at``.
-            to_ts (int): Inclusive upper bound on ``created_at``.
-            agent_version (str, optional): Restrict to one agent version.
-
-        Returns:
-            list[RetrievedLearningEvaluationResult]: Every matching row,
-                ordered by ``created_at ASC, result_id ASC``.
-        """
-        raise NotImplementedError
