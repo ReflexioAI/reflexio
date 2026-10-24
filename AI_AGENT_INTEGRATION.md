@@ -196,8 +196,15 @@ raising the application's Python requirement without the developer's approval:
 pip install reflexio-client
 ```
 
-Then set only the API key. `ReflexioClient()` defaults to
-`https://www.reflexio.ai/`:
+For a TypeScript or JavaScript application on Node.js 20.3 or newer (or Bun,
+Deno, or an edge runtime), install the TypeScript client instead:
+
+```shell
+npm install @reflexioai/client
+```
+
+Then set only the API key. Both clients default to `https://www.reflexio.ai/`
+and read the same variables:
 
 ```shell
 REFLEXIO_API_KEY="..."

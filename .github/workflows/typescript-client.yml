@@ -1,0 +1,63 @@
+name: TypeScript client
+
+on:
+  pull_request:
+    paths:
+      - client_ts/**
+      - reflexio/server/routes/**
+      - reflexio/server/api.py
+      - reflexio/models/api_schema/**
+      - .github/workflows/typescript-client.yml
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  client:
+    strategy:
+      matrix:
+        node: ["20", "22", "24"]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: client_ts
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: client_ts/package-lock.json
+      - run: npm ci --no-fund --no-audit
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  # The client's types are generated from the server's OpenAPI document. A
+  # server change that alters a request or response must regenerate them in
+  # the same PR, or the client would silently send fields the server drops.
+  generated-types:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: client_ts/package-lock.json
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync
+      - run: npm ci --no-fund --no-audit
+        working-directory: client_ts
+      - run: npm run check-generated
+        working-directory: client_ts

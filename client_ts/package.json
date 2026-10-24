@@ -1,0 +1,41 @@
+{
+  "name": "@reflexioai/client",
+  "version": "0.1.0",
+  "description": "TypeScript client for the Reflexio API: publish what your agent did, search what it learned.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ReflexioAI/reflexio.git",
+    "directory": "client_ts"
+  },
+  "homepage": "https://www.reflexio.ai/docs/api-reference/typescript",
+  "keywords": ["reflexio", "agent", "memory", "llm", "self-improving"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist/**/*.js", "dist/**/*.d.ts", "README.md"],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20.3"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "generate": "node scripts/generate-types.mjs",
+    "check-generated": "node scripts/generate-types.mjs --check",
+    "prepack": "npm run build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "openapi-typescript": "7.13.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

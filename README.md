@@ -236,6 +236,35 @@ headroom beyond the ordinary extraction target; output reservations, safety marg
 and durable call limits still apply. Held capacity failures require explicit
 operator recovery with the original journal, rather than fresh automatic quota.
 
+### Integrate with the TypeScript SDK
+
+```shell
+npm install @reflexioai/client
+```
+
+```ts
+import { ReflexioClient } from "@reflexioai/client";
+
+const client = new ReflexioClient({ url: "http://localhost:8061/" });
+
+// Same calls and field names as the Python SDK, camelCased method names.
+const session = client.forSession("deploy-demo-1");
+
+await session.publishInteraction({
+  user_id: "alice",
+  interactions: [
+    { role: "user", content: "Deploy the new service." },
+    { role: "assistant", content: "Starting deployment to us-east-1..." },
+    { role: "user", content: "Wait — we never deploy production to us-east-1. Always use us-west-2." },
+    { role: "assistant", content: "Understood. Switching to us-west-2." },
+  ],
+});
+
+const context = await session.search({ query: "deploy the service", user_id: "alice" });
+```
+
+See [`client_ts/`](client_ts/README.md) for the full TypeScript client guide.
+
 ## Features
 
 ### Profile Generation
@@ -305,6 +334,7 @@ task improvement; measure that separately after rollout.
 ## SDK Usage
 
 For detailed API documentation, see the [full API reference](https://www.reflexio.ai/docs/api-reference).
+For TypeScript and JavaScript, use [`@reflexioai/client`](client_ts/README.md); the examples below are Python.
 
 Install the package:
 
