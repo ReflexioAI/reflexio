@@ -1,7 +1,16 @@
 from abc import ABC, abstractmethod
-from typing import Any
+from enum import Enum
+from typing import Any, Final
 
 from reflexio.models.config_schema import Config
+
+
+class _ConfigVersionProbeFailure(Enum):
+    FAILED = "failed"
+
+
+CONFIG_VERSION_PROBE_FAILED: Final = _ConfigVersionProbeFailure.FAILED
+ConfigVersionProbe = tuple[str, Any] | None | _ConfigVersionProbeFailure
 
 
 class ConfigWriteConflictError(RuntimeError):
@@ -61,8 +70,7 @@ class ConfigStorage(ABC):
             tuple[str, Any] | None: A ``(kind, value)`` tuple where
             ``kind`` is a short string identifying the probe type
             (e.g. ``"file"`` for mtime, ``"db"`` for a row version).
-            Returns ``None`` when probing is unsupported or fails — the
-            cache treats ``None`` as "still fresh", deferring to the
-            TTL safety net.
+            Returns ``None`` only when probing is unsupported. Probe failures
+            raise so callers can retry rather than permanently disable probes.
         """
         return None

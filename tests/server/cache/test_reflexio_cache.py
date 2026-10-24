@@ -27,6 +27,9 @@ from reflexio.server.cache.reflexio_cache import (
     get_reflexio,
     invalidate_reflexio_cache,
 )
+from reflexio.server.services.configurator.config_storage import (
+    CONFIG_VERSION_PROBE_FAILED,
+)
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.sqlite_storage._base import SQLiteStorageBase
 from reflexio.server.tracing import configure_tracer
@@ -78,7 +81,7 @@ class TestGetReflexio:
     @patch("reflexio.server.cache.reflexio_cache.Reflexio")
     def test_creates_new_instance_on_cache_miss(self, mock_reflexio_cls: MagicMock):
         """First call with a given key creates a new Reflexio instance."""
-        mock_instance = MagicMock()
+        mock_instance = _stub_reflexio(None)
         mock_reflexio_cls.return_value = mock_instance
 
         result = get_reflexio("org-1")
@@ -88,7 +91,7 @@ class TestGetReflexio:
     @patch("reflexio.server.cache.reflexio_cache.Reflexio")
     def test_cache_hit_returns_same_instance(self, mock_reflexio_cls: MagicMock):
         """Second call with the same key returns the cached instance without constructing again."""
-        mock_instance = MagicMock()
+        mock_instance = _stub_reflexio(None)
         mock_reflexio_cls.return_value = mock_instance
 
         first = get_reflexio("org-1")
@@ -102,8 +105,8 @@ class TestGetReflexio:
         self, mock_reflexio_cls: MagicMock
     ):
         """Different org_id values result in separate cache entries."""
-        mock_a = MagicMock()
-        mock_b = MagicMock()
+        mock_a = _stub_reflexio(None)
+        mock_b = _stub_reflexio(None)
         mock_reflexio_cls.side_effect = [mock_a, mock_b]
 
         result_a = get_reflexio("org-a")
@@ -117,8 +120,8 @@ class TestGetReflexio:
         self, mock_reflexio_cls: MagicMock
     ):
         """Same org_id with different storage_base_dir creates separate entries."""
-        mock_a = MagicMock()
-        mock_b = MagicMock()
+        mock_a = _stub_reflexio(None)
+        mock_b = _stub_reflexio(None)
         mock_reflexio_cls.side_effect = [mock_a, mock_b]
 
         result_a = get_reflexio("org-1", storage_base_dir="/path/a")
@@ -130,8 +133,8 @@ class TestGetReflexio:
     @patch("reflexio.server.cache.reflexio_cache.Reflexio")
     def test_none_vs_string_storage_base_dir(self, mock_reflexio_cls: MagicMock):
         """storage_base_dir=None and a string value produce different cache entries."""
-        mock_a = MagicMock()
-        mock_b = MagicMock()
+        mock_a = _stub_reflexio(None)
+        mock_b = _stub_reflexio(None)
         mock_reflexio_cls.side_effect = [mock_a, mock_b]
 
         result_a = get_reflexio("org-1", storage_base_dir=None)
@@ -143,7 +146,7 @@ class TestGetReflexio:
     @patch("reflexio.server.cache.reflexio_cache.Reflexio")
     def test_passes_storage_base_dir_to_constructor(self, mock_reflexio_cls: MagicMock):
         """storage_base_dir is forwarded to the Reflexio constructor."""
-        mock_reflexio_cls.return_value = MagicMock()
+        mock_reflexio_cls.return_value = _stub_reflexio(None)
 
         get_reflexio("org-1", storage_base_dir="/custom/dir")
         mock_reflexio_cls.assert_called_once_with(
@@ -220,7 +223,7 @@ class TestInvalidateReflexioCache:
     @patch("reflexio.server.cache.reflexio_cache.Reflexio")
     def test_invalidate_existing_entry_returns_true(self, mock_reflexio_cls: MagicMock):
         """Invalidating an existing cache entry returns True."""
-        mock_reflexio_cls.return_value = MagicMock()
+        mock_reflexio_cls.return_value = _stub_reflexio(None)
         get_reflexio("org-1")
 
         assert invalidate_reflexio_cache("org-1") is True
@@ -234,8 +237,8 @@ class TestInvalidateReflexioCache:
         self, mock_reflexio_cls: MagicMock
     ):
         """After invalidation, the next get_reflexio creates a fresh instance."""
-        mock_first = MagicMock()
-        mock_second = MagicMock()
+        mock_first = _stub_reflexio(None)
+        mock_second = _stub_reflexio(None)
         mock_reflexio_cls.side_effect = [mock_first, mock_second]
 
         first = get_reflexio("org-1")
@@ -248,7 +251,7 @@ class TestInvalidateReflexioCache:
     @patch("reflexio.server.cache.reflexio_cache.Reflexio")
     def test_invalidate_with_storage_base_dir(self, mock_reflexio_cls: MagicMock):
         """Invalidation uses the full cache key including storage_base_dir."""
-        mock_reflexio_cls.return_value = MagicMock()
+        mock_reflexio_cls.return_value = _stub_reflexio(None)
         get_reflexio("org-1", storage_base_dir="/data")
 
         # Wrong storage_base_dir should not find the entry
@@ -268,7 +271,7 @@ class TestClearReflexioCache:
     @patch("reflexio.server.cache.reflexio_cache.Reflexio")
     def test_clear_empties_all_entries(self, mock_reflexio_cls: MagicMock):
         """Clearing the cache removes all entries."""
-        mock_reflexio_cls.return_value = MagicMock()
+        mock_reflexio_cls.return_value = _stub_reflexio(None)
         get_reflexio("org-1")
         get_reflexio("org-2")
         get_reflexio("org-3")
@@ -309,7 +312,7 @@ class TestGetCacheStats:
     @patch("reflexio.server.cache.reflexio_cache.Reflexio")
     def test_current_size_increments(self, mock_reflexio_cls: MagicMock):
         """current_size reflects the number of cached entries."""
-        mock_reflexio_cls.return_value = MagicMock()
+        mock_reflexio_cls.return_value = _stub_reflexio(None)
 
         get_reflexio("org-1")
         assert get_cache_stats()["current_size"] == 1
@@ -336,13 +339,14 @@ class TestGetCacheStats:
 
 
 def _stub_reflexio(version: tuple[str, object] | None) -> MagicMock:
-    """Build a Reflexio mock that returns *version* from current_config_version().
+    """Model a captured load stamp and independently mutable current revision.
 
     Each call to ``current_config_version()`` returns the same tuple,
     matching the contract that the probe is cheap and idempotent
     between out-of-band writes.
     """
     instance = MagicMock()
+    instance.loaded_config_version.return_value = version
     instance.current_config_version.return_value = version
     return instance
 
@@ -382,8 +386,8 @@ class TestVersionBasedInvalidation:
 
         assert a is b is c
         assert mock_reflexio_cls.call_count == 1
-        # Probe was called on the second + third hits (not the first
-        # construction, where the result is captured for stamping).
+        # Only warm hits probe current storage; cold construction uses its
+        # already captured load stamp.
         assert first.current_config_version.call_count >= 2
 
     @patch("reflexio.server.cache.reflexio_cache.Reflexio")
@@ -396,12 +400,8 @@ class TestVersionBasedInvalidation:
         b = get_reflexio("org-1")
 
         assert a is b
-        # The cache short-circuits the probe call when the stamped
-        # version is None — no point in re-probing a backend that
-        # already declared "I can't tell you". One call happened at
-        # construction to capture the stamp; the second hit must NOT
-        # add another call.
-        assert first.current_config_version.call_count == 1
+        first.loaded_config_version.assert_called_once()
+        first.current_config_version.assert_not_called()
         assert mock_reflexio_cls.call_count == 1
 
     @patch("reflexio.server.cache.reflexio_cache.Reflexio")
@@ -452,7 +452,7 @@ class TestVersionBasedInvalidation:
         # Third instance (post-eviction) probes at 200.
         first = MagicMock()
         first.org_id = "org-1"
-        first.current_config_version.side_effect = OSError("disk gone")
+        first.loaded_config_version.return_value = CONFIG_VERSION_PROBE_FAILED
 
         second = _stub_reflexio(("file", 100.0))
         third = _stub_reflexio(("file", 200.0))
@@ -727,7 +727,7 @@ def test_prefetch_overlaps_independent_work_and_reuses_fresh_version(monkeypatch
     started = threading.Event()
     release = threading.Event()
     old = MagicMock(org_id="prefetch-org")
-    replacement = MagicMock(org_id="prefetch-org")
+    replacement = _stub_reflexio(("db", 2))
     project: ContextVar[str | None] = ContextVar("test_project", default=None)
     project_token = project.set("test-project")
 

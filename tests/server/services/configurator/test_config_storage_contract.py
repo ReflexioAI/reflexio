@@ -126,21 +126,28 @@ class TestConfigStorageContract:
     def test_get_version_returns_none_or_tuple(
         self, config_storage: ConfigStorage
     ) -> None:
-        """get_version() returns a (kind, value) tuple or None — never raises."""
+        """A successful get_version() returns a (kind, value) tuple or None."""
         version = config_storage.get_version()
         assert version is None or (isinstance(version, tuple) and len(version) == 2)
 
-    def test_get_version_returns_none_when_file_missing(self, tmp_path) -> None:
-        """LocalFileConfigStorage.get_version() returns None for an unsaved org.
-
-        The file is created lazily by load_config() / save_config(); a
-        fresh storage instance with no prior writes must report None
-        rather than raising or stamping a phantom mtime — the cache
-        treats None as "still fresh".
-        """
+    def test_get_version_stamps_missing_file(self, tmp_path) -> None:
+        """File creation after a missing-file probe remains detectable."""
         storage = LocalFileConfigStorage(org_id="brand-new-org", base_dir=str(tmp_path))
         # Don't trigger load_config (which creates the file). Probe directly.
-        assert storage.get_version() is None
+        assert storage.get_version() == ("file", None)
+
+    @pytest.mark.parametrize(
+        "error", [PermissionError("denied"), OSError("stat failed")]
+    )
+    def test_get_version_propagates_stat_failure(self, tmp_path, monkeypatch, error):
+        storage = LocalFileConfigStorage(org_id="stat-failed", base_dir=str(tmp_path))
+
+        def fail_stat(*args, **kwargs):
+            raise error
+
+        monkeypatch.setattr(Path, "stat", fail_stat)
+        with pytest.raises(type(error), match=str(error)):
+            storage.get_version()
 
     def test_save_config_writes_atomically(self, tmp_path) -> None:
         """save_config writes via a per-write unique temp file and renames into place.

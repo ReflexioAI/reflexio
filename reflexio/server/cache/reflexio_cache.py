@@ -3,14 +3,19 @@
 import logging
 import threading
 from concurrent.futures import Future
+from contextlib import ExitStack
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any
 
 from cachetools import TTLCache
 
 from reflexio.lib.reflexio_lib import Reflexio
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.llm_utils import positive_int_env
+from reflexio.server.services.configurator.config_storage import (
+    CONFIG_VERSION_PROBE_FAILED as _PROBE_FAILED,
+)
+from reflexio.server.services.configurator.config_storage import ConfigVersionProbe
 from reflexio.server.tracing import profile_step
 
 logger = logging.getLogger(__name__)
@@ -33,21 +38,19 @@ CacheKey = tuple[str, str | None]
 # to permanent unprobeable state, otherwise a single transient error
 # (e.g. brief Postgres reconnect, file lock contention) would silently
 # disable version-based auto-eviction for the lifetime of the entry.
-_PROBE_FAILED: Final = object()
-
-# Type alias for ``current_config_version()`` return values plus our
-# private sentinel. ``None`` means "backend doesn't support probing"
+# Type alias for version probe results plus the shared failure sentinel.
+# ``None`` means "backend doesn't support probing"
 # (permanent), the sentinel means "probe raised this time" (transient).
-_ProbeResult = tuple[str, Any] | None | object
+_ProbeResult = ConfigVersionProbe
 
 
 @dataclass
 class _CacheEntry:
     """Per-org cache entry pairing a Reflexio instance with the config version stamped at load time.
 
-    The ``cached_version`` is whatever ``Reflexio.current_config_version()``
-    returned when the instance was constructed. On each cache hit we
-    re-probe and evict the entry if the value changed — this catches
+    The ``cached_version`` is captured before the instance loads config,
+    so a concurrent write cannot stamp an older config with a newer revision.
+    On each cache hit we re-probe and evict the entry if the value changed — this catches
     out-of-band config mutations (file edits, sibling-replica writes,
     direct DB updates) that don't go through ``invalidate_reflexio_cache``.
 
@@ -57,10 +60,8 @@ class _CacheEntry:
             captured at load time. ``None`` means "no probe available";
             entries with ``None`` are never auto-evicted (they fall
             through to the TTL safety net). Probe failures during
-            construction never produce ``None`` here — they're recorded
-            as the same value the next probe attempt would compare
-            against, so a later successful probe can still evict the
-            stale entry.
+            construction prevent the instance from being cached, so a later
+            successful construction can restore version-based eviction.
     """
 
     reflexio: Reflexio
@@ -134,6 +135,20 @@ def prefetch_config_version(org_id: str) -> Future[Any] | None:
     return submit_search_work(lambda: _probe_version_safe(entry.reflexio))
 
 
+def _entry_is_fresh(entry: _CacheEntry) -> bool:
+    """Probe a cached entry, retaining its stamp across transient failures."""
+    if entry.cached_version is None:
+        return True
+    with profile_step("reflexio.cache.version_probe", cache_state="hit") as span:
+        current_version = _probe_version_safe(entry.reflexio)
+        span.set_data("probe_failed", current_version is _PROBE_FAILED)
+        span.set_data(
+            "probe_supported",
+            current_version is not None and current_version is not _PROBE_FAILED,
+        )
+    return current_version is _PROBE_FAILED or current_version == entry.cached_version
+
+
 def get_reflexio(org_id: str, storage_base_dir: str | None = None) -> Reflexio:
     """Get or create a cached Reflexio instance.
 
@@ -163,29 +178,9 @@ def get_reflexio(org_id: str, storage_base_dir: str | None = None) -> Reflexio:
         )
 
     if entry is not None:
-        cached_version = entry.cached_version
-        # Skip probing when we have nothing to compare against — a
-        # ``None`` stamp means the backend can't probe cheaply, so we
-        # rely on TTL + explicit invalidation instead.
-        if cached_version is None:
+        if _entry_is_fresh(entry):
             return entry.reflexio
-        with profile_step("reflexio.cache.version_probe", cache_state="hit") as span:
-            current_version = _probe_version_safe(entry.reflexio)
-            span.set_data("probe_failed", current_version is _PROBE_FAILED)
-            span.set_data(
-                "probe_supported",
-                current_version is not None and current_version is not _PROBE_FAILED,
-            )
-        # Transient probe failure: keep the cached instance for this
-        # request but DON'T mutate the stamp — the next request will
-        # try again, so a brief outage doesn't permanently disable
-        # eviction the way collapsing failures into ``None`` would.
-        if current_version is _PROBE_FAILED:
-            return entry.reflexio
-        if current_version == cached_version:
-            return entry.reflexio
-        # Stale entry. Evict only if the cached version still matches
-        # the one we just compared against — another thread may have
+        # Stale entry. Evict only the entry we inspected: another thread may have
         # already replaced the entry while we were probing.
         # Do NOT close() the evicted instance here: callers receive
         # instances after the cache lock is released, so another thread
@@ -195,9 +190,7 @@ def get_reflexio(org_id: str, storage_base_dir: str | None = None) -> Reflexio:
         with profile_step("reflexio.cache.evict_stale") as span:
             with _reflexio_cache_lock:
                 existing = _reflexio_cache.get(cache_key)
-                evicted = (
-                    existing is not None and existing.cached_version == cached_version
-                )
+                evicted = existing is entry
                 if evicted:
                     del _reflexio_cache[cache_key]
             span.set_data("evicted", evicted)
@@ -210,7 +203,12 @@ def get_reflexio(org_id: str, storage_base_dir: str | None = None) -> Reflexio:
         with _reflexio_cache_lock:
             entry = _reflexio_cache.get(cache_key)
         if entry is not None:
-            return entry.reflexio
+            # A constructor we waited behind may have loaded before a sibling
+            # replica wrote. Validate its captured stamp just like a warm hit.
+            if _entry_is_fresh(entry):
+                return entry.reflexio
+            with _reflexio_cache_lock:
+                _reflexio_cache.pop(cache_key, None)
 
         logger.info(
             "Constructing Reflexio instance for org %s storage_base_dir=%s",
@@ -220,7 +218,7 @@ def get_reflexio(org_id: str, storage_base_dir: str | None = None) -> Reflexio:
         with profile_step("reflexio.cache.construct"):
             reflexio = Reflexio(org_id=org_id, storage_base_dir=storage_base_dir)
         with profile_step("reflexio.cache.version_probe", cache_state="miss") as span:
-            new_version = _probe_version_safe(reflexio)
+            new_version = reflexio.loaded_config_version()
             span.set_data("probe_failed", new_version is _PROBE_FAILED)
             span.set_data(
                 "probe_supported",
@@ -243,7 +241,7 @@ def get_reflexio(org_id: str, storage_base_dir: str | None = None) -> Reflexio:
 
         new_entry = _CacheEntry(
             reflexio=reflexio,
-            cached_version=new_version,  # type: ignore[arg-type]
+            cached_version=new_version,
         )
 
         with profile_step("reflexio.cache.store") as span:
@@ -286,7 +284,7 @@ def get_cached_request_context(
 def invalidate_reflexio_cache(org_id: str, storage_base_dir: str | None = None) -> bool:
     """Invalidate cached Reflexio for specific org.
 
-    Call this after set_config to ensure next request gets fresh instance.
+    Wait for in-flight construction, then evict so the next request reloads.
 
     Args:
         org_id (str): Organization ID to invalidate
@@ -296,7 +294,7 @@ def invalidate_reflexio_cache(org_id: str, storage_base_dir: str | None = None) 
         bool: True if entry was removed, False if not found
     """
     cache_key: CacheKey = (org_id, storage_base_dir)
-    with _reflexio_cache_lock:
+    with _get_construction_lock(cache_key), _reflexio_cache_lock:
         if cache_key in _reflexio_cache:
             del _reflexio_cache[cache_key]
             return True
@@ -304,9 +302,12 @@ def invalidate_reflexio_cache(org_id: str, storage_base_dir: str | None = None) 
 
 
 def clear_reflexio_cache() -> None:
-    """Clear entire cache (for testing/admin)."""
-    with _reflexio_cache_lock:
-        _reflexio_cache.clear()
+    """Clear the cache after fencing all in-flight constructors."""
+    with ExitStack() as locks:
+        for construction_lock in _reflexio_construction_locks:
+            locks.enter_context(construction_lock)
+        with _reflexio_cache_lock:
+            _reflexio_cache.clear()
 
 
 def get_cache_stats() -> dict:

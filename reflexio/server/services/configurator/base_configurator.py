@@ -9,7 +9,11 @@ from typing import Any, ClassVar
 from pydantic import BaseModel
 
 from reflexio.models.config_schema import Config, StorageConfig, StorageConfigTest
-from reflexio.server.services.configurator.config_storage import ConfigStorage
+from reflexio.server.services.configurator.config_storage import (
+    CONFIG_VERSION_PROBE_FAILED,
+    ConfigStorage,
+    ConfigVersionProbe,
+)
 from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.storage_base import BaseStorage
 
@@ -42,7 +46,20 @@ class BaseConfigurator(ABC):
         self.base_dir = base_dir
 
         self.config_storage = self._select_config_storage(org_id, base_dir)
-        if not config:
+        self.loaded_config_version: ConfigVersionProbe = None
+        if config is None:
+            # Probe before loading: a write during construction must never
+            # label an older config with its newer durable revision. An older
+            # stamp conservatively causes a refresh on the next request.
+            try:
+                self.loaded_config_version = self.config_storage.get_version()
+            except Exception as exc:  # noqa: BLE001 -- load can still succeed.
+                logger.warning(
+                    "Failed to probe config version before loading org %s: %s",
+                    org_id,
+                    exc,
+                )
+                self.loaded_config_version = CONFIG_VERSION_PROBE_FAILED
             self.config = self.config_storage.load_config()
         else:
             self.config = config
