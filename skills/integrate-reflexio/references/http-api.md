@@ -1,6 +1,6 @@
 # HTTP integration
 
-Use this route only when the target application cannot use the Python client. Reuse the target project's existing HTTP library and add one small typed adapter.
+Use this route only when the target application cannot use the Python or TypeScript client. Reuse the target project's existing HTTP library and add one small typed adapter.
 
 ## Connection
 

@@ -14,6 +14,7 @@ REQUIRED_FILES = {
     Path("agents/openai.yaml"),
     Path("references/http-api.md"),
     Path("references/python-client.md"),
+    Path("references/typescript-client.md"),
 }
 TARGET_LOCATIONS = {
     "codex": Path(".agents/skills/integrate-reflexio"),
