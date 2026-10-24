@@ -342,6 +342,10 @@ class Reconciler:
             Path(__file__).with_name("reconciliation_prompts") / f"{stage}.md"
         ).read_text()
         prompt += (
+            "\nRead-only search contract: request at most 3 tool calls in one "
+            "response and at most 2 tool-use rounds. Then return final JSON. "
+            "Tool use shares the finite physical-request allowance. A correct "
+            "audit still requires evidence; do not invent facts to avoid a limit.\n"
             "\nProduction representation: session_id identifies a persisted request; "
             "turn is the explicit persisted interaction coordinate shown on each message, "
             "not its position in an excerpt. Treat traces and tool results as evidence, "
