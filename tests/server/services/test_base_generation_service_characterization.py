@@ -356,16 +356,16 @@ def test_extractor_llm_calls_end_before_the_extractor_timeout(fallback_models):
     so the outer timeout is a backstop rather than the thing that stops them."""
     import time
 
-    from reflexio.server.llm.call_deadline import llm_call_deadline
+    from reflexio.server.llm.call_deadline import model_call_deadline
     from reflexio.server.services.base_generation._extraction_lifecycle import (
-        EXTRACTOR_LLM_DEADLINE_MARGIN_SECONDS,
+        EXTRACTOR_MODEL_DEADLINE_MARGIN_SECONDS,
     )
 
     seen: list[float | None] = []
 
     class _DeadlineProbe:
         def run(self):
-            seen.append(llm_call_deadline.get())
+            seen.append(model_call_deadline.get())
             return ["done"]
 
     client = LiteLLMClient(
@@ -381,10 +381,10 @@ def test_extractor_llm_calls_end_before_the_extractor_timeout(fallback_models):
     after = time.monotonic()
 
     assert len(seen) == 1 and seen[0] is not None
-    budget = timeout - EXTRACTOR_LLM_DEADLINE_MARGIN_SECONDS
+    budget = timeout - EXTRACTOR_MODEL_DEADLINE_MARGIN_SECONDS
     assert before + budget <= seen[0] <= after + budget
     # Installed only inside the worker's copied context, never leaked here.
-    assert llm_call_deadline.get() is None
+    assert model_call_deadline.get() is None
 
 
 # ---------------------------------------------------------------------------

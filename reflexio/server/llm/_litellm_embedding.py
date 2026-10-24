@@ -35,7 +35,7 @@ from reflexio.server.llm._litellm_types import LiteLLMClientError
 from reflexio.server.llm._provider_concurrency import provider_slot
 from reflexio.server.llm.call_deadline import (
     CallDeadlineExceededError,
-    llm_call_deadline,
+    model_call_deadline,
     remaining_call_time,
 )
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
@@ -402,7 +402,7 @@ class EmbeddingMixin:
                         ),
                     ),
                     num_retries=0
-                    if llm_call_deadline.get() is not None
+                    if model_call_deadline.get() is not None
                     or (search_scope is not None and search_scope.deadline is not None)
                     else self.config.max_retries,
                 )

@@ -25,8 +25,8 @@ def test_nested_budget_tightens_and_expired_unknown_provider_cannot_dispatch(
 ):
     monkeypatch.setattr(admission, "_provider_key", lambda _model: None)
     assert deadline.remaining_call_time(4) == 4
-    with deadline.llm_deadline(102):
-        with deadline.llm_deadline(104):
+    with deadline.model_deadline(102):
+        with deadline.model_deadline(104):
             assert deadline.remaining_call_time(4) == 2
         clock[0] = 102
         with (
@@ -54,7 +54,7 @@ def test_provider_wait_consumes_budget_and_releases_only_acquired_capacity(
     monkeypatch.setattr(admission, "_provider_key", lambda _model: "synthetic")
     monkeypatch.setattr(admission, "_get_semaphore", lambda _provider: Permit())
     with (
-        deadline.llm_deadline(101),
+        deadline.model_deadline(101),
         pytest.raises(deadline.CallDeadlineExceededError),
         admission.provider_slot("x"),
     ):
@@ -89,7 +89,7 @@ def test_real_service_path_does_not_return_late_vectors_or_dispatch_next_chunk(
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         monkeypatch.setattr(service, "_http_client", lambda: client)
         with (
-            deadline.llm_deadline(101),
+            deadline.model_deadline(101),
             pytest.raises(deadline.CallDeadlineExceededError),
         ):
             service.get_service_embeddings(["a", "b", "c"], model="local/synthetic")
@@ -112,7 +112,7 @@ def test_expired_reconnect_backoff_does_not_replay(monkeypatch, clock, service_m
     with httpx.Client(transport=httpx.MockTransport(connect_failure)) as client:
         monkeypatch.setattr(service, "_http_client", lambda: client)
         with (
-            deadline.llm_deadline(101),
+            deadline.model_deadline(101),
             pytest.raises(deadline.CallDeadlineExceededError),
         ):
             service.get_service_embeddings(["a"], model="local/synthetic")
@@ -129,7 +129,10 @@ def test_late_capability_response_is_not_cached_and_lock_is_released(
         return {"configured_model": "local/synthetic"}
 
     monkeypatch.setattr(service, "_inference_service_health", late_health)
-    with deadline.llm_deadline(101), pytest.raises(deadline.CallDeadlineExceededError):
+    with (
+        deadline.model_deadline(101),
+        pytest.raises(deadline.CallDeadlineExceededError),
+    ):
         service.resolve_inference_service_capabilities(service_url="http://offline")
     assert not service._configured_model_cache
     assert not service._configured_model_lock.locked()
@@ -161,6 +164,9 @@ def test_cloud_dispatch_gets_remaining_budget_and_rejects_late_result(
         return SimpleNamespace(data=[{"index": 0, "embedding": [0.1]}])
 
     monkeypatch.setattr(embedding.litellm, "embedding", respond)
-    with deadline.llm_deadline(101), pytest.raises(deadline.CallDeadlineExceededError):
+    with (
+        deadline.model_deadline(101),
+        pytest.raises(deadline.CallDeadlineExceededError),
+    ):
         client.get_embedding("synthetic", model="openai/synthetic")
     assert sem._value == capacity

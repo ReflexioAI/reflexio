@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from reflexio.server.llm import _litellm_text_generation as ttg
 from reflexio.server.llm import call_deadline
-from reflexio.server.llm.call_deadline import llm_deadline
+from reflexio.server.llm.call_deadline import model_deadline
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
@@ -266,7 +266,7 @@ def _repair_walk(
 
     deadline = None if caller_seconds is None else clock.now + caller_seconds
     try:
-        with llm_deadline(deadline) if deadline is not None else nullcontext():
+        with model_deadline(deadline) if deadline is not None else nullcontext():
             outcome: Any = client.generate_chat_response(
                 _MESSAGES,
                 response_format=_Answer,
@@ -311,11 +311,11 @@ def test_no_repair_turn_is_started_once_the_caller_deadline_is_too_close(
 
 
 def test_nested_deadlines_only_tighten() -> None:
-    from reflexio.server.llm.call_deadline import llm_call_deadline
+    from reflexio.server.llm.call_deadline import model_call_deadline
 
-    with llm_deadline(100.0):
-        with llm_deadline(200.0):
-            assert llm_call_deadline.get() == 100.0
-        with llm_deadline(50.0):
-            assert llm_call_deadline.get() == 50.0
-    assert llm_call_deadline.get() is None
+    with model_deadline(100.0):
+        with model_deadline(200.0):
+            assert model_call_deadline.get() == 100.0
+        with model_deadline(50.0):
+            assert model_call_deadline.get() == 50.0
+    assert model_call_deadline.get() is None

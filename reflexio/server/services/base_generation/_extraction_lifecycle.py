@@ -35,7 +35,7 @@ from reflexio.server.llm._litellm_types import (
     ModelProvenance,
     ProviderRequestGuardError,
 )
-from reflexio.server.llm.call_deadline import llm_deadline
+from reflexio.server.llm.call_deadline import model_deadline
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.token_accounting import RunTokenTotals
 from reflexio.server.services.deferred_learning_plan import ExtractorBookmarkAdvance
@@ -84,11 +84,11 @@ WINDOW_FAILURE_ERROR_ATTEMPT = 10
 # extractor timeout fires, leaving time for the tool loop to return, the agent
 # run to record its failure and the extractor to raise. The outer timeout stays
 # as a backstop for anything that is not an LLM ladder walk.
-EXTRACTOR_LLM_DEADLINE_MARGIN_SECONDS = 10
+EXTRACTOR_MODEL_DEADLINE_MARGIN_SECONDS = 10
 
 
-def _run_with_llm_deadline(run: Any, deadline: float) -> Any:
-    with llm_deadline(deadline):
+def _run_with_model_deadline(run: Any, deadline: float) -> Any:
+    with model_deadline(deadline):
         return run()
 
 
@@ -214,16 +214,16 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
             # Every ladder walk inside the extractor stops before this point, so
             # a slow model is not abandoned mid-call by the timeout below and
             # an orphaned worker cannot start new model calls after it.
-            llm_deadline_at = (
+            model_deadline_at = (
                 time.monotonic()
                 + timeout_seconds
-                - EXTRACTOR_LLM_DEADLINE_MARGIN_SECONDS
+                - EXTRACTOR_MODEL_DEADLINE_MARGIN_SECONDS
             )
             future = executor.submit(
                 ctx.run,
-                _run_with_llm_deadline,
+                _run_with_model_deadline,
                 extractor.run,  # type: ignore[reportAttributeAccessIssue]
-                llm_deadline_at,
+                model_deadline_at,
             )
             result = future.result(timeout=timeout_seconds)
             if isinstance(result, ExtractionOutcome):

@@ -1,4 +1,4 @@
-"""Caller-imposed absolute deadline for LLM calls.
+"""Caller-imposed absolute deadline for model calls.
 
 Provider admission and embedding boundaries share this context through
 ``remaining_call_time``. Boundary checks reject expired dispatch and late
@@ -25,8 +25,8 @@ from contextvars import ContextVar
 from time import monotonic
 
 # Absolute deadline on the ``time.monotonic()`` clock, or None for no bound.
-llm_call_deadline: ContextVar[float | None] = ContextVar(
-    "llm_call_deadline", default=None
+model_call_deadline: ContextVar[float | None] = ContextVar(
+    "model_call_deadline", default=None
 )
 
 
@@ -40,17 +40,17 @@ def remaining_call_time(default: float = 30.0) -> float:
     This is a cooperative boundary check, not an interrupt of synchronous I/O
     or SDK processing. Callers must also check before accepting a result.
     """
-    deadline = llm_call_deadline.get()
+    deadline = model_call_deadline.get()
     if deadline is None:
         return default
     remaining = deadline - monotonic()
     if remaining <= 0:
-        raise CallDeadlineExceededError("LLM operation deadline exceeded")
+        raise CallDeadlineExceededError("Model operation deadline exceeded")
     return min(default, remaining)
 
 
 @contextmanager
-def llm_deadline(deadline: float) -> Iterator[None]:
+def model_deadline(deadline: float) -> Iterator[None]:
     """Share ``deadline`` with LLM walks, admission and embedding boundaries.
 
     Nested scopes can only tighten the bound: the effective deadline is the
@@ -62,11 +62,11 @@ def llm_deadline(deadline: float) -> Iterator[None]:
     Yields:
         None
     """
-    current = llm_call_deadline.get()
-    token = llm_call_deadline.set(
+    current = model_call_deadline.get()
+    token = model_call_deadline.set(
         deadline if current is None else min(current, deadline)
     )
     try:
         yield
     finally:
-        llm_call_deadline.reset(token)
+        model_call_deadline.reset(token)

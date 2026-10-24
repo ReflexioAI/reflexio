@@ -72,7 +72,7 @@ from reflexio.server.llm._provider_concurrency import (
     ProviderCapSaturatedError,
     provider_slot,
 )
-from reflexio.server.llm.call_deadline import llm_call_deadline
+from reflexio.server.llm.call_deadline import model_call_deadline
 from reflexio.server.llm.image_utils import (
     SUPPORTED_IMAGE_MIME_TYPES,
     ImageEncodingError,
@@ -1617,10 +1617,10 @@ class TextGenerationMixin:
         walk_deadline = time.monotonic() + _LADDER_WALL_CLOCK_BUDGET_SECONDS
         walk_bound = f"{_LADDER_WALL_CLOCK_BUDGET_SECONDS:.0f}s"
         # A caller with its own cutoff (the generation service's per-extractor
-        # timeout, `call_deadline.llm_deadline`) shortens the walk, so the walk
+        # timeout, `call_deadline.model_deadline`) shortens the walk, so the walk
         # stops itself -- no new rung or repair turn, and a running turn's kill
         # bound clamped -- before that caller abandons it mid-call.
-        caller_deadline = llm_call_deadline.get()
+        caller_deadline = model_call_deadline.get()
         if caller_deadline is not None and caller_deadline < walk_deadline:
             walk_deadline = caller_deadline
             walk_bound = "caller deadline"
