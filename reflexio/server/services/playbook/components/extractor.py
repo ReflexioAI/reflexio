@@ -26,7 +26,9 @@ from reflexio.server.services.extraction.overflow_coordinator import (
     OverflowCoordinator,
     current_overflow_coordinator,
 )
-from reflexio.server.services.extraction.overflow_pipeline import OverflowExtractionCall
+from reflexio.server.services.extraction.overflow_pipeline import (
+    OverflowExtractionCall,
+)
 from reflexio.server.services.extraction.overflow_presentation import (
     current_overflow_presentation,
     present_extraction_chunk,
@@ -45,6 +47,9 @@ from reflexio.server.services.extractor_interaction_utils import (
     get_extractor_window_params,
 )
 from reflexio.server.services.operation_state_utils import OperationStateManager
+from reflexio.server.services.playbook._historical_reference_contract import (
+    select_saved_reference_call,
+)
 from reflexio.server.services.playbook.playbook_evidence import (
     as_playbook_content,
     build_playbook_extraction_contract,
@@ -669,10 +674,27 @@ class PlaybookExtractor:
                         schema=stored_schema
                     ),
                 )
-            return OverflowExtractionCall(
+            call = OverflowExtractionCall(
                 chunk_messages,
                 stored_schema or chunk_contract.schema,
                 lambda output: validate_all(output, visible),
+            )
+            return select_saved_reference_call(
+                coordinator,
+                call,
+                prompt_manager,
+                lambda manager, instruction: (
+                    construct_playbook_extraction_messages_from_sessions(
+                        manager,
+                        request_interaction_data_models,
+                        pinned_context,
+                        playbook_definition,
+                        tool_can_use=tool_can_use_str,
+                        prompt_context=visible,
+                        citation_instruction=instruction,
+                    )
+                ),
+                expert=expert_mode,
             )
 
         result = run_resumable_extraction_agent(
