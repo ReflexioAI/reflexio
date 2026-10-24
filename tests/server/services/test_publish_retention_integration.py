@@ -204,10 +204,10 @@ def test_server_scope_resets_after_failure_and_does_not_suppress_other_threads(
     )
 
 
-def test_publish_attributes_config_and_sampling_without_changing_calls(
+def test_publish_attributes_evaluation_config_without_changing_calls(
     reflexio: Reflexio, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Previously invisible config and sampling costs retain their call semantics."""
+    """Previously invisible config costs retain their call semantics."""
     from types import SimpleNamespace
 
     clock = [0.0]
@@ -219,25 +219,15 @@ def test_publish_attributes_config_and_sampling_without_changing_calls(
     config = reflexio.request_context.configurator
     storage = reflexio.get_storage()
     original_config = config.get_config
-    original_sampling = storage.record_retrieved_learning_sampling_decision
 
     def read_config():
         value = original_config()
         clock[0] += 1
         return value
 
-    def record_sampling(**kwargs):
-        clock[0] += 2
-        return original_sampling(**kwargs)
-
     with (
         patch.object(publisher_api, "get_reflexio", return_value=reflexio),
         patch.object(config, "get_config", side_effect=read_config) as reads,
-        patch.object(
-            storage,
-            "record_retrieved_learning_sampling_decision",
-            side_effect=record_sampling,
-        ) as writes,
         publish_timing.collect(),
     ):
         response = publisher_api.add_user_interaction(
@@ -246,10 +236,9 @@ def test_publish_attributes_config_and_sampling_without_changing_calls(
         phases = publish_timing.snapshot()
     assert response.success, response.message
     assert reads.call_count == 4
-    writes.assert_called_once()
     assert phases is not None
     assert phases["publish_config_ms"] == 3000
     assert phases["evaluation_config_ms"] == 1000
-    assert phases["sampling_decision_ms"] == 2000
-    assert phases["evaluation_schedule_ms"] == 3000  # Includes its two children.
+    assert "sampling_decision_ms" not in phases
+    assert phases["evaluation_schedule_ms"] == 1000  # Includes its one child.
     assert storage.get_request("retention-20") is not None
