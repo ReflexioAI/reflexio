@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -29,19 +32,8 @@ from reflexio.server.services.configurator.configurator import DefaultConfigurat
 from reflexio.test_support.llm_mock import patched_litellm
 
 
-def _wait_until(assertion: Callable[[], None], timeout_s: float = 5.0) -> None:
-    deadline = time.monotonic() + timeout_s
-    last_error: AssertionError | None = None
-    while time.monotonic() < deadline:
-        try:
-            assertion()
-            return
-        except AssertionError as exc:
-            last_error = exc
-            time.sleep(0.05)
-    if last_error is not None:
-        raise last_error
-    assertion()
+class _SchedulerWaiting(BaseException):
+    """Stop a synchronous scheduler pass when it would wait for time or work."""
 
 
 def _interaction_pair(label: str) -> list[InteractionData]:
@@ -65,8 +57,36 @@ def test_evaluation_only_publish_waits_and_batches_followup_session_requests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Evaluation-only publishes wait for inactivity and evaluate the session."""
-    monkeypatch.setattr(scheduler, "_EFFECTIVE_DELAY_SECONDS", 1)
-    monkeypatch.setattr(runner, "_EFFECTIVE_DELAY_SECONDS", 1)
+    monkeypatch.setattr(scheduler, "_EFFECTIVE_DELAY_SECONDS", 10)
+    monkeypatch.setattr(runner, "_EFFECTIVE_DELAY_SECONDS", 10)
+
+    # Run the real heap/dispatch loop synchronously at explicit deadlines. Patch
+    # module references, never global time/threading functions used by SQLite or
+    # other background services. No scheduler daemon escapes this test.
+    clock = SimpleNamespace(now=0.0)
+    wake_event = MagicMock()
+    wake_event.wait.side_effect = _SchedulerWaiting
+    monkeypatch.setattr(
+        scheduler,
+        "time",
+        SimpleNamespace(monotonic=lambda: clock.now, sleep=time.sleep),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "threading",
+        SimpleNamespace(
+            Lock=threading.Lock, Event=lambda: wake_event, Thread=MagicMock()
+        ),
+    )
+    callbacks: list[Callable[[], None]] = []
+    monkeypatch.setattr(
+        scheduler, "submit_callback", lambda _name, callback: callbacks.append(callback)
+    )
+    group_scheduler = GroupEvaluationScheduler.get_instance()
+
+    def drain_scheduler() -> None:
+        with pytest.raises(_SchedulerWaiting):
+            group_scheduler._scheduler_loop()
 
     config = Config(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
@@ -125,7 +145,12 @@ def test_evaluation_only_publish_waits_and_batches_followup_session_requests(
             == []
         )
 
-        time.sleep(0.55)
+        key = (instance.org_id, None, user_id, session_id)
+        assert group_scheduler._scheduled[key][0] == 10.0
+        drain_scheduler()
+        assert callbacks == []
+
+        clock.now = 5.0
         second = instance.publish_interaction(
             {
                 "user_id": user_id,
@@ -137,6 +162,22 @@ def test_evaluation_only_publish_waits_and_batches_followup_session_requests(
             }
         )
         assert second.success is True
+        assert group_scheduler._scheduled[key][0] == 15.0
+        latest_created_at = max(
+            request.created_at
+            for request in storage.get_requests_by_session(user_id, session_id)
+        )
+        # Keep the runner's separate wall-clock inactivity check enabled and
+        # aligned to the latest real stored request and its virtual publish time.
+        monkeypatch.setattr(
+            runner,
+            "datetime",
+            SimpleNamespace(
+                now=lambda _tz: datetime.fromtimestamp(
+                    latest_created_at + clock.now - 5.0, tz=UTC
+                )
+            ),
+        )
 
         ordinary_session_id = "session_ordinary"
         ordinary = instance.publish_interaction(
@@ -151,9 +192,18 @@ def test_evaluation_only_publish_waits_and_batches_followup_session_requests(
         )
         assert ordinary.success is True
 
-        # This passes the first publish's original fire time but is still before
-        # the second publish's rescheduled fire time.
-        time.sleep(0.65)
+        # Consume the superseded first deadline; the follow-up must still wait.
+        clock.now = 10.0
+        drain_scheduler()
+        assert callbacks == []
+        assert group_scheduler._heap == [(15.0, key)]
+        clock.now = 14.0
+        drain_scheduler()
+        assert callbacks == []
+        # Even an explicitly attempted early callback must respect the runner's
+        # independent inactivity gate; the real judge cannot run yet.
+        group_scheduler._run_callback(key, group_scheduler._scheduled[key][1])
+        assert observed_request_model_counts == []
         assert (
             storage.get_agent_success_evaluation_results(
                 agent_version=agent_version, limit=10
@@ -161,20 +211,21 @@ def test_evaluation_only_publish_waits_and_batches_followup_session_requests(
             == []
         )
 
-        def assert_evaluated_once() -> None:
-            results = storage.get_agent_success_evaluation_results(
-                agent_version=agent_version, limit=10
-            )
-            assert len(results) == 1
-            assert results[0].session_id == session_id
-
-        _wait_until(assert_evaluated_once)
-        time.sleep(0.4)
+        clock.now = 15.0
+        drain_scheduler()
+        assert len(callbacks) == 1
+        callbacks[0]()
+        clock.now = 25.0
+        drain_scheduler()
+        assert len(callbacks) == 1
+        assert group_scheduler._scheduled == {}
+        assert group_scheduler._heap == []
 
         results = storage.get_agent_success_evaluation_results(
             agent_version=agent_version, limit=10
         )
         assert [result.session_id for result in results] == [session_id]
+        assert results[0].trajectory_interaction_count == 4
 
     stored_requests = storage.get_requests_by_session(user_id, session_id)
     assert len(stored_requests) == 2
