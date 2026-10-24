@@ -1,4 +1,4 @@
-"""An upgrade must explicitly adopt the new search policy for active optimizers."""
+"""Historical optimizer input is owned by migration, never runtime readers."""
 
 from copy import deepcopy
 
@@ -33,9 +33,12 @@ def test_active_legacy_stopping_requires_explicit_adoption(enabled):
 def test_disabled_legacy_stopping_cannot_select_execution_policy(enabled):
     source = {"enabled": enabled, "early_stop_score": 0.8}
     original = deepcopy(source)
-    config = PlaybookOptimizerConfig.model_validate(source)
-    assert config.enabled is False
-    assert "early_stop_score" not in config.model_dump()
+    with pytest.raises(ValueError, match="early_stop_score"):
+        PlaybookOptimizerConfig.model_validate(source)
+    with pytest.raises(ValueError, match="playbook_optimizer_config"):
+        validate_stored_config(
+            {"storage_config": None, "playbook_optimizer_config": source}
+        )
     assert (
         "early_stop_score"
         not in PlaybookOptimizerConfig.model_json_schema()["properties"]
@@ -80,3 +83,16 @@ def test_malformed_obsolete_score_cannot_be_hidden_by_disable_or_upgrade(
             {"storage_config": None, "playbook_optimizer_config": payload}
         )
     assert "private-malformed" not in str(error.value)
+
+
+@pytest.mark.parametrize("enabled", [None, "private-invalid-enabled", {}, []])
+def test_conversion_cannot_hide_invalid_activation_while_retiring_score(enabled):
+    source = {
+        "storage_config": None,
+        "playbook_optimizer_config": {"enabled": enabled, "early_stop_score": 0.8},
+    }
+    original = deepcopy(source)
+    with pytest.raises(ValueError) as error:
+        canonicalize_config_document(source)
+    assert "private-invalid-enabled" not in str(error.value)
+    assert source == original

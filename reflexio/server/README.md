@@ -679,9 +679,11 @@ The adapter retains successfully persisted evaluation facts for its run-local
 stopping callback; it does not reread storage or score another rollout there.
 Train and validation loaders use disjoint IDs in GEPA's shared evaluation cache.
 Search returns its current eligible winner or exhausts the existing metric
-budget. `early_stop_score` is retired; active saved policies require explicit
-adoption through the offline config converter. Disabled legacy values remain
-inert, malformed values fail, and old job-authority snapshots are unchanged.
+budget. Current readers reject retired `early_stop_score` input for both enabled
+and disabled policies. Historical conversion validates and removes it while
+preserving activation, budgets and metadata; old job-authority snapshots stay
+unchanged. Standalone caller-selected files use the explicit converter, while
+versioned hosts must own conversion before serving and close older writers.
 See `docs/playbook_optimizer_assistant_backends.md` for the exploration change
 and rollout requirements.
 

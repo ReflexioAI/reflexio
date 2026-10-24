@@ -354,16 +354,26 @@ insufficient absolute quality continues within the existing budget. Final
 publication still performs its own durable quality, authorization and approval
 checks. Old job authority snapshots are immutable.
 
-`early_stop_score` is retired without a replacement numeric threshold. A valid
-old field on a disabled optimizer is inert and omitted from canonical output.
-When the master `enabled` switch is on, old input refuses to load until explicit
-adoption. Before upgrading an active deployment, use
+`early_stop_score` is retired without a replacement numeric threshold. Current
+runtime readers reject the old field for both enabled and disabled optimizers;
+historical settings belong to migration, not a second runtime reader mode.
+Conversion validates the old score and activation value before removing the
+field. It preserves disabled state, budgets, quality thresholds and unrelated
+metadata. This adopts quality-owned stopping; it cannot preserve the former
+independent aspiration. Malformed historical values fail without exposing them.
+
+For a standalone SDK program selecting a JSON file, run
 `reflexio config upgrade-file old.json --output canonical.json`, review the
-quality thresholds and call budget, then select the converted configuration.
-This conversion explicitly adopts quality-owned stopping; it cannot preserve the
-former independent aspiration. It leaves the input unchanged and does not publish
-to organization storage. Malformed old values fail even when disabled. No startup
-or fleet conversion is performed automatically.
+quality thresholds and call budget, then select the converted copy. The source
+file remains unchanged. Runtime loading does not rewrite caller files.
+
+A managed or self-host product with versioned startup migrations must convert
+its saved rows before the strict reader serves, with old-writer closure and
+qualified recovery. That integration belongs to the host, not SDK imports or
+per-read rewriting; [the enterprise upgrade integration](https://github.com/ReflexioAI/reflexio-enterprise/pull/2153)
+tracks that path. Do not integrate the strict SDK into an older host without its
+qualified upgrade owner. The standalone file command does not publish to
+organization storage, and the SDK performs no automatic fleet conversion.
 
 ### 6.3 Validator
 

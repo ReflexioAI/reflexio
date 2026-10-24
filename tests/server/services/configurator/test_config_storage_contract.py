@@ -365,12 +365,16 @@ def test_saved_optimizer_stopping_adoption_never_rewrites_on_read(tmp_path, enab
     }
     encoded = json.dumps(payload).encode()
     path.write_bytes(encoded)
-    if enabled:
-        with pytest.raises(ValueError):
-            storage.load_config()
-        assert path.read_bytes() == encoded
-        return
-    config = storage.load_config()
+    with pytest.raises(ValueError):
+        storage.load_config()
+    assert path.read_bytes() == encoded
+
+    # Explicit migration and publication are the only way past old input.
+    from reflexio.config_migration import canonicalize_config_document
+    from reflexio.models.config_schema import validate_stored_config
+
+    config = validate_stored_config(canonicalize_config_document(payload))
+    assert config.playbook_optimizer_config.enabled is enabled
     assert path.read_bytes() == encoded
     assert "early_stop_score" not in config.playbook_optimizer_config.model_dump()
     storage.save_config(config)
