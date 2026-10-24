@@ -492,9 +492,8 @@ exclude network time before ASGI entry and after ASGI send, so are not client RT
 
 New top-level handler phases are `publish_config` (the three pre-admission
 configuration reads), `worker_dispatch`, and `evaluation_schedule`. The latter
-contains `evaluation_config` and `sampling_decision`; these child timers must not
-be added again when calculating unattributed time. Configuration freshness and
-the sampling write are unchanged. Enterprise HTTP `auth_binding` and
+contains the `evaluation_config` child timer, which must not be added again when
+calculating unattributed time. Configuration freshness is unchanged. Enterprise HTTP `auth_binding` and
 `billing_gate` timers are subsets of `before_handler_ms`: billing dependency
 construction and other middleware/framework work remain in the remainder.
 
