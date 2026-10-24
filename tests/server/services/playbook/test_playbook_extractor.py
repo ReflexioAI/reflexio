@@ -36,6 +36,7 @@ from reflexio.server.llm.litellm_client import (
     LiteLLMConfig,
     StructuredOutputRepairError,
 )
+from reflexio.server.services.configurator.configurator import get_configurator_class
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
 from reflexio.server.services.playbook.components.extractor import (
     PlaybookExtractor,
@@ -456,9 +457,14 @@ def temp_storage_dir():
 @pytest.fixture
 def request_context(temp_storage_dir):
     """Create a request context with mock storage."""
-    context = RequestContext(org_id="test_org", storage_base_dir=temp_storage_dir)
-    context.storage = MagicMock()
-    return context
+    configurator = get_configurator_class()("test_org", base_dir=temp_storage_dir)
+    # Mock this instance's storage factory before the real context uses it.
+    with patch.object(configurator, "create_storage", return_value=MagicMock()):
+        return RequestContext(
+            org_id="test_org",
+            storage_base_dir=temp_storage_dir,
+            configurator=configurator,
+        )
 
 
 @pytest.fixture
