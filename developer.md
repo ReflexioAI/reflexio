@@ -621,6 +621,17 @@ regression exercises both layouts in isolated processes with distinct packages.
 
 ### Qualifying reviewer reason-code precedence (#428)
 
+New reviewer work follows the [iteration reset](tests/test_data/reviewer_reset_protocol.md):
+preserve the existing future-usefulness policy, characterize actual baseline
+failures, and test one minimal change at a time. The historical experiments below
+do not establish a winner. Use `--baseline-only` to screen v1.3 without selecting
+or calling a treatment. The CLI now applies actual decisions, records
+saved survivors/notes, refuses an existing checkpoint, and stops on incomplete
+calls or provider/cost observations. Raw observations survive the stop; unbegun calls
+are reported separately. Semantic disagreements continue the declared schedule.
+In-memory `evaluate` retains its historical continue-on-error default for
+compatibility; reset experiments must pass `stop_on_incomplete=True`.
+
 The follow-up [adoption protocol](tests/test_data/reviewer_adoption_protocol.md)
 defines development/held-out coverage, semantic oracles and activation gates.
 Use `--cases tests/test_data/reviewer_generalization_cases.json --split development`
