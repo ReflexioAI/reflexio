@@ -81,7 +81,7 @@ def test_cpu_bulk_budget_never_extends_searches(
     payload = client.post.call_args.kwargs["json"]
     assert payload["priority"] == priority
     assert payload["timeout_ms"] == budget
-    assert client.post.call_args.kwargs["timeout"] == (30 if priority == "bulk" else 2)
+    assert client.post.call_args.kwargs["timeout"] == budget / 1000
 
 
 def test_local_models_always_route_to_separate_service(monkeypatch) -> None:

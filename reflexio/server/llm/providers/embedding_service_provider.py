@@ -25,12 +25,17 @@ from reflexio.inference_launch import (
     inference_service_url as resolve_inference_service_url,
 )
 from reflexio.server.env_utils import env_str, env_truthy, positive_int_env
+from reflexio.server.llm.call_deadline import remaining_call_time
 from reflexio.server.search_runtime import (
-    checkpoint,
+    checkpoint as _search_checkpoint,
+)
+from reflexio.server.search_runtime import (
     current,
     http_request_deadline,
     increment,
-    remaining,
+)
+from reflexio.server.search_runtime import (
+    remaining as _search_remaining,
 )
 from reflexio.server.tracing import profile_step
 
@@ -70,6 +75,16 @@ _ADVERTISED_CAPABILITY_LOCK_SECONDS = 5
 
 class EmbeddingUnavailableError(RuntimeError):
     """Raised when the configured embedding provider is unavailable."""
+
+
+def remaining(default: float = 30.0) -> float:
+    """Respect both the search request and the enclosing compute attempt."""
+    return remaining_call_time(_search_remaining(default))
+
+
+def checkpoint() -> None:
+    _search_checkpoint()
+    remaining_call_time()
 
 
 @dataclass(frozen=True)
@@ -194,6 +209,7 @@ def resolve_inference_service_capabilities(
         EmbeddingUnavailableError: If the provider is ``off``, or the service
             cannot be reached.
     """
+    checkpoint()
     # Honour an explicit `off` before deriving a service mode. Deriving one
     # unconditionally made `off` unreachable here: the caller got a connection
     # error against a service it had just disabled, rather than being told the
@@ -223,6 +239,7 @@ def resolve_inference_service_capabilities(
     if not admitted:
         raise EmbeddingUnavailableError("Inference capability discovery is busy")
     try:
+        checkpoint()
         cached = _configured_model_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -234,6 +251,7 @@ def resolve_inference_service_capabilities(
                 )
             else:
                 body = advertised
+            checkpoint()
             configured_model = body.get("configured_model")
         except (
             httpx.HTTPError,
@@ -261,6 +279,7 @@ def resolve_inference_service_capabilities(
             reranker_ready=body.get("reranker_ready") is True,
             workload=body.get("workload", "shared"),
         )
+        checkpoint()
         _configured_model_cache[cache_key] = capabilities
         return capabilities
     finally:
@@ -508,6 +527,7 @@ def validate_query_embedding_service(
     Readiness supplies fresh, bounded health responses. The request path caches
     contracts by PID and both endpoints; a drift requires restarting the API.
     """
+    checkpoint()
     query_url = query_embedding_service_url()
     mode = embedding_provider_mode(model)
     if not query_url:
@@ -531,6 +551,7 @@ def validate_query_embedding_service(
         ):
             raise EmbeddingUnavailableError("Query model contract discovery is busy")
         try:
+            checkpoint()
             cached = _query_contract_cache.get(key)
             if cached is not None and advertised is None:
                 contract = cached
@@ -564,6 +585,7 @@ def validate_query_embedding_service(
                     raise EmbeddingUnavailableError(
                         "Vector contract changed; restart API required"
                     )
+                checkpoint()
                 _query_contract_cache[key] = contract
         finally:
             _query_contract_lock.release()
@@ -571,6 +593,7 @@ def validate_query_embedding_service(
         raise EmbeddingUnavailableError(
             "Query vector contract differs from requested model/dimensions"
         )
+    checkpoint()
     return query_url
 
 
@@ -598,6 +621,7 @@ def get_service_embeddings(
     if not texts:
         return []
 
+    checkpoint()
     mode = embedding_provider_mode(model)
     if mode == "off":
         raise EmbeddingUnavailableError("Embedding provider is disabled")
@@ -622,6 +646,7 @@ def get_service_embeddings(
     chunk_size = 1 if separate else _max_texts_per_request()
     embeddings: list[list[float]] = []
     for start in range(0, len(texts), chunk_size):
+        checkpoint()
         chunk = texts[start : start + chunk_size]
         embeddings.extend(
             _post_embedding_batch(
@@ -634,6 +659,7 @@ def get_service_embeddings(
                 purpose=purpose,
             )
         )
+    checkpoint()
     return embeddings
 
 
@@ -669,8 +695,12 @@ def _post_embedding_batch(
     last_error: Exception | None = None
     for attempt in range(2):
         try:
+            checkpoint()
             payload["timeout_ms"] = max(1, min(600_000, int(remaining(timeout) * 1000)))
-            response = _http_client().post(url, json=payload, timeout=timeout)
+            response = _http_client().post(
+                url, json=payload, timeout=remaining(timeout)
+            )
+            checkpoint()
             response.raise_for_status()
             body = response.json()
             vectors = _ordered_embeddings_from_response(body.get("data"), len(texts))
@@ -692,6 +722,7 @@ def _post_embedding_batch(
                 ):
                     raise ValueError("Query worker returned invalid vectors")
                 increment("search.embedding.query_worker")
+            checkpoint()
             return vectors
         except (
             httpx.ConnectError,

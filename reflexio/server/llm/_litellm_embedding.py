@@ -33,6 +33,11 @@ import tiktoken
 from reflexio.server import search_runtime
 from reflexio.server.llm._litellm_types import LiteLLMClientError
 from reflexio.server.llm._provider_concurrency import provider_slot
+from reflexio.server.llm.call_deadline import (
+    CallDeadlineExceededError,
+    model_call_deadline,
+    remaining_call_time,
+)
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
@@ -347,6 +352,7 @@ class EmbeddingMixin:
             EmbeddingUnavailableError: If the embedding provider is disabled.
             LiteLLMClientError: If embedding generation fails.
         """
+        remaining_call_time()
         embedding_model = resolve_service_configured_model(
             model or self._resolve_default_embedding_model()
         )
@@ -389,15 +395,24 @@ class EmbeddingMixin:
                     **params,
                     # LiteLLM's overload says int; its implementation forwards
                     # fractional seconds unchanged to the provider HTTP client.
-                    timeout=cast(Any, search_runtime.remaining(self.config.timeout)),
+                    timeout=cast(
+                        Any,
+                        remaining_call_time(
+                            search_runtime.remaining(self.config.timeout)
+                        ),
+                    ),
                     num_retries=0
-                    if search_scope is not None and search_scope.deadline is not None
+                    if model_call_deadline.get() is not None
+                    or (search_scope is not None and search_scope.deadline is not None)
                     else self.config.max_retries,
                 )
             # Response data may not be in order, sort by index to ensure correct ordering
             sorted_data = sorted(response.data, key=lambda x: x["index"])
-            return [item["embedding"] for item in sorted_data]
-        except search_runtime.SearchDeadlineError:
+            vectors = [item["embedding"] for item in sorted_data]
+            remaining_call_time()
+            search_runtime.checkpoint()
+            return vectors
+        except (search_runtime.SearchDeadlineError, CallDeadlineExceededError):
             raise
         except Exception as e:
             raise _embedding_error(
