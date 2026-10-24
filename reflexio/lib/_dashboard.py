@@ -233,6 +233,7 @@ class DashboardMixin(ReflexioBase):
         service = EvaluationOverviewService(
             storage=self._get_storage(),
             config=self.request_context.configurator.get_config(),
+            prompt_manager=self.request_context.prompt_manager,
         )
         return service.run(request)
 

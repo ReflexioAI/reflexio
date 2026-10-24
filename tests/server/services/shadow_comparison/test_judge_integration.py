@@ -78,7 +78,11 @@ def _stub_prompt_manager() -> object:
     from unittest.mock import MagicMock
 
     pm = MagicMock()
-    pm.render_prompt.return_value = "rendered-prompt-body"
+    pm.get_prompt_template_identity.return_value = {
+        "active_version": "1.0.0",
+        "template_content_digest": "a" * 64,
+    }
+    pm.render_prompt_from_identity.return_value = "rendered-prompt-body"
     return pm
 
 
@@ -91,7 +95,6 @@ def test_judge_returns_verdict_for_interaction_with_shadow_content():
     judge = ShadowComparisonJudge(
         llm_client=llm_client,  # type: ignore[arg-type]
         prompt_manager=prompt_manager,  # type: ignore[arg-type]
-        prompt_version="v1.0.0",
     )
 
     verdict = judge.judge_turn(
@@ -106,7 +109,7 @@ def test_judge_returns_verdict_for_interaction_with_shadow_content():
     assert verdict.interaction_id == "42"
     assert verdict.session_id == "s1"
     assert verdict.agent_version == "v1"
-    assert verdict.judge_prompt_version == "v1.0.0"
+    assert verdict.judge_prompt_version == "v1.0.0@sha256:" + "a" * 64
     assert verdict.output.better_request == "1"
     # verdict_id is 0 (storage assigns); storage layer is tested separately.
     assert verdict.verdict_id == 0
@@ -118,7 +121,6 @@ def test_judge_returns_none_when_shadow_content_missing():
     judge = ShadowComparisonJudge(
         llm_client=llm_client,  # type: ignore[arg-type]
         prompt_manager=prompt_manager,  # type: ignore[arg-type]
-        prompt_version="v1.0.0",
     )
 
     verdict = judge.judge_turn(
@@ -140,7 +142,6 @@ def test_judge_returns_none_on_llm_failure():
     judge = ShadowComparisonJudge(
         llm_client=llm_client,  # type: ignore[arg-type]
         prompt_manager=prompt_manager,  # type: ignore[arg-type]
-        prompt_version="v1.0.0",
     )
 
     verdict = judge.judge_turn(
@@ -160,7 +161,6 @@ def test_judge_records_position_assignment_correctly():
     judge = ShadowComparisonJudge(
         llm_client=llm_client,  # type: ignore[arg-type]
         prompt_manager=prompt_manager,  # type: ignore[arg-type]
-        prompt_version="v1.0.0",
     )
 
     verdict = judge.judge_turn(
@@ -173,7 +173,7 @@ def test_judge_records_position_assignment_correctly():
     assert verdict is not None
     # PromptManager.render_prompt(prompt_id, variables) — variables is the
     # second positional argument (no keyword) or the `variables=` kwarg.
-    call = prompt_manager.render_prompt.call_args  # type: ignore[attr-defined]
+    call = prompt_manager.render_prompt_from_identity.call_args  # type: ignore[attr-defined]
     variables = (
         call.kwargs.get("variables")
         if call.kwargs.get("variables") is not None
@@ -194,7 +194,6 @@ def test_judge_called_with_correct_prompt_id():
     judge = ShadowComparisonJudge(
         llm_client=llm_client,  # type: ignore[arg-type]
         prompt_manager=prompt_manager,  # type: ignore[arg-type]
-        prompt_version="v1.0.0",
     )
 
     judge.judge_turn(
@@ -204,7 +203,7 @@ def test_judge_called_with_correct_prompt_id():
         rng=random.Random(0),  # noqa: S311 — test seed, not crypto
     )
 
-    call = prompt_manager.render_prompt.call_args  # type: ignore[attr-defined]
+    call = prompt_manager.render_prompt_from_identity.call_args  # type: ignore[attr-defined]
     prompt_id = call.kwargs.get("prompt_id") or (call.args[0] if call.args else None)
     assert prompt_id == "shadow_comparison"
 
@@ -216,7 +215,6 @@ def test_judge_passes_response_format_to_llm():
     judge = ShadowComparisonJudge(
         llm_client=llm_client,  # type: ignore[arg-type]
         prompt_manager=prompt_manager,  # type: ignore[arg-type]
-        prompt_version="v1.0.0",
     )
 
     judge.judge_turn(

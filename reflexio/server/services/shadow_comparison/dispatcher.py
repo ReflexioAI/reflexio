@@ -49,12 +49,14 @@ def dispatch_shadow_comparison_judge(
     if not shadow_interactions:
         return
 
-    config = request_context.configurator.get_config()  # type: ignore[reportOptionalMemberAccess]
-    judge = ShadowComparisonJudge(
-        llm_client=llm_client,
-        prompt_manager=request_context.prompt_manager,  # type: ignore[reportOptionalMemberAccess]
-        prompt_version=config.shadow_comparison_judge_prompt_version,
-    )
+    try:
+        judge = ShadowComparisonJudge(
+            llm_client=llm_client,
+            prompt_manager=request_context.prompt_manager,  # type: ignore[reportOptionalMemberAccess]
+        )
+    except (ValueError, OSError):
+        logger.warning("shadow_comparison rubric is unavailable", exc_info=True)
+        return
     rng = random.Random()  # noqa: S311 - position randomization, not crypto
     saved_count = 0
 

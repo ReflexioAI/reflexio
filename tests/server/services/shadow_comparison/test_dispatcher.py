@@ -13,6 +13,7 @@ from reflexio.models.api_schema.eval_overview_schema import (
     ShadowComparisonVerdict,
 )
 from reflexio.models.config_schema import Config, StorageConfigSQLite
+from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.shadow_comparison.dispatcher import (
     dispatch_shadow_comparison_judge,
 )
@@ -27,7 +28,7 @@ def _request_context() -> SimpleNamespace:
         configurator=SimpleNamespace(
             get_config=lambda: Config(storage_config=StorageConfigSQLite())
         ),
-        prompt_manager=MagicMock(),
+        prompt_manager=PromptManager(),
     )
 
 

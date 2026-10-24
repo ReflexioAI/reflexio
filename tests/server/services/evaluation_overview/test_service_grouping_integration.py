@@ -24,6 +24,7 @@ from reflexio.models.api_schema.eval_overview_schema import (
     GetEvaluationOverviewRequest,
 )
 from reflexio.models.config_schema import Config, StorageConfigSQLite
+from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.evaluation_overview.service import (
     EvaluationOverviewService,
 )
@@ -88,7 +89,9 @@ def test_run_exposes_available_sources_from_first_session_request(
     _seed_session(storage, "s2", base_ts, False, source="")
 
     service = EvaluationOverviewService(
-        storage=storage, config=Config(storage_config=StorageConfigSQLite())
+        storage=storage,
+        config=Config(storage_config=StorageConfigSQLite()),
+        prompt_manager=PromptManager(),
     )
     response = service.run(
         GetEvaluationOverviewRequest(from_ts=base_ts - 1, to_ts=base_ts + 1)
@@ -119,7 +122,9 @@ def test_run_computes_source_set_metrics_by_first_request_source(
     )
 
     service = EvaluationOverviewService(
-        storage=storage, config=Config(storage_config=StorageConfigSQLite())
+        storage=storage,
+        config=Config(storage_config=StorageConfigSQLite()),
+        prompt_manager=PromptManager(),
     )
     response = service.run(
         GetEvaluationOverviewRequest(
@@ -161,7 +166,9 @@ def test_run_source_set_includes_evaluation_only_requests(
     )
 
     service = EvaluationOverviewService(
-        storage=storage, config=Config(storage_config=StorageConfigSQLite())
+        storage=storage,
+        config=Config(storage_config=StorageConfigSQLite()),
+        prompt_manager=PromptManager(),
     )
     response = service.run(
         GetEvaluationOverviewRequest(

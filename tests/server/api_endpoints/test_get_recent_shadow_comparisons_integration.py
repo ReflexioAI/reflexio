@@ -11,42 +11,54 @@ storage backend (no judge mocking needed — verdicts are seeded directly):
   - Default limit (10) honoured even when storage has more rows.
   - Hard cap at 100 enforced regardless of the ``limit`` query param.
   - "Newest first" ordering — storage returns ascending, the endpoint flips.
-  - Pinned ``shadow_comparison_judge_prompt_version`` filter — verdicts
-    produced under another rubric must not bleed into the response.
+  - Exact active template identity filter excludes historical rubric labels.
 
-Isolation: the SQLite ``shadow_comparison_verdicts`` table is not
-org-scoped, so multiple parallel tests writing to the same shared DB
-would otherwise see each other's rows. Each test pins a unique judge
-prompt version (the storage filter is on this field exactly) so its
-rows are partitioned from sibling tests and from any prior dev rows.
+Each test owns a temporary SQLite database; rubric labels never substitute for
+storage isolation. The endpoint resolves the real request-context prompt manager.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
+from reflexio.models.api_schema.domain.entities import Interaction
 from reflexio.models.api_schema.eval_overview_schema import (
+    GetEvaluationOverviewRequest,
     ShadowComparisonOutput,
     ShadowComparisonVerdict,
 )
 from reflexio.server.cache.reflexio_cache import get_reflexio
+from reflexio.server.services.shadow_comparison.dispatcher import (
+    dispatch_shadow_comparison_judge,
+)
+from reflexio.server.services.shadow_comparison.rubric import ShadowComparisonRubric
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
 
 
-def _unique_judge_version() -> str:
-    """Return a per-test pinned judge prompt version for isolation.
+@pytest.fixture(autouse=True)
+def _owned_shadow_database(client_with_org, tmp_path):
+    _, org_id = client_with_org
+    context = get_reflexio(org_id=org_id).request_context
+    previous = context.storage
+    storage = SQLiteStorage(org_id=org_id, db_path=str(tmp_path / "shadow.db"))
+    context.storage = storage
+    try:
+        yield
+    finally:
+        context.storage = previous
+        storage.conn.close()
 
-    The shared SQLite DB at ``~/.reflexio/data/reflexio.db`` carries a
-    single ``shadow_comparison_verdicts`` table. Filtering by
-    ``judge_prompt_version`` is the storage layer's only natural
-    partition; each test reserves its own version string so its rows
-    cannot collide with other tests' rows.
-    """
-    return f"test-{uuid.uuid4().hex[:12]}"
+
+def _legacy_rubric_label() -> str:
+    """Represent an unverified historical label that must remain separate."""
+    return f"historical-{uuid.uuid4().hex[:12]}"
 
 
 def _make_verdict(
@@ -116,12 +128,74 @@ def _seed_verdicts(
         )
 
 
-def _pin_judge_version(org_id: str, version: str) -> None:
-    """Pin the org's ``shadow_comparison_judge_prompt_version`` config."""
+def _active_rubric_key(org_id: str) -> str:
+    context = get_reflexio(org_id=org_id).request_context
+    return ShadowComparisonRubric(context.prompt_manager).key
+
+
+def test_dispatch_storage_recent_and_overview_share_the_actual_rubric(
+    client_with_org, monkeypatch
+):
+    client, org_id = client_with_org
     reflexio = get_reflexio(org_id=org_id)
-    reflexio.request_context.configurator.set_config_by_name(
-        "shadow_comparison_judge_prompt_version", version
+    storage = reflexio.request_context.storage
+    assert storage is not None
+    anchor = datetime.now(UTC) - timedelta(seconds=2)
+    monkeypatch.setattr(
+        "reflexio.server.services.shadow_comparison.judge.datetime",
+        SimpleNamespace(now=lambda *_: anchor),
     )
+    llm = MagicMock()
+    llm.generate_chat_response.return_value = ShadowComparisonOutput(
+        better_request="1",
+        is_significantly_better=True,
+        comparison_reason="The first response follows the request.",
+    )
+    dispatch_shadow_comparison_judge(
+        storage=storage,
+        interactions=[
+            Interaction(
+                interaction_id=42,
+                user_id="rubric-user",
+                request_id="rubric-request",
+                role="assistant",
+                content="reflexio response",
+                shadow_content="baseline response",
+            )
+        ],
+        session_id="rubric-session",
+        agent_version="agent-version",
+        request_context=reflexio.request_context,
+        llm_client=llm,
+    )
+    storage.save_shadow_comparison_verdict(
+        _make_verdict(
+            interaction_id="historical",
+            created_at=anchor,
+            judge_prompt_version="v1.1.0",
+        )
+    )
+    expected = _active_rubric_key(org_id)
+    response = client.get("/api/evaluations/shadow_comparisons/recent")
+    assert response.status_code == 200, response.text
+    verdicts = response.json()["verdicts"]
+    assert len(verdicts) == 1
+    assert verdicts[0]["interaction_id"] == "42"
+    assert verdicts[0]["judge_prompt_version"] == expected
+    overview = reflexio.get_evaluation_overview(
+        GetEvaluationOverviewRequest(
+            from_ts=int(anchor.timestamp()) - 1, to_ts=int(anchor.timestamp()) + 1
+        )
+    )
+    assert overview.shadow_win_rate_trend.window_total.n == 1
+    assert overview.shadow_win_rate_trend.judge_prompt_version == expected
+    historical = storage.get_shadow_comparison_verdicts(
+        from_ts=int(anchor.timestamp()) - 1,
+        to_ts=int(anchor.timestamp()) + 1,
+        judge_prompt_version="v1.1.0",
+    )
+    assert [item.interaction_id for item in historical] == ["historical"]
+    llm.generate_chat_response.assert_called_once()
 
 
 def test_returns_empty_when_no_verdicts(client_with_org):
@@ -129,7 +203,6 @@ def test_returns_empty_when_no_verdicts(client_with_org):
     client, org_id = client_with_org
     # Pin a unique version so any prior dev rows in the shared DB are
     # excluded by the storage-side filter.
-    _pin_judge_version(org_id, _unique_judge_version())
     resp = client.get("/api/evaluations/shadow_comparisons/recent")
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"verdicts": []}
@@ -142,8 +215,7 @@ def test_default_limit_returns_at_most_10_newest_first(client_with_org):
     storage = reflexio.request_context.storage
     assert storage is not None
 
-    version = _unique_judge_version()
-    _pin_judge_version(org_id, version)
+    version = _active_rubric_key(org_id)
     base_ts = int(datetime.now(UTC).timestamp()) - 1_000
     _seed_verdicts(storage, count=15, base_ts=base_ts, judge_prompt_version=version)
 
@@ -164,8 +236,7 @@ def test_limit_query_param_honoured_up_to_hard_cap(client_with_org):
     storage = reflexio.request_context.storage
     assert storage is not None
 
-    version = _unique_judge_version()
-    _pin_judge_version(org_id, version)
+    version = _active_rubric_key(org_id)
     base_ts = int(datetime.now(UTC).timestamp()) - 10_000
     _seed_verdicts(storage, count=150, base_ts=base_ts, judge_prompt_version=version)
 
@@ -177,8 +248,8 @@ def test_limit_query_param_honoured_up_to_hard_cap(client_with_org):
 def test_filters_to_pinned_judge_prompt_version(client_with_org):
     """Verdicts produced under a different rubric version are excluded.
 
-    The endpoint reads ``Config.shadow_comparison_judge_prompt_version``
-    and passes it to ``get_shadow_comparison_verdicts``. Verdicts written
+    The endpoint resolves the actual request-context rubric identity
+    and passes it to storage. Verdicts written
     under an older rubric must stay in storage but be hidden from the
     drawer so the dashboard never silently mixes scoring epochs.
     """
@@ -187,9 +258,8 @@ def test_filters_to_pinned_judge_prompt_version(client_with_org):
     storage = reflexio.request_context.storage
     assert storage is not None
 
-    pinned_version = _unique_judge_version()
-    other_version = _unique_judge_version()
-    _pin_judge_version(org_id, pinned_version)
+    pinned_version = _active_rubric_key(org_id)
+    other_version = _legacy_rubric_label()
 
     # Anchor verdicts a few seconds in the past so the integer-second
     # truncation in the endpoint's ``to_ts = int(now.timestamp())`` can't
@@ -223,8 +293,7 @@ def test_invalid_limit_clamped_to_one(client_with_org):
     storage = reflexio.request_context.storage
     assert storage is not None
 
-    version = _unique_judge_version()
-    _pin_judge_version(org_id, version)
+    version = _active_rubric_key(org_id)
     base_ts = int(datetime.now(UTC).timestamp()) - 100
     _seed_verdicts(storage, count=5, base_ts=base_ts, judge_prompt_version=version)
 

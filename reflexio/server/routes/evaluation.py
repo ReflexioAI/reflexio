@@ -607,8 +607,7 @@ def get_recent_shadow_comparisons(
 ) -> GetRecentShadowComparisonsResponse:
     """Return the N most recent shadow comparison verdicts for the pinned rubric.
 
-    Filters to the org's currently pinned
-    ``Config.shadow_comparison_judge_prompt_version`` so verdicts produced
+    Filters to the active prompt template's identity so verdicts produced
     under an older rubric do not mix into the drawer or the Top 10
     disagreements widget. Storage returns verdicts newest-first and caps the
     read at ``limit``.
@@ -634,12 +633,9 @@ def get_recent_shadow_comparisons(
     if storage is None:
         raise HTTPException(status_code=503, detail="Storage not configured")
 
-    config = reflexio.request_context.configurator.get_config()
-    pinned_version = (
-        config.shadow_comparison_judge_prompt_version
-        if config is not None
-        else "v1.0.0"
-    )
+    from reflexio.server.services.shadow_comparison.rubric import ShadowComparisonRubric
+
+    pinned_version = ShadowComparisonRubric(reflexio.request_context.prompt_manager).key
 
     now = int(datetime.now(UTC).timestamp())
     try:

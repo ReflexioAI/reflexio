@@ -245,8 +245,8 @@ class ShadowWinRateTrend(BaseModel):
             ascending. Empty when no verdicts exist in the window.
         window_total (ShadowWinRateTrendWindowTotal): Aggregate over all
             daily buckets.
-        judge_prompt_version (str): Pinned prompt version the verdicts in
-            this payload were graded under.
+        judge_prompt_version (str): Active template version and content digest.
+            Empty when no rubric was resolved for an unconfigured store.
     """
 
     daily: list[ShadowWinRateTrendPoint] = Field(default_factory=list)
@@ -260,7 +260,7 @@ class ShadowWinRateTrend(BaseModel):
             net_win=0.0,
         )
     )
-    judge_prompt_version: str = Field(default="v1.0.0")
+    judge_prompt_version: str = Field(default="")
 
 
 class SourceSetEvaluationMetrics(BaseModel):
@@ -519,10 +519,10 @@ class ShadowComparisonVerdict(BaseModel):
             The dashboard derives win/loss/tie via:
                 derived_win = (better == "1") == reflexio_is_request_1
         output (ShadowComparisonOutput): The judge's structured verdict.
-        judge_prompt_version (str): Semver of shadow_comparison prompt
-            used. The dashboard filters to the org's current pinned
-            version (Config.shadow_comparison_judge_prompt_version) so
-            verdicts from a prior rubric never mix into the headline.
+        judge_prompt_version (str): Identity of the rendered shadow-comparison
+            template, containing its version and unrendered content digest.
+            Historical semver-only labels are retained as unverified history;
+            current dashboard reads filter to the active template identity.
         created_at (datetime): When the judge call returned.
     """
 

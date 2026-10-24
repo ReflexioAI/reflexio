@@ -31,7 +31,7 @@ def _make(better: str, reflexio_is_r1: bool, ts: int) -> ShadowComparisonVerdict
 
 
 def test_empty_input_returns_empty_trend() -> None:
-    trend = compute_shadow_win_rate_trend([])
+    trend = compute_shadow_win_rate_trend([], judge_prompt_version="v1.0.0")
     assert trend.daily == []
     assert trend.window_total.n == 0
     assert trend.window_total.wins == 0
@@ -52,7 +52,7 @@ def test_single_bucket_with_mixed_outcomes() -> None:
         # 1 tie
         _make("tie", True, ts),
     ]
-    trend = compute_shadow_win_rate_trend(verdicts)
+    trend = compute_shadow_win_rate_trend(verdicts, judge_prompt_version="v1.0.0")
     assert len(trend.daily) == 1
     day = trend.daily[0]
     assert day.n == 4
@@ -75,7 +75,7 @@ def test_multi_day_bucketing() -> None:
         _make("1", True, ts_day_1),
         _make("2", True, ts_day_2),
     ]
-    trend = compute_shadow_win_rate_trend(verdicts)
+    trend = compute_shadow_win_rate_trend(verdicts, judge_prompt_version="v1.0.0")
     assert len(trend.daily) == 2
     day_one, day_two = trend.daily
     assert day_one.wins == 2
@@ -93,7 +93,9 @@ def test_multi_day_bucketing() -> None:
 def test_daily_buckets_use_utc_date_keys() -> None:
     # 2023-11-14 22:13:20 UTC
     ts = 1_700_000_000
-    trend = compute_shadow_win_rate_trend([_make("1", True, ts)])
+    trend = compute_shadow_win_rate_trend(
+        [_make("1", True, ts)], judge_prompt_version="v1.0.0"
+    )
     assert len(trend.daily) == 1
     assert trend.daily[0].date == "2023-11-14"
 
@@ -103,18 +105,13 @@ def test_judge_prompt_version_passthrough() -> None:
     assert trend.judge_prompt_version == "v2.0.0"
 
 
-def test_default_judge_prompt_version_is_v1() -> None:
-    trend = compute_shadow_win_rate_trend([])
-    assert trend.judge_prompt_version == "v1.0.0"
-
-
 def test_all_ties_yields_zero_rates() -> None:
     ts = 1_700_000_000
     verdicts = [
         _make("tie", True, ts),
         _make("tie", False, ts),
     ]
-    trend = compute_shadow_win_rate_trend(verdicts)
+    trend = compute_shadow_win_rate_trend(verdicts, judge_prompt_version="v1.0.0")
     assert trend.window_total.n == 2
     assert trend.window_total.ties == 2
     assert trend.window_total.win_rate == 0.0

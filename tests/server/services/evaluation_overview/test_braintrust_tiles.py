@@ -15,6 +15,7 @@ from reflexio.models.api_schema.eval_overview_schema import (
     GetEvaluationOverviewRequest,
 )
 from reflexio.models.config_schema import Config, StorageConfigSQLite
+from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.evaluation_overview.service import (
     EvaluationOverviewService,
     _aggregate_imported_scores,
@@ -58,7 +59,9 @@ def test_service_returns_empty_braintrust_tiles_with_no_imported_scores() -> Non
     storage.get_imported_scores.return_value = []
     config = Config(storage_config=StorageConfigSQLite())
 
-    svc = EvaluationOverviewService(storage=storage, config=config)
+    svc = EvaluationOverviewService(
+        storage=storage, config=config, prompt_manager=PromptManager()
+    )
     response = svc.run(GetEvaluationOverviewRequest(from_ts=0, to_ts=int(time.time())))
 
     assert response.braintrust_tiles == []
@@ -88,7 +91,9 @@ def test_service_emits_braintrust_tiles_with_delta() -> None:
     storage.get_imported_scores.side_effect = get_imported_scores_router
     config = Config(storage_config=StorageConfigSQLite())
 
-    svc = EvaluationOverviewService(storage=storage, config=config)
+    svc = EvaluationOverviewService(
+        storage=storage, config=config, prompt_manager=PromptManager()
+    )
     response = svc.run(GetEvaluationOverviewRequest(from_ts=1_000_000, to_ts=2_000_000))
 
     tiles_by_name = {t.scorer_name: t for t in response.braintrust_tiles}
