@@ -16,6 +16,8 @@ from reflexio.server.services.shadow_comparison.dispatcher import (
 )
 from reflexio.server.services.shadow_comparison.rubric import ShadowComparisonRubric
 
+pytestmark = pytest.mark.unit
+
 
 def _manager(tmp_path, override=None):
     bank = tmp_path / "prompts" / "shadow_comparison"

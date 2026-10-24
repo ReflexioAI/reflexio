@@ -16,6 +16,9 @@ from reflexio.models.config_schema import (
     validate_stored_config,
 )
 
+pytestmark = pytest.mark.unit
+
+
 _LABEL = "shadow_comparison_judge_prompt_version"
 
 
