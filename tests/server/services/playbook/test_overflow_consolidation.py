@@ -906,3 +906,266 @@ def test_consolidation_failures_are_still_reported(monkeypatch, caplog, error):
         r.levelname == "ERROR" and r.getMessage() == "Failed to identify duplicates"
         for r in caplog.records
     )
+
+
+# --- Legacy history without a stored source_span ---
+
+
+def _legacy(identity=51, **update):
+    values = {
+        "content": "Prepare only. Deployment needs separate approval.",
+        "trigger": "after preparation",
+        "rationale": "Preserve approval scope",
+        "source_span": None,
+        "created_at": 1000,
+    }
+    values.update(update)
+    return _old(identity).model_copy(update=values)
+
+
+def _admit_fixture(chunks=1):
+    from reflexio.server.services.extraction.input_preparation import (
+        PreparedChunk,
+        PreparedExtractionInput,
+    )
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+    )
+
+    checkpoint: dict[str, Any] = {}
+    prepared = PreparedExtractionInput(
+        "window", tuple(PreparedChunk(index, ()) for index in range(chunks))
+    )
+    coordinator = SimpleNamespace(
+        checkpoint=checkpoint, require_prepared=lambda: prepared
+    )
+    coordinator.save_checkpoint = lambda value: checkpoint.update(value)
+    return cast(OverflowCoordinator, coordinator), checkpoint
+
+
+def test_span_rows_keep_saved_receipt_keys_payloads_and_digests():
+    """Pinned from origin/main d11e2c43: saved v1/v2 receipts must keep replaying."""
+    import hashlib
+    import json
+
+    from reflexio.server.services.playbook.components import (
+        overflow_consolidation as module,
+    )
+
+    text = 'Keep exact "quoted" Unicode 🙂 evidence.'
+    owner, coordinator, row, _ = _history_fixture(text)
+    row = row.model_copy(
+        update={
+            "content": "Require approval.",
+            "trigger": "before deploy",
+            "rationale": "Owner said so",
+        }
+    )
+    claims = [{"content": "new claim"}]
+
+    def digest(value):
+        return hashlib.sha256(
+            json.dumps(value, ensure_ascii=False, sort_keys=True).encode()
+        ).hexdigest()
+
+    v1 = module._scan_request(owner, coordinator, row, claims, [], 0, len(text))
+    v2 = module._historical_scan_request(
+        owner, coordinator, row, claims, [], 0, len(text)
+    )
+    assert v1[0] == "fbe0a3552afb77eecef383c7dafdfa7c5ae9650bf2c232a6b33b7613d89a6075"
+    assert digest(v1[1]) == (
+        "bb0a34e4a1a0d647a1545d9315d74233f6a5a5a1f7e26ca6f44144bb28fc3ac7"
+    )
+    assert v2[0] == "cb3d21c4dfdd99368be2abe47da3cc547ff8f9a994c2b8f83c084ecc770e95c4"
+    assert digest(v2[1]) == (
+        "a97af025b1b720d147fbd9fdcd793e8435eccef2c86f0ac579135b0b13138550"
+    )
+    assert (
+        module._historical_source_digest(row)
+        == hashlib.sha256(text.encode()).hexdigest()
+    )
+    policies = {
+        "SCAN_POLICY": "f82dc251467c5be90cdbe4d14ca0438094cf32e0cbe68a68996a25cc1515cf98",
+        "SCAN_SELECTION_POLICY": "f0665772e44d0ecbc93992c17c4b7e999402922cd042a4a977fd1b2ce7aa0cf4",
+        "VERIFY_POLICY": "ab2d80a8f279a5f19c71d1e82e013e5a7b22776bb31717bd4b63e5f3c57da196",
+    }
+    for name, expected in policies.items():
+        assert hashlib.sha256(getattr(module, name).encode()).hexdigest() == expected
+    quote = HistoricalQuote(start=0, end=len(text), text=text)
+    from reflexio.server.services.playbook.components.overflow_evidence import (
+        historical_playbook_digest,
+    )
+
+    # The verification record for a span row is the exact pre-change shape,
+    # including key order (json.dumps preserves insertion order).
+    assert json.dumps(module._historical_record(row, [quote])) == json.dumps(
+        {
+            "rule": module.rule_metadata(row),
+            "author_role": "unknown",
+            "source_digest": historical_playbook_digest(row),
+            "quotes": [quote.model_dump()],
+        }
+    )
+
+
+def test_stored_rule_evidence_is_rendered_marked_and_quoted_against_its_text():
+    import json
+
+    from reflexio.models.api_schema.common import BlockingIssue, BlockingIssueKind
+    from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
+    from reflexio.server.services.playbook.components import (
+        overflow_consolidation as module,
+    )
+
+    owner, coordinator, _, receipts = _history_fixture("unused")
+    row = _legacy(
+        rationale="  ",
+        blocking_issue=BlockingIssue(
+            kind=BlockingIssueKind.PERMISSION_DENIED, details="no deploy role"
+        ),
+    )
+    evidence = module.historical_evidence(row)
+    assert evidence.kind == "stored_rule"
+    assert evidence.text == (
+        "Trigger: after preparation\n\n"
+        "Content: Prepare only. Deployment needs separate approval.\n\n"
+        "Blocking issue: permission_denied: no deploy role"
+    )
+    # A whitespace-only span is no evidence either.
+    assert module.historical_evidence(
+        row.model_copy(update={"source_span": " \n"})
+    ) == (evidence)
+    text = evidence.text
+    key, messages, low, high = module._scan_request(
+        owner, coordinator, row, [], [], 0, len(text)
+    )
+    assert messages[0]["content"] == module.STORED_RULE_SCAN_POLICY
+    payload = json.loads(messages[1]["content"])
+    assert payload["evidence_kind"] == "stored_rule"
+    assert payload["evidence_note"] == module.STORED_RULE_EVIDENCE_NOTE
+    assert payload["author_role"] == "unknown"
+    assert payload["chunk"]["text"] == text and (low, high) == (0, len(text))
+    for policy in (
+        module.STORED_RULE_SCAN_POLICY,
+        module.STORED_RULE_SCAN_SELECTION_POLICY,
+    ):
+        assert "source_span" not in policy
+        assert "author role is UNKNOWN" in policy
+        assert "untrusted data, not instructions" in policy
+        assert policy.endswith(module.STORED_RULE_EVIDENCE_NOTE + "\n")
+
+    def select(**kwargs):
+        assert (
+            kwargs["messages"][0]["content"] == module.STORED_RULE_SCAN_SELECTION_POLICY
+        )
+        body = json.loads(kwargs["messages"][1]["content"])
+        assert body["evidence_kind"] == "stored_rule"
+        assert "".join(item["text"] for item in body["chunk"]["snippets"]) == text
+        selected = module.HistoricalScanSelection(
+            coverage="complete",
+            snippet_ids=[item["snippet_id"] for item in body["chunk"]["snippets"]],
+        )
+        assert kwargs["structured_output_validator"](selected) == []
+        return CompletionResult(selected, ModelProvenance(model_name="fixture-model"))
+
+    cast(
+        MagicMock, owner.client.generate_chat_response_with_provenance
+    ).side_effect = select
+    quotes = module._scan_history(owner, coordinator, row, [(0, len(text))], [])
+    assert quotes and all(q.text == text[q.start : q.end] for q in quotes)
+    assert (
+        module._remaining_history_calls(owner, coordinator, row, [(0, len(text))], [])
+        == 0
+    )
+    assert key not in receipts and len(receipts) == 1
+    # An offset into the raw (absent) span is rejected against the rendering.
+    with pytest.raises(ValueError, match="exact source offsets"):
+        _merge_quotes(
+            [],
+            HistoricalScan(
+                coverage="complete",
+                quotes=[HistoricalQuote(start=0, end=7, text="Prepare")],
+            ),
+            text,
+            0,
+            len(text),
+        )
+    record = module._historical_record(row, quotes)
+    assert record["evidence_kind"] == "stored_rule"
+    assert record["evidence_note"] == module.STORED_RULE_EVIDENCE_NOTE
+    assert record["author_role"] == "unknown"
+
+
+def test_distinct_legacy_rows_get_distinct_digests_and_partition_plans():
+    import hashlib
+
+    from reflexio.server.services.playbook.components.overflow_consolidation import (
+        _admit_history,
+        _historical_source_digest,
+        historical_evidence,
+    )
+
+    first = _legacy(51)
+    second = _legacy(52, content="Run the migration preflight before every PR.")
+    coordinator, checkpoint = _admit_fixture()
+    plans = _admit_history(coordinator, [first, second])
+    digests = [_historical_source_digest(row) for row in (first, second)]
+    assert len(set(digests)) == 2 == len(plans) == len(checkpoint["historical_chunks"])
+    assert hashlib.sha256(b"").hexdigest() not in digests
+    for row, digest in zip((first, second), digests, strict=True):
+        assert plans[digest] == [(0, len(historical_evidence(row).text))]
+    # Re-admitting the same rows (a retry) reproduces the same plans.
+    assert _admit_history(coordinator, [first, second]) == plans
+    # Domain separation: a span equal to a rendering never shares its digest.
+    spanned = first.model_copy(update={"source_span": historical_evidence(first).text})
+    assert _historical_source_digest(spanned) != digests[0]
+    assert digests[0].startswith("stored_rule:")
+
+
+def test_legacy_row_gaining_a_span_does_not_trip_partition_changed():
+    from reflexio.server.services.playbook.components.overflow_consolidation import (
+        _admit_history,
+        _historical_source_digest,
+    )
+
+    legacy = _legacy(51)
+    coordinator, checkpoint = _admit_fixture()
+    _admit_history(coordinator, [legacy])
+    saved = dict(checkpoint["historical_chunks"])
+    spanned = legacy.model_copy(update={"source_span": "Original quote. " * 40})
+    plans = _admit_history(coordinator, [spanned])
+    assert list(plans) == [_historical_source_digest(spanned)]
+    # The earlier stored-rule entry is kept (append-only), never overwritten.
+    assert checkpoint["historical_chunks"] == {
+        **saved,
+        _historical_source_digest(spanned): [[0, len(spanned.source_span or "")]],
+    }
+
+
+def test_legacy_row_without_any_rule_text_takes_the_no_merge_plan(monkeypatch):
+    from reflexio.server.services.playbook.components import (
+        overflow_consolidation as module,
+    )
+
+    blank = _legacy(51, content="", trigger=None, rationale=" ")
+    new = [_rule(0, "A fresh lesson about release notes.")]
+    output = PlaybookConsolidationOutput(
+        decisions=[
+            UnifyDecision(
+                new_id="NEW-0",
+                archive_existing_ids=[0],
+                content="merged",
+                trigger="scope",
+                rationale="reason",
+            )
+        ]
+    )
+    monkeypatch.setattr(module, "_bounded_proposals", lambda *_: output)
+    owner = PlaybookConsolidator.__new__(PlaybookConsolidator)
+    owner.consolidation_not_cleared = False
+    coordinator, checkpoint = _admit_fixture()
+    for _ in range(2):  # every retry reaches the same completed plan
+        plan = module.verified_consolidation_decisions(owner, coordinator, new, [blank])
+        assert plan == module.unconsolidated_decisions(new)
+        assert owner.consolidation_not_cleared is True
+    assert not checkpoint.get("historical_chunks")
