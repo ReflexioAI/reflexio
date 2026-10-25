@@ -11,6 +11,7 @@ import pytest
 
 from reflexio.server.llm import _litellm_text_generation as generation
 from reflexio.server.llm import _provider_concurrency as admission
+from reflexio.server.llm import call_deadline
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 
 
@@ -143,6 +144,49 @@ def test_start_failure_closes_unstarted_worker_and_queue(monkeypatch, provider_p
 def _publish_then_linger(_params, result_queue):
     result_queue.put(("ok", {"pid": os.getpid(), "value": "ready"}))
     time.sleep(10)
+
+
+def test_rejected_late_public_result_keeps_live_worker_permit(
+    monkeypatch, provider_permit
+):
+    clock = [1000.0]
+    monkeypatch.setattr(
+        generation,
+        "time",
+        SimpleNamespace(monotonic=lambda: clock[0], perf_counter=time.perf_counter),
+    )
+    monkeypatch.setattr(call_deadline, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(generation, "_LADDER_MIN_TURN_SECONDS", 0.0001)
+    worker = LingeringWorker()
+    result_queue = Mock()
+
+    def receive(**_kwargs):
+        clock[0] += 0.075
+        return "ok", SimpleNamespace(usage=None)
+
+    result_queue.get.side_effect = receive
+    context = SimpleNamespace(
+        Queue=lambda **_: result_queue, Process=lambda **_: worker
+    )
+    monkeypatch.setattr(generation.multiprocessing, "get_context", lambda: context)
+    client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
+    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
+    try:
+        with (
+            call_deadline.model_deadline(1000.03),
+            pytest.raises(generation.LiteLLMClientError, match="attempt deadline"),
+        ):
+            client.generate_response("synthetic")
+        assert worker.reaping.wait(2)
+        assert not provider_permit.is_set()
+        with (
+            pytest.raises(admission.ProviderCapSaturatedError),
+            admission.provider_slot("gpt-4o", max_wait=0),
+        ):
+            pytest.fail("late result freed a still-live worker's capacity")
+    finally:
+        worker.allow_exit.set()
+    assert provider_permit.wait(2)
 
 
 def test_multiple_retained_owners_release_capacity_only_after_last_exit(

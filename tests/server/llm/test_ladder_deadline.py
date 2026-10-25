@@ -280,14 +280,15 @@ def _repair_walk(
 def test_without_a_caller_deadline_the_repair_turn_gets_its_full_timeout(
     monkeypatch,
 ) -> None:
-    calls, outcome, _ = _repair_walk(monkeypatch, first_burns=125, caller_seconds=None)
+    # A successful first turn must finish before its own 125-second kill bound.
+    calls, outcome, _ = _repair_walk(monkeypatch, first_burns=124, caller_seconds=None)
     assert isinstance(outcome, _Answer)
     assert [c["hard"] for c in calls] == [pytest.approx(125), pytest.approx(125)]
 
 
 def test_a_repair_turn_is_clamped_to_end_by_the_caller_deadline(monkeypatch) -> None:
     calls, outcome, deadline = _repair_walk(
-        monkeypatch, first_burns=125, caller_seconds=170
+        monkeypatch, first_burns=124, caller_seconds=169
     )
     assert isinstance(outcome, _Answer)
     assert len(calls) == 2
@@ -302,7 +303,7 @@ def test_no_repair_turn_is_started_once_the_caller_deadline_is_too_close(
     """A slow first attempt leaves too little before the extractor's cutoff for
     a repair turn: the walk stops itself and makes no further model call."""
     calls, outcome, deadline = _repair_walk(
-        monkeypatch, first_burns=125, caller_seconds=130
+        monkeypatch, first_burns=124, caller_seconds=129
     )
     assert isinstance(outcome, LiteLLMClientError)
     assert len(calls) == 1

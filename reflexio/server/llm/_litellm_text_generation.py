@@ -72,7 +72,7 @@ from reflexio.server.llm._provider_concurrency import (
     ProviderCapSaturatedError,
     provider_slot,
 )
-from reflexio.server.llm.call_deadline import model_call_deadline
+from reflexio.server.llm.call_deadline import model_call_deadline, remaining_call_time
 from reflexio.server.llm.image_utils import (
     SUPPORTED_IMAGE_MIME_TYPES,
     ImageEncodingError,
@@ -1215,6 +1215,8 @@ class TextGenerationMixin:
         """
         from reflexio.server import search_runtime
 
+        started = time.monotonic()
+        hard_timeout = remaining_call_time(hard_timeout)
         search_scope = search_runtime.current()
         if search_scope is not None:
             hard_timeout = search_runtime.remaining(hard_timeout)
@@ -1231,7 +1233,14 @@ class TextGenerationMixin:
         # ladder-wide ``hard_timeout``.
         timeout_seconds = self._coerce_timeout_seconds(params)
         grace_seconds = self._hard_timeout_grace_seconds()
-        hard_timeout = max(0.001, hard_timeout)
+        deadline = started + hard_timeout
+        if search_scope is not None and search_scope.deadline is not None:
+            deadline = min(deadline, search_scope.deadline)
+        caller_deadline = model_call_deadline.get()
+        if caller_deadline is not None:
+            deadline = min(deadline, caller_deadline)
+        if time.monotonic() >= deadline:
+            raise LLMHardTimeoutError("LLM request deadline expired before dispatch")
 
         if not self._should_process_isolate_completion(timeout_seconds, grace_seconds):
             try:
@@ -1256,6 +1265,8 @@ class TextGenerationMixin:
             daemon=True,
         )
         try:
+            if time.monotonic() >= deadline:
+                raise LLMHardTimeoutError("LLM request deadline expired before startup")
             process.start()
             # Drain the result queue BEFORE joining the child. A large completion
             # payload overflows the OS pipe buffer, so the child's queue-feeder
@@ -1266,9 +1277,9 @@ class TextGenerationMixin:
             # result reported as a wall-clock kill). Reading here unblocks the
             # feeder so the child can exit. The read is bounded by the same
             # ``hard_timeout`` budget the join used to enforce.
-            deadline = time.monotonic() + hard_timeout
-            if search_scope is not None and search_scope.deadline is not None:
-                deadline = min(deadline, search_scope.deadline)
+            # Startup spends this same budget. An already available response
+            # may be drained after expiry so the caller can record its usage;
+            # public acceptance below rejects the late output after accounting.
             result: tuple[str, Any] | None = None
             while result is None:
                 remaining = deadline - time.monotonic()
@@ -1295,14 +1306,9 @@ class TextGenerationMixin:
                         # last read in case the feeder flushed the payload just
                         # before exit; otherwise it died without a result.
                         try:
-                            queue_timeout = 1.0
-                            if (
-                                search_scope is not None
-                                and search_scope.deadline is not None
-                            ):
-                                queue_timeout = max(
-                                    0.0, min(queue_timeout, deadline - time.monotonic())
-                                )
+                            queue_timeout = max(
+                                0.0, min(1.0, deadline - time.monotonic())
+                            )
                             result = result_queue.get(timeout=queue_timeout)
                         except queue.Empty as exc2:
                             raise LiteLLMClientError(
@@ -1598,6 +1604,11 @@ class TextGenerationMixin:
         def _finish(
             attempt: _StructuredAttempt,
         ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse]:
+            search_runtime.checkpoint()
+            if time.monotonic() >= walk_deadline:
+                raise LadderBudgetExhaustedError(
+                    "LLM deadline expired before accepting the completed output"
+                )
             assert attempt.provenance is not None  # noqa: S101
             return CompletionResult(
                 attempt.value, attempt.provenance, usage=attempt.usage
@@ -1735,6 +1746,20 @@ class TextGenerationMixin:
                     turn_params, turn_hard_timeout = _clamp_to_walk(
                         turn_params, turn_hard_timeout
                     )
+                    turn_deadline = min(
+                        walk_deadline, time.monotonic() + turn_hard_timeout
+                    )
+                    scope = search_runtime.current()
+                    if scope is not None and scope.deadline is not None:
+                        turn_deadline = min(turn_deadline, scope.deadline)
+
+                    def check_turn_deadline() -> None:
+                        search_runtime.checkpoint()
+                        if time.monotonic() >= turn_deadline:
+                            raise LLMHardTimeoutError(
+                                "LLM completion exceeded its attempt deadline"
+                            )
+
                     if provider_request_guard is not None:
                         provider_request_guard(
                             turn_params,
@@ -1753,8 +1778,9 @@ class TextGenerationMixin:
                             tuple(ladder),
                             turn_parse_structured_output,
                         )
+                    check_turn_deadline()
                     response = self._completion_with_hard_timeout(
-                        turn_params, turn_hard_timeout
+                        turn_params, turn_deadline - time.monotonic()
                     )
                 # BEFORE any read of the response body. This call is what
                 # accumulates the run-scoped provider total, and everything
@@ -1767,6 +1793,7 @@ class TextGenerationMixin:
                 # Nothing here needs the parsed body: `_log_token_usage` reads
                 # only `response.usage`, and returns early when it is absent.
                 self._log_token_usage(turn_params, response)
+                check_turn_deadline()
                 provenance = self._build_model_provenance(response)
                 message = response.choices[0].message  # type: ignore[reportAttributeAccessIssue]
                 content = message.content
@@ -1823,6 +1850,7 @@ class TextGenerationMixin:
                         parsed_output=parsed_output,
                         **completion_metadata(message, response),
                     )
+                    check_turn_deadline()
                     return _StructuredAttempt(
                         value=value,
                         raw_content=content if isinstance(content, str) else None,
@@ -1849,6 +1877,7 @@ class TextGenerationMixin:
                         turn_params=turn_params,
                     )
                     raise
+                check_turn_deadline()
                 return _StructuredAttempt(
                     value=value,
                     raw_content=content if isinstance(content, str) else None,
