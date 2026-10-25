@@ -224,8 +224,23 @@ Consolidation proposes actions from per-candidate retrieval metadata, scans the
 complete selected historical spans into bounded exact quotations, then verifies
 the combined decisions before applying the original storage models. Equal source
 bytes share source geometry; row-specific semantic receipts, fingerprints and
-original source IDs remain distinct. Unsafe or insufficient evidence blocks
-publication. Final row locks protect scope, status, content and evidence changes.
+original source IDs remain distinct. A proposal that verification does not
+clear (unsafe or undetermined verdict, undetermined coverage, no verified
+quotation) completes with the no-merge plan: every NEW is inserted unchanged and
+no historical row is touched. Final row locks protect scope, status, content and
+evidence changes.
+A historical row's evidence comes from one helper, `historical_evidence`. Its
+`source_span` is used when non-blank. Legacy rows created before extraction
+stored the verbatim quote have none; their stored rule text (`Trigger`,
+`Content`, `Rationale`, `Blocking issue`, in that order, blank fields omitted)
+is scanned and quoted instead, under the same exact-offset rules. Scan and
+verification payloads mark such a row `evidence_kind: "stored_rule"` with a fixed
+note, and its partition plan is keyed by a `stored_rule:`-prefixed digest that
+never collides with a span digest. The guarantee is weaker: for stored-rule
+evidence, verification proves no stored constraint is dropped, not fidelity to
+the original conversation. Rows with a span keep their exact scan and
+verification payloads, step keys and partition digests. A row with neither a
+span nor any rule text completes with the no-merge plan.
 Missing historical scan receipts now use lossless bounded original snippets:
 the model selects displayed IDs, and the server copies exact text and absolute
 character ranges into the existing quotation receipt format. Every primary and
