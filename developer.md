@@ -1006,3 +1006,13 @@ temporary-file permissions. The command never calls the backend or edits `.env`.
 Hosts loading stored organization/project settings must own a versioned startup
 upgrade and close incompatible writers before admitting the new strict reader.
 A copied document or schema change alone does not perform that deployment.
+
+### Audited playbook consolidation search limits
+
+The native reconciler advertises its local read-only search contract in every
+method, audit and revision prompt: at most three tool calls in one response and
+two tool-use rounds, followed by a final structured response. All responses still
+share the physical-request allowance. The runtime withholds an unaudited batch
+when a tool or physical-request limit is exceeded; prompt wording does not relax
+those limits or guarantee that a model complies. This avoids a hidden execution
+constraint while preserving the required final audit before persistence.
