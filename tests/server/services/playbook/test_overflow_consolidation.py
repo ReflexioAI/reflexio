@@ -908,7 +908,7 @@ def test_consolidation_failures_are_still_reported(monkeypatch, caplog, error):
     )
 
 
-# --- Legacy history without a stored source_span (org 48, PYTHON-FASTAPI-16X) ---
+# --- Legacy history without a stored source_span ---
 
 
 def _legacy(identity=51, **update):

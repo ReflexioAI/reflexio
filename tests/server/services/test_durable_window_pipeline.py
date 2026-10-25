@@ -1241,7 +1241,7 @@ def test_historical_consolidation_scans_complete_source_and_replays_without_call
 def test_legacy_history_without_source_span_merges_on_stored_rule_and_replays(
     pipeline, monkeypatch
 ):
-    """Org 48 shape: a pre-quote legacy OLD (source_span NULL) is shortlisted.
+    """A pre-quote legacy OLD (source_span NULL) is shortlisted.
 
     It used to raise a retryable configuration error on every retry, forever.
     Its stored rule text is now the scanned evidence, so the normal scan and
