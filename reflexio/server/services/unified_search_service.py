@@ -67,6 +67,7 @@ from reflexio.server.services.retrieval.temporal import (
 from reflexio.server.services.retrieval.user_context_guard import (
     should_suppress_user_context,
 )
+from reflexio.server.services.storage.error import ReadinessUnavailableError
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.tracing import profile_step, set_span_data
 
@@ -445,6 +446,21 @@ def _run_phase_a(
                     embedding = None
                     embedding_failed = True
                 span.set_data("embedding_generated", embedding is not None)
+            except (
+                search_runtime.SearchDeadlineError,
+                ReadinessUnavailableError,
+            ) as e:
+                # Expected, handled outcomes: the request's own deadline ran
+                # out, or the tenant's vector index is not qualified yet. Search
+                # degrades to FTS (or to the deadline answer), so these are not
+                # application faults. Keep a stable event name so the rate
+                # stays countable; anything else below remains an ERROR.
+                span.set_data("embedding_generated", False)
+                embedding_failed = True
+                logger.warning(
+                    "event=search_query_embedding_unavailable error_type=%s",
+                    type(e).__name__,
+                )
             except Exception as e:
                 span.set_data("embedding_generated", False)
                 embedding_failed = True

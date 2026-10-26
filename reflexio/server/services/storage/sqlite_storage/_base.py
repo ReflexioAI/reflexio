@@ -45,7 +45,7 @@ from reflexio.models.config_schema import (
     LLMConfig,
     SearchMode,
 )
-from reflexio.server import publish_timing
+from reflexio.server import publish_timing, search_runtime
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import (
     ModelRole,
@@ -1008,7 +1008,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 return func(*args, **kwargs)
             except Exception as e:
                 args[0]._rollback_owned_transaction()
-                if isinstance(e, StorageError):
+                # The request's own search deadline is not a storage fault:
+                # wrapping it would hide it from callers that degrade on it.
+                if isinstance(e, (StorageError, search_runtime.SearchDeadlineError)):
                     raise
                 import traceback
 
