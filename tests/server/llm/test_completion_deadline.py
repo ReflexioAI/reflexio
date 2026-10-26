@@ -29,7 +29,6 @@ def completion(monkeypatch):
     monkeypatch.setattr(generation, "time", local_time)
     monkeypatch.setattr(search_runtime, "time", local_time)
     monkeypatch.setattr(call_deadline, "monotonic", local_time.monotonic)
-    monkeypatch.setattr(generation, "_LADDER_MIN_TURN_SECONDS", 0.0001)
     response = litellm.ModelResponse(
         model="gpt-4o",
         choices=[{"message": {"role": "assistant", "content": "received"}}],
@@ -248,3 +247,26 @@ def test_validation_spending_enclosing_budget_cannot_return_success(completion):
             "synthetic", response_format=Answer, structured_output_validator=validate
         )
     assert completion.usage.call_count == 1
+
+
+def test_child_startup_expiry_prevents_provider_dispatch(monkeypatch):
+    from reflexio.server.llm import _litellm_subprocess as subprocess
+
+    clock = SimpleNamespace(now=1000.0)
+    monkeypatch.setattr(
+        subprocess, "time", SimpleNamespace(monotonic=lambda: clock.now), raising=False
+    )
+    monkeypatch.setattr(subprocess, "_reset_llm_client_state_after_fork", lambda: None)
+
+    def register():
+        clock.now += 1
+
+    monkeypatch.setattr(subprocess, "_register_local_cli_providers", register)
+    dispatch = Mock()
+    monkeypatch.setattr(subprocess, "model_completion", dispatch)
+    result_queue = Mock()
+    subprocess._litellm_completion_worker({"model": "gpt-4o"}, result_queue, 1000.5)
+    dispatch.assert_not_called()
+    status, error = result_queue.put.call_args.args[0]
+    assert status == "error"
+    assert error.type_name == "LLMHardTimeoutError"

@@ -141,7 +141,7 @@ def test_start_failure_closes_unstarted_worker_and_queue(monkeypatch, provider_p
     result_queue.join_thread.assert_called_once()
 
 
-def _publish_then_linger(_params, result_queue):
+def _publish_then_linger(_params, result_queue, _deadline):
     result_queue.put(("ok", {"pid": os.getpid(), "value": "ready"}))
     time.sleep(10)
 
@@ -156,7 +156,6 @@ def test_rejected_late_public_result_keeps_live_worker_permit(
         SimpleNamespace(monotonic=lambda: clock[0], perf_counter=time.perf_counter),
     )
     monkeypatch.setattr(call_deadline, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(generation, "_LADDER_MIN_TURN_SECONDS", 0.0001)
     worker = LingeringWorker()
     result_queue = Mock()
 

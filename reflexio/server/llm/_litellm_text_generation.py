@@ -164,8 +164,8 @@ _MAX_CORRECTION_CHARS = 8000
 
 # Wall-clock budget for a whole ladder walk, ENFORCED. The walk starts one
 # deadline and every turn -- each rung and each repair turn -- is clamped to what
-# remains (`_prepare_turn`), and a failed rung only advances when enough is left
-# for another (`_LADDER_MIN_TURN_SECONDS`). It matches the generation service's
+# remains (`_prepare_turn`), and a failed rung advances only while positive
+# time remains. It matches the generation service's
 # outer 600 s guard (`base_generation_service.py`, FALLBACK_EXTRACTOR_TIMEOUT
 # "staying below the 600-second outer generation-service guard"): a walk that
 # outlives the guard is abandoned by its caller anyway, while still holding a
@@ -177,10 +177,6 @@ _MAX_CORRECTION_CHARS = 8000
 # `llm_ladder_budget_exceeded` on every structured call (376 in 14 h) while the
 # real worst case -- repair turns get their own timeouts -- was higher still.
 _LADDER_WALL_CLOCK_BUDGET_SECONDS = 600.0
-
-# Below this much remaining budget a turn is not attempted: a call given a few
-# seconds cannot complete a generation, it only spends a provider slot to fail.
-_LADDER_MIN_TURN_SECONDS = 10.0
 
 StructuredOutputValidator = Callable[[BaseModel], Sequence[str]]
 
@@ -1261,7 +1257,7 @@ class TextGenerationMixin:
         result_queue = process_context.Queue(maxsize=1)
         process = process_context.Process(
             target=_litellm_completion_worker,
-            args=(params, result_queue),
+            args=(params, result_queue, deadline),
             daemon=True,
         )
         try:
@@ -1641,7 +1637,7 @@ class TextGenerationMixin:
         ) -> tuple[dict[str, Any], float]:
             """Re-size a prepared turn to what the walk has left, at dispatch time."""
             remaining = walk_deadline - time.monotonic()
-            if remaining < _LADDER_MIN_TURN_SECONDS:
+            if remaining <= 0:
                 raise LadderBudgetExhaustedError(
                     f"LLM ladder budget exhausted ({walk_bound}) "
                     f"while waiting to dispatch {turn_params.get('model')}"
@@ -1649,7 +1645,13 @@ class TextGenerationMixin:
             if hard_timeout <= remaining:
                 return turn_params, hard_timeout
             grace = self._hard_timeout_grace_seconds()
-            clamped = {**turn_params, "timeout": max(1.0, remaining - grace)}
+            clamped = {
+                **turn_params,
+                "timeout": min(
+                    self._coerce_timeout_seconds(turn_params),
+                    remaining - grace if remaining > grace else remaining,
+                ),
+            }
             return clamped, remaining
 
         def _prepare_turn(
@@ -1683,7 +1685,7 @@ class TextGenerationMixin:
             per_attempt = self._coerce_timeout_seconds(params)
             grace = self._hard_timeout_grace_seconds()
             remaining = walk_deadline - time.monotonic()
-            if remaining < _LADDER_MIN_TURN_SECONDS:
+            if remaining <= 0:
                 # LiteLLMClientError propagates out of the rung to the walker,
                 # which treats it as that rung's final failure.
                 raise LadderBudgetExhaustedError(
@@ -1693,7 +1695,9 @@ class TextGenerationMixin:
             if per_attempt + grace > remaining:
                 # Clamp the provider timeout and the kill bound together, so the
                 # provider gives up before the subprocess is killed.
-                per_attempt = max(1.0, remaining - grace)
+                per_attempt = min(
+                    per_attempt, remaining - grace if remaining > grace else remaining
+                )
                 params["timeout"] = per_attempt
             hard_timeout = min(per_attempt + grace, remaining)
             return params, response_format, parse_structured_output, hard_timeout
@@ -1737,9 +1741,7 @@ class TextGenerationMixin:
                 # provider can hold a turn here long after `_prepare_turn`
                 # sized it, and dispatching with the stale remainder would
                 # overrun the budget by the length of the wait.
-                slot_budget = (
-                    walk_deadline - time.monotonic() - _LADDER_MIN_TURN_SECONDS
-                )
+                slot_budget = walk_deadline - time.monotonic()
                 with provider_slot(
                     turn_params["model"], max_wait=max(0.0, slot_budget)
                 ):
@@ -2367,7 +2369,7 @@ class TextGenerationMixin:
                     primary_error = exc
                 if not is_last:
                     left = walk_deadline - time.monotonic()
-                    if left >= _LADDER_MIN_TURN_SECONDS:
+                    if left > 0:
                         continue
                     # A real, per-occurrence event: this walk ran out of budget
                     # with rungs left. Handled below as the final failure.
