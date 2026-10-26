@@ -139,8 +139,9 @@ def save_storage_to_config(
 ) -> None:
     """Update storage_config in the local config file.
 
-    Loads the existing config, replaces only ``storage_config``, and saves.
-    All other fields (extractors, api_keys, etc.) are preserved.
+    Edits only ``storage_config`` under its file publication lock. Selecting
+    SQLite again preserves the existing database path. Unrelated raw fields,
+    including unknown extension fields, are preserved.
 
     Args:
         storage_type: Backend name ("sqlite", "supabase", "postgres").
@@ -152,6 +153,7 @@ def save_storage_to_config(
         StorageConfigPostgres,
         StorageConfigSQLite,
         StorageConfigSupabase,
+        validate_stored_config,
     )
     from reflexio.server.services.configurator.local_file_config_storage import (
         LocalFileConfigStorage,
@@ -159,15 +161,16 @@ def save_storage_to_config(
 
     org_id = org_id or default_org_id()
     storage_obj = LocalFileConfigStorage(org_id, base_dir=base_dir)
-    config = storage_obj.load_config()
+    storage_obj.load_config()  # Initialize only an absent file; never replace it.
 
+    replacement = None
     match storage_type:
         case "sqlite":
-            config.storage_config = StorageConfigSQLite()
+            replacement = StorageConfigSQLite()
         case "supabase":
             db_url = _data_db_url_from_env()
             if db_url:
-                config.storage_config = StorageConfigSupabase(db_url=db_url)
+                replacement = StorageConfigSupabase(db_url=db_url)
             else:
                 logger.warning(
                     "Supabase storage requested but DATA_DB_URL is missing. "
@@ -186,7 +189,7 @@ def save_storage_to_config(
                 **asdict(resolve_postgres_pool_defaults(os.environ)),
             }
             if db_url:
-                config.storage_config = StorageConfigPostgres(**postgres_kwargs)
+                replacement = StorageConfigPostgres(**postgres_kwargs)
             else:
                 logger.warning(
                     "Postgres storage requested but DATA_DB_URL "
@@ -195,7 +198,19 @@ def save_storage_to_config(
         case _:
             raise ValueError(f"Unknown storage type: {storage_type}")
 
-    storage_obj.save_config(config)
+    if replacement is None:
+        return
+
+    from reflexio.config_file import LocalConfigFile
+
+    def update_storage(document: dict[str, Any]) -> None:
+        existing = validate_stored_config(document).storage_config
+        if storage_type == "sqlite" and isinstance(existing, StorageConfigSQLite):
+            # A backend selection does not request a different SQLite database.
+            return
+        document["storage_config"] = replacement.model_dump(mode="json")
+
+    LocalConfigFile(storage_obj.config_file).edit_document(update_storage)
 
 
 def resolve_storage(cli_flag: str | None) -> str:

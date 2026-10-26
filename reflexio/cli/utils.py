@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import errno
 import hashlib
 import json
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -144,6 +146,29 @@ def find_pids_by_pattern(pattern: str) -> list[int]:
     return []
 
 
+def _port_bind_error(port: int) -> str | None:
+    """Ask the kernel when process-inspection utilities cannot identify a holder."""
+    for family, address in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as probe:
+                if os.name == "nt":
+                    # Windows SO_REUSEADDR can steal a live listener's address.
+                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                # Do not reuse addresses: some kernels allow a wildcard bind
+                # beside a live specific-address listener until listen(). An
+                # inconclusive TIME_WAIT holder must also block preparation.
+                probe.bind((address, port))
+        except OSError as exc:
+            if family == socket.AF_INET6 and exc.errno in {
+                errno.EAFNOSUPPORT,
+                errno.EPROTONOSUPPORT,
+                errno.EADDRNOTAVAIL,
+            }:
+                continue
+            return str(exc)
+    return None
+
+
 def get_requested_port_conflicts(ports: dict[str, int]) -> list[str]:
     """Return startup-blocking conflicts for requested service ports."""
     conflicts: list[str] = []
@@ -164,6 +189,8 @@ def get_requested_port_conflicts(ports: dict[str, int]) -> list[str]:
             conflicts.append(
                 f"{name} port {port} is already in use by PID(s): {pid_list}"
             )
+        elif error := _port_bind_error(port):
+            conflicts.append(f"{name} port {port} cannot be bound: {error}")
 
     return conflicts
 

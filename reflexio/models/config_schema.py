@@ -636,9 +636,8 @@ class PlaybookOptimizerConfig(BaseModel):
 
     # --- gating ------------------------------------------------------------
     enabled: bool = False
-    optimize_agent_playbooks: bool = False
+    agent_playbooks_enabled: bool = False
     user_playbooks_enabled: bool = False
-    auto_update_pending_agent_playbooks: bool = True
 
     # --- GEPA budget -------------------------------------------------------
     max_metric_calls: int = Field(default=20, gt=0)
@@ -696,6 +695,8 @@ class PlaybookOptimizerConfig(BaseModel):
             (
                 "optimize_user_playbooks",
                 "auto_update_user_playbooks",
+                "optimize_agent_playbooks",
+                "auto_update_pending_agent_playbooks",
                 "use_merge",
                 "early_stop_score",
             ),
@@ -706,10 +707,7 @@ class PlaybookOptimizerConfig(BaseModel):
         if not self.enabled:
             return False
         if kind == "agent_playbook":
-            return (
-                self.optimize_agent_playbooks
-                and self.auto_update_pending_agent_playbooks
-            )
+            return self.agent_playbooks_enabled
         return self.user_playbooks_enabled
 
     @model_validator(mode="after")

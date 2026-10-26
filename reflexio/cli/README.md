@@ -9,7 +9,7 @@ Description: Typer command layer for local service management and typed calls to
 - **`root_app.py`** — shared global options without service imports
 - **`app.py`** — full command-group registration after environment bootstrap
 - **`offline.py`** — explicit file-command dispatch before environment bootstrap
-- **`config_upgrade.py`** — atomic canonical JSON-copy publication
+- **`config_upgrade.py`** — explicit current-generation JSON-copy publication and selected-org pre-launch preparation
 - **`commands/`** — domain command handlers
 - **`_client.py`** — configured SDK client construction
 - **`run_services.py`** — backend/docs/inference startup

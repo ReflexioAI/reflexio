@@ -1041,10 +1041,68 @@ and content digest. Historical verdict labels remain unchanged and are not
 relabelled as verified template identities. Explicit PromptManager overrides
 remain actual prompt-selection policy.
 
+### Local file upgrades and optimizer consent
+
+The server owns optimizer admission and adoption. `enabled` remains the master
+switch; `agent_playbooks_enabled` and `user_playbooks_enabled` are independent,
+default-off target opt-ins. Agent admission and winner adoption consult the
+same `allows_target` policy. The former agent switches
+`optimize_agent_playbooks` (default false) and
+`auto_update_pending_agent_playbooks` (default true) both gated the same work;
+the upgrade preserves their conjunction. Explicit budgets, assistant backend,
+quality thresholds and user consent remain separate policy.
+
+`reflexio/config_file.py::LocalConfigFile` owns the local file format, strict
+reads, publication and pre-launch preparation. The unmarked generation0 is the
+previous canonical schema. Generation1 records `_reflexio_config_file` alongside
+the raw configuration. This metadata is stripped before logical Config/API
+validation and is not a tuning field. A saved current-generation file rejects
+retired names; request-time reads never translate or rewrite them.
+
+`reflexio services start` and `python -m reflexio.server` with the default OSS
+app prepare the selected local org before strict storage discovery. Stop old
+writers before upgrading. Preparation preflights the requested backend port;
+this detects an occupied port even without PID inspection tools, but does not
+reserve it or stop an old writer using a different port. The shared native file
+lock serializes cooperating current writers, not arbitrary editors or old SDKs.
+A changed source/link observed during preparation aborts publication.
+
+Automatic generation0 preparation converts only the newly retired agent pair.
+It validates the complete result, preserves unrelated raw fields and database
+identity, and stores the exact original bytes under
+`configs/.config-migrations/<config filename>/<sha256>.json` with owner-only file
+permissions. On POSIX, backup directory entries are synced before the file replacement.
+The version and converted document land in one atomic replacement. A repeat
+start validates and leaves the current file unchanged. Symlinked configurations
+keep their backing file; dangling links fail rather than initialize defaults.
+Explicit `--storage sqlite` preserves an existing SQLite database path, including
+an untagged SQLite config, and edits no unrelated raw settings.
+
+A generation0 file containing `agent_playbooks_enabled` is ambiguous: the old
+schema ignored that key, so treating it as consent could enable vetoed work.
+Automatic startup refuses it. Deliberately review that policy and use
+`reflexio config upgrade-file old.json --output canonical.json`; its output
+records the current file generation and can be installed while writers are
+stopped. The original is retained unchanged. The pure
+`canonicalize_config_document` converter remains a logical-document interface
+without file metadata; only the file command adds the format generation.
+Unsupported older aliases, unknown/future generations and invalid values stay
+fail-closed; automatic preparation does not invoke the broad historical converter.
+
+Custom ASGI/embedded hosts, including direct
+`uvicorn reflexio.server.api:app`, own their upgrade lifecycle. After stopping
+writers, explicitly call `reflexio.cli.config_upgrade.prepare_local_config`
+before creating serving request contexts. Preparation does not run inside ASGI
+lifespan: uvicorn may execute lifespan before discovering a failed bind.
+Enterprise remote configuration uses its existing versioned auth-row migration
+owner, not this local-file mechanism. A plugin bundle must prepare before its
+SQLite identity pin and make that pin through the same raw file owner; source
+merges alone do not update already installed bundles.
+
 For standalone saved files, run
 `reflexio config upgrade-file old.json --output canonical.json`. The complete
-input is retained unchanged; the output is replaced atomically with restrictive
-temporary-file permissions. The command never calls the backend or edits `.env`.
+input is retained unchanged; the current-generation output is replaced atomically
+with restrictive temporary-file permissions. The command never calls the backend or edits `.env`.
 Hosts loading stored organization/project settings must own a versioned startup
 upgrade and close incompatible writers before admitting the new strict reader.
 A copied document or schema change alone does not perform that deployment.

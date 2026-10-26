@@ -1,13 +1,9 @@
-import contextlib
 import logging
-import os
-import time
 from pathlib import Path
 from typing import Any
 
 from reflexio.cli.paths import reflexio_home
-from reflexio.config_document import decode_config_document
-from reflexio.config_migration import StoredConfigurationError
+from reflexio.config_file import LocalConfigFile
 from reflexio.models.config_schema import (
     Config,
     PlaybookConfig,
@@ -70,25 +66,17 @@ class LocalFileConfigStorage(ConfigStorage):
         Invalid saved policy and read failures never select another database or
         defaults. Historical conversion belongs to explicit upgrade operations.
         """
-        path = Path(self.config_file)
+        file = LocalConfigFile(self.config_file)
         try:
-            try:
-                content = path.read_text(encoding="utf-8")
-            except FileNotFoundError:
-                config = self.get_default_config()
-                if self._publish_config_document(
-                    config.model_dump_json(), create_only=True
-                ):
-                    return config
-                # Another creator won. Read its complete document once; if it
-                # disappeared, propagate that failure instead of recreating it.
-                content = path.read_text(encoding="utf-8")
-            data = decode_config_document(content)
-        except ValueError:
-            raise StoredConfigurationError(
-                "Saved configuration is not a valid finite JSON object. "
-                "Correct or restore the original file before continuing."
-            ) from None
+            data = file.read_document()
+        except FileNotFoundError:
+            config = self.get_default_config()
+            if self._publish_config_document(
+                config.model_dump_json(), create_only=True
+            ):
+                return config
+            # Another creator won. Never replace its complete document with defaults.
+            data = file.read_document()
         return validate_stored_config(data)
 
     def save_config(self, config: Config) -> None:
@@ -139,21 +127,6 @@ class LocalFileConfigStorage(ConfigStorage):
         """
         if not (self.base_dir and self.config_file):
             raise ValueError("base_dir and config_file must be set")
-        final_path = Path(self.config_file)
-        final_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = final_path.with_name(
-            f"{final_path.name}.{os.getpid()}.{time.time_ns()}.tmp"
+        return LocalConfigFile(self.config_file).publish_document(
+            document, create_only=create_only
         )
-        try:
-            tmp_path.write_text(document, encoding="utf-8")
-            if create_only:
-                try:
-                    os.link(tmp_path, final_path)
-                except FileExistsError:
-                    return False
-            else:
-                tmp_path.replace(final_path)
-            return True
-        finally:
-            with contextlib.suppress(OSError):
-                tmp_path.unlink(missing_ok=True)
