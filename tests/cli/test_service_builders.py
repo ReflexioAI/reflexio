@@ -196,13 +196,12 @@ class TestBuildBackendService:
         self, monkeypatch
     ) -> None:
         monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "1")
+        monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "local_service")
 
         assert should_start_local_embedding_service() is True
 
     def test_regular_startup_always_starts_shared_service(self, monkeypatch) -> None:
         monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "true")
 
         assert should_start_local_embedding_service() is True
 
@@ -211,7 +210,6 @@ class TestBuildBackendService:
     ) -> None:
         monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "internal_service")
         monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "1")
 
         assert should_start_local_embedding_service() is True
 

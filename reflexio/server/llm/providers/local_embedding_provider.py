@@ -1,8 +1,8 @@
 """Local in-process all-MiniLM-L6-v2 embeddings using ONNX Runtime.
 
-Lets reflexio run without any external embedding API key. Activation is
-opt-in via ``CLAUDE_SMART_USE_LOCAL_EMBEDDING=1`` (or automatic fallback
-when no cloud embedder is configured). Requires ONNX Runtime, tokenizers,
+Runs local inference without an external embedding API key. The selected
+embedding model owns execution; availability alone does not activate a model.
+Requires ONNX Runtime, tokenizers,
 and NumPy; no vector database package or server is involved.
 
 The model natively produces 384-dim vectors; reflexio's storage schema
@@ -28,7 +28,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, BinaryIO, cast
 
-from reflexio.server.env_utils import env_truthy
+from reflexio.removed_env import reject_removed_env
 
 try:
     import fcntl
@@ -42,7 +42,6 @@ except ImportError:  # pragma: no cover - POSIX only
 
 _LOGGER = logging.getLogger(__name__)
 
-_ENV_ENABLE = "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
 _MODEL_KEY = "local/minilm-l6-v2"
 
 # Reflexio's storage schema (vec0 virtual tables) expects this dimension.
@@ -471,12 +470,8 @@ def register_if_available() -> bool:
 def register_if_enabled() -> bool:
     """Backwards-compatible alias for :func:`register_if_available`.
 
-    Historically gated on ``CLAUDE_SMART_USE_LOCAL_EMBEDDING=1``; now
-    delegates to the dependency-only check so the local embedder is also
-    available as a silent fallback when no cloud embedder is configured.
-    The claude-smart opt-in env var continues to drive
-    :func:`is_local_embedder_available` (provider-priority ordering),
-    which is the public contract the env var actually owns.
+    Registration depends on runtime dependencies. The selected model owns
+    execution; this compatibility function does not choose a model.
 
     Returns:
         bool: True if the embedder is usable after this call, False
@@ -496,19 +491,12 @@ def is_enabled() -> bool:
 
 
 def is_local_embedder_available() -> bool:
-    """Return True iff both the env flag is set and the ONNX dependencies are installed.
+    """Advertise installed local inference capability without loading a model.
 
-    Unlike :func:`is_enabled`, this does not require
-    :func:`register_if_enabled` to have run. It is the predicate
-    ``model_defaults.detect_available_providers`` uses to decide whether
-    to surface ``"local"`` as an option.
-
-    Returns:
-        bool: True when ``CLAUDE_SMART_USE_LOCAL_EMBEDDING=1``
-            AND the ONNX dependencies are importable.
+    Model selection and process ownership remain independent. This predicate
+    neither registers a provider nor accesses authenticated CLI credentials.
     """
-    if not env_truthy(os.environ.get(_ENV_ENABLE, "")):
-        return False
+    reject_removed_env(os.environ, canonical="REFLEXIO_EMBEDDING_PROVIDER")
     return are_local_embedding_dependencies_available()
 
 
