@@ -4,7 +4,7 @@
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Literal
 
 from reflexio.server.services.storage.storage_base._extraction_stream import (
     Kind,
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS extraction_windows (
  project_id TEXT NOT NULL DEFAULT '', predecessor INTEGER NOT NULL, end_seq INTEGER NOT NULL, manifest TEXT NOT NULL,
  policy TEXT NOT NULL, force INTEGER NOT NULL DEFAULT 0,
  skip_aggregation INTEGER NOT NULL DEFAULT 0, outcome TEXT,
- invalidated INTEGER NOT NULL DEFAULT 0, completed INTEGER NOT NULL DEFAULT 0, effects TEXT, effects_done INTEGER NOT NULL DEFAULT 0, derived_claimed INTEGER NOT NULL DEFAULT 0, effects_retry_at REAL NOT NULL DEFAULT 0,
+ invalidated INTEGER NOT NULL DEFAULT 0, completed INTEGER NOT NULL DEFAULT 0, completed_at REAL, effects TEXT, effects_done INTEGER NOT NULL DEFAULT 0, derived_claimed INTEGER NOT NULL DEFAULT 0, effects_retry_at REAL NOT NULL DEFAULT 0,
  UNIQUE(user_id,kind,predecessor,project_id)
 );
 CREATE INDEX IF NOT EXISTS extraction_windows_effects ON extraction_windows(completed,effects_done);
@@ -47,6 +47,23 @@ def migrate_extraction_stream(conn: sqlite3.Connection) -> None:
         if column not in columns:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
     conn.executescript(SCHEMA)
+    columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(extraction_windows)")
+    }
+    if "completed_at" not in columns:
+        conn.execute("ALTER TABLE extraction_windows ADD COLUMN completed_at REAL")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS extraction_admission_time ON requests("
+        "json_extract(learning_admission,'$.admitted_at'),request_id,user_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS extraction_window_completion ON extraction_windows("
+        "user_id,kind,project_id,end_seq) WHERE completed=1"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS extraction_request_arrivals ON interactions("
+        "user_id,request_id,ingestion_seq)"
+    )
     conn.executescript("""
     CREATE TRIGGER IF NOT EXISTS invalidate_extraction_input BEFORE DELETE ON interactions
     BEGIN
@@ -108,6 +125,7 @@ class SQLiteStreamSQL:
         if field not in {
             "force",
             "max_seq",
+            "min_seq",
             "session_finished",
             "admitted_at",
             "idle_timeout_seconds",
@@ -129,7 +147,7 @@ class SQLiteStreamSQL:
             _row_to_request(source_request_row(row)), _row_to_interaction(row)
         )
 
-    def project_filter(self) -> str:
+    def project_filter(self, alias: Literal["r", "i"] = "r") -> str:  # noqa: ARG002 -- SQLite has no projects.
         return "? = ''"
 
     def eligible(self, kind: Kind) -> str:

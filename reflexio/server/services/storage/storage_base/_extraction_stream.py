@@ -71,7 +71,7 @@ class StreamSQL(Protocol):
     def now(self) -> float: ...
     def lock(self, *, skip_locked: bool = False) -> str: ...
     def eligible(self, kind: Kind) -> str: ...
-    def project_filter(self) -> str: ...
+    def project_filter(self, alias: Literal["r", "i"] = "r") -> str: ...
     def input_lock(self) -> str: ...
     def admission_value(self, field: str) -> str: ...
     def source_witness_bytes(self, row: dict[str, Any]) -> bytes: ...
@@ -712,13 +712,14 @@ class ExtractionStreamStore:
         }
         with self._stream_sql() as db:
             self._fence(db, window.user_id, token)
+            completed_at = db.now()
             rows = db.query(
                 f"UPDATE {db.table('extraction_cursors')} SET completed_seq=?,started=1,window_id=NULL,"
                 "attempts=0,retry_at=0,last_error=NULL,last_turn=? "
                 "WHERE user_id=? AND kind=? AND completed_seq=? AND window_id=? AND project_id=? RETURNING user_id",
                 (
                     window.end_seq,
-                    db.now(),
+                    completed_at,
                     window.user_id,
                     window.kind,
                     window.predecessor,
@@ -729,8 +730,8 @@ class ExtractionStreamStore:
             if not rows:
                 raise LeaseLostError("Extraction cursor was superseded")
             db.query(
-                f"UPDATE {db.table('extraction_windows')} SET completed=1,effects=? WHERE window_id=?",
-                (json.dumps(effects), window.window_id),
+                f"UPDATE {db.table('extraction_windows')} SET completed=1,completed_at=?,effects=? WHERE window_id=?",
+                (completed_at, json.dumps(effects), window.window_id),
             )
             # A completed window is progress, so restart a still-pending user's
             # backlog clock -- unless a sibling cursor is failing (this cursor's
@@ -1110,6 +1111,26 @@ class ExtractionStreamStore:
             return (
                 self._extraction_status(db, user_id, snapshot),
                 self._extraction_counts(db, user_id, request_id, snapshot.admission),
+            )
+
+    def learning_completion_report(
+        self,
+        start: float,
+        end: float,
+        *,
+        page_size: int = 100,
+        max_requests: int = 10_000,
+    ) -> dict[str, Any]:
+        """Measure retained admissions in the current project; never read content.
+
+        This operational report is separate from best-effort publish reporting.
+        Invalid intervals, incomplete walks and database errors propagate.
+        """
+        from .learning_completion import completion_report
+
+        with self._stream_sql(read_only=True) as db:
+            return completion_report(
+                db, start, end, page_size=page_size, max_requests=max_requests
             )
 
     def extraction_status(self, user_id: str, request_id: str) -> dict[str, Any]:
