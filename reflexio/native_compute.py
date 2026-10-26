@@ -102,12 +102,14 @@ def configure_native_compute(*, torch: bool = False) -> int:
 
 
 def main() -> None:
-    """Exec an inference command with derived cold-start library limits."""
+    """Exec a POSIX inference command with derived cold-start library limits."""
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    if os.name != "posix":
+        parser.error("the exec wrapper requires POSIX; use reflexio embeddings serve")
     command = args.command
     if command and command[0] == "--":
         command = command[1:]

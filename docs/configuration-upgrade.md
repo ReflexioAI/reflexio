@@ -95,9 +95,12 @@ to the required positive size to retain that capacity. Managed E5 and MiniLM kee
 their previous default 2; managed query processes retain 1 through explicit role
 configuration. This requires the matched enterprise launcher/image update.
 
-For a direct service launch, set the canonical budget before importing models,
+The cross-platform SDK supervisor prepares its inference child environment
+directly and retains the original Popen command and process handle.
+
+For a direct POSIX service launch, set the canonical budget before importing models,
 or execute `python -m reflexio.native_compute -- python -m uvicorn
-reflexio.server.llm.embedding_service:app`. The wrapper execs the command with
+reflexio.server.llm.embedding_service:app`. The POSIX wrapper execs the command with
 prepared library environment and keeps its PID/signal ownership. No environment
 file is rewritten, and the retired `REFLEXIO_EMBED_TORCH_THREADS` alias remains
 strictly rejected, including blank assignments.

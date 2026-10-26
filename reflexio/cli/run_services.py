@@ -276,10 +276,6 @@ def build_embedding_service(
         command=[
             sys.executable,
             "-m",
-            "reflexio.native_compute",
-            "--",
-            sys.executable,
-            "-m",
             "uvicorn",
             app_module,
             "--host",

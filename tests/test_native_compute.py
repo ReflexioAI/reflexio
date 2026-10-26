@@ -185,6 +185,9 @@ def test_real_onnx_adapter_session_obeys_budget(monkeypatch, tmp_path, count):
     assert np.array_equal(adapter._session.run(None, {"input_ids": inputs})[0], inputs)
 
 
+@pytest.mark.skipif(
+    os.name != "posix", reason="POSIX exec contract; SDK supervision uses direct Popen"
+)
 def test_exec_wrapper_preserves_pid_argv_and_parent_environment():
     env = native_compute_env({**os.environ, BUDGET: "3"})
     source = """
@@ -207,3 +210,35 @@ assert before == dict(os.environ)
         timeout=45,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("service", ["embedding", "backend"])
+def test_supervisor_prepares_only_inference_child_at_launch(
+    monkeypatch, tmp_path, service
+):
+    from unittest.mock import Mock
+
+    from reflexio.cli.utils import ServiceConfig, _ServiceSupervisor
+
+    monkeypatch.setenv(BUDGET, "3")
+    monkeypatch.setenv("OMP_NUM_THREADS", "2")
+    supervisor = _ServiceSupervisor(
+        service_configs={}, pidfile=tmp_path / "pids.json", stop_request_paths={}
+    )
+    process = Mock()
+    process.pid = 1234
+    process.stdout = None
+    popen = Mock(return_value=process)
+    monkeypatch.setattr("reflexio.cli.utils.subprocess.Popen", popen)
+    monkeypatch.setattr("reflexio.cli.utils.threading.Thread", Mock())
+    monkeypatch.setattr(supervisor, "write_current_pidfile", Mock())
+    before = dict(os.environ)
+    command = [sys.executable, "-m", "uvicorn", "example:app"]
+    config = ServiceConfig(name=service, command=command)
+    supervisor.start_service(config)
+    assert config.command == command
+    assert popen.call_args.args[0] == command
+    assert supervisor.processes[service] is process
+    child = popen.call_args.kwargs["env"]
+    assert child["OMP_NUM_THREADS"] == ("3" if service == "embedding" else "2")
+    assert dict(os.environ) == before

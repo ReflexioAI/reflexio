@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Protocol
 
 from reflexio.cli.log_format import format_service_line
+from reflexio.native_compute import native_compute_env
 
 
 @dataclasses.dataclass
@@ -362,6 +363,10 @@ class _ServiceSupervisor:
     def start_service(self, svc: ServiceConfig, *, respawn: bool = False) -> None:
         noise_env = _NOISE_SUPPRESSION_ENV.get(svc.name, {})
         merged_env = {**os.environ, **(svc.env or {}), **noise_env}
+        if svc.name == "embedding":
+            # Prepare only the owned inference child; keep direct Popen ownership
+            # on every platform, including Windows where exec creates a process.
+            merged_env = native_compute_env(merged_env)
         action = "Respawning" if respawn else "Starting"
         self.write_output(f"{action} {svc.name}...")
         proc = subprocess.Popen(
