@@ -28,6 +28,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, BinaryIO, cast
 
+from reflexio.native_compute import configure_native_compute
 from reflexio.removed_env import reject_removed_env
 
 try:
@@ -86,6 +87,7 @@ class ONNXMiniLM:
     MODEL_SHA256 = "913d7300ceae3b2dbc2c50d1de4baacab4be7b9380491c27fab7418616a16ec3"
 
     def __init__(self) -> None:
+        configure_native_compute()
         import numpy as np
         import onnxruntime as ort
         from tokenizers import Tokenizer
@@ -150,7 +152,7 @@ class ONNXMiniLM:
             tokenizer.enable_truncation(max_length=256)
             tokenizer.enable_padding(pad_id=0, pad_token="[PAD]", length=256)  # noqa: S106 - tokenizer marker
             options = self._ort.SessionOptions()
-            options.intra_op_num_threads = 2
+            options.intra_op_num_threads = configure_native_compute()
             options.inter_op_num_threads = 1
             options.log_severity_level = 3
             options.graph_optimization_level = (

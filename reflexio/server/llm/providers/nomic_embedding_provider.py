@@ -33,8 +33,8 @@ import os
 import threading
 from typing import Any
 
+from reflexio.native_compute import configure_native_compute
 from reflexio.server.env_utils import positive_int_env
-from reflexio.server.llm.torch_threads import configure_torch_threads
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -107,6 +107,7 @@ class NomicEmbedder:
             if self._model is not None:
                 return self._model
             try:
+                configure_native_compute(torch=True)
                 from sentence_transformers import (
                     SentenceTransformer,  # type: ignore[import-not-found]
                 )
@@ -115,7 +116,6 @@ class NomicEmbedder:
                     "sentence-transformers is required for the Nomic local "
                     "embedder. Install with `uv add sentence-transformers`."
                 ) from exc
-            configure_torch_threads()
             _LOGGER.info(
                 "Loading Nomic embedding model %s — first call may download "
                 "~550 MB to %s",

@@ -56,3 +56,11 @@ jobs:
           source /tmp/reflexio-mem0-venv/bin/activate
           cd /tmp
           python "$GITHUB_WORKSPACE/scripts/verify_mem0_artifact.py"
+
+      - name: Verify installed native compute budget
+        if: matrix.distribution == 'full'
+        shell: bash
+        run: |
+          source /tmp/reflexio-mem0-venv/bin/activate
+          cd /tmp
+          python "$GITHUB_WORKSPACE/scripts/verify_native_compute_artifact.py"

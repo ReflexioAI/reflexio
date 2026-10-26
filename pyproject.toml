@@ -58,6 +58,7 @@ dependencies = [
     "sqlite-vec>=0.1.6",
     "urllib3>=2.7.0",
     "simplejson>=4.2.0",
+    "threadpoolctl>=3.6,<4",
 ]
 
 [project.optional-dependencies]
