@@ -2727,8 +2727,12 @@ class TestStructuredOutputRepair:
 
         def fake_completion(**kwargs):
             calls.append(kwargs)
-            clock["now"] += 95  # leaves 5 s: too little for the repair turn
+            clock["now"] += 95  # positive budget remains until validation finishes
             return self._make_mock_response('{"answer": "bad", "score": 1}')
+
+        def validate(output):
+            clock["now"] += 5  # validation spends the remaining caller budget
+            return self._score_validator(output)
 
         client = _build_client(LiteLLMConfig(model="primary-model"))
         with (
@@ -2738,7 +2742,7 @@ class TestStructuredOutputRepair:
             client.generate_chat_response(
                 messages=[{"role": "user", "content": "test"}],
                 response_format=SampleResponse,
-                structured_output_validator=self._score_validator,
+                structured_output_validator=validate,
             )
 
         assert isinstance(exc_info.value, ttg.LadderBudgetExhaustedError)
@@ -4172,7 +4176,9 @@ class TestLitellmIntegration:
         result_queue = process_context.Queue(maxsize=1)
 
         try:
-            _litellm_completion_worker({"model": "gpt-5-mini"}, result_queue)
+            _litellm_completion_worker(
+                {"model": "gpt-5-mini"}, result_queue, float("inf")
+            )
             status, payload = result_queue.get(timeout=1.0)
         finally:
             result_queue.close()

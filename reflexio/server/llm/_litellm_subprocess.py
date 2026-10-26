@@ -21,6 +21,7 @@ import logging
 import multiprocessing
 import pickle
 import threading
+import time
 from dataclasses import dataclass, field
 from multiprocessing.process import BaseProcess
 from typing import Any
@@ -28,7 +29,7 @@ from typing import Any
 import litellm
 from litellm.exceptions import ContextWindowExceededError
 
-from reflexio.server.llm._litellm_types import completion_metadata
+from reflexio.server.llm._litellm_types import LLMHardTimeoutError, completion_metadata
 from reflexio.server.llm._model_compat import model_completion
 from reflexio.server.llm._provider_concurrency import retain_current_provider_slot
 
@@ -284,11 +285,15 @@ def _register_local_cli_providers() -> None:
 
 
 def _litellm_completion_worker(
-    params: dict[str, Any], result_queue: multiprocessing.Queue
+    params: dict[str, Any], result_queue: multiprocessing.Queue, deadline: float
 ) -> None:
     _reset_llm_client_state_after_fork()
     _register_local_cli_providers()
     try:
+        if time.monotonic() >= deadline:
+            raise LLMHardTimeoutError(
+                "LLM request deadline expired during child startup"
+            )
         result_queue.put(("ok", _picklable_completion_result(model_completion(params))))
     except BaseException as exc:
         result_queue.put(("error", _snapshot_completion_error(exc, params)))

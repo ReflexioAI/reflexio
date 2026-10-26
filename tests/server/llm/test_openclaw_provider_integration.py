@@ -11,6 +11,7 @@ never spawns a real openclaw CLI.
 from __future__ import annotations
 
 import json
+import time
 from unittest.mock import patch
 
 import litellm
@@ -134,6 +135,7 @@ def test_spawned_completion_worker_can_reach_the_openclaw_provider(
                 "messages": [{"role": "user", "content": "hi"}],
             },
             queue,
+            time.monotonic() + 120,
         ),
     )
     process.start()
