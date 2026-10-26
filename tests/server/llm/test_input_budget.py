@@ -227,7 +227,7 @@ def test_isolated_capacity_classifier_does_not_guess_from_code_or_message(
     process_context = multiprocessing.get_context("fork")
     monkeypatch.setattr(module.multiprocessing, "get_context", lambda: process_context)
 
-    def reject_worker(params, result_queue):
+    def reject_worker(_params, result_queue, _deadline):
         result_queue.put(("error", snapshot))
 
     monkeypatch.setattr(module, "_litellm_completion_worker", reject_worker)
@@ -248,6 +248,9 @@ def test_isolated_capacity_classifier_does_not_guess_from_code_or_message(
         if classified:
             assert isinstance(caught.value, ProviderInputOverflowError)
             assert caught.value.identity == identity
+        else:
+            assert isinstance(caught.value, LiteLLMClientError)
+            assert caught.value.upstream_error_type == "BadRequestError"
     finally:
         extraction_request_identity.reset(identity_token)
         extraction_provider_guard.reset(guard_token)
