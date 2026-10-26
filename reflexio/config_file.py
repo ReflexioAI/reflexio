@@ -112,11 +112,25 @@ def _publish_bytes(target: Path, raw: bytes, *, create_only: bool = False) -> bo
             temporary.unlink(missing_ok=True)
 
 
+def _validate_sdk_document(data: dict[str, Any]) -> None:
+    from reflexio.models.config_schema import validate_stored_config
+
+    validate_stored_config(data)
+
+
 class LocalConfigFile:
     """Serialize cooperating writers and preserve exact originals on upgrade."""
 
-    def __init__(self, path: Path | str):
+    def __init__(
+        self,
+        path: Path | str,
+        *,
+        validator: Callable[[dict[str, Any]], object] | None = None,
+    ):
         self.path = Path(path)
+        # A schema owner validates without mutating the raw document. Local
+        # enterprise storage has a different implicit-storage contract.
+        self._validate = validator if validator is not None else _validate_sdk_document
 
     def _target(self) -> Path:
         for part in (self.path, *self.path.parents):
@@ -136,10 +150,8 @@ class LocalConfigFile:
 
     def publish_document(self, document: str, *, create_only: bool = False) -> bool:
         """Publish an explicit full replacement; this is not a read/merge patch."""
-        from reflexio.models.config_schema import validate_stored_config
-
         data, _supplied_metadata = _decode(document.encode("utf-8"))
-        validate_stored_config(data)
+        self._validate(data)
         target = self._target()
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with FileLock(f"{target}.lock", timeout=30, mode=0o600):
@@ -166,8 +178,6 @@ class LocalConfigFile:
         Callbacks run synchronously under the publication lock and must not do
         external I/O. Explicit full replacements keep their separate semantics.
         """
-        from reflexio.models.config_schema import validate_stored_config
-
         target = self._target()
         if not target.is_file():
             raise StoredConfigurationError("Saved configuration must be a regular file")
@@ -176,9 +186,9 @@ class LocalConfigFile:
             data, metadata = _decode(original)
             if not metadata:
                 _reject_ambiguous_unmarked_policy(data)
-            validate_stored_config(data)
+            self._validate(data)
             edit(data)
-            validate_stored_config(data)
+            self._validate(data)
             previous, _ = _decode(original)
             if data == previous:
                 return False
@@ -196,7 +206,6 @@ class LocalConfigFile:
         current product writers; it is not a CAS against arbitrary file editors.
         """
         from reflexio.config_migration import canonicalize_agent_optimizer_policy
-        from reflexio.models.config_schema import validate_stored_config
 
         target = self._target()
         if not target.exists():
@@ -207,7 +216,7 @@ class LocalConfigFile:
             original = target.read_bytes()
             data, metadata = _decode(original)
             if metadata.get("version") == FILE_FORMAT_VERSION:
-                validate_stored_config(data)
+                self._validate(data)
                 return False
             _reject_ambiguous_unmarked_policy(data)
             # Generation0 is the supported unmarked canonical schema. Only
@@ -219,7 +228,7 @@ class LocalConfigFile:
                         canonical["playbook_optimizer_config"]
                     )
                 )
-            validate_stored_config(canonical)
+            self._validate(canonical)
             digest = hashlib.sha256(original).hexdigest()
             encoded = encode_local_config_document(
                 canonical, {"original_sha256": digest}

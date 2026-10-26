@@ -1053,7 +1053,10 @@ the upgrade preserves their conjunction. Explicit budgets, assistant backend,
 quality thresholds and user consent remain separate policy.
 
 `reflexio/config_file.py::LocalConfigFile` owns the local file format, strict
-reads, publication and pre-launch preparation. The unmarked generation0 is the
+reads, publication and pre-launch preparation. The logical schema owner may
+supply a pure validator; the SDK validator remains the default. Enterprise
+implicit-storage validation must not insert a storage field into the raw file
+merely to satisfy the SDK schema. The unmarked generation0 is the
 previous canonical schema. Generation1 records `_reflexio_config_file` alongside
 the raw configuration. This metadata is stripped before logical Config/API
 validation and is not a tuning field. A saved current-generation file rejects

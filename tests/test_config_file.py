@@ -410,3 +410,58 @@ def test_automatic_upgrade_never_adopts_previously_ignored_consent(tmp_path, leg
         current.read_document()
     ).playbook_optimizer_config.allows_target("agent_playbook")
     assert path.read_bytes() == original
+
+
+def test_schema_owner_validation_does_not_materialize_implicit_storage(tmp_path):
+    path = tmp_path / "config.json"
+    data = {"window_size": 23, "stride_size": 7, "opaque": {"preserve": "extension"}}
+    document = encode_config_document(data)
+    # Default SDK storage still requires an explicit logical storage field.
+    with pytest.raises(StoredConfigurationError):
+        LocalConfigFile(path).publish_document(document)
+    assert not path.exists()
+
+    def validate_enterprise_shape(raw):
+        return validate_stored_config({"storage_config": None, **raw})
+
+    owner = LocalConfigFile(path, validator=validate_enterprise_shape)
+    assert owner.publish_document(document) is True
+    assert owner.read_document() == data
+    assert "storage_config" not in decode_config_document(path.read_text())
+    assert owner.prepare() is False
+    owner.edit_document(lambda raw: raw.update(window_size=25))
+    assert owner.read_document() == {**data, "window_size": 25}
+    before = path.read_bytes()
+    with pytest.raises(StoredConfigurationError):
+        owner.edit_document(lambda raw: raw.update(window_size=0))
+    assert path.read_bytes() == before
+    with pytest.raises(StoredConfigurationError):
+        owner.publish_document(encode_config_document({**data, "window_size": 0}))
+    assert path.read_bytes() == before
+
+
+def test_schema_owner_validates_targeted_upgrade_without_changing_storage_identity(
+    tmp_path,
+):
+    path = tmp_path / "config.json"
+    original = b'{"window_size":23,"stride_size":7,"playbook_optimizer_config":{"optimize_agent_playbooks":true,"auto_update_pending_agent_playbooks":false}}'
+    path.write_bytes(original)
+
+    def validate_enterprise_shape(raw):
+        return validate_stored_config({"storage_config": None, **raw})
+
+    owner = LocalConfigFile(path, validator=validate_enterprise_shape)
+    assert owner.prepare() is True
+    assert owner.read_document() == {
+        "window_size": 23,
+        "stride_size": 7,
+        "playbook_optimizer_config": {"agent_playbooks_enabled": False},
+    }
+    assert "storage_config" not in decode_config_document(path.read_text())
+    assert (
+        list((tmp_path / ".config-migrations" / path.name).glob("*.json"))[
+            0
+        ].read_bytes()
+        == original
+    )
+    assert owner.prepare() is False
