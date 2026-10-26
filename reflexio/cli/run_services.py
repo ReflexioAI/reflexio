@@ -324,7 +324,7 @@ def _ensure_nextjs_dependencies(project_dir: Path) -> bool:
     return True
 
 
-def execute(args: argparse.Namespace) -> None:
+def execute(args: argparse.Namespace, *, storage: str | None = None) -> None:
     """Execute the run-services command."""
     load_reflexio_env()
 
@@ -342,6 +342,29 @@ def execute(args: argparse.Namespace) -> None:
     os.environ["EMBEDDING_PORT"] = str(ports["embedding"])
 
     only = parse_only_flag(args.only, {"backend", "docs"})
+    if "backend" in only:
+        from reflexio.cli.config_upgrade import prepare_local_config
+        from reflexio.cli.utils import ensure_requested_ports_available
+
+        # Never rewrite a live predecessor's settings while a second start fails.
+        ensure_requested_ports_available({"backend": ports["backend"]})
+        prepare_local_config()
+    if "backend" in only or storage is not None:
+        from reflexio.cli.bootstrap_config import (
+            resolve_storage,
+            save_storage_to_config,
+        )
+
+        resolved = resolve_storage(storage)
+        os.environ["REFLEXIO_STORAGE"] = resolved
+        if storage is not None:
+            from reflexio.cli.env_loader import get_env_path, set_env_var
+
+            save_storage_to_config(resolved)
+            env_path = get_env_path()
+            if env_path.exists():
+                set_env_var(env_path, "REFLEXIO_STORAGE", resolved)
+
     if "backend" in only and should_start_local_embedding_service():
         only.add("embedding")
         os.environ["REFLEXIO_EMBEDDING_PROVIDER"] = os.environ.get(

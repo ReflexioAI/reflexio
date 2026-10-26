@@ -158,7 +158,12 @@ def test_real_cli_converts_copy_without_client_or_operator_env_writes(
     assert "legacy-http-secret" not in result.output
     assert source.read_bytes() == encoded
     assert env.read_bytes() == b"OPERATOR_SETTING=preserve\n"
-    assert json.loads(output.read_text()) == canonicalize_config_document(_payload())
+    from reflexio.config_file import LocalConfigFile
+
+    assert LocalConfigFile(output).read_document() == canonicalize_config_document(
+        _payload()
+    )
+    assert LocalConfigFile(output).prepare() is False
     if os.name != "nt":
         assert output.stat().st_mode & 0o777 == 0o600
     assert not list(tmp_path.glob("*.tmp"))

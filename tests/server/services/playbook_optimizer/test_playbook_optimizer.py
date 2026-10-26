@@ -607,7 +607,7 @@ def test_optimizer_skips_when_validation_windows_cannot_satisfy_commit_threshold
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
         playbook_optimizer_config=PlaybookOptimizerConfig(
             enabled=True,
-            optimize_agent_playbooks=True,
+            agent_playbooks_enabled=True,
             webhook_url="https://assistant.example.test/rollout",
             min_commit_windows=2,
         ),
@@ -644,8 +644,7 @@ def test_optimizer_skips_when_validation_windows_cannot_satisfy_commit_threshold
             PlaybookOptimizationTarget(kind="agent_playbook", target_id=1),
             PlaybookOptimizerConfig(
                 enabled=True,
-                optimize_agent_playbooks=True,
-                auto_update_pending_agent_playbooks=False,
+                agent_playbooks_enabled=False,
                 webhook_url="https://assistant.example.test/rollout",
             ),
         ),
@@ -695,7 +694,7 @@ def test_agent_playbook_optimizer_successor_does_not_trigger_aggregation(tmp_pat
     config = Config(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
         playbook_optimizer_config=PlaybookOptimizerConfig(
-            auto_update_pending_agent_playbooks=True
+            enabled=True, agent_playbooks_enabled=True
         ),
     )
     optimizer = _optimizer_for_test(storage, config)
@@ -738,8 +737,7 @@ def test_agent_optimizer_local_backend_does_not_build_user_publication_authority
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
         playbook_optimizer_config=PlaybookOptimizerConfig(
             enabled=True,
-            optimize_agent_playbooks=True,
-            auto_update_pending_agent_playbooks=True,
+            agent_playbooks_enabled=True,
             assistant_script_path=sys.executable,
             min_commit_windows=1,
             min_commit_score=0.1,
@@ -810,7 +808,7 @@ def test_optimizer_runs_single_window_when_commit_threshold_is_one(tmp_path):
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
         playbook_optimizer_config=PlaybookOptimizerConfig(
             enabled=True,
-            optimize_agent_playbooks=True,
+            agent_playbooks_enabled=True,
             webhook_url="https://assistant.example.test/rollout",
             min_commit_windows=1,
             min_commit_score=0.1,
@@ -872,7 +870,7 @@ def test_run_gepa_reuses_trainset_for_single_window_validation(tmp_path, merge_l
     config = PlaybookOptimizerConfig(
         max_merge_invocations=merge_limit,
         enabled=True,
-        optimize_agent_playbooks=True,
+        agent_playbooks_enabled=True,
         webhook_url="https://assistant.example.test/rollout",
     )
     optimizer = _optimizer_for_test(
@@ -905,7 +903,7 @@ def test_run_gepa_binds_complete_quality_policy(tmp_path):
     storage = _sqlite_storage(tmp_path)
     config = PlaybookOptimizerConfig(
         enabled=True,
-        optimize_agent_playbooks=True,
+        agent_playbooks_enabled=True,
         webhook_url="https://assistant.example.test/rollout",
         min_commit_score=0.5,
         min_commit_likert=5,
@@ -943,7 +941,7 @@ def test_run_gepa_keeps_distinct_validation_holdout(tmp_path):
     storage = _sqlite_storage(tmp_path)
     config = PlaybookOptimizerConfig(
         enabled=True,
-        optimize_agent_playbooks=True,
+        agent_playbooks_enabled=True,
         webhook_url="https://assistant.example.test/rollout",
     )
     optimizer = _optimizer_for_test(
@@ -1038,10 +1036,9 @@ json.dump({"content": "response for " + payload["playbooks"][0]["content"]}, sys
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
         playbook_optimizer_config=PlaybookOptimizerConfig(
             enabled=True,
-            optimize_agent_playbooks=True,
+            agent_playbooks_enabled=True,
             assistant_script_path=sys.executable,
             assistant_script_args=[str(script), str(record)],
-            auto_update_pending_agent_playbooks=True,
             min_commit_windows=1,
             min_commit_score=0.1,
             min_commit_likert=1,
@@ -1099,9 +1096,8 @@ def test_optimizer_passes_distinct_train_and_validation_sets_to_gepa(tmp_path):
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
         playbook_optimizer_config=PlaybookOptimizerConfig(
             enabled=True,
-            optimize_agent_playbooks=True,
+            agent_playbooks_enabled=True,
             webhook_url="https://assistant.example.test/rollout",
-            auto_update_pending_agent_playbooks=True,
             min_commit_windows=1,
             min_commit_score=0.1,
             min_commit_likert=1,
@@ -1321,7 +1317,7 @@ def test_optimizer_successor_preserves_source_window_snapshots(tmp_path):
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
         playbook_optimizer_config=PlaybookOptimizerConfig(
             enabled=True,
-            optimize_agent_playbooks=True,
+            agent_playbooks_enabled=True,
             webhook_url="https://assistant.example.test/rollout",
             min_commit_windows=1,
             min_commit_score=0.1,
@@ -1654,9 +1650,8 @@ def test_optimizer_failure_does_not_persist_exception_message(tmp_path):
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
         playbook_optimizer_config=PlaybookOptimizerConfig(
             enabled=True,
-            optimize_agent_playbooks=True,
+            agent_playbooks_enabled=True,
             webhook_url="https://assistant.example.test/rollout",
-            auto_update_pending_agent_playbooks=True,
             min_commit_windows=1,
             min_commit_score=0.1,
             min_commit_likert=1,

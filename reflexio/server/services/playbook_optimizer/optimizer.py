@@ -762,7 +762,7 @@ class PlaybookOptimizer:
         # The optimize() entrypoint already checks target eligibility before
         # creating the job, but check again so this stays correct if called
         # from elsewhere.
-        if not _can_adopt_winner(target, config):
+        if not config.allows_target(target.kind):
             return None
         if target.kind == "agent_playbook":
             source_windows = _source_windows_with_backfill(
@@ -805,15 +805,6 @@ def _agent_like_playbook(playbook: UserPlaybook) -> AgentPlaybook:
         playbook_status=PlaybookStatus.PENDING,
         status=playbook.status,
     )
-
-
-def _can_adopt_winner(
-    target: PlaybookOptimizationTarget,
-    config: PlaybookOptimizerConfig,
-) -> bool:
-    if target.kind == "agent_playbook":
-        return config.auto_update_pending_agent_playbooks
-    return config.user_playbooks_enabled
 
 
 def _append_optimizer_metadata(existing: str, predecessor_id: int) -> str:

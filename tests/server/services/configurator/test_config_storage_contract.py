@@ -195,15 +195,19 @@ class TestConfigStorageContract:
         storage = LocalFileConfigStorage(org_id="raises-org", base_dir=str(tmp_path))
         cfg = storage.get_default_config()
 
-        def boom(self: Path, *args, **kwargs) -> int:
+        from reflexio import config_file
+
+        def boom(*args, **kwargs) -> int:
             raise OSError("simulated disk failure")
 
-        monkeypatch.setattr(Path, "write_text", boom)
+        monkeypatch.setattr(config_file.os, "fsync", boom)
 
         with pytest.raises(OSError, match="simulated disk failure"):
             storage.save_config(cfg)
 
-        leaked = list(Path(tmp_path).rglob(f"{Path(storage.config_file).name}*.tmp"))
+        path = Path(storage.config_file)
+        assert not path.exists()
+        leaked = list(path.parent.glob(f".{path.name}.*"))
         assert not leaked, f"tmp file should be cleaned up on failure: {leaked}"
 
     def test_get_version_changes_after_save(

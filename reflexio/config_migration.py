@@ -39,6 +39,40 @@ class OptimizerSchedulingMigrationError(ConfigurationMigrationError):
     """Invalid saved scheduling policy must not trigger a storage-default fallback."""
 
 
+def canonicalize_agent_optimizer_policy(data: Any) -> Any:
+    """Convert only the formerly canonical agent gate pair during an upgrade.
+
+    Other unsupported historical fields are deliberately left for strict
+    validation; local startup must not accidentally admit old storage formats.
+    """
+    if not isinstance(data, dict):
+        return data
+    normalized = dict(data)
+    legacy_agent_keys = (
+        "optimize_agent_playbooks",
+        "auto_update_pending_agent_playbooks",
+    )
+    if any(key in data for key in legacy_agent_keys):
+        # The old adoption default was true, unlike the old user target.
+        # Preserve the complete effective opt-in, including an explicit veto.
+        try:
+            optimize = _LEGACY_OPTIMIZER_BOOL.validate_python(
+                data.get(legacy_agent_keys[0], False)
+            )
+            adopt = _LEGACY_OPTIMIZER_BOOL.validate_python(
+                data.get(legacy_agent_keys[1], True)
+            )
+        except ValidationError:
+            raise ConfigurationMigrationError(
+                "Invalid saved agent optimizer switches; correct optimize_agent_playbooks "
+                "and auto_update_pending_agent_playbooks before retrying"
+            ) from None
+        normalized.setdefault("agent_playbooks_enabled", optimize and adopt)
+        for key in legacy_agent_keys:
+            normalized.pop(key, None)
+    return normalized
+
+
 def _normalize_optimizer_policy(data: Any) -> Any:
     """Canonicalize retired controls without enabling previously disabled work."""
     if not isinstance(data, dict):
@@ -73,6 +107,7 @@ def _normalize_optimizer_policy(data: Any) -> Any:
         normalized.setdefault("user_playbooks_enabled", optimize and adopt)
         for key in legacy_user_keys:
             normalized.pop(key, None)
+    normalized = canonicalize_agent_optimizer_policy(normalized)
     if "use_merge" in data:
         enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(data["use_merge"])
         limit = _LEGACY_MERGE_LIMIT.validate_python(
