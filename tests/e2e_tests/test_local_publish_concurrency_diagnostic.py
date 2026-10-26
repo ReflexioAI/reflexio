@@ -27,7 +27,13 @@ def test_concurrent_publishes_persist_while_reads_serve():
             timeout=30,
         )
     except subprocess.TimeoutExpired as exc:
-        pytest.fail(f"Publish probe exceeded 30s. Thread stacks:\n{exc.stderr}")
+        # TimeoutExpired carries bytes or None even under text=True.
+        stderr = exc.stderr
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+        pytest.fail(
+            f"Publish probe exceeded 30s. Thread stacks:\n{stderr or '<no stderr>'}"
+        )
     assert completed.returncode == 0, completed.stderr + completed.stdout
     report = json.loads(completed.stdout.strip().splitlines()[-1])
     assert report["persisted_requests"] == report["concurrent_publishes"] == 20
