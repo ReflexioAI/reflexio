@@ -1048,3 +1048,12 @@ temporary-file permissions. The command never calls the backend or edits `.env`.
 Hosts loading stored organization/project settings must own a versioned startup
 upgrade and close incompatible writers before admitting the new strict reader.
 A copied document or schema change alone does not perform that deployment.
+
+### Embedding HTTP request capacity
+
+`reflexio.embedding_requests.embedding_request_max_texts()` owns the existing
+`REFLEXIO_EMBEDDING_SERVICE_MAX_TEXTS_PER_REQUEST` policy for SDK and gateway
+callers. Unset/blank defaults to 32; positive overrides are preserved; invalid
+values fall back to the same default with a name-only warning. This HTTP input
+count is independent of encoder batching, server microbatch capacity, and the
+query-isolation path's single-text requests.
