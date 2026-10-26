@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
@@ -13,6 +14,7 @@ from reflexio.models.config_schema import (
     AzureOpenAIConfig,
     OpenAIConfig,
 )
+from reflexio.server.llm import _litellm_text_generation as generation
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook_optimizer import judge as judge_module
@@ -111,6 +113,18 @@ def test_pairwise_judge_rejects_frozen_plan_drift_before_provider_execution(
 
 
 def test_pairwise_judge_provider_params_match_frozen_sanitized_plan(monkeypatch):
+    # This checks the configured frozen plan, with no elapsed admission time.
+    # Patch only the generation module; deadline tests exercise advancing clocks.
+    monkeypatch.setattr(
+        generation,
+        "time",
+        SimpleNamespace(
+            monotonic=lambda: 1000.0,
+            perf_counter=time.perf_counter,
+            sleep=time.sleep,
+            time=time.time,
+        ),
+    )
     monkeypatch.setenv("REFLEXIO_LLM_SEED", "47")
     monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "7")
     endpoint = "https://example.com:4443/"
