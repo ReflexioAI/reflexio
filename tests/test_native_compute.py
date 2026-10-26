@@ -87,7 +87,7 @@ def test_import_is_inert_in_a_client_process():
         [
             sys.executable,
             "-c",
-            "import os, sys; before=dict(os.environ); import reflexio.native_compute; assert before == dict(os.environ); assert not {'torch', 'numpy', 'threadpoolctl'} & sys.modules.keys()",
+            "import os, sys; before=dict(os.environ); import reflexio.native_compute; assert before == dict(os.environ); assert not {'torch', 'numpy', 'threadpoolctl', 'reflexio.removed_env'} & sys.modules.keys()",
         ],
         capture_output=True,
         text=True,
