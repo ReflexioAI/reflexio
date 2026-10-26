@@ -159,6 +159,10 @@ class LeaseLostError(RuntimeError):
     """The complete transaction must roll back when a claim is superseded."""
 
 
+class WindowEffectsDeletedError(RuntimeError):
+    """Erasure removed a committed window while its effects were in flight."""
+
+
 class OverflowCheckpointConflictError(RuntimeError):
     """A stale worker may not replace a newer extraction checkpoint."""
 
@@ -1278,24 +1282,53 @@ class ExtractionStreamStore:
         cannot reschedule a winner's optimization, aggregation or tagging.
         """
         with self._stream_sql() as db:
-            self._fence(db, window.user_id, token)
-            return bool(
+            self._fence_extraction_effects(db, window.window_id, window.user_id, token)
+            claimed = bool(
                 db.query(
                     f"UPDATE {db.table('extraction_windows')} SET derived_claimed=1 WHERE window_id=? AND completed=1 AND derived_claimed=0 RETURNING window_id",
                     (window.window_id,),
                 )
             )
+            if not claimed:
+                self._assert_extraction_effects_present(
+                    db, window.window_id, window.user_id
+                )
+            return claimed
+
+    def _assert_extraction_effects_present(
+        self, db: StreamSQL, window_id: str, user_id: str
+    ) -> None:
+        if not db.query(
+            f"SELECT window_id FROM {db.table('extraction_windows')} "
+            "WHERE window_id=? AND user_id=?",
+            (window_id, user_id),
+        ):
+            raise WindowEffectsDeletedError("Extraction effects were erased")
+
+    def _fence_extraction_effects(
+        self, db: StreamSQL, window_id: str, user_id: str, token: str
+    ) -> None:
+        try:
+            self._fence(db, user_id, token)
+        except LeaseLostError:
+            # Erasure deletes the immutable window and then the global owner.
+            # Only proven window deletion is cancellation; a surviving window
+            # retains its lease failure, and query failures still propagate.
+            self._assert_extraction_effects_present(db, window_id, user_id)
+            raise
 
     def ack_extraction_effects(
         self, window_id: str, *, user_id: str | None = None, token: str | None = None
     ) -> None:
         with self._stream_sql() as db:
             if token is not None and user_id is not None:
-                self._fence(db, user_id, token)
+                self._fence_extraction_effects(db, window_id, user_id, token)
             rows = db.query(
                 f"SELECT effects FROM {db.table('extraction_windows')} WHERE window_id=?",
                 (window_id,),
             )
+            if not rows and token is not None and user_id is not None:
+                raise WindowEffectsDeletedError("Extraction effects were erased")
             if rows:
                 effects = decoded(rows[0]["effects"]) or {}
                 summary = {
