@@ -675,6 +675,8 @@ Local inference uses one CPU numerical-library budget, `REFLEXIO_NATIVE_COMPUTE_
 configures Torch, loaded BLAS/OpenMP runtimes and ONNX intra-op sessions. It also
 prepares native environment outputs before a managed child imports libraries.
 This bounds each backend's pool, not total CPU across concurrent operations.
+The model-only owner is independent of the application-wide configuration
+migration registry, so unrelated setting retirements do not invalidate model asset builds.
 Importing the owner in a client process has no side effects. Tokenizer fork
 safety remains separately controlled by `TOKENIZERS_PARALLELISM`.
 

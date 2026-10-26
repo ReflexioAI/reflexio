@@ -10,8 +10,6 @@ import os
 import threading
 from collections.abc import Mapping
 
-from reflexio.removed_env import reject_removed_env
-
 _LOCK = threading.Lock()
 _BUDGET = "REFLEXIO_NATIVE_COMPUTE_THREADS"
 
@@ -23,7 +21,14 @@ def native_compute_threads(env: Mapping[str, str]) -> int:
     explicit new budget rather than a guessed conversion across runtimes.
     Diagnostics contain names only, since environment values may be sensitive.
     """
-    reject_removed_env(env, canonical="REFLEXIO_NATIVE_COMPUTE_THREADS")
+    # Keep model-only builders independent of the application-wide migration
+    # registry. This boundary owns only its already-retired inference spelling.
+    if "REFLEXIO_EMBED_TORCH_THREADS" in env:
+        raise ValueError(
+            "Removed environment name: REFLEXIO_EMBED_TORCH_THREADS -> "
+            "REFLEXIO_NATIVE_COMPUTE_THREADS. Remove the obsolete assignment; "
+            "legacy values are never copied."
+        )
     raw = env.get(_BUDGET, "").strip()
     if raw:
         try:
