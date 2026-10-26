@@ -670,9 +670,20 @@ the explicit `score_search_pairs` helpers. Unset search routing preserves the
 existing path. Failed isolated calls do not retry against the shared worker;
 retrieval retains its existing unavailable-reranker behavior and deadlines.
 
-Local Torch model loaders share the thread-budget owner in
-`reflexio/server/llm/torch_threads.py`. Set `REFLEXIO_INFERENCE_TORCH_THREADS`
-to bound CPU intra-op work. Leaving it unset preserves Nomic thread
-autodetection. Retired thread-variable names require migration before startup.
+Local inference uses one CPU numerical-library budget, `REFLEXIO_NATIVE_COMPUTE_THREADS`
+(positive integer, default **2**). The owner in `reflexio/native_compute.py`
+configures Torch, loaded BLAS/OpenMP runtimes and ONNX intra-op sessions. It also
+prepares native environment outputs before a managed child imports libraries.
+This bounds each backend's pool, not total CPU across concurrent operations.
+Importing the owner in a client process has no side effects. Tokenizer fork
+safety remains separately controlled by `TOKENIZERS_PARALLELISM`.
+
+This intentionally replaces Nomic's former unset/Torch-default behavior with the
+same explicit budget as E5 and MiniLM. To preserve a custom native thread limit,
+choose the new budget explicitly before removing `REFLEXIO_INFERENCE_TORCH_THREADS`,
+`OMP_NUM_THREADS`, `MKL_NUM_THREADS` and `OPENBLAS_NUM_THREADS` from inference input
+configuration. Blank/former-default `2` assignments are ignored; other legacy
+values without an explicit new budget fail before changing libraries. Legacy
+values never select the new budget. See the [upgrade guide](docs/configuration-upgrade.md).
 
 Environment-name upgrades: see the [canonical configuration guide](docs/configuration-upgrade.md) before adopting this version.

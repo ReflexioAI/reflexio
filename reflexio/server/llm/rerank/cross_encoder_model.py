@@ -8,13 +8,13 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from reflexio.native_compute import configure_native_compute
 from reflexio.server.llm.rerank.common import (
     RERANK_ENABLED_ENV_VAR,
     CrossEncoderUnavailableError,
     reranker_enabled,
     reranker_revision,
 )
-from reflexio.server.llm.torch_threads import configure_torch_threads
 
 _LOGGER = logging.getLogger(__name__)
 _DEVICE_ENV_VAR = "REFLEXIO_RERANK_DEVICE"
@@ -73,7 +73,7 @@ class CrossEncoderRunner:
         with self._model_lock:
             if self._model is not None:
                 return self._model
-            configure_torch_threads()
+            configure_native_compute(torch=True)
             cross_encoder_cls = _import_cross_encoder()
             device = os.environ.get(_DEVICE_ENV_VAR, "cpu")
             try:
