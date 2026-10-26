@@ -68,6 +68,48 @@ the model download/warmup timed out. Check the preceding `[embedding]` logs for
 the failing stage. This deadline accommodation is platform-independent; a
 Windows-only model initialization failure still needs its own diagnosis.
 
+### Embedding policy and upgrades
+
+The selected embedding model owns execution. An explicit cloud model uses its
+provider; a local model uses the separate inference service. The service URL
+owns process attachment: an explicit URL, including loopback, attaches to an
+existing service; an absent URL leaves the launcher responsible for its child.
+Dependency availability advertises capability without loading a model. It never
+authorizes generation or authenticated CLI access. `CLAUDE_SMART_USE_LOCAL_CLI`
+and the OpenClaw CLI opt-in retain their separate credential-access decisions.
+
+`CLAUDE_SMART_USE_LOCAL_EMBEDDING` is retired. Normal loading rejects active
+assignments, including empty ones and those alongside a canonical setting.
+Files explicitly disabled through python-dotenv retain their existing opt-out.
+Remove it from the selected environment file and parent-process exports after
+preserving effective policy through existing controls:
+
+- Preserve explicit `llm_config.embedding_model_name`, service URL, provider mode
+  and timeout values. Do not replace them with a local default.
+- The old false value did not disable embeddings or prevent the launcher's local
+  child. Removing that assignment preserves model-based routing; setting
+  `REFLEXIO_EMBEDDING_PROVIDER=off` is a separate, deliberate disabling choice.
+- The SDK CLI loaded file settings before converting a truthy old flag to
+  canonical `local_service` when no provider was configured. Preserve that preference with
+  `REFLEXIO_EMBEDDING_PROVIDER=local_service`, then remove the old assignment.
+- A library caller using the old flag directly could retain a 30-second default
+  even with a remote endpoint. Canonical remote routing defaults to two seconds;
+  preserve that caller's effective budget explicitly with
+  `REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS` (30000 for that former default).
+  Keep any explicit custom budget. CLI startup already normalized provider
+  mode, so its remote default was two seconds; do not apply the library migration
+  blindly to plugin files.
+- The old plugin shell handled exact `1` and empty/default values earlier: it
+  could set a local provider before canonical file settings were loaded. An
+  explicit file `off` could therefore be shadowed. Resolve such conflicts before
+  conversion; preserving the written file value alone does not establish that
+  effective behavior is unchanged.
+
+No conversion happens during ordinary startup. Migrate only known settings;
+never infer a cloud model from available keys or grant CLI access from a binary
+on PATH. Client plugin installers/dashboard producers must be upgraded together
+with their bundled SDK before claiming the old input is fully retired.
+
 ### Standalone OSS access
 
 The standalone backend binds `127.0.0.1` by default. With no

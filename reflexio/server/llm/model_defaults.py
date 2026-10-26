@@ -25,12 +25,9 @@ if TYPE_CHECKING:
 _CLAUDE_CODE_ENABLE_ENV = "CLAUDE_SMART_USE_LOCAL_CLI"
 _CLAUDE_CODE_PROVIDER = "claude-code"
 
-# Companion provider key for the local ONNX embedder (registered in
-# reflexio.server.llm.providers.local_embedding_provider). Surfaces in
-# ``providers`` only when ``CLAUDE_SMART_USE_LOCAL_EMBEDDING=1`` is set
-# (claude-smart's explicit opt-in); otherwise the embedding role still
-# silently falls back to "local" when ONNX dependencies are importable but no
-# cloud embedder is configured — see Path 3 in ``_auto_detect_model``.
+# Installed local embedding capability is advertised without activating it.
+# resolve_model_name owns the embedding-role default independently of provider
+# credentials. Generation still requires a generation-capable provider.
 _LOCAL_EMBEDDING_PROVIDER = "local"
 
 # The OpenClaw CLI provider (providers/openclaw_provider.py), opted into with
@@ -133,10 +130,8 @@ def detect_available_providers(
         if os.environ.get(env_var):
             available.add(provider)
 
-    # Claude Code CLI and the local ONNX embedder are opt-in via their
-    # own env vars + runtime requirements (`claude` on PATH for the CLI,
-    # ONNX dependencies installed for the embedder). Their availability helpers
-    # own the detection logic so there's one source of truth.
+    # Authenticated CLI providers retain their explicit opt-ins. The local
+    # embedder advertises dependencies only; model selection owns execution.
     from reflexio.server.llm.providers.claude_code_provider import (
         is_claude_code_available,
     )
@@ -393,8 +388,8 @@ def _auto_detect_model(
 ) -> str:
     """Pick the default model for *role* from the first available provider.
 
-    For the EMBEDDING role, if the primary provider has no embedding support,
-    search the remaining providers for one that does.
+    Embeddings are resolved before this function; generation roles select
+    the first provider supporting the requested role.
 
     Args:
         role: The model role to resolve.
@@ -411,33 +406,6 @@ def _auto_detect_model(
             "No LLM provider available. Set at least one of: "
             + ", ".join(sorted(_ENV_TO_PROVIDER))
             + f" in your .env file, {_local_cli_provider_hint()}"
-        )
-
-    if role == ModelRole.EMBEDDING:
-        # Path 1+2: explicit claude-smart opt-in or a cloud embedder. The
-        # priority list places `local` at position 2, so when the env var is
-        # set ``providers`` already contains "local" and this loop returns it
-        # before any cloud provider. When the env var is unset, only cloud
-        # providers can hit here (local is filtered out by
-        # ``is_local_embedder_available``).
-        for provider in providers:
-            defaults = _PROVIDER_DEFAULTS[provider]
-            if defaults.embedding:
-                return defaults.embedding
-        # Path 3: no embedding-capable provider in `providers`, but ONNX dependencies
-        # are importable — silently fall back to the local ONNX embedder so
-        # users with only a non-embedding LLM key (Anthropic, MiniMax, etc.)
-        # are not blocked at startup.
-        from reflexio.server.llm.providers.local_embedding_provider import (
-            are_local_embedding_dependencies_available,
-        )
-
-        if are_local_embedding_dependencies_available():
-            return _PROVIDER_DEFAULTS[_LOCAL_EMBEDDING_PROVIDER].embedding  # type: ignore[return-value]
-        raise RuntimeError(
-            "No embedding-capable provider configured and ONNX dependencies are not "
-            "importable. Set OPENAI_API_KEY or GEMINI_API_KEY, or "
-            "`pip install onnxruntime tokenizers numpy`."
         )
 
     # Non-embedding roles: fall through to the first provider whose slot

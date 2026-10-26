@@ -24,7 +24,8 @@ import httpx
 from reflexio.inference_launch import (
     inference_service_url as resolve_inference_service_url,
 )
-from reflexio.server.env_utils import env_str, env_truthy, positive_int_env
+from reflexio.removed_env import reject_removed_env
+from reflexio.server.env_utils import env_str, positive_int_env
 from reflexio.server.llm.call_deadline import remaining_call_time
 from reflexio.server.search_runtime import (
     checkpoint as _search_checkpoint,
@@ -49,7 +50,6 @@ _ENV_QUERY_URL = "REFLEXIO_QUERY_EMBEDDING_SERVICE_URL"
 _query_contract_cache: dict[tuple[int, str, str], tuple[str, str, int]] = {}
 _query_contract_lock = threading.Lock()
 _ENV_TIMEOUT_MS = "REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS"
-_ENV_CLAUDE_SMART_LOCAL = "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
 _ENV_MAX_TEXTS_PER_REQUEST = "REFLEXIO_EMBEDDING_SERVICE_MAX_TEXTS_PER_REQUEST"
 CUSTOM_EMBEDDING_MODEL = "custom"
 _DEFAULT_INTERNAL_SERVICE_TIMEOUT_MS = 2_000
@@ -382,6 +382,7 @@ def embedding_provider_mode(model: str | None = None) -> EmbeddingProviderMode:
     availability never changes the routing decision and never causes a model to
     load inside an API worker. Cloud models use their provider directly.
     """
+    reject_removed_env(os.environ, canonical=_ENV_PROVIDER)
     configured = os.environ.get(_ENV_PROVIDER)
     if configured:
         mode = configured.strip().lower()
@@ -400,9 +401,6 @@ def embedding_provider_mode(model: str | None = None) -> EmbeddingProviderMode:
 
     if model and not _uses_embedding_service(model):
         return "cloud"
-
-    if env_truthy(os.environ.get(_ENV_CLAUDE_SMART_LOCAL, "")):
-        return "local_service"
 
     if os.environ.get(_ENV_SERVICE_URL, "").strip():
         return "internal_service"

@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "REFLEXIO_EMBEDDING_PROVIDER",
     "PUBLIC_SCHEMA_AUDIT_ENABLED": "PUBLIC_SCHEMA_AUDIT_INTERVAL_SECONDS",
     "REFLEXIO_SEARCH_RECENCY_ENABLED": "REFLEXIO_SEARCH_RECENCY_POOL_SIZE",
     "REFLEXIO_LLM_FAIL_CLOSED_PROVIDERS": "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY",
@@ -66,6 +67,13 @@ def reject_removed_env(
                 "; zero audit cadence disables periodic schema audits; preserve "
                 "a positive cadence to enable them, with 86400 as the unchanged "
                 "default. Values are seconds, not booleans"
+            )
+        if "CLAUDE_SMART_USE_LOCAL_EMBEDDING" in obsolete:
+            migration += (
+                "; preserve the selected embedding model, explicit service endpoint "
+                "and effective service timeout. The old false value was not an "
+                "embeddings-off switch; use canonical off only when deliberately "
+                "disabling embeddings. See the embedding upgrade guide"
             )
         raise ValueError(
             f"Removed environment names: {migration}. Migrate the effective "

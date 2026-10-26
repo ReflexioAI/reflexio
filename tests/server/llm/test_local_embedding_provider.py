@@ -77,21 +77,24 @@ class TestAvailability:
         )
         assert not are_local_embedding_dependencies_available()
 
-    def test_not_available_without_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_available_without_flag_when_dependencies_installed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
-        assert is_local_embedder_available() is False
+        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: object())
+        assert is_local_embedder_available() is True
 
     def test_not_available_without_local_dependencies(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "1")
+        monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "local_service")
         monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: None)
         assert is_local_embedder_available() is False
 
-    def test_available_when_both_conditions_met(
+    def test_available_with_canonical_local_policy(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "1")
+        monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "local_service")
         monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: MagicMock())
         assert is_local_embedder_available() is True
 
@@ -150,10 +153,8 @@ class TestRegisterIfAvailable:
 class TestRegisterIfEnabled:
     """``register_if_enabled`` is now an alias for ``register_if_available``.
 
-    The legacy env-var gate (``CLAUDE_SMART_USE_LOCAL_EMBEDDING``) only
-    drives provider-priority ordering via ``is_local_embedder_available``;
-    registration of the LiteLLM dispatch hook depends solely on whether
-    `ONNX dependencies` imports.
+    Registration and capability advertisement depend on installed ONNX
+    dependencies; neither selects a model nor grants generation access.
     """
 
     def test_local_dependencies_missing_does_not_register(
@@ -176,7 +177,7 @@ class TestRegisterIfEnabled:
     def test_registers_when_env_and_local_dependencies_set(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "1")
+        monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "local_service")
         monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: MagicMock())
         assert register_if_enabled() is True
         assert lep.is_enabled() is True
@@ -750,11 +751,11 @@ class TestLiteLLMClientShortCircuit:
         from reflexio.server.llm import litellm_client
         from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 
-        # CLAUDE_SMART_USE_LOCAL_EMBEDDING=1 selects the local embedding *service*
+        # REFLEXIO_EMBEDDING_PROVIDER=local_service selects the local embedding *service*
         # (daemon) mode (see embedding_provider_mode). The request must route to
         # that service and never reach litellm. Mock the service call so the test
         # is hermetic (no running daemon required).
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "1")
+        monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "local_service")
         monkeypatch.setattr(
             _litellm_embedding,
             "get_service_embeddings",
@@ -775,9 +776,9 @@ class TestLiteLLMClientShortCircuit:
         from reflexio.server.llm import litellm_client
         from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 
-        # CLAUDE_SMART_USE_LOCAL_EMBEDDING=1 routes the batch path to the local
+        # REFLEXIO_EMBEDDING_PROVIDER=local_service routes the batch path to the local
         # embedding *service* (daemon) too. Mock the service call for hermeticity.
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "1")
+        monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "local_service")
         monkeypatch.setattr(
             _litellm_embedding,
             "get_service_embeddings",

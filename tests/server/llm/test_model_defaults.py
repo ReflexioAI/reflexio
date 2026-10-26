@@ -23,6 +23,13 @@ from reflexio.server.llm.model_defaults import (
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove all LLM API key env vars to isolate each test."""
+    from reflexio.server.llm.providers import local_embedding_provider as local
+
+    # Credential-detection cases use a host without local inference installed.
+    # Dependency-present behavior is exercised explicitly in the policy tests.
+    monkeypatch.setattr(
+        local, "are_local_embedding_dependencies_available", lambda: False
+    )
     for key in [
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
@@ -261,18 +268,6 @@ class TestResolveModelName:
         result = resolve_model_name(ModelRole.EMBEDDING)
         assert result == _PROVIDER_DEFAULTS["local"].embedding
 
-    def test_embedding_explicit_opt_in_beats_cloud(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """CLAUDE_SMART_USE_LOCAL_EMBEDDING=1 forces local even with cloud keys."""
-        from reflexio.server.llm.providers import local_embedding_provider as lep
-
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "1")
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: object())
-        result = resolve_model_name(ModelRole.EMBEDDING)
-        assert result == _PROVIDER_DEFAULTS["local"].embedding
-
     def test_embedding_default_does_not_probe_local_dependencies(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -350,10 +345,10 @@ class TestValidateLlmAvailability:
         """
         from reflexio.server.llm.providers import local_embedding_provider as lep
 
-        # No LLM env vars; opt into the local embedder so ``local`` shows
-        # up in ``detect_available_providers`` results.
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "1")
-        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: object())
+        # Installed embedding capability never authorizes generation.
+        monkeypatch.setattr(
+            lep, "are_local_embedding_dependencies_available", lambda: True
+        )
         with pytest.raises(
             RuntimeError, match="No generation-capable LLM provider available"
         ):
