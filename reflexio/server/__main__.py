@@ -105,7 +105,7 @@ def main(argv: list[str] | None = None) -> None:
         from reflexio.cli.config_upgrade import prepare_local_config
         from reflexio.cli.utils import ensure_requested_ports_available
 
-        ensure_requested_ports_available({"backend": args.port})
+        ensure_requested_ports_available({"backend": args.port}, host=args.host)
         prepare_local_config()
 
     # Record the configured worker count for per-worker startup diagnostics.
