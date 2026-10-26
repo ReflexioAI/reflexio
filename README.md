@@ -528,6 +528,17 @@ session inactivity by default. Both paths retain the usefulness judge; a negativ
 judge result covers the input without generating learnings. Normal full windows
 and strides run as before. Later messages in a finalized session remain valid.
 
+For operational measurement, `storage.learning_completion_report(start, end)`
+reports a mature acceptance cohort of at most 24 hours, using server acceptance
+time through coverage by every required extractor. Each publish counts once;
+queue waits and retries count toward the fixed 60-second target. Empty valid
+results count as coverage. The report includes overdue unfinished work and
+unknown historical completion times in its denominator; erased/inapplicable
+inputs are explicit exclusions. It reads only bounded metadata pages, raises
+on incomplete pagination or its row cap, and cannot reconstruct erased or
+expired records. Window completion timestamps are recorded inside the fenced
+commit transaction and survive acknowledgement; older receipts stay unknown.
+
 ```python
 client.publish_interaction(user_id="u", session_id="s", interactions=messages,
                            session_finished=True)
