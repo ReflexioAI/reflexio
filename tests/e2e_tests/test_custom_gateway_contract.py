@@ -116,7 +116,7 @@ def test_custom_gateway_keeps_nested_model_id_and_bearer_key(
             {"role": "user", "content": "Local contract check."}
         ]
         # Custom completion routing must not repoint the embedding provider.
-        assert client._resolve_api_key(for_embedding=True)[1] is None
+        assert client._resolve_api_key(for_embedding=True) == (None, None, None)
     finally:
         server.shutdown()
         worker.join(timeout=5)
