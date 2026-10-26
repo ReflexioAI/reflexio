@@ -4619,6 +4619,13 @@ export interface components {
             learning_status?: string | null;
             /** Learning Reason */
             learning_reason?: string | null;
+            /**
+             * Replayed
+             * @default false
+             */
+            replayed?: boolean;
+            /** Error Reason */
+            error_reason?: "request_id_conflict" | null;
         };
         /**
          * RegenerateFailure

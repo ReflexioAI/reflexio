@@ -262,7 +262,8 @@ def test_publish_request_rejects_empty_caller_request_id():
         )
 
 
-def test_publish_request_rejects_duplicate_caller_request_id(mock_llm_responses):
+def test_publish_request_replays_duplicate_caller_request_id(mock_llm_responses):
+    """An identical retry of a committed publish is replayed, not re-admitted."""
     user_id = "test_user_id"
     org_id = "test_org"
     request_id = "caller-request-id"
@@ -293,9 +294,11 @@ def test_publish_request_rejects_duplicate_caller_request_id(mock_llm_responses)
             interaction_data_list=[interaction],
         )
 
-        generation_service.run(first_request, defer_learning=True)
-        with pytest.raises(ValueError, match="already exists"):
-            generation_service.run(second_request, defer_learning=True)
+        first = generation_service.run(first_request, defer_learning=True)
+        replay = generation_service.run(second_request, defer_learning=True)
+        assert replay.replayed
+        assert replay.request_id == request_id
+        assert replay.interaction_ids == first.interaction_ids
 
         assert generation_service.storage is not None
         assert (

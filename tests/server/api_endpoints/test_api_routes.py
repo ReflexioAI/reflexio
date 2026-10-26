@@ -222,6 +222,41 @@ class TestPublishInteraction:
         assert response.status_code == 200
         assert response.json()["success"] is False
 
+    def test_request_id_conflict_is_http_409(self, client, patched_reflexio):
+        """A reused request_id for a different publish is not a generic failure."""
+        with patch(
+            "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
+            return_value=PublishUserInteractionResponse(
+                success=False,
+                message="request_id 'r-1' already exists for a different publish",
+                request_id="r-1",
+                error_reason="request_id_conflict",
+            ),
+        ):
+            response = client.post(
+                "/api/publish_interaction",
+                json={**self._publish_payload(), "request_id": "r-1"},
+            )
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert detail["reason"] == "request_id_conflict"
+        assert detail["request_id"] == "r-1"
+
+    def test_replayed_publish_is_reported_as_success(self, client, patched_reflexio):
+        with patch(
+            "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
+            return_value=PublishUserInteractionResponse(
+                success=True, request_id="r-1", replayed=True
+            ),
+        ):
+            response = client.post(
+                "/api/publish_interaction",
+                json={**self._publish_payload(), "request_id": "r-1"},
+            )
+        assert response.status_code == 200
+        assert response.json()["replayed"] is True
+        assert response.json()["request_id"] == "r-1"
+
     def test_async_publish_does_not_gate_durable_write_on_limiter(
         self, client, patched_reflexio
     ):
