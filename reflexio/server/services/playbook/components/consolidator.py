@@ -27,6 +27,7 @@ from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
 )
+from reflexio.server.llm.tools import describe_tool_loop_error
 from reflexio.server.ops_log import get_ops_logger
 from reflexio.server.services.deduplication_utils import (
     BaseDeduplicator,
@@ -1182,6 +1183,15 @@ class PlaybookConsolidator(BaseDeduplicator):
             # error text can quote tenant content, so it is never attached).
             failure_kind = getattr(e, "failure_kind", None)
             failed_check = getattr(self, "last_failed_check", None)
+            # A provider outage or an exhausted repair ladder is retried by the
+            # caller: the durable window logs each attempt at WARNING and
+            # escalates to ERROR when it parks; a synchronous run logs the
+            # re-raised failure at ERROR once. Reporting it at ERROR here too
+            # would page on every attempt. Anything else stays ERROR.
+            _, failure_class = describe_tool_loop_error(e)
+            level = (
+                logging.ERROR if failure_class == "non_transient" else logging.WARNING
+            )
             with error_tags(
                 subsystem="playbook_consolidator",
                 op="identify_duplicates",
@@ -1193,8 +1203,10 @@ class PlaybookConsolidator(BaseDeduplicator):
                 failure_kind=failure_kind,
                 failed_check=failed_check,
             ):
-                logger.exception(
+                logger.log(
+                    level,
                     "Failed to identify duplicates",
+                    exc_info=True,
                     extra={
                         "error_type": type(e).__name__,
                         "failure_kind": failure_kind,

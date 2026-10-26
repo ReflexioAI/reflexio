@@ -908,6 +908,58 @@ def test_consolidation_failures_are_still_reported(monkeypatch, caplog, error):
     )
 
 
+def _retried_llm_failures() -> list[Exception]:
+    from reflexio.server.llm._litellm_types import (
+        LiteLLMClientError,
+        StructuredOutputRepairError,
+    )
+
+    return [
+        TimeoutError(),
+        # The subprocess-isolated provider call: the concrete litellm class is
+        # carried as ``upstream_error_type`` (PYTHON-FASTAPI-15G / 15Z).
+        LiteLLMClientError("API call failed", upstream_error_type="APIConnectionError"),
+        LiteLLMClientError("API call failed", upstream_status_code=529),
+        # An exhausted repair ladder (PYTHON-FASTAPI-MN).
+        StructuredOutputRepairError(
+            "Structured output repair exhausted", failure_kind="parse", model="m"
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "error", _retried_llm_failures(), ids=lambda e: type(e).__name__
+)
+def test_retried_llm_failures_are_warnings_not_errors(monkeypatch, caplog, error):
+    """The caller retries these and owns escalation; ERROR here pages per attempt."""
+    owner = _dedup_owner(monkeypatch, error)
+    caplog.set_level("DEBUG")
+    with pytest.raises(type(error)):
+        _deduplicate(owner)
+    failures = [
+        r for r in caplog.records if r.getMessage() == "Failed to identify duplicates"
+    ]
+    assert [r.levelname for r in failures] == ["WARNING"]
+    assert failures[0].exc_info is not None
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+
+def test_non_transient_provider_failure_is_still_an_error(monkeypatch, caplog):
+    from reflexio.server.llm._litellm_types import LiteLLMClientError
+
+    owner = _dedup_owner(
+        monkeypatch,
+        LiteLLMClientError("bad request", upstream_error_type="BadRequestError"),
+    )
+    with pytest.raises(LiteLLMClientError):
+        _deduplicate(owner)
+    assert [
+        r.levelname
+        for r in caplog.records
+        if r.getMessage() == "Failed to identify duplicates"
+    ] == ["ERROR"]
+
+
 # --- Legacy history without a stored source_span ---
 
 
