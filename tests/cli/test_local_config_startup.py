@@ -1,6 +1,7 @@
 """Run the real startup preparation before strict discovery and process launch."""
 
 import json
+import os
 import socket
 from pathlib import Path
 
@@ -30,8 +31,17 @@ def saved_local_config(tmp_path, monkeypatch):
     return path
 
 
+@pytest.mark.parametrize(
+    "listener_host,requested_host",
+    [
+        ("127.0.0.1", "127.0.0.1"),
+        ("0.0.0.0", "0.0.0.0"),  # noqa: S104 - short-lived owned socket, no accepts
+        ("127.0.0.1", "localhost"),
+    ],
+)
+@pytest.mark.parametrize("launcher", ["cli", "module"])
 def test_occupied_backend_never_prepares_when_pid_tools_cannot_see_it(
-    saved_local_config, monkeypatch
+    saved_local_config, monkeypatch, listener_host, requested_host, launcher
 ):
     original = saved_local_config.read_bytes()
     monkeypatch.setattr("reflexio.cli.utils.find_pids_on_port", lambda _port: [])
@@ -39,12 +49,14 @@ def test_occupied_backend_never_prepares_when_pid_tools_cannot_see_it(
         run_services, "run_services", lambda *_args: pytest.fail("must refuse launch")
     )
     with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
+        listener.bind((listener_host, 0))
         listener.listen()
         args = run_services._build_run_services_parser().parse_args(
             [
                 "--only",
                 "backend",
+                "--backend-host",
+                requested_host,
                 "--backend-port",
                 str(listener.getsockname()[1]),
                 "--no-reload",
@@ -53,7 +65,18 @@ def test_occupied_backend_never_prepares_when_pid_tools_cannot_see_it(
             ]
         )
         with pytest.raises(SystemExit):
-            run_services.execute(args)
+            if launcher == "cli":
+                run_services.execute(args)
+            else:
+                from reflexio.server.__main__ import main
+
+                monkeypatch.setattr(
+                    "reflexio.server.__main__.uvicorn.run",
+                    lambda *_args, **_kwargs: pytest.fail("must refuse launch"),
+                )
+                main(
+                    ["--host", requested_host, "--port", str(listener.getsockname()[1])]
+                )
     assert saved_local_config.read_bytes() == original
     assert not (saved_local_config.parent / ".config-migrations").exists()
 
@@ -223,3 +246,62 @@ runpy.run_module("reflexio.server", run_name="__main__")
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="POSIX reuse semantics; Windows requires exclusive address ownership",
+)
+def test_recently_closed_connections_do_not_block_a_valid_restart(monkeypatch):
+    from reflexio.cli.utils import ensure_requested_ports_available
+
+    monkeypatch.setattr("reflexio.cli.utils.find_pids_on_port", lambda _port: [])
+    with socket.socket() as previous:
+        previous.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        previous.bind(("127.0.0.1", 0))
+        previous.listen()
+        port = previous.getsockname()[1]
+        with socket.create_connection(("127.0.0.1", port)) as client:
+            accepted, _address = previous.accept()
+            # The server actively closes first, retaining TIME_WAIT on its port.
+            accepted.shutdown(socket.SHUT_WR)
+            assert client.recv(1) == b""
+            accepted.close()
+    # Uvicorn's ordinary address reuse can actually bind and listen again.
+    with socket.socket() as replacement:
+        replacement.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        replacement.bind(("127.0.0.1", port))
+        replacement.listen()
+    ensure_requested_ports_available({"backend": port})
+
+
+@pytest.mark.parametrize(
+    "host,ipv4,available",
+    [("localhost", True, True), ("localhost", False, False), ("::1", False, False)],
+)
+def test_unavailable_ipv6_requires_a_verified_applicable_address(
+    host, ipv4, available, monkeypatch
+):
+    import errno
+
+    from reflexio.cli import utils
+
+    original_socket = socket.socket
+    addresses: list[
+        tuple[int, int, int, str, tuple[str, int] | tuple[str, int, int, int]]
+    ] = [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 0, 0, 0))]
+    if ipv4:
+        addresses.append((socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0)))
+
+    def socket_with_disabled_ipv6(family, *args):
+        if family == socket.AF_INET6:
+            raise OSError(errno.EAFNOSUPPORT, "IPv6 disabled")
+        return original_socket(family, *args)
+
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *_args, **_kwargs: addresses)
+    monkeypatch.setattr(socket, "socket", socket_with_disabled_ipv6)
+    monkeypatch.setattr(utils, "find_pids_on_port", lambda _port: [])
+    assert (
+        bool(utils.get_requested_port_conflicts({"backend": 0}, host=host))
+        is not available
+    )

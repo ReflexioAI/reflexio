@@ -347,7 +347,9 @@ def execute(args: argparse.Namespace, *, storage: str | None = None) -> None:
         from reflexio.cli.utils import ensure_requested_ports_available
 
         # Never rewrite a live predecessor's settings while a second start fails.
-        ensure_requested_ports_available({"backend": ports["backend"]})
+        ensure_requested_ports_available(
+            {"backend": ports["backend"]}, host=args.backend_host
+        )
         prepare_local_config()
     if "backend" in only or storage is not None:
         from reflexio.cli.bootstrap_config import (

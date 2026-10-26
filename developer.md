@@ -1062,8 +1062,10 @@ retired names; request-time reads never translate or rewrite them.
 `reflexio services start` and `python -m reflexio.server` with the default OSS
 app prepare the selected local org before strict storage discovery. Stop old
 writers before upgrading. Preparation preflights the requested backend port;
-this detects an occupied port even without PID inspection tools, but does not
-reserve it or stop an old writer using a different port. The shared native file
+this checks the requested bind address even without PID inspection tools, but
+neither reserves it nor proves that writers on other addresses or ports stopped.
+On POSIX the kernel probe permits normal TIME_WAIT reuse on that address;
+Windows retains exclusive address ownership instead of forcible reuse. The shared native file
 lock serializes cooperating current writers, not arbitrary editors or old SDKs.
 A changed source/link observed during preparation aborts publication.
 

@@ -146,30 +146,50 @@ def find_pids_by_pattern(pattern: str) -> list[int]:
     return []
 
 
-def _port_bind_error(port: int) -> str | None:
-    """Ask the kernel when process-inspection utilities cannot identify a holder."""
-    for family, address in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
-        try:
-            with socket.socket(family, socket.SOCK_STREAM) as probe:
-                if os.name == "nt":
-                    # Windows SO_REUSEADDR can steal a live listener's address.
-                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-                # Do not reuse addresses: some kernels allow a wildcard bind
-                # beside a live specific-address listener until listen(). An
-                # inconclusive TIME_WAIT holder must also block preparation.
-                probe.bind((address, port))
-        except OSError as exc:
-            if family == socket.AF_INET6 and exc.errno in {
-                errno.EAFNOSUPPORT,
-                errno.EPROTONOSUPPORT,
-                errno.EADDRNOTAVAIL,
-            }:
-                continue
-            return str(exc)
-    return None
+def _port_bind_error(port: int, host: str) -> str | None:
+    """Check the actual server bind address using its restart semantics.
+
+    This is not proof that writers on other addresses or ports have stopped.
+    """
+    checked = False
+    try:
+        addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        for family, kind, protocol, _name, address in addresses:
+            try:
+                with socket.socket(family, kind, protocol) as probe:
+                    if os.name == "nt":
+                        # Windows reuse can steal a live listener's address.
+                        probe.setsockopt(
+                            socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1
+                        )
+                    else:
+                        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    probe.bind(address)
+                    probe.listen(1)
+                    checked = True
+            except OSError as exc:
+                if (
+                    family == socket.AF_INET6
+                    and ":" not in host
+                    and exc.errno
+                    in {
+                        errno.EAFNOSUPPORT,
+                        errno.EPROTONOSUPPORT,
+                        errno.EADDRNOTAVAIL,
+                    }
+                ):
+                    # A hostname can resolve unavailable IPv6 alongside usable
+                    # IPv4. An explicit IPv6 address must still fail closed.
+                    continue
+                raise
+    except OSError as exc:
+        return str(exc)
+    return None if checked else "No usable bind address could be verified"
 
 
-def get_requested_port_conflicts(ports: dict[str, int]) -> list[str]:
+def get_requested_port_conflicts(
+    ports: dict[str, int], *, host: str = "127.0.0.1"
+) -> list[str]:
     """Return startup-blocking conflicts for requested service ports."""
     conflicts: list[str] = []
     services_by_port: dict[int, list[str]] = {}
@@ -189,15 +209,17 @@ def get_requested_port_conflicts(ports: dict[str, int]) -> list[str]:
             conflicts.append(
                 f"{name} port {port} is already in use by PID(s): {pid_list}"
             )
-        elif error := _port_bind_error(port):
+        elif error := _port_bind_error(port, host):
             conflicts.append(f"{name} port {port} cannot be bound: {error}")
 
     return conflicts
 
 
-def ensure_requested_ports_available(ports: dict[str, int]) -> None:
+def ensure_requested_ports_available(
+    ports: dict[str, int], *, host: str = "127.0.0.1"
+) -> None:
     """Exit with a clear message when requested service ports are unavailable."""
-    conflicts = get_requested_port_conflicts(ports)
+    conflicts = get_requested_port_conflicts(ports, host=host)
     if not conflicts:
         return
 
