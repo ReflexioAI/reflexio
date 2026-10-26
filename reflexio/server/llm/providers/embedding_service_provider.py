@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from reflexio.embedding_requests import embedding_request_max_texts
 from reflexio.inference_launch import (
     inference_service_url as resolve_inference_service_url,
 )
@@ -50,15 +51,9 @@ _ENV_QUERY_URL = "REFLEXIO_QUERY_EMBEDDING_SERVICE_URL"
 _query_contract_cache: dict[tuple[int, str, str], tuple[str, str, int]] = {}
 _query_contract_lock = threading.Lock()
 _ENV_TIMEOUT_MS = "REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS"
-_ENV_MAX_TEXTS_PER_REQUEST = "REFLEXIO_EMBEDDING_SERVICE_MAX_TEXTS_PER_REQUEST"
 CUSTOM_EMBEDDING_MODEL = "custom"
 _DEFAULT_INTERNAL_SERVICE_TIMEOUT_MS = 2_000
 _DEFAULT_LOCAL_SERVICE_TIMEOUT_MS = 30_000
-# Each request embeds its whole ``input`` list in one ``model.encode()`` on the
-# service, so an unbounded request can exceed the client read timeout on a CPU
-# daemon. Cap texts per request and concatenate; encode batching is a separate
-# server-side knob (REFLEXIO_EMBED_BATCH_SIZE).
-_DEFAULT_MAX_TEXTS_PER_REQUEST = 32
 # Keep-alive must expire below the ALB's default 60s idle timeout so the pool
 # never hands out a connection the load balancer already closed.
 _HTTP_KEEPALIVE_EXPIRY_SECONDS = 50.0
@@ -641,7 +636,7 @@ def get_service_embeddings(
 
     # Bound each request so a single large publish cannot exceed the client read
     # timeout: split into fixed-size chunks and concatenate the results in order.
-    chunk_size = 1 if separate else _max_texts_per_request()
+    chunk_size = 1 if separate else embedding_request_max_texts()
     embeddings: list[list[float]] = []
     for start in range(0, len(texts), chunk_size):
         checkpoint()
@@ -771,26 +766,3 @@ def _post_embedding_batch(
     raise EmbeddingUnavailableError(
         f"Embedding service unavailable at {url}: {error_detail}"
     ) from last_error
-
-
-def _max_texts_per_request() -> int:
-    raw = os.environ.get(_ENV_MAX_TEXTS_PER_REQUEST)
-    if raw is None:
-        return _DEFAULT_MAX_TEXTS_PER_REQUEST
-    try:
-        value = int(raw)
-    except ValueError:
-        _LOGGER.warning(
-            "%s must be an integer; using %d",
-            _ENV_MAX_TEXTS_PER_REQUEST,
-            _DEFAULT_MAX_TEXTS_PER_REQUEST,
-        )
-        return _DEFAULT_MAX_TEXTS_PER_REQUEST
-    if value < 1:
-        _LOGGER.warning(
-            "%s must be >= 1; using %d",
-            _ENV_MAX_TEXTS_PER_REQUEST,
-            _DEFAULT_MAX_TEXTS_PER_REQUEST,
-        )
-        return _DEFAULT_MAX_TEXTS_PER_REQUEST
-    return value

@@ -70,7 +70,7 @@ def service_mode(monkeypatch):
     )
     monkeypatch.setattr(service, "embedding_service_url", lambda *_: "http://offline")
     monkeypatch.setattr(service, "query_embedding_service_url", lambda: "")
-    monkeypatch.setattr(service, "_max_texts_per_request", lambda: 1)
+    monkeypatch.setattr(service, "embedding_request_max_texts", lambda: 1)
 
 
 @pytest.mark.parametrize("slow_chunk", [0, 1])
