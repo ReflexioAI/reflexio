@@ -596,6 +596,13 @@ cover the whole fallback ladder: recovered fallback is success; exhausted calls
 are failure; guard cancellation is separate. Call sites emit no user, tenant,
 prompt, model endpoint, or request identifiers.
 
+Learning status reports committed cursor coverage, so `done` can precede durable
+effect delivery. If erasure removes a committed window during delivery, the
+worker records an effects attempt with outcome `cancelled` and does not retry
+the deleted window. Cancellation requires an authoritative scoped absence check;
+a surviving window with an expired or superseded lease still warns and retries,
+and a failed absence check remains an operational failure.
+
 Sparse aggregation consumers can use `on_work_claimed(context)` to requeue a scope
 for the next normal tick. The callback runs only after a successful authoritative
 claim, within the existing failure/finalization handling; an empty claim does not

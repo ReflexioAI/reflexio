@@ -33,6 +33,7 @@ from reflexio.server.services.storage.storage_base._extraction_stream import (
     MAX_EXTRACTION_WINDOW_ATTEMPTS,
     LeaseLostError,
     Window,
+    WindowEffectsDeletedError,
 )
 from reflexio.server.work_scope import WorkScope, WorkScopeError, bind_work_scope
 
@@ -496,6 +497,9 @@ class DurableLearningWorker:
                             context, create_generation_litellm_client(context)
                         ).deliver(effect_window, effects, token=token)
                         outcome = "success"
+                    except WindowEffectsDeletedError:
+                        outcome = "cancelled"
+                        return 0
                     except Exception as exc:
                         outcome = (
                             "lease_lost"
