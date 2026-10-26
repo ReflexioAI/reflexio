@@ -330,6 +330,7 @@ task improvement; measure that separately after rollout.
 
 - OpenAI and Azure OpenAI, Anthropic, OpenRouter, Google Gemini, MiniMax, DeepSeek, DashScope/Qwen, Zhipu AI/GLM, Moonshot/Kimi, xAI/Grok, and custom OpenAI-compatible endpoints
 - Powered by LiteLLM — configure your preferred provider via API keys or custom endpoints
+- [OpenAI-compatible gateway configuration and verified limits](developer.md#openai-compatible-gateways-including-orcarouter-492)
 
 ## SDK Usage
 
