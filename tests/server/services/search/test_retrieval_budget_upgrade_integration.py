@@ -12,14 +12,18 @@ from reflexio.models.api_schema.domain.entities import (
     UserProfile,
 )
 from reflexio.models.api_schema.retriever_schema import UnifiedSearchRequest
-from reflexio.models.config_schema import SearchMode, validate_stored_config
+from reflexio.models.config_schema import (
+    SearchMode,
+    StorageConfigSQLite,
+    validate_stored_config,
+)
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.unified_search_service import run_unified_search
 
 
 @pytest.mark.parametrize("enabled", [False, True])
 def test_saved_retrieval_policy_survives_upgrade_and_real_search(
-    tmp_path, monkeypatch, enabled
+    tmp_path, monkeypatch, request, enabled
 ):
     database = tmp_path / "owned.sqlite"
     path = tmp_path / "config.json"
@@ -37,7 +41,12 @@ def test_saved_retrieval_policy_survives_upgrade_and_real_search(
     owner = LocalConfigFile(path)
     assert owner.prepare() is True
     config = validate_stored_config(owner.read_document())
-    storage = SQLiteStorage(org_id="floor-upgrade", db_path=str(database))
+    assert isinstance(config.storage_config, StorageConfigSQLite)
+    assert config.storage_config.db_path == str(database)
+    storage = SQLiteStorage(
+        org_id="floor-upgrade", db_path=config.storage_config.db_path
+    )
+    request.addfinalizer(storage.conn.close)
     storage.migrate()
     # Embedding transport is outside this FTS test; all database reads/writes,
     # config preparation and search phases remain real.
