@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 import threading
 import time
 import uuid
@@ -25,7 +26,8 @@ from starlette.datastructures import QueryParams
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from reflexio.server.env_utils import env_bool
+from reflexio.removed_env import reject_removed_env
+from reflexio.server.env_utils import env_str
 from reflexio.server.operational_metrics import record_health
 from reflexio.server.work_scope import current_project_id, current_work_scope
 
@@ -513,12 +515,18 @@ def _record_finalization(
 
 
 async def _finalize_response(
-    state: SearchScope, status: int, deadline: float, incoming: _RequestInput
+    state: SearchScope,
+    status: int,
+    deadline: float,
+    incoming: _RequestInput,
+    *,
+    commit_deadline: float,
 ) -> None:
     """Finish accepted-response writes before release; never substitute a 504.
 
     Queueing uses the original deadline. Acceptance happens inside the worker;
-    writes then share one five-second budget, with admission retained to exit.
+    writes then share the remaining original HTTP budget. No phase restarts
+    that clock, and admission stays retained until the actual worker exits.
     """
     from anyio.to_thread import run_sync
 
@@ -553,9 +561,7 @@ async def _finalize_response(
                 state.remaining(30)
                 if time.monotonic() >= deadline:
                     raise SearchDeadlineError()
-                finalization.deadline = (
-                    time.monotonic() + 5 if state.deadline is not None else deadline
-                )
+                finalization.deadline = commit_deadline
                 state.response_accepted = True
         finally:
             loop.call_soon_threadsafe(begun.set)
@@ -858,6 +864,27 @@ class _RequestInput:
             self.queue.put_nowait({"type": "http.disconnect"})
 
 
+def _search_timeout(override: float | None) -> float:
+    """Read the actual work budget; zero inherits the transport's original clock."""
+    reject_removed_env(os.environ, canonical="REFLEXIO_SEARCH_TIMEOUT_SECONDS")
+    value = (
+        env_str("REFLEXIO_SEARCH_TIMEOUT_SECONDS", "5")
+        if override is None
+        else override
+    )
+    try:
+        timeout = float(value)
+    except (ValueError, TypeError):
+        raise ValueError(
+            "REFLEXIO_SEARCH_TIMEOUT_SECONDS must be finite and nonnegative"
+        ) from None
+    if not math.isfinite(timeout) or timeout < 0:
+        raise ValueError(
+            "REFLEXIO_SEARCH_TIMEOUT_SECONDS must be finite and nonnegative"
+        )
+    return timeout
+
+
 class SearchRuntimeMiddleware:
     """Buffer the small search JSON response; enforce one ingress deadline.
 
@@ -870,9 +897,8 @@ class SearchRuntimeMiddleware:
         self, app: ASGIApp, *, timeout: float | None = None, capacity: int = 20
     ) -> None:
         self.app = app
-        self.timeout = timeout
+        self.timeout = _search_timeout(timeout)
         self.capacity = capacity
-        self.enabled = env_bool("REFLEXIO_SEARCH_DEADLINE_ENABLED", default=True)
         self.tasks: set[asyncio.Task[None]] = set()
 
     def _task_done(self, task: asyncio.Task[None]) -> None:
@@ -899,7 +925,6 @@ class SearchRuntimeMiddleware:
 
         state = SearchScope()
         state.timing_id = correlation_id_var.get() or state.timing_id
-        enabled = self.enabled
         wait_for_response = (
             QueryParams(scope.get("query_string", b""))
             .get("wait_for_response", "")
@@ -909,10 +934,17 @@ class SearchRuntimeMiddleware:
         ingress_backstop = state.started + backstop_for(
             "/api/search", wait_for_response
         )
-        if enabled:
-            state.deadline = state.started + (
-                self.timeout if self.timeout is not None else 5.0
-            )
+        search_deadline = (
+            min(ingress_backstop, state.started + self.timeout)
+            if self.timeout > 0
+            else ingress_backstop
+        )
+        state.deadline = search_deadline
+        timeout_reason = (
+            "search_deadline"
+            if self.timeout > 0 and state.started + self.timeout <= ingress_backstop
+            else "backstop_timeout"
+        )
         token = _scope.set(state)
         messages: list[Message] = []
         finished = asyncio.Event()
@@ -984,11 +1016,7 @@ class SearchRuntimeMiddleware:
                 task = asyncio.create_task(run())
                 self.tasks.add(task)
                 task.add_done_callback(self._task_done)
-                app_timeout = (
-                    remaining(3600)
-                    if enabled
-                    else max(0, ingress_backstop - time.monotonic())
-                )
+                app_timeout = remaining(max(0, ingress_backstop - time.monotonic()))
                 await asyncio.wait_for(finished.wait(), timeout=app_timeout)
                 if state.outcome == "disconnected":
                     return
@@ -1000,7 +1028,11 @@ class SearchRuntimeMiddleware:
                 # and a later timeout cannot replace committed success with 504.
                 with phase("search.finalization", cleanup=True):
                     await _finalize_response(
-                        state, status, state.deadline or ingress_backstop, incoming
+                        state,
+                        status,
+                        search_deadline,
+                        incoming,
+                        commit_deadline=ingress_backstop,
                     )
                 if state.cancelled:
                     return
@@ -1021,7 +1053,7 @@ class SearchRuntimeMiddleware:
                 await JSONResponse(
                     {
                         "detail": "Request timeout",
-                        "reason": "search_deadline" if enabled else "backstop_timeout",
+                        "reason": timeout_reason,
                         "correlation_id": state.timing_id,
                     },
                     status_code=504,

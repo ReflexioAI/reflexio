@@ -1,0 +1,113 @@
+{
+  "storage_config": {
+    "type": "sqlite",
+    "db_path": "generation1-owned.sqlite"
+  },
+  "storage_config_test": 0,
+  "agent_context_prompt": null,
+  "tool_can_use": null,
+  "profile_extractor_config": {
+    "extraction_definition_prompt": "Extract key information about the user and their working environment: name, role, preferences, and stable facts the agent needs to know to serve the user correctly \u2014 including data/schema details (table names, column types, units, join paths), metric definitions the user enforces, and tool quirks or workarounds the user relies on. Do NOT extract behavioral rules for the agent (those belong in the playbook extractor).",
+    "context_prompt": null,
+    "tagging_definition_prompt": null,
+    "should_extract_profile_prompt_override": null,
+    "request_sources_enabled": null,
+    "manual_trigger": false,
+    "window_size_override": null,
+    "stride_size_override": null
+  },
+  "user_playbook_extractor_config": {
+    "extraction_definition_prompt": "Extract playbook rules about agent performance, including areas where the agent was helpful, areas for improvement, and any issues encountered during the interaction.",
+    "tagging_definition_prompt": null,
+    "aggregation_config": {
+      "min_cluster_size": 2,
+      "reaggregation_trigger_count": 2,
+      "clustering_similarity": null,
+      "direction_overlap_threshold": 0.6
+    },
+    "deduplication_config": null,
+    "request_sources_enabled": null,
+    "window_size_override": null,
+    "stride_size_override": null
+  },
+  "agent_success_config": {
+    "success_definition_prompt": "Evaluate whether the AI agent successfully handled the user's session.\n\nMark the session successful when, by the end of the conversation, the agent:\n1. Identified and addressed the user's main goal or question.\n2. Provided a correct, useful, and actionable response or completed the requested action.\nMark the session unsuccessful when the agent failed to understand the request,\ngave incorrect or unhelpful guidance, did not complete an available action,\nignored important constraints, or left the user unsatisfied.",
+    "tagging_definition_prompt": null,
+    "request_sources_enabled": null,
+    "sampling_rate": 0.05,
+    "evaluation_only_sampling_rate": null,
+    "retrieved_learning_sampling_rate": null
+  },
+  "window_size": 11,
+  "stride_size": 3,
+  "extraction_idle_timeout_seconds": 21600,
+  "api_key_config": null,
+  "llm_config": null,
+  "retrieval_experiment_config": null,
+  "retrieval_experiment_history": [],
+  "retrieval_floor": {
+    "enabled": false,
+    "pool_size": 30,
+    "profile_floor": null,
+    "user_playbook_floor": null,
+    "agent_playbook_floor": null
+  },
+  "playbook_optimizer_config": {
+    "enabled": true,
+    "optimize_agent_playbooks": true,
+    "user_playbooks_enabled": true,
+    "auto_update_pending_agent_playbooks": false,
+    "max_metric_calls": 7,
+    "max_turns": 4,
+    "reflection_minibatch_size": 2,
+    "max_validation_windows": 2,
+    "min_commit_windows": 4,
+    "min_commit_score": 0.75,
+    "min_commit_likert": 4,
+    "max_merge_invocations": 5,
+    "reflection_model": null,
+    "webhook_url": "https://example.invalid/assistant",
+    "webhook_auth_header": null,
+    "webhook_timeout_seconds": 60,
+    "webhook_max_retries": 3,
+    "webhook_backoff_base_seconds": 1.0,
+    "assistant_script_path": null,
+    "assistant_script_args": [],
+    "scheduler_jitter_seconds": 1.0,
+    "abort_cooldown_threshold": 2,
+    "cooldown_after_aborts_seconds": 3600
+  },
+  "lineage_gc": {
+    "enabled": true,
+    "tombstone_grace_window_days": 90
+  },
+  "expiry_reclamation": {
+    "enabled": false
+  },
+  "governance_retention": {
+    "audit_events_retention_enabled": false,
+    "audit_events_retention_days": 365,
+    "audit_events_delete_batch_limit": 500
+  },
+  "pending_tool_call_config": {
+    "enabled": false,
+    "pending_ttl_seconds": 86400,
+    "dedup_cache_seconds": 300,
+    "prior_answer_valid_seconds": 2592000,
+    "similarity_threshold": 0.0,
+    "max_resume_attempts": 3,
+    "max_finalization_attempts": 3,
+    "hmac_secrets": [],
+    "tool_overrides": {}
+  },
+  "skip_should_run_check": false,
+  "enable_document_expansion": false,
+  "eval_sample_n_per_stratum": 200,
+  "eval_concurrency_limit": 10,
+  "opaque_extension": {
+    "preserve": [
+      "generation1",
+      false
+    ]
+  }
+}

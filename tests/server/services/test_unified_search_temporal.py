@@ -214,7 +214,7 @@ def test_wants_current_composes_with_relevance_floor(monkeypatch):
             storage=_mock_storage(),
             llm_client=MagicMock(),
             prompt_manager=MagicMock(),
-            retrieval_floor=RetrievalFloorConfig(enabled=True),
+            retrieval_floor=RetrievalFloorConfig(candidate_pool_size=30),
         )
 
     assert [p.profile_id for p in result.profiles] == ["fresh", "stale"]

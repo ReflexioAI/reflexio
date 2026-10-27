@@ -39,6 +39,12 @@ def _payload():
             "use_merge": False,
             "max_merge_invocations": 9,
         },
+        "governance_retention": {
+            "audit_events_retention_enabled": False,
+            "audit_events_retention_days": 45,
+            "audit_events_delete_batch_limit": 2,
+            "extension": {"keep": True},
+        },
         "extension": {"batch_size": "opaque"},
     }
 
@@ -55,6 +61,9 @@ def test_document_conversion_preserves_policy_identity_and_opaque_metadata():
     assert typed.user_playbook_extractor_config.aggregation_config.min_cluster_size == 9
     assert typed.playbook_optimizer_config.max_merge_invocations == 0
     assert typed.playbook_optimizer_config.user_playbooks_enabled is False
+    assert typed.governance_retention.audit_events_max_age_days == 0
+    assert typed.governance_retention.audit_events_delete_batch_limit == 2
+    assert result["governance_retention"]["extension"] == {"keep": True}
     assert result["storage_config"] == {
         "type": "supabase",
         "schema": "custom_schema",
@@ -158,7 +167,12 @@ def test_real_cli_converts_copy_without_client_or_operator_env_writes(
     assert "legacy-http-secret" not in result.output
     assert source.read_bytes() == encoded
     assert env.read_bytes() == b"OPERATOR_SETTING=preserve\n"
-    assert json.loads(output.read_text()) == canonicalize_config_document(_payload())
+    from reflexio.config_file import LocalConfigFile
+
+    assert LocalConfigFile(output).read_document() == canonicalize_config_document(
+        _payload()
+    )
+    assert LocalConfigFile(output).prepare() is False
     if os.name != "nt":
         assert output.stat().st_mode & 0o777 == 0o600
     assert not list(tmp_path.glob("*.tmp"))

@@ -30,6 +30,7 @@ from reflexio.server.services.extraction.agent_run_records import (
     build_extractor_agent_run_record,
     frozen_extractor_config_identity,
     matches_frozen_extractor_binding,
+    matches_frozen_window_binding,
 )
 from reflexio.server.services.extraction.pending_tool_admission import (
     pending_tool_calls_disabled_reason as pending_tool_calls_disabled_reason,
@@ -50,7 +51,6 @@ from reflexio.server.services.storage.storage_base import (
     AgentRunStatus,
     BaseStorage,
     PendingToolCallRecord,
-    build_scope_hash,
 )
 from reflexio.server.usage_metrics import record_usage_event
 
@@ -228,22 +228,14 @@ def _require_overflow_parent(
     storage: BaseStorage, coordinator: OverflowCoordinator, run: AgentRunRecord
 ) -> AgentRunRecord:
     existing = storage.get_agent_run(run.id)
-    frozen = (
-        existing.generation_request_snapshot.get("extractor_config")
-        if existing is not None
-        else None
-    )
     if (
         run.id != f"window:{coordinator.window.window_id}"
         or existing is None
-        # Identity reconstruction consumes this snapshot even for equal bindings.
-        # Authenticate both original witnesses before using historical metadata.
-        or not isinstance(frozen, dict)
-        or build_scope_hash(frozen) != existing.binding.extractor_config_hash
-        or build_scope_hash(coordinator.window.policy["extractor"])
-        != existing.binding.extractor_config_hash
-        or not matches_frozen_extractor_binding(
-            existing, run, coordinator.window.policy["extractor"]
+        or not matches_frozen_window_binding(
+            existing,
+            run,
+            coordinator.window.policy["extractor"],
+            project_id=coordinator.window.project_id,
         )
     ):
         raise RuntimeError("Overflow extraction child parent binding changed")

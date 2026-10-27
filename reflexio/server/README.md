@@ -74,7 +74,7 @@ health alarms still page in that case.
 
 
 - **API composer**: `api.py` - `create_app()` factory, middleware/capability wiring, OpenAPI auth decoration, and `core_router` aggregation
-- **Search request runtime**: `search_runtime.py` - HTTP deadline, unsampled phase timing (including completed monotonic landmarks), bounded worker ownership and connection cancellation; embedded calls have no request scope
+- **Search request runtime**: `search_runtime.py` - explicit search-work budget bounded by the original HTTP deadline, accepted-write finalization on that remaining HTTP budget, unsampled phase timing (including completed monotonic landmarks), bounded worker ownership and connection cancellation; embedded calls have no request scope
   - `search.deps_to_body` reuses the final-dependency stamp through the endpoint profiling boundary. It includes dispatch and setup (such as experiment lookup), not pure pool wait. It is absent for missing stamps, holdout early returns and timeouts before that boundary; completed-landmark recording does not track still-queued endpoints.
   Its `run_in_threadpool` helper delegates to Starlette's default shared limiter
   and measures search-scoped dispatch wait, execution and return wait. Dispatch
@@ -106,6 +106,12 @@ Compose the shared HTTP API, resolve request dependencies, and coordinate durabl
 - `prefetch_config_version(org_id)` - Check a warm instance concurrently with independent search-request reads using the shared search executor and deadline. The request memo retains the fresh version; `get_reflexio` still owns invalidation and reconstruction. Cold and non-search requests are unchanged.
 - `invalidate_reflexio_cache(org_id)` - Invalidate after config changes
 - `clear_reflexio_cache()` - Clear entire cache (testing/admin)
+
+Search requests waiting for another caller to construct an instance retain their
+existing deadline and stop waiting on disconnect. The
+`reflexio.cache.construction_wait` timing phase distinguishes that wait from
+construction performed by the request itself. Non-search callers and cache
+invalidation retain their existing construction fencing.
 
 **Pattern**: **ALWAYS use `get_reflexio()`** instead of `Reflexio()` directly in API endpoints
 
@@ -990,3 +996,17 @@ values require explicit policy adoption while preserving the existing secret.
 mapping too; only the actual process enables the existing test escape hatch.
 Secret rotation requires separate qualified migration of persisted references
 and erasure barriers, not a configuration-selector cleanup.
+
+
+Native sentence encoders share `llm/sentence_encoder.py` for lazy loading,
+serialization and process device policy. Adapters retain model/vector semantics;
+`REFLEXIO_EMBEDDING_DEVICE` chooses placement explicitly and
+`REFLEXIO_EMBED_BATCH_SIZE` remains the independent mini-batch budget.
+
+The import-light `reflexio.inference_launch.inference_workload` role resolver
+(`shared`/`query`) drives container child ownership and is available for dedicated
+worker admission. Enterprise adoption must migrate its producers, worker readers
+and monitoring together, using the selected image's historical/current contract.
+Monitoring and supervisors should consume the resolved launch plan rather than
+parse a second API-query toggle or infer ownership from a localhost URL. See
+`developer.md` for the image/configuration upgrade contract.

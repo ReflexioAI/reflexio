@@ -56,8 +56,7 @@ def test_cleanup_preserves_policy_holds_and_opaque_metadata_without_mutating():
             "poll_interval_seconds": 86400,
         },
         "governance_retention": {
-            "audit_events_retention_enabled": False,
-            "audit_events_retention_days": 30,
+            "audit_events_max_age_days": 0,
             "audit_events_delete_batch_limit": 2000,
         },
         "opaque": {"poll_interval_seconds": 60, "audit_events_delete_batch_limit": 1},
@@ -71,8 +70,7 @@ def test_cleanup_preserves_policy_holds_and_opaque_metadata_without_mutating():
     )
     assert cfg.lineage_gc.enabled is False
     assert cfg.lineage_gc.tombstone_grace_window_days == 120
-    assert cfg.governance_retention.audit_events_retention_enabled is False
-    assert cfg.governance_retention.audit_events_retention_days == 30
+    assert cfg.governance_retention.audit_events_max_age_days == 0
     assert cfg.governance_retention.audit_events_delete_batch_limit == 2000
 
 
@@ -106,8 +104,7 @@ def test_supported_audit_batch_survives_cleanup_and_roundtrip(limit):
         "storage_config": None,
         "lineage_gc": {"enabled": False},
         "governance_retention": {
-            "audit_events_retention_enabled": False,
-            "audit_events_retention_days": 45,
+            "audit_events_max_age_days": 0,
             "audit_events_delete_batch_limit": limit,
         },
     }
@@ -115,7 +112,7 @@ def test_supported_audit_batch_survives_cleanup_and_roundtrip(limit):
     assert strip_legacy_housekeeping_fields(payload) == payload
     cfg = validate_stored_config(payload)
     assert cfg.governance_retention.audit_events_delete_batch_limit == limit
-    assert cfg.governance_retention.audit_events_retention_enabled is False
+    assert cfg.governance_retention.audit_events_max_age_days == 0
     assert cfg.lineage_gc.enabled is False
     assert (
         validate_stored_config(

@@ -294,8 +294,9 @@ def test_embedding_only_start_skips_first_run_llm_guard(monkeypatch) -> None:
 
     called_args = None
 
-    def _capture_execute(args) -> None:
+    def _capture_execute(args, *, storage=None) -> None:
         nonlocal called_args
+        assert storage is None
         called_args = args
 
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)

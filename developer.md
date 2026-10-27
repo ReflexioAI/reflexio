@@ -157,6 +157,12 @@ The `reflexio services start` command has two distinct modes:
 | `--max-requests-jitter J` | 1000 | Per-worker random 0..J added to threshold (avoid synchronized recycles) |
 | `--graceful-shutdown-sec S` | 30 | Drain window for in-flight requests on shutdown |
 
+The backend launcher logs one multi-worker daemon diagnostic from the actual
+`--workers` argument. Worker processes no longer parse a second environment
+setting to repeat that diagnostic. Remove `REFLEXIO_SERVER_WORKERS` from old
+environments; it never selected Uvicorn capacity. Direct Uvicorn starts retain
+`--workers N` and Uvicorn's process logs.
+
 The `--reload + --workers > 1` combination is rejected at CLI parse time (autoreload is incompatible with multi-worker mode).
 
 When the storage backend is SQLite and `--workers > 1`, a warning is logged at startup — SQLite supports concurrent reads but serializes writes (even in WAL mode), so high-QPS writes hit `SQLITE_BUSY`. Switch to Postgres/Supabase for higher write throughput.
@@ -362,6 +368,11 @@ uv run pytest -k "test_name"           # by name
 - Name test files `test_<module>.py`
 - Use markers: `@pytest.mark.unit` (no network), `@pytest.mark.integration` (needs services), `@pytest.mark.e2e` (full stack), `@pytest.mark.requires_credentials` (needs API keys)
 - Keep tests independent — no shared mutable state between tests
+
+`test_sentence_encoder.py` replaces only the model constructor through a
+function-scoped test-owned module, retaining real Torch device/thread behavior.
+Real model loading remains covered separately by the opt-in
+`test_nomic_embedding_realmodel_concurrency.py` qualification.
 
 ### Self-bootstrapping test harnesses
 
@@ -596,6 +607,13 @@ cover the whole fallback ladder: recovered fallback is success; exhausted calls
 are failure; guard cancellation is separate. Call sites emit no user, tenant,
 prompt, model endpoint, or request identifiers.
 
+Learning status reports committed cursor coverage, so `done` can precede durable
+effect delivery. If erasure removes a committed window during delivery, the
+worker records an effects attempt with outcome `cancelled` and does not retry
+the deleted window. Cancellation requires an authoritative scoped absence check;
+a surviving window with an expired or superseded lease still warns and retries,
+and a failed absence check remains an operational failure.
+
 Sparse aggregation consumers can use `on_work_claimed(context)` to requeue a scope
 for the next normal tick. The callback runs only after a successful authoritative
 claim, within the existing failure/finalization handling; an empty claim does not
@@ -608,14 +626,34 @@ The provider should retain the scope until that remaining delay expires.
 
 ### Search request deadlines
 
-The HTTP `/api/search` path has a five-second server-arrival deadline and returns
-504 with `reason=search_deadline` on expiry (no partial results). Set
-`REFLEXIO_SEARCH_DEADLINE_ENABLED=false` to disable enforcement while retaining
-request timing. Embedded calls have no newly imposed deadline. Timeout responses
-do not imply a worker thread has stopped: request admission remains held until
-its application and queued/running retrieval work settles. Timing logs for every search
-and application outcome metrics are independent of sampled tracing. See the
-enterprise managed-cloud health guide for rollout and phase interpretation.
+The HTTP `/api/search` work budget is `REFLEXIO_SEARCH_TIMEOUT_SECONDS`:
+finite nonnegative seconds, default `5`. Zero inherits the original HTTP
+backstop (normally 60 seconds, or the existing synchronous/wait budget).
+Positive values are also bounded by that backstop. Blank means the documented
+default; negative, nonnumeric and nonfinite values refuse startup.
+
+Body buffering, authentication, dispatch and retrieval share one absolute
+server-arrival deadline. Queued finalization must enter before that deadline.
+Once the response is accepted, durable writes share the remaining original HTTP
+budget; no fresh five-second window or per-phase clock is created. Accepted
+success cannot become a late 504. This intentionally replaces the former
+renewed five-second commit window: an accepted response may wait longer for
+durable writes, but never receives a new clock beyond the original HTTP budget.
+Admission and connection ownership remain
+held until actual workers and cleanup finish. These are cooperative deadlines,
+not forced Python-thread termination. Embedded calls retain no request scope.
+
+`REFLEXIO_SEARCH_DEADLINE_ENABLED` is retired and rejected, including blank
+assignments and assignments alongside the new setting. Preserve former `true`
+with `REFLEXIO_SEARCH_TIMEOUT_SECONDS=5`, or former `false` with `0`, then remove
+the old assignment. Change task environment and image together when upgrading;
+an older image does not read the new setting. The inherited mode now propagates
+the transport's deadline into workers too. Timing and connection recovery remain
+active in every mode. Expiry reports `search_deadline` when the configured work
+budget wins and `backstop_timeout` when the HTTP budget wins, without partial
+results. Tracing sampling never controls request timing or outcome metrics.
+
+This replaces one selector with one real budget and earns zero knob reductions.
 
 ### Mutation testing
 
@@ -950,9 +988,19 @@ positive integer up to PostgreSQL int32, default 500. Enterprise audit cleanup
 applies the configured limit separately to audit events and erasure tombstones
 in the existing transaction. The earlier retirement did not eliminate this
 throughput/transaction-size choice. Stored custom values are preserved; invalid
-values fail loading without resetting other saved policy. Retention enablement,
-ages, grace windows and holds remain independent. OSS accepts this enterprise
+values fail loading without resetting other saved policy. Audit expiration uses
+one `audit_events_max_age_days`: zero retains indefinitely, positive days select
+the exact permitted age. Grace windows and holds remain independent. OSS accepts this enterprise
 policy without executing audit-event cleanup.
+
+Local file generation3 converts the historical audit enable/days pair before
+serving. False or absent enablement becomes zero even when a custom positive age
+was saved. True retains the historical age (365 only when it was absent). Dormant
+ages are validated, and exact original bytes retain disabled custom ages for
+deliberate recovery. Current reads reject both retired names. A previously ignored
+`audit_events_max_age_days` in an older generation requires explicit offline
+conversion; conflicting old/new fields require selecting one policy. Current
+publication stamps generation3. Startup never replays the broad alias converter.
 
 ### Session outcome cutovers
 
@@ -1041,10 +1089,82 @@ and content digest. Historical verdict labels remain unchanged and are not
 relabelled as verified template identities. Explicit PromptManager overrides
 remain actual prompt-selection policy.
 
+### Local file upgrades and optimizer consent
+
+The server owns optimizer admission and adoption. `enabled` remains the master
+switch; `agent_playbooks_enabled` and `user_playbooks_enabled` are independent,
+default-off target opt-ins. Agent admission and winner adoption consult the
+same `allows_target` policy. The former agent switches
+`optimize_agent_playbooks` (default false) and
+`auto_update_pending_agent_playbooks` (default true) both gated the same work;
+the upgrade preserves their conjunction. Explicit budgets, assistant backend,
+quality thresholds and user consent remain separate policy.
+
+`reflexio/config_file.py::LocalConfigFile` owns the local file format, strict
+reads, publication and pre-launch preparation. The logical schema owner may
+supply a pure validator; the SDK validator remains the default. Enterprise
+implicit-storage validation must not insert a storage field into the raw file
+merely to satisfy the SDK schema. The unmarked generation0 is the
+previous canonical schema. Generation1 records `_reflexio_config_file` alongside
+the raw configuration. This metadata is stripped before logical Config/API
+validation and is not a tuning field. A saved current-generation file rejects
+retired names; request-time reads never translate or rewrite them.
+
+`reflexio services start` and `python -m reflexio.server` with the default OSS
+app prepare the selected local org before strict storage discovery. Stop old
+writers before upgrading. Preparation preflights the requested backend port;
+this checks the requested bind address even without PID inspection tools, but
+neither reserves it nor proves that writers on other addresses or ports stopped.
+On POSIX the kernel probe permits normal TIME_WAIT reuse on that address;
+Windows retains exclusive address ownership instead of forcible reuse. The shared native file
+lock serializes cooperating current writers, not arbitrary editors or old SDKs.
+A changed source/link observed during preparation aborts publication.
+
+Automatic generation0 preparation converts the retired agent pair; generations0/1
+also consolidate retrieval flooring into `retrieval_floor.candidate_pool_size`.
+Zero disables flooring; a positive budget enables it when a reranker is available.
+The three calibrated/explicit per-arm score thresholds remain independent.
+An old disabled policy becomes zero even if it stored a positive dormant pool;
+its exact original preserves that dormant value for deliberate later changes.
+Old enabled policies retain their configured positive pool (formerly default30).
+Generation1 already owns canonical agent policy and never replays its old names.
+It validates the complete result, preserves unrelated raw fields and database
+identity, and stores the exact original bytes under
+`configs/.config-migrations/<config filename>/<sha256>.json` with owner-only file
+permissions. On POSIX, backup directory entries are synced before the file replacement.
+The version and converted document land in one atomic replacement. A repeat
+start validates and leaves the current file unchanged. Symlinked configurations
+keep their backing file; dangling links fail rather than initialize defaults.
+Explicit `--storage sqlite` preserves an existing SQLite database path, including
+an untagged SQLite config, and edits no unrelated raw settings.
+
+A generation0 file containing `agent_playbooks_enabled` is ambiguous: the old
+schema ignored that key, so treating it as consent could enable vetoed work.
+A generation0/1 file containing `retrieval_floor.candidate_pool_size` is likewise
+ambiguous because those schemas ignored it, even alongside old switches.
+Automatic startup refuses ambiguous policy. Deliberately review that policy and use
+`reflexio config upgrade-file old.json --output canonical.json`; its output
+records the current file generation and can be installed while writers are
+stopped. The original is retained unchanged. The pure
+`canonicalize_config_document` converter remains a logical-document interface
+without file metadata; only the file command adds the format generation.
+Unsupported older aliases, unknown/future generations and invalid values stay
+fail-closed; automatic preparation does not invoke the broad historical converter.
+
+Custom ASGI/embedded hosts, including direct
+`uvicorn reflexio.server.api:app`, own their upgrade lifecycle. After stopping
+writers, explicitly call `reflexio.cli.config_upgrade.prepare_local_config`
+before creating serving request contexts. Preparation does not run inside ASGI
+lifespan: uvicorn may execute lifespan before discovering a failed bind.
+Enterprise remote configuration uses its existing versioned auth-row migration
+owner, not this local-file mechanism. A plugin bundle must prepare before its
+SQLite identity pin and make that pin through the same raw file owner; source
+merges alone do not update already installed bundles.
+
 For standalone saved files, run
 `reflexio config upgrade-file old.json --output canonical.json`. The complete
-input is retained unchanged; the output is replaced atomically with restrictive
-temporary-file permissions. The command never calls the backend or edits `.env`.
+input is retained unchanged; the current-generation output is replaced atomically
+with restrictive temporary-file permissions. The command never calls the backend or edits `.env`.
 Hosts loading stored organization/project settings must own a versioned startup
 upgrade and close incompatible writers before admitting the new strict reader.
 A copied document or schema change alone does not perform that deployment.
@@ -1072,3 +1192,118 @@ The completion child receives the effective absolute deadline and checks it afte
 provider initialization, immediately before dispatch. Startup cannot authorize a
 provider call after expiry. A shorter configured provider I/O timeout remains
 a bound even when the remaining caller time is shorter than cleanup grace.
+
+### OpenAI-compatible gateways, including OrcaRouter (#492)
+
+Use the existing `APIKeyConfig.custom_endpoint` setting for a compatible chat
+gateway. Its model overrides completion-role model selection. Prefix the
+**gateway model id** with `openai/` so LiteLLM uses its OpenAI-compatible adapter:
+
+```python
+import os
+
+from reflexio.models.config_schema import APIKeyConfig, CustomEndpointConfig
+from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+keys = APIKeyConfig(
+    custom_endpoint=CustomEndpointConfig(
+        model="openai/orcarouter/auto",
+        api_key=os.environ["ORCAROUTER_API_KEY"],
+        api_base="https://api.orcarouter.ai/v1",
+    )
+)
+client = LiteLLMClient(
+    LiteLLMConfig(model="openai/orcarouter/auto", api_key_config=keys)
+)
+response = client.generate_chat_response(
+    [{"role": "user", "content": "Hello"}]
+)
+```
+
+For Reflexio's backend, store this `keys` object in the existing
+`Config.api_key_config` field using the deployment's configurator. The snippet
+above constructs an individual LLM client; it does not change a running
+backend's configuration. `ORCAROUTER_API_KEY` here is a caller-provided variable,
+not an automatically detected Reflexio provider variable.
+
+[OrcaRouter's documentation](https://www.orcarouter.ai/switch/openrouter) specifies
+the `/v1` base URL, API-key authentication, and nested gateway model ids. The
+wire model for `openai/orcarouter/auto` is `orcarouter/auto`; for a specific vendor
+model, use e.g. `openai/anthropic/claude-sonnet-4`, whose wire model remains
+`anthropic/claude-sonnet-4`.
+
+The credential-free local HTTP contract test
+`tests/e2e_tests/test_custom_gateway_contract.py` verifies the real LiteLLM
+adapter sends the nested id, Bearer key, and `/v1/chat/completions` request and
+reads the response. It also verifies that the completion override does not
+redirect embeddings. Run it with `uv run pytest
+ tests/e2e_tests/test_custom_gateway_contract.py -o addopts= -v`.
+
+This establishes the existing integration path, not live OrcaRouter service
+compatibility. Structured outputs, tool calls, caching, gateway failover and
+budgets still need a vendor-account test before claiming support. The custom
+endpoint pins one model for **all completion roles**; it does not offer separate
+per-role gateway models. Embeddings keep their own provider. A dedicated provider
+would be justified by a confirmed requirement beyond this existing path, such
+as independent per-role gateway selection, rather than by endpoint branding.
+
+### Windows startup and publish diagnostics (#482, #295)
+
+The `Windows local diagnostics` workflow runs on `windows-2022`. It downloads
+MiniLM into an empty temporary cache, verifies a real 384-dimension embedding,
+and checks that the CLI supervisor launches its backend child only afterward.
+The backend child is a launch marker; this does not exercise full backend
+configuration, the reranker, or paid extraction.
+
+It also runs a separate temporary-SQLite probe: 20 concurrent publishes through
+`/api/publish_interaction` alongside 20 profile reads. Every publish must return
+`success=true` and persist its request. Inference and background extraction are
+excluded to isolate storage/admission. The child emits Python/package/platform
+versions and dumps thread stacks after 20 seconds; its parent kills it at 30
+seconds so a stuck worker cannot hang the test indefinitely.
+
+Run the same probes from a Windows checkout (PowerShell):
+
+```powershell
+uv sync --group dev
+$env:PYTHON_DOTENV_DISABLED = "1"
+$env:RUN_COLD_MODEL_PROBE = "1"
+uv run pytest tests/e2e_tests/test_local_model_cold_start_diagnostic.py tests/e2e_tests/test_local_publish_concurrency_diagnostic.py tests/cli/test_utils.py -o addopts= --timeout=360 -v -s
+```
+
+`RUN_COLD_MODEL_PROBE` is test-only and opts into the ~79MB model download.
+The cache and database are disposable; existing `.env`, databases, and model
+caches are unchanged. A passing Windows Server runner narrows these reports;
+it does not reproduce the original Windows 11/Bash environment. To close an
+original hang report, still capture the installed version, exact command or
+request, and thread stacks from the failing environment, including inference
+and extraction if they were active.
+
+
+### Native embedding placement upgrade
+
+`REFLEXIO_EMBEDDING_DEVICE` selects the native sentence encoder's device in the
+inference process (default CPU, including blank values). Explicit MPS/CUDA device
+strings remain supported by Nomic subject to the installed native runtime. The
+reranker device is independent. Replace `NOMIC_EMBED_DEVICE` with this setting,
+preserving the actual device, and upgrade image/environment together. Old names
+are rejected even when blank or alongside the new name. No env file is rewritten.
+The common encoder owns lazy loading and serialized encoding; Nomic's model,
+input truncation, vector normalization and configurable mini-batch budget retain
+their prior behavior.
+
+### One explicit inference workload role
+
+`reflexio.inference_launch.inference_workload` validates the existing `shared`
+or `query` process role without loading server/model dependencies. Blank and
+unset mean `shared`. Container launch chooses its query child only for explicit
+`query` plus the reserved loopback query endpoint; an endpoint alone does not
+claim ownership of a caller's process. Dedicated workers keep their own direct
+entrypoint and explicit workload role.
+
+Remove `REFLEXIO_API_QUERY_EMBEDDING_ENABLED`, including false/blank assignments.
+For the same API-local query topology, select `REFLEXIO_INFERENCE_WORKLOAD=query`
+and retain the reserved query URL. Standard or externally attached inference
+retains `shared`. Upgrade image and configuration together: historical API images
+need their historical launcher contract and do not use the workload role to
+select this child. This SDK foundation alone claims no configuration reduction.

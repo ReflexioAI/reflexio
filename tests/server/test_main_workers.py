@@ -66,3 +66,45 @@ def test_max_requests_zero_disables_recycling() -> None:
         main(["--port", "8081", "--workers", "2", "--max-requests", "0"])
     kwargs = run.call_args.kwargs
     assert kwargs["limit_max_requests"] is None
+
+
+@pytest.mark.parametrize("workers", [1, 2, 3])
+def test_launcher_owns_worker_diagnostics_without_environment_publication(
+    monkeypatch, caplog, workers
+):
+    import os
+
+    observed = []
+
+    def launch(*_args, **kwargs):
+        observed.append(kwargs["workers"])
+        records = [
+            r for r in caplog.records if "event=multi_worker_daemons" in r.message
+        ]
+        assert len(records) == (1 if workers > 1 else 0)
+        if workers > 1:
+            assert f"workers={workers}" in records[0].message
+        assert "REFLEXIO_SERVER_WORKERS" not in os.environ
+
+    monkeypatch.delenv("REFLEXIO_SERVER_WORKERS", raising=False)
+    with (
+        caplog.at_level("WARNING"),
+        patch("reflexio.server.__main__.uvicorn.run", launch),
+    ):
+        main(["--port", "8081", "--workers", str(workers)])
+    assert observed == [workers]
+    assert "REFLEXIO_SERVER_WORKERS" not in os.environ
+
+
+@pytest.mark.parametrize("name", ["WEB_CONCURRENCY", "REFLEXIO_SERVER_WORKERS"])
+@pytest.mark.parametrize("value", ["", "1", "73", "private-invalid"])
+def test_worker_metadata_cannot_override_or_spoof_launcher(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    with (
+        patch("reflexio.server.__main__.uvicorn.run") as run,
+        pytest.raises(ValueError, match="explicit server --workers N") as caught,
+    ):
+        main(["--port", "8081", "--workers", "3"])
+    run.assert_not_called()
+    if value:
+        assert value not in str(caught.value)

@@ -9,6 +9,7 @@ from typing import Literal
 
 from reflexio.config_env import ConfigurationMigrationError
 from reflexio.env_utils import env_truthy
+from reflexio.removed_env import reject_removed_env
 
 _SERVICE_URL = "REFLEXIO_EMBEDDING_SERVICE_URL"
 _LEGACY_HOST = "REFLEXIO_EMBEDDING_DAEMON_HOST"
@@ -57,9 +58,22 @@ def ordinary_inference_launch(
     return InferenceLaunchPlan("colocated", endpoint + "/health")
 
 
+def inference_workload(env: Mapping[str, str]) -> Literal["shared", "query"]:
+    """One explicit workload role for container children and dedicated workers."""
+    reject_removed_env(env, canonical="REFLEXIO_INFERENCE_WORKLOAD")
+    role = env.get("REFLEXIO_INFERENCE_WORKLOAD", "").strip()
+    if not role or role == "shared":
+        return "shared"
+    if role == "query":
+        return "query"
+    raise ConfigurationMigrationError(
+        "REFLEXIO_INFERENCE_WORKLOAD must be shared or query"
+    )
+
+
 def container_inference_launch(env: Mapping[str, str]) -> InferenceLaunchPlan:
     """Resolve Docker's independent query role before ordinary child ownership."""
-    if env.get("REFLEXIO_API_QUERY_EMBEDDING_ENABLED", "false") == "true":
+    if inference_workload(env) == "query":
         if env.get(_QUERY_URL, "").strip().rstrip("/") != _API_QUERY_URL:
             raise ConfigurationMigrationError(
                 "API-local query mode requires its reserved loopback URL."
@@ -74,7 +88,7 @@ def main() -> None:
     """Small shell adapter: fixed mode and health URL, never eval shell code."""
     try:
         plan = container_inference_launch(os.environ)
-    except ConfigurationMigrationError as exc:
+    except ValueError as exc:
         raise SystemExit(str(exc)) from None
     print(plan.mode, plan.health_url or "-")
 

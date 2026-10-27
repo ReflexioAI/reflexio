@@ -186,6 +186,44 @@ def frozen_extractor_config_identity(config: BaseModel, frozen: dict[str, Any]) 
     return " ".join(fields)
 
 
+def matches_frozen_window_binding(
+    prior: AgentRunRecord,
+    expected: AgentRunRecord,
+    frozen_config: object,
+    *,
+    project_id: str,
+) -> bool:
+    """Authenticate a window's policy against its unchanged stored parent.
+
+    A window admitted before label retirement can create its first parent after
+    retirement. That parent's snapshot is normalized, while the immutable window
+    still has ``extractor_name``. Accept only that exact extra field; arbitrary
+    model round-tripping could hide unknown fields or changed defaults. Existing
+    historical parents keep their original snapshots, hashes and lookup identity.
+    """
+    if prior.binding.extractor_kind not in {"profile", "playbook"}:
+        return False
+    if (prior.project_id or "") != project_id:
+        return False
+    saved = prior.generation_request_snapshot.get("extractor_config")
+    if not isinstance(saved, dict) or not isinstance(frozen_config, dict):
+        return False
+    original_hash = prior.binding.extractor_config_hash
+    if build_scope_hash(saved) != original_hash:
+        return False
+    if build_scope_hash(frozen_config) != original_hash:
+        if "extractor_name" not in frozen_config or "extractor_name" in saved:
+            return False
+        without_label = {
+            name: value
+            for name, value in frozen_config.items()
+            if name != "extractor_name"
+        }
+        if build_scope_hash(without_label) != original_hash:
+            return False
+    return matches_frozen_extractor_binding(prior, expected, saved)
+
+
 def matches_frozen_extractor_binding(
     prior: AgentRunRecord, expected: AgentRunRecord, frozen_config: dict[str, Any]
 ) -> bool:

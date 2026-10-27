@@ -612,15 +612,19 @@ class RetrievalFloorConfig(BaseModel):
     service. Numeric values are exact organization overrides, including ``0.0``.
     """
 
-    enabled: bool = False
-    pool_size: int = Field(
-        default=30,
-        gt=0,
-        description="Candidates fetched per arm before flooring + cap to top_k.",
+    candidate_pool_size: int = Field(
+        default=0,
+        ge=0,
+        description="Candidates per arm before flooring; zero disables flooring.",
     )
     profile_floor: float | None = None
     user_playbook_floor: float | None = None
     agent_playbook_floor: float | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_obsolete_policy(cls, data: Any) -> Any:
+        return _reject_obsolete_fields(data, ("enabled", "pool_size"))
 
 
 class PlaybookOptimizerConfig(BaseModel):
@@ -636,9 +640,8 @@ class PlaybookOptimizerConfig(BaseModel):
 
     # --- gating ------------------------------------------------------------
     enabled: bool = False
-    optimize_agent_playbooks: bool = False
+    agent_playbooks_enabled: bool = False
     user_playbooks_enabled: bool = False
-    auto_update_pending_agent_playbooks: bool = True
 
     # --- GEPA budget -------------------------------------------------------
     max_metric_calls: int = Field(default=20, gt=0)
@@ -696,6 +699,8 @@ class PlaybookOptimizerConfig(BaseModel):
             (
                 "optimize_user_playbooks",
                 "auto_update_user_playbooks",
+                "optimize_agent_playbooks",
+                "auto_update_pending_agent_playbooks",
                 "use_merge",
                 "early_stop_score",
             ),
@@ -706,10 +711,7 @@ class PlaybookOptimizerConfig(BaseModel):
         if not self.enabled:
             return False
         if kind == "agent_playbook":
-            return (
-                self.optimize_agent_playbooks
-                and self.auto_update_pending_agent_playbooks
-            )
+            return self.agent_playbooks_enabled
         return self.user_playbooks_enabled
 
     @model_validator(mode="after")
@@ -801,8 +803,18 @@ class GovernanceRetentionConfig(BaseModel):
 
     model_config = ConfigDict(hide_input_in_errors=True)
 
-    audit_events_retention_enabled: bool = False
-    audit_events_retention_days: int = Field(default=365, gt=0)
+    audit_events_max_age_days: int = Field(
+        default=0,
+        ge=0,
+        description="Maximum audit-event age in days; zero retains indefinitely.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_obsolete_retention_policy(cls, data: Any) -> Any:
+        return _reject_obsolete_fields(
+            data, ("audit_events_retention_enabled", "audit_events_retention_days")
+        )
 
     audit_events_delete_batch_limit: int = Field(
         default=500,

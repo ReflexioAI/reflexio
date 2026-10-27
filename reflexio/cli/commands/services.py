@@ -227,7 +227,6 @@ def start(
     ] = 30,
 ) -> None:
     """Start Reflexio services (backend, docs)."""
-    from reflexio.cli.bootstrap_config import resolve_storage, save_storage_to_config
     from reflexio.cli.env_loader import get_env_path, load_reflexio_env
 
     # Load .env BEFORE resolve_storage so env vars from ~/.reflexio/.env
@@ -242,19 +241,6 @@ def start(
     if "backend" in selected_services:
         _ensure_llm_configured(get_env_path())
 
-    resolved = resolve_storage(storage)
-    os.environ["REFLEXIO_STORAGE"] = resolved
-
-    # If user explicitly passed --storage, also persist to config and .env
-    if storage is not None:
-        save_storage_to_config(resolved)
-
-        from reflexio.cli.env_loader import set_env_var
-
-        env_path = get_env_path()
-        if env_path.exists():
-            set_env_var(env_path, "REFLEXIO_STORAGE", resolved)
-
     args = argparse.Namespace(
         backend_host=backend_host,
         backend_port=backend_port,
@@ -267,7 +253,7 @@ def start(
         max_requests_jitter=max_requests_jitter,
         graceful_shutdown_sec=graceful_shutdown_sec,
     )
-    run_mod.execute(args)
+    run_mod.execute(args, storage=storage)
 
 
 @app.command()

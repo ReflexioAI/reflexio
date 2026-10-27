@@ -113,12 +113,13 @@ def test_unreadable_existing_file_never_becomes_defaults_or_writes(
 def test_read_io_error_propagates_without_initializing(storage, monkeypatch):
     path = write_source(storage, b'{"storage_config":null}')
     failure = PermissionError("blocked-read")
-    monkeypatch.setattr(Path, "read_text", Mock(side_effect=failure))
     defaults = Mock(side_effect=AssertionError("not missing"))
     monkeypatch.setattr(storage, "get_default_config", defaults)
-    with pytest.raises(PermissionError) as error:
-        storage.load_config()
-    assert error.value is failure
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_bytes", Mock(side_effect=failure))
+        with pytest.raises(PermissionError) as error:
+            storage.load_config()
+        assert error.value is failure
     assert path.read_bytes() == b'{"storage_config":null}'
     defaults.assert_not_called()
 

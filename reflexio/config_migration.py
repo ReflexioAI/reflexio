@@ -16,6 +16,8 @@ from reflexio.config_env import StoredConfigurationError as StoredConfigurationE
 
 _LEGACY_OPTIMIZER_BOOL = TypeAdapter(bool)
 _LEGACY_MERGE_LIMIT = TypeAdapter(Annotated[int, Field(ge=0)])
+_LEGACY_RETRIEVAL_POOL = TypeAdapter(Annotated[int, Field(gt=0)])
+_LEGACY_AUDIT_RETENTION_DAYS = TypeAdapter(Annotated[int, Field(gt=0)])
 _LEGACY_STOP_SCORE = TypeAdapter(
     Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 )
@@ -37,6 +39,86 @@ def strip_retired_optimizer_stop_score(data: Any) -> Any:
 
 class OptimizerSchedulingMigrationError(ConfigurationMigrationError):
     """Invalid saved scheduling policy must not trigger a storage-default fallback."""
+
+
+def canonicalize_retrieval_floor_policy(data: Any) -> Any:
+    """Preserve the old effective gate and capacity during explicit conversion."""
+    if not isinstance(data, dict) or not {"enabled", "pool_size"}.intersection(data):
+        return data
+    try:
+        enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(data.get("enabled", False))
+        pool_size = _LEGACY_RETRIEVAL_POOL.validate_python(data.get("pool_size", 30))
+    except ValidationError:
+        raise ConfigurationMigrationError(
+            "Invalid saved retrieval floor enabled or pool_size setting"
+        ) from None
+    normalized = {
+        key: value for key, value in data.items() if key not in {"enabled", "pool_size"}
+    }
+    normalized.setdefault("candidate_pool_size", pool_size if enabled else 0)
+    return normalized
+
+
+def canonicalize_audit_retention_policy(data: Any) -> Any:
+    """Preserve historical deletion consent, including disabled custom ages."""
+    old_fields = {"audit_events_retention_enabled", "audit_events_retention_days"}
+    if not isinstance(data, dict) or not old_fields.intersection(data):
+        return data
+    if "audit_events_max_age_days" in data:
+        raise ConfigurationMigrationError(
+            "Conflicting current and historical audit retention fields; "
+            "explicitly select one policy before conversion"
+        )
+    try:
+        enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(
+            data.get("audit_events_retention_enabled", False)
+        )
+        # Historical default only; current runtime defaults to indefinite retention.
+        days = _LEGACY_AUDIT_RETENTION_DAYS.validate_python(
+            data.get("audit_events_retention_days", 365)
+        )
+    except ValidationError:
+        raise ConfigurationMigrationError(
+            "Invalid saved audit retention enabled or days setting"
+        ) from None
+    return {
+        **{key: value for key, value in data.items() if key not in old_fields},
+        "audit_events_max_age_days": days if enabled else 0,
+    }
+
+
+def canonicalize_agent_optimizer_policy(data: Any) -> Any:
+    """Convert only the formerly canonical agent gate pair during an upgrade.
+
+    Other unsupported historical fields are deliberately left for strict
+    validation; local startup must not accidentally admit old storage formats.
+    """
+    if not isinstance(data, dict):
+        return data
+    normalized = dict(data)
+    legacy_agent_keys = (
+        "optimize_agent_playbooks",
+        "auto_update_pending_agent_playbooks",
+    )
+    if any(key in data for key in legacy_agent_keys):
+        # The old adoption default was true, unlike the old user target.
+        # Preserve the complete effective opt-in, including an explicit veto.
+        try:
+            optimize = _LEGACY_OPTIMIZER_BOOL.validate_python(
+                data.get(legacy_agent_keys[0], False)
+            )
+            adopt = _LEGACY_OPTIMIZER_BOOL.validate_python(
+                data.get(legacy_agent_keys[1], True)
+            )
+        except ValidationError:
+            raise ConfigurationMigrationError(
+                "Invalid saved agent optimizer switches; correct optimize_agent_playbooks "
+                "and auto_update_pending_agent_playbooks before retrying"
+            ) from None
+        normalized.setdefault("agent_playbooks_enabled", optimize and adopt)
+        for key in legacy_agent_keys:
+            normalized.pop(key, None)
+    return normalized
 
 
 def _normalize_optimizer_policy(data: Any) -> Any:
@@ -73,6 +155,7 @@ def _normalize_optimizer_policy(data: Any) -> Any:
         normalized.setdefault("user_playbooks_enabled", optimize and adopt)
         for key in legacy_user_keys:
             normalized.pop(key, None)
+    normalized = canonicalize_agent_optimizer_policy(normalized)
     if "use_merge" in data:
         enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(data["use_merge"])
         limit = _LEGACY_MERGE_LIMIT.validate_python(
@@ -278,6 +361,14 @@ def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
     if "playbook_optimizer_config" in payload:
         payload["playbook_optimizer_config"] = _normalize_optimizer_policy(
             payload["playbook_optimizer_config"]
+        )
+    if "retrieval_floor" in payload:
+        payload["retrieval_floor"] = canonicalize_retrieval_floor_policy(
+            payload["retrieval_floor"]
+        )
+    if "governance_retention" in payload:
+        payload["governance_retention"] = canonicalize_audit_retention_policy(
+            payload["governance_retention"]
         )
     payload.pop("shadow_mode_enabled", None)
     names = {

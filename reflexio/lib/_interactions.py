@@ -31,6 +31,9 @@ from reflexio.models.api_schema.service_schemas import (
     PublishUserInteractionResponse,
 )
 from reflexio.server import publish_timing
+from reflexio.server.services.durable_learning.waiting import (
+    AdmissionDeadlineExceededError,
+)
 from reflexio.server.services.generation_service import (
     GenerationService,
     PublishRequestIdConflictError,
@@ -196,6 +199,11 @@ class InteractionsMixin(ReflexioBase):
                 request_id=e.request_id,
                 error_reason="request_id_conflict",
             )
+        except AdmissionDeadlineExceededError:
+            # Only the HTTP route sets the admission deadline, and it answers
+            # this with a retryable 503. Folding it into `success=False` here
+            # turned a safe-to-retry capacity refusal into a 200 failure body.
+            raise
         except Exception as e:
             return PublishUserInteractionResponse(success=False, message=str(e))
 

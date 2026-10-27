@@ -4286,6 +4286,118 @@ def test_waiter_capacity_does_not_block_admission(pipeline):
             release_waiter("stream-test")
 
 
+@pytest.mark.parametrize(
+    "fence", ["claim_extraction_derived", "ack_extraction_effects"]
+)
+@pytest.mark.parametrize(
+    "change",
+    ["erased", "window_erased", "expired", "superseded", "erasure_check_failed"],
+)
+def test_effect_delivery_distinguishes_erasure_from_surviving_window_lease_loss(
+    pipeline, monkeypatch, caplog, fence, change
+):
+    engine, worker, client = pipeline
+    assert client.post(
+        "/api/publish_interaction", json=payload("effects-ownership", force=True)
+    ).json()["success"]
+    assert worker.drain_org("stream-test", 1, 300) == 1
+    storage = engine.get_storage()
+    assert storage.extraction_status("u", "effects-ownership")["status"] == "done"
+    [(window, _)] = storage.pending_extraction_effects()
+    original = getattr(storage, fence)
+    replacement = None
+
+    def change_before_fence(*args, **kwargs):
+        nonlocal replacement
+        if change in {"erased", "erasure_check_failed"}:
+            assert client.post(
+                "/api/clear_user_data", json={"user_id": window.user_id}
+            ).json()["success"]
+            if change == "erasure_check_failed":
+                import sqlite3
+
+                from reflexio.server.services.storage.sqlite_storage._extraction_stream import (
+                    SQLiteStreamSQL,
+                )
+
+                query = SQLiteStreamSQL.query
+
+                def unavailable(db, sql, params=()):
+                    if sql.startswith("SELECT window_id FROM extraction_windows"):
+                        raise sqlite3.OperationalError("Cancellation read unavailable")
+                    return query(db, sql, params)
+
+                monkeypatch.setattr(SQLiteStreamSQL, "query", unavailable)
+        elif change == "window_erased":
+            # Enterprise erasure commits window deletion before separately
+            # removing the global owner row. The old lease may still be valid.
+            with storage._stream_sql() as db:
+                db.query(
+                    "DELETE FROM extraction_windows WHERE window_id=?",
+                    (window.window_id,),
+                )
+        else:
+            with storage._stream_sql() as db:
+                db.query(
+                    "UPDATE learning_work SET lease_until=0 WHERE user_id=?",
+                    (window.user_id,),
+                )
+            if change == "superseded":
+                replacement = storage.claim_extraction("replacement", 300)
+                assert replacement is not None
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(storage, fence, change_before_fence)
+    retry = Mock(wraps=storage.retry_extraction_effects)
+    monkeypatch.setattr(storage, "retry_extraction_effects", retry)
+    sink = Mock()
+    monkeypatch.setattr("reflexio.server.operational_metrics._sink", sink)
+    with caplog.at_level(logging.WARNING):
+        completed = worker.drain_org("stream-test", 1, 300)
+    attempts = [
+        call.kwargs["attributes"]
+        for call in sink.record.call_args_list
+        if call.args[0] == "worker.attempts"
+    ]
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if "Extraction effects will retry" in record.getMessage()
+    ]
+    with storage._stream_sql(read_only=True) as db:
+        windows = db.query(
+            "SELECT effects_done,effects_retry_at FROM extraction_windows WHERE window_id=?",
+            (window.window_id,),
+        )
+        work = db.query("SELECT lease_token FROM learning_work WHERE user_id=?", ("u",))
+    if change in {"erased", "window_erased"}:
+        assert completed == 0
+        assert attempts == [{"phase": "effects", "outcome": "cancelled"}]
+        retry.assert_not_called()
+        assert warnings == []
+        assert windows == []
+        if change == "erased":
+            assert work == []
+            assert storage.get_request("effects-ownership") is None
+            assert storage.get_user_profile("u") == []
+        else:
+            assert work[0]["lease_token"] is None
+    elif change == "erasure_check_failed":
+        retry.assert_called_once_with(window)
+        assert attempts == [{"phase": "effects", "outcome": "failure"}]
+        assert len(warnings) == 1 and "error=OperationalError" in warnings[0]
+        assert windows == work == []
+    else:
+        retry.assert_called_once_with(window)
+        assert attempts == [{"phase": "effects", "outcome": "lease_lost"}]
+        assert len(warnings) == 1 and "error=LeaseLostError" in warnings[0]
+        assert len(windows) == 1 and windows[0]["effects_done"] == 0
+        assert windows[0]["effects_retry_at"] > time.time()
+        if replacement is not None:
+            # The stale owner's finally block must not release the new lease.
+            assert work[0]["lease_token"] == replacement[1]
+
+
 def test_outbox_ack_failure_does_not_repeat_derived_dispatch(pipeline, monkeypatch):
     engine, worker, client = pipeline
     assert client.post(

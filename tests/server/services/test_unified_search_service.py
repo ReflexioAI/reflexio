@@ -249,7 +249,7 @@ class TestRunUnifiedSearch(unittest.TestCase):
                 storage=storage,
                 llm_client=MagicMock(),
                 prompt_manager=MagicMock(),
-                retrieval_floor=RetrievalFloorConfig(enabled=False),
+                retrieval_floor=RetrievalFloorConfig(candidate_pool_size=0),
                 recency=RecencyConfig(max_penalty_frac=1.0, pool_size=2),
             )
 
@@ -300,7 +300,7 @@ class TestRunUnifiedSearch(unittest.TestCase):
                 storage=storage,
                 llm_client=MagicMock(),
                 prompt_manager=MagicMock(),
-                retrieval_floor=RetrievalFloorConfig(enabled=False),
+                retrieval_floor=RetrievalFloorConfig(candidate_pool_size=0),
                 recency=RecencyConfig(max_penalty_frac=0.15, pool_size=2),
             )
 
@@ -349,7 +349,7 @@ class TestRunUnifiedSearch(unittest.TestCase):
                 storage=cast(BaseStorage, _PgLikeStorage()),
                 llm_client=MagicMock(),
                 prompt_manager=MagicMock(),
-                retrieval_floor=RetrievalFloorConfig(enabled=False),
+                retrieval_floor=RetrievalFloorConfig(candidate_pool_size=0),
                 recency=RecencyConfig(pool_size=2),
             )
 

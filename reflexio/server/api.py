@@ -33,6 +33,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware import Middleware
 
+from reflexio.lib._base import StorageNotConfiguredError
 from reflexio.server.api_endpoints import (
     health_api,
     pending_tool_call_api,
@@ -85,35 +86,6 @@ __all__ = [
     "default_get_org_id",
     "limiter",
 ]
-
-
-def _log_multi_worker_daemons() -> None:
-    """Warn once at startup when multiple worker processes will run daemons.
-
-    ``--workers N`` (N>1) runs the full daemon set in every worker process
-    (duplicate ticking). Safe by the concurrent-tick invariant — every daemon
-    tick is concurrent-safe — but worth one visible line (design D3).
-
-    Reads ``REFLEXIO_SERVER_WORKERS``. When the count
-    is unavailable or invalid, this logs nothing.
-    """
-    import os
-
-    from reflexio.removed_env import reject_removed_env
-
-    reject_removed_env(os.environ, canonical="REFLEXIO_SERVER_WORKERS")
-    raw_workers = os.environ.get("REFLEXIO_SERVER_WORKERS")
-    try:
-        workers = int(raw_workers) if raw_workers is not None else None
-    except ValueError:
-        workers = None
-    if workers is not None and workers > 1:
-        logger.warning(
-            "event=multi_worker_daemons workers=%d — background daemons tick in "
-            "every worker process (duplicate ticking; safe: ticks are "
-            "concurrent-safe by design)",
-            workers,
-        )
 
 
 # ``core_router`` stays an aggregator: it ``include_router``s every domain
@@ -176,6 +148,17 @@ async def _safe_request_validation_exception_handler(
     return JSONResponse(
         status_code=422, content={"detail": safe_validation_errors(errors)}
     )
+
+
+async def _storage_not_configured_handler(
+    request: Request, exc: StorageNotConfiguredError
+) -> JSONResponse:
+    """Answer every route that needs storage the same way when it has none.
+
+    The exception carries no ``status_code``, so Sentry's Starlette integration
+    does not report this expected caller state as a server error.
+    """
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 def _add_openapi_security(app: FastAPI, *, allow_local_access: bool = False) -> None:
@@ -511,7 +494,6 @@ def create_app(  # noqa: C901
             configure_usage_event_recorder(exempt_usage_event_recorder)
         try:
             if mounts_data_plane:
-                _log_multi_worker_daemons()
                 log_publish_hardware_capacity()
                 validate_llm_availability()
                 # The scheduler discovers every org with resumable work each tick and
@@ -619,6 +601,10 @@ def create_app(  # noqa: C901
     app.add_exception_handler(
         RequestValidationError,
         _safe_request_validation_exception_handler,  # type: ignore[reportArgumentType]
+    )
+    app.add_exception_handler(
+        StorageNotConfiguredError,
+        _storage_not_configured_handler,  # type: ignore[reportArgumentType]
     )
 
     if auth_required:

@@ -71,7 +71,7 @@ class StreamSQL(Protocol):
     def now(self) -> float: ...
     def lock(self, *, skip_locked: bool = False) -> str: ...
     def eligible(self, kind: Kind) -> str: ...
-    def project_filter(self) -> str: ...
+    def project_filter(self, alias: Literal["r", "i"] = "r") -> str: ...
     def input_lock(self) -> str: ...
     def admission_value(self, field: str) -> str: ...
     def source_witness_bytes(self, row: dict[str, Any]) -> bytes: ...
@@ -157,6 +157,10 @@ class WindowInputsDeletedError(RuntimeError):
 
 class LeaseLostError(RuntimeError):
     """The complete transaction must roll back when a claim is superseded."""
+
+
+class WindowEffectsDeletedError(RuntimeError):
+    """Erasure removed a committed window while its effects were in flight."""
 
 
 class OverflowCheckpointConflictError(RuntimeError):
@@ -712,13 +716,14 @@ class ExtractionStreamStore:
         }
         with self._stream_sql() as db:
             self._fence(db, window.user_id, token)
+            completed_at = db.now()
             rows = db.query(
                 f"UPDATE {db.table('extraction_cursors')} SET completed_seq=?,started=1,window_id=NULL,"
                 "attempts=0,retry_at=0,last_error=NULL,last_turn=? "
                 "WHERE user_id=? AND kind=? AND completed_seq=? AND window_id=? AND project_id=? RETURNING user_id",
                 (
                     window.end_seq,
-                    db.now(),
+                    completed_at,
                     window.user_id,
                     window.kind,
                     window.predecessor,
@@ -729,8 +734,8 @@ class ExtractionStreamStore:
             if not rows:
                 raise LeaseLostError("Extraction cursor was superseded")
             db.query(
-                f"UPDATE {db.table('extraction_windows')} SET completed=1,effects=? WHERE window_id=?",
-                (json.dumps(effects), window.window_id),
+                f"UPDATE {db.table('extraction_windows')} SET completed=1,completed_at=?,effects=? WHERE window_id=?",
+                (completed_at, json.dumps(effects), window.window_id),
             )
             # A completed window is progress, so restart a still-pending user's
             # backlog clock -- unless a sibling cursor is failing (this cursor's
@@ -1112,6 +1117,26 @@ class ExtractionStreamStore:
                 self._extraction_counts(db, user_id, request_id, snapshot.admission),
             )
 
+    def learning_completion_report(
+        self,
+        start: float,
+        end: float,
+        *,
+        page_size: int = 100,
+        max_requests: int = 10_000,
+    ) -> dict[str, Any]:
+        """Measure retained admissions in the current project; never read content.
+
+        This operational report is separate from best-effort publish reporting.
+        Invalid intervals, incomplete walks and database errors propagate.
+        """
+        from .learning_completion import completion_report
+
+        with self._stream_sql(read_only=True) as db:
+            return completion_report(
+                db, start, end, page_size=page_size, max_requests=max_requests
+            )
+
     def extraction_status(self, user_id: str, request_id: str) -> dict[str, Any]:
         with self._stream_sql(read_only=True) as db:
             return self._extraction_status(
@@ -1257,24 +1282,53 @@ class ExtractionStreamStore:
         cannot reschedule a winner's optimization, aggregation or tagging.
         """
         with self._stream_sql() as db:
-            self._fence(db, window.user_id, token)
-            return bool(
+            self._fence_extraction_effects(db, window.window_id, window.user_id, token)
+            claimed = bool(
                 db.query(
                     f"UPDATE {db.table('extraction_windows')} SET derived_claimed=1 WHERE window_id=? AND completed=1 AND derived_claimed=0 RETURNING window_id",
                     (window.window_id,),
                 )
             )
+            if not claimed:
+                self._assert_extraction_effects_present(
+                    db, window.window_id, window.user_id
+                )
+            return claimed
+
+    def _assert_extraction_effects_present(
+        self, db: StreamSQL, window_id: str, user_id: str
+    ) -> None:
+        if not db.query(
+            f"SELECT window_id FROM {db.table('extraction_windows')} "
+            "WHERE window_id=? AND user_id=?",
+            (window_id, user_id),
+        ):
+            raise WindowEffectsDeletedError("Extraction effects were erased")
+
+    def _fence_extraction_effects(
+        self, db: StreamSQL, window_id: str, user_id: str, token: str
+    ) -> None:
+        try:
+            self._fence(db, user_id, token)
+        except LeaseLostError:
+            # Erasure deletes the immutable window and then the global owner.
+            # Only proven window deletion is cancellation; a surviving window
+            # retains its lease failure, and query failures still propagate.
+            self._assert_extraction_effects_present(db, window_id, user_id)
+            raise
 
     def ack_extraction_effects(
         self, window_id: str, *, user_id: str | None = None, token: str | None = None
     ) -> None:
         with self._stream_sql() as db:
             if token is not None and user_id is not None:
-                self._fence(db, user_id, token)
+                self._fence_extraction_effects(db, window_id, user_id, token)
             rows = db.query(
                 f"SELECT effects FROM {db.table('extraction_windows')} WHERE window_id=?",
                 (window_id,),
             )
+            if not rows and token is not None and user_id is not None:
+                raise WindowEffectsDeletedError("Extraction effects were erased")
             if rows:
                 effects = decoded(rows[0]["effects"]) or {}
                 summary = {

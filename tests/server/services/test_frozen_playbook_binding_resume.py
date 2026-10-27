@@ -97,15 +97,15 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
         )
     resumed = storage.prepare_extraction(user, token)
     service, request, config = executor.service(resumed)
-    compatible = window_executor.matches_frozen_extractor_binding
+    compatible = window_executor.matches_frozen_window_binding
     monkeypatch.setattr(
         window_executor,
-        "matches_frozen_extractor_binding",
-        lambda prior, expected, _: prior.binding == expected.binding,
+        "matches_frozen_window_binding",
+        lambda prior, expected, _, **_kwargs: prior.binding == expected.binding,
     )
     with pytest.raises(InputBudgetConfigurationError, match="parent binding changed"):
         executor._coordinator(resumed, token, service, request, config)
-    monkeypatch.setattr(window_executor, "matches_frozen_extractor_binding", compatible)
+    monkeypatch.setattr(window_executor, "matches_frozen_window_binding", compatible)
     admitted = executor._coordinator(resumed, token, service, request, config)
     assert admitted is not None
     assert admitted.saved_run is not None
@@ -169,17 +169,17 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
                 log_label="historical-playbook-child",
             )
 
-    child_compatible = resumable_agent.matches_frozen_extractor_binding
+    child_compatible = resumable_agent.matches_frozen_window_binding
     monkeypatch.setattr(
         resumable_agent,
-        "matches_frozen_extractor_binding",
-        lambda prior, expected, _: prior.binding == expected.binding,
+        "matches_frozen_window_binding",
+        lambda prior, expected, _, **_kwargs: prior.binding == expected.binding,
     )
     with pytest.raises(RuntimeError, match="child parent binding changed"):
         run_child()
     assert calls == []
     monkeypatch.setattr(
-        resumable_agent, "matches_frozen_extractor_binding", child_compatible
+        resumable_agent, "matches_frozen_window_binding", child_compatible
     )
     pending = PendingToolCallConfig(enabled=True)
     monkeypatch.setattr(resumable_agent, "pending_tool_calls_enabled", lambda _: True)

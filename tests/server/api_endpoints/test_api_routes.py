@@ -481,6 +481,85 @@ class TestPublishInteraction:
                 f"callers cannot act on it: {detail['message']!r}"
             )
 
+    def test_worker_admission_deadline_is_the_same_retryable_503(
+        self, client, patched_reflexio
+    ):
+        """A worker that hits the deadline before committing admitted nothing.
+
+        It used to fold into a 200 ``success=False`` body logged at ERROR. It is
+        the capacity refusal above, reached one step later, so it must carry the
+        same reason -- not the 504, whose meaning is "admission may have
+        happened" -- and must hand its ingestion slot back.
+        """
+        from reflexio.server.services.durable_learning import waiting
+
+        payload = self._publish_payload()
+        payload["request_id"] = "req-worker-deadline"
+        with patch(
+            "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
+            side_effect=waiting.AdmissionDeadlineExceededError("deadline"),
+        ):
+            response = client.post("/api/publish_interaction", json=payload)
+
+        assert response.status_code == 503, response.text
+        detail = response.json()["detail"]
+        assert detail["reason"] == "capacity_deadline_exceeded"
+        assert detail["request_id"] == "req-worker-deadline"
+        assert waiting._ingesting == {}
+
+    @pytest.mark.parametrize(
+        ("error", "expect_error_log"),
+        [
+            (lambda w: w.AdmissionDeadlineExceededError("deadline"), False),
+            (lambda _w: RuntimeError("real failure"), True),
+        ],
+        ids=["deadline-consumed-quietly", "real-failure-logged"],
+    )
+    def test_detached_worker_outcome_is_consumed(self, caplog, error, expect_error_log):
+        """A worker that fails after the route stopped awaiting it.
+
+        Nobody awaits it after the 504 or a disconnect, so an unretrieved
+        exception becomes asyncio's ERROR "Task exception was never retrieved"
+        -- for a deadline, the very report this path exists to avoid. The
+        callback must retrieve it, release the slot, and still log a real
+        failure at ERROR.
+        """
+        import asyncio
+        import gc
+        import logging
+
+        from reflexio.server.routes.interactions import _detached_publish_done
+        from reflexio.server.services.durable_learning import waiting
+
+        loop_reports: list[dict] = []
+
+        async def scenario() -> None:
+            asyncio.get_running_loop().set_exception_handler(
+                lambda _loop, context: loop_reports.append(context)
+            )
+            waiting._ingesting["detached-org"] = 1
+
+            async def worker() -> None:
+                raise error(waiting)
+
+            task = asyncio.ensure_future(worker())
+            task.add_done_callback(_detached_publish_done("detached-org"))
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            del task
+            gc.collect()
+
+        caplog.set_level(logging.WARNING)
+        asyncio.run(scenario())
+
+        assert loop_reports == []
+        assert "detached-org" not in waiting._ingesting
+        logged_error = any(
+            r.levelno >= logging.ERROR and "Detached publish worker failed" in r.message
+            for r in caplog.records
+        )
+        assert logged_error is expect_error_log, caplog.text
+
 
 class TestSearchEndpoints:
     """Tests for search endpoints."""

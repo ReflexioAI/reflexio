@@ -19,11 +19,12 @@ def test_launcher_reuses_parser_without_importing_server_or_site_packages():
     script = f"""
 import sys
 sys.path.insert(0, {str(package_root)!r})
-from reflexio.inference_launch import ordinary_inference_launch
+from reflexio.inference_launch import ordinary_inference_launch, container_inference_launch
 from reflexio.config_env import ConfigurationMigrationError
 from reflexio.env_utils import env_truthy
 assert env_truthy(' ON ')
 assert ordinary_inference_launch({{}}).mode == 'colocated'
+assert container_inference_launch({{'REFLEXIO_INFERENCE_WORKLOAD':'query', 'REFLEXIO_QUERY_EMBEDDING_SERVICE_URL':'http://127.0.0.1:8093'}}).mode == 'query'
 try:
     ordinary_inference_launch({{'REFLEXIO_DISABLE_LOCAL_EMBEDDING_DAEMON': 'true'}})
 except ConfigurationMigrationError:
@@ -90,7 +91,7 @@ def test_custom_legacy_host_is_not_silently_dropped_or_printed():
 
 def test_query_child_remains_independent_of_ordinary_disable_switch():
     env = {
-        "REFLEXIO_API_QUERY_EMBEDDING_ENABLED": "true",
+        "REFLEXIO_INFERENCE_WORKLOAD": "query",
         "REFLEXIO_QUERY_EMBEDDING_SERVICE_URL": "http://127.0.0.1:8093",
         "REFLEXIO_DISABLE_LOCAL_EMBEDDING_DAEMON": "true",
     }
@@ -106,9 +107,123 @@ def test_query_child_remains_independent_of_ordinary_disable_switch():
 def test_query_endpoint_normalization_matches_request_routing(url):
     plan = container_inference_launch(
         {
-            "REFLEXIO_API_QUERY_EMBEDDING_ENABLED": "true",
+            "REFLEXIO_INFERENCE_WORKLOAD": "query",
             "REFLEXIO_QUERY_EMBEDDING_SERVICE_URL": url,
         }
     )
     assert plan.mode == "query"
     assert plan.health_url == "http://127.0.0.1:8093/health/model"
+
+
+@pytest.mark.parametrize("value", ["query", " query "])
+def test_explicit_query_workload_owns_only_the_reserved_child(value):
+    plan = container_inference_launch(
+        {
+            "REFLEXIO_INFERENCE_WORKLOAD": value,
+            "REFLEXIO_QUERY_EMBEDDING_SERVICE_URL": "http://127.0.0.1:8093",
+            "REFLEXIO_EMBEDDING_SERVICE_URL": "http://document-worker:8089",
+        }
+    )
+    assert plan.mode == "query"
+    assert plan.health_url == "http://127.0.0.1:8093/health/model"
+
+
+@pytest.mark.parametrize("role", [None, "", "  ", "shared"])
+def test_shared_role_keeps_caller_owned_loopback_endpoint_attached(role):
+    env = {
+        "REFLEXIO_QUERY_EMBEDDING_SERVICE_URL": "http://127.0.0.1:8093",
+        "REFLEXIO_EMBEDDING_SERVICE_URL": "http://document-worker:8089",
+    }
+    if role is not None:
+        env["REFLEXIO_INFERENCE_WORKLOAD"] = role
+    assert container_inference_launch(env).mode == "attached"
+
+
+@pytest.mark.parametrize("value", ["True", "false", "query-only", "unknown"])
+def test_unknown_role_rejected_before_attaching_to_external_endpoint(value):
+    with pytest.raises(
+        ConfigurationMigrationError, match="REFLEXIO_INFERENCE_WORKLOAD"
+    ):
+        container_inference_launch(
+            {
+                "REFLEXIO_INFERENCE_WORKLOAD": value,
+                "REFLEXIO_EMBEDDING_SERVICE_URL": "http://document-worker:8089",
+            }
+        )
+
+
+@pytest.mark.parametrize("old", ["", "false", "true", "True"])
+def test_retired_api_query_boolean_is_never_a_second_role_authority(old):
+    with pytest.raises(ValueError, match="REFLEXIO_API_QUERY_EMBEDDING_ENABLED"):
+        container_inference_launch(
+            {
+                "REFLEXIO_API_QUERY_EMBEDDING_ENABLED": old,
+                "REFLEXIO_INFERENCE_WORKLOAD": "query",
+                "REFLEXIO_QUERY_EMBEDDING_SERVICE_URL": "http://127.0.0.1:8093",
+                "REFLEXIO_EMBEDDING_SERVICE_URL": "http://document-worker:8089",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("settings", "code", "output"),
+    [
+        (
+            {
+                "REFLEXIO_INFERENCE_WORKLOAD": "query",
+                "REFLEXIO_QUERY_EMBEDDING_SERVICE_URL": "http://127.0.0.1:8093",
+            },
+            0,
+            "query http://127.0.0.1:8093/health/model",
+        ),
+        (
+            {
+                "REFLEXIO_INFERENCE_WORKLOAD": "shared",
+                "REFLEXIO_EMBEDDING_SERVICE_URL": "http://127.0.0.1:8093",
+            },
+            0,
+            "attached -",
+        ),
+        ({"REFLEXIO_INFERENCE_WORKLOAD": "query"}, 1, "reserved loopback URL"),
+        ({"REFLEXIO_INFERENCE_WORKLOAD": "True"}, 1, "REFLEXIO_INFERENCE_WORKLOAD"),
+        (
+            {"REFLEXIO_API_QUERY_EMBEDDING_ENABLED": ""},
+            1,
+            "REFLEXIO_API_QUERY_EMBEDDING_ENABLED",
+        ),
+        (
+            {"REFLEXIO_API_QUERY_EMBEDDING_ENABLED": "false"},
+            1,
+            "REFLEXIO_API_QUERY_EMBEDDING_ENABLED",
+        ),
+    ],
+)
+def test_actual_container_plan_cli(settings, code, output, tmp_path):
+    import os
+
+    root = Path(__file__).resolve().parents[1]
+    empty = tmp_path / "empty.env"
+    empty.touch()
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key in {"PATH", "LANG", "LC_ALL", "TMPDIR"}
+    }
+    env.update(
+        HOME=str(tmp_path),
+        REFLEXIO_ENV_FILE=str(empty),
+        PYTHONPATH=str(root),
+        **settings,
+    )
+    result = subprocess.run(  # noqa: S603 - fixed interpreter/module, isolated fixture env.
+        [sys.executable, "-m", "reflexio.inference_launch"],
+        env=env,
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    assert result.returncode == code, result.stderr
+    assert output in (result.stdout if code == 0 else result.stderr)
+    assert "Traceback" not in result.stderr

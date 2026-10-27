@@ -178,9 +178,14 @@ def test_services_cli_forwards_backend_host(monkeypatch, runner, app) -> None:
     monkeypatch.setattr(env_loader, "load_reflexio_env", lambda: None)
     monkeypatch.setattr(bootstrap_config, "resolve_storage", lambda _: "sqlite")
     monkeypatch.setattr(services_module, "_ensure_llm_configured", lambda _: None)
-    monkeypatch.setattr(services_module.run_mod, "execute", captured.append)
+
+    def capture_execute(args, *, storage):
+        captured.append((args, storage))
+
+    monkeypatch.setattr(services_module.run_mod, "execute", capture_execute)
     result = runner.invoke(
         app, ["services", "start", "--only", "backend", "--backend-host", "127.0.0.1"]
     )
     assert result.exit_code == 0, result.output
-    assert captured[0].backend_host == "127.0.0.1"
+    assert captured[0][0].backend_host == "127.0.0.1"
+    assert captured[0][1] is None

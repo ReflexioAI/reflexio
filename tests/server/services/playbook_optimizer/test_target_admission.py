@@ -23,8 +23,7 @@ from reflexio.server.services.playbook_optimizer import PlaybookOptimizationSche
             "agent_playbook",
             {
                 "enabled": True,
-                "optimize_agent_playbooks": True,
-                "auto_update_pending_agent_playbooks": False,
+                "agent_playbooks_enabled": False,
             },
         ),
     ],
@@ -51,7 +50,7 @@ def test_production_enqueue_keeps_custom_admission_policy(kind):
     config = PlaybookOptimizerConfig(
         enabled=True,
         user_playbooks_enabled=True,
-        optimize_agent_playbooks=True,
+        agent_playbooks_enabled=True,
         scheduler_jitter_seconds=0.25,
         abort_cooldown_threshold=4,
         cooldown_after_aborts_seconds=60,

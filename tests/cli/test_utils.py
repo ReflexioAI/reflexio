@@ -689,6 +689,10 @@ def test_supervisor_waits_for_delayed_model_process_before_launching_backend(
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="os.kill(SIGTERM) is TerminateProcess on Windows; no handler runs",
+)
 @pytest.mark.parametrize("phase", ["output", "ready"])
 def test_shutdown_signal_unwinds_before_cleanup(tmp_path: Path, phase: str) -> None:
     """Signals must release interrupted locks and reap children during startup."""

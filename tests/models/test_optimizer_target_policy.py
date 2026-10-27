@@ -138,11 +138,13 @@ def test_real_local_file_upgrade_preserves_effective_activation(
 @pytest.mark.parametrize("optimize", [False, True])
 @pytest.mark.parametrize("adopt", [False, True])
 def test_agent_adoption_veto_remains_independent(enabled, optimize, adopt):
-    config = PlaybookOptimizerConfig(
-        enabled=enabled,
-        optimize_agent_playbooks=optimize,
-        auto_update_pending_agent_playbooks=adopt,
-        user_playbooks_enabled=True,
+    config = _upgrade_policy(
+        {
+            "enabled": enabled,
+            "optimize_agent_playbooks": optimize,
+            "auto_update_pending_agent_playbooks": adopt,
+            "user_playbooks_enabled": True,
+        }
     )
     assert config.allows_target("agent_playbook") is (enabled and optimize and adopt)
     assert config.allows_target("user_playbook") is enabled
@@ -155,3 +157,51 @@ def _upgrade_policy(legacy):
         {"storage_config": None, "playbook_optimizer_config": legacy}
     )
     return PlaybookOptimizerConfig.model_validate(current["playbook_optimizer_config"])
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("optimize", [None, False, True])
+@pytest.mark.parametrize("adopt", [None, False, True])
+def test_legacy_agent_upgrade_preserves_effective_activation(enabled, optimize, adopt):
+    legacy = {"enabled": enabled, "user_playbooks_enabled": True}
+    if optimize is not None:
+        legacy["optimize_agent_playbooks"] = optimize
+    if adopt is not None:
+        legacy["auto_update_pending_agent_playbooks"] = adopt
+    before = deepcopy(legacy)
+    config = _upgrade_policy(legacy)
+    expected = bool(optimize and (True if adopt is None else adopt))
+    assert config.agent_playbooks_enabled is expected
+    assert config.allows_target("agent_playbook") is (enabled and expected)
+    assert config.allows_target("user_playbook") is enabled
+    assert _upgrade_policy(config.model_dump()).model_dump() == config.model_dump()
+    assert legacy == before
+    for key in ("optimize_agent_playbooks", "auto_update_pending_agent_playbooks"):
+        assert key not in config.model_dump()
+        assert key not in config.model_json_schema()["properties"]
+
+
+@pytest.mark.parametrize(
+    "key", ["optimize_agent_playbooks", "auto_update_pending_agent_playbooks"]
+)
+@pytest.mark.parametrize("value", [False, True, None, "private-invalid-value"])
+def test_retired_agent_names_rejected_by_runtime_even_with_canonical_policy(key, value):
+    with pytest.raises(ValueError, match=key) as error:
+        PlaybookOptimizerConfig.model_validate(
+            {"agent_playbooks_enabled": False, key: value}
+        )
+    assert "private-invalid-value" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "key", ["optimize_agent_playbooks", "auto_update_pending_agent_playbooks"]
+)
+@pytest.mark.parametrize("value", [None, "private-invalid-value"])
+def test_inactive_agent_upgrade_validates_legacy_policy_without_leaking_values(
+    key, value
+):
+    with pytest.raises(StoredConfigurationError) as error:
+        _upgrade_policy(
+            {"enabled": False, "agent_playbooks_enabled": False, key: value}
+        )
+    assert "private-invalid-value" not in str(error.value)

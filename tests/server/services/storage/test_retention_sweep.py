@@ -3,8 +3,9 @@
 These tests are the enterprise ``TestCleanupStorageTables`` class retargeted at
 the new module: the behaviour being asserted (lock, per-target isolation, delete
 arithmetic) did not change when the caller moved, so the assertions did not
-either. What is new is the headroom half -- ``retention.cap.approaching`` and
-``retention.cap.enforced`` -- which had no equivalent on the request path.
+either. What is new is the headroom half -- the ``retention.cap.approaching``
+anomaly and the ``event=retention_cap_enforced`` operational line -- which had
+no equivalent on the request path.
 """
 
 from __future__ import annotations
@@ -52,6 +53,26 @@ def anomalies():
         yield seen
 
 
+_ENFORCED_FIELDS = ("org_id", "project_id", "target", "rows_before", "deleted", "limit")
+
+
+@pytest.fixture
+def enforcements():
+    """Capture each ``event=retention_cap_enforced`` ops line as a dict.
+
+    A designed oldest-row trim is an operational event, not an anomaly, so it
+    is asserted here and never in ``anomalies``.
+    """
+    seen: list[dict] = []
+
+    def info(message, *args, **_kwargs):
+        if message.startswith("event=retention_cap_enforced "):
+            seen.append(dict(zip(_ENFORCED_FIELDS, args, strict=True)))
+
+    with patch.object(retention_sweep._ops_logger, "info", info):
+        yield seen
+
+
 def _limits(**kwargs: int):
     return patch.object(
         retention_sweep, "get_row_retention_limits", return_value=dict(kwargs)
@@ -77,7 +98,9 @@ def test_a_count_below_the_limit_deletes_nothing(storage, granted_lock, anomalie
     assert anomalies == []
 
 
-def test_a_count_equal_to_the_limit_deletes(storage, granted_lock, anomalies):
+def test_a_count_equal_to_the_limit_deletes(
+    storage, granted_lock, anomalies, enforcements
+):
     """Review Focus 3: the boundary is ``count < limit`` returns, so == deletes."""
     storage.count_retention_target_rows.return_value = 500
     storage.delete_oldest_retention_target_rows.return_value = 100
@@ -88,7 +111,8 @@ def test_a_count_equal_to_the_limit_deletes(storage, granted_lock, anomalies):
     storage.delete_oldest_retention_target_rows.assert_called_once_with(
         "interactions", 100
     )
-    assert [name for name, _ in anomalies] == ["retention.cap.enforced"]
+    assert anomalies == []
+    assert [e["target"] for e in enforcements] == ["interactions"]
 
 
 def test_the_warn_boundary_is_inclusive(storage, granted_lock, anomalies):
@@ -115,15 +139,94 @@ def test_just_below_the_warn_boundary_is_silent(storage, granted_lock, anomalies
     assert anomalies == []
 
 
-def test_an_enforced_delete_reports_what_it_removed(storage, granted_lock, anomalies):
+def _state_storage() -> MagicMock:
+    """A ``MagicMock`` storage whose operation-state store really persists."""
+    storage = MagicMock()
+    state: dict[str, dict] = {}
+    storage.estimate_retention_target_rows.return_value = None
+    storage.get_operation_state.side_effect = lambda key: (
+        {"operation_state": state[key]} if key in state else None
+    )
+    storage.upsert_operation_state.side_effect = state.__setitem__
+    return storage
+
+
+def _approaching_per_pass(storage, counts: list[int], anomalies) -> list[int]:
+    """Run one sweep per count; return how many approaching events each raised."""
+    raised = []
+    for count in counts:
+        storage.count_retention_target_rows.return_value = count
+        before = len(anomalies)
+        with _limits(interactions=500):
+            sweep_retention_caps(_ORG, storage)
+        raised.append(
+            sum(name == "retention.cap.approaching" for name, _ in anomalies[before:])
+        )
+    return raised
+
+
+def test_approaching_reports_the_crossing_not_the_standing_condition(
+    granted_lock, anomalies
+):
+    """PYTHON-FASTAPI-14W: a project parked above 90% paged on every sweep."""
+    storage = _state_storage()
+
+    #   in band, in band, in band, cleared, back in band
+    counts = [450, 470, 480, 300, 460]
+    assert _approaching_per_pass(storage, counts, anomalies) == [1, 0, 0, 0, 1]
+
+
+def test_an_enforced_trim_clears_the_band_so_the_next_crossing_reports(
+    granted_lock, anomalies
+):
+    storage = _state_storage()
+    storage.delete_oldest_retention_target_rows.return_value = 100
+
+    assert _approaching_per_pass(storage, [460, 500, 470], anomalies) == [1, 0, 1]
+
+
+def test_approaching_state_is_per_project(granted_lock, anomalies):
+    """Two projects of one org share the store; one must not mute the other."""
+    storage = _state_storage()
+    for project in ("p1", "p2"):
+        with patch.object(retention_sweep, "current_project_id", return_value=project):
+            assert _approaching_per_pass(storage, [450, 460], anomalies) == [1, 0]
+
+
+def test_an_unreadable_state_still_reports(granted_lock, anomalies):
+    """Dedup failing must fail toward the old every-pass report, never silence."""
+    storage = _state_storage()
+    storage.get_operation_state.side_effect = RuntimeError("store down")
+
+    assert _approaching_per_pass(storage, [450, 460], anomalies) == [1, 1]
+
+
+def test_a_failed_measurement_keeps_the_band_without_re_reporting(
+    granted_lock, anomalies
+):
+    storage = _state_storage()
+    assert _approaching_per_pass(storage, [450], anomalies) == [1]
+
+    storage.count_retention_target_rows.side_effect = RuntimeError("boom")
+    with _limits(interactions=500):
+        sweep_retention_caps(_ORG, storage)
+    storage.count_retention_target_rows.side_effect = None
+
+    assert _approaching_per_pass(storage, [460], anomalies) == [0]
+
+
+def test_an_enforced_delete_reports_what_it_removed(
+    storage, granted_lock, anomalies, enforcements
+):
     storage.count_retention_target_rows.return_value = 600
     storage.delete_oldest_retention_target_rows.return_value = 120
 
     with _limits(interactions=500):
         assert sweep_retention_caps(_ORG, storage).deleted == 120
 
-    assert [name for name, _ in anomalies] == ["retention.cap.enforced"]
-    _, tags = anomalies[0]
+    assert anomalies == [], "a designed trim must not raise an anomaly"
+    assert len(enforcements) == 1
+    tags = enforcements[0]
     assert tags["rows_before"] == 600
     assert tags["deleted"] == 120
     assert tags["limit"] == 500
@@ -153,7 +256,9 @@ def test_a_failing_target_does_not_stop_the_rest(storage, granted_lock, anomalie
     )
 
 
-def test_a_backend_missing_the_hook_does_not_stop_the_rest(granted_lock, anomalies):
+def test_a_backend_missing_the_hook_does_not_stop_the_rest(
+    granted_lock, anomalies, enforcements
+):
     """Review Focus 1, with the exception the condition actually raises.
 
     The sibling above uses a ``MagicMock``, on which EVERY attribute exists --
@@ -189,10 +294,8 @@ def test_a_backend_missing_the_hook_does_not_stop_the_rest(granted_lock, anomali
         f"a missing hook stopped the siblings: {storage.deleted}"
     )
     assert result.deleted == 240
-    assert [name for name, _ in anomalies] == [
-        "retention.cap.enforced",
-        "retention.cap.enforced",
-    ]
+    assert anomalies == []
+    assert [e["target"] for e in enforcements] == ["interactions", "profiles"]
 
 
 def test_the_lease_is_released_when_a_target_raises(storage, granted_lock):
@@ -343,7 +446,7 @@ def test_one_probe_call_sizes_every_target(granted_lock, anomalies):
         (449, []),
         (450, ["retention.cap.approaching"]),
         (499, ["retention.cap.approaching"]),
-        (500, ["retention.cap.enforced"]),
+        (500, []),
     ],
 )
 def test_an_exact_probe_decides_like_the_count_did(
@@ -376,22 +479,21 @@ def test_an_estimate_at_or_over_the_threshold_never_deletes_on_its_own(
     assert anomalies == []
 
 
-def test_the_confirming_count_is_what_the_delete_rests_on(granted_lock, anomalies):
+def test_the_confirming_count_is_what_the_delete_rests_on(granted_lock, enforcements):
     storage = _BatchedStorage({"interactions": _estimate(450)})
     storage.count_value = 600
 
     with _limits(interactions=500):
         assert sweep_retention_caps(_ORG, storage).deleted == 120  # type: ignore[arg-type]
 
-    _, tags = anomalies[0]
-    assert tags["rows_before"] == 600
+    assert enforcements[0]["rows_before"] == 600
 
 
 @pytest.mark.parametrize(
     ("snapshot", "now", "expected", "deleted"),
     [
         # A writer crossed the cap after the probe: the delete must still happen.
-        (499, 500, ["retention.cap.enforced"], [("interactions", 100)]),
+        (499, 500, [], [("interactions", 100)]),
         # Rows were removed after the probe: no delete on the stale 500.
         (500, 470, ["retention.cap.approaching"], []),
         (450, 449, [], []),
@@ -586,7 +688,7 @@ def test_an_unbound_pass_refuses_to_probe_when_a_provider_is_registered(
 
 
 def test_oss_without_a_provider_is_not_treated_as_unbound(
-    storage, granted_lock, anomalies
+    storage, granted_lock, anomalies, enforcements
 ):
     """The converse: no provider registered is OSS, where no project exists.
 
@@ -598,7 +700,8 @@ def test_oss_without_a_provider_is_not_treated_as_unbound(
     with _limits(interactions=500):
         assert sweep_retention_caps(_ORG, storage).deleted == 120
 
-    assert [name for name, _ in anomalies] == ["retention.cap.enforced"]
+    assert anomalies == []
+    assert [e["target"] for e in enforcements] == ["interactions"]
 
 
 def test_an_unbound_project_is_tagged_distinguishably(

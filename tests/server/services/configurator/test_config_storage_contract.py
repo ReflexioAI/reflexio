@@ -195,15 +195,19 @@ class TestConfigStorageContract:
         storage = LocalFileConfigStorage(org_id="raises-org", base_dir=str(tmp_path))
         cfg = storage.get_default_config()
 
-        def boom(self: Path, *args, **kwargs) -> int:
+        from reflexio import config_file
+
+        def boom(*args, **kwargs) -> int:
             raise OSError("simulated disk failure")
 
-        monkeypatch.setattr(Path, "write_text", boom)
+        monkeypatch.setattr(config_file.os, "fsync", boom)
 
         with pytest.raises(OSError, match="simulated disk failure"):
             storage.save_config(cfg)
 
-        leaked = list(Path(tmp_path).rglob(f"{Path(storage.config_file).name}*.tmp"))
+        path = Path(storage.config_file)
+        assert not path.exists()
+        leaked = list(path.parent.glob(f".{path.name}.*"))
         assert not leaked, f"tmp file should be cleaned up on failure: {leaked}"
 
     def test_get_version_changes_after_save(
@@ -304,7 +308,7 @@ def test_retired_custom_policy_propagates_without_resetting_file(
 @pytest.mark.parametrize(
     "invalid_policy",
     [
-        {"audit_events_retention_days": 0},
+        {"audit_events_max_age_days": -1},
         {"audit_events_delete_batch_limit": 0},
     ],
 )
@@ -337,13 +341,13 @@ def test_invalid_recognized_policy_preserves_file_and_blocks_cli_fallback(
             load()
         assert path.read_bytes() == original
     payload["governance_retention"] = {
-        "audit_events_retention_days": 45,
+        "audit_events_max_age_days": 45,
         "audit_events_delete_batch_limit": 2,
     }
     path.write_text(json.dumps(payload))
     cfg = storage.load_config()
     assert cfg.lineage_gc.enabled is False
-    assert cfg.governance_retention.audit_events_retention_days == 45
+    assert cfg.governance_retention.audit_events_max_age_days == 45
     storage.save_config(cfg)
     reloaded = storage.load_config()
     assert reloaded.lineage_gc.enabled is False
