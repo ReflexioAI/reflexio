@@ -1,10 +1,8 @@
-"""An organization without storage gets an explicit 503, not an unhandled 500.
+"""An organization without storage gets an explicit 503.
 
-Sentry PYTHON-FASTAPI-16E/16F: ``get_storage()`` raised a bare ``RuntimeError``
-on ``/api/search`` (and enterprise data-source routes), which surfaced as an
-unhandled 500 reported to Sentry at error level. The control,
-``test_an_unexpected_runtime_error_is_still_a_500``, keeps a real server fault
-on the 500 path that reaches Sentry.
+A bare RuntimeError surfaced as an unhandled server fault. A typed caller-state
+exception keeps the storage contract distinct, while the unexpected-runtime-error
+control preserves the real server failure path.
 """
 
 from __future__ import annotations
@@ -57,8 +55,7 @@ def test_search_without_storage_is_an_explicit_503() -> None:
 
 
 def test_storage_not_configured_is_not_reported_as_a_server_error() -> None:
-    """Sentry's Starlette integration reports a handled exception only when it
-    carries a 5xx ``status_code``; the typed error deliberately has none."""
+    """The typed caller-state error has no server-failure status attribute."""
     from reflexio.lib._base import StorageNotConfiguredError
 
     with pytest.raises(StorageNotConfiguredError) as exc_info:

@@ -155,7 +155,7 @@ async def _storage_not_configured_handler(
 ) -> JSONResponse:
     """Answer every route that needs storage the same way when it has none.
 
-    The exception carries no ``status_code``, so Sentry's Starlette integration
+    The exception carries no ``status_code``, so the error reporter integration
     does not report this expected caller state as a server error.
     """
     return JSONResponse(status_code=503, content={"detail": str(exc)})

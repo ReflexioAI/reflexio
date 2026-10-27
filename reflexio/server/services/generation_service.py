@@ -515,8 +515,8 @@ class GenerationService:
         if isinstance(error, AdmissionDeadlineExceededError):
             # Capacity, not a fault: the deadline passed before admission
             # committed, so nothing landed and the route answers with a
-            # retryable 503. An ERROR here was one Sentry event per busy
-            # publish (PYTHON-FASTAPI-Y9).
+            # retryable 503. An ERROR here would report each busy publish
+            # as a server fault.
             logger.warning(
                 "event=publish_admission_deadline_exceeded user_id=%s request_id=%s",
                 sanitise_for_log(user_id),
