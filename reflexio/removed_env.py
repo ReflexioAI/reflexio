@@ -10,7 +10,8 @@ REMOVED_ENV_ALIASES = {
     "DEBUG_LOG_TO_CONSOLE": "REFLEXIO_LOG_PROFILE",
     "DATA_SUPABASE_DB_URL": "DATA_DB_URL",
     "POSTGRES_DB_URL": "DATA_DB_URL",
-    "WEB_CONCURRENCY": "REFLEXIO_SERVER_WORKERS",
+    "WEB_CONCURRENCY": "server --workers N",
+    "REFLEXIO_SERVER_WORKERS": "server --workers N",
     "INTERACTION_CLEANUP_THRESHOLD": "REFLEXIO_ROW_LIMIT_INTERACTIONS",
     "REFLEXIO_EMBED_TORCH_THREADS": "REFLEXIO_NATIVE_COMPUTE_THREADS",
     "REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED": "REFLEXIO_MISSING_VECTOR_BACKFILL_CAP",
@@ -45,10 +46,11 @@ def reject_removed_env(
     )
     if obsolete:
         migration = "; ".join(f"{name} -> {aliases[name]}" for name in obsolete)
-        if "WEB_CONCURRENCY" in obsolete:
+        if {"WEB_CONCURRENCY", "REFLEXIO_SERVER_WORKERS"}.intersection(obsolete):
             migration += (
                 "; preserve the actual worker count with explicit server --workers N; "
-                "REFLEXIO_SERVER_WORKERS is diagnostic metadata only"
+                "worker diagnostics now use that launcher argument directly. "
+                "REFLEXIO_SERVER_WORKERS never selected execution capacity"
             )
         if "REFLEXIO_LLM_FAIL_CLOSED_PROVIDERS" in obsolete:
             migration += (

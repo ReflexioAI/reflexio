@@ -87,35 +87,6 @@ __all__ = [
 ]
 
 
-def _log_multi_worker_daemons() -> None:
-    """Warn once at startup when multiple worker processes will run daemons.
-
-    ``--workers N`` (N>1) runs the full daemon set in every worker process
-    (duplicate ticking). Safe by the concurrent-tick invariant — every daemon
-    tick is concurrent-safe — but worth one visible line (design D3).
-
-    Reads ``REFLEXIO_SERVER_WORKERS``. When the count
-    is unavailable or invalid, this logs nothing.
-    """
-    import os
-
-    from reflexio.removed_env import reject_removed_env
-
-    reject_removed_env(os.environ, canonical="REFLEXIO_SERVER_WORKERS")
-    raw_workers = os.environ.get("REFLEXIO_SERVER_WORKERS")
-    try:
-        workers = int(raw_workers) if raw_workers is not None else None
-    except ValueError:
-        workers = None
-    if workers is not None and workers > 1:
-        logger.warning(
-            "event=multi_worker_daemons workers=%d — background daemons tick in "
-            "every worker process (duplicate ticking; safe: ticks are "
-            "concurrent-safe by design)",
-            workers,
-        )
-
-
 # ``core_router`` stays an aggregator: it ``include_router``s every domain
 # sub-router so ``core_router.routes`` still enumerates all data-plane handlers
 # (enterprise QPS enforcement iterates this list). The include order is
@@ -511,7 +482,6 @@ def create_app(  # noqa: C901
             configure_usage_event_recorder(exempt_usage_event_recorder)
         try:
             if mounts_data_plane:
-                _log_multi_worker_daemons()
                 log_publish_hardware_capacity()
                 validate_llm_availability()
                 # The scheduler discovers every org with resumable work each tick and
