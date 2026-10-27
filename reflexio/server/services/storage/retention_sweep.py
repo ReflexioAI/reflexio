@@ -292,6 +292,8 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
                 age_deleted, age_failed = _age_pass(org_id, project_id, storage, policy)
                 deleted_total += age_deleted
                 age_seconds = time.monotonic() - age_started
+            approaching_before = _load_approaching(storage, org_id, project_id)
+            approaching_now: set[str] = set()
             probe_started = time.monotonic()
             probes: Mapping[str, RetentionProbe] = _probe_targets(storage, limits)
             probe_seconds = time.monotonic() - probe_started
@@ -303,6 +305,8 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
                 try:
                     total_count = _exact_rows(storage, target_name, limit, probe)
                     if total_count is not None:
+                        if limit * CAP_WARN_FRACTION <= total_count < limit:
+                            approaching_now.add(target_name)
                         if total_count >= limit:
                             # A cascade may have removed rows from a target
                             # probed before this delete, and the per-target
@@ -319,9 +323,17 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
                             limit,
                             total_count,
                             alert_only=_cap_alerts_only(policy, target_name),
+                            report_approaching=(
+                                approaching_before is None
+                                or target_name not in approaching_before
+                            ),
                         )
                 except Exception as exc:  # noqa: BLE001
                     targets_failed += 1
+                    # Unmeasured this pass: keep what the last pass knew, so a
+                    # transient read failure neither clears nor re-reports it.
+                    if approaching_before and target_name in approaching_before:
+                        approaching_now.add(target_name)
                     with error_tags(
                         subsystem="retention",
                         op="sweep_target",
@@ -336,6 +348,8 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
                     target_seconds[target_name] = (
                         time.monotonic() - target_started
                     ) + (probe.seconds if probe is not None else 0.0)
+            if approaching_now != (approaching_before or set()):
+                _save_approaching(storage, org_id, project_id, approaching_now)
         finally:
             mgr.release_simple_lock()
     except Exception as exc:  # noqa: BLE001
@@ -603,6 +617,7 @@ def _sweep_target(
     total_count: int,
     *,
     alert_only: bool = False,
+    report_approaching: bool = True,
 ) -> int:
     """Warn near one target's cap; at it, delete -- or, ``alert_only``, page.
 
@@ -617,6 +632,9 @@ def _sweep_target(
         alert_only (bool): The cap is a backstop for customer data: reaching it
             raises an error-level ``retention.cap.exceeded`` for a human to act
             on, and deletes nothing.
+        report_approaching (bool): Whether a count in the warn band raises
+            ``retention.cap.approaching``. False when the previous pass already
+            reported this target in the band (see ``_load_approaching``).
 
     Returns:
         int: Rows deleted for this target.
@@ -626,7 +644,7 @@ def _sweep_target(
     # that really lacks it raises `AttributeError`, which the per-target
     # isolation in the caller absorbs.
     if total_count < limit:
-        if total_count >= limit * CAP_WARN_FRACTION:
+        if report_approaching and total_count >= limit * CAP_WARN_FRACTION:
             capture_anomaly(
                 "retention.cap.approaching",
                 org_id=org_id,
@@ -661,20 +679,70 @@ def _sweep_target(
     deleted = storage.delete_oldest_retention_target_rows(  # type: ignore[reportAttributeAccessIssue]
         target_name, delete_count
     )
-    capture_anomaly(
-        "retention.cap.enforced",
-        org_id=org_id,
-        project_id=project_id,
-        target=target_name,
-        rows_before=total_count,
-        deleted=deleted,
-        limit=limit,
-    )
-    logger.info(
-        "Cleaned up %d oldest %s row(s) (total was %d, limit %d)",
-        deleted,
+    # A designed deletion, not a fault: an operational event, not an anomaly.
+    # A table that keeps climbing past its cap shows in the rows_before series.
+    _ops_logger.info(
+        "event=retention_cap_enforced org_id=%s project_id=%s target=%s "
+        "rows_before=%d deleted=%d limit=%d",
+        org_id,
+        project_id,
         target_name,
         total_count,
+        deleted,
         limit,
     )
     return deleted
+
+
+def _approaching_state_key(org_id: str, project_id: str | None) -> str:
+    return f"storage_table_cleanup::{org_id}::{project_id or '-'}::cap_approaching"
+
+
+def _load_approaching(
+    storage: BaseStorage, org_id: str, project_id: str | None
+) -> set[str] | None:
+    """Targets the previous pass found in the warn band, or ``None`` if unknown.
+
+    ``retention.cap.approaching`` reports the transition into the band, not the
+    standing condition: a project that sits above 90% of a cap for weeks is
+    reported once, and again only after it has left the band (dropped below
+    it, or been trimmed by enforcement) and re-entered. The set lives in the
+    operation-state store, read and written under the sweep's own lease, so it
+    survives restarts and deploys and is shared by every process that may run
+    the sweep.
+
+    An unreadable state is ``None``, which reports every target in the band --
+    the behaviour before this state existed -- rather than going silent.
+    """
+    try:
+        record = storage.get_operation_state(_approaching_state_key(org_id, project_id))
+    except Exception:  # noqa: BLE001 -- fail toward reporting, never silence
+        logger.warning(
+            "event=retention_approaching_state_unreadable org_id=%s",
+            org_id,
+            exc_info=True,
+        )
+        return None
+    if not record:
+        return set()
+    state = record.get("operation_state")
+    targets = state.get("targets") if isinstance(state, dict) else None
+    if not isinstance(targets, list):
+        return set()
+    return {target for target in targets if isinstance(target, str)}
+
+
+def _save_approaching(
+    storage: BaseStorage, org_id: str, project_id: str | None, targets: set[str]
+) -> None:
+    """Persist the warn-band set; a failure only means the next pass re-reports."""
+    try:
+        storage.upsert_operation_state(
+            _approaching_state_key(org_id, project_id), {"targets": sorted(targets)}
+        )
+    except Exception:  # noqa: BLE001 -- never fail the sweep over alert dedup
+        logger.warning(
+            "event=retention_approaching_state_unwritable org_id=%s",
+            org_id,
+            exc_info=True,
+        )
