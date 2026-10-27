@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "REFLEXIO_SEARCH_DEADLINE_ENABLED": "REFLEXIO_SEARCH_TIMEOUT_SECONDS",
     "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "REFLEXIO_EMBEDDING_PROVIDER",
     "PUBLIC_SCHEMA_AUDIT_ENABLED": "PUBLIC_SCHEMA_AUDIT_INTERVAL_SECONDS",
     "REFLEXIO_SEARCH_RECENCY_ENABLED": "REFLEXIO_SEARCH_RECENCY_POOL_SIZE",
@@ -57,6 +58,12 @@ def reject_removed_env(
                 "; capacities now apply to every resolved provider; preserve "
                 "per-provider sizes with REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY_OVERRIDES. "
                 "Dispatch without a permit is no longer supported"
+            )
+        if "REFLEXIO_SEARCH_DEADLINE_ENABLED" in obsolete:
+            migration += (
+                "; preserve the former true work budget with 5 seconds or select "
+                "0 to inherit the original HTTP backstop (former false). "
+                "Accepted-response writes use the remaining HTTP budget"
             )
         if "REFLEXIO_SEARCH_RECENCY_ENABLED" in obsolete:
             migration += (
