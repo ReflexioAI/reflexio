@@ -1812,6 +1812,13 @@ class PublishUserInteractionResponse(BaseModel):
     # otherwise deferred. learning_reason explains coverage/waiting.
     learning_status: str | None = None
     learning_reason: str | None = None
+    # True when a caller-supplied request_id matched an already committed,
+    # identical publish: nothing new was stored and request_id names the
+    # original publish.
+    replayed: bool = False
+    # "request_id_conflict" when the caller-supplied request_id already names a
+    # different publish (another user or payload). Not retryable with that id.
+    error_reason: Literal["request_id_conflict"] | None = None
 
 
 class LearningStatusResponse(BaseModel):

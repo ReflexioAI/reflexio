@@ -47,6 +47,7 @@ from reflexio.server.usage_metrics import record_usage_event
 from reflexio.server.work_scope import current_project_id
 
 if TYPE_CHECKING:
+    from reflexio.server.services.storage.storage_base import BaseStorage
     from reflexio.server.services.unified_search_service import UnifiedSearchService
 
 logger = logging.getLogger(__name__)
@@ -116,6 +117,91 @@ _DURABLE_LOCK_CLEARED_STATE = {
 }
 
 
+class PublishRequestIdConflictError(ValueError):
+    """A caller-supplied ``request_id`` already names a different publish.
+
+    Raised when the id is taken by another user, another payload, or a request
+    this caller cannot see. An exact retry of a committed publish is replayed
+    instead (see ``GenerationService._replay_existing_request``). This is a
+    caller error, not a server fault: it is logged at WARNING.
+    """
+
+    def __init__(self, request_id: str) -> None:
+        super().__init__(
+            f"request_id {request_id!r} already exists for a different publish; "
+            "use a new request_id"
+        )
+        self.request_id = request_id
+
+
+class _RequestIdTakenError(Exception):
+    """Internal: the unique request key refused the insert; roll back and re-check."""
+
+
+# What makes a retry "the same publish". Server-assigned values are excluded:
+# ``created_at`` on the request is server time, and an interaction's
+# ``created_at`` defaults to the time the payload was parsed, so a retry that
+# omits it differs on every attempt. Everything else the caller states is
+# compared, so success is never reported for a different payload.
+_REPLAY_REQUEST_FIELDS = (
+    "user_id",
+    "session_id",
+    "source",
+    "agent_version",
+    "evaluation_only",
+    "retrieval_experiment_id",
+    "retrieval_experiment_arm",
+)
+_REPLAY_INTERACTION_FIELDS = frozenset(
+    {
+        "role",
+        "content",
+        "user_action",
+        "user_action_description",
+        "interacted_image_url",
+        "image_encoding",
+        "shadow_content",
+        "expert_content",
+        "tools_used",
+        "citations",
+    }
+)
+
+
+def _replay_view(interaction: Interaction) -> dict[str, Any]:
+    """An interaction as storage persists it, for exact-retry comparison.
+
+    Retrieved learnings are compared in their persisted form: storage keeps an
+    exposure receipt only as its digest, so the submitted token never
+    round-trips.
+    """
+    view = interaction.model_dump(mode="json", include=set(_REPLAY_INTERACTION_FIELDS))
+    view["retrieved_learnings"] = [
+        learning.persistence_payload() for learning in interaction.retrieved_learnings
+    ]
+    return view
+
+
+def _is_same_publish(
+    existing: Request,
+    stored: list[Interaction],
+    request: Request,
+    interactions: list[Interaction],
+) -> bool:
+    """Whether a committed request and its rows are exactly this publish."""
+    if any(
+        getattr(existing, name) != getattr(request, name)
+        for name in _REPLAY_REQUEST_FIELDS
+    ):
+        return False
+    if len(stored) != len(interactions):
+        return False
+    return all(
+        _replay_view(old) == _replay_view(new)
+        for old, new in zip(stored, interactions, strict=True)
+    )
+
+
 @dataclass
 class GenerationServiceResult:
     """Result of a GenerationService.run call.
@@ -129,6 +215,9 @@ class GenerationServiceResult:
             empty request, missing ``user_id``, or no interactions).
         warnings (list[str]): Non-fatal warnings raised by individual
             generation services during the run.
+        replayed (bool): True when this call matched an already committed
+            publish with the same ``request_id`` and stored nothing new.
+        interaction_ids (list[int]): Interaction ids admitted (or replayed).
     """
 
     request_id: str | None = None
@@ -263,17 +352,34 @@ class GenerationService:
                 check_admission_deadline,
             )
 
-            replay = self._replay_external_admission(
-                admission_participant, request_id, user_id
-            )
-            if replay is not None:
-                return replay
-
             new_interactions: list[Interaction] = (
                 GenerationService.get_interaction_from_publish_user_interaction_request(
                     publish_user_interaction_request, request_id
                 )
             )
+            # Store Request before adding interactions so downstream workers can
+            # resolve the session's source and evaluation-only status.
+            new_request = Request(
+                request_id=request_id,
+                user_id=user_id,
+                source=publish_user_interaction_request.source,
+                agent_version=agent_version,
+                session_id=publish_user_interaction_request.session_id,
+                evaluation_only=publish_user_interaction_request.evaluation_only,
+                retrieval_experiment_id=retrieval_experiment_id,
+                retrieval_experiment_arm=retrieval_experiment_arm,
+            )
+
+            # An external receipt is replayed before any embedding work. An
+            # ordinary publish takes no preflight read: the unique request key
+            # in the admission transaction arbitrates, and a taken id is
+            # replayed or refused after that rollback (below).
+            if admission_participant is not None:
+                replay = self._replay_existing_request(
+                    admission_participant, new_request, new_interactions
+                )
+                if replay is not None:
+                    return replay
 
             # Same phase key as the success events below, which accumulates.
             # This call reaches the same usage-event recorder and can wait on
@@ -299,19 +405,6 @@ class GenerationService:
                     outcome="received",
                     count_value=len(new_interactions),
                 )
-
-            # Store Request before adding interactions so downstream workers can
-            # resolve the session's source and evaluation-only status.
-            new_request = Request(
-                request_id=request_id,
-                user_id=user_id,
-                source=publish_user_interaction_request.source,
-                agent_version=agent_version,
-                session_id=publish_user_interaction_request.session_id,
-                evaluation_only=publish_user_interaction_request.evaluation_only,
-                retrieval_experiment_id=retrieval_experiment_id,
-                retrieval_experiment_arm=retrieval_experiment_arm,
-            )
 
             from reflexio.server.services.durable_learning.admission import (
                 extraction_admission,
@@ -369,9 +462,7 @@ class GenerationService:
                     # Never upsert here: a duplicate must roll back the whole scope.
                     with publish_timing.phase("add_request"):
                         if not storage.add_request_if_absent(new_request):
-                            raise ValueError(
-                                f"request_id {request_id!r} already exists"
-                            )
+                            raise _RequestIdTakenError
                     with publish_timing.phase("add_interactions"):
                         storage.add_user_interactions_bulk(
                             user_id, new_interactions, embeddings_prepared=True
@@ -392,6 +483,16 @@ class GenerationService:
                     ]
             except PostCommitStorageError as error:
                 _warn_publish_followup(result, error)
+            except _RequestIdTakenError:
+                # The id is already committed (a retry, a concurrent duplicate,
+                # or a reuse). Nothing of ours committed: replay or refuse.
+                replay = self._replay_existing_request(
+                    admission_participant, new_request, new_interactions
+                )
+                if replay is None:
+                    # Taken, but not visible to this caller (another project).
+                    raise PublishRequestIdConflictError(request_id) from None
+                return replay
             admitted = True
             extraction_ready = False
             with publish_timing.phase("post_publish"), _publish_followup(result):
@@ -429,56 +530,9 @@ class GenerationService:
             # also catches a failure that never reaches this method at all,
             # such as a cold `get_reflexio` construction.
             if not defer_learning and extraction_ready:
-                from reflexio.server.services.durable_learning.waiting import (
-                    acquire_waiter,
-                    coverage_stalled,
-                    release_waiter,
+                self._wait_for_extraction_coverage(
+                    storage, user_id, request_id, publish_start
                 )
-
-                # Blocking on a background worker is not time spent SERVING
-                # this publish. Because the reporting frame sits further OUT
-                # than this one, the wait is SUBTRACTED rather than the clock
-                # stopped. Without this, a threshold low enough to be useful
-                # reports every waited request as slow -- measured at 609ms for
-                # a publish whose own phases summed to ~110ms.
-                if acquire_waiter(self.org_id):
-                    try:
-                        with publish_timing.excluded():
-                            deadline = publish_start + 240
-                            while time.perf_counter() < deadline:
-                                status = storage.extraction_status(user_id, request_id)
-                                if status["status"] == "done":
-                                    break
-                                # A partial window needs input this caller does
-                                # not have, so the remaining deadline cannot
-                                # change the answer. Without this the default
-                                # library publish blocks the full 240s for any
-                                # user below one window.
-                                if coverage_stalled(status):
-                                    break
-                                time.sleep(
-                                    min(0.25, max(0, deadline - time.perf_counter()))
-                                )
-                    except Exception:  # noqa: BLE001
-                        # Everything above this point has COMMITTED. The waiter
-                        # only observes how far extraction has got; it performs
-                        # no writes. Letting it raise would fall into the outer
-                        # handler, which records `publish_request_failed` and
-                        # re-raises -- the caller is then told their durable
-                        # publish failed, and the response carries no
-                        # `request_id`, so they cannot even poll for the work
-                        # that actually landed. Stop waiting instead: coverage
-                        # is reported separately and is allowed to be unknown.
-                        logger.warning(
-                            "Publish for user %s committed, but waiting for "
-                            "extraction coverage of request %s failed; "
-                            "returning the admitted publish.",
-                            sanitise_for_log(user_id),
-                            sanitise_for_log(request_id),
-                            exc_info=True,
-                        )
-                    finally:
-                        release_waiter(self.org_id)
             return result
 
         except Exception as e:
@@ -501,8 +555,74 @@ class GenerationService:
                     duration_ms=int((time.perf_counter() - publish_start) * 1000),
                     error_kind=type(e).__name__,
                 )
+            if isinstance(e, PublishRequestIdConflictError):
+                # The caller reused an id for a different publish; nothing on
+                # the server is broken, so this is not an error report.
+                logger.warning(
+                    "event=publish_request_id_conflict request_id=%s user_id=%s",
+                    sanitise_for_log(e.request_id),
+                    sanitise_for_log(user_id),
+                )
+                raise
             self._log_publish_failure(e, user_id, result.request_id)
             raise
+
+    def _wait_for_extraction_coverage(
+        self,
+        storage: BaseStorage,
+        user_id: str,
+        request_id: str,
+        publish_start: float,
+    ) -> None:
+        """Wait (bounded) for this committed request's extraction coverage."""
+        from reflexio.server.services.durable_learning.waiting import (
+            acquire_waiter,
+            coverage_stalled,
+            release_waiter,
+        )
+
+        # Blocking on a background worker is not time spent SERVING
+        # this publish. Because the reporting frame sits further OUT
+        # than this one, the wait is SUBTRACTED rather than the clock
+        # stopped. Without this, a threshold low enough to be useful
+        # reports every waited request as slow -- measured at 609ms for
+        # a publish whose own phases summed to ~110ms.
+        if acquire_waiter(self.org_id):
+            try:
+                with publish_timing.excluded():
+                    deadline = publish_start + 240
+                    while time.perf_counter() < deadline:
+                        status = storage.extraction_status(user_id, request_id)
+                        if status["status"] == "done":
+                            break
+                        # A partial window needs input this caller does
+                        # not have, so the remaining deadline cannot
+                        # change the answer. Without this the default
+                        # library publish blocks the full 240s for any
+                        # user below one window.
+                        if coverage_stalled(status):
+                            break
+                        time.sleep(min(0.25, max(0, deadline - time.perf_counter())))
+            except Exception:  # noqa: BLE001
+                # Everything above this point has COMMITTED. The waiter
+                # only observes how far extraction has got; it performs
+                # no writes. Letting it raise would fall into the outer
+                # handler, which records `publish_request_failed` and
+                # re-raises -- the caller is then told their durable
+                # publish failed, and the response carries no
+                # `request_id`, so they cannot even poll for the work
+                # that actually landed. Stop waiting instead: coverage
+                # is reported separately and is allowed to be unknown.
+                logger.warning(
+                    "Publish for user %s committed, but waiting for "
+                    "extraction coverage of request %s failed; "
+                    "returning the admitted publish.",
+                    sanitise_for_log(user_id),
+                    sanitise_for_log(request_id),
+                    exc_info=True,
+                )
+            finally:
+                release_waiter(self.org_id)
 
     def _log_publish_failure(
         self, error: Exception, user_id: str, request_id: str | None
@@ -536,15 +656,22 @@ class GenerationService:
                 user_id,
             )
 
-    def _replay_external_admission(
+    def _replay_existing_request(
         self,
         participant: ExternalAdmissionParticipant | None,
-        request_id: str,
-        user_id: str,
+        new_request: Request,
+        new_interactions: list[Interaction],
     ) -> GenerationServiceResult | None:
-        """Return a fenced existing receipt before preparing embeddings."""
-        if participant is None:
-            return None
+        """Answer a retry of an already committed publish without re-admitting it.
+
+        Returns None when ``request_id`` is unused or invisible to this caller.
+        With an external admission participant the replay is its fenced
+        receipt. Otherwise the committed
+        request and its interactions must equal this publish exactly
+        (``_is_same_publish``); a match returns the original identifiers with
+        ``replayed=True``. Anything else raises PublishRequestIdConflictError.
+        """
+        request_id, user_id = new_request.request_id, new_request.user_id
         storage = self.storage
         if storage is None:
             raise RuntimeError("Publishing requires storage")
@@ -555,18 +682,31 @@ class GenerationService:
         # Read through the writer scope, but create/lock a work row only for a
         # replay; ordinary misses must leave no state behind before admission.
         with storage.commit_scope():
-            if storage.get_request(request_id) is None:
+            existing = storage.get_request(request_id)
+            if existing is None:
                 return None
-            storage.lock_extraction_stream(user_id)
-            check_admission_deadline()
-            receipt = participant.claim(request_id, user_id)
-            if receipt is None:
-                raise ValueError(f"request_id {request_id!r} already exists")
-            return GenerationServiceResult(
-                request_id=receipt.request_id,
-                interaction_ids=list(receipt.interaction_ids),
-                replayed=True,
+            if participant is not None:
+                storage.lock_extraction_stream(user_id)
+                check_admission_deadline()
+                receipt = participant.claim(request_id, user_id)
+                if receipt is None:
+                    raise PublishRequestIdConflictError(request_id)
+                return GenerationServiceResult(
+                    request_id=receipt.request_id,
+                    interaction_ids=list(receipt.interaction_ids),
+                    replayed=True,
+                )
+            stored = sorted(
+                storage.get_interactions_by_request_ids([request_id]),
+                key=lambda interaction: interaction.interaction_id,
             )
+        if not _is_same_publish(existing, stored, new_request, new_interactions):
+            raise PublishRequestIdConflictError(request_id)
+        return GenerationServiceResult(
+            request_id=existing.request_id,
+            interaction_ids=[interaction.interaction_id for interaction in stored],
+            replayed=True,
+        )
 
     def _refresh_publish_stall_warning(
         self,

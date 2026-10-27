@@ -34,7 +34,10 @@ from reflexio.server import publish_timing
 from reflexio.server.services.durable_learning.waiting import (
     AdmissionDeadlineExceededError,
 )
-from reflexio.server.services.generation_service import GenerationService
+from reflexio.server.services.generation_service import (
+    GenerationService,
+    PublishRequestIdConflictError,
+)
 from reflexio.server.services.storage.retention_sweep import (
     maybe_sweep_retention_caps_for_library,
 )
@@ -135,7 +138,12 @@ class InteractionsMixin(ReflexioBase):
             # strings (e.g. server-side Supabase stack traces) into
             # ``message`` turns the CLI's one-line header into a
             # terminal dump.
-            if result.warnings:
+            if result.replayed:
+                message = (
+                    "Interaction already published with this request_id; "
+                    "nothing new was stored"
+                )
+            elif result.warnings:
                 message = (
                     f"Interaction published successfully with "
                     f"{len(result.warnings)} warning(s)"
@@ -182,6 +190,14 @@ class InteractionsMixin(ReflexioBase):
                     else ("done" if status["status"] == "done" else "deferred")
                 ),
                 learning_reason=None if status is None else status["reason"],
+                replayed=result.replayed,
+            )
+        except PublishRequestIdConflictError as e:
+            return PublishUserInteractionResponse(
+                success=False,
+                message=str(e),
+                request_id=e.request_id,
+                error_reason="request_id_conflict",
             )
         except AdmissionDeadlineExceededError:
             # Only the HTTP route sets the admission deadline, and it answers

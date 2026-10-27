@@ -205,6 +205,11 @@ describe("client", () => {
     await expect(client().publish(req, 1000)).resolves.toBeUndefined();
   });
 
+  it("does not report a request_id conflict (409) as delivered", async () => {
+    respond(409, { detail: { reason: "request_id_conflict", message: "request_id 'r' already exists for a different publish" } });
+    await expect(client().publish(req, 1000)).rejects.toSatisfy((e: ReflexioError) => e.status === 409 && e.rejected);
+  });
+
   it("marks 4xx (but not 408/429) as rejected and other failures as retryable", async () => {
     respond(422, { detail: "bad" });
     await expect(client().publish(req, 1000)).rejects.toSatisfy((e: ReflexioError) => e.rejected);

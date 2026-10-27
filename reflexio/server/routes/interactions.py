@@ -288,6 +288,18 @@ async def publish_user_interaction(
                 release_ingestion(org_id)
         finally:
             admission_deadline.reset(token)
+        if response.error_reason == "request_id_conflict":
+            # Nothing was admitted, and resending the same id cannot succeed.
+            # An identical retry of a committed publish is not this case: it
+            # returns 200 with `replayed: true`.
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "request_id_conflict",
+                    "request_id": payload.request_id,
+                    "message": response.message,
+                },
+            )
         response.warnings = [*response.warnings, *payload.payload_warnings()]
         if not response.success or not wait_for_response:
             return response

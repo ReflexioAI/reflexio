@@ -531,10 +531,14 @@ generic handler. Treat **any** `4xx` other than `408`/`429` the same way you
 treat a `ValidationError`: it is a permanent rejection, not a retryable failure.
 A `5xx`, timeout, or connection loss is potentially transient, but it is also
 ambiguous: the server may have accepted the publish before the response was
-lost. Do not blindly replay an ambiguous publish. The optional HTTP
-`request_id` is useful for correlation, but current replay detection is not an
-atomic idempotency guarantee. Quarantine the batch for reconciliation unless
-the host can prove the server did not accept it.
+lost. The SDK does not send a `request_id`, so do not blindly replay an
+ambiguous SDK publish: quarantine the batch for reconciliation unless the host
+can prove the server did not accept it. A direct HTTP caller that supplies its
+own `request_id` can retry safely with the **same** id and the **same** payload:
+if the first attempt committed, the server answers `200` with `replayed: true`
+and the original `request_id`, and stores nothing new. Reusing an id for a
+different user or payload returns HTTP `409` with
+`reason="request_id_conflict"`; that is a permanent rejection.
 
 ### Extraction Is Gated — Don't Expect a Result From One Publish
 
@@ -748,16 +752,21 @@ Follow these rules for production agent integrations:
 ## Direct HTTP Fallback
 
 Use the SDK on Python 3.12 or newer. For older Python runtimes or other
-languages, call the HTTP API directly. The HTTP route does not add an atomic
-idempotency guarantee.
+languages, call the HTTP API directly.
 
 1. Discover routes from `GET /openapi.json` instead of guessing endpoint paths.
 2. Include `Content-Type: application/json`.
 3. Include a normal `User-Agent`, for example `User-Agent: my-agent-reflexio`.
 4. Include `Authorization: Bearer <REFLEXIO_API_KEY>` when using managed
    Reflexio.
-5. If supplied, treat `request_id` as correlation metadata, not as an
-   idempotency key.
+5. If supplied, `request_id` is an idempotency key for the publish. Resend
+   an ambiguous publish with the same `request_id` and identical payload: a
+   committed one answers `replayed: true` without storing anything again.
+   The user, session, source, agent version, `evaluation_only`, retrieval
+   experiment attribution and every interaction field except `created_at` must
+   match, or the server returns HTTP `409` (`reason="request_id_conflict"`).
+   Extraction-control flags on a replay are ignored; the original admission
+   stands.
 
 Core routes:
 

@@ -51,7 +51,7 @@ never on exit codes alone (a fail-open plugin exits 0 whether or not it works):
 | load | `plugins inspect --runtime`: loaded, 3 hooks, `/reflexio` registered |
 | publish | the turn is stored under the plugin's user id and `request_id` |
 | inject + attribute | a seeded preference reaches the model prompt; the stored reply carries it in `retrieved_learnings` and the citation is counted |
-| duplicate publish is recognized | the server's refusal of a re-sent `request_id` matches what the plugin treats as already delivered |
+| duplicate publish is recognized | an identical re-send of a `request_id` is replayed as a success (`replayed: true`), which the plugin treats as delivered |
 | backend down is harmless | with an unreachable backend the turn is unchanged and the failure is reported |
 | recursion guard | `OPENCLAW_SMART_INTERNAL=1` (set by Reflexio's extraction CLI) disables the plugin |
 | session_end finalizes | through a Gateway, `/new` calls `finalize_session` |

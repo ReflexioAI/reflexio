@@ -124,8 +124,9 @@ def test_publish_checks_duplicates_only_in_the_atomic_insert() -> None:
             _publish_request(), defer_learning=True
         )
     assert response.success, response.message
-    assert not duplicate.success
-    assert "already exists" in duplicate.message
+    # The identical retry is answered after the insert's arbitration.
+    assert duplicate.success and duplicate.replayed
+    assert duplicate.request_id == response.request_id
     assert snap is not None
     assert "add_request_ms" in snap
     assert "dup_check_ms" not in snap
