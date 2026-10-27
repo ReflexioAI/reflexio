@@ -1,4 +1,4 @@
-"""A caller-supplied request_id is idempotent across retries (Sentry X3).
+"""A caller-supplied request_id is idempotent across retries.
 
 Real SQLite storage, mocked LLM. A retry of a committed publish is replayed
 with the original identifiers and stores nothing; the same id reused for a
