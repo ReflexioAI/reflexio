@@ -553,3 +553,71 @@ def test_generation_one_does_not_replay_retired_agent_policy(tmp_path):
         LocalConfigFile(path).prepare()
     assert path.read_bytes() == original
     assert not (tmp_path / ".config-migrations").exists()
+
+
+@pytest.mark.parametrize("version", [0, 1, 2, 3])
+def test_historical_gateway_upgrade_preserves_dispatch_and_exact_original(
+    tmp_path, version
+):
+    path = tmp_path / "config.json"
+    payload = {
+        "storage_config": {"type": "sqlite", "db_path": "existing.sqlite"},
+        "api_key_config": {
+            "custom_endpoint": {
+                "api_key": "local-key",
+                "api_base": "https://gateway.invalid/v1",
+                "model": "openai/previous-effective",
+            }
+        },
+        "llm_config": {
+            "generation_model_name": "ignored-before",
+            "embedding_model_name": "local/minilm-l6-v2",
+        },
+        "opaque": {"keep": True},
+    }
+    if version:
+        payload["_reflexio_config_file"] = {"version": version}
+    original = json.dumps(payload).encode()
+    path.write_bytes(original)
+    owner = LocalConfigFile(path)
+    assert owner.prepare()
+    current = owner.read_document()
+    config = validate_stored_config(current)
+    assert config.llm_config is not None
+    assert config.llm_config.generation_model_name == "openai/previous-effective"
+    assert config.llm_config.should_run_model_name == "openai/previous-effective"
+    assert config.llm_config.pre_retrieval_model_name == "openai/previous-effective"
+    assert config.llm_config.embedding_model_name == "local/minilm-l6-v2"
+    assert current["opaque"] == {"keep": True}
+    assert "model" not in current["api_key_config"]["custom_endpoint"]
+    backup = (
+        tmp_path
+        / ".config-migrations/config.json"
+        / f"{hashlib.sha256(original).hexdigest()}.json"
+    )
+    assert backup.read_bytes() == original
+    after = path.read_bytes()
+    assert not owner.prepare()
+    assert path.read_bytes() == after
+
+
+def test_current_generation_cannot_accept_historical_gateway_pin(tmp_path):
+    path = tmp_path / "config.json"
+    original = json.dumps(
+        {
+            "_reflexio_config_file": {"version": FILE_FORMAT_VERSION},
+            "storage_config": None,
+            "api_key_config": {
+                "custom_endpoint": {
+                    "api_key": "private-key",
+                    "api_base": "https://gateway.invalid/v1",
+                    "model": "openai/old",
+                }
+            },
+        }
+    ).encode()
+    path.write_bytes(original)
+    with pytest.raises(StoredConfigurationError):
+        LocalConfigFile(path).prepare()
+    assert path.read_bytes() == original
+    assert not (tmp_path / ".config-migrations").exists()

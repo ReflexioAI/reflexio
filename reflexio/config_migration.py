@@ -286,6 +286,39 @@ def normalize_legacy_config_shape(data: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def canonicalize_custom_endpoint_policy(payload: dict[str, Any]) -> dict[str, Any]:
+    """Retain the historical effective text model, not its ignored overrides."""
+    keys = payload.get("api_key_config")
+    if not isinstance(keys, dict):
+        return payload
+    endpoint = keys.get("custom_endpoint")
+    if not isinstance(endpoint, dict) or "model" not in endpoint:
+        return payload
+    from reflexio.models.api_schema.validators import NonEmptyStr
+    from reflexio.models.config_schema import CustomEndpointConfig, LLMConfig
+
+    transport = {key: value for key, value in endpoint.items() if key != "model"}
+    previous = payload.get("llm_config")
+    try:
+        selected = TypeAdapter(NonEmptyStr).validate_python(endpoint["model"])
+        CustomEndpointConfig.model_validate(transport)
+        LLMConfig.model_validate(previous if previous is not None else {})
+    except ValidationError:
+        raise StoredConfigurationError(
+            "Invalid historical custom endpoint or model selection"
+        ) from None
+    return {
+        **payload,
+        "api_key_config": {**keys, "custom_endpoint": transport},
+        "llm_config": {
+            **(previous or {}),
+            "generation_model_name": selected,
+            "should_run_model_name": selected,
+            "pre_retrieval_model_name": selected,
+        },
+    }
+
+
 def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
     """Normalize retired settings without losing custom policies or opaque metadata.
 
@@ -299,7 +332,9 @@ def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
         strip_retired_pending_followup_warning,
     )
 
-    payload = strip_legacy_housekeeping_fields(data)
+    payload = canonicalize_custom_endpoint_policy(
+        strip_legacy_housekeeping_fields(data)
+    )
     if "shadow_comparison_judge_prompt_version" in payload:
         # Bootstrap-only inference images do not package model schemas.
         from reflexio.models.api_schema.validators import NonEmptyStr

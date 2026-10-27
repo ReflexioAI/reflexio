@@ -27,7 +27,7 @@ def setup(pipeline, monkeypatch, *, gate=True, profiles=True):
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     monkeypatch.setenv("OPENAI_API_KEY", "fixture-no-provider")
     monkeypatch.setenv("REFLEXIO_LLM_CONTEXT_LIMITS_JSON", '{"gpt-4o-mini":128000}')
-    for module in ("_litellm_text_generation", "tools"):
+    for module in ("_litellm_text_generation",):
         monkeypatch.setattr(
             f"reflexio.server.llm.{module}.resolve_model_name",
             lambda **_: "gpt-4o-mini",

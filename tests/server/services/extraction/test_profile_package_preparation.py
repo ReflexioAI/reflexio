@@ -356,12 +356,11 @@ def test_custom_route_credentials_are_not_in_preparation_snapshot(
     route = "https://example.invalid/v1?token=private-route-secret"
     client = LiteLLMClient(
         LiteLLMConfig(
-            model="gpt-4o-mini",
+            model="openai/private",
             max_tokens=8192,
             api_key_config=APIKeyConfig(
                 custom_endpoint=CustomEndpointConfig.model_validate(
                     {
-                        "model": "openai/private",
                         "api_key": "private-api-key",
                         "api_base": route,
                     }

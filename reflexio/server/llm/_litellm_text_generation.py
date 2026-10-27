@@ -1049,13 +1049,14 @@ class TextGenerationMixin:
     def _resolve_primary_model(
         self, model: str | None, model_role: ModelRole | None
     ) -> str:
-        """Resolve the primary model name honoring model_role + custom_endpoint.
+        """Resolve work separately from the endpoint supplying its credentials.
 
         Applies the same precedence used by ``_build_completion_params`` so the
         ladder walker and the per-rung param builder never disagree on which
         model is the primary: an explicit ``model`` (or the config default),
-        overridden by ``model_role`` resolution, overridden in turn by a
-        configured custom endpoint (the highest-priority hard pin).
+        overridden by ``model_role`` resolution on standard providers. A custom
+        gateway has opaque model IDs: its selected client/request model owns
+        dispatch, not provider autodetection or a second endpoint model pin.
 
         Args:
             model: Explicit per-call model, or ``None`` for the config default.
@@ -1065,6 +1066,8 @@ class TextGenerationMixin:
             str: The resolved primary model name.
         """
         actual_model = model or self.config.model
+        if self.config.api_key_config and self.config.api_key_config.custom_endpoint:
+            return actual_model
         if model_role is not None:
             actual_model = resolve_model_name(
                 role=model_role,
@@ -1072,13 +1075,6 @@ class TextGenerationMixin:
                 config_override=None,
                 api_key_config=self.config.api_key_config,
             )
-        ce = (
-            self.config.api_key_config.custom_endpoint
-            if self.config.api_key_config
-            else None
-        )
-        if ce and ce.api_key and ce.api_base:
-            actual_model = ce.model
         return actual_model
 
     def _resolve_ladder(self, **kwargs: Any) -> list[str]:
@@ -1089,12 +1085,9 @@ class TextGenerationMixin:
         completion route and self-referential entries
         would just retry the same broken endpoint, so both are filtered here.
 
-        A configured custom endpoint is a single-model hard pin (every rung's
-        ``_resolve_primary_model`` call re-pins to ``ce.model`` regardless of
-        what the rung was), so fallback is meaningless there: short-circuit to
-        a single-rung ladder rather than dispatching the same call N times
-        under N different "fallback" labels and logging a false
-        ``served_model`` on success.
+        Custom endpoints retain their existing single-rung policy. A process's
+        provider fallback list is not evidence that those model IDs are valid
+        on an unrelated gateway; a model-authority upgrade must not activate it.
 
         Args:
             **kwargs: The original per-call kwargs (``model``, ``model_role``,

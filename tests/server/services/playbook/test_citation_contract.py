@@ -130,7 +130,6 @@ def test_sdk_schema_and_repair_use_selected_contract(
         api_key_config=APIKeyConfig.model_validate(
             {
                 "custom_endpoint": {
-                    "model": "minimax/MiniMax-M3",
                     "api_base": "https://api.minimax.io/v1",
                     "api_key": "sk-cp-scripted-only",
                 }

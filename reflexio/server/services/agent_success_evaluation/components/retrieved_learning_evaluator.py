@@ -196,7 +196,7 @@ class RetrievedLearningEvaluator:
         self.model_name = resolve_model_name(
             ModelRole.EVALUATION,
             site_var_value=site_var.get("default_evaluate_model_name"),
-            config_override=llm_config.generation_model_name if llm_config else None,
+            llm_config=llm_config,
             api_key_config=config.api_key_config if config else None,
         )
 

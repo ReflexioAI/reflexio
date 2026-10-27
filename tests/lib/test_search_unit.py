@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from reflexio.lib._search import SearchMixin
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.retriever_schema import (
@@ -335,3 +337,56 @@ class TestUnifiedSearch:
 
         assert response is expected_response
         mock_run_unified.assert_called_once()
+
+
+@pytest.mark.parametrize("role_model", [None, "openai/lightweight"])
+def test_unified_search_gateway_uses_shared_model_authority(monkeypatch, role_model):
+    from reflexio.models.config_schema import APIKeyConfig, Config, LLMConfig
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+    from reflexio.server.site_var.site_var_manager import SiteVarManager
+
+    mixin = _make_mixin()
+    keys = APIKeyConfig.model_validate(
+        {
+            "custom_endpoint": {
+                "api_key": "test-key",
+                "api_base": "https://gateway.invalid/v1",
+            }
+        }
+    )
+    config = Config(
+        storage_config=None,
+        api_key_config=keys,
+        llm_config=LLMConfig(
+            generation_model_name="openai/gateway-generation",
+            pre_retrieval_model_name=role_model,
+        ),
+    )
+    cast(MagicMock, mixin.request_context.configurator.get_config).return_value = config
+    mixin.llm_client = LiteLLMClient(
+        LiteLLMConfig(model="openai/gateway-generation", api_key_config=keys)
+    )
+    monkeypatch.setattr(
+        SiteVarManager,
+        "get_site_var",
+        lambda *_args: {"pre_retrieval_model_name": "wrong-provider-default"},
+    )
+    expected = role_model or "openai/gateway-generation"
+    observed = []
+
+    def run(**kwargs):
+        # Exercise the caller's selected model through the actual dispatch builder.
+        selected = kwargs["pre_retrieval_model_name"]
+        params = kwargs["llm_client"]._build_completion_params(
+            messages=[], model=selected
+        )[0]
+        observed.append(params["model"])
+        return UnifiedSearchResponse(success=True)
+
+    monkeypatch.setattr(
+        "reflexio.server.services.unified_search_service.run_unified_search", run
+    )
+    assert mixin.unified_search(
+        UnifiedSearchRequest(query="test", enable_reformulation=True), org_id="test_org"
+    ).success
+    assert observed == [expected]

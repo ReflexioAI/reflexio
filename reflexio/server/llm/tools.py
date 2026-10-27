@@ -23,7 +23,7 @@ from reflexio.server.llm.llm_utils import (
     assert_provider_safe_schema,
     make_strict_json_schema,
 )
-from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
+from reflexio.server.llm.model_defaults import ModelRole
 
 if TYPE_CHECKING:
     from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -664,12 +664,7 @@ def run_tool_loop(
         RuntimeError: If the model lacks tool-calling AND no fallback
             (multi-stage or single-shot) is provided.
     """
-    model = resolve_model_name(
-        role=model_role,
-        site_var_value=None,
-        config_override=None,
-        api_key_config=getattr(client.config, "api_key_config", None),
-    )
+    model = client.get_completion_model_ladder(model_role=model_role)[0]
     trace = ToolLoopTrace()
     pending_tool_call_ids: list[str] = []
 

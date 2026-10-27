@@ -1196,7 +1196,8 @@ a bound even when the remaining caller time is shorter than cleanup grace.
 ### OpenAI-compatible gateways, including OrcaRouter (#492)
 
 Use the existing `APIKeyConfig.custom_endpoint` setting for a compatible chat
-gateway. Its model overrides completion-role model selection. Prefix the
+gateway. It supplies transport credentials; select the model on the client or
+through the existing role settings. Prefix the
 **gateway model id** with `openai/` so LiteLLM uses its OpenAI-compatible adapter:
 
 ```python
@@ -1207,7 +1208,6 @@ from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 
 keys = APIKeyConfig(
     custom_endpoint=CustomEndpointConfig(
-        model="openai/orcarouter/auto",
         api_key=os.environ["ORCAROUTER_API_KEY"],
         api_base="https://api.orcarouter.ai/v1",
     )
@@ -1221,7 +1221,10 @@ response = client.generate_chat_response(
 ```
 
 For Reflexio's backend, store this `keys` object in the existing
-`Config.api_key_config` field using the deployment's configurator. The snippet
+`Config.api_key_config` field and select `llm_config.generation_model_name`
+(for example `openai/orcarouter/auto`) using the deployment's configurator.
+Optional should-run and pre-retrieval model choices override that default;
+embeddings keep their independent provider. The snippet
 above constructs an individual LLM client; it does not change a running
 backend's configuration. `ORCAROUTER_API_KEY` here is a caller-provided variable,
 not an automatically detected Reflexio provider variable.
@@ -1307,3 +1310,27 @@ and retain the reserved query URL. Standard or externally attached inference
 retains `shared`. Upgrade image and configuration together: historical API images
 need their historical launcher contract and do not use the workload role to
 select this child. This SDK foundation alone claims no configuration reduction.
+
+
+### Custom gateway model authority
+
+Custom endpoint configuration contains only `api_key` and `api_base`. Select
+text models with the existing `llm_config.generation_model_name`,
+`should_run_model_name`, and `pre_retrieval_model_name` fields. An omitted text
+role inherits the generation model on a custom gateway. Embedding model and
+credentials remain independent. Direct `LiteLLMClient` users choose the model
+in `LiteLLMConfig.model` or the request's `model` argument. A custom gateway
+retains its single-model attempt policy; provider fallback lists are not
+assumed to be supported by that gateway.
+
+Local file generation4 moves the former endpoint `model` into all three text
+role fields, preserving the model that actually ran, even when dormant role
+fields contained different values. Normal launcher preparation upgrades older
+files before serving, stores their exact originals, and is idempotent. It does
+not translate old aliases or change embeddings. Generation4 files reject the
+retired endpoint field. Older SDKs reject generation4 metadata; do not run old
+writers against upgraded files. Embedded hosts must stop old writers and call
+`prepare_local_config` before serving, as described above. Explicit offline
+conversion remains `reflexio config upgrade-file old.json --output canonical.json`.
+Enterprise images own their separate versioned auth-row migration; updating
+only the SDK does not authorize a remote configuration upgrade.

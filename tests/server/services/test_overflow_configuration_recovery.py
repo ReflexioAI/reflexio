@@ -9,7 +9,7 @@ from unittest.mock import Mock
 import pytest
 from pydantic import HttpUrl
 
-from reflexio.models.config_schema import APIKeyConfig, CustomEndpointConfig
+from reflexio.models.config_schema import APIKeyConfig, CustomEndpointConfig, LLMConfig
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.storage.sqlite_storage._extraction_stream import (
     SQLiteStreamSQL,
@@ -46,14 +46,18 @@ def test_corrected_context_declaration_resumes_only_the_original_contract(
     )
     keys = APIKeyConfig(
         custom_endpoint=CustomEndpointConfig(
-            model=model,
             api_key="test-key-no-provider",
             api_base=HttpUrl(endpoint),
         )
     )
     configurator = engine.request_context.configurator
     configurator.set_config(
-        configurator.get_config().model_copy(update={"api_key_config": keys})
+        configurator.get_config().model_copy(
+            update={
+                "api_key_config": keys,
+                "llm_config": LLMConfig(generation_model_name=model),
+            }
+        )
     )
     monkeypatch.setenv(
         "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",

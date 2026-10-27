@@ -215,7 +215,7 @@ class SearchMixin(ReflexioBase):
             config = self.request_context.configurator.get_config()
             config_llm_config = config.llm_config if config else None
 
-            # Resolve pre_retrieval_model_name: config override -> site var -> auto-detect.
+            # Resolve the role through the shared organization/gateway policy.
             model_setting = SiteVarManager().get_site_var("llm_model_setting")
             site_var = model_setting if isinstance(model_setting, dict) else {}
             api_key_config = config.api_key_config if config else None
@@ -223,9 +223,7 @@ class SearchMixin(ReflexioBase):
             pre_retrieval_model_name = resolve_model_name(
                 ModelRole.PRE_RETRIEVAL,
                 site_var_value=site_var.get("pre_retrieval_model_name"),
-                config_override=config_llm_config.pre_retrieval_model_name
-                if config_llm_config
-                else None,
+                llm_config=config_llm_config,
                 api_key_config=api_key_config,
             )
             storage = self._get_storage()

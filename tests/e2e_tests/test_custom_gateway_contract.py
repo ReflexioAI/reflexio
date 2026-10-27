@@ -23,8 +23,9 @@ pytestmark = pytest.mark.e2e
 @pytest.mark.parametrize(
     "gateway_model", ["orcarouter/auto", "anthropic/claude-sonnet-4"]
 )
+@pytest.mark.parametrize("per_call", [False, True])
 def test_custom_gateway_keeps_nested_model_id_and_bearer_key(
-    gateway_model, monkeypatch
+    gateway_model, per_call, monkeypatch
 ):
     # This contract intentionally targets loopback, regardless of the caller's
     # production URL policy. monkeypatch restores that policy after the test.
@@ -84,14 +85,13 @@ def test_custom_gateway_keeps_nested_model_id_and_bearer_key(
     try:
         config = APIKeyConfig(
             custom_endpoint=CustomEndpointConfig(
-                model=f"openai/{gateway_model}",
                 api_key="local-contract-key",
                 api_base=f"http://127.0.0.1:{server.server_port}/v1",  # type: ignore[arg-type]
             )
         )
         client = LiteLLMClient(
             LiteLLMConfig(
-                model="unused-model",
+                model="openai/not-requested" if per_call else f"openai/{gateway_model}",
                 api_key_config=config,
                 timeout=10,
                 max_retries=0,
@@ -105,6 +105,7 @@ def test_custom_gateway_keeps_nested_model_id_and_bearer_key(
             result = client.generate_chat_response(
                 [{"role": "user", "content": "Local contract check."}],
                 model_role=ModelRole.GENERATION,
+                model=f"openai/{gateway_model}" if per_call else None,
             )
         assert result == "gateway-ok"
         assert len(received) == 1
