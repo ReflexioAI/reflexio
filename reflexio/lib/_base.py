@@ -28,6 +28,18 @@ STORAGE_NOT_CONFIGURED_MSG = (
     "Storage not configured. Please configure storage in settings first."
 )
 
+
+class StorageNotConfiguredError(RuntimeError):
+    """The organization has no storage backend configured yet.
+
+    A caller state, not a server fault: the API answers it with the existing
+    503 "storage not configured" contract instead of an unhandled 500.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(STORAGE_NOT_CONFIGURED_MSG)
+
+
 # Wall-clock ceiling for one generation/evaluation call, deliberately above
 # LiteLLMConfig.timeout (120s). That default kills work that is about to
 # succeed: session evaluations against a local-CLI bridge were measured at
@@ -164,7 +176,7 @@ class ReflexioBase:
         """Return storage, raising if not configured."""
         storage = self.request_context.storage
         if storage is None:
-            raise RuntimeError(STORAGE_NOT_CONFIGURED_MSG)
+            raise StorageNotConfiguredError
         return storage
 
     def get_storage(self) -> BaseStorage:
@@ -178,7 +190,7 @@ class ReflexioBase:
             BaseStorage: The configured storage backend.
 
         Raises:
-            RuntimeError: If storage is not configured.
+            StorageNotConfiguredError: If storage is not configured.
         """
         return self._get_storage()
 

@@ -33,6 +33,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware import Middleware
 
+from reflexio.lib._base import StorageNotConfiguredError
 from reflexio.server.api_endpoints import (
     health_api,
     pending_tool_call_api,
@@ -147,6 +148,17 @@ async def _safe_request_validation_exception_handler(
     return JSONResponse(
         status_code=422, content={"detail": safe_validation_errors(errors)}
     )
+
+
+async def _storage_not_configured_handler(
+    request: Request, exc: StorageNotConfiguredError
+) -> JSONResponse:
+    """Answer every route that needs storage the same way when it has none.
+
+    The exception carries no ``status_code``, so Sentry's Starlette integration
+    does not report this expected caller state as a server error.
+    """
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 def _add_openapi_security(app: FastAPI, *, allow_local_access: bool = False) -> None:
@@ -589,6 +601,10 @@ def create_app(  # noqa: C901
     app.add_exception_handler(
         RequestValidationError,
         _safe_request_validation_exception_handler,  # type: ignore[reportArgumentType]
+    )
+    app.add_exception_handler(
+        StorageNotConfiguredError,
+        _storage_not_configured_handler,  # type: ignore[reportArgumentType]
     )
 
     if auth_required:
