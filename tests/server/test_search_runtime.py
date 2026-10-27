@@ -267,8 +267,8 @@ def test_shared_retry_budget_is_atomic():
 
 
 @pytest.mark.asyncio
-async def test_rollback_switch_preserves_measurement(monkeypatch):
-    monkeypatch.setenv("REFLEXIO_SEARCH_DEADLINE_ENABLED", "false")
+async def test_inherited_http_budget_preserves_measurement(monkeypatch):
+    monkeypatch.setenv("REFLEXIO_SEARCH_TIMEOUT_SECONDS", "0")
 
     async def app(scope, receive, send):
         await asyncio.sleep(0.02)
@@ -276,7 +276,7 @@ async def test_rollback_switch_preserves_measurement(monkeypatch):
         await send({"type": "http.response.start", "status": 200, "headers": []})
         await send({"type": "http.response.body", "body": b"{}"})
 
-    messages = await call(runtime.SearchRuntimeMiddleware(app, timeout=0.001))
+    messages = await call(runtime.SearchRuntimeMiddleware(app, timeout=0))
     assert messages[0]["status"] == 200
 
 
@@ -795,14 +795,14 @@ async def test_factory_deadline_and_capacity_responses_keep_browser_headers():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("enabled", ["true", "false"])
+@pytest.mark.parametrize("budget", ["5", "0"])
 @pytest.mark.parametrize("worker_tokens", [1, float("inf")])
 async def test_host_worker_configuration_still_admits_search(
-    monkeypatch, enabled, worker_tokens
+    monkeypatch, budget, worker_tokens
 ):
     from anyio.to_thread import current_default_thread_limiter
 
-    monkeypatch.setenv("REFLEXIO_SEARCH_DEADLINE_ENABLED", enabled)
+    monkeypatch.setenv("REFLEXIO_SEARCH_TIMEOUT_SECONDS", budget)
     limiter = current_default_thread_limiter()
     original_tokens = limiter.total_tokens
     limiter.total_tokens = worker_tokens
@@ -822,16 +822,16 @@ async def test_host_worker_configuration_still_admits_search(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("enabled", ["true", "false"])
+@pytest.mark.parametrize("budget", ["5", "0"])
 async def test_slow_unauthenticated_body_does_not_take_search_worker_slot(
-    monkeypatch, enabled
+    monkeypatch, budget
 ):
     from fastapi import Depends, HTTPException, Request
     from httpx import ASGITransport, AsyncClient
 
     from reflexio.server import middleware as middleware_module
 
-    monkeypatch.setenv("REFLEXIO_SEARCH_DEADLINE_ENABLED", enabled)
+    monkeypatch.setenv("REFLEXIO_SEARCH_TIMEOUT_SECONDS", budget)
     monkeypatch.setattr(middleware_module, "REQUEST_TIMEOUT_SECONDS", 0.1)
     app = FastAPI()
     authenticating = []
@@ -845,7 +845,9 @@ async def test_slow_unauthenticated_body_does_not_take_search_worker_slot(
     def search(payload: dict):
         return payload
 
-    middleware = runtime.SearchRuntimeMiddleware(app, timeout=0.1, capacity=1)
+    middleware = runtime.SearchRuntimeMiddleware(
+        app, timeout=0 if budget == "0" else 0.1, capacity=1
+    )
     waiting, release = asyncio.Event(), asyncio.Event()
 
     async def slow_body():
@@ -876,7 +878,7 @@ async def test_slow_unauthenticated_body_does_not_take_search_worker_slot(
             rejected = await asyncio.wait_for(slow, 0.5)
             assert rejected.status_code == 504
             assert rejected.json()["reason"] == (
-                "search_deadline" if enabled == "true" else "backstop_timeout"
+                "search_deadline" if budget != "0" else "backstop_timeout"
             )
             assert authenticating == ["Bearer valid"]
         finally:
@@ -1092,7 +1094,10 @@ async def test_cancellation_while_finalizer_queued_preserves_disconnect(
 
 
 @pytest.mark.asyncio
-async def test_accepted_exposure_has_commit_budget_after_original_expiry():
+async def test_accepted_exposure_has_commit_budget_after_original_expiry(monkeypatch):
+    from reflexio.server import middleware as http_middleware
+
+    monkeypatch.setattr(http_middleware, "backstop_for", lambda *_args: 2.0)
     effects = []
     budgets = []
 
@@ -1110,7 +1115,7 @@ async def test_accepted_exposure_has_commit_budget_after_original_expiry():
     result = await call(runtime.SearchRuntimeMiddleware(app, timeout=0.1))
     assert result[0]["status"] == 200
     assert effects == ["recorded"]
-    assert 4 < budgets[0] <= 5
+    assert 1 < budgets[0] <= 2
 
 
 @pytest.mark.asyncio
@@ -1217,10 +1222,12 @@ async def test_app_cleanup_completes_before_acceptance_and_finalization():
 
 
 @pytest.mark.asyncio
-async def test_disabled_deadline_finalization_uses_remaining_http_backstop(monkeypatch):
+async def test_inherited_deadline_finalization_uses_remaining_http_backstop(
+    monkeypatch,
+):
     from reflexio.server import middleware as http_middleware
 
-    monkeypatch.setenv("REFLEXIO_SEARCH_DEADLINE_ENABLED", "false")
+    monkeypatch.setenv("REFLEXIO_SEARCH_TIMEOUT_SECONDS", "0")
     monkeypatch.setattr(http_middleware, "backstop_for", lambda *_args: 19.0)
     budgets = []
 

@@ -621,14 +621,34 @@ The provider should retain the scope until that remaining delay expires.
 
 ### Search request deadlines
 
-The HTTP `/api/search` path has a five-second server-arrival deadline and returns
-504 with `reason=search_deadline` on expiry (no partial results). Set
-`REFLEXIO_SEARCH_DEADLINE_ENABLED=false` to disable enforcement while retaining
-request timing. Embedded calls have no newly imposed deadline. Timeout responses
-do not imply a worker thread has stopped: request admission remains held until
-its application and queued/running retrieval work settles. Timing logs for every search
-and application outcome metrics are independent of sampled tracing. See the
-enterprise managed-cloud health guide for rollout and phase interpretation.
+The HTTP `/api/search` work budget is `REFLEXIO_SEARCH_TIMEOUT_SECONDS`:
+finite nonnegative seconds, default `5`. Zero inherits the original HTTP
+backstop (normally 60 seconds, or the existing synchronous/wait budget).
+Positive values are also bounded by that backstop. Blank means the documented
+default; negative, nonnumeric and nonfinite values refuse startup.
+
+Body buffering, authentication, dispatch and retrieval share one absolute
+server-arrival deadline. Queued finalization must enter before that deadline.
+Once the response is accepted, durable writes share the remaining original HTTP
+budget; no fresh five-second window or per-phase clock is created. Accepted
+success cannot become a late 504. This intentionally replaces the former
+renewed five-second commit window: an accepted response may wait longer for
+durable writes, but never receives a new clock beyond the original HTTP budget.
+Admission and connection ownership remain
+held until actual workers and cleanup finish. These are cooperative deadlines,
+not forced Python-thread termination. Embedded calls retain no request scope.
+
+`REFLEXIO_SEARCH_DEADLINE_ENABLED` is retired and rejected, including blank
+assignments and assignments alongside the new setting. Preserve former `true`
+with `REFLEXIO_SEARCH_TIMEOUT_SECONDS=5`, or former `false` with `0`, then remove
+the old assignment. Change task environment and image together when upgrading;
+an older image does not read the new setting. The inherited mode now propagates
+the transport's deadline into workers too. Timing and connection recovery remain
+active in every mode. Expiry reports `search_deadline` when the configured work
+budget wins and `backstop_timeout` when the HTTP budget wins, without partial
+results. Tracing sampling never controls request timing or outcome metrics.
+
+This replaces one selector with one real budget and earns zero knob reductions.
 
 ### Mutation testing
 
