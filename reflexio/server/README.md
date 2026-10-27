@@ -1002,3 +1002,11 @@ Native sentence encoders share `llm/sentence_encoder.py` for lazy loading,
 serialization and process device policy. Adapters retain model/vector semantics;
 `REFLEXIO_EMBEDDING_DEVICE` chooses placement explicitly and
 `REFLEXIO_EMBED_BATCH_SIZE` remains the independent mini-batch budget.
+
+The import-light `reflexio.inference_launch.inference_workload` role resolver
+(`shared`/`query`) drives container child ownership and is available for dedicated
+worker admission. Enterprise adoption must migrate its producers, worker readers
+and monitoring together, using the selected image's historical/current contract.
+Monitoring and supervisors should consume the resolved launch plan rather than
+parse a second API-query toggle or infer ownership from a localhost URL. See
+`developer.md` for the image/configuration upgrade contract.
