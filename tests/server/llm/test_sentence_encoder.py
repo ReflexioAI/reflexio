@@ -1,7 +1,9 @@
 """Execution policy and concurrency shared by native sentence models."""
 
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from types import ModuleType
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -15,6 +17,11 @@ def native_budget_for_stubbed_models(monkeypatch):
     # Test-owned native loading must not depend on the CI runner's BLAS env.
     # The production rejection of retired thread inputs remains unchanged.
     monkeypatch.setenv("REFLEXIO_NATIVE_COMPUTE_THREADS", "2")
+    # Every loader case supplies its own constructor. Avoid importing the full
+    # Transformers stack just to replace it; Torch policy remains real.
+    transformers = ModuleType("sentence_transformers")
+    monkeypatch.setattr(transformers, "SentenceTransformer", None, raising=False)
+    monkeypatch.setitem(sys.modules, "sentence_transformers", transformers)
 
 
 @pytest.mark.parametrize("device", ["cpu", "mps", "cuda:2"])
