@@ -222,3 +222,63 @@ def test_exposure_receipt_round_trip_still_replays(tmp_path, worker_id):
     assert replay.replayed and replay.interaction_ids == first.interaction_ids
     with pytest.raises(PublishRequestIdConflictError):
         svc.run(_receipt_request("another-receipt"), defer_learning=True)
+
+
+def test_empty_role_retry_replays(tmp_path, worker_id):
+    """An empty role is stored and read back as "User"; a retry still replays."""
+    svc = _service(tmp_path, worker_id)
+    store = svc.storage
+    assert isinstance(store, SQLiteStorage)
+    request = PublishUserInteractionRequest(
+        request_id="caller-id",
+        user_id="u1",
+        session_id="s1",
+        interaction_data_list=[InteractionData(role="", content="hello")],
+    )
+    first = svc.run(request, defer_learning=True)
+    rows = _counts(store)
+
+    replay = svc.run(request.model_copy(deep=True), defer_learning=True)
+
+    assert replay.replayed
+    assert replay.interaction_ids == first.interaction_ids
+    assert _counts(store) == rows
+
+
+def test_two_workers_racing_the_insert_admit_once(tmp_path, worker_id, monkeypatch):
+    """Both attempts finish preparation before either inserts; one admits.
+
+    Two services own separate SQLite connections to one database, like two
+    server workers. The barrier holds both after embedding preparation, the last
+    step before the admission transaction, so neither has seen the other's row.
+    """
+    import threading
+
+    services = [_service(tmp_path, worker_id) for _ in range(2)]
+    assert services[0].storage is not services[1].storage
+    barrier = threading.Barrier(2, timeout=30)
+    original = SQLiteStorage.prepare_interaction_embeddings
+
+    def prepare_then_wait(self, interactions):
+        original(self, interactions)
+        barrier.wait()
+
+    monkeypatch.setattr(
+        SQLiteStorage, "prepare_interaction_embeddings", prepare_then_wait
+    )
+    results = {}
+
+    def publish(index: int) -> None:
+        results[index] = services[index].run(_request(), defer_learning=True)
+
+    threads = [threading.Thread(target=publish, args=(i,)) for i in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+
+    assert sorted(r.replayed for r in results.values()) == [False, True]
+    assert results[0].interaction_ids == results[1].interaction_ids
+    store = services[0].storage
+    assert isinstance(store, SQLiteStorage)
+    assert _counts(store) == (1, 2)

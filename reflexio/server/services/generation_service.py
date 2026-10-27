@@ -176,6 +176,8 @@ def _replay_view(interaction: Interaction) -> dict[str, Any]:
     round-trips.
     """
     view = interaction.model_dump(mode="json", include=set(_REPLAY_INTERACTION_FIELDS))
+    # Storage reads an empty role back as the model default.
+    view["role"] = view["role"] or "User"
     view["retrieved_learnings"] = [
         learning.persistence_payload() for learning in interaction.retrieved_learnings
     ]
