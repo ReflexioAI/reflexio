@@ -9,6 +9,10 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
+from reflexio.cli.config_upgrade import convert_config_file
+from reflexio.config_env import StoredConfigurationError
 from reflexio.models.config_schema import (
     Config,
     StorageConfigSQLite,
@@ -89,14 +93,8 @@ def test_configurator_integration():
     print("  Configurator integration tests passed!")
 
 
-def test_load_config_upgrades_legacy_list_shape():
-    """Legacy list-shaped extractor fields on disk are migrated to singular fields.
-
-    Configs persisted before the single-extractor refactor store
-    ``*_extractor_configs`` lists and ``agent_success_configs``. Without
-    migration at the load boundary, ``Config`` would drop these unknown keys and
-    silently lose the user's customization.
-    """
+def test_legacy_list_shape_requires_explicit_conversion():
+    """Only explicit offline conversion accepts aliases, preserving originals."""
     with tempfile.TemporaryDirectory() as temp_dir:
         org_id = "legacy_org"
         storage = LocalFileConfigStorage(org_id=org_id, base_dir=temp_dir)
@@ -122,10 +120,23 @@ def test_load_config_upgrades_legacy_list_shape():
                 }
             ],
         }
-        Path(storage.config_file).parent.mkdir(parents=True, exist_ok=True)
-        Path(storage.config_file).write_text(
-            json.dumps(legacy_payload), encoding="utf-8"
+        path = Path(storage.config_file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        original = json.dumps(legacy_payload).encode()
+        path.write_bytes(original)
+
+        with pytest.raises(StoredConfigurationError):
+            storage.load_config()
+        assert path.read_bytes() == original
+        assert not (path.parent / ".config-migrations").exists()
+        converted = LocalFileConfigStorage(
+            org_id=org_id, base_dir=str(Path(temp_dir) / "converted")
         )
+        destination = Path(converted.config_file)
+        destination.parent.mkdir(parents=True)
+        convert_config_file(path, destination)
+        assert path.read_bytes() == original
+        storage = converted
 
         loaded = storage.load_config()
 
@@ -157,7 +168,7 @@ def test_load_config_upgrades_legacy_list_shape():
         assert storage.load_config() == loaded
 
 
-def test_load_config_removes_retired_reflection_key_and_preserves_settings():
+def test_load_config_preserves_retired_key_without_rewriting():
     with tempfile.TemporaryDirectory() as temp_dir:
         storage = LocalFileConfigStorage(org_id="legacy_reflection", base_dir=temp_dir)
         payload = {
@@ -168,16 +179,16 @@ def test_load_config_removes_retired_reflection_key_and_preserves_settings():
         path = Path(storage.config_file)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload), encoding="utf-8")
+        original = path.read_bytes()
 
         loaded = storage.load_config()
 
         assert loaded.agent_context_prompt == "keep this setting"
-        rewritten = json.loads(path.read_text(encoding="utf-8"))
-        assert "reflection_config" not in rewritten
-        assert rewritten["agent_context_prompt"] == "keep this setting"
+        assert path.read_bytes() == original
+        assert not (path.parent / ".config-migrations").exists()
 
 
-def test_load_config_returns_validated_config_when_cleanup_rewrite_fails():
+def test_load_config_never_attempts_cleanup_publication():
     with tempfile.TemporaryDirectory() as temp_dir:
         storage = LocalFileConfigStorage(
             org_id="readonly_reflection", base_dir=temp_dir
@@ -190,16 +201,18 @@ def test_load_config_returns_validated_config_when_cleanup_rewrite_fails():
         path = Path(storage.config_file)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload), encoding="utf-8")
+        original = path.read_bytes()
 
         with patch.object(
             storage,
             "_save_config_to_local_dir",
             side_effect=OSError("read only"),
-        ):
+        ) as publish:
             loaded = storage.load_config()
 
+        publish.assert_not_called()
         assert loaded.agent_context_prompt == "still available"
-        assert "reflection_config" in json.loads(path.read_text(encoding="utf-8"))
+        assert path.read_bytes() == original
 
 
 def test_load_config():
