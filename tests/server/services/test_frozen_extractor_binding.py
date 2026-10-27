@@ -14,7 +14,10 @@ from reflexio.models.config_schema import (
     UserPlaybookExtractorConfig,
 )
 from reflexio.server.services.extraction.agent_run_records import (
+    build_extractor_agent_run_record,
     matches_frozen_extractor_binding,
+    matches_frozen_window_binding,
+    snapshot_extractor_config,
 )
 from reflexio.server.services.storage.storage_base import (
     AgentBinding,
@@ -384,7 +387,7 @@ def test_equal_parent_binding_authenticates_identity_witnesses(
     storage.get_agent_run.return_value = prior
     coordinator = Mock()
     coordinator.window = SimpleNamespace(
-        window_id="original", policy={"extractor": deepcopy(frozen)}
+        window_id="original", project_id="", policy={"extractor": deepcopy(frozen)}
     )
     assert _require_overflow_parent(storage, coordinator, prior) == prior
     if witness == "snapshot":
@@ -393,3 +396,116 @@ def test_equal_parent_binding_authenticates_identity_witnesses(
         coordinator.window.policy["extractor"] = changed
     with pytest.raises(RuntimeError, match="child parent binding changed"):
         _require_overflow_parent(storage, coordinator, prior)
+
+
+@pytest.mark.parametrize("kind", ["profile", "playbook"])
+def test_first_parent_created_from_retired_label_window_keeps_its_binding(kind):
+    from reflexio.server.services.extraction.resumable_agent import (
+        _require_overflow_parent,
+    )
+
+    config_type = (
+        ProfileExtractorConfig if kind == "profile" else UserPlaybookExtractorConfig
+    )
+    frozen = snapshot_extractor_config(
+        config_type(extraction_definition_prompt="Preserve explicit safeguards")
+    )
+    frozen["extractor_name"] = "historical-label"
+    current = config_type.model_validate(frozen)
+    parent = build_extractor_agent_run_record(
+        org_id="org-1",
+        extractor_kind=kind,
+        user_id="user-1",
+        request_id="request-1",
+        agent_version=None,
+        source="published",
+        request_interaction_data_models=[],
+        extractor_config=current,
+        service_config=SimpleNamespace(frozen_extractor_config=frozen),
+        agent_context="",
+    )
+    parent = replace(parent, id="window:original")
+    assert (
+        "extractor_name" not in parent.generation_request_snapshot["extractor_config"]
+    )
+    storage = Mock()
+    storage.get_agent_run.return_value = parent
+    coordinator = Mock()
+    coordinator.window = SimpleNamespace(
+        window_id="original", project_id="", policy={"extractor": frozen}
+    )
+    before = deepcopy((parent, frozen))
+    assert _require_overflow_parent(storage, coordinator, parent) == parent
+    assert (parent, frozen) == before
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "unknown_window_field",
+        "behavior",
+        "saved_hash",
+        "saved_missing",
+        "saved_label",
+        "missing_window",
+        "kind",
+        "org",
+        "user",
+        "request",
+        "version",
+        "source",
+        "source_order",
+        "project",
+    ],
+)
+def test_normalized_parent_window_compatibility_refuses_other_changes(change):
+    prior, _, _ = _records("profile")
+    saved = deepcopy(prior.generation_request_snapshot["extractor_config"])
+    saved.pop("extractor_name")
+    prior = replace(
+        prior,
+        binding=replace(prior.binding, extractor_config_hash=build_scope_hash(saved)),
+        generation_request_snapshot={"extractor_config": saved},
+        project_id="project-1",
+    )
+    expected = deepcopy(prior)
+    frozen = {**deepcopy(saved), "extractor_name": "historical-label"}
+    project_id = "project-1"
+    if change == "unknown_window_field":
+        frozen["unexpected"] = True
+    elif change == "behavior":
+        frozen["extraction_definition_prompt"] = "Changed policy"
+    elif change == "saved_hash":
+        prior = replace(
+            prior, binding=replace(prior.binding, extractor_config_hash="corrupt")
+        )
+    elif change == "saved_missing":
+        prior = replace(prior, generation_request_snapshot={})
+    elif change == "saved_label":
+        saved["extractor_name"] = "other-label"
+        prior = replace(
+            prior,
+            binding=replace(
+                prior.binding, extractor_config_hash=build_scope_hash(saved)
+            ),
+        )
+    elif change == "missing_window":
+        frozen = None
+    elif change == "project":
+        project_id = "project-2"
+    else:
+        field, value = {
+            "kind": ("extractor_kind", "playbook"),
+            "org": ("org_id", "org-2"),
+            "user": ("user_id", "user-2"),
+            "request": ("request_id", "request-2"),
+            "version": ("agent_version", "version-2"),
+            "source": ("source", "other"),
+            "source_order": ("source_interaction_ids", [7, 12, 20]),
+        }[change]
+        expected = replace(
+            expected, binding=replace(expected.binding, **{field: value})
+        )
+    assert not matches_frozen_window_binding(
+        prior, expected, frozen, project_id=project_id
+    )

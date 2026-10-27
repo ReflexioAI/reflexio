@@ -138,6 +138,15 @@ spent provider attempts are never refunded, so repeated recomputes end in the
 attempt-budget hold.
 
 Protected context exposes only its literal quotation at original source offsets.
+An immutable window admitted before `extractor_name` retirement can create its
+first parent after retirement. The shared `matches_frozen_window_binding` proof
+authenticates the stored parent snapshot with its stored hash, then accepts an
+exact window policy or a window with only that extra retired label. Coordinator
+readmission and child validation use the same proof, including project and all
+other binding fields. Historical snapshots, lookup identities, child receipts
+and spent quota remain unchanged; arbitrary model normalization and unknown
+window fields are not compatibility proofs.
+
 Final reconciliation and cached recovery reuse proof carried by registered child
 outputs or that quoted context; scanning the full source does not make its
 unshown remainder valid prompt evidence. Profile publication keeps canonical
