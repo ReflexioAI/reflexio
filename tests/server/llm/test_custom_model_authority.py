@@ -10,6 +10,8 @@ from reflexio.models.config_schema import APIKeyConfig, Config, LLMConfig
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 
+pytestmark = pytest.mark.unit
+
 
 def endpoint():
     return {"api_key": "test-gateway-key", "api_base": "https://gateway.invalid/v1"}
