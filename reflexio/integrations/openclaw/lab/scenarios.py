@@ -183,9 +183,10 @@ def s_inject_and_attribute() -> None:
 
 
 def s_duplicate_publish_is_recognized() -> None:
-    """The server's refusal of a re-sent request_id must match what the plugin
-    treats as "already delivered" (client.ts ALREADY_ADMITTED); otherwise a
-    publish that committed after a client timeout is retried forever."""
+    """A re-sent request_id must read as delivered to the plugin; otherwise a
+    publish that committed after a client timeout is retried forever. The
+    server replays an identical retry as a success; client.ts ALREADY_ADMITTED
+    covers older servers that refused it instead."""
     wire = json.loads(
         (_THIS_DIR.parent / "plugin/tests/fixtures/wire-requests.json").read_text()
     )
@@ -198,10 +199,8 @@ def s_duplicate_publish_is_recognized() -> None:
     first = CLIENT._make_request("POST", "/api/publish_interaction", json=body)
     assert first.get("success") is not False, first
     second = CLIENT._make_request("POST", "/api/publish_interaction", json=body)
-    assert second.get("success") is False, second
-    assert re.search(r"request_id .* already exists", str(second.get("message"))), (
-        second
-    )
+    assert second.get("success") is True, second
+    assert second.get("replayed") is True, second
 
 
 def s_failed_backend_is_harmless() -> None:

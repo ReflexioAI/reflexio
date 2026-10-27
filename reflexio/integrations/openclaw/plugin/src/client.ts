@@ -85,10 +85,10 @@ export class ReflexioError extends Error {
   }
 }
 
-// The server refuses a second publish under a request_id it has already
-// admitted. A publish that timed out on our side may still have committed
-// (the server's own deadline is minutes, ours seconds), so the retry seeing
-// this message means the first attempt landed.
+// A publish that timed out on our side may still have committed (the
+// server's own deadline is minutes, ours seconds). Current servers replay an
+// identical retry as a success; older ones refuse it with this message, which
+// likewise means the first attempt landed.
 const ALREADY_ADMITTED = /request_id .* already exists/;
 
 export class ReflexioClient {
