@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -102,6 +103,53 @@ def get_session_outcomes(
     return publisher_api.get_session_outcomes(org_id=org_id, request=payload)
 
 
+def _capacity_deadline_exceeded(request_id: str | None) -> HTTPException:
+    """Build the retryable 503 for a publish that admitted nothing.
+
+    Shared by both exits where the deadline passed before admission committed:
+    the ingestion queue, and the worker's pre-commit deadline checks.
+    """
+    return HTTPException(
+        status_code=503,
+        detail={
+            "reason": "capacity_deadline_exceeded",
+            "request_id": request_id,
+            "message": "Publish capacity deadline exceeded; nothing was admitted, so this publish can be retried safely.",
+        },
+    )
+
+
+def _detached_publish_done(
+    org_id: str,
+) -> Callable[[asyncio.Future[PublishUserInteractionResponse]], None]:
+    """Build the done-callback for a publish worker the route stopped awaiting.
+
+    After the route's 504 or a client disconnect, nobody awaits the shielded
+    worker, so its outcome must be consumed here: an unretrieved exception
+    becomes asyncio's ERROR-level "Task exception was never retrieved". An
+    admission deadline is capacity -- the worker already logged it at
+    WARNING -- so it is consumed quietly. Anything else is still a failure
+    and is logged at ERROR with its traceback.
+    """
+    from reflexio.server.services.durable_learning.waiting import (
+        AdmissionDeadlineExceededError,
+        release_ingestion,
+    )
+
+    def done(operation: asyncio.Future[PublishUserInteractionResponse]) -> None:
+        release_ingestion(org_id)
+        if operation.cancelled():
+            return
+        error = operation.exception()
+        if error is not None and not isinstance(error, AdmissionDeadlineExceededError):
+            logger.error(
+                "Detached publish worker failed after the route stopped waiting",
+                exc_info=error,
+            )
+
+    return done
+
+
 @router.post(
     "/api/publish_interaction",
     response_model=PublishUserInteractionResponse,
@@ -116,6 +164,7 @@ async def publish_user_interaction(
     _gate: None = Depends(default_billing_gate("learnings_generated")),  # noqa: B008
 ) -> PublishUserInteractionResponse:
     from reflexio.server.services.durable_learning.waiting import (
+        AdmissionDeadlineExceededError,
         acquire_ingestion,
         acquire_waiter,
         admission_deadline,
@@ -158,14 +207,7 @@ async def publish_user_interaction(
                 # key that most callers cannot set is worse than advertising
                 # nothing. Guarded by a test that keys off that signature, so
                 # it relaxes on its own if the SDK ever gains the parameter.
-                raise HTTPException(
-                    status_code=503,
-                    detail={
-                        "reason": "capacity_deadline_exceeded",
-                        "request_id": payload.request_id,
-                        "message": "Publish capacity deadline exceeded; nothing was admitted, so this publish can be retried safely.",
-                    },
-                )
+                raise _capacity_deadline_exceeded(payload.request_id)
         except BaseException:
             # The ONLY exits that never reach `GenerationService.run`, and so
             # the only ones nothing else will report: the 503 above, and a
@@ -217,8 +259,17 @@ async def publish_user_interaction(
                     asyncio.shield(operation),
                     timeout=max(0, deadline - time.monotonic()),
                 )
+            except AdmissionDeadlineExceededError:
+                # The worker reached the deadline before its admission
+                # transaction committed (every check precedes the commit, and
+                # a raise inside `commit_scope` rolls it back), so this is the
+                # same safe-to-retry refusal as the queue exit above. Before the
+                # `TimeoutError` branch: it subclasses TimeoutError, and that
+                # branch's 504 means admission may already have happened.
+                release_ingestion(org_id)
+                raise _capacity_deadline_exceeded(payload.request_id) from None
             except TimeoutError:
-                operation.add_done_callback(lambda _: release_ingestion(org_id))
+                operation.add_done_callback(_detached_publish_done(org_id))
                 raise HTTPException(
                     status_code=504,
                     detail={
@@ -228,7 +279,7 @@ async def publish_user_interaction(
                     },
                 ) from None
             except asyncio.CancelledError:
-                operation.add_done_callback(lambda _: release_ingestion(org_id))
+                operation.add_done_callback(_detached_publish_done(org_id))
                 raise
             except Exception:
                 release_ingestion(org_id)

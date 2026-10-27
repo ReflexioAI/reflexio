@@ -501,19 +501,40 @@ class GenerationService:
                     duration_ms=int((time.perf_counter() - publish_start) * 1000),
                     error_kind=type(e).__name__,
                 )
-            with error_tags(
-                subsystem="generation",
-                op="refresh_profile",
-                org_id=self.org_id,
-                user_id=user_id,
-                request_id=result.request_id,
-                error_type=type(e).__name__,
-            ):
-                logger.exception(
-                    "Failed to refresh user profile for user id: %s",
-                    user_id,
-                )
+            self._log_publish_failure(e, user_id, result.request_id)
             raise
+
+    def _log_publish_failure(
+        self, error: Exception, user_id: str, request_id: str | None
+    ) -> None:
+        """Log a publish that failed before admission, by what it means."""
+        from reflexio.server.services.durable_learning.waiting import (
+            AdmissionDeadlineExceededError,
+        )
+
+        if isinstance(error, AdmissionDeadlineExceededError):
+            # Capacity, not a fault: the deadline passed before admission
+            # committed, so nothing landed and the route answers with a
+            # retryable 503. An ERROR here was one Sentry event per busy
+            # publish (PYTHON-FASTAPI-Y9).
+            logger.warning(
+                "event=publish_admission_deadline_exceeded user_id=%s request_id=%s",
+                sanitise_for_log(user_id),
+                sanitise_for_log(request_id or ""),
+            )
+            return
+        with error_tags(
+            subsystem="generation",
+            op="refresh_profile",
+            org_id=self.org_id,
+            user_id=user_id,
+            request_id=request_id,
+            error_type=type(error).__name__,
+        ):
+            logger.exception(
+                "Failed to refresh user profile for user id: %s",
+                user_id,
+            )
 
     def _replay_external_admission(
         self,

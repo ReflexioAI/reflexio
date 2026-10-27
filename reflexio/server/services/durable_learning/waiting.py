@@ -41,10 +41,23 @@ def coverage_stalled(status: dict[str, Any]) -> bool:
     return status["status"] == "pending" and status["reason"] == "waiting_for_window"
 
 
+class AdmissionDeadlineExceededError(TimeoutError):
+    """The publish deadline passed before this request was admitted.
+
+    Raised only by :func:`check_admission_deadline`, at points before the
+    admission transaction commits (a raise inside ``commit_scope`` rolls it
+    back), so nothing was admitted and a retry is safe. That is a capacity
+    outcome, not a fault: the route answers it with the same retryable 503
+    ``capacity_deadline_exceeded`` as a refused admission. A distinct type,
+    because a bare ``TimeoutError`` from a socket or driver means something
+    else and must keep reporting as a failure.
+    """
+
+
 def check_admission_deadline() -> None:
     deadline = admission_deadline.get()
     if deadline is not None and time.monotonic() >= deadline:
-        raise TimeoutError("Publish admission deadline exceeded")
+        raise AdmissionDeadlineExceededError("Publish admission deadline exceeded")
 
 
 async def acquire_ingestion(org_id: str, deadline: float) -> bool:
