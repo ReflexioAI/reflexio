@@ -75,8 +75,7 @@ assert.equal(serialized.profile_extractor_config.window_size_override, 23);
 const fetched = {
   ...configSchema.defaultConfig(),
   governance_retention: {
-    audit_events_retention_enabled: false,
-    audit_events_retention_days: 45,
+    audit_events_max_age_days: 0,
     audit_events_delete_batch_limit: 2000,
   },
   lineage_gc: { enabled: false, tombstone_grace_window_days: 120 },

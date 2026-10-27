@@ -308,7 +308,7 @@ def test_retired_custom_policy_propagates_without_resetting_file(
 @pytest.mark.parametrize(
     "invalid_policy",
     [
-        {"audit_events_retention_days": 0},
+        {"audit_events_max_age_days": -1},
         {"audit_events_delete_batch_limit": 0},
     ],
 )
@@ -341,13 +341,13 @@ def test_invalid_recognized_policy_preserves_file_and_blocks_cli_fallback(
             load()
         assert path.read_bytes() == original
     payload["governance_retention"] = {
-        "audit_events_retention_days": 45,
+        "audit_events_max_age_days": 45,
         "audit_events_delete_batch_limit": 2,
     }
     path.write_text(json.dumps(payload))
     cfg = storage.load_config()
     assert cfg.lineage_gc.enabled is False
-    assert cfg.governance_retention.audit_events_retention_days == 45
+    assert cfg.governance_retention.audit_events_max_age_days == 45
     storage.save_config(cfg)
     reloaded = storage.load_config()
     assert reloaded.lineage_gc.enabled is False

@@ -803,8 +803,18 @@ class GovernanceRetentionConfig(BaseModel):
 
     model_config = ConfigDict(hide_input_in_errors=True)
 
-    audit_events_retention_enabled: bool = False
-    audit_events_retention_days: int = Field(default=365, gt=0)
+    audit_events_max_age_days: int = Field(
+        default=0,
+        ge=0,
+        description="Maximum audit-event age in days; zero retains indefinitely.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_obsolete_retention_policy(cls, data: Any) -> Any:
+        return _reject_obsolete_fields(
+            data, ("audit_events_retention_enabled", "audit_events_retention_days")
+        )
 
     audit_events_delete_batch_limit: int = Field(
         default=500,
