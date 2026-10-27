@@ -68,7 +68,7 @@ def test_recency_pool_owns_scored_routing_and_overfetch(monkeypatch, pool_size):
             storage=cast(BaseStorage, _FakeStorage()),
             llm_client=MagicMock(),
             prompt_manager=MagicMock(),
-            retrieval_floor=RetrievalFloorConfig(enabled=False),
+            retrieval_floor=RetrievalFloorConfig(candidate_pool_size=0),
             recency=RecencyConfig(
                 pool_size=pool_size, max_penalty_frac=0, max_penalty_logit=0
             ),
@@ -121,7 +121,7 @@ def test_expired_reranker_does_not_start_source_suppression_lookup(monkeypatch):
                 storage=storage,
                 llm_client=MagicMock(),
                 prompt_manager=MagicMock(),
-                retrieval_floor=RetrievalFloorConfig(enabled=True),
+                retrieval_floor=RetrievalFloorConfig(candidate_pool_size=30),
             )
         score.assert_called_once()
         storage.get_source_user_playbook_ids_for_agent_playbooks.assert_not_called()
@@ -159,7 +159,7 @@ def test_floor_applied_per_arm(monkeypatch):
             llm_client=cast(LiteLLMClient, object()),
             prompt_manager=cast(PromptManager, object()),
             retrieval_floor=RetrievalFloorConfig(
-                enabled=True, user_playbook_floor=-5.0
+                candidate_pool_size=30, user_playbook_floor=-5.0
             ),
         )
 
@@ -194,7 +194,7 @@ def test_floor_recency_applied_after_logits(monkeypatch):
             llm_client=cast(LiteLLMClient, object()),
             prompt_manager=cast(PromptManager, object()),
             retrieval_floor=RetrievalFloorConfig(
-                enabled=True, user_playbook_floor=-5.0
+                candidate_pool_size=30, user_playbook_floor=-5.0
             ),
             recency=RecencyConfig(max_penalty_logit=1.0, pool_size=2),
         )
@@ -232,7 +232,7 @@ def test_floor_recency_does_not_overtake_clearly_more_relevant(monkeypatch):
             llm_client=cast(LiteLLMClient, object()),
             prompt_manager=cast(PromptManager, object()),
             retrieval_floor=RetrievalFloorConfig(
-                enabled=True, user_playbook_floor=-5.0
+                candidate_pool_size=30, user_playbook_floor=-5.0
             ),
             recency=RecencyConfig(max_penalty_logit=0.2, pool_size=2),
         )
@@ -267,7 +267,7 @@ def test_floor_recency_falls_back_to_combined_score_when_unavailable(monkeypatch
             llm_client=cast(LiteLLMClient, object()),
             prompt_manager=cast(PromptManager, object()),
             retrieval_floor=RetrievalFloorConfig(
-                enabled=True, user_playbook_floor=-5.0
+                candidate_pool_size=30, user_playbook_floor=-5.0
             ),
             recency=RecencyConfig(max_penalty_frac=1.0, pool_size=2),
         )
@@ -293,7 +293,7 @@ def test_floor_disabled_returns_all(monkeypatch):
             storage=cast(BaseStorage, _FakeStorage()),
             llm_client=cast(LiteLLMClient, object()),
             prompt_manager=cast(PromptManager, object()),
-            retrieval_floor=RetrievalFloorConfig(enabled=False),
+            retrieval_floor=RetrievalFloorConfig(candidate_pool_size=0),
         )
 
     mock_score.assert_not_called()
@@ -325,9 +325,55 @@ def test_global_reranker_flag_disables_floor_and_pool(monkeypatch):
             storage=cast(BaseStorage, _FakeStorage()),
             llm_client=cast(LiteLLMClient, object()),
             prompt_manager=cast(PromptManager, object()),
-            retrieval_floor=RetrievalFloorConfig(enabled=True, pool_size=30),
+            retrieval_floor=RetrievalFloorConfig(candidate_pool_size=30),
         )
 
     mock_score.assert_not_called()
     assert phase_b_calls[0]["top_k"] == 2
     assert [p.content for p in resp.user_playbooks] == ["a", "b"]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("pool_size", [2, 47])
+@pytest.mark.parametrize("available", [False, True])
+def test_upgraded_budget_preserves_fetch_scoring_and_selected_results(
+    monkeypatch, enabled, pool_size, available
+):
+    from reflexio.config_migration import canonicalize_retrieval_floor_policy
+
+    monkeypatch.setattr(uss, "reranker_enabled", lambda: available)
+    monkeypatch.setattr(
+        uss,
+        "_run_phase_a",
+        lambda **_kw: (ReformulationResult(standalone_query="q"), None, False),
+    )
+    seen = []
+    items = [_fake_user_playbook("good"), _fake_user_playbook("junk")]
+
+    def retrieve(**kwargs):
+        seen.append(kwargs["top_k"])
+        return [], [], items
+
+    monkeypatch.setattr(uss, "_run_phase_b", retrieve)
+    canonical = canonicalize_retrieval_floor_policy(
+        {"enabled": enabled, "pool_size": pool_size, "user_playbook_floor": 0.0}
+    )
+    with patch(
+        "reflexio.server.services.retrieval.relevance_floor.score_pairs_with_model",
+        return_value=("cross-encoder/ms-marco-MiniLM-L-6-v2", [1.0, -1.0]),
+    ) as score:
+        response = uss.run_unified_search(
+            request=UnifiedSearchRequest(query="q", user_id="u", top_k=2),
+            org_id="o",
+            storage=cast(BaseStorage, _FakeStorage()),
+            llm_client=MagicMock(),
+            prompt_manager=MagicMock(),
+            retrieval_floor=RetrievalFloorConfig.model_validate(canonical),
+        )
+    active = enabled and available
+    assert response.success
+    assert seen == [max(2, pool_size if active else 0)]
+    assert score.call_count == int(active)
+    assert [item.content for item in response.user_playbooks] == (
+        ["good"] if active else ["good", "junk"]
+    )

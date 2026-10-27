@@ -19,7 +19,7 @@ from filelock import FileLock
 from reflexio.config_document import decode_config_document, encode_config_document
 from reflexio.config_env import StoredConfigurationError
 
-FILE_FORMAT_VERSION = 1
+FILE_FORMAT_VERSION = 2
 _METADATA_KEY = "_reflexio_config_file"
 
 
@@ -53,13 +53,24 @@ def _decode(raw: bytes) -> tuple[dict[str, Any], dict[str, Any]]:
     return document, metadata
 
 
-def _reject_ambiguous_unmarked_policy(data: dict[str, Any]) -> None:
+def _reject_ambiguous_policy(data: dict[str, Any], version: int) -> None:
     optimizer = data.get("playbook_optimizer_config")
-    if isinstance(optimizer, dict) and "agent_playbooks_enabled" in optimizer:
+    if (
+        version == 0
+        and isinstance(optimizer, dict)
+        and "agent_playbooks_enabled" in optimizer
+    ):
         raise StoredConfigurationError(
             "Unmarked configuration contains agent_playbooks_enabled, which "
             "was ignored by the previous schema. Stop old writers and use "
             "config upgrade-file to explicitly select canonical policy."
+        )
+    floor = data.get("retrieval_floor")
+    if version < 2 and isinstance(floor, dict) and "candidate_pool_size" in floor:
+        raise StoredConfigurationError(
+            "Older configuration contains candidate_pool_size, which was ignored "
+            "by its schema. Stop old writers and use config upgrade-file to "
+            "explicitly select canonical policy."
         )
 
 
@@ -184,8 +195,7 @@ class LocalConfigFile:
         with FileLock(f"{target}.lock", timeout=30, mode=0o600):
             original = target.read_bytes()
             data, metadata = _decode(original)
-            if not metadata:
-                _reject_ambiguous_unmarked_policy(data)
+            _reject_ambiguous_policy(data, metadata.get("version", 0))
             self._validate(data)
             edit(data)
             self._validate(data)
@@ -205,7 +215,10 @@ class LocalConfigFile:
         The launcher must stop old serving writers first. The lock serializes
         current product writers; it is not a CAS against arbitrary file editors.
         """
-        from reflexio.config_migration import canonicalize_agent_optimizer_policy
+        from reflexio.config_migration import (
+            canonicalize_agent_optimizer_policy,
+            canonicalize_retrieval_floor_policy,
+        )
 
         target = self._target()
         if not target.exists():
@@ -218,15 +231,20 @@ class LocalConfigFile:
             if metadata.get("version") == FILE_FORMAT_VERSION:
                 self._validate(data)
                 return False
-            _reject_ambiguous_unmarked_policy(data)
-            # Generation0 is the supported unmarked canonical schema. Only
-            # this newly retired pair is converted, not arbitrary old aliases.
+            version = metadata.get("version", 0)
+            _reject_ambiguous_policy(data, version)
+            # Apply only changes introduced after this file's generation.
+            # Never replay the broad historical alias converter at startup.
             canonical = dict(data)
-            if "playbook_optimizer_config" in canonical:
+            if version == 0 and "playbook_optimizer_config" in canonical:
                 canonical["playbook_optimizer_config"] = (
                     canonicalize_agent_optimizer_policy(
                         canonical["playbook_optimizer_config"]
                     )
+                )
+            if "retrieval_floor" in canonical:
+                canonical["retrieval_floor"] = canonicalize_retrieval_floor_policy(
+                    canonical["retrieval_floor"]
                 )
             self._validate(canonical)
             digest = hashlib.sha256(original).hexdigest()
