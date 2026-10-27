@@ -157,6 +157,12 @@ The `reflexio services start` command has two distinct modes:
 | `--max-requests-jitter J` | 1000 | Per-worker random 0..J added to threshold (avoid synchronized recycles) |
 | `--graceful-shutdown-sec S` | 30 | Drain window for in-flight requests on shutdown |
 
+The backend launcher logs one multi-worker daemon diagnostic from the actual
+`--workers` argument. Worker processes no longer parse a second environment
+setting to repeat that diagnostic. Remove `REFLEXIO_SERVER_WORKERS` from old
+environments; it never selected Uvicorn capacity. Direct Uvicorn starts retain
+`--workers N` and Uvicorn's process logs.
+
 The `--reload + --workers > 1` combination is rejected at CLI parse time (autoreload is incompatible with multi-worker mode).
 
 When the storage backend is SQLite and `--workers > 1`, a warning is logged at startup — SQLite supports concurrent reads but serializes writes (even in WAL mode), so high-QPS writes hit `SQLITE_BUSY`. Switch to Postgres/Supabase for higher write throughput.

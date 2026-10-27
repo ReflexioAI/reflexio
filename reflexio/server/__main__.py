@@ -15,12 +15,16 @@ Flags mirror the subset of ``uvicorn`` CLI options that
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 
 import uvicorn
 
+from reflexio.removed_env import reject_removed_env
 from reflexio.server.uvicorn_logging import UVICORN_LOG_CONFIG
+
+logger = logging.getLogger(__name__)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -89,6 +93,7 @@ def main(argv: list[str] | None = None) -> None:
     """
     parser = _build_parser()
     args = parser.parse_args(argv)
+    reject_removed_env(os.environ, canonical="server --workers N")
 
     if args.workers < 1:
         print("error: --workers must be >= 1", file=sys.stderr)
@@ -108,8 +113,13 @@ def main(argv: list[str] | None = None) -> None:
         ensure_requested_ports_available({"backend": args.port}, host=args.host)
         prepare_local_config()
 
-    # Record the configured worker count for per-worker startup diagnostics.
-    os.environ["REFLEXIO_SERVER_WORKERS"] = str(1 if args.reload else args.workers)
+    if args.workers > 1:
+        logger.warning(
+            "event=multi_worker_daemons workers=%d — background daemons, when "
+            "enabled, run in every worker process (duplicate ticking; core ticks "
+            "are concurrent-safe by design)",
+            args.workers,
+        )
 
     if args.reload:
         uvicorn.run(

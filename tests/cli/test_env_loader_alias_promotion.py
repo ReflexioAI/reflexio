@@ -72,5 +72,5 @@ def test_disabled_dotenv_does_not_validate_or_prune_file(
 def test_worker_upgrade_diagnostic_preserves_execution_count():
     with pytest.raises(ValueError, match="explicit server --workers N") as error:
         reject_removed_env({"WEB_CONCURRENCY": "private-value"})
-    assert "diagnostic metadata only" in str(error.value)
+    assert "never selected execution capacity" in str(error.value)
     assert "private-value" not in str(error.value)
