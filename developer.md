@@ -1286,3 +1286,19 @@ are rejected even when blank or alongside the new name. No env file is rewritten
 The common encoder owns lazy loading and serialized encoding; Nomic's model,
 input truncation, vector normalization and configurable mini-batch budget retain
 their prior behavior.
+
+### One explicit inference workload role
+
+`reflexio.inference_launch.inference_workload` validates the existing `shared`
+or `query` process role without loading server/model dependencies. Blank and
+unset mean `shared`. Container launch chooses its query child only for explicit
+`query` plus the reserved loopback query endpoint; an endpoint alone does not
+claim ownership of a caller's process. Dedicated workers keep their own direct
+entrypoint and explicit workload role.
+
+Remove `REFLEXIO_API_QUERY_EMBEDDING_ENABLED`, including false/blank assignments.
+For the same API-local query topology, select `REFLEXIO_INFERENCE_WORKLOAD=query`
+and retain the reserved query URL. Standard or externally attached inference
+retains `shared`. Upgrade image and configuration together: historical API images
+need their historical launcher contract and do not use the workload role to
+select this child. This SDK foundation alone claims no configuration reduction.
