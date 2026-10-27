@@ -1,0 +1,26 @@
+{
+  "_reflexio_config_file": {
+    "version": 2
+  },
+  "governance_retention": {
+    "audit_events_delete_batch_limit": 2,
+    "audit_events_retention_days": 45,
+    "audit_events_retention_enabled": false
+  },
+  "opaque_extension": {
+    "preserve": [
+      "generation2",
+      false
+    ]
+  },
+  "retrieval_floor": {
+    "agent_playbook_floor": null,
+    "candidate_pool_size": 73,
+    "profile_floor": null,
+    "user_playbook_floor": 0.0
+  },
+  "storage_config": {
+    "db_path": "generation2-owned.sqlite",
+    "type": "sqlite"
+  }
+}

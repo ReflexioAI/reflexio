@@ -199,7 +199,7 @@ def _bootstrap_ctx(
             ),
             expiry_reclamation=types.SimpleNamespace(enabled=expiry),
             governance_retention=types.SimpleNamespace(
-                audit_events_retention_enabled=governance
+                audit_events_max_age_days=45 if governance else 0
             ),
         )
     )

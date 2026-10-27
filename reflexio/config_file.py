@@ -19,7 +19,7 @@ from filelock import FileLock
 from reflexio.config_document import decode_config_document, encode_config_document
 from reflexio.config_env import StoredConfigurationError
 
-FILE_FORMAT_VERSION = 2
+FILE_FORMAT_VERSION = 3
 _METADATA_KEY = "_reflexio_config_file"
 
 
@@ -54,6 +54,17 @@ def _decode(raw: bytes) -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 def _reject_ambiguous_policy(data: dict[str, Any], version: int) -> None:
+    retention = data.get("governance_retention")
+    if (
+        version < 3
+        and isinstance(retention, dict)
+        and "audit_events_max_age_days" in retention
+    ):
+        raise StoredConfigurationError(
+            "Older configuration contains audit_events_max_age_days, which was "
+            "ignored by its schema. Stop old writers and use config upgrade-file "
+            "to explicitly select canonical policy."
+        )
     optimizer = data.get("playbook_optimizer_config")
     if (
         version == 0
@@ -217,6 +228,7 @@ class LocalConfigFile:
         """
         from reflexio.config_migration import (
             canonicalize_agent_optimizer_policy,
+            canonicalize_audit_retention_policy,
             canonicalize_retrieval_floor_policy,
         )
 
@@ -242,9 +254,13 @@ class LocalConfigFile:
                         canonical["playbook_optimizer_config"]
                     )
                 )
-            if "retrieval_floor" in canonical:
+            if version < 2 and "retrieval_floor" in canonical:
                 canonical["retrieval_floor"] = canonicalize_retrieval_floor_policy(
                     canonical["retrieval_floor"]
+                )
+            if "governance_retention" in canonical:
+                canonical["governance_retention"] = canonicalize_audit_retention_policy(
+                    canonical["governance_retention"]
                 )
             self._validate(canonical)
             digest = hashlib.sha256(original).hexdigest()

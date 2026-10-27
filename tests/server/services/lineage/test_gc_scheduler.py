@@ -260,7 +260,7 @@ def test_gc_tick_no_high_volume_anomaly_below_threshold():
 
 def test_gc_tick_never_runs_governance_retention():
     """Invariant: the reduced OSS scheduler sheds the premium concern. Even when
-    a governance_retention config with audit_events_retention_enabled=True is
+    a governance_retention config with audit_events_max_age_days=45 is
     present, _gc_tick must NEVER call gc_governance_retention directly — that
     behavior is only invoked if an enterprise per-org sweep is registered via
     register_per_org_sweep (Task 1 seam)."""
@@ -271,7 +271,7 @@ def test_gc_tick_never_runs_governance_retention():
     # premium path under the old combined scheduler.
     ctx.configurator.get_config.return_value = SimpleNamespace(
         lineage_gc=cfg,
-        governance_retention=SimpleNamespace(audit_events_retention_enabled=True),
+        governance_retention=SimpleNamespace(audit_events_max_age_days=45),
     )
 
     sched = _scheduler(factory=lambda _: ctx)
@@ -546,14 +546,12 @@ def test_gc_tick_stops_mid_tick_when_stop_event_set():
 # ---------------------------------------------------------------------------
 
 
-def _config(
-    *, lineage_gc_enabled: bool = True, audit_events_retention_enabled: bool = False
-):
+def _config(*, lineage_gc_enabled: bool = True, audit_events_max_age_days: int = 0):
     """Build a minimal config-like object for dead-knob warning tests."""
     return SimpleNamespace(
         lineage_gc=SimpleNamespace(enabled=lineage_gc_enabled),
         governance_retention=SimpleNamespace(
-            audit_events_retention_enabled=audit_events_retention_enabled
+            audit_events_max_age_days=audit_events_max_age_days
         ),
     )
 
@@ -579,7 +577,7 @@ def _mock_storage() -> MagicMock:
 def test_oss_dead_knob_warns_when_retention_enabled_without_enterprise(
     monkeypatch, caplog
 ):
-    """OSS-only deployment with audit_events_retention_enabled=True must warn that
+    """OSS-only deployment with audit_events_max_age_days=45 must warn that
     the knob is enterprise-only (the OSS scheduler does not reclaim audit events)."""
     import reflexio.server.services.configurator.configurator as _conf_mod
     from reflexio.server.services.configurator.configurator import DefaultConfigurator
@@ -588,7 +586,7 @@ def test_oss_dead_knob_warns_when_retention_enabled_without_enterprise(
     monkeypatch.setattr(_conf_mod, "_configurator_class", DefaultConfigurator)
 
     # The warning fires before the feature-enabled gate.
-    cfg = _config(lineage_gc_enabled=False, audit_events_retention_enabled=True)
+    cfg = _config(lineage_gc_enabled=False, audit_events_max_age_days=45)
     ctx = _ctx(org_id="org1", storage=_mock_storage(), cfg=cfg)
 
     # Warning-only test: row caps may independently enable the scheduler.
@@ -597,8 +595,7 @@ def test_oss_dead_knob_warns_when_retention_enabled_without_enterprise(
         maybe_start_lineage_gc(lambda _org: ctx, bootstrap_org_id="org1")  # type: ignore[arg-type]
 
     assert any(
-        "audit_events_retention_enabled" in r.message
-        and "enterprise" in r.message.lower()
+        "audit_events_max_age_days" in r.message and "enterprise" in r.message.lower()
         for r in caplog.records
     ), (
         f"Expected a dead-knob warning; got records: {[r.message for r in caplog.records]}"
@@ -616,7 +613,7 @@ def test_oss_dead_knob_does_not_warn_when_not_oss(monkeypatch, caplog):
     monkeypatch.setattr(_conf_mod, "_configurator_class", _FakeEnterpriseConfigurator)
 
     # The warning check runs before the feature-enabled gate.
-    cfg = _config(lineage_gc_enabled=False, audit_events_retention_enabled=True)
+    cfg = _config(lineage_gc_enabled=False, audit_events_max_age_days=45)
     ctx = _ctx(org_id="org1", storage=_mock_storage(), cfg=cfg)
 
     # Warning-only test: row caps may independently enable the scheduler.
@@ -625,7 +622,7 @@ def test_oss_dead_knob_does_not_warn_when_not_oss(monkeypatch, caplog):
         maybe_start_lineage_gc(lambda _org: ctx, bootstrap_org_id="org1")  # type: ignore[arg-type]
 
     dead_knob_records = [
-        r for r in caplog.records if "audit_events_retention_enabled" in r.message
+        r for r in caplog.records if "audit_events_max_age_days" in r.message
     ]
     assert not dead_knob_records, (
         f"Unexpected dead-knob warning in enterprise mode: {[r.message for r in dead_knob_records]}"
@@ -633,14 +630,14 @@ def test_oss_dead_knob_does_not_warn_when_not_oss(monkeypatch, caplog):
 
 
 def test_oss_dead_knob_does_not_warn_when_retention_disabled(monkeypatch, caplog):
-    """No warning when audit_events_retention_enabled=False (even in OSS mode)."""
+    """No warning when audit_events_max_age_days=0 (even in OSS mode)."""
     import reflexio.server.services.configurator.configurator as _conf_mod
     from reflexio.server.services.configurator.configurator import DefaultConfigurator
 
     monkeypatch.setattr(_conf_mod, "_configurator_class", DefaultConfigurator)
 
     # The warning check runs before the feature-enabled gate.
-    cfg = _config(lineage_gc_enabled=False, audit_events_retention_enabled=False)
+    cfg = _config(lineage_gc_enabled=False, audit_events_max_age_days=0)
     ctx = _ctx(org_id="org1", storage=_mock_storage(), cfg=cfg)
 
     # Warning-only test: row caps may independently enable the scheduler.
@@ -649,7 +646,7 @@ def test_oss_dead_knob_does_not_warn_when_retention_disabled(monkeypatch, caplog
         maybe_start_lineage_gc(lambda _org: ctx, bootstrap_org_id="org1")  # type: ignore[arg-type]
 
     dead_knob_records = [
-        r for r in caplog.records if "audit_events_retention_enabled" in r.message
+        r for r in caplog.records if "audit_events_max_age_days" in r.message
     ]
     assert not dead_knob_records, (
         f"Unexpected dead-knob warning when retention disabled: {[r.message for r in dead_knob_records]}"
@@ -663,7 +660,7 @@ def test_oss_dead_knob_warns_even_when_lineage_gc_disabled(monkeypatch, caplog):
 
     monkeypatch.setattr(_conf_mod, "_configurator_class", DefaultConfigurator)
 
-    cfg = _config(lineage_gc_enabled=False, audit_events_retention_enabled=True)
+    cfg = _config(lineage_gc_enabled=False, audit_events_max_age_days=45)
     ctx = _ctx(org_id="org1", storage=_mock_storage(), cfg=cfg)
 
     # Warning-only test: row caps may independently enable the scheduler.
@@ -672,8 +669,7 @@ def test_oss_dead_knob_warns_even_when_lineage_gc_disabled(monkeypatch, caplog):
         maybe_start_lineage_gc(lambda _org: ctx, bootstrap_org_id="org1")  # type: ignore[arg-type]
 
     assert any(
-        "audit_events_retention_enabled" in r.message
-        and "enterprise" in r.message.lower()
+        "audit_events_max_age_days" in r.message and "enterprise" in r.message.lower()
         for r in caplog.records
     ), (
         f"Expected dead-knob warning even with GC disabled; got: {[r.message for r in caplog.records]}"
@@ -775,7 +771,7 @@ def test_gc_tick_isolates_per_org_sweep_failure():
 def test_maybe_start_starts_when_a_per_org_sweep_is_registered_even_with_flags_off():
     """Scheduler must start when any per-org sweep is registered, even if all
     config flags (lineage_gc.enabled, expiry_reclamation.enabled,
-    governance_retention.audit_events_retention_enabled) are False.
+    governance_retention.audit_events_max_age_days) are False.
 
     This preserves the invariant of the deleted GovernanceRetentionScheduler,
     which started unconditionally so that a non-bootstrap tenant with governance
@@ -791,7 +787,7 @@ def test_maybe_start_starts_when_a_per_org_sweep_is_registered_even_with_flags_o
         cfg = SimpleNamespace(
             lineage_gc=SimpleNamespace(enabled=False, poll_interval_seconds=86400),
             expiry_reclamation=SimpleNamespace(enabled=False),
-            governance_retention=SimpleNamespace(audit_events_retention_enabled=False),
+            governance_retention=SimpleNamespace(audit_events_max_age_days=0),
         )
         ctx = SimpleNamespace(
             org_id="org_bootstrap",

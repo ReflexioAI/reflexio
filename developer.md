@@ -963,9 +963,19 @@ positive integer up to PostgreSQL int32, default 500. Enterprise audit cleanup
 applies the configured limit separately to audit events and erasure tombstones
 in the existing transaction. The earlier retirement did not eliminate this
 throughput/transaction-size choice. Stored custom values are preserved; invalid
-values fail loading without resetting other saved policy. Retention enablement,
-ages, grace windows and holds remain independent. OSS accepts this enterprise
+values fail loading without resetting other saved policy. Audit expiration uses
+one `audit_events_max_age_days`: zero retains indefinitely, positive days select
+the exact permitted age. Grace windows and holds remain independent. OSS accepts this enterprise
 policy without executing audit-event cleanup.
+
+Local file generation3 converts the historical audit enable/days pair before
+serving. False or absent enablement becomes zero even when a custom positive age
+was saved. True retains the historical age (365 only when it was absent). Dormant
+ages are validated, and exact original bytes retain disabled custom ages for
+deliberate recovery. Current reads reject both retired names. A previously ignored
+`audit_events_max_age_days` in an older generation requires explicit offline
+conversion; conflicting old/new fields require selecting one policy. Current
+publication stamps generation3. Startup never replays the broad alias converter.
 
 ### Session outcome cutovers
 

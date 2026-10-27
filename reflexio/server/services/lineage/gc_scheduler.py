@@ -1,7 +1,7 @@
 """Process-local scheduler for lineage tombstone garbage collection and expiry reclamation.
 
 Startup runs when EITHER ``lineage_gc.enabled`` OR ``expiry_reclamation.enabled``
-OR ``governance_retention.audit_events_retention_enabled`` is set in the bootstrap
+OR ``governance_retention.audit_events_max_age_days > 0`` is set in the bootstrap
 org's config. Each tick evaluates every org independently.
 
 - **Class A** (profile expiry sweep + tombstone GC): gated on ``lineage_gc.enabled``.
@@ -940,7 +940,7 @@ def maybe_start_lineage_gc(
     Startup runs when the bootstrap-org config sets ``lineage_gc.enabled``
     (Class A: profile expiry + tombstone GC), ``expiry_reclamation.enabled``
     (Class B: plain-row direct-delete sweeps), or
-    ``governance_retention.audit_events_retention_enabled`` — OR when any sweep
+    ``governance_retention.audit_events_max_age_days > 0`` — OR when any sweep
     hook has been registered via :func:`register_per_org_sweep` /
     :func:`register_global_sweep`. Registered hooks carry their own per-org gate
     in the enterprise closure, so the scheduler must start to evaluate them even
@@ -1022,12 +1022,12 @@ def maybe_start_lineage_gc(
         gr = getattr(cfg, "governance_retention", None)
         if (
             gr is not None
-            and getattr(gr, "audit_events_retention_enabled", False)
+            and getattr(gr, "audit_events_max_age_days", 0) > 0
             and get_configurator_class() is DefaultConfigurator
         ):
             logger.warning(
                 "event=governance_retention_knob_ignored "
-                "audit_events_retention_enabled=True but this is an OSS-only "
+                "audit_events_max_age_days>0 but this is an OSS-only "
                 "deployment — audit-event retention is an enterprise-only feature "
                 "and will NOT run here."
             )
@@ -1035,9 +1035,7 @@ def maybe_start_lineage_gc(
         expiry_reclamation_enabled = getattr(
             getattr(cfg, "expiry_reclamation", None), "enabled", False
         )
-        governance_retention_enabled = getattr(
-            gr, "audit_events_retention_enabled", False
-        )
+        governance_retention_enabled = getattr(gr, "audit_events_max_age_days", 0) > 0
         config_enabled = bool(
             cfg.lineage_gc.enabled
             or expiry_reclamation_enabled
