@@ -149,7 +149,8 @@ export class ReflexioClient {
         timeoutMs,
       );
     } catch (err) {
-      if (err instanceof ReflexioError && ALREADY_ADMITTED.test(err.message)) return;
+      // A 409 is a request_id reused for a DIFFERENT publish: never delivered.
+      if (err instanceof ReflexioError && err.status !== 409 && ALREADY_ADMITTED.test(err.message)) return;
       throw err;
     }
   }
