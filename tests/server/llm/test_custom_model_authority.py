@@ -152,6 +152,9 @@ def test_tool_capability_checks_use_the_same_gateway_model_as_dispatch(
         return False
 
     monkeypatch.setattr("reflexio.server.llm.tools.supports_tool_calling", no_tools)
+    monkeypatch.setattr(
+        "litellm.get_model_info", lambda _model: {"supports_function_calling": False}
+    )
     with pytest.raises(RuntimeError, match="gateway-selected lacks tool-calling"):
         run_tool_loop(
             client=client,
@@ -179,3 +182,58 @@ def test_retired_gateway_rejection_does_not_echo_credentials(enclosing):
     for rendered in (str(error.value), repr(error.value)):
         assert "sensitive-gateway-credential" not in rendered
         assert "private-token" not in rendered
+
+
+@pytest.mark.parametrize("empty_registry", [True, False])
+def test_opaque_gateway_tool_loop_attempts_native_protocol(monkeypatch, empty_registry):
+    from pydantic import BaseModel
+
+    from reflexio.server.llm._litellm_types import (
+        CompletionResult,
+        ModelProvenance,
+        ToolCallingChatResponse,
+    )
+    from reflexio.server.llm.tools import Tool, ToolRegistry, run_tool_loop
+
+    class Finish(BaseModel):
+        answer: str
+
+    calls = []
+
+    def complete(**kwargs):
+        calls.append(kwargs)
+        return CompletionResult(
+            value=ToolCallingChatResponse(
+                content="done", tool_calls=None, finish_reason="stop"
+            ),
+            provenance=ModelProvenance(model_name="openai/orcarouter/auto"),
+        )
+
+    client = LiteLLMClient(
+        LiteLLMConfig(
+            model="openai/orcarouter/auto",
+            api_key_config=APIKeyConfig.model_validate({"custom_endpoint": endpoint()}),
+        )
+    )
+    monkeypatch.setattr(client, "generate_chat_response_with_provenance", complete)
+    registry = ToolRegistry(
+        []
+        if empty_registry
+        else [Tool(name="finish", args_model=Finish, handler=lambda _args, _ctx: {})]
+    )
+    result = run_tool_loop(
+        client=client,
+        messages=[{"role": "user", "content": "Run"}],
+        registry=registry,
+        model_role=ModelRole.EXTRACTION_AGENT,
+        max_steps=1,
+        ctx=None,
+    )
+    assert len(calls) == 1
+    assert result.finished_reason != "error"
+    assert (
+        client.get_completion_request_contract(model_role=ModelRole.EXTRACTION_AGENT)[
+            "model"
+        ]
+        == "openai/orcarouter/auto"
+    )

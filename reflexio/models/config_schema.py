@@ -895,8 +895,10 @@ class LLMConfig(BaseModel):
     """
     LLM model configuration overrides.
 
-    These settings override the default model names from llm_model_setting.json site variable.
-    If a field is None, the default from site variable is used.
+    These settings override the llm_model_setting.json site-variable defaults.
+    Custom gateways require a generation model; omitted text-role choices
+    inherit it. Other providers use the site-variable default for an unset role.
+    Embedding selection is independent of the custom text gateway.
     """
 
     should_run_model_name: str | None = None  # Model for "should run extraction" checks

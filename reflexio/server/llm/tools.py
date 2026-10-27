@@ -354,6 +354,25 @@ def supports_tool_calling(model: str) -> bool:
         return True
 
 
+def _can_attempt_native_tools(client: LiteLLMClient, model: str) -> bool:
+    """Distinguish missing gateway catalog metadata from a known negative."""
+    if supports_tool_calling(model):
+        return True
+    if not (
+        client.config.api_key_config and client.config.api_key_config.custom_endpoint
+    ):
+        return False
+    import litellm
+
+    # Opaque gateway IDs need not appear in the provider catalog. Attempt the
+    # actual protocol when metadata is absent, retaining known-negative fallback.
+    try:
+        advertised = litellm.get_model_info(model).get("supports_function_calling")
+    except Exception:
+        advertised = None
+    return advertised is not False
+
+
 # Cap on tool-result payload size injected back into the message history
 # in multi-stage mode. Without this, a single fat search response could
 # blow the model's context window in two or three turns.
@@ -677,7 +696,7 @@ def run_tool_loop(
         )
 
     # ---- Capability fallback ------------------------------------------
-    if not supports_tool_calling(model):
+    if not _can_attempt_native_tools(client, model):
         if multi_stage_schema is not None:
             return _run_multi_stage_fallback(
                 client=client,
