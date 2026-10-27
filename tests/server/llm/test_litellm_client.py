@@ -115,7 +115,6 @@ def test_installed_litellm_transport_round_trip(monkeypatch):
                     fallback_models=[],
                     api_key_config=APIKeyConfig(
                         custom_endpoint=CustomEndpointConfig(
-                            model="openai/gpt-4o-mini",
                             api_key="loopback-test-key",
                             api_base=HttpUrl(
                                 f"http://127.0.0.1:{server.server_port}/v1"

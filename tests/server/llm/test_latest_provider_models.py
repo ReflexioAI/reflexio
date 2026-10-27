@@ -444,9 +444,6 @@ def test_real_adapter_two_turn_tool_loop(model, snapshot, transport, monkeypatch
     )
     client = LiteLLMClient(LiteLLMConfig(model=model))
     monkeypatch.setattr(
-        "reflexio.server.llm.tools.resolve_model_name", lambda **_: model
-    )
-    monkeypatch.setattr(
         "reflexio.server.llm._litellm_text_generation.resolve_model_name",
         lambda *_a, **_k: model,
     )
@@ -664,9 +661,6 @@ def test_interleaved_signed_thinking_keeps_exact_provider_block_order(
     responses.extend([first, _provider_response(model)])
     client = LiteLLMClient(LiteLLMConfig(model=model))
     monkeypatch.setattr(
-        "reflexio.server.llm.tools.resolve_model_name", lambda **_: model
-    )
-    monkeypatch.setattr(
         "reflexio.server.llm._litellm_text_generation.resolve_model_name",
         lambda *_a, **_k: model,
     )
@@ -843,9 +837,6 @@ def test_secondary_tool_loop_through_actual_subprocess(model, monkeypatch):
 
     monkeypatch.setattr(
         client, "generate_chat_response_with_provenance", with_low_effort
-    )
-    monkeypatch.setattr(
-        "reflexio.server.llm.tools.resolve_model_name", lambda **_: model
     )
     monkeypatch.setattr(
         "reflexio.server.llm._litellm_text_generation.resolve_model_name",

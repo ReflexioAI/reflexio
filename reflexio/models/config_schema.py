@@ -354,16 +354,21 @@ class CustomEndpointConfig(BaseModel):
     """Custom OpenAI-compatible endpoint configuration.
 
     Args:
-        model (str): Model name to use (e.g., 'openai/mistral', 'mistral'). Passed as-is to LiteLLM.
         api_key (str): API key for the custom endpoint.
         api_base (SafeHttpUrl): Base URL of the custom endpoint (e.g., 'http://localhost:8000/v1').
             Validated against SSRF: always blocks cloud metadata endpoints;
             blocks private IPs when REFLEXIO_BLOCK_PRIVATE_URLS=true.
     """
 
-    model: NonEmptyStr
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     api_key: NonEmptyStr
     api_base: SafeHttpUrl
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_retired_model_pin(cls, data: Any) -> Any:
+        return _reject_obsolete_fields(data, ("model",))
 
 
 class APIKeyConfig(BaseModel):
@@ -375,6 +380,8 @@ class APIKeyConfig(BaseModel):
     OpenAI-compatible endpoints. When custom_endpoint is configured with non-empty fields,
     it takes priority over all other providers for LLM completion calls (but not embeddings).
     """
+
+    model_config = ConfigDict(hide_input_in_errors=True)
 
     custom_endpoint: CustomEndpointConfig | None = None
     openai: OpenAIConfig | None = None
@@ -888,8 +895,10 @@ class LLMConfig(BaseModel):
     """
     LLM model configuration overrides.
 
-    These settings override the default model names from llm_model_setting.json site variable.
-    If a field is None, the default from site variable is used.
+    These settings override the llm_model_setting.json site-variable defaults.
+    Custom gateways require a generation model; omitted text-role choices
+    inherit it. Other providers use the site-variable default for an unset role.
+    Embedding selection is independent of the custom text gateway.
     """
 
     should_run_model_name: str | None = None  # Model for "should run extraction" checks
@@ -1058,6 +1067,20 @@ class Config(BaseModel):
         """Validate that stride_size <= window_size."""
         if self.stride_size > self.window_size:
             raise ValueError("stride_size must be <= window_size")
+        return self
+
+    @model_validator(mode="after")
+    def check_custom_endpoint_model_authority(self) -> Self:
+        """A gateway supplies transport; the existing model policy selects work."""
+        if self.api_key_config and self.api_key_config.custom_endpoint:
+            selected = (
+                self.llm_config.generation_model_name if self.llm_config else None
+            )
+            if not selected or not selected.strip():
+                raise ValueError(
+                    "Custom endpoints require llm_config.generation_model_name. "
+                    "Explicitly upgrade historical endpoint model settings."
+                )
         return self
 
     @model_validator(mode="after")

@@ -15,7 +15,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from reflexio.models.config_schema import APIKeyConfig
+    from reflexio.models.config_schema import APIKeyConfig, LLMConfig
 
 # Env var opting into the Claude Code CLI provider (registered in
 # reflexio.server.llm.providers.claude_code_provider). When set to "1"
@@ -425,19 +425,23 @@ def resolve_model_name(
     site_var_value: str | None = None,
     config_override: str | None = None,
     api_key_config: APIKeyConfig | None = None,
+    llm_config: LLMConfig | None = None,
 ) -> str:
     """Resolve a model name using the role-specific default chain.
 
     Resolution order (highest priority first):
-        1. config_override (from LLMConfig, org-level)
-        2. For EMBEDDING, the OSS local MiniLM model
-        3. For other roles, site_var_value then auto-detect from available API keys
+        1. config_override, then the matching llm_config role choice
+        2. For custom gateways, inherit their generation model for text roles
+        3. For EMBEDDING, the OSS local MiniLM model
+        4. For other roles, site_var_value then auto-detect from available API keys
 
     Args:
         role: The model role to resolve.
         site_var_value: Value from llm_model_setting.json. Ignored for embeddings.
         config_override: Value from org-level LLMConfig.
         api_key_config: Optional org-level API key configuration for provider detection.
+        llm_config: Existing organization role choices. Custom gateways inherit
+            their generation model for text roles without an explicit choice.
 
     Returns:
         str: The resolved model name.
@@ -447,6 +451,24 @@ def resolve_model_name(
     """
     if config_override:
         return config_override
+    if llm_config is not None:
+        field = {
+            ModelRole.GENERATION: "generation_model_name",
+            ModelRole.EVALUATION: "generation_model_name",
+            ModelRole.SHOULD_RUN: "should_run_model_name",
+            ModelRole.PRE_RETRIEVAL: "pre_retrieval_model_name",
+            ModelRole.EMBEDDING: "embedding_model_name",
+        }.get(role)
+        selected = getattr(llm_config, field) if field else None
+        if selected:
+            return selected
+        if (
+            role != ModelRole.EMBEDDING
+            and api_key_config is not None
+            and api_key_config.custom_endpoint is not None
+            and llm_config.generation_model_name
+        ):
+            return llm_config.generation_model_name
     if role == ModelRole.EMBEDDING:
         return (
             _PROVIDER_DEFAULTS[_LOCAL_EMBEDDING_PROVIDER].embedding

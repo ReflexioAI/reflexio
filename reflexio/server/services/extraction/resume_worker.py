@@ -150,7 +150,7 @@ def _create_llm_client(request_context: RequestContext) -> LiteLLMClient:
     model_name = resolve_model_name(
         ModelRole.GENERATION,
         site_var_value=site_var.get("default_generation_model_name"),
-        config_override=llm_config.generation_model_name if llm_config else None,
+        llm_config=llm_config,
         api_key_config=api_key_config,
     )
     return LiteLLMClient(LiteLLMConfig(model=model_name, api_key_config=api_key_config))

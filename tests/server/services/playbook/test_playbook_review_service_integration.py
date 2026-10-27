@@ -11,6 +11,7 @@ import pytest
 from reflexio.models.api_schema.domain import Interaction, Request, Status, UserPlaybook
 from reflexio.models.api_schema.domain.entities import ReviewUserPlaybooksRequest
 from reflexio.models.api_schema.domain.enums import UserActionType
+from reflexio.models.config_schema import LLMConfig
 from reflexio.server.services.playbook.components.reviewer import (
     CandidateEvidenceUnit,
     CandidateReviewDecision,
@@ -142,6 +143,7 @@ def _service(storage: SQLiteStorage) -> UserPlaybookReviewService:
         stride_size=8,
         tool_can_use=None,
         api_key_config=None,
+        llm_config=LLMConfig(),
     )
     request_context = SimpleNamespace(
         storage=storage,

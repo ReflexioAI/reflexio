@@ -19,7 +19,7 @@ from filelock import FileLock
 from reflexio.config_document import decode_config_document, encode_config_document
 from reflexio.config_env import StoredConfigurationError
 
-FILE_FORMAT_VERSION = 3
+FILE_FORMAT_VERSION = 4
 _METADATA_KEY = "_reflexio_config_file"
 
 
@@ -229,6 +229,7 @@ class LocalConfigFile:
         from reflexio.config_migration import (
             canonicalize_agent_optimizer_policy,
             canonicalize_audit_retention_policy,
+            canonicalize_custom_endpoint_policy,
             canonicalize_retrieval_floor_policy,
         )
 
@@ -258,10 +259,11 @@ class LocalConfigFile:
                 canonical["retrieval_floor"] = canonicalize_retrieval_floor_policy(
                     canonical["retrieval_floor"]
                 )
-            if "governance_retention" in canonical:
+            if version < 3 and "governance_retention" in canonical:
                 canonical["governance_retention"] = canonicalize_audit_retention_policy(
                     canonical["governance_retention"]
                 )
+            canonical = canonicalize_custom_endpoint_policy(canonical)
             self._validate(canonical)
             digest = hashlib.sha256(original).hexdigest()
             encoded = encode_local_config_document(

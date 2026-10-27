@@ -155,7 +155,7 @@ def test_explicit_current_publication_stamps_age_policy_generation(tmp_path):
     assert (
         json.loads(path.read_text())["_reflexio_config_file"]["version"]
         == FILE_FORMAT_VERSION
-        == 3
+        == 4
     )
     assert not owner.prepare()
 

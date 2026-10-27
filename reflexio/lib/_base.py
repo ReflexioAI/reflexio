@@ -66,9 +66,7 @@ def create_generation_litellm_client(
     generation_model_name = resolve_model_name(
         ModelRole.GENERATION,
         site_var_value=site_var.get("default_generation_model_name"),
-        config_override=(
-            config_llm_config.generation_model_name if config_llm_config else None
-        ),
+        llm_config=config_llm_config,
         api_key_config=api_key_config,
     )
     configured_timeout = (
@@ -213,9 +211,7 @@ class ReflexioBase:
             pre_retrieval_model_name = resolve_model_name(
                 ModelRole.PRE_RETRIEVAL,
                 site_var_value=site_var.get("pre_retrieval_model_name"),
-                config_override=config_llm_config.pre_retrieval_model_name
-                if config_llm_config
-                else None,
+                llm_config=config_llm_config,
                 api_key_config=api_key_config,
             )
 

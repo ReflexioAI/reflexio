@@ -234,7 +234,7 @@ Key files:
 **Features**:
 
 - Uses LiteLLM for multi-provider support (OpenAI, Claude, Azure, OpenRouter, Gemini, custom endpoints, etc.)
-- **Custom endpoint support**: `CustomEndpointConfig` (model, api_key, api_base) takes priority over all other providers for LLM completion calls when configured with non-empty fields (but not embeddings)
+- **Custom endpoint support**: `CustomEndpointConfig` (api_key, api_base) supplies completion credentials (never embedding credentials); the existing client/request and organization role settings own model selection
 - **Gemini support**: Model names with `gemini/` prefix route through Google Gemini; API key from `api_key_config.gemini`
 - **OpenRouter support**: Model names with `openrouter/` prefix (e.g., `openrouter/openai/gpt-5-nano`) route through OpenRouter; API key from `api_key_config.openrouter`
 - **Z.ai support**: `zai/*` completions default to the coding endpoint at `https://api.z.ai/api/coding/paas/v4` unless a custom endpoint or per-call `api_base` overrides it. Z.ai structured output uses a guarded schema instruction plus JSON-object mode; tool turns leave `response_format` unset and validate the terminal result locally.

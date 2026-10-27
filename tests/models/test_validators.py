@@ -93,7 +93,6 @@ class TestSSRFPrevention:
         with pytest.raises(ValidationError, match="cloud metadata"):
             CustomEndpointConfig.model_validate(
                 {
-                    "model": "x",
                     "api_key": "k",
                     "api_base": "http://169.254.169.254/latest",
                 }
@@ -104,7 +103,6 @@ class TestSSRFPrevention:
         with pytest.raises(ValidationError, match="cloud metadata"):
             CustomEndpointConfig.model_validate(
                 {
-                    "model": "x",
                     "api_key": "k",
                     "api_base": "http://metadata.google.internal/computeMetadata/v1",
                 }
@@ -114,7 +112,6 @@ class TestSSRFPrevention:
         """Public URLs are always accepted."""
         config = CustomEndpointConfig.model_validate(
             {
-                "model": "gpt-4",
                 "api_key": "sk-test",
                 "api_base": "https://api.openai.com/v1",
             }
@@ -125,7 +122,6 @@ class TestSSRFPrevention:
         """Localhost is allowed when REFLEXIO_BLOCK_PRIVATE_URLS is not set."""
         config = CustomEndpointConfig.model_validate(
             {
-                "model": "local-model",
                 "api_key": "k",
                 "api_base": "http://localhost:8080/v1",
             }
@@ -136,7 +132,6 @@ class TestSSRFPrevention:
         """Private IPs are allowed when REFLEXIO_BLOCK_PRIVATE_URLS is not set."""
         config = CustomEndpointConfig.model_validate(
             {
-                "model": "local-model",
                 "api_key": "k",
                 "api_base": "http://192.168.1.100:8080/v1",
             }
@@ -148,7 +143,6 @@ class TestSSRFPrevention:
         with pytest.raises(ValidationError, match="localhost"):
             CustomEndpointConfig.model_validate(
                 {
-                    "model": "x",
                     "api_key": "k",
                     "api_base": "http://localhost:8080/v1",
                 }
@@ -159,7 +153,6 @@ class TestSSRFPrevention:
         with pytest.raises(ValidationError, match="private"):
             CustomEndpointConfig.model_validate(
                 {
-                    "model": "x",
                     "api_key": "k",
                     "api_base": "http://192.168.1.1/v1",
                 }
@@ -170,7 +163,6 @@ class TestSSRFPrevention:
         with pytest.raises(ValidationError):
             CustomEndpointConfig.model_validate(
                 {
-                    "model": "x",
                     "api_key": "k",
                     "api_base": "http://127.0.0.1:8080/v1",
                 }
@@ -212,7 +204,6 @@ class TestSSRFPrevention:
         with pytest.raises(ValidationError, match="cloud metadata"):
             CustomEndpointConfig.model_validate(
                 {
-                    "model": "x",
                     "api_key": "k",
                     "api_base": "http://rebind.example.test/v1",
                 }

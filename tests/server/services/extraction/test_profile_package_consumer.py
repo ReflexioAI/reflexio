@@ -68,9 +68,6 @@ def prepare_consumer(
         "reflexio.server.llm._litellm_text_generation.resolve_model_name",
         lambda **_: "gpt-4o-mini",
     )
-    monkeypatch.setattr(
-        "reflexio.server.llm.tools.resolve_model_name", lambda **_: "gpt-4o-mini"
-    )
     payload = durable.payload("profile-package")
     if long_tools:
         payload["interaction_data_list"][0]["tools_used"] = [

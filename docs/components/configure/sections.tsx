@@ -319,22 +319,11 @@ export function APIKeysSection({
 
       <div className="space-y-2 pt-2 border-t border-border">
         <p className="text-xs font-semibold">Custom OpenAI-compatible endpoint</p>
-        <FieldRow label="Model" htmlFor="custom-model">
-          <TextField
-            id="custom-model"
-            value={keys.custom_endpoint?.model ?? null}
-            onChange={(v) =>
-              update({
-                custom_endpoint: {
-                  model: v ?? "",
-                  api_key: keys.custom_endpoint?.api_key ?? "",
-                  api_base: keys.custom_endpoint?.api_base ?? "",
-                },
-              })
-            }
-            placeholder="e.g. openai/mistral"
-          />
-        </FieldRow>
+        <p className="text-xs text-muted-foreground">
+          Select the gateway model under LLM models. Use an openai/ prefix, for
+          example openai/mistral. Text roles inherit the generation model unless
+          you select a role-specific model.
+        </p>
         <FieldRow label="API key" htmlFor="custom-key">
           <TextField
             id="custom-key"
@@ -343,7 +332,6 @@ export function APIKeysSection({
             onChange={(v) =>
               update({
                 custom_endpoint: {
-                  model: keys.custom_endpoint?.model ?? "",
                   api_key: v ?? "",
                   api_base: keys.custom_endpoint?.api_base ?? "",
                 },
@@ -358,7 +346,6 @@ export function APIKeysSection({
             onChange={(v) =>
               update({
                 custom_endpoint: {
-                  model: keys.custom_endpoint?.model ?? "",
                   api_key: keys.custom_endpoint?.api_key ?? "",
                   api_base: v ?? "",
                 },
@@ -425,7 +412,7 @@ export function LLMModelsSection({
   return (
     <Section
       title="LLM model overrides"
-      description="Override the default model names. Leave blank to fall back to the site-variable defaults."
+      description="A custom gateway requires a generation model; omitted text roles inherit it. Other providers use site-variable defaults when a role is blank."
       defaultOpen={false}
     >
       {LLM_FIELDS.map((f) => (

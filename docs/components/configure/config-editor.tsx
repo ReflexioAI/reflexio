@@ -44,6 +44,7 @@ export function ConfigEditor() {
   const { apiEndpoint, apiKey } = useSettings();
   const [config, setConfig] = useState<ReflexioConfig>(defaultConfig);
   const [status, setStatus] = useState<Status>({ kind: "loading" });
+  const [loaded, setLoaded] = useState(false);
   const operation = useRef(0);
 
   const baseUrl = useMemo(() => apiEndpoint.replace(/\/$/, ""), [apiEndpoint]);
@@ -62,11 +63,13 @@ export function ConfigEditor() {
 
   const load = useCallback(async (signal?: AbortSignal) => {
     const current = ++operation.current;
+    setLoaded(false);
     setStatus({ kind: "loading" });
     try {
       const next = await fetchConfig(signal);
       if (current !== operation.current || signal?.aborted) return;
       setConfig(next);
+      setLoaded(true);
       setStatus({ kind: "idle" });
     } catch (err) {
       if (current !== operation.current || signal?.aborted) return;
@@ -83,10 +86,17 @@ export function ConfigEditor() {
   }, [load]);
 
   const save = useCallback(async () => {
+    if (!loaded) return;
     const current = ++operation.current;
     setStatus({ kind: "saving" });
     try {
       const payload = serializeConfig(config);
+      if (
+        payload.api_key_config?.custom_endpoint &&
+        !payload.llm_config?.generation_model_name?.trim()
+      ) {
+        throw new Error("Select the custom gateway's generation model under LLM models before saving.");
+      }
       const res = await fetch(`${baseUrl}/api/set_config`, {
         method: "POST",
         headers: {
@@ -108,7 +118,7 @@ export function ConfigEditor() {
       if (current !== operation.current) return;
       setStatus({ kind: "error", message: errorMessage(err) });
     }
-  }, [baseUrl, apiKey, config, fetchConfig]);
+  }, [baseUrl, apiKey, config, fetchConfig, loaded]);
 
   const busy = status.kind === "loading" || status.kind === "saving";
   const payload = serializeConfig(config);
@@ -154,7 +164,7 @@ export function ConfigEditor() {
           <RawJsonSection payload={payload} />
 
           <div className="flex items-center gap-2 pt-2 sticky bottom-0 bg-background/80 backdrop-blur py-3 -mx-6 px-6 border-t border-border">
-            <Button onClick={save} disabled={busy} className="gap-2">
+            <Button onClick={save} disabled={busy || !loaded} className="gap-2">
               {status.kind === "saving" && (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               )}

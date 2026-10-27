@@ -31,7 +31,6 @@ export interface DashScopeConfig {
 }
 
 export interface CustomEndpointConfig {
-  model: string;
   api_key: string;
   api_base: string;
 }
@@ -202,6 +201,12 @@ export function hydrateConfig(raw: unknown): ReflexioConfig {
   const base = defaultConfig();
   if (!raw || typeof raw !== "object") return base;
   const incoming = raw as Partial<ReflexioConfig>;
+  const gateway = incoming.api_key_config?.custom_endpoint;
+  if (gateway && Object.prototype.hasOwnProperty.call(gateway, "model")) {
+    throw new Error(
+      "This server uses the retired custom endpoint model setting. Upgrade its saved configuration and reload before editing.",
+    );
+  }
   return {
     ...base,
     ...incoming,
@@ -212,7 +217,7 @@ export function hydrateConfig(raw: unknown): ReflexioConfig {
 // Strip empty strings → null and empty arrays → null so the server receives
 // a clean payload. The Pydantic model rejects empty strings for `NonEmptyStr`
 // fields, so leaving them in would produce confusing 422s.
-export function serializeConfig(config: ReflexioConfig): unknown {
+export function serializeConfig(config: ReflexioConfig) {
   const clean = <T,>(v: T): T | null => {
     if (v === null || v === undefined) return null;
     if (typeof v === "string" && v.trim() === "") return null;
@@ -256,7 +261,6 @@ export function serializeConfig(config: ReflexioConfig): unknown {
     if (out.custom_endpoint) {
       const ce = out.custom_endpoint;
       if (
-        clean(ce.model) === null ||
         clean(ce.api_key) === null ||
         clean(ce.api_base) === null
       ) {

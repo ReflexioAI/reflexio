@@ -258,3 +258,19 @@ run.props.onClick();
 assert.deepEqual(actions, [["update", "editor-session"], ["execute", "editor-session"]]);
 
 console.log("Explorer preserves caller sessions; notebook retrieval, publish and grading share a fresh run identity");
+
+// A credential transport cannot revive the retired model pin or lose a role choice.
+const gatewayConfig = configSchema.hydrateConfig({
+  ...configSchema.defaultConfig(),
+  api_key_config: { custom_endpoint: { api_key: "local-key", api_base: "https://gateway.invalid/v1" } },
+  llm_config: { generation_model_name: "openai/chosen", should_run_model_name: "openai/check", embedding_model_name: "local/minilm-l6-v2" },
+  opaque: { keep: true },
+});
+const gatewaySaved = configSchema.serializeConfig(gatewayConfig);
+assert.equal("model" in gatewaySaved.api_key_config.custom_endpoint, false);
+assert.equal(gatewaySaved.llm_config.generation_model_name, "openai/chosen");
+assert.equal(gatewaySaved.llm_config.should_run_model_name, "openai/check");
+assert.deepEqual(gatewaySaved.opaque, { keep: true });
+assert.throws(() => configSchema.hydrateConfig({
+  ...gatewayConfig, api_key_config: { custom_endpoint: { ...gatewayConfig.api_key_config.custom_endpoint, model: "openai/old-pin" } },
+}), /retired custom endpoint model/);

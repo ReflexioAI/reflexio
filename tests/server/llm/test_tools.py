@@ -360,10 +360,6 @@ def test_run_tool_loop_returns_structured_terminus_provenance(monkeypatch):
     client = LiteLLMClient(LiteLLMConfig(model="claude-code/default"))
     generate = MagicMock(return_value=response)
     monkeypatch.setattr(client, "generate_chat_response_with_provenance", generate)
-    monkeypatch.setattr(
-        "reflexio.server.llm.tools.resolve_model_name",
-        lambda **_kwargs: "claude-code/default",
-    )
 
     result = run_tool_loop(
         client=client,

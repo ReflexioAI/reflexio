@@ -118,7 +118,7 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
     # The generic agent rebuilds its run with today's normalized config. This
     # reaches the child guard too, unlike a package consumer reusing the parent.
     monkeypatch.setenv("OPENAI_API_KEY", "fixture-no-provider")
-    for module in ("tools", "_litellm_text_generation"):
+    for module in ("_litellm_text_generation",):
         monkeypatch.setattr(
             f"reflexio.server.llm.{module}.resolve_model_name",
             lambda **_: "gpt-4o-mini",

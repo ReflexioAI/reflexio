@@ -169,13 +169,13 @@ class ProfileExtractor:
         self.should_run_model_name = resolve_model_name(
             ModelRole.SHOULD_RUN,
             site_var_value=site_var.get("should_run_model_name"),
-            config_override=llm_config.should_run_model_name if llm_config else None,
+            llm_config=llm_config,
             api_key_config=api_key_config,
         )
         self.default_generation_model_name = resolve_model_name(
             ModelRole.GENERATION,
             site_var_value=site_var.get("default_generation_model_name"),
-            config_override=llm_config.generation_model_name if llm_config else None,
+            llm_config=llm_config,
             api_key_config=api_key_config,
         )
 

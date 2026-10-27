@@ -271,7 +271,6 @@ class TestInit:
     def test_init_with_custom_endpoint(self):
         api_key_config = APIKeyConfig(
             custom_endpoint=CustomEndpointConfig(
-                model="my-model",
                 api_key="ce-key",
                 api_base="https://example.com/v1",  # type: ignore[arg-type]
             )
@@ -301,7 +300,6 @@ class TestResolveApiKey:
     def test_custom_endpoint_priority_for_non_embedding(self):
         api_key_config = APIKeyConfig(
             custom_endpoint=CustomEndpointConfig(
-                model="custom-model",
                 api_key="ce-key",
                 api_base="https://example.com/v1",  # type: ignore[arg-type]
             ),
@@ -317,7 +315,6 @@ class TestResolveApiKey:
     def test_custom_endpoint_skipped_for_embedding(self):
         api_key_config = APIKeyConfig(
             custom_endpoint=CustomEndpointConfig(
-                model="custom-model",
                 api_key="ce-key",
                 api_base="https://example.com/v1",  # type: ignore[arg-type]
             ),
@@ -697,7 +694,6 @@ class TestGenerateResponse:
                 model="openai/local-model",
                 api_key_config=APIKeyConfig(
                     custom_endpoint=CustomEndpointConfig(
-                        model="openai/local-model",
                         api_key="test-key",
                         api_base="https://example.com/v1",  # type: ignore[arg-type]
                     )
@@ -1771,7 +1767,6 @@ class TestStrictStructuredOutputRequest:
     def test_zai_custom_endpoint_takes_precedence_over_builtin_default(self):
         api_key_config = APIKeyConfig(
             custom_endpoint=CustomEndpointConfig(
-                model="zai/glm-5.2",
                 api_key="custom-key",
                 api_base="https://example.com/v1",  # type: ignore[arg-type]
             )
@@ -3277,11 +3272,10 @@ class TestBuildCompletionParams:
         assert mock_completion.call_args.kwargs["timeout"] == 120
 
     @patch("reflexio.server.llm.litellm_client.litellm.completion")
-    def test_custom_endpoint_overrides_model(self, mock_completion):
+    def test_custom_endpoint_preserves_selected_model(self, mock_completion):
         mock_completion.return_value = _make_completion_response("ok")
         api_key_config = APIKeyConfig(
             custom_endpoint=CustomEndpointConfig(
-                model="custom-model",
                 api_key="ce-key",
                 api_base="https://example.com/v1",  # type: ignore[arg-type]
             )
@@ -3292,7 +3286,7 @@ class TestBuildCompletionParams:
         client.generate_response("hi")
 
         call_kwargs = mock_completion.call_args.kwargs
-        assert call_kwargs["model"] == "custom-model"
+        assert call_kwargs["model"] == "gpt-4o"
         assert call_kwargs["api_key"] == "ce-key"
         assert call_kwargs["api_base"] == "https://example.com/v1"
 
@@ -4677,13 +4671,9 @@ class TestOwnedFallbackWalk:
     def test_custom_endpoint_short_circuits_ladder_to_single_rung(
         self, monkeypatch, caplog
     ):
-        """A custom endpoint is a single-model pin — fallback_models must not
-        re-pin every rung to the SAME ce.model (wasted rung timeouts) nor let
-        the success branch log a false ``served_model`` for a rung that never
-        actually ran."""
+        """Provider fallbacks must not activate on an unrelated custom gateway."""
         api_key_config = APIKeyConfig(
             custom_endpoint=CustomEndpointConfig(
-                model="ce-model",
                 api_key="ce-key",
                 api_base="https://example.com/v1",  # type: ignore[arg-type]
             )
@@ -4695,7 +4685,9 @@ class TestOwnedFallbackWalk:
                 api_key_config=api_key_config,
             )
         )
-        assert client._resolve_ladder(fallback_models=["zai/glm-5.2"]) == ["ce-model"]
+        assert client._resolve_ladder(fallback_models=["zai/glm-5.2"]) == [
+            "minimax/MiniMax-M3"
+        ]
 
         calls = []
 
@@ -4706,7 +4698,7 @@ class TestOwnedFallbackWalk:
         monkeypatch.setattr("litellm.completion", _fake)
         with caplog.at_level(logging.INFO):
             client.generate_chat_response(self._messages())
-        assert calls == ["ce-model"]
+        assert calls == ["minimax/MiniMax-M3"]
         assert not any("event=llm_fallback_used" in r.message for r in caplog.records)
 
 

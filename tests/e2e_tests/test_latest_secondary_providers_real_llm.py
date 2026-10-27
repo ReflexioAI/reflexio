@@ -47,9 +47,6 @@ def client(request, monkeypatch):
     assert_litellm_unpatched()
     monkeypatch.delenv("BRAINTRUST_API_KEY", raising=False)
     monkeypatch.setattr(
-        "reflexio.server.llm.tools.resolve_model_name", lambda **_: model
-    )
-    monkeypatch.setattr(
         "reflexio.server.llm._litellm_text_generation.resolve_model_name",
         lambda *_a, **_k: model,
     )

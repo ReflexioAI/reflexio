@@ -27,6 +27,7 @@ from reflexio.models.api_schema.service_schemas import (
     ProfileTimeToLive,
     UserProfile,
 )
+from reflexio.models.config_schema import LLMConfig
 from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
@@ -190,6 +191,7 @@ def mock_request_context():
     # Set up configurator chain for model resolution
     mock_config = MagicMock()
     mock_config.api_key_config = None
+    mock_config.llm_config = LLMConfig()
     context.configurator.get_config.return_value = mock_config
     return context
 

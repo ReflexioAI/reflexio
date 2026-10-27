@@ -1,6 +1,7 @@
 """The public identity seam matches actual builder policy, never provider I/O."""
 
 import pytest
+from pydantic import HttpUrl
 
 from reflexio.models.config_schema import (
     APIKeyConfig,
@@ -90,13 +91,14 @@ def test_custom_route_wins_role_and_descriptor_is_for_hashing_not_logging(monkey
     monkeypatch.setattr(litellm, "completion", dispatch)
     client = LiteLLMClient(
         LiteLLMConfig(
-            model="gpt-5.4-mini",
+            model="openai/custom-contract",
             max_tokens=2048,
             api_key_config=APIKeyConfig(
                 custom_endpoint=CustomEndpointConfig(
-                    model="openai/custom-contract",
                     api_key="custom-key",
-                    api_base="https://example.invalid/v1?access_token=route-credential",
+                    api_base=HttpUrl(
+                        "https://example.invalid/v1?access_token=route-credential"
+                    ),
                 )
             ),
         )
@@ -184,14 +186,13 @@ def test_public_ladder_uses_role_precedence_and_custom_endpoint_pin(monkeypatch)
     assert primary != "ignored-model"
     client.config.api_key_config = APIKeyConfig(
         custom_endpoint=CustomEndpointConfig(
-            model="openai/pinned",
             api_key="test-private",
-            api_base="https://example.invalid/v1",
+            api_base=HttpUrl("https://example.invalid/v1"),
         )
     )
-    assert client.get_completion_model_ladder(**overrides) == ("openai/pinned",)
+    assert client.get_completion_model_ladder(**overrides) == ("ignored-model",)
     assert (
-        client.get_completion_request_contract(**overrides)["model"] == "openai/pinned"
+        client.get_completion_request_contract(**overrides)["model"] == "ignored-model"
     )
     dispatch.assert_not_called()
 

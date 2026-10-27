@@ -1,8 +1,8 @@
-import json
 from pathlib import Path
 
 import pytest
 
+from reflexio.config_file import LocalConfigFile
 from reflexio.models.config_schema import (
     Config,
     LLMConfig,
@@ -33,13 +33,12 @@ def test_init_creates_config_file(temp_dir, test_org_id):
     config_file = Path(temp_dir) / "configs" / f"config_{test_org_id}.json"
 
     assert config_file.exists()
-    with open(config_file, encoding="utf-8") as f:
-        loaded_config = Config.model_validate(json.load(f))
-        assert isinstance(loaded_config.storage_config, StorageConfigSQLite)
-        assert loaded_config.profile_extractor_config is not None
-        assert loaded_config.profile_extractor_config.extraction_definition_prompt
-        assert loaded_config.user_playbook_extractor_config is not None
-        assert loaded_config.user_playbook_extractor_config.extraction_definition_prompt
+    loaded_config = Config.model_validate(LocalConfigFile(config_file).read_document())
+    assert isinstance(loaded_config.storage_config, StorageConfigSQLite)
+    assert loaded_config.profile_extractor_config is not None
+    assert loaded_config.profile_extractor_config.extraction_definition_prompt
+    assert loaded_config.user_playbook_extractor_config is not None
+    assert loaded_config.user_playbook_extractor_config.extraction_definition_prompt
 
 
 def test_get_config_with_default(configurator):
