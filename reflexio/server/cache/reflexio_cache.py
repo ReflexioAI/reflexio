@@ -2,8 +2,9 @@
 
 import logging
 import threading
+from collections.abc import Iterator
 from concurrent.futures import Future
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -84,6 +85,30 @@ def _get_construction_lock(cache_key: CacheKey) -> threading.Lock:
     return _reflexio_construction_locks[
         hash(cache_key) % _REFLEXIO_CONSTRUCTION_LOCK_STRIPES
     ]
+
+
+@contextmanager
+def _construction_guard(cache_key: CacheKey) -> Iterator[None]:
+    from reflexio.server import search_runtime
+
+    lock = _get_construction_lock(cache_key)
+    if search_runtime.current() is None:
+        with lock:
+            yield
+        return
+
+    acquired = False
+    try:
+        with profile_step("reflexio.cache.construction_wait"):
+            # Recheck disconnects while the constructor retains ownership;
+            # the caller's existing deadline also bounds every lock attempt.
+            while not acquired:
+                acquired = lock.acquire(timeout=search_runtime.remaining(0.1))
+        search_runtime.checkpoint()
+        yield
+    finally:
+        if acquired:
+            lock.release()
 
 
 def _probe_version_safe(reflexio: Reflexio) -> _ProbeResult:
@@ -198,8 +223,7 @@ def get_reflexio(org_id: str, storage_base_dir: str | None = None) -> Reflexio:
     # Cache miss (or just-evicted stale entry). Only one request per cache
     # key may construct at a time; construction can initialize storage and
     # run migrations, so parallel cold starts for the same org are not safe.
-    construction_lock = _get_construction_lock(cache_key)
-    with construction_lock:
+    with _construction_guard(cache_key):
         with _reflexio_cache_lock:
             entry = _reflexio_cache.get(cache_key)
         if entry is not None:
