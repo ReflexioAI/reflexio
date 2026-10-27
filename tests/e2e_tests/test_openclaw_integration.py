@@ -108,7 +108,7 @@ def _make_reflexio_with_playbook(
         # to verify search plumbing (both playbook types surface), not relevance
         # ranking. Disable the read-path cross-encoder relevance floor so a lone
         # weakly-scoring seed is not dropped before it can be returned.
-        retrieval_floor=RetrievalFloorConfig(enabled=False),
+        retrieval_floor=RetrievalFloorConfig(candidate_pool_size=0),
         # Single configured playbook extractor (the list-valued field is retired and
         # the Config constructor would ignore it, leaving aggregation_config unset).
         user_playbook_extractor_config=PlaybookConfig(

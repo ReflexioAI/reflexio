@@ -121,6 +121,11 @@ def test_ordinary_restart_preserves_database_and_unrelated_raw_fields(
     optimizer.pop("auto_update_pending_agent_playbooks")
     optimizer["agent_playbooks_enabled"] = False
     expected["playbook_optimizer_config"] = optimizer
+    floor = dict(expected["retrieval_floor"])
+    assert floor.pop("enabled") is False
+    assert floor.pop("pool_size") == 30
+    floor["candidate_pool_size"] = 0
+    expected["retrieval_floor"] = floor
     assert logical == expected
     first = saved_local_config.read_bytes()
     run_services.execute(args, storage=explicit_storage)

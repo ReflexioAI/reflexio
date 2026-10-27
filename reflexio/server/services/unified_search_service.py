@@ -176,7 +176,7 @@ def run_unified_search(
     )
 
     floor_cfg = retrieval_floor or RetrievalFloorConfig()
-    floor_on = floor_cfg.enabled and reranker_enabled()
+    floor_on = floor_cfg.candidate_pool_size > 0 and reranker_enabled()
     recency_on = bool(recency and recency.enabled)
 
     # --- Phase A: query reformulation (+ temporal signals) + embedding ---
@@ -221,7 +221,7 @@ def run_unified_search(
     temporal_reorder = reformulation.wants_current or reformulation.recency_dominant
     fetch_k = max(
         top_k,
-        floor_cfg.pool_size if floor_on else 0,
+        floor_cfg.candidate_pool_size if floor_on else 0,
         recency.pool_size if recency_on and recency is not None else 0,
         _TEMPORAL_POOL_SIZE if temporal_reorder else 0,
     )

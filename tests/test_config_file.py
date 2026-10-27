@@ -465,3 +465,91 @@ def test_schema_owner_validates_targeted_upgrade_without_changing_storage_identi
         == original
     )
     assert owner.prepare() is False
+
+
+@pytest.mark.parametrize("version", [0, 1])
+@pytest.mark.parametrize(
+    "floor,expected",
+    [
+        ({}, 0),
+        ({"pool_size": 73}, 0),
+        ({"enabled": False, "pool_size": 73}, 0),
+        ({"enabled": True}, 30),
+        ({"enabled": True, "pool_size": 73}, 73),
+    ],
+)
+def test_retrieval_upgrade_retains_gate_capacity_original_and_generation(
+    tmp_path, version, floor, expected
+):
+    path = tmp_path / "config.json"
+    data = {
+        "storage_config": {"type": "sqlite", "db_path": "original.sqlite"},
+        "retrieval_floor": {**floor, "user_playbook_floor": 0, "profile_floor": None},
+        "opaque": {"keep": True},
+    }
+    if version:
+        data["_reflexio_config_file"] = {"version": version}
+        data["playbook_optimizer_config"] = {"agent_playbooks_enabled": True}
+    original = json.dumps(data).encode()
+    path.write_bytes(original)
+    owner = LocalConfigFile(path)
+    assert owner.prepare() is True
+    current = owner.read_document()
+    config = validate_stored_config(current)
+    assert config.retrieval_floor.candidate_pool_size == expected
+    assert config.retrieval_floor.user_playbook_floor == 0
+    assert config.retrieval_floor.profile_floor is None
+    assert current["storage_config"]["db_path"] == "original.sqlite"
+    assert current["opaque"] == {"keep": True}
+    if version:
+        assert config.playbook_optimizer_config.agent_playbooks_enabled is True
+    assert (
+        path.parent.joinpath(
+            ".config-migrations",
+            path.name,
+            hashlib.sha256(original).hexdigest() + ".json",
+        ).read_bytes()
+        == original
+    )
+    before = path.read_bytes()
+    assert owner.prepare() is False
+    assert path.read_bytes() == before
+    assert json.loads(before)["_reflexio_config_file"]["version"] == FILE_FORMAT_VERSION
+
+
+@pytest.mark.parametrize("version", [0, 1])
+@pytest.mark.parametrize(
+    "policy",
+    [
+        {"candidate_pool_size": 0},
+        {"candidate_pool_size": 73, "enabled": False, "pool_size": 30},
+    ],
+)
+@pytest.mark.parametrize("operation", ["prepare", "edit"])
+def test_old_generation_cannot_treat_ignored_candidate_key_as_authority(
+    tmp_path, version, policy, operation
+):
+    path = tmp_path / "config.json"
+    data = {"storage_config": None, "retrieval_floor": policy}
+    if version:
+        data["_reflexio_config_file"] = {"version": version}
+    original = json.dumps(data).encode()
+    path.write_bytes(original)
+    owner = LocalConfigFile(path)
+    with pytest.raises(StoredConfigurationError, match="candidate_pool_size"):
+        if operation == "prepare":
+            owner.prepare()
+        else:
+            owner.edit_document(lambda document: document.update(window_size=19))
+    assert path.read_bytes() == original
+    assert not (tmp_path / ".config-migrations").exists()
+
+
+def test_generation_one_does_not_replay_retired_agent_policy(tmp_path):
+    path = tmp_path / "config.json"
+    original = b'{"_reflexio_config_file":{"version":1},"storage_config":null,"playbook_optimizer_config":{"optimize_agent_playbooks":true},"retrieval_floor":{"enabled":true}}'
+    path.write_bytes(original)
+    with pytest.raises(StoredConfigurationError):
+        LocalConfigFile(path).prepare()
+    assert path.read_bytes() == original
+    assert not (tmp_path / ".config-migrations").exists()

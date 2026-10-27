@@ -612,15 +612,19 @@ class RetrievalFloorConfig(BaseModel):
     service. Numeric values are exact organization overrides, including ``0.0``.
     """
 
-    enabled: bool = False
-    pool_size: int = Field(
-        default=30,
-        gt=0,
-        description="Candidates fetched per arm before flooring + cap to top_k.",
+    candidate_pool_size: int = Field(
+        default=0,
+        ge=0,
+        description="Candidates per arm before flooring; zero disables flooring.",
     )
     profile_floor: float | None = None
     user_playbook_floor: float | None = None
     agent_playbook_floor: float | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_obsolete_policy(cls, data: Any) -> Any:
+        return _reject_obsolete_fields(data, ("enabled", "pool_size"))
 
 
 class PlaybookOptimizerConfig(BaseModel):

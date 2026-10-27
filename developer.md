@@ -1079,7 +1079,14 @@ Windows retains exclusive address ownership instead of forcible reuse. The share
 lock serializes cooperating current writers, not arbitrary editors or old SDKs.
 A changed source/link observed during preparation aborts publication.
 
-Automatic generation0 preparation converts only the newly retired agent pair.
+Automatic generation0 preparation converts the retired agent pair; generations0/1
+also consolidate retrieval flooring into `retrieval_floor.candidate_pool_size`.
+Zero disables flooring; a positive budget enables it when a reranker is available.
+The three calibrated/explicit per-arm score thresholds remain independent.
+An old disabled policy becomes zero even if it stored a positive dormant pool;
+its exact original preserves that dormant value for deliberate later changes.
+Old enabled policies retain their configured positive pool (formerly default30).
+Generation1 already owns canonical agent policy and never replays its old names.
 It validates the complete result, preserves unrelated raw fields and database
 identity, and stores the exact original bytes under
 `configs/.config-migrations/<config filename>/<sha256>.json` with owner-only file
@@ -1092,7 +1099,9 @@ an untagged SQLite config, and edits no unrelated raw settings.
 
 A generation0 file containing `agent_playbooks_enabled` is ambiguous: the old
 schema ignored that key, so treating it as consent could enable vetoed work.
-Automatic startup refuses it. Deliberately review that policy and use
+A generation0/1 file containing `retrieval_floor.candidate_pool_size` is likewise
+ambiguous because those schemas ignored it, even alongside old switches.
+Automatic startup refuses ambiguous policy. Deliberately review that policy and use
 `reflexio config upgrade-file old.json --output canonical.json`; its output
 records the current file generation and can be installed while writers are
 stopped. The original is retained unchanged. The pure

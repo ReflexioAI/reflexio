@@ -16,6 +16,7 @@ from reflexio.config_env import StoredConfigurationError as StoredConfigurationE
 
 _LEGACY_OPTIMIZER_BOOL = TypeAdapter(bool)
 _LEGACY_MERGE_LIMIT = TypeAdapter(Annotated[int, Field(ge=0)])
+_LEGACY_RETRIEVAL_POOL = TypeAdapter(Annotated[int, Field(gt=0)])
 _LEGACY_STOP_SCORE = TypeAdapter(
     Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 )
@@ -37,6 +38,24 @@ def strip_retired_optimizer_stop_score(data: Any) -> Any:
 
 class OptimizerSchedulingMigrationError(ConfigurationMigrationError):
     """Invalid saved scheduling policy must not trigger a storage-default fallback."""
+
+
+def canonicalize_retrieval_floor_policy(data: Any) -> Any:
+    """Preserve the old effective gate and capacity during explicit conversion."""
+    if not isinstance(data, dict) or not {"enabled", "pool_size"}.intersection(data):
+        return data
+    try:
+        enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(data.get("enabled", False))
+        pool_size = _LEGACY_RETRIEVAL_POOL.validate_python(data.get("pool_size", 30))
+    except ValidationError:
+        raise ConfigurationMigrationError(
+            "Invalid saved retrieval floor enabled or pool_size setting"
+        ) from None
+    normalized = {
+        key: value for key, value in data.items() if key not in {"enabled", "pool_size"}
+    }
+    normalized.setdefault("candidate_pool_size", pool_size if enabled else 0)
+    return normalized
 
 
 def canonicalize_agent_optimizer_policy(data: Any) -> Any:
@@ -313,6 +332,10 @@ def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
     if "playbook_optimizer_config" in payload:
         payload["playbook_optimizer_config"] = _normalize_optimizer_policy(
             payload["playbook_optimizer_config"]
+        )
+    if "retrieval_floor" in payload:
+        payload["retrieval_floor"] = canonicalize_retrieval_floor_policy(
+            payload["retrieval_floor"]
         )
     payload.pop("shadow_mode_enabled", None)
     names = {
