@@ -107,6 +107,12 @@ Compose the shared HTTP API, resolve request dependencies, and coordinate durabl
 - `invalidate_reflexio_cache(org_id)` - Invalidate after config changes
 - `clear_reflexio_cache()` - Clear entire cache (testing/admin)
 
+Search requests waiting for another caller to construct an instance retain their
+existing deadline and stop waiting on disconnect. The
+`reflexio.cache.construction_wait` timing phase distinguishes that wait from
+construction performed by the request itself. Non-search callers and cache
+invalidation retain their existing construction fencing.
+
 **Pattern**: **ALWAYS use `get_reflexio()`** instead of `Reflexio()` directly in API endpoints
 
 ## API Endpoints
