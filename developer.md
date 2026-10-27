@@ -369,6 +369,11 @@ uv run pytest -k "test_name"           # by name
 - Use markers: `@pytest.mark.unit` (no network), `@pytest.mark.integration` (needs services), `@pytest.mark.e2e` (full stack), `@pytest.mark.requires_credentials` (needs API keys)
 - Keep tests independent — no shared mutable state between tests
 
+`test_sentence_encoder.py` replaces only the model constructor through a
+function-scoped test-owned module, retaining real Torch device/thread behavior.
+Real model loading remains covered separately by the opt-in
+`test_nomic_embedding_realmodel_concurrency.py` qualification.
+
 ### Self-bootstrapping test harnesses
 
 The test bootstrap redirects `REFLEXIO_LOG_DIR` and `LOCAL_STORAGE_PATH` to a
