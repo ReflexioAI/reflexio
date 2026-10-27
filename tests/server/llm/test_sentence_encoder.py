@@ -10,6 +10,13 @@ import pytest
 from reflexio.server.llm.providers.nomic_embedding_provider import NomicEmbedder
 
 
+@pytest.fixture(autouse=True)
+def native_budget_for_stubbed_models(monkeypatch):
+    # Test-owned native loading must not depend on the CI runner's BLAS env.
+    # The production rejection of retired thread inputs remains unchanged.
+    monkeypatch.setenv("REFLEXIO_NATIVE_COMPUTE_THREADS", "2")
+
+
 @pytest.mark.parametrize("device", ["cpu", "mps", "cuda:2"])
 def test_actual_loader_honors_process_device(monkeypatch, device):
     monkeypatch.setenv("REFLEXIO_EMBEDDING_DEVICE", device)
