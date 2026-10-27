@@ -37,6 +37,7 @@ from reflexio.server.llm.rerank.cross_encoder_model import (
     CrossEncoderRunner,
     RerankWork,
 )
+from reflexio.server.llm.sentence_encoder import embedding_device
 
 logger = logging.getLogger(__name__)
 # The standalone inference service is operator-facing infrastructure. Keep its
@@ -314,7 +315,7 @@ def create_embedding_app(
             "reranker_device=%s reranker_ready=%s hf_offline=%s workload=%s",
             default_model,
             reranker_model,
-            os.environ.get("NOMIC_EMBED_DEVICE", "cpu"),
+            embedding_device(),
             os.environ.get("REFLEXIO_RERANK_DEVICE", "cpu"),
             rerank_allowed and runner.ready(),
             os.environ.get("HF_HUB_OFFLINE", "0"),

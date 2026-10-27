@@ -209,7 +209,7 @@ def test_service_lifespan_logs_operator_model_and_device_contract(
     monkeypatch, caplog
 ) -> None:
     monkeypatch.setattr(embedding_service, "_ACTIVE_MODEL", None)
-    monkeypatch.setenv("NOMIC_EMBED_DEVICE", "cuda")
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_DEVICE", "cuda")
     monkeypatch.setenv("REFLEXIO_RERANK_DEVICE", "cuda")
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     runner = _Runner()

@@ -996,3 +996,9 @@ values require explicit policy adoption while preserving the existing secret.
 mapping too; only the actual process enables the existing test escape hatch.
 Secret rotation requires separate qualified migration of persisted references
 and erasure barriers, not a configuration-selector cleanup.
+
+
+Native sentence encoders share `llm/sentence_encoder.py` for lazy loading,
+serialization and process device policy. Adapters retain model/vector semantics;
+`REFLEXIO_EMBEDDING_DEVICE` chooses placement explicitly and
+`REFLEXIO_EMBED_BATCH_SIZE` remains the independent mini-batch budget.

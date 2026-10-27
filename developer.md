@@ -1273,3 +1273,16 @@ it does not reproduce the original Windows 11/Bash environment. To close an
 original hang report, still capture the installed version, exact command or
 request, and thread stacks from the failing environment, including inference
 and extraction if they were active.
+
+
+### Native embedding placement upgrade
+
+`REFLEXIO_EMBEDDING_DEVICE` selects the native sentence encoder's device in the
+inference process (default CPU, including blank values). Explicit MPS/CUDA device
+strings remain supported by Nomic subject to the installed native runtime. The
+reranker device is independent. Replace `NOMIC_EMBED_DEVICE` with this setting,
+preserving the actual device, and upgrade image/environment together. Old names
+are rejected even when blank or alongside the new name. No env file is rewritten.
+The common encoder owns lazy loading and serialized encoding; Nomic's model,
+input truncation, vector normalization and configurable mini-batch budget retain
+their prior behavior.
