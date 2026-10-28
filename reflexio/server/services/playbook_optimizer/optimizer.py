@@ -210,7 +210,7 @@ class PlaybookOptimizer:
             target.target_id,
             len(windows),
             type(assistant).__name__,
-            config.max_metric_calls,
+            config.metric_call_budget,
             config.max_turns,
         )
 
@@ -401,7 +401,7 @@ class PlaybookOptimizer:
             reflection_minibatch_size=config.reflection_minibatch_size,
             use_merge=config.max_merge_invocations > 0,
             max_merge_invocations=config.max_merge_invocations,
-            max_metric_calls=config.max_metric_calls,
+            max_metric_calls=config.metric_call_budget,
             stop_callbacks=[
                 lambda gepa_state: adapter.should_stop_on_quality(
                     gepa_state, authority=authority
@@ -1058,7 +1058,7 @@ def _gepa_publication_authority(
         **adoption_authority,
         "backend_identity": _assistant_backend_identity(config, assistant),
         "budget_settings": {
-            "max_metric_calls": config.max_metric_calls,
+            "max_metric_calls": config.metric_call_budget,
             "max_turns": config.max_turns,
             "reflection_minibatch_size": config.reflection_minibatch_size,
         },

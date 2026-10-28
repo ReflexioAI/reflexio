@@ -23,7 +23,7 @@ SCHEDULING_DEFAULTS = {
 @pytest.mark.parametrize("strings", [False, True])
 def test_defaults_remain_supported_without_mutating_input(strings):
     legacy = {k: str(v) if strings else v for k, v in SCHEDULING_DEFAULTS.items()}
-    payload = {"playbook_optimizer_config": {**legacy, "enabled": False}}
+    payload = {"playbook_optimizer_config": {**legacy, "metric_call_budget": 0}}
     original = deepcopy(payload)
     normalized = strip_retired_config_fields(payload)
     assert normalized == payload
@@ -60,7 +60,7 @@ def test_defaults_remain_supported_without_mutating_input(strings):
 def test_invalid_policy_is_rejected_even_when_disabled(key, value):
     from reflexio.config_migration import ConfigurationMigrationError
 
-    policy = {"enabled": False, key: value}
+    policy = {"metric_call_budget": 0, key: value}
     for load, error_type in (
         (lambda: PlaybookOptimizerConfig.model_validate(policy), ValueError),
         (
@@ -86,7 +86,7 @@ def test_local_saved_default_policy_is_canonicalized(tmp_path):
         )
     )
     for _ in range(2):
-        assert not storage.load_config().playbook_optimizer_config.enabled
+        assert storage.load_config().playbook_optimizer_config.metric_call_budget == 0
     saved = json.loads(path.read_text())["playbook_optimizer_config"]
     assert {key: saved[key] for key in SCHEDULING_DEFAULTS} == SCHEDULING_DEFAULTS
 

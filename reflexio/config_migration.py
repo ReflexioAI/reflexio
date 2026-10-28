@@ -16,6 +16,7 @@ from reflexio.config_env import StoredConfigurationError as StoredConfigurationE
 
 _LEGACY_OPTIMIZER_BOOL = TypeAdapter(bool)
 _LEGACY_MERGE_LIMIT = TypeAdapter(Annotated[int, Field(ge=0)])
+_LEGACY_METRIC_CALL_LIMIT = TypeAdapter(Annotated[int, Field(gt=0)])
 _LEGACY_RETRIEVAL_POOL = TypeAdapter(Annotated[int, Field(gt=0)])
 _LEGACY_AUDIT_RETENTION_DAYS = TypeAdapter(Annotated[int, Field(gt=0)])
 _LEGACY_STOP_SCORE = TypeAdapter(
@@ -39,6 +40,32 @@ def strip_retired_optimizer_stop_score(data: Any) -> Any:
 
 class OptimizerSchedulingMigrationError(ConfigurationMigrationError):
     """Invalid saved scheduling policy must not trigger a storage-default fallback."""
+
+
+def canonicalize_optimizer_work_budget(data: Any) -> Any:
+    """Translate old admission and budget only at an explicit upgrade boundary."""
+    old_fields = {"enabled", "max_metric_calls"}
+    if not isinstance(data, dict) or not old_fields.intersection(data):
+        return data
+    if "metric_call_budget" in data:
+        raise ConfigurationMigrationError(
+            "Conflicting current and historical optimizer work budgets; "
+            "select one policy explicitly before conversion"
+        )
+    try:
+        enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(data.get("enabled", False))
+        # Historical default only. New runtime policy defaults to no work.
+        limit = _LEGACY_METRIC_CALL_LIMIT.validate_python(
+            data.get("max_metric_calls", 20)
+        )
+    except ValidationError:
+        raise ConfigurationMigrationError(
+            "Invalid saved optimizer enabled or max_metric_calls setting"
+        ) from None
+    return {
+        **{key: value for key, value in data.items() if key not in old_fields},
+        "metric_call_budget": limit if enabled else 0,
+    }
 
 
 def canonicalize_retrieval_floor_policy(data: Any) -> Any:
@@ -163,7 +190,9 @@ def _normalize_optimizer_policy(data: Any) -> Any:
         )
         normalized.pop("use_merge")
         normalized["max_merge_invocations"] = limit if enabled else 0
-    return strip_retired_optimizer_stop_score(normalized)
+    return canonicalize_optimizer_work_budget(
+        strip_retired_optimizer_stop_score(normalized)
+    )
 
 
 class ExtractionPreset(StrEnum):

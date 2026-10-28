@@ -25,7 +25,7 @@ def test_preparation_preserves_original_policy_and_precision(tmp_path):
     logical = owner.read_document()
     assert logical["storage_config"] == {"type": "sqlite", "db_path": "owned.db"}
     assert logical["playbook_optimizer_config"] == {
-        "enabled": False,
+        "metric_call_budget": 0,
         "agent_playbooks_enabled": False,
     }
     assert str(logical["opaque"]["number"]) == "1.00000000000000000000001"
@@ -227,7 +227,7 @@ def test_frozen_generation_one_file_has_an_ordinary_upgrade_path(tmp_path):
     assert isinstance(config.storage_config, StorageConfigSQLite)
     assert config.storage_config.db_path == "generation1-owned.sqlite"
     assert (config.window_size, config.stride_size) == (11, 3)
-    assert config.playbook_optimizer_config.max_metric_calls == 7
+    assert config.playbook_optimizer_config.metric_call_budget == 7
     assert config.playbook_optimizer_config.min_commit_windows == 4
     assert config.playbook_optimizer_config.allows_target("agent_playbook") is False
     assert config.playbook_optimizer_config.allows_target("user_playbook") is True
@@ -273,7 +273,7 @@ def test_frozen_unmarked_generation_zero_retains_effective_agent_veto(tmp_path):
     config = validate_stored_config(owner.read_document())
     assert config.playbook_optimizer_config.allows_target("agent_playbook") is False
     assert config.playbook_optimizer_config.allows_target("user_playbook") is True
-    assert config.playbook_optimizer_config.max_metric_calls == 7
+    assert config.playbook_optimizer_config.metric_call_budget == 7
     assert isinstance(config.storage_config, StorageConfigSQLite)
     assert config.storage_config.db_path == "generation1-owned.sqlite"
     assert owner.read_document()["opaque_extension"] == {

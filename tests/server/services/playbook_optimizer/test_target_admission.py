@@ -15,14 +15,15 @@ from reflexio.server.services.playbook_optimizer import PlaybookOptimizationSche
 @pytest.mark.parametrize(
     "kind,policy",
     [
-        ("user_playbook", {"enabled": False, "user_playbooks_enabled": True}),
-        ("user_playbook", {"enabled": True, "user_playbooks_enabled": False}),
-        # Global opt-in alone must leave the canonical user target disabled.
-        ("user_playbook", {"enabled": True}),
+        ("user_playbook", {"metric_call_budget": 0, "user_playbooks_enabled": True}),
+        ("agent_playbook", {"metric_call_budget": 0, "agent_playbooks_enabled": True}),
+        ("user_playbook", {"metric_call_budget": 20, "user_playbooks_enabled": False}),
+        # A positive work budget alone must leave the canonical user target disabled.
+        ("user_playbook", {"metric_call_budget": 20}),
         (
             "agent_playbook",
             {
-                "enabled": True,
+                "metric_call_budget": 20,
                 "agent_playbooks_enabled": False,
             },
         ),
@@ -48,7 +49,7 @@ def test_disabled_enqueue_does_not_construct_scheduler(kind, policy):
 @pytest.mark.parametrize("kind", ["user_playbook", "agent_playbook"])
 def test_production_enqueue_keeps_custom_admission_policy(kind):
     config = PlaybookOptimizerConfig(
-        enabled=True,
+        metric_call_budget=20,
         user_playbooks_enabled=True,
         agent_playbooks_enabled=True,
         scheduler_jitter_seconds=0.25,

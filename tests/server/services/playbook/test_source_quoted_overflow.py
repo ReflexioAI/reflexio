@@ -318,7 +318,7 @@ def test_source_quoted_playbooks_are_not_automatically_enqueued_for_optimization
     service.configurator = Mock(
         get_config=lambda: SimpleNamespace(
             playbook_optimizer_config=PlaybookOptimizerConfig(
-                enabled=True,
+                metric_call_budget=20,
                 user_playbooks_enabled=True,
             )
         )

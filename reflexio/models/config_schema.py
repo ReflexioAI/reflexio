@@ -637,7 +637,7 @@ class RetrievalFloorConfig(BaseModel):
 class PlaybookOptimizerConfig(BaseModel):
     """Configuration for GEPA-backed playbook content optimization.
 
-    The optimizer is opt-in (``enabled=False`` by default) and requires
+    The optimizer is opt-in (a zero work budget by default) and requires
     *exactly one* assistant backend to actually do anything. The two
     backends are mutually exclusive — see ``check_single_assistant_backend``
     below.
@@ -646,12 +646,12 @@ class PlaybookOptimizerConfig(BaseModel):
     model_config = ConfigDict(hide_input_in_errors=True)
 
     # --- gating ------------------------------------------------------------
-    enabled: bool = False
     agent_playbooks_enabled: bool = False
     user_playbooks_enabled: bool = False
 
     # --- GEPA budget -------------------------------------------------------
-    max_metric_calls: int = Field(default=20, gt=0)
+    # One policy owns admission and evaluation work; zero disables new runs.
+    metric_call_budget: int = Field(default=0, ge=0)
     max_turns: int = Field(default=4, gt=0)
     reflection_minibatch_size: int = Field(default=2, gt=0)
     max_validation_windows: int = Field(default=2, gt=0)
@@ -710,12 +710,14 @@ class PlaybookOptimizerConfig(BaseModel):
                 "auto_update_pending_agent_playbooks",
                 "use_merge",
                 "early_stop_score",
+                "enabled",
+                "max_metric_calls",
             ),
         )
 
     def allows_target(self, kind: Literal["agent_playbook", "user_playbook"]) -> bool:
         """Admit only targets with an enabled optimization and adoption path."""
-        if not self.enabled:
+        if self.metric_call_budget == 0:
             return False
         if kind == "agent_playbook":
             return self.agent_playbooks_enabled
