@@ -8,7 +8,6 @@ OPERATIONAL = (
     "retrieved_learning_evaluation",
     "offline_tuner_reward_label",
     "share_links",
-    "agent_playbook_source_user_playbooks",
     "playbook_optimization_history",
     "playbook_retrieval_logs",
 )

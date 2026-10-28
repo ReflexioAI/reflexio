@@ -1377,3 +1377,23 @@ inputs. Normal runtime readers reject both old names. Old SDKs reject the new
 file generation, so stop old writers before upgrade. Remote saved configuration
 needs its separately qualified enterprise image migration. See the
 [assistant backend guide](docs/playbook_optimizer_assistant_backends.md#work-budget-migration).
+
+### Source provenance lifetime
+
+Agent-to-user playbook source links determine source-filtered search. They are
+not independently evictable operational history: keep each link while both
+parent playbooks survive. Existing parent retention, deletion/privacy cleanup,
+and explicit source replacement own removal. Parent capacity limits retain their
+existing units, values and zero-disable behavior; no fixed link cap replaces the
+removed collector. This is not an aggregate row/byte budget for the graph.
+
+`REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOK_SOURCE_USER_PLAYBOOKS` is retired. Remove its
+assignment, including blank or zero assignments, before upgrading; startup and
+direct retention-policy resolution reject it without reading its value. Do not
+copy that value into a parent limit. This external-environment cleanup is an
+explicit upgrade exception: independently deleting live provenance cannot be
+converted into an equivalent safe policy. No stored configuration or schema
+migration is needed. Link storage can now grow with valid relationships until
+parent cleanup; independent link truncation is no longer a supported capacity
+backstop. Managed customer-data holds/alert policy must not be bypassed by
+classifying this provenance as disposable metadata.
