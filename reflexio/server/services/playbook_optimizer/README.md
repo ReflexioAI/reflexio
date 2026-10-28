@@ -16,7 +16,8 @@ Generate and compare content candidates while retaining the user/agent playbook 
 
 `PlaybookOptimizerConfig.allows_target()` owns admission for execution and both
 scheduling paths. The nonnegative `metric_call_budget` owns the overall work
-limit: zero admits no new runs, and a positive value bounds evaluations.
+limit: zero admits no new runs, and a positive value selects GEPA’s metric-call stopping threshold. GEPA may
+finish a validation batch before checking that threshold.
 `user_playbooks_enabled` and `agent_playbooks_enabled` keep target consent
 independent. Historical admission/budget inputs are translated only at explicit
 upgrade boundaries; normal runtime readers reject them. Frozen GEPA publication

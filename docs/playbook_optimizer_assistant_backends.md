@@ -334,7 +334,7 @@ positive `metric_call_budget` and the relevant target permission to opt in.
 | `webhook_timeout_seconds` | `int > 0` | 60 | Per-call timeout — both backends |
 | `webhook_max_retries` | `int >= 0` | 3 | Retry budget — both backends |
 | `webhook_backoff_base_seconds` | `float >= 0` | 1.0 | Exponential base — both backends |
-| `metric_call_budget` | `int >= 0` | 0 | Zero disables new optimization; positive values bound candidate/window evaluations per run |
+| `metric_call_budget` | `int >= 0` | 0 | Zero disables new optimization; positive values set GEPA’s metric-call stopping threshold |
 | `max_turns` | `int > 0` | 4 | Maximum user turns replayed per source window rollout |
 | `reflection_minibatch_size` | `int > 0` | 2 | Number of training windows GEPA samples for each reflection minibatch |
 
@@ -347,7 +347,9 @@ policy; the stopping callback performs no database reads or new evaluations.
 Training and held-out windows receive disjoint GEPA cache IDs, so a cached
 training judgement cannot substitute for a different validation window.
 
-The `metric_call_budget` also owns GEPA's search limit. This is a
+A positive `metric_call_budget` selects GEPA's metric-call stopping threshold.
+GEPA may finish a validation batch, including seed validation, before checking
+that threshold; it is not a hard evaluation or cost cap. This is a
 satisficing search, not a guarantee of the globally best candidate. A publishable
 0.8 can stop before the former default aspiration of 0.9; a 0.95 candidate with
 insufficient absolute quality continues within the existing budget. Final
@@ -494,7 +496,7 @@ The existing tests in `tests/server/services/playbook_optimizer/test_playbook_op
 | **Shell injection** | None. The command is a list, `shell=True` is not used. |
 | **Credentials in logs** | Only `str(last_error)` from the exception chain is logged. Authorization headers are never logged or echoed back. |
 | **Data residency** | Webhook traffic goes wherever `webhook_url` points — operators are responsible for choosing an appropriate endpoint. The script backend is local and never leaves the host. |
-| **Process overhead** | One process per assistant turn. Bounded by `metric_call_budget × max_turns × 2` (incumbent + candidate). For a long-lived script that pays a heavy startup cost, see §11. |
+| **Process overhead** | One process per assistant turn. Work grows with evaluations and `max_turns`, and GEPA may finish a validation batch past its stopping threshold. For a long-lived script that pays a heavy startup cost, see §11. |
 | **stderr handling** | Captured, not streamed. Truncated to 1000 chars when included in error messages. |
 
 ---
@@ -520,7 +522,7 @@ independent. Set a positive budget explicitly to resume work after disabling it.
 
 The existing explicit converter maps an old disabled or missing `enabled` to
 zero, including custom positive old limits. An old enabled policy retains its
-validated old limit, or its historical default of20 when omitted. Malformed
+validated old limit, or its historical default of 20 when omitted. Malformed
 inactive limits and mixed old/new budgets fail instead of being silently
 selected. Inactive old limits are not saved as hidden future defaults.
 

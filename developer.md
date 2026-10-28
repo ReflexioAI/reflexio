@@ -1368,8 +1368,9 @@ their caller. This changes no notification policy, SQL or timeout.
 
 Local-file generation5 replaces optimizer `enabled` plus `max_metric_calls`
 with the nonnegative `metric_call_budget`. Fresh policy defaults to zero.
-Positive budgets bound the existing candidate/window evaluation work and still
-require the relevant user/agent target permission. The explicit historical
+Positive budgets select GEPA’s candidate/window metric-call stopping threshold;
+GEPA can finish a validation batch before checking it. The relevant user/agent
+target permission remains required. The explicit historical
 converter preserves disabled policies as zero and enabled policies with their
 old validated limit; it retains originals and rejects malformed/conflicting
 inputs. Normal runtime readers reject both old names. Old SDKs reject the new
