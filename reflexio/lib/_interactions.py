@@ -38,6 +38,7 @@ from reflexio.server.services.generation_service import (
     GenerationService,
     PublishRequestIdConflictError,
 )
+from reflexio.server.services.storage.error import ReadinessUnavailableError
 from reflexio.server.services.storage.retention_sweep import (
     maybe_sweep_retention_caps_for_library,
 )
@@ -199,10 +200,12 @@ class InteractionsMixin(ReflexioBase):
                 request_id=e.request_id,
                 error_reason="request_id_conflict",
             )
-        except AdmissionDeadlineExceededError:
-            # Only the HTTP route sets the admission deadline, and it answers
-            # this with a retryable 503. Folding it into `success=False` here
-            # turned a safe-to-retry capacity refusal into a 200 failure body.
+        except (AdmissionDeadlineExceededError, ReadinessUnavailableError):
+            # These typed pre-admission refusals have a retryable HTTP 503
+            # handler. Folding them into `success=False` would return a 200
+            # failure body and lose the host's Retry-After semantics. A
+            # failure after admission is handled inside GenerationService;
+            # it must never invite another admission of committed work.
             raise
         except Exception as e:
             return PublishUserInteractionResponse(success=False, message=str(e))
