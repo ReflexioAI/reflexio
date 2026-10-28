@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import time
 from typing import Any, Protocol
 
 import requests
@@ -59,11 +58,11 @@ class AssistantFailedError(Exception):
 
 
 class WebhookFailedError(AssistantFailedError):
-    """Raised when ``WebhookAssistant`` exhausts its retries."""
+    """Raised when ``WebhookAssistant`` cannot complete an invocation."""
 
 
 class LocalScriptFailedError(AssistantFailedError):
-    """Raised when ``LocalScriptAssistant`` exhausts its retries."""
+    """Raised when ``LocalScriptAssistant`` cannot complete an invocation."""
 
 
 def _build_payload(
@@ -89,40 +88,17 @@ def _build_payload(
 
 
 class WebhookAssistant:
-    """HTTP assistant backend.
+    """Send one POST per invocation; the integration owns any safe replay.
 
-    POSTs the rollout payload to ``url`` and expects ``{"content": str}`` in
-    the response body. Retries any exception (network error, non-2xx,
-    malformed JSON, missing field) with exponential backoff up to
-    ``max_retries`` additional attempts before raising
-    ``WebhookFailedError``.
-
-    Args:
-        url: Destination URL. The optimizer does not validate the scheme,
-            so operators are responsible for ensuring it points at a host
-            that satisfies their data-residency requirements.
-        auth_header: Sent verbatim as the ``Authorization`` header. Never
-            logged.
-        timeout_s: Per-request timeout (passed to ``requests.post``).
-        max_retries: Number of *additional* attempts after the first try.
-            ``max_retries=0`` means a single attempt.
-        backoff_base_s: Base for the exponential delay
-            ``backoff_base_s * 2**attempt`` between retries.
+    Failures, redirects and malformed output abort the current evaluation.
+    A later evaluator call is distinct work, not an exactly-once guarantee.
+    ``timeout_s`` retains requests' connection/read timeout semantics.
     """
 
-    def __init__(
-        self,
-        url: str,
-        auth_header: str | None,
-        timeout_s: int,
-        max_retries: int,
-        backoff_base_s: float,
-    ) -> None:
+    def __init__(self, url: str, auth_header: str | None, timeout_s: int) -> None:
         self.url = url
         self.auth_header = auth_header
         self.timeout_s = timeout_s
-        self.max_retries = max_retries
-        self.backoff_base_s = backoff_base_s
 
     def __call__(
         self, messages: list[ChatMessage], playbooks: list[AgentPlaybook]
@@ -130,117 +106,78 @@ class WebhookAssistant:
         headers = {"Content-Type": "application/json"}
         if self.auth_header:
             headers["Authorization"] = self.auth_header
-        payload = _build_payload(messages, playbooks)
-        last_error: Exception | None = None
-        for attempt in range(self.max_retries + 1):
-            try:
-                response = requests.post(
-                    self.url,
-                    json=payload,
-                    headers=headers,
-                    timeout=self.timeout_s,
+        try:
+            response = requests.post(
+                self.url,
+                json=_build_payload(messages, playbooks),
+                headers=headers,
+                timeout=self.timeout_s,
+                allow_redirects=False,
+            )
+            if not 200 <= response.status_code < 300:
+                raise WebhookFailedError(
+                    f"assistant webhook returned HTTP {response.status_code}"
                 )
-                response.raise_for_status()
+            try:
                 data = response.json()
-                content = data.get("content")
-                if not isinstance(content, str):
-                    raise WebhookFailedError("assistant webhook returned no content")
-                return content
-            except Exception as exc:  # noqa: PERF203
-                last_error = exc
-                if attempt >= self.max_retries:
-                    break
-                time.sleep(self.backoff_base_s * (2**attempt))
-        # Wrap-and-rethrow ensures the adapter sees a single AssistantFailedError
-        # subclass regardless of which underlying exception triggered the failure.
-        raise WebhookFailedError(str(last_error)) from last_error
+            except ValueError:
+                raise WebhookFailedError(
+                    "assistant webhook returned invalid JSON"
+                ) from None
+            content = data.get("content") if isinstance(data, dict) else None
+            if not isinstance(content, str):
+                raise WebhookFailedError("assistant webhook returned no content")
+            return content
+        except requests.RequestException:
+            # The server may have executed. Do not replay or expose URL/body/auth.
+            raise WebhookFailedError("assistant webhook transport failed") from None
 
 
 class LocalScriptAssistant:
-    """Subprocess assistant backend.
+    """Start one process per invocation, exchanging the shared JSON payload.
 
-    Spawns ``[script_path, *script_args]`` per turn and exchanges JSON over
-    stdin/stdout. The script must:
-
-    1. Read a single JSON object from stdin matching ``_build_payload``'s
-       shape (``{"messages": [...], "playbooks": [...]}``).
-    2. Print a single JSON object to stdout containing at least
-       ``{"content": "<assistant reply>"}``.
-    3. Exit with code 0 on success. Any non-zero exit, malformed JSON,
-       missing/non-string ``content``, or timeout is treated as a failure
-       and counted against ``max_retries``.
-
-    The command is built as a list and passed to ``subprocess.run`` *without*
-    ``shell=True``, so config values cannot inject shell metacharacters.
-    Retry/timeout/backoff semantics mirror ``WebhookAssistant``.
+    The command is a list without a shell. Failure/invalid output/timeout aborts
+    this evaluation; scripts own any retries they can perform safely. The
+    existing subprocess timeout kills and waits for this child, not descendants.
     """
 
     def __init__(
-        self,
-        script_path: str,
-        script_args: list[str],
-        timeout_s: int,
-        max_retries: int,
-        backoff_base_s: float,
+        self, script_path: str, script_args: list[str], timeout_s: int
     ) -> None:
         self.command = [script_path, *script_args]
         self.timeout_s = timeout_s
-        self.max_retries = max_retries
-        self.backoff_base_s = backoff_base_s
 
     def __call__(
         self, messages: list[ChatMessage], playbooks: list[AgentPlaybook]
     ) -> str:
-        payload = _build_payload(messages, playbooks)
-        stdin = json.dumps(payload, ensure_ascii=False)
-        last_error: Exception | None = None
-        for attempt in range(self.max_retries + 1):
-            try:
-                # shell=False (the default) is intentional — see class docstring.
-                result = subprocess.run(  # noqa: S603
-                    self.command,
-                    input=stdin,
-                    text=True,
-                    capture_output=True,
-                    timeout=self.timeout_s,
-                    check=False,
-                )
-                if result.returncode != 0:
-                    # Truncate stderr to keep error messages bounded — long
-                    # tracebacks would otherwise blow up DB rows and logs.
-                    raise LocalScriptFailedError(
-                        "assistant script exited with code "
-                        f"{result.returncode}: {_truncate(result.stderr)}"
-                    )
-                try:
-                    data = json.loads(result.stdout)
-                except json.JSONDecodeError as exc:
-                    raise LocalScriptFailedError(
-                        f"assistant script returned invalid JSON: {_truncate(result.stdout)}"
-                    ) from exc
-                content = data.get("content") if isinstance(data, dict) else None
-                if not isinstance(content, str):
-                    raise LocalScriptFailedError("assistant script returned no content")
-                return content
-            except subprocess.TimeoutExpired:
-                # Timeouts come up via a different exception class than the
-                # validation errors above, but feed into the same retry budget.
-                last_error = LocalScriptFailedError(
-                    f"assistant script timed out after {self.timeout_s}s"
-                )
-                if attempt >= self.max_retries:
-                    break
-                time.sleep(self.backoff_base_s * (2**attempt))
-            except Exception as exc:  # noqa: PERF203
-                last_error = exc
-                if attempt >= self.max_retries:
-                    break
-                time.sleep(self.backoff_base_s * (2**attempt))
-        raise LocalScriptFailedError(str(last_error)) from last_error
-
-
-def _truncate(value: str, limit: int = 1000) -> str:
-    """Cap a string for inclusion in error messages and stored rows."""
-    if len(value) <= limit:
-        return value
-    return f"{value[:limit]}..."
+        try:
+            result = subprocess.run(  # noqa: S603 - explicit configured executable, no shell
+                self.command,
+                input=json.dumps(
+                    _build_payload(messages, playbooks), ensure_ascii=False
+                ),
+                text=True,
+                capture_output=True,
+                timeout=self.timeout_s,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            raise LocalScriptFailedError(
+                f"assistant script timed out after {self.timeout_s}s"
+            ) from None
+        except OSError:
+            raise LocalScriptFailedError("assistant script could not start") from None
+        if result.returncode != 0:
+            raise LocalScriptFailedError(
+                f"assistant script exited with code {result.returncode}"
+            )
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            raise LocalScriptFailedError(
+                "assistant script returned invalid JSON"
+            ) from None
+        content = data.get("content") if isinstance(data, dict) else None
+        if not isinstance(content, str):
+            raise LocalScriptFailedError("assistant script returned no content")
+        return content

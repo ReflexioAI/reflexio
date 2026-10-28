@@ -661,11 +661,8 @@ class PlaybookOptimizerConfig(BaseModel):
     # --- assistant backend: webhook ---------------------------------------
     webhook_url: str | None = None
     webhook_auth_header: str | None = None
-    # The webhook_* timeout/retry/backoff fields apply to BOTH backends —
-    # the prefix is preserved purely to avoid a config-schema migration.
+    # Timeout applies to both transports; integrations own safe retry behavior.
     webhook_timeout_seconds: int = Field(default=60, gt=0)
-    webhook_max_retries: int = Field(default=3, ge=0)
-    webhook_backoff_base_seconds: float = Field(default=1.0, ge=0.0)
 
     # --- assistant backend: local script ----------------------------------
     # Absolute path to the executable. The optimizer spawns
@@ -705,6 +702,8 @@ class PlaybookOptimizerConfig(BaseModel):
                 "enabled",
                 "max_metric_calls",
                 "scheduler_jitter_seconds",
+                "webhook_max_retries",
+                "webhook_backoff_base_seconds",
             ),
         )
 
