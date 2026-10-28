@@ -11,6 +11,7 @@ Targets coverage gaps in:
          full archive delete path, incremental archive delete)
 """
 
+import json
 import logging
 import re
 from contextlib import ExitStack, contextmanager
@@ -315,6 +316,76 @@ def test_aggregation_prompt_processor_preprocesses_cluster_playbooks_but_not_exi
     assert len({mapping_id for _text, mapping_id in processor.calls}) == 1
     assert clusters[0][0].content == "Project Zephyr prefers the safety checklist."
     assert existing[0].content == "Project Zephyr already has a checklist playbook."
+
+
+@pytest.mark.parametrize("threshold", [0.0, 1.0])
+def test_client_prompt_keeps_complete_preprocessed_sources(threshold):
+    from reflexio.server.prompt.prompt_manager import PromptManager
+
+    class Processor(_MappingAwareProcessor):
+        prompt_extra_instructions = "Keep protected markers opaque."
+
+    agg = _make_aggregator(aggregation_prompt_processor=Processor())
+    agg.request_context.prompt_manager = PromptManager()
+    sources = [
+        UserPlaybook(
+            user_playbook_id=index,
+            agent_version="v1",
+            request_id=f"request-{index}",
+            playbook_name="test",
+            content=content,
+            trigger=f"When {project} deploys",
+            rationale=f"{project} protects availability",
+        )
+        for index, (project, content) in enumerate(
+            [
+                (
+                    "Project Zephyr",
+                    "Project Zephyr must ask approval before deployment",
+                ),
+                ("Project Atlas", "Project Atlas must never expose access tokens"),
+            ],
+            start=1,
+        )
+    ]
+    originals = [source.model_dump() for source in sources]
+    captured = []
+
+    def inspect_prompt(messages, **_kwargs):
+        captured.extend(messages)
+        return PlaybookAggregationOutput(playbook=None)
+
+    agg.client.generate_chat_response.side_effect = inspect_prompt
+    with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": ""}):
+        outcomes = agg._generate_playbook_outcomes_with_source_clusters(
+            {0: sources}, [], direction_overlap_threshold=threshold
+        )
+
+    assert len(captured) == 1
+    prompt = captured[0]["content"]
+    assert "must ask approval before deployment" in prompt
+    assert "must never expose access tokens" in prompt
+    assert "Project Zephyr" not in prompt
+    assert "Project Atlas" not in prompt
+    assert "Keep protected markers opaque." in prompt
+    records = [
+        json.loads(line)
+        for line in prompt.splitlines()
+        if line.lstrip().startswith('{"content":')
+    ]
+    assert records == [
+        {
+            "content": f"<<TOKEN_{index}>> {instruction}",
+            "trigger": f"When <<TOKEN_{index}>> deploys",
+            "rationale": f"<<TOKEN_{index}>> protects availability",
+        }
+        for index, instruction in enumerate(
+            ["must ask approval before deployment", "must never expose access tokens"],
+            start=1,
+        )
+    ]
+    assert [source.model_dump() for source in sources] == originals
+    assert outcomes[0].source_cluster is sources
 
 
 def test_aggregation_prompt_processor_preprocesses_grouped_prompt_input():
@@ -2030,7 +2101,7 @@ def test_large_prompt_cluster_skips_quadratic_direction_grouping(monkeypatch):
         )
     )
 
-    assert "TRIGGER conditions: (none specified)" in rendered
+    assert '"content": "rule 256"' in rendered
 
 
 def test_existing_prompt_context_is_embedding_ranked_and_bounded():

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from reflexio.models.api_schema.service_schemas import UserPlaybook
 
 MAX_EXACT_DIRECTION_GROUPING_ITEMS = 256
@@ -134,86 +136,39 @@ def format_structured_cluster_input(
     return format_grouped(groups)
 
 
+def _format_source(playbook: UserPlaybook) -> str:
+    """Keep related fields together and escape embedded quotes/newlines."""
+    fields = {
+        "content": playbook.content,
+        "trigger": playbook.trigger,
+        "rationale": playbook.rationale,
+    }
+    return json.dumps(
+        {name: value for name, value in fields.items() if value}, ensure_ascii=False
+    )
+
+
 def format_flat(cluster_playbooks: list[UserPlaybook]) -> str:
-    """
-    Format playbooks as flat bullet lists (original format, used when no conflict).
-
-    Args:
-        cluster_playbooks: List of raw playbooks in this cluster
-
-    Returns:
-        str: Formatted input with separate field lists
-    """
-    triggers = []
-    rationales = []
-
-    for fb in cluster_playbooks:
-        if fb.trigger:
-            triggers.append(fb.trigger)
-        if fb.rationale:
-            rationales.append(fb.rationale)
-
-    lines: list[str] = []
-
-    if triggers:
-        lines.append("TRIGGER conditions (to be consolidated):")
-        lines.extend(f"- {trigger}" for trigger in triggers)
-    else:
-        lines.append("TRIGGER conditions: (none specified)")
-
-    if rationales:
-        lines.append("RATIONALE summaries:")
-        lines.extend(f"- {r}" for r in rationales)
-
-    append_freeform_observations(lines, cluster_playbooks)
-
-    return "\n".join(lines)
+    """Render complete source records in their selected order."""
+    return "\n".join(
+        [
+            "Source playbooks (one JSON object per source):",
+            *(_format_source(playbook) for playbook in cluster_playbooks),
+        ]
+    )
 
 
-def format_grouped(
-    groups: list[list[UserPlaybook]],
-) -> str:
-    """
-    Format playbooks in grouped layout (used when conflicting directions are detected).
-
-    Args:
-        groups: AgentPlaybook groups sorted by size descending
-
-    Returns:
-        str: Formatted input with group headers and per-playbook fields
-    """
-    lines: list[str] = [
+def format_grouped(groups: list[list[UserPlaybook]]) -> str:
+    """Render complete source records inside the existing similarity groups."""
+    lines = [
         "The following playbook items are grouped by similarity. "
         "Groups are ordered by size (largest first).",
+        "Each JSON object contains one source playbook's associated fields.",
         "",
     ]
-
-    for idx, group in enumerate(groups, start=1):
+    for index, group in enumerate(groups, start=1):
         count_label = "playbook" if len(group) == 1 else "playbooks"
-        lines.append(f"Group {idx} ({len(group)} {count_label}):")
-        for fb in group:
-            parts: list[str] = []
-            if fb.trigger:
-                parts.append(f'Trigger: "{fb.trigger}"')
-            if fb.rationale:
-                parts.append(f'Rationale: "{fb.rationale}"')
-            if not parts and fb.content:
-                parts.append(f'AgentPlaybook: "{fb.content}"')
-            if parts:
-                lines.append(f"  - {parts[0]}")
-                lines.extend(f"    {p}" for p in parts[1:])
+        lines.append(f"Group {index} ({len(group)} {count_label}):")
+        lines.extend(f"  {_format_source(playbook)}" for playbook in group)
         lines.append("")
-
     return "\n".join(lines)
-
-
-def append_freeform_observations(
-    lines: list[str], cluster_playbooks: list[UserPlaybook]
-) -> None:
-    """Append freeform observations from cluster playbooks to output lines."""
-    freeform_observations = [
-        fb.content for fb in cluster_playbooks if not fb.trigger and fb.content
-    ]
-    if freeform_observations:
-        lines.append("Freeform observations (from freeform cluster members):")
-        lines.extend(f"- {obs}" for obs in freeform_observations)

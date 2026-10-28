@@ -179,6 +179,15 @@ The portable state contract is
 `../storage/sqlite_storage/playbook/_aggregation.py`. Claims are lease-fenced, and
 all multi-write effects must remain inside `storage.commit_scope()`.
 
+**Aggregation source fidelity**: each selected source is rendered as one JSON
+object containing its nonempty content, trigger and rationale, preserving their
+association and embedded newlines. Similarity grouping and the large-cluster
+linear fallback share that renderer. It uses the already-preprocessed source
+rows; original rows remain the provenance authority. This restores instruction
+text that the former field-list layout could omit when a trigger was present.
+Prompts can therefore grow; source-count limits are not token-size guarantees,
+and this change introduces no truncation or new budget.
+
 **Optional prompt processing**: deployments can register an
 `AggregationPromptProcessor` via the `AGGREGATION_PROMPT_PROCESSOR` ServiceKey
 (`register_service`). The aggregator applies the processor only at the
