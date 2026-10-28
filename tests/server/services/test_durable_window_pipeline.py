@@ -3378,7 +3378,7 @@ def test_enabled_overflow_profile_uses_real_window_commit_once(
         schema_name = getattr(response_format, "__name__", "") or json.dumps(
             response_format, default=str
         )
-        if response_format is None:
+        if response_format is None and not params.get("tools"):
             response.choices[0].message.content = "false" if gate_negative else "true"
         if "ProfileDeduplicationOutput" in schema_name or any(
             "unique_ids" in str(message.get("content", ""))
