@@ -242,3 +242,44 @@ def test_actual_lingering_worker_is_reaped_without_blocking_caller(
     with pytest.raises(ProcessLookupError):
         os.kill(result["pid"], 0)
     assert elapsed < 1.5
+
+
+class StatusCollectedElsewhereWorker(LingeringWorker):
+    """join() returns but another poller consumed the exit status."""
+
+    def join(self, timeout=None):
+        self.join_timeouts.append(timeout)
+        if timeout is None:
+            self.reaping.set()
+            assert self.allow_exit.wait(5), "test did not release its owned worker"
+
+    def close(self):
+        raise ValueError("Cannot close a process while it is still running.")
+
+
+def test_reaper_releases_permit_when_exit_status_was_collected_elsewhere(
+    monkeypatch, provider_permit
+):
+    worker = StatusCollectedElsewhereWorker()
+    result_queue = Mock()
+    result_queue.get.return_value = ("ok", "ready")
+    context = SimpleNamespace(
+        Queue=lambda **_kwargs: result_queue,
+        Process=lambda **_kwargs: worker,
+    )
+    monkeypatch.setattr(generation.multiprocessing, "get_context", lambda: context)
+    thread_errors = []
+    monkeypatch.setattr(threading, "excepthook", thread_errors.append)
+    client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
+    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
+    try:
+        with admission.provider_slot("gpt-4o"):
+            assert client._completion_with_hard_timeout({"model": "gpt-4o"}, 30) == (
+                "ready"
+            )
+        assert worker.reaping.wait(2)
+    finally:
+        worker.allow_exit.set()
+    assert provider_permit.wait(2)
+    result_queue.close.assert_called_once()
+    assert thread_errors == []
