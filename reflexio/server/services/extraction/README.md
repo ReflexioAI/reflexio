@@ -147,6 +147,17 @@ other binding fields. Historical snapshots, lookup identities, child receipts
 and spent quota remain unchanged; arbitrary model normalization and unknown
 window fields are not compatibility proofs.
 
+Profile chunk checkpoints distinguish the complete rendered prompt hash from an
+instruction witness: the same source/schema and context-free rendering plus the
+unrendered template identities. If only existing-profile context changes between
+attempts, the ordinary fenced journal reselects the affected children. Old
+content-addressed receipts and consumed provider attempts remain intact; they
+cannot satisfy a new prompt or increase its remaining quota. Genuine instruction
+or schema changes, active/waiting continuations and legacy prompt mismatches
+without this witness remain held. An unchanged legacy prompt can acquire the
+witness. Fully computed saved outputs retain their existing current-contract
+revalidation path. Only hashes are added, not another copy of profile text.
+
 Final reconciliation and cached recovery reuse proof carried by registered child
 outputs or that quoted context; scanning the full source does not make its
 unshown remainder valid prompt evidence. Profile publication keeps canonical
