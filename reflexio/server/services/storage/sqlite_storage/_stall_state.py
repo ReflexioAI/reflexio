@@ -12,6 +12,7 @@ import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from threading import RLock
 from typing import Any
 
 from reflexio.models.api_schema.stall_state_schema import StallReason
@@ -178,6 +179,7 @@ class SQLiteStallStateMixin:
 
     # Type hints for instance attributes provided by SQLiteStorageBase via MRO
     conn: Any
+    _lock: RLock
 
     def get_stall_state(self) -> StallState:
         """Return the current stall row.
@@ -185,7 +187,8 @@ class SQLiteStallStateMixin:
         Returns:
             StallState: Current snapshot of the singleton stall row.
         """
-        return get_stall_state(self.conn)
+        with self._lock:
+            return get_stall_state(self.conn)
 
     def upsert_stall_state(
         self,
@@ -204,18 +207,21 @@ class SQLiteStallStateMixin:
             reset_estimate (datetime | None): Estimated reset time, if known.
             error_message (str): Raw error text for debugging.
         """
-        upsert_stall_state(
-            self.conn,
-            reason=reason,
-            stalled_at=stalled_at,
-            reset_estimate=reset_estimate,
-            error_message=error_message,
-        )
+        with self._lock:
+            upsert_stall_state(
+                self.conn,
+                reason=reason,
+                stalled_at=stalled_at,
+                reset_estimate=reset_estimate,
+                error_message=error_message,
+            )
 
     def mark_stall_notified(self) -> None:
         """Set ``notified_in_cc=1`` for the current stall. No-op when clean."""
-        mark_stall_notified(self.conn)
+        with self._lock:
+            mark_stall_notified(self.conn)
 
     def clear_stall_state(self) -> None:
         """Mark the singleton clean — clears all stall fields atomically."""
-        clear_stall_state(self.conn)
+        with self._lock:
+            clear_stall_state(self.conn)

@@ -1353,3 +1353,13 @@ A batch may reclaim one graph larger than its requested physical-row count to
 make progress without leaving dangling winner/evaluation history. Selection uses
 the existing bounded delete chunk. Unqualified adapters retain histories; a
 jobs-only size estimate cannot bypass the aggregate budget.
+
+
+### SQLite stall-state connection ownership
+
+Stall-state reads, upserts, notification acknowledgement and clearing on a
+composed SQLite storage instance use its existing reentrant connection lock.
+They share the writer connection with interaction inserts and their Python
+Unicode-index trigger function; they must not bypass that lock during concurrent
+publish/read requests. Standalone connection helpers leave synchronization to
+their caller. This changes no notification policy, SQL or timeout.

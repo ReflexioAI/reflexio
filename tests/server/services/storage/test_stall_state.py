@@ -2,9 +2,52 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Event
+
+import pytest
 
 from reflexio.server.services.storage.sqlite_storage._stall_state import _parse_ts
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "get_stall_state",
+        "upsert_stall_state",
+        "mark_stall_notified",
+        "clear_stall_state",
+    ],
+)
+def test_stall_operations_wait_for_the_shared_connection_owner(storage, operation):
+    """A stall operation cannot enter SQLite during another thread's insert."""
+    started, finished = Event(), Event()
+
+    def access_stall_state():
+        started.set()
+        try:
+            if operation == "upsert_stall_state":
+                storage.upsert_stall_state(
+                    reason="auth_error",
+                    stalled_at=datetime.now(UTC),
+                    reset_estimate=None,
+                    error_message="owned test",
+                )
+            else:
+                getattr(storage, operation)()
+        finally:
+            finished.set()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with storage._lock:
+            future = pool.submit(access_stall_state)
+            assert started.wait(timeout=2), "worker did not start"
+            assert not finished.wait(timeout=0.2), (
+                "stall access bypassed the connection owner"
+            )
+        future.result(timeout=2)
+    assert finished.is_set()
 
 
 def test_parse_ts_treats_offsetless_timestamp_as_utc():
