@@ -31,6 +31,7 @@ class SQLiteDeletionMixin:
     _fetchone: Any
     _fetchall: Any
     _has_sqlite_vec: bool
+    commit_scope: Any
 
     # -- Retention hooks (see RetentionMixin) --
 
@@ -46,6 +47,39 @@ class SQLiteDeletionMixin:
     def _retention_count_rows(self, target: RetentionTarget) -> int:
         row = self._fetchone(f"SELECT COUNT(*) as cnt FROM {target.table_name}")  # noqa: S608
         return int(row["cnt"]) if row else 0
+
+    @SQLiteStorageBase.handle_exceptions
+    def _retention_delete_optimization_rows(
+        self, target: RetentionTarget, count: int
+    ) -> int:
+        # BEGIN IMMEDIATE (or the enclosing commit scope) serializes eligibility
+        # with job activation, including another connection to this database.
+        with self.commit_scope():
+            rows = self.conn.execute(
+                f"""SELECT history.{target.id_columns[0]}
+                    FROM {target.table_name} AS history
+                    JOIN playbook_optimization_jobs AS jobs
+                      ON jobs.job_id = history.job_id
+                    WHERE jobs.status IN ('completed', 'failed', 'skipped')
+                      AND (jobs.lease_expires_at IS NULL
+                           OR jobs.lease_expires_at <= CAST(strftime('%s', 'now') AS INTEGER))
+                      AND (jobs.stage IS NULL OR jobs.stage <> 'publishing')
+                      AND jobs.optimizer_kind <> 'offline_tuner_open_world'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM user_playbook_publication_claims AS claims
+                          WHERE claims.job_id = jobs.job_id AND claims.consumed = 0
+                      )
+                    ORDER BY history.{target.order_column}, history.{target.id_columns[0]}
+                    LIMIT ?""",  # noqa: S608 - literal registry identifiers, no caller SQL.
+                (count,),
+            ).fetchall()
+            # Open-world publication has external lifecycle/attribution holds
+            # unavailable to SQLite. Its qualified adapter owns reclamation.
+            keys = [(row[0],) for row in rows]
+            if keys:
+                self._retention_delete_dependencies(target, keys)
+                self._retention_delete_target_rows(target, keys)
+            return len(keys)
 
     @SQLiteStorageBase.handle_exceptions
     def _retention_select_oldest_keys(

@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from reflexio.server.services.storage.retention import (
+    OPTIMIZATION_HISTORY_TARGETS,
     RETENTION_CASCADES,
     RETENTION_TARGETS_BY_NAME,
     RetentionArchiver,
@@ -260,6 +261,8 @@ class RetentionMixin(ABC):
         target = get_retention_target(target_name)
         if not self._retention_table_exists(target.table_name):
             return 0
+        if target_name in OPTIMIZATION_HISTORY_TARGETS:
+            return self._retention_delete_optimization_rows(target, count)
         older_than = (
             retention_cutoff_value(
                 target, int(time.time()) - target.minimum_age_seconds
@@ -521,6 +524,18 @@ class RetentionMixin(ABC):
         """
         self._retention_delete_dependencies(target, keys)
         self._retention_delete_target_rows(target, keys)
+
+    def _retention_delete_optimization_rows(
+        self, target: RetentionTarget, count: int
+    ) -> int:
+        """Atomically evict eligible optimizer history; unknown backends retain it.
+
+        A separate preflight filter is unsafe: a job could activate between the
+        observation and deletion. The backend must hold its writer transaction
+        across eligibility, selection, cascades and removal.
+        """
+        del target, count
+        return 0
 
     # -- Backend hooks --
 
