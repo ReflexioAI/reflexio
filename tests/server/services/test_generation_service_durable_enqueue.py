@@ -93,7 +93,10 @@ def test_durable_enqueue_persists_job_atomically(monkeypatch):
         assert claim is not None and claim[0] == "u1"
 
 
-def test_public_publish_to_durable_worker_persists_profile_and_playbook(monkeypatch):
+@pytest.mark.parametrize("initially_unready", [False, True])
+def test_public_publish_to_durable_worker_persists_profile_and_playbook(
+    monkeypatch, initially_unready
+):
     """The public deferred-publish path survives without the retired service.
 
     This exercises the complete in-process boundary: public facade, atomic queue
@@ -136,26 +139,42 @@ def test_public_publish_to_durable_worker_persists_profile_and_playbook(monkeypa
             configurator=configurator,
         )
 
-        try:
-            response = reflexio.publish_interaction(
+        payload = {
+            "request_id": "durable-public-request",
+            "user_id": "durable-public-user",
+            "session_id": "durable-public-session",
+            "agent_version": "v1",
+            "source": "durable-boundary-test",
+            "interaction_data_list": [
                 {
-                    "request_id": "durable-public-request",
-                    "user_id": "durable-public-user",
-                    "session_id": "durable-public-session",
-                    "agent_version": "v1",
-                    "source": "durable-boundary-test",
-                    "interaction_data_list": [
-                        {
-                            "content": (
-                                "I prefer concise answers. Next time, confirm the account "
-                                "number before suggesting a billing change."
-                            ),
-                            "created_at": int(datetime.datetime.now(UTC).timestamp()),
-                        }
-                    ],
-                },
-                defer_learning=True,
-            )
+                    "content": (
+                        "I prefer concise answers. Next time, confirm the account "
+                        "number before suggesting a billing change."
+                    ),
+                    "created_at": int(datetime.datetime.now(UTC).timestamp()),
+                }
+            ],
+        }
+        try:
+            storage = reflexio.get_storage()
+            if initially_unready:
+                from reflexio.server.services.storage.error import (
+                    ReadinessUnavailableError,
+                )
+
+                with monkeypatch.context() as pending:
+                    pending.setattr(
+                        storage,
+                        "prepare_interaction_embeddings",
+                        Mock(side_effect=ReadinessUnavailableError("warming up")),
+                    )
+                    with pytest.raises(ReadinessUnavailableError):
+                        reflexio.publish_interaction(payload, defer_learning=True)
+                assert storage.get_request(payload["request_id"]) is None
+                assert storage.get_user_interaction(payload["user_id"]) == []
+                assert storage.claim_extraction("before-readiness", 300) is None
+
+            response = reflexio.publish_interaction(payload, defer_learning=True)
 
             assert response.success is True
             storage = reflexio.get_storage()

@@ -919,6 +919,15 @@ blip into replaced processes. Routing and uptime decisions use `/health/ready`.
 Hosts can raise `ReadinessUnavailableError` for temporarily unqualified vector
 operations. Resumable extraction keeps these runs queued without spending the
 retry budget; resume refunds remain protected by the claim and user lease fence.
+The public publishing facade preserves this typed refusal before admission so
+HTTP hosts can return a retryable 503 rather than a 200 failure body. Its
+`publish_readiness_unavailable` warning identifies an unadmitted request without
+logging provider exception values. The warning remains release-blocking until
+the affected tenant operation demonstrably recovers. Its organization and
+project attribution come from the current server context, using the neutral
+work-scope provider for the project rather than caller-supplied content. An
+identical committed request can still replay while the vector dependency is
+unavailable; no new interactions or extraction work are admitted.
 
 ### Session-outcome error handling
 

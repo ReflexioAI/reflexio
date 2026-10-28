@@ -434,7 +434,11 @@ class GenerationService:
             check_admission_deadline()
             publish_timing.record("n_interactions", len(new_interactions))
             with publish_timing.phase("embeddings"):
-                storage.prepare_interaction_embeddings(new_interactions)
+                replay = self._prepare_or_replay_publish(
+                    storage, admission_participant, new_request, new_interactions
+                )
+                if replay is not None:
+                    return replay
             check_admission_deadline()
             from reflexio.server.services.storage.error import PostCommitStorageError
 
@@ -569,6 +573,31 @@ class GenerationService:
             self._log_publish_failure(e, user_id, result.request_id)
             raise
 
+    def _prepare_or_replay_publish(
+        self,
+        storage: BaseStorage,
+        participant: ExternalAdmissionParticipant | None,
+        new_request: Request,
+        new_interactions: list[Interaction],
+    ) -> GenerationServiceResult | None:
+        """Prepare new vectors, or recover a committed replay while unready."""
+        from reflexio.server.services.storage.error import ReadinessUnavailableError
+
+        try:
+            storage.prepare_interaction_embeddings(new_interactions)
+        except ReadinessUnavailableError:
+            # Ordinary retries discover committed duplicates after preparation.
+            # During a readiness refusal, use the same fenced replay check:
+            # committed work needs no new vector admission. Successful first
+            # attempts still pay no extra replay read.
+            replay = self._replay_existing_request(
+                participant, new_request, new_interactions
+            )
+            if replay is not None:
+                return replay
+            raise
+        return None
+
     def _wait_for_extraction_coverage(
         self,
         storage: BaseStorage,
@@ -633,6 +662,35 @@ class GenerationService:
         from reflexio.server.services.durable_learning.waiting import (
             AdmissionDeadlineExceededError,
         )
+        from reflexio.server.services.storage.error import ReadinessUnavailableError
+        from reflexio.server.work_scope import current_project_id
+
+        if isinstance(error, ReadinessUnavailableError):
+            # run() calls this only before admission committed. The host
+            # returns a retryable 503, so this is a refusal rather than a
+            # profile-refresh fault. It still blocks release verification
+            # until the affected operation demonstrably recovers: retryable
+            # does not mean the dependency is healthy. Never log provider
+            # exception values, which can contain credentials.
+            project_id = current_project_id()
+            with error_tags(
+                subsystem="generation",
+                op="publish_interaction",
+                org_id=self.org_id,
+                project_id=project_id,
+                user_id=user_id,
+                request_id=request_id,
+                release_blocking="true",
+            ):
+                logger.warning(
+                    "event=publish_readiness_unavailable admitted=false retryable=true "
+                    "release_blocking=true org_id=%s project_id=%s user_id=%s request_id=%s",
+                    sanitise_for_log(self.org_id),
+                    sanitise_for_log(project_id or ""),
+                    sanitise_for_log(user_id),
+                    sanitise_for_log(request_id or ""),
+                )
+            return
 
         if isinstance(error, AdmissionDeadlineExceededError):
             # Capacity, not a fault: the deadline passed before admission
