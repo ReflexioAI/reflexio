@@ -293,10 +293,32 @@ class TestClaudeCodeLLMCompletion:
         cmd = mock_run.call_args.args[0]
         fmt_idx = cmd.index("--output-format")
         assert cmd[fmt_idx + 1] == "stream-json"
-        model_idx = cmd.index("--model")
-        assert cmd[model_idx + 1] == "claude-sonnet-5"
+        assert "--model" not in cmd
         # stream-json requires --verbose to emit events.
         assert "--verbose" in cmd
+
+    @pytest.mark.parametrize(
+        "override", [None, "", " \t", "chosen-model", " chosen-model "]
+    )
+    def test_only_explicit_model_override_is_forwarded(
+        self, monkeypatch: pytest.MonkeyPatch, override: str | None
+    ) -> None:
+        mock_run = self._mock_cli(monkeypatch, served_model="actual-host-model")
+        if override is None:
+            monkeypatch.delenv("CLAUDE_SMART_CLI_MODEL", raising=False)
+        else:
+            monkeypatch.setenv("CLAUDE_SMART_CLI_MODEL", override)
+
+        response = ClaudeCodeLLM().completion(
+            messages=[{"role": "user", "content": "hello"}]
+        )
+
+        cmd = mock_run.call_args.args[0]
+        if override and override.strip():
+            assert cmd[cmd.index("--model") + 1] == override.strip()
+        else:
+            assert "--model" not in cmd
+        assert response._hidden_params["reflexio_served_model"] == "actual-host-model"
 
     def test_sets_max_retries_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """CLI subprocess env and stdin encoding are pinned for Windows safety."""

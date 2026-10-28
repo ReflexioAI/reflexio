@@ -213,6 +213,7 @@ Key files:
 - `call_deadline.py`: Shared `model_deadline(...)` scope, `model_call_deadline` timestamp, and cooperative remaining-time checks for text generation and embeddings. Provider admission and cloud/service embeddings honor the tighter compute/search budget at dispatch, chunk, reconnect and result boundaries. Expired results are rejected; calls without a compute deadline retain their configured budgets. This does not interrupt synchronous DNS, I/O or parsing, establish a new precompute budget, or change worker retirement, transport pools or document expansion.
   Completion attempts count worker construction/startup and all result waits against the same deadline. Received responses go through existing usage accounting before expired output is rejected, including when synchronous receiving or parsing finishes late. The public return also checks the enclosing deadline after validation. Running workers retain provider admission through actual retirement; these checks do not forcibly interrupt startup or deserialization and create no embedding worker.
 - `providers/`: Optional local/provider adapters (`claude-code/`, OpenClaw, local embedding, Nomic embedding, and GPU-only multilingual E5); registration is opt-in via environment/config
+
 - `llm_utils.py`: Helper functions for Pydantic model conversion; retains the compatibility export for `env_utils.positive_int_env`
 - `embedding_policy.py`: Schema-independent model prefixes and retrieval/clustering thresholds; `services.embedding_text` re-exports its public names
 - `embedding_service.py`: Inference HTTP app. Package-root, LLM and rerank public exports load on demand, so importing this daemon does not pull in application clients, schemas or extraction code. Public `from reflexio import ...` and LLM/rerank imports retain their existing objects.
@@ -231,6 +232,13 @@ Key files:
   `REFLEXIO_EMBEDDING_BULK_TIMEOUT_MS` extends only bulk HTTP requests;
   search requests always retain their active search deadline.
 
+The Claude CLI provider passes `--model` only for a nonblank
+`CLAUDE_SMART_CLI_MODEL` override. Otherwise the host CLI owns model selection
+through its native configuration; Reflexio does not pin a model name. This
+intentionally replaces the former built-in model default and can change the
+selected model and its cost. Select an explicit override when a pin is needed.
+The provider's request slug remains opaque; served-model provenance comes from
+the CLI response. Local-CLI consent and timeout controls remain independent.
 **Features**:
 
 - Uses LiteLLM for multi-provider support (OpenAI, Claude, Azure, OpenRouter, Gemini, custom endpoints, etc.)
