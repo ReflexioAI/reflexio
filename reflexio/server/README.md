@@ -919,8 +919,10 @@ blip into replaced processes. Routing and uptime decisions use `/health/ready`.
 Hosts can raise `ReadinessUnavailableError` for temporarily unqualified vector
 operations. Resumable extraction keeps these runs queued without spending the
 retry budget; resume refunds remain protected by the claim and user lease fence.
-The public publishing facade preserves this typed refusal before admission so
-HTTP hosts can return a retryable 503 rather than a 200 failure body. Its
+The public publishing facade preserves this typed refusal before admission. The
+shared `create_app` factory maps it to HTTP 503 with
+`detail="embedding_readiness_unavailable"`, `Cache-Control: no-store`, and
+`Retry-After: 30`, including standalone hosts. Its
 `publish_readiness_unavailable` warning identifies an unadmitted request without
 logging provider exception values. The warning remains release-blocking until
 the affected tenant operation demonstrably recovers. Its organization and

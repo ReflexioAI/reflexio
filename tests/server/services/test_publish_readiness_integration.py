@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
+from functools import partial
 from unittest.mock import Mock
 
 import pytest
+from fastapi.testclient import TestClient
 
 from reflexio.lib.reflexio_lib import Reflexio
 from reflexio.server.services.storage.error import ReadinessUnavailableError
@@ -143,3 +147,78 @@ def test_readiness_failure_after_commit_preserves_success(
     assert len(storage.get_user_interaction("readiness-user")) == 1
     assert storage.claim_extraction("committed-worker", 300) is not None
     failure.assert_called()
+
+
+def test_standalone_http_readiness_refusal_then_retry_and_post_commit_success(
+    tmp_path, monkeypatch, worker_id
+):
+    """The shared app owns 503 mapping; no enterprise handler is installed."""
+    from reflexio.server.api import create_app
+    from reflexio.server.api_endpoints import publisher_api
+    from reflexio.server.services.durable_learning import waiting
+
+    org_id = f"standalone-readiness-{worker_id}"
+    reflexio = Reflexio(org_id=org_id, storage_base_dir=str(tmp_path))
+    storage = reflexio.get_storage()
+    assert isinstance(storage, SQLiteStorage)
+    original_prepare = storage.prepare_interaction_embeddings
+    unready = [True]
+
+    @SQLiteStorage.handle_exceptions
+    def prepare_when_ready(owner, interactions):
+        if unready[0]:
+            raise ReadinessUnavailableError("private provider diagnostics")
+        original_prepare(interactions)
+
+    monkeypatch.setattr(
+        storage, "prepare_interaction_embeddings", partial(prepare_when_ready, storage)
+    )
+    monkeypatch.setattr(publisher_api, "get_reflexio", lambda **_: reflexio)
+    monkeypatch.setattr(waiting, "operation_limit_value", lambda _: 1)
+    client = TestClient(
+        create_app(get_org_id=lambda: org_id), raise_server_exceptions=False
+    )
+
+    def assert_ingestion_permit_released():
+        acquired = asyncio.run(
+            waiting.acquire_ingestion(org_id, time.monotonic() + 0.1)
+        )
+        assert acquired, "the HTTP outcome must release its ingestion permit"
+        waiting.release_ingestion(org_id)
+
+    try:
+        refused = client.post(
+            "/api/publish_interaction", json=payload("standalone-request")
+        )
+        assert refused.status_code == 503
+        assert refused.json() == {"detail": "embedding_readiness_unavailable"}
+        assert refused.headers["Cache-Control"] == "no-store"
+        assert refused.headers["Retry-After"] == "30"
+        assert "private provider" not in refused.text
+        assert storage.get_request("standalone-request") is None
+        assert storage.get_user_interaction("readiness-user") == []
+        assert storage.claim_extraction("standalone-worker", 300) is None
+        assert_ingestion_permit_released()
+
+        unready[0] = False
+        accepted = client.post(
+            "/api/publish_interaction", json=payload("standalone-request")
+        )
+        assert accepted.status_code == 200 and accepted.json()["success"] is True
+        assert len(storage.get_user_interaction("readiness-user")) == 1
+        assert_ingestion_permit_released()
+
+        # A dependency becoming unavailable after commit must preserve success.
+        monkeypatch.setattr(
+            "reflexio.server.services.durable_learning.local.ensure_local_extraction",
+            Mock(side_effect=ReadinessUnavailableError("post-commit readiness")),
+        )
+        committed = client.post(
+            "/api/publish_interaction", json=payload("committed-http-request")
+        )
+        assert committed.status_code == 200 and committed.json()["success"] is True
+        assert storage.get_request("committed-http-request") is not None
+        assert len(storage.get_user_interaction("readiness-user")) == 2
+        assert_ingestion_permit_released()
+    finally:
+        client.close()
