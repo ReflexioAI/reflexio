@@ -62,8 +62,7 @@ def test_explicit_upgrade_adopts_quality_policy_without_losing_budget_or_metadat
     original = deepcopy(source)
     converted = canonicalize_config_document(source)
     assert converted["playbook_optimizer_config"] == {
-        "enabled": enabled,
-        "max_metric_calls": 37,
+        "metric_call_budget": 37 if enabled else 0,
     }
     assert converted["extension"] == source["extension"]
     assert canonicalize_config_document(converted) == converted

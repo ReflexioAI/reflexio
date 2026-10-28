@@ -321,9 +321,9 @@ With the default `min_commit_windows=2` and `max_validation_windows=2`, the
 optimizer needs at least three source windows to run: two are held out for
 validation and at least one stays in the training pool. Targets with one or
 two source windows are skipped before any job row is written. Note that the
-default `max_metric_calls` and `max_turns` were lowered (from 40 → 20 and
-5 → 4) in this release to keep nightly runs cheaper — raise them if you
-need deeper exploration.
+work budget defaults to zero, so fresh optimizers perform no work. Select a
+positive `metric_call_budget` and the relevant target permission to opt in.
+`max_turns` remains an independent limit of four turns per rollout.
 
 ### 6.2 Existing fields that now apply to both backends
 
@@ -334,7 +334,7 @@ need deeper exploration.
 | `webhook_timeout_seconds` | `int > 0` | 60 | Per-call timeout — both backends |
 | `webhook_max_retries` | `int >= 0` | 3 | Retry budget — both backends |
 | `webhook_backoff_base_seconds` | `float >= 0` | 1.0 | Exponential base — both backends |
-| `max_metric_calls` | `int > 0` | 20 | GEPA metric-call budget per optimization run |
+| `metric_call_budget` | `int >= 0` | 0 | Zero disables new optimization; positive values bound candidate/window evaluations per run |
 | `max_turns` | `int > 0` | 4 | Maximum user turns replayed per source window rollout |
 | `reflection_minibatch_size` | `int > 0` | 2 | Number of training windows GEPA samples for each reflection minibatch |
 
@@ -347,7 +347,7 @@ policy; the stopping callback performs no database reads or new evaluations.
 Training and held-out windows receive disjoint GEPA cache IDs, so a cached
 training judgement cannot substitute for a different validation window.
 
-The independent `max_metric_calls` budget remains GEPA's search limit. This is a
+The `metric_call_budget` also owns GEPA's search limit. This is a
 satisficing search, not a guarantee of the globally best candidate. A publishable
 0.8 can stop before the former default aspiration of 0.9; a 0.95 candidate with
 insufficient absolute quality continues within the existing budget. Final
@@ -393,7 +393,8 @@ def check_single_assistant_backend(self) -> Self:
 ```yaml
 # Webhook backend (production)
 playbook_optimizer_config:
-  enabled: true
+  metric_call_budget: 20
+  user_playbooks_enabled: true
   webhook_url: https://assistant.internal/rollout
   webhook_auth_header: "Bearer <secret>"
   webhook_timeout_seconds: 60
@@ -401,7 +402,8 @@ playbook_optimizer_config:
 
 # Script backend (local dev / CI)
 playbook_optimizer_config:
-  enabled: true
+  metric_call_budget: 20
+  user_playbooks_enabled: true
   assistant_script_path: /usr/bin/python3
   assistant_script_args: [/path/to/echo_assistant.py]
   webhook_timeout_seconds: 30
@@ -432,8 +434,8 @@ What happens, in order, when a playbook is scheduled and the optimizer is enable
 | 9b | User-playbook publication | Builds a fixed decision proof and search projection, stages them durably, then atomically replaces the current user playbook with exactly one successor. The compact proof binds each full durable evaluation through a canonical digest rather than duplicating rollout documents. |
 | 10 | User-playbook recovery | A later enabled run may reclaim an expired publication lease and finish from the staged bytes. Incumbent changes produce `incumbent_changed`; retries do not rerun GEPA or regenerate the projection. |
 
-User-playbook recovery and new runs both require `enabled` and
-`user_playbooks_enabled`. The two legacy user switches normalize to their
+User-playbook recovery and new runs both require a positive `metric_call_budget`
+and `user_playbooks_enabled`. Explicit historical conversion combines the two legacy user switches with their
 conjunction, preserving both former false defaults. Prepared publication
 authority retains its recorded policy independently of later config changes.
 
@@ -492,7 +494,7 @@ The existing tests in `tests/server/services/playbook_optimizer/test_playbook_op
 | **Shell injection** | None. The command is a list, `shell=True` is not used. |
 | **Credentials in logs** | Only `str(last_error)` from the exception chain is logged. Authorization headers are never logged or echoed back. |
 | **Data residency** | Webhook traffic goes wherever `webhook_url` points — operators are responsible for choosing an appropriate endpoint. The script backend is local and never leaves the host. |
-| **Process overhead** | One process per assistant turn. Bounded by `max_metric_calls × max_turns × 2` (incumbent + candidate). For a long-lived script that pays a heavy startup cost, see §11. |
+| **Process overhead** | One process per assistant turn. Bounded by `metric_call_budget × max_turns × 2` (incumbent + candidate). For a long-lived script that pays a heavy startup cost, see §11. |
 | **stderr handling** | Captured, not streamed. Truncated to 1000 chars when included in error messages. |
 
 ---
@@ -505,3 +507,28 @@ The existing tests in `tests/server/services/playbook_optimizer/test_playbook_op
 | Long-lived script process | If startup overhead is measurable, replace `subprocess.run` with a persistent process speaking line-delimited JSON. Only `LocalScriptAssistant.__call__` would change. |
 | Per-turn working directory | Today the script inherits `cwd`. Passing an explicit `cwd` would help when the script loads local state tied to an org. |
 | Structured stderr capture on success | Currently surfaced only on non-zero exit. Capturing it on success too would help telemetry on script-internal warnings. |
+
+
+## Work-budget migration
+
+The former `enabled` and `max_metric_calls` configuration inputs are retired.
+Normal constructors and stored-config readers reject both names; they are not
+aliases. A zero `metric_call_budget` admits no backend, queue or optimizer work,
+even when a target permission is true. Positive budgets retain the same evaluation
+unit; user/agent permissions and quality, turn and scheduling policies remain
+independent. Set a positive budget explicitly to resume work after disabling it.
+
+The existing explicit converter maps an old disabled or missing `enabled` to
+zero, including custom positive old limits. An old enabled policy retains its
+validated old limit, or its historical default of20 when omitted. Malformed
+inactive limits and mixed old/new budgets fail instead of being silently
+selected. Inactive old limits are not saved as hidden future defaults.
+
+Local-file generation5 prepares a previously canonical file before the serving
+process starts and retains its original bytes. Older SDKs reject that generation;
+stop old writers before replacement. A previously ignored new budget in an older
+file is ambiguous and requires explicit copy conversion with `config upgrade-file`.
+Remote organizations require their separately qualified enterprise image upgrade;
+installing this SDK alone does not authorize a remote conversion. Immutable job
+authority continues to record the historical `budget_settings.max_metric_calls`
+output key, which is not a supported configuration input.

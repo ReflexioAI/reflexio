@@ -910,7 +910,7 @@ class TestCrossFieldValidators:
 
         assert config.webhook_url is None
         assert config.assistant_script_path is None
-        assert config.max_metric_calls == 20
+        assert config.metric_call_budget == 0
         assert config.max_turns == 4
         assert "early_stop_score" not in config.model_dump()
         assert config.max_validation_windows == 2

@@ -378,7 +378,7 @@ def test_saved_optimizer_stopping_adoption_never_rewrites_on_read(tmp_path, enab
     from reflexio.models.config_schema import validate_stored_config
 
     config = validate_stored_config(canonicalize_config_document(payload))
-    assert config.playbook_optimizer_config.enabled is enabled
+    assert config.playbook_optimizer_config.metric_call_budget == (37 if enabled else 0)
     assert path.read_bytes() == encoded
     assert "early_stop_score" not in config.playbook_optimizer_config.model_dump()
     storage.save_config(config)
@@ -386,7 +386,7 @@ def test_saved_optimizer_stopping_adoption_never_rewrites_on_read(tmp_path, enab
         "early_stop_score"
         not in json.loads(path.read_text())["playbook_optimizer_config"]
     )
-    config.playbook_optimizer_config.enabled = True
+    config.playbook_optimizer_config.metric_call_budget = 37
     storage.save_config(config)
     loaded = storage.load_config().playbook_optimizer_config
-    assert loaded.enabled is True and loaded.max_metric_calls == 37
+    assert loaded.metric_call_budget == 37

@@ -71,7 +71,7 @@ def _optimizer_config(tmp_path) -> Config:
     return Config(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
         playbook_optimizer_config=PlaybookOptimizerConfig(
-            enabled=True,
+            metric_call_budget=20,
             user_playbooks_enabled=True,
             webhook_url="https://assistant.example.test/rollout",
             min_commit_windows=1,
@@ -420,7 +420,7 @@ def test_gepa_user_job_creation_freezes_complete_sanitized_authority(tmp_path):
     storage = _storage(tmp_path)
     incumbent = _incumbent(storage)
     config = _optimizer_config(tmp_path)
-    config.playbook_optimizer_config.max_metric_calls = 37
+    config.playbook_optimizer_config.metric_call_budget = 37
     config.playbook_optimizer_config.max_turns = 6
     config.playbook_optimizer_config.reflection_minibatch_size = 3
     config.playbook_optimizer_config.max_validation_windows = 1
@@ -1532,7 +1532,7 @@ def test_gepa_live_publishing_lease_excludes_duplicate_worker(tmp_path):
 
 @pytest.mark.parametrize(
     "kill_switch",
-    ["enabled", "user_playbooks_enabled"],
+    ["metric_call_budget", "user_playbooks_enabled"],
 )
 def test_gepa_recovery_respects_live_kill_switches(tmp_path, kill_switch):
     storage = _storage(tmp_path)
@@ -1565,7 +1565,11 @@ def test_gepa_recovery_respects_live_kill_switches(tmp_path, kill_switch):
             )
         )
 
-    setattr(config.playbook_optimizer_config, kill_switch, False)
+    setattr(
+        config.playbook_optimizer_config,
+        kill_switch,
+        0 if kill_switch == "metric_call_budget" else False,
+    )
     optimizer._run_gepa = Mock(  # type: ignore[method-assign]
         side_effect=AssertionError("recovery must not rerun GEPA")
     )

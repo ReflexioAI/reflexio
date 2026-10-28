@@ -502,6 +502,6 @@ def test_upgrade_file_explicitly_adopts_quality_owned_optimizer_stopping(tmp_pat
     assert source.read_bytes() == encoded
     assert converted["extension"] == {"keep": True}
     config = validate_stored_config(converted).playbook_optimizer_config
-    assert config.enabled is True
-    assert config.max_metric_calls == 37 and config.min_commit_likert == 5
+    assert config.metric_call_budget > 0
+    assert config.metric_call_budget == 37 and config.min_commit_likert == 5
     assert "early_stop_score" not in converted["playbook_optimizer_config"]

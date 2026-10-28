@@ -19,7 +19,7 @@ from filelock import FileLock
 from reflexio.config_document import decode_config_document, encode_config_document
 from reflexio.config_env import StoredConfigurationError
 
-FILE_FORMAT_VERSION = 4
+FILE_FORMAT_VERSION = 5
 _METADATA_KEY = "_reflexio_config_file"
 
 
@@ -66,6 +66,16 @@ def _reject_ambiguous_policy(data: dict[str, Any], version: int) -> None:
             "to explicitly select canonical policy."
         )
     optimizer = data.get("playbook_optimizer_config")
+    if (
+        version < 5
+        and isinstance(optimizer, dict)
+        and "metric_call_budget" in optimizer
+    ):
+        raise StoredConfigurationError(
+            "Older configuration contains metric_call_budget, which was ignored "
+            "by its schema. Stop old writers and use config upgrade-file to "
+            "explicitly select canonical policy."
+        )
     if (
         version == 0
         and isinstance(optimizer, dict)
@@ -230,6 +240,7 @@ class LocalConfigFile:
             canonicalize_agent_optimizer_policy,
             canonicalize_audit_retention_policy,
             canonicalize_custom_endpoint_policy,
+            canonicalize_optimizer_work_budget,
             canonicalize_retrieval_floor_policy,
         )
 
@@ -264,6 +275,12 @@ class LocalConfigFile:
                     canonical["governance_retention"]
                 )
             canonical = canonicalize_custom_endpoint_policy(canonical)
+            if version < 5 and "playbook_optimizer_config" in canonical:
+                canonical["playbook_optimizer_config"] = (
+                    canonicalize_optimizer_work_budget(
+                        canonical["playbook_optimizer_config"]
+                    )
+                )
             self._validate(canonical)
             digest = hashlib.sha256(original).hexdigest()
             encoded = encode_local_config_document(

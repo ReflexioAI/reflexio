@@ -15,11 +15,14 @@ Description: GEPA-driven optimization of playbook content using assistant rollou
 Generate and compare content candidates while retaining the user/agent playbook adoption rules.
 
 `PlaybookOptimizerConfig.allows_target()` owns admission for execution and both
-scheduling paths. User optimization and adoption share `user_playbooks_enabled`;
-legacy user switches normalize to their conjunction before stored-config pruning.
-Both agent switches remain independent because integration defaults preserve an
-agent-adoption veto. Frozen GEPA publication authority keeps its historical
-`auto_update_user_playbooks` key; it is not rewritten from live configuration.
+scheduling paths. The nonnegative `metric_call_budget` owns the overall work
+limit: zero admits no new runs, and a positive value bounds evaluations.
+`user_playbooks_enabled` and `agent_playbooks_enabled` keep target consent
+independent. Historical admission/budget inputs are translated only at explicit
+upgrade boundaries; normal runtime readers reject them. Frozen GEPA publication
+authority retains its historical budget and adoption output keys and is never
+rewritten from live configuration.
+
 
 ## Architecture Pattern
 

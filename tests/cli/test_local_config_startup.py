@@ -120,6 +120,9 @@ def test_ordinary_restart_preserves_database_and_unrelated_raw_fields(
     optimizer.pop("optimize_agent_playbooks")
     optimizer.pop("auto_update_pending_agent_playbooks")
     optimizer["agent_playbooks_enabled"] = False
+    enabled = optimizer.pop("enabled")
+    limit = optimizer.pop("max_metric_calls")
+    optimizer["metric_call_budget"] = limit if enabled else 0
     expected["playbook_optimizer_config"] = optimizer
     floor = dict(expected["retrieval_floor"])
     assert floor.pop("enabled") is False
@@ -233,7 +236,7 @@ runpy.run_module("reflexio.server", run_name="__main__")
             optimizer = config["playbook_optimizer_config"]
             assert optimizer["agent_playbooks_enabled"] is False
             assert optimizer["user_playbooks_enabled"] is True
-            assert optimizer["max_metric_calls"] == 7
+            assert optimizer["metric_call_budget"] == 7
             assert "optimize_agent_playbooks" not in optimizer
             assert "auto_update_pending_agent_playbooks" not in optimizer
             assert config["storage_config"]["db_path"] == database

@@ -213,7 +213,7 @@ def test_real_gepa_search_uses_publication_quality(
     )
     result = optimizer._run_gepa(
         PlaybookOptimizerConfig(
-            max_metric_calls=20, max_merge_invocations=0, reflection_minibatch_size=1
+            metric_call_budget=20, max_merge_invocations=0, reflection_minibatch_size=1
         ),
         "seed",
         train_windows,

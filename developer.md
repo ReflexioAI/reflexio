@@ -1363,3 +1363,16 @@ They share the writer connection with interaction inserts and their Python
 Unicode-index trigger function; they must not bypass that lock during concurrent
 publish/read requests. Standalone connection helpers leave synchronization to
 their caller. This changes no notification policy, SQL or timeout.
+
+### Optimizer work-budget authority
+
+Local-file generation5 replaces optimizer `enabled` plus `max_metric_calls`
+with the nonnegative `metric_call_budget`. Fresh policy defaults to zero.
+Positive budgets bound the existing candidate/window evaluation work and still
+require the relevant user/agent target permission. The explicit historical
+converter preserves disabled policies as zero and enabled policies with their
+old validated limit; it retains originals and rejects malformed/conflicting
+inputs. Normal runtime readers reject both old names. Old SDKs reject the new
+file generation, so stop old writers before upgrade. Remote saved configuration
+needs its separately qualified enterprise image migration. See the
+[assistant backend guide](docs/playbook_optimizer_assistant_backends.md#work-budget-migration).

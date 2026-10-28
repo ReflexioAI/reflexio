@@ -2465,7 +2465,7 @@ def _make_ordered_aggregator(call_log: list[tuple[str, Any]]) -> Any:
     # A real optimizer config (not a MagicMock) so the enqueue gate — which uses
     # ``is not True`` identity checks — actually passes and the scheduler fires.
     cfg.playbook_optimizer_config = PlaybookOptimizerConfig(
-        enabled=True, agent_playbooks_enabled=True
+        metric_call_budget=20, agent_playbooks_enabled=True
     )
 
     agg.storage.count_user_playbooks.return_value = 5
