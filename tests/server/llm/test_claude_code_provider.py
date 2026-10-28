@@ -282,6 +282,7 @@ class TestClaudeCodeLLMCompletion:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The provider must invoke the CLI with stream-json, not the legacy json envelope."""
+        monkeypatch.delenv("CLAUDE_SMART_CLI_MODEL", raising=False)
         mock_run = self._mock_cli(monkeypatch)
         llm = ClaudeCodeLLM()
 
@@ -297,6 +298,7 @@ class TestClaudeCodeLLMCompletion:
         # stream-json requires --verbose to emit events.
         assert "--verbose" in cmd
 
+    @pytest.mark.unit
     @pytest.mark.parametrize(
         "override", [None, "", " \t", "chosen-model", " chosen-model "]
     )
