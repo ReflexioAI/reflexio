@@ -69,9 +69,7 @@ from reflexio.models.api_schema.retriever_schema import (
 from reflexio.models.config_schema import SearchMode
 from reflexio.models.profile_id import new_profile_id
 
-IS_TEST_ENV = os.environ.get("IS_TEST_ENV", "false").strip() == "true"
-
-BACKEND_URL = "http://127.0.0.1:8000" if IS_TEST_ENV else "https://www.reflexio.ai/"
+BACKEND_URL = "https://www.reflexio.ai/"
 # Both routes run under the server's 600s SYNC_REQUEST_TIMEOUT_SECONDS. The client
 # waits LONGER than that, not equally: transmission and response delivery happen
 # outside the middleware's timer, so a response produced at 599s server-side
@@ -205,10 +203,22 @@ class ReflexioClient:
             url_endpoint (str): Base URL for the API. Falls back to REFLEXIO_URL env var,
                 then to the default backend URL.
             timeout (int): Default request timeout in seconds (default 300)
+
+        Raises:
+            ValueError: Legacy IS_TEST_ENV is active or unrecognized without an
+                explicit url_endpoint or REFLEXIO_URL. Test mode no longer selects
+                a local backend; specify the intended URL before upgrading.
         """
-        self.base_url = (
-            url_endpoint or os.environ.get("REFLEXIO_URL", "") or BACKEND_URL
-        )
+        target = url_endpoint.strip() or os.environ.get("REFLEXIO_URL", "").strip()
+        if not target and os.environ.get("IS_TEST_ENV", "").strip().lower() not in (
+            "",
+            "false",
+        ):
+            raise ValueError(
+                "IS_TEST_ENV no longer selects a client endpoint. Set REFLEXIO_URL "
+                "or url_endpoint explicitly before constructing ReflexioClient."
+            )
+        self.base_url = target or BACKEND_URL
         self.api_key = api_key or os.environ.get("REFLEXIO_API_KEY", "")
         self.timeout = timeout
         self.session = requests.Session()

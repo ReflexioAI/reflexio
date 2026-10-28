@@ -11,7 +11,6 @@ import pytest
 from reflexio.server.services.braintrust import _cron
 from reflexio.server.services.braintrust._cron import (
     BraintrustSyncScheduler,
-    _interval_seconds,
     _resolve_base_url,
     get_instance,
     make_client_factory_with_base_url,
@@ -21,12 +20,12 @@ from reflexio.server.services.braintrust._cron import (
 
 def test_interval_seconds_default_is_15min(monkeypatch) -> None:
     monkeypatch.delenv("IS_TEST_ENV", raising=False)
-    assert _interval_seconds() == 15 * 60
+    assert BraintrustSyncScheduler().interval_seconds == 15 * 60
 
 
-def test_interval_seconds_test_env_shortens_to_5s(monkeypatch) -> None:
+def test_test_mode_cannot_change_sync_policy(monkeypatch) -> None:
     monkeypatch.setenv("IS_TEST_ENV", "true")
-    assert _interval_seconds() == 5
+    assert BraintrustSyncScheduler().interval_seconds == 15 * 60
 
 
 def test_resolve_base_url_default(monkeypatch) -> None:
@@ -71,7 +70,6 @@ def test_trigger_tick_handles_zero_orgs() -> None:
 
 def test_start_spawns_daemon_then_stop_signals_exit(monkeypatch) -> None:
     """Smoke: the loop runs, syncs at least once, and stops cleanly."""
-    monkeypatch.setenv("IS_TEST_ENV", "true")  # 5s interval
     ran = threading.Event()
     calls: list[str] = []
 
@@ -99,7 +97,6 @@ def test_start_spawns_daemon_then_stop_signals_exit(monkeypatch) -> None:
 
 def test_start_is_idempotent(monkeypatch) -> None:
     """Calling start() twice doesn't spawn two daemons."""
-    monkeypatch.setenv("IS_TEST_ENV", "true")
     scheduler = BraintrustSyncScheduler(interval_seconds=10)
     scheduler.start()
     first_thread = scheduler._thread
@@ -110,7 +107,6 @@ def test_start_is_idempotent(monkeypatch) -> None:
 
 def test_loop_swallows_per_org_exceptions(monkeypatch) -> None:
     """A throwing sync for one org doesn't prevent the next org's sync."""
-    monkeypatch.setenv("IS_TEST_ENV", "true")
     calls: list[str] = []
 
     def maybe_throw(org: str) -> None:
@@ -148,7 +144,6 @@ def test_singleton_starts_on_first_access() -> None:
 
 
 def test_reset_for_test_clears_singleton(monkeypatch) -> None:
-    monkeypatch.setenv("IS_TEST_ENV", "true")
     s1 = get_instance()
     _cron._reset_for_test()
     s2 = get_instance()

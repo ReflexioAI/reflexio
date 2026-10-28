@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+import runpy
 import threading
 from typing import Any
+
+import pytest
 
 from reflexio.server.services.tagging import tagging_scheduler
 from reflexio.server.services.tagging.tagging_scheduler import (
     TaggingScheduler,
     schedule_tagging,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_scheduler(monkeypatch):
+    # A publish test may leave unrelated future work in the shared singleton.
+    monkeypatch.setattr(TaggingScheduler, "_instance", None)
 
 
 class _FakeScheduler:
@@ -86,3 +95,9 @@ def test_schedule_tagging_skips_when_no_user(monkeypatch: Any) -> None:
     )
     assert len(scheduled) == 1
     assert scheduled[0][0] == ("o", None, "u", "v")
+
+
+def test_test_mode_cannot_change_tagging_policy(monkeypatch):
+    monkeypatch.setenv("IS_TEST_ENV", "true")
+    policy = runpy.run_path(tagging_scheduler.__file__)
+    assert policy["_EFFECTIVE_DELAY_SECONDS"] == 15
