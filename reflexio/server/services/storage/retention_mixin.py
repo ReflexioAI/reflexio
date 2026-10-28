@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from reflexio.server.services.storage.retention import (
-    OPTIMIZATION_HISTORY_TARGETS,
+    OPTIMIZATION_HISTORY_TARGET,
     RETENTION_CASCADES,
     RETENTION_TARGETS_BY_NAME,
     RetentionArchiver,
@@ -203,6 +203,8 @@ class RetentionMixin(ABC):
         target = get_retention_target(target_name)
         if not self._retention_table_exists(target.table_name):
             return 0
+        if target_name == OPTIMIZATION_HISTORY_TARGET:
+            return self._retention_count_optimization_rows()
         return self._retention_count_rows(target)
 
     def estimate_retention_target_rows(self, target_name: str) -> int | None:
@@ -220,7 +222,11 @@ class RetentionMixin(ABC):
         Returns:
             int | None: An estimate no lower than the exact count, or ``None``.
         """
-        return self._retention_estimate_rows(get_retention_target(target_name))
+        target = get_retention_target(target_name)
+        if target_name == OPTIMIZATION_HISTORY_TARGET:
+            # A jobs-table estimate excludes its variable-size child histories.
+            return None
+        return self._retention_estimate_rows(target)
 
     def probe_retention_targets(
         self, exact_count_from: Mapping[str, float]
@@ -261,7 +267,7 @@ class RetentionMixin(ABC):
         target = get_retention_target(target_name)
         if not self._retention_table_exists(target.table_name):
             return 0
-        if target_name in OPTIMIZATION_HISTORY_TARGETS:
+        if target_name == OPTIMIZATION_HISTORY_TARGET:
             return self._retention_delete_optimization_rows(target, count)
         older_than = (
             retention_cutoff_value(
@@ -524,6 +530,10 @@ class RetentionMixin(ABC):
         """
         self._retention_delete_dependencies(target, keys)
         self._retention_delete_target_rows(target, keys)
+
+    def _retention_count_optimization_rows(self) -> int:
+        """Count physical history rows; unqualified adapters refuse maintenance."""
+        raise NotImplementedError("Atomic optimizer history retention is unavailable")
 
     def _retention_delete_optimization_rows(
         self, target: RetentionTarget, count: int

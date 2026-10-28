@@ -139,35 +139,13 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
         ("agent_playbook_id", "user_playbook_id"),
     ),
     RetentionTarget(
-        "playbook_optimization_jobs",
+        "playbook_optimization_history",
         "playbook_optimization_jobs",
         "created_at",
         ("job_id",),
     ),
-    RetentionTarget(
-        "playbook_optimization_candidates",
-        "playbook_optimization_candidates",
-        "created_at",
-        ("candidate_id",),
-    ),
-    RetentionTarget(
-        "playbook_optimization_evaluations",
-        "playbook_optimization_evaluations",
-        "created_at",
-        ("evaluation_id",),
-    ),
-    RetentionTarget(
-        "playbook_optimization_events",
-        "playbook_optimization_events",
-        "created_at",
-        ("event_id",),
-    ),
-    # RETIRED WRITER, LIVE PII. Nothing writes playbook_retrieval_logs any more
-    # (the retrieval-capture subsystem is gone), but the table still exists and
-    # still holds user_id/session_id until a later release DROPs it — so it must
-    # keep being trimmed. Every backend gates on ``_retention_table_exists``
-    # before counting/deleting, so this target no-ops cleanly once the table is
-    # dropped and an old task never issues a raw DELETE against a missing table.
+    # Managed publication still writes retrieval occurrence history here and
+    # evidence readers consume it. Keep its independent retention and PII purge.
     RetentionTarget(
         "playbook_retrieval_logs",
         "playbook_retrieval_logs",
@@ -192,16 +170,35 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
 
 RETENTION_TARGETS_BY_NAME = {target.name: target for target in RETENTION_TARGETS}
 
-# These targets are one execution graph: capacity cannot discard a live root
-# or its evidence. Backends own atomic eligibility + deletion for all four.
-OPTIMIZATION_HISTORY_TARGETS = frozenset(
-    {
-        "playbook_optimization_jobs",
-        "playbook_optimization_candidates",
-        "playbook_optimization_evaluations",
-        "playbook_optimization_events",
-    }
+# Capacity belongs to complete optimizer histories, rather than independently
+# deleting their jobs, candidates, evaluations and events. This physical inventory
+# defines accounting units, not independent capacity or lifetime policies.
+OPTIMIZATION_HISTORY_TABLES = (
+    "playbook_optimization_jobs",
+    "playbook_optimization_candidates",
+    "playbook_optimization_evaluations",
+    "playbook_optimization_events",
 )
+OPTIMIZATION_HISTORY_TARGET = "playbook_optimization_history"
+
+
+def optimization_graphs_for_budget(
+    rows: Sequence[tuple[int, int]], budget: int
+) -> tuple[list[int], int]:
+    """Select whole oldest graphs, including one oversize graph for progress.
+
+    Each weight counts the root plus its candidate/evaluation/event rows.
+    Callers hold writer locks across reading these weights and deleting roots.
+    """
+    job_ids: list[int] = []
+    physical_rows = 0
+    for job_id, weight in rows:
+        if physical_rows >= budget:
+            break
+        job_ids.append(job_id)
+        physical_rows += weight
+    return job_ids, physical_rows
+
 
 #: Age-retained targets in the order the age pass visits them. ``interactions``
 #: comes before ``requests`` on purpose: the age path deletes a request only once
@@ -287,13 +284,10 @@ RETENTION_CASCADES: dict[str, tuple[CascadeRef, ...]] = {
     "agent_playbooks": (
         CascadeRef("agent_playbook_source_user_playbooks", "agent_playbook_id"),
     ),
-    "playbook_optimization_jobs": (
+    "playbook_optimization_history": (
         CascadeRef("playbook_optimization_evaluations", "job_id"),
         CascadeRef("playbook_optimization_events", "job_id"),
         CascadeRef("playbook_optimization_candidates", "job_id"),
-    ),
-    "playbook_optimization_candidates": (
-        CascadeRef("playbook_optimization_evaluations", "candidate_id"),
     ),
     # Retired writer, live PII — see the RETENTION_TARGETS note above. The
     # cascade only runs when the parent target yielded keys, which requires the
@@ -341,11 +335,21 @@ def get_row_retention_limits(*, env: Mapping[str, str] | None = None) -> dict[st
     )
     limits: dict[str, int] = {}
     reject_removed_env(env, canonical="REFLEXIO_ROW_LIMIT_INTERACTIONS")
+    reject_removed_env(
+        env, canonical="REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_HISTORY"
+    )
     for target in RETENTION_TARGETS:
         if target.fixed_row_limit is not None:
             limits[target.name] = target.fixed_row_limit
             continue
         env_name = f"REFLEXIO_ROW_LIMIT_{target.name.upper()}"
+        if target.name == OPTIMIZATION_HISTORY_TARGET:
+            # Preserve the former combined nominal ceiling, including shared
+            # zero-disable, without pretending arbitrary old caps can be summed.
+            limits[target.name] = _operational_row_limit(
+                env_name, operational_limit * len(OPTIMIZATION_HISTORY_TABLES), env
+            )
+            continue
         if not target.customer_data:
             limit = _operational_row_limit(env_name, operational_limit, env)
             if (

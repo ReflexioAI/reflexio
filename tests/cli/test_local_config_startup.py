@@ -126,6 +126,13 @@ def test_ordinary_restart_preserves_database_and_unrelated_raw_fields(
     assert floor.pop("pool_size") == 30
     floor["candidate_pool_size"] = 0
     expected["retrieval_floor"] = floor
+    # Generation-zero disabled audit retention must remain disabled after its
+    # explicit age-owned policy conversion, just like the other retired fields.
+    audit = dict(expected["governance_retention"])
+    assert audit.pop("audit_events_retention_enabled") is False
+    assert audit.pop("audit_events_retention_days") == 365
+    audit["audit_events_max_age_days"] = 0
+    expected["governance_retention"] = audit
     assert logical == expected
     first = saved_local_config.read_bytes()
     run_services.execute(args, storage=explicit_storage)

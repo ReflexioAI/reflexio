@@ -11,8 +11,10 @@ import sqlite3
 from typing import Any
 
 from reflexio.server.services.storage.retention import (
+    OPTIMIZATION_HISTORY_TABLES,
     RETENTION_CASCADES,
     RetentionTarget,
+    optimization_graphs_for_budget,
 )
 from reflexio.server.services.storage.retention_mixin import (
     RETENTION_DELETE_CHUNK,
@@ -49,17 +51,27 @@ class SQLiteDeletionMixin:
         return int(row["cnt"]) if row else 0
 
     @SQLiteStorageBase.handle_exceptions
+    def _retention_count_optimization_rows(self) -> int:
+        terms = " + ".join(
+            f"(SELECT COUNT(*) FROM {table})" for table in OPTIMIZATION_HISTORY_TABLES
+        )
+        row = self._fetchone(f"SELECT {terms} AS physical_rows")  # noqa: S608 - literal physical inventory.
+        return int(row["physical_rows"])
+
+    @SQLiteStorageBase.handle_exceptions
     def _retention_delete_optimization_rows(
         self, target: RetentionTarget, count: int
     ) -> int:
-        # BEGIN IMMEDIATE (or the enclosing commit scope) serializes eligibility
-        # with job activation, including another connection to this database.
+        # BEGIN IMMEDIATE serializes selection, physical-row accounting and
+        # root/cascade deletion with every other connection's writer.
+        weight_sql = "1 + " + " + ".join(
+            f"(SELECT COUNT(*) FROM {table} AS child WHERE child.job_id = jobs.job_id)"
+            for table in OPTIMIZATION_HISTORY_TABLES[1:]
+        )
         with self.commit_scope():
             rows = self.conn.execute(
-                f"""SELECT history.{target.id_columns[0]}
-                    FROM {target.table_name} AS history
-                    JOIN playbook_optimization_jobs AS jobs
-                      ON jobs.job_id = history.job_id
+                f"""SELECT jobs.job_id, {weight_sql} AS physical_rows
+                    FROM playbook_optimization_jobs AS jobs
                     WHERE jobs.status IN ('completed', 'failed', 'skipped')
                       AND (jobs.lease_expires_at IS NULL
                            OR jobs.lease_expires_at <= CAST(strftime('%s', 'now') AS INTEGER))
@@ -69,17 +81,19 @@ class SQLiteDeletionMixin:
                           SELECT 1 FROM user_playbook_publication_claims AS claims
                           WHERE claims.job_id = jobs.job_id AND claims.consumed = 0
                       )
-                    ORDER BY history.{target.order_column}, history.{target.id_columns[0]}
-                    LIMIT ?""",  # noqa: S608 - literal registry identifiers, no caller SQL.
-                (count,),
+                    ORDER BY jobs.created_at, jobs.job_id
+                    LIMIT ?""",  # noqa: S608 - literal physical inventory, no caller SQL.
+                (min(count, RETENTION_DELETE_CHUNK),),
             ).fetchall()
-            # Open-world publication has external lifecycle/attribution holds
-            # unavailable to SQLite. Its qualified adapter owns reclamation.
-            keys = [(row[0],) for row in rows]
-            if keys:
+            # SQLite has no external open-world lifecycle/attribution evidence.
+            job_ids, physical_rows = optimization_graphs_for_budget(
+                [(int(row["job_id"]), int(row["physical_rows"])) for row in rows], count
+            )
+            if job_ids:
+                keys = [(job_id,) for job_id in job_ids]
                 self._retention_delete_dependencies(target, keys)
                 self._retention_delete_target_rows(target, keys)
-            return len(keys)
+            return physical_rows
 
     @SQLiteStorageBase.handle_exceptions
     def _retention_select_oldest_keys(
@@ -231,10 +245,8 @@ class SQLiteDeletionMixin:
             self._delete_playbook_search_rows(
                 "agent", [int(v) for v in ids], commit=False
             )
-        elif target_name == "playbook_optimization_jobs":
+        elif target.table_name == "playbook_optimization_jobs":
             self._delete_optimizer_rows_for_job_ids([int(v) for v in ids])
-        elif target_name == "playbook_optimization_candidates":
-            self._delete_optimizer_evaluations_for_candidate_ids([int(v) for v in ids])
 
     def _retention_delete_target_rows(
         self, target: RetentionTarget, keys: list[tuple[Any, ...]]
@@ -390,12 +402,3 @@ class SQLiteDeletionMixin:
             "playbook_optimization_candidates",
         ):
             self._delete_in_chunks(table, "job_id", job_ids)
-
-    def _delete_optimizer_evaluations_for_candidate_ids(
-        self, candidate_ids: list[int]
-    ) -> None:
-        self._delete_in_chunks(
-            "playbook_optimization_evaluations",
-            "candidate_id",
-            candidate_ids,
-        )
