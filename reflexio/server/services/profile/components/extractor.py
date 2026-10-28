@@ -15,6 +15,7 @@ from reflexio.models.profile_id import new_profile_id
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.env_utils import env_bool
 from reflexio.server.llm._litellm_types import ProviderRequestGuardError
+from reflexio.server.llm.input_budget import InputBudgetConfigurationError
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_tokens
 from reflexio.server.llm.tools import describe_tool_loop_error
@@ -46,6 +47,7 @@ if TYPE_CHECKING:
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.profile.profile_generation_service_utils import (
     PROFILE_SOURCE_EVIDENCE_INSTRUCTION,
+    ProfileGenerationServiceConstants,
     ProfileTimeToLive,
     StructuredProfilesOutput,
     calculate_expiration_timestamp,
@@ -479,30 +481,54 @@ class ProfileExtractor:
             presentation = current_overflow_presentation.get()
             if presentation is None:
                 raise RuntimeError("Profile chunk lacks its prepared source")
-            chunk_messages = construct_profile_extraction_messages_from_sessions(
-                prompt_manager=self.request_context.prompt_manager,
-                request_interaction_data_models=request_interaction_data_models,
-                agent_context_prompt=coordinator.agent_context
-                if coordinator
-                else self.agent_context,
-                context_prompt=self.config.context_prompt.strip()
-                if self.config.context_prompt
-                else "",
-                extraction_definition_prompt=self.config.extraction_definition_prompt.strip(),
-                existing_profiles=existing_profiles,
-            )
-            chunk_messages.append(
-                {
-                    "role": "system",
-                    "content": PROFILE_SOURCE_EVIDENCE_INSTRUCTION,
-                }
-            )
+            templates = {
+                prompt_id: self.request_context.prompt_manager.get_prompt_template_identity(
+                    prompt_id
+                )
+                for prompt_id in (
+                    ProfileGenerationServiceConstants.PROFILE_UPDATE_INSTRUCTION_START_PROMPT_ID,
+                    ProfileGenerationServiceConstants.PROFILE_UPDATE_MAIN_PROMPT_ID,
+                )
+            }
+
+            def messages_for(profiles: list[UserProfile]) -> list[dict]:
+                messages = construct_profile_extraction_messages_from_sessions(
+                    prompt_manager=self.request_context.prompt_manager,
+                    request_interaction_data_models=request_interaction_data_models,
+                    agent_context_prompt=coordinator.agent_context
+                    if coordinator
+                    else self.agent_context,
+                    context_prompt=self.config.context_prompt.strip()
+                    if self.config.context_prompt
+                    else "",
+                    extraction_definition_prompt=self.config.extraction_definition_prompt.strip(),
+                    existing_profiles=profiles,
+                )
+                messages.append(
+                    {"role": "system", "content": PROFILE_SOURCE_EVIDENCE_INSTRUCTION}
+                )
+                return messages
+
+            chunk_messages = messages_for(existing_profiles)
+            context_free_messages = messages_for([])
+            if any(
+                self.request_context.prompt_manager.get_prompt_template_identity(
+                    prompt_id
+                )
+                != identity
+                for prompt_id, identity in templates.items()
+            ):
+                raise InputBudgetConfigurationError(
+                    "Profile templates changed while constructing extraction"
+                )
             return OverflowExtractionCall(
                 chunk_messages,
                 StructuredProfilesOutput,
                 lambda output: _profile_evidence_validation_errors(
                     output, presentation.visible_spans
                 ),
+                context_free_messages=context_free_messages,
+                template_identities=templates,
             )
 
         all_spans = (

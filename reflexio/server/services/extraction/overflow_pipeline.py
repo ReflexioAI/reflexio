@@ -3,7 +3,7 @@
 import json
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 from pydantic import BaseModel
@@ -50,6 +50,10 @@ class OverflowExtractionCall:
     messages: list[dict[str, Any]]
     schema: type[BaseModel]
     validator: Callable[[BaseModel], Sequence[str]] | None = None
+    # Same template and source, rendered with an empty mutable-context slot.
+    # Only the hash is persisted; existing profile text is never copied here.
+    context_free_messages: list[dict[str, Any]] | None = None
+    template_identities: dict[str, dict[str, str]] | None = None
 
 
 def _carried_evidence_errors(
@@ -282,6 +286,11 @@ def _recover_saved_output(
             (saved_policy or "")[:12],
             (current_policy or "")[:12],
         )
+    if cached_call.context_free_messages is not None:
+        with present_extraction_chunk(prepared, prepared.chunks[0], coordinator.record):
+            checkpoint["extraction_instruction_contract"] = _instruction_contract(
+                coordinator, cached_call
+            )
     if "candidate_models" not in checkpoint:
         # Legacy envelopes only have scalar attribution. New protocol
         # outputs retain the observed model of each unchanged child.
@@ -319,6 +328,62 @@ def _adopt_current_policy(
             contract["policy"] = current_policy
 
 
+def _instruction_contract(
+    coordinator: OverflowCoordinator, call: OverflowExtractionCall
+) -> str | None:
+    if call.context_free_messages is None:
+        return None
+    if call.template_identities is None:
+        raise InputBudgetConfigurationError(
+            "Extraction template identities unavailable"
+        )
+    return coordinator.step_key(
+        "extraction-instructions-v1",
+        {
+            "policy": _extraction_policy(
+                coordinator, replace(call, messages=call.context_free_messages)
+            ),
+            "templates": call.template_identities,
+        },
+    )
+
+
+def _pin_extraction_policy(
+    coordinator: OverflowCoordinator, call: OverflowExtractionCall, policy: str
+) -> None:
+    """Restart context-only work; never relabel old receipts or refund quota.
+
+    A missing legacy instruction witness cannot prove a context-only change.
+    Active continuations keep their original tool/input binding and remain held.
+    """
+    checkpoint = coordinator.checkpoint
+    previous = checkpoint.get("extraction_policy")
+    instructions = _instruction_contract(coordinator, call)
+    saved_instructions = checkpoint.get("extraction_instruction_contract")
+    if saved_instructions is not None and saved_instructions != instructions:
+        raise InputBudgetConfigurationError("Extraction instructions changed")
+    changed = previous != policy
+    if previous is not None and changed:
+        if instructions is None or saved_instructions != instructions:
+            raise InputBudgetConfigurationError(
+                "Extraction policy changed after checkpoint"
+            )
+        if checkpoint.get("active_child") or checkpoint.get("waiting_child"):
+            raise InputBudgetConfigurationError(
+                "Extraction context changed during an active continuation"
+            )
+        # Old outputs stay immutable and content-addressed in completed_steps.
+        # Removing only the active mapping makes every affected chunk runnable;
+        # require_remaining_work below still charges the original attempt budget.
+        checkpoint.pop("extraction_children", None)
+    checkpoint["extraction_policy"] = policy
+    if instructions is not None and saved_instructions is None:
+        checkpoint["extraction_instruction_contract"] = instructions
+        changed = True
+    if changed:
+        coordinator.save_checkpoint(checkpoint)
+
+
 def extract_overflow_window(
     *,
     coordinator: OverflowCoordinator,
@@ -348,18 +413,12 @@ def extract_overflow_window(
                 )
             schema = call.schema
             current_policy = _extraction_policy(coordinator, call)
-            previous = coordinator.checkpoint.get("extraction_policy")
-            if (previous is not None and previous != current_policy) or (
-                policy_key is not None and policy_key != current_policy
-            ):
+            if policy_key is not None and policy_key != current_policy:
                 raise InputBudgetConfigurationError(
                     "Extraction policy changed after checkpoint"
                 )
+            _pin_extraction_policy(coordinator, call, current_policy)
             policy_key = current_policy
-            if previous is None:
-                checkpoint = coordinator.checkpoint
-                checkpoint["extraction_policy"] = policy_key
-                coordinator.save_checkpoint(checkpoint)
             coordinator.require_remaining_work(
                 coordinator.unfinished_extraction_chunks(prepared, start=index)
             )
