@@ -32,7 +32,6 @@ from reflexio.server.background_work import (
     report_background_failure,
     report_background_success,
 )
-from reflexio.server.env_utils import env_bool
 from reflexio.server.services.braintrust.client import (
     DEFAULT_BASE_URL,
     BraintrustClient,
@@ -42,14 +41,6 @@ logger = logging.getLogger(__name__)
 
 
 _DEFAULT_INTERVAL_SECONDS = 15 * 60  # 15 min
-_TEST_INTERVAL_SECONDS = 5  # IS_TEST_ENV shortcut for fast tests
-
-
-def _interval_seconds() -> int:
-    """Pick the recurring interval based on `IS_TEST_ENV`."""
-    if env_bool("IS_TEST_ENV", default=False):
-        return _TEST_INTERVAL_SECONDS
-    return _DEFAULT_INTERVAL_SECONDS
 
 
 def _resolve_base_url() -> str:
@@ -77,15 +68,14 @@ class BraintrustSyncScheduler:
     """Singleton recurring scheduler for Braintrust sync_once.
 
     Args:
-        interval_seconds (int): How often to poll. Defaults to 15 min
-            (5s under IS_TEST_ENV).
+        interval_seconds (int): How often to poll. Defaults to 15 min.
         list_connected_orgs (Callable[[], list[str]]): Discovery hook.
         run_sync_for_org (Callable[[str], None]): Per-org sync action.
             Provided by the caller so the scheduler stays decoupled from
             BraintrustConnectorService construction.
     """
 
-    interval_seconds: int = field(default_factory=_interval_seconds)
+    interval_seconds: int = _DEFAULT_INTERVAL_SECONDS
     list_connected_orgs: Callable[[], list[str]] = field(default=lambda: [])
     run_sync_for_org: Callable[[str], None] = field(default=lambda _org: None)
 

@@ -29,7 +29,6 @@ from reflexio.server.background_work import (
     report_background_success,
 )
 from reflexio.server.callback_executor import drain_callbacks, submit_callback
-from reflexio.server.env_utils import env_bool
 from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.tagging.service import TaggingService
@@ -46,8 +45,7 @@ logger = logging.getLogger(__name__)
 # to debounce a burst of publishes into one pass, short enough that tags appear
 # promptly. Kept as a patch point for tests.
 TAGGING_DELAY_SECONDS = 15
-IS_TEST_ENV = env_bool("IS_TEST_ENV", default=False)
-_EFFECTIVE_DELAY_SECONDS = 1 if IS_TEST_ENV else TAGGING_DELAY_SECONDS
+_EFFECTIVE_DELAY_SECONDS = TAGGING_DELAY_SECONDS
 
 # (org_id, project_id, user_id, agent_version)
 #

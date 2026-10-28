@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import heapq
 import logging
-import os
 import threading
 import time
 from collections.abc import Callable
@@ -20,6 +19,7 @@ from reflexio.server.background_work import (
     report_background_success,
 )
 from reflexio.server.callback_executor import submit_callback
+from reflexio.server.env_utils import env_str
 from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.services.agent_success_evaluation import _eval_health
 from reflexio.server.work_scope import WorkScope, WorkScopeError, bind_work_scope
@@ -29,16 +29,28 @@ logger = logging.getLogger(__name__)
 # Default delay in seconds before evaluating a group after the last request.
 _DEFAULT_DELAY_SECONDS = 600  # 10 minutes
 
+
 # Inactivity delay before a session is evaluated. Override the default via the
 # GROUP_EVALUATION_DELAY_SECONDS environment variable (in seconds).
-GROUP_EVALUATION_DELAY_SECONDS = int(
-    os.environ.get("GROUP_EVALUATION_DELAY_SECONDS", str(_DEFAULT_DELAY_SECONDS))
-)
+def _evaluation_delay_seconds() -> int:
+    try:
+        value = int(
+            env_str("GROUP_EVALUATION_DELAY_SECONDS", str(_DEFAULT_DELAY_SECONDS))
+        )
+    except ValueError:
+        raise ValueError(
+            "GROUP_EVALUATION_DELAY_SECONDS must be a nonnegative integer"
+        ) from None
+    if not 0 <= value <= threading.TIMEOUT_MAX:
+        raise ValueError(
+            "GROUP_EVALUATION_DELAY_SECONDS must fit a nonnegative thread wait"
+        )
+    return value
 
-# Kept as a patch point for tests. Production should use the full inactivity
-# delay unless a test deliberately lowers this constant.
-IS_TEST_ENV = os.environ.get("IS_TEST_ENV", "false").strip() == "true"
-_EFFECTIVE_DELAY_SECONDS = 30 if IS_TEST_ENV else GROUP_EVALUATION_DELAY_SECONDS
+
+GROUP_EVALUATION_DELAY_SECONDS = _evaluation_delay_seconds()
+# Tests can inject timing here without changing policy through a process-wide mode.
+_EFFECTIVE_DELAY_SECONDS = GROUP_EVALUATION_DELAY_SECONDS
 
 # Type alias for the scheduling key.
 # (org_id, project_id, user_id, session_id)

@@ -256,7 +256,7 @@ Copy `.env.example` to `.env` and fill in values. Key variables:
 - **LLM API keys**: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, etc.
 - **Storage**: `LOCAL_STORAGE_PATH` (defaults to `~/.reflexio/data`) — houses the SQLite DB file. (Not used by `supabase`/`postgres`, which use external connections.)
 - **Storage backend**: `REFLEXIO_STORAGE` — `sqlite` (default), `supabase`, or `postgres`. Selects the data storage backend independently from auth configuration.
-- **Testing**: `IS_TEST_ENV`, `MOCK_LLM_RESPONSE`; logging profile: `REFLEXIO_LOG_PROFILE=production|verbose` (remove retired `DEBUG_LOG_TO_CONSOLE` assignments)
+- **Testing**: `MOCK_LLM_RESPONSE`; explicitly set `GROUP_EVALUATION_DELAY_SECONDS=30` before server startup for fast group evaluation. `IS_TEST_ENV` is local/offline tooling only and changes neither scheduler timing nor SDK routing. Point local clients at the printed backend port through `REFLEXIO_URL`; active/unknown legacy test mode without an explicit endpoint is refused before transport creation. Tagging and Braintrust tests use their scheduler injection seams. Logging profile: `REFLEXIO_LOG_PROFILE=production|verbose` (remove retired `DEBUG_LOG_TO_CONSOLE` assignments)
 
 Never change env variable values in `.env` directly for port overrides — use shell exports instead.
 
