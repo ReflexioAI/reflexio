@@ -42,7 +42,7 @@ from litellm.types.utils import (
     Usage,
 )
 
-from reflexio.server.env_utils import env_truthy
+from reflexio.server.env_utils import env_str, env_truthy
 from reflexio.server.llm.providers.claude_code_stream_parser import (
     ParseResult,
     classify_stall,
@@ -86,7 +86,6 @@ _CODEX_COMPAT_SCRIPT_NAMES = (
 )
 _CODEX_COMPAT_SCRIPT_NAME_SET = set(_CODEX_COMPAT_SCRIPT_NAMES)
 _DEFAULT_TIMEOUT_SECONDS = 120
-_DEFAULT_CLI_MODEL = "claude-sonnet-5"
 _WINDOWS_ARGV_SYSTEM_PROMPT_LIMIT = 3_000
 _WINDOWS_CLI_SUFFIXES = (".cmd", ".exe", ".bat")
 
@@ -409,7 +408,7 @@ def _run_claude_stream(
     timeout_seconds: int,
 ) -> ParseResult:
     """Invoke ``claude -p --output-format stream-json`` and return a ParseResult."""
-    model = os.environ.get(_ENV_MODEL) or _DEFAULT_CLI_MODEL
+    model = env_str(_ENV_MODEL)
     inline_system_prompt = (
         _is_windows() and len(system_prompt) > _WINDOWS_ARGV_SYSTEM_PROMPT_LIMIT
     )
@@ -420,9 +419,9 @@ def _run_claude_stream(
         "stream-json",
         "--verbose",
         "--include-partial-messages",
-        "--model",
-        model,
     ]
+    if model:
+        cmd.extend(["--model", model])
     if system_prompt and not inline_system_prompt:
         cmd.extend(["--append-system-prompt", system_prompt])
     stdin_text = dialogue
