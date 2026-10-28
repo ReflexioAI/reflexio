@@ -1334,3 +1334,13 @@ writers against upgraded files. Embedded hosts must stop old writers and call
 conversion remains `reflexio config upgrade-file old.json --output canonical.json`.
 Enterprise images own their separate versioned auth-row migration; updating
 only the SDK does not authorize a remote configuration upgrade.
+
+
+### Optimizer capacity retention
+
+The four optimizer history caps preserve active/pending job graphs, live leases,
+publishing stages and unconsumed publication claims. Each backend checks eligibility
+and deletes within one write transaction. SQLite uses its existing `commit_scope`
+(`BEGIN IMMEDIATE`); open-world graphs require the enterprise lifecycle owner and
+are not capacity-evicted locally. Adapters without a qualified atomic optimizer
+cleanup hook retain history. Independent caps and zero-disable semantics remain.

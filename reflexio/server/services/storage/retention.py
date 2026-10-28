@@ -192,6 +192,17 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
 
 RETENTION_TARGETS_BY_NAME = {target.name: target for target in RETENTION_TARGETS}
 
+# These targets are one execution graph: capacity cannot discard a live root
+# or its evidence. Backends own atomic eligibility + deletion for all four.
+OPTIMIZATION_HISTORY_TARGETS = frozenset(
+    {
+        "playbook_optimization_jobs",
+        "playbook_optimization_candidates",
+        "playbook_optimization_evaluations",
+        "playbook_optimization_events",
+    }
+)
+
 #: Age-retained targets in the order the age pass visits them. ``interactions``
 #: comes before ``requests`` on purpose: the age path deletes a request only once
 #: it has no interactions left, so the requests -> interactions cascade can never
