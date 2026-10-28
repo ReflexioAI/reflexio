@@ -62,6 +62,29 @@ def retire_optimizer_jitter_policy(data: Any) -> Any:
     }
 
 
+def retire_optimizer_replay_policy(data: Any) -> Any:
+    """Validate historical retry settings before intentional transport retirement.
+
+    This changes failure policy, not an equivalent encoding: integrations own
+    safe replay. Historical publication metadata is outside this config path.
+    """
+    fields = {
+        "webhook_max_retries": TypeAdapter(Annotated[int, Field(ge=0)]),
+        "webhook_backoff_base_seconds": TypeAdapter(Annotated[float, Field(ge=0)]),
+    }
+    if not isinstance(data, dict):
+        return data
+    for name, adapter in fields.items():
+        if name in data:
+            try:
+                adapter.validate_python(data[name])
+            except ValidationError:
+                raise ConfigurationMigrationError(
+                    f"Invalid obsolete optimizer setting: {name}"
+                ) from None
+    return {key: value for key, value in data.items() if key not in fields}
+
+
 def canonicalize_optimizer_work_budget(data: Any) -> Any:
     """Translate old admission and budget only at an explicit upgrade boundary."""
     old_fields = {"enabled", "max_metric_calls"}
@@ -178,7 +201,9 @@ def _normalize_optimizer_policy(data: Any) -> Any:
         OptimizerSchedulingPolicy,
     )
 
-    normalized = dict(retire_optimizer_jitter_policy(data))
+    normalized = dict(
+        retire_optimizer_replay_policy(retire_optimizer_jitter_policy(data))
+    )
     scheduling = {
         key: data[key] for key in OptimizerSchedulingPolicy.model_fields if key in data
     }

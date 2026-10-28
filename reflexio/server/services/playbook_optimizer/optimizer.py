@@ -427,16 +427,14 @@ class PlaybookOptimizer:
         dispatch. Returning ``None`` means the optimizer is enabled but has no
         backend configured — ``optimize()`` treats that as a no-op.
 
-        The ``webhook_*`` retry/timeout fields govern *both* backends; the
-        prefix is preserved only for config-schema compatibility.
+        The existing timeout governs both backends. Each invocation dispatches
+        once; integrations own any retries they can prove safe.
         """
         if config.webhook_url:
             return WebhookAssistant(
                 url=config.webhook_url,
                 auth_header=config.webhook_auth_header,
                 timeout_s=config.webhook_timeout_seconds,
-                max_retries=config.webhook_max_retries,
-                backoff_base_s=config.webhook_backoff_base_seconds,
             )
         if config.assistant_script_path:
             if not _is_executable_file(config.assistant_script_path):
@@ -450,8 +448,6 @@ class PlaybookOptimizer:
                 script_path=config.assistant_script_path,
                 script_args=config.assistant_script_args,
                 timeout_s=config.webhook_timeout_seconds,
-                max_retries=config.webhook_max_retries,
-                backoff_base_s=config.webhook_backoff_base_seconds,
             )
         return None
 
@@ -1133,10 +1129,8 @@ def _assistant_backend_identity(
     assistant: AssistantCallable,
 ) -> dict[str, Any]:
     identity: dict[str, Any] = {
-        "backoff_base_seconds": _decimal_string(config.webhook_backoff_base_seconds),
         "backend_class": _code_identity(type(assistant)),
         "backend_class_code_digest": _code_digest(type(assistant)),
-        "max_retries": config.webhook_max_retries,
         "timeout_seconds": config.webhook_timeout_seconds,
     }
     if config.webhook_url:

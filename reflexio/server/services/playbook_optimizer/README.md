@@ -66,3 +66,12 @@ reads reject obsolete jitter, including a former default value. Custom failure
 policy and unrelated data survive conversion. Malformed/nonfinite/unsafe settings
 raise `OptimizerSchedulingMigrationError` before pruning or any stored-file write;
 storage adapters and CLI bootstrap must propagate that error.
+
+
+Assistant delivery is owned by `assistant_webhook.py`: one POST (no redirects) or
+one process per invocation, without generic retry/backoff. Integrations own safe
+replay; a transport/response failure becomes an aborted evaluation, while other
+evaluator calls remain possible. Timeout policy is unchanged. New publication
+identities omit retired retry fields; historical frozen identities and publication
+recovery are neither rewritten nor reinterpreted. Local-file generation7 validates
+and retires saved retry policy through the original-preserving startup owner.

@@ -23,7 +23,7 @@ The "assistant backend" is the thing that turns *(messages, playbooks)* into the
                        ┌──────────────────────────────────────────────────────────┐
                        │  PlaybookOptimizationScheduler   (singleton, daemon)     │
                        │  • debounce by (org_id, kind, target_id)                 │
-                       │  • jitter, then fire callback in a worker thread         │
+                       │  • keyed coalescing, then bounded callback dispatch         │
                        └─────────────────────┬────────────────────────────────────┘
                                              │ callback() = optimize(target)
                                              ▼
@@ -112,8 +112,8 @@ The "assistant backend" is the thing that turns *(messages, playbooks)* into the
                        │      headers={Auth},    │   │      input=json.dumps(payload),  │
                        │      timeout=…)         │   │      capture_output=True,        │
                        │                         │   │      timeout=…)                  │
-                       │  retry: 1 + max_retries │   │  retry: 1 + max_retries          │
-                       │  backoff: base * 2^a    │   │  backoff: base * 2^a             │
+                       │  one transport attempt │   │  one transport attempt          │
+                       │  no automatic replay    │   │  no automatic replay             │
                        │                         │   │                                  │
                        │  raise → Webhook        │   │  raise → LocalScript             │
                        │          FailedError    │   │          FailedError             │
@@ -169,7 +169,7 @@ Anything that satisfies this Protocol can be swapped in. The two concrete backen
 | Common base | `AssistantFailedError` | `AssistantFailedError` |
 | Best for | Production / remote deployments | Local dev, CI, offline evaluation |
 
-Both share the same retry/backoff/timeout knobs and the same payload builder (`_build_payload`), so the wire shape is identical regardless of transport.
+Both share the same timeout policy and single-attempt delivery contract and the same payload builder (`_build_payload`), so the wire shape is identical regardless of transport.
 
 ### 3.1 The shared payload
 
@@ -195,21 +195,24 @@ For the webhook, this becomes the request body. For the script, this becomes the
 
 Anything else — non-string `content`, missing key, malformed JSON, non-zero exit code, network error, timeout — is reported as a typed failure.
 
-### 3.3 Retry behavior (identical for both)
+### 3.3 Failure and replay ownership
 
-| Setting | Default | Effect |
-|---|---|---|
-| `webhook_max_retries` | 3 | Total attempts = `max_retries + 1` |
-| `webhook_backoff_base_seconds` | 1.0 | Sleep between attempts = `base * 2^attempt` |
-| `webhook_timeout_seconds` | 60 | Per-call timeout |
+Each invocation sends one POST or starts one process. Reflexio does not replay
+failures, invalid responses or timeouts: the assistant may already have acted.
+HTTP redirects are rejected. Integrations own retries they can prove safe near
+their side effects. `webhook_timeout_seconds` remains the shared timeout setting.
 
-> Naming note: the fields keep the `webhook_*` prefix even though they govern both backends. This is deliberate — renaming would have required a config-schema migration. Treat them as "assistant call" knobs.
+A failed invocation becomes an **aborted evaluation**, not necessarily an aborted
+job. Later evaluator calls can invoke the assistant again. No exactly-once remote
+execution or cross-evaluation guarantee is made. Requests uses connection/read
+timeouts; subprocess timeout kills and waits for its immediate child, not an
+arbitrary descendant process tree.
 
----
-
-## 4. How the local-script backend works
-
-This is the new piece. The high-level idea: spawn a child process for each assistant turn, hand it the payload on stdin, and read the reply off stdout.
+`webhook_max_retries` and `webhook_backoff_base_seconds` are retired. Generation7
+local-file and canonical-v10 enterprise startup upgrades validate historical values,
+retain originals through existing recovery, and remove these fields before strict
+reads. Former positive retry counts intentionally lose transient-failure replay.
+Historical publication identities/proofs/recovery remain unchanged.
 
 ### 4.1 The command
 
@@ -230,17 +233,17 @@ There is **no shell interpretation** (`shell=True` is not used), so config value
 | 1. Read stdin | Single JSON object (UTF-8). The `messages` and `playbooks` fields described above. |
 | 2. Compute reply | Free-form. Could be an LLM call, a deterministic stub, a replay of prior recordings, etc. |
 | 3. Write stdout | Single JSON object containing at least `{"content": "<string>"}`. |
-| 4. Exit 0 on success | Any non-zero exit is treated as a failure; stderr is included in the error message. |
+| 4. Exit 0 on success | Any non-zero exit is a failure; diagnostics omit raw stderr. |
 
 ### 4.3 Failure modes and how each is reported
 
 | Symptom | What the backend raises |
 |---|---|
-| Non-zero exit code | `LocalScriptFailedError("...exited with code N: <stderr truncated>")` |
-| stdout not valid JSON | `LocalScriptFailedError("...returned invalid JSON: <stdout truncated>")` |
+| Non-zero exit code | `LocalScriptFailedError("...exited with code N")` |
+| stdout not valid JSON | `LocalScriptFailedError("...returned invalid JSON")` |
 | stdout missing `content` (or non-string) | `LocalScriptFailedError("...returned no content")` |
-| `subprocess.TimeoutExpired` | Counts as one failed attempt → final raise is `LocalScriptFailedError("...timed out after Ns")` |
-| Any other exception | Counts as one failed attempt → final raise is `LocalScriptFailedError(str(exc))` |
+| `subprocess.TimeoutExpired` | No replay; raises `LocalScriptFailedError("...timed out after Ns")` |
+| Any other exception | Typed failure without replay or raw process output. |
 
 stderr is truncated to 1000 chars before being put into messages so a noisy script can't blow up logs or DB rows.
 
@@ -332,8 +335,6 @@ positive `metric_call_budget` and the relevant target permission to opt in.
 | `webhook_url` | `str \| None` | `None` | URL for the webhook backend |
 | `webhook_auth_header` | `str \| None` | `None` | Sent verbatim as `Authorization` (webhook only) |
 | `webhook_timeout_seconds` | `int > 0` | 60 | Per-call timeout — both backends |
-| `webhook_max_retries` | `int >= 0` | 3 | Retry budget — both backends |
-| `webhook_backoff_base_seconds` | `float >= 0` | 1.0 | Exponential base — both backends |
 | `metric_call_budget` | `int >= 0` | 0 | Zero disables new optimization; positive values set GEPA’s metric-call stopping threshold |
 | `max_turns` | `int > 0` | 4 | Maximum user turns replayed per source window rollout |
 | `reflection_minibatch_size` | `int > 0` | 2 | Number of training windows GEPA samples for each reflection minibatch |
@@ -400,7 +401,6 @@ playbook_optimizer_config:
   webhook_url: https://assistant.internal/rollout
   webhook_auth_header: "Bearer <secret>"
   webhook_timeout_seconds: 60
-  webhook_max_retries: 3
 
 # Script backend (local dev / CI)
 playbook_optimizer_config:
@@ -409,7 +409,6 @@ playbook_optimizer_config:
   assistant_script_path: /usr/bin/python3
   assistant_script_args: [/path/to/echo_assistant.py]
   webhook_timeout_seconds: 30
-  webhook_max_retries: 1
 ```
 
 ---
@@ -421,7 +420,7 @@ What happens, in order, when a playbook is scheduled and the optimizer is enable
 | Step | Component | What it does |
 |---|---|---|
 | 1 | `PlaybookAggregator._enqueue_playbook_optimization` | After saving new agent playbooks, enqueues each PENDING playbook with the scheduler. |
-| 2 | `PlaybookOptimizationScheduler` | Debounces by `(org_id, kind, target_id)`, fires after a small jitter, spawns a daemon thread. |
+| 2 | `PlaybookOptimizationScheduler` | Coalesces `(org_id, kind, target_id)` work through the shared bounded callback executor; no jitter timer. |
 | 3 | `PlaybookOptimizer.optimize(target)` | Applies feature, target, and adoption gates. For user targets, resumes an expired staged publication before starting new search work. |
 | 4 | `ScenarioResolver` | Builds `ScenarioWindow`s from snapshotted agent source windows or a user playbook's `source_interaction_ids`. |
 | 5 | `gepa.api.optimize(...)` | Runs the candidate-search loop. |
@@ -456,9 +455,8 @@ authority retains its recorded policy independently of later config changes.
 | `WebhookFailedError` | Exception | Webhook backend failures. |
 | `LocalScriptFailedError` | Exception | Script backend failures. |
 | `_build_payload` | Function | Single source of truth for the wire payload. |
-| `_truncate` | Function | Caps stderr / stdout strings included in error messages at 1000 chars. |
-| `WebhookAssistant` | Class | HTTP POST + retry. |
-| `LocalScriptAssistant` | Class | `subprocess.run` + retry. |
+| `WebhookAssistant` | Class | One HTTP POST; redirects rejected. |
+| `LocalScriptAssistant` | Class | One `subprocess.run` invocation. |
 
 ### Other touched files
 
@@ -497,7 +495,7 @@ The existing tests in `tests/server/services/playbook_optimizer/test_playbook_op
 | **Credentials in logs** | Only `str(last_error)` from the exception chain is logged. Authorization headers are never logged or echoed back. |
 | **Data residency** | Webhook traffic goes wherever `webhook_url` points — operators are responsible for choosing an appropriate endpoint. The script backend is local and never leaves the host. |
 | **Process overhead** | One process per assistant turn. Work grows with evaluations and `max_turns`, and GEPA may finish a validation batch past its stopping threshold. For a long-lived script that pays a heavy startup cost, see §11. |
-| **stderr handling** | Captured, not streamed. Truncated to 1000 chars when included in error messages. |
+| **stderr handling** | Captured, not streamed; raw stderr/stdout are omitted from persisted failure diagnostics. |
 
 ---
 
@@ -505,10 +503,10 @@ The existing tests in `tests/server/services/playbook_optimizer/test_playbook_op
 
 | Item | Detail |
 |---|---|
-| Rename `webhook_*` retry/timeout fields | They govern both backends. Renaming requires a config-schema migration; deferred. |
+| Timeout naming | `webhook_timeout_seconds` governs both transports; generic replay settings are retired. |
 | Long-lived script process | If startup overhead is measurable, replace `subprocess.run` with a persistent process speaking line-delimited JSON. Only `LocalScriptAssistant.__call__` would change. |
 | Per-turn working directory | Today the script inherits `cwd`. Passing an explicit `cwd` would help when the script loads local state tied to an org. |
-| Structured stderr capture on success | Currently surfaced only on non-zero exit. Capturing it on success too would help telemetry on script-internal warnings. |
+| Structured stderr capture on success | Raw stderr is currently omitted from failure diagnostics. Any future telemetry needs explicit content/redaction ownership. |
 
 
 ## Work-budget migration

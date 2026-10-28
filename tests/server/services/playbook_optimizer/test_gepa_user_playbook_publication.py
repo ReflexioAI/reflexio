@@ -1437,11 +1437,31 @@ def test_gepa_recovery_resumes_crash_after_staging(tmp_path):
     )
 
 
-def test_gepa_expired_publishing_job_is_reclaimed_before_new_search(tmp_path):
+@pytest.mark.parametrize("historical_replay", [False, True])
+def test_gepa_expired_publishing_job_is_reclaimed_before_new_search(
+    tmp_path, monkeypatch, historical_replay
+):
     storage = _storage(tmp_path)
     incumbent = _incumbent(storage)
     optimizer = _optimizer(storage, tmp_path)
     _install_winning_gepa(optimizer, storage, _window(incumbent.user_playbook_id))
+    if historical_replay:
+        from reflexio.server.services.playbook_optimizer import (
+            optimizer as implementation,
+        )
+
+        current_identity = implementation._assistant_backend_identity
+
+        def historical_identity(*args):
+            return {
+                **current_identity(*args),
+                "max_retries": 7,
+                "backoff_base_seconds": "2.5",
+            }
+
+        monkeypatch.setattr(
+            implementation, "_assistant_backend_identity", historical_identity
+        )
     original_prepare = storage.prepare_gepa_user_playbook_publication
     prepared_job_ids: list[int] = []
 
@@ -1469,6 +1489,17 @@ def test_gepa_expired_publishing_job_is_reclaimed_before_new_search(tmp_path):
             )
         )
 
+    frozen = storage.conn.execute(
+        "SELECT metadata_json FROM playbook_optimization_jobs"
+    ).fetchone()[0]
+    if historical_replay:
+        assert (
+            json.loads(frozen)[GEPA_PUBLICATION_AUTHORITY_METADATA_KEY][
+                "backend_identity"
+            ]["max_retries"]
+            == 7
+        )
+        monkeypatch.undo()
     optimizer._run_gepa = Mock(  # type: ignore[method-assign]
         side_effect=AssertionError("expired publication must resume without GEPA")
     )
@@ -1479,6 +1510,12 @@ def test_gepa_expired_publishing_job_is_reclaimed_before_new_search(tmp_path):
     )
 
     assert status == "completed"
+    assert (
+        storage.conn.execute(
+            "SELECT metadata_json FROM playbook_optimization_jobs"
+        ).fetchone()[0]
+        == frozen
+    )
     assert prepared_job_ids == [
         storage.conn.execute(
             "SELECT job_id FROM playbook_optimization_jobs"

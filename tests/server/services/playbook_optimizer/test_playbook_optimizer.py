@@ -147,8 +147,6 @@ json.dump({"content": "script:" + payload["playbooks"][0]["content"] + ":" + sys
         script_path=sys.executable,
         script_args=[str(script), str(record), "extra-arg"],
         timeout_s=5,
-        max_retries=0,
-        backoff_base_s=0.0,
     )
 
     content = assistant(
@@ -189,8 +187,6 @@ def test_local_script_assistant_reports_script_failures(tmp_path, script_body, m
         script_path=sys.executable,
         script_args=[str(script)],
         timeout_s=5,
-        max_retries=0,
-        backoff_base_s=0.0,
     )
 
     with pytest.raises(LocalScriptFailedError, match=match):
@@ -204,8 +200,6 @@ def test_local_script_assistant_times_out(tmp_path):
         script_path=sys.executable,
         script_args=[str(script)],
         timeout_s=1,
-        max_retries=0,
-        backoff_base_s=0.0,
     )
 
     with pytest.raises(LocalScriptFailedError, match="timed out"):
@@ -431,6 +425,41 @@ def test_adapter_does_not_cache_aborted_evaluations(tmp_path):
         "aborted",
         "candidate",
     ]
+
+
+def test_assistant_failure_aborts_one_evaluation_not_future_invocations(tmp_path):
+    storage = _sqlite_storage(tmp_path)
+    job = storage.create_playbook_optimization_job(
+        PlaybookOptimizationJob(
+            optimizer_kind="gepa", target_kind="agent_playbook", target_id=1
+        )
+    )
+    incumbent = AgentPlaybook(
+        agent_playbook_id=1,
+        playbook_name="support",
+        agent_version="v1",
+        content="incumbent content",
+    )
+    assistant = Mock(side_effect=LocalScriptFailedError("failed invocation"))
+    adapter = ReflexioPlaybookGEPAAdapter(
+        storage=storage,
+        job_id=job.job_id,
+        target_kind="agent_playbook",
+        target_id=1,
+        incumbent=incumbent,
+        rollout=MultiTurnRollout(assistant),
+        judge=Mock(),
+        max_turns=1,
+    )
+    window = _scenario_window(11)
+    for _ in range(2):
+        result = adapter.evaluate([window], {PLAYBOOK_CONTENT_COMPONENT: "candidate"})
+        assert result.outputs[0].verdict == "aborted"
+    assert assistant.call_count == 2
+    assert [
+        row.verdict
+        for row in storage.list_playbook_optimization_evaluations(job.job_id)
+    ] == ["aborted", "aborted"]
 
 
 def test_optimizer_skips_approved_agent_playbooks(tmp_path):
