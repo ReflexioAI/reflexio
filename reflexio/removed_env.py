@@ -3,6 +3,10 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_JOBS": "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_HISTORY",
+    "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_CANDIDATES": "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_HISTORY",
+    "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_EVALUATIONS": "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_HISTORY",
+    "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_EVENTS": "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_HISTORY",
     "REFLEXIO_API_QUERY_EMBEDDING_ENABLED": "REFLEXIO_INFERENCE_WORKLOAD",
     "NOMIC_EMBED_DEVICE": "REFLEXIO_EMBEDDING_DEVICE",
     "REFLEXIO_SEARCH_DEADLINE_ENABLED": "REFLEXIO_SEARCH_TIMEOUT_SECONDS",
@@ -72,6 +76,16 @@ def reject_removed_env(
                 "; a zero recency pool disables scored recency retrieval and "
                 "ranking; preserve positive pool sizes to enable it, with "
                 "20 as the unchanged default"
+            )
+        if any(
+            name.startswith("REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_")
+            for name in obsolete
+        ):
+            migration += (
+                "; optimizer history now has one aggregate physical-row budget "
+                "and reclaims complete eligible job graphs. Select its capacity "
+                "explicitly; zero disables it. Independent old caps, including "
+                "zero and blank assignments, are never silently converted"
             )
         if "PUBLIC_SCHEMA_AUDIT_ENABLED" in obsolete:
             migration += (

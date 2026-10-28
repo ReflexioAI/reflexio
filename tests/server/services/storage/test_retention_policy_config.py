@@ -9,10 +9,7 @@ OPERATIONAL = (
     "offline_tuner_reward_label",
     "share_links",
     "agent_playbook_source_user_playbooks",
-    "playbook_optimization_jobs",
-    "playbook_optimization_candidates",
-    "playbook_optimization_evaluations",
-    "playbook_optimization_events",
+    "playbook_optimization_history",
     "playbook_retrieval_logs",
 )
 CUSTOMER = (
@@ -48,7 +45,12 @@ def test_default_caps_and_registry_partition_are_preserved(monkeypatch, raw_cap)
     assert set(CUSTOMER) == {
         t.name for t in retention.RETENTION_TARGETS if t.customer_data
     }
-    assert set(limits.values()) == {250_000}
+    assert limits["playbook_optimization_history"] == 1_000_000
+    assert {
+        value
+        for name, value in limits.items()
+        if name != "playbook_optimization_history"
+    } == {250_000}
 
 
 @pytest.mark.parametrize("cap", [0, 17])
@@ -57,7 +59,10 @@ def test_one_operational_cap_keeps_customer_and_fixed_limits(monkeypatch, cap):
     monkeypatch.setenv("REFLEXIO_ROW_LIMIT_PROFILES", "9")
     monkeypatch.setenv("REFLEXIO_ROW_LIMIT_INTERACTIONS", "11")
     limits = retention.get_row_retention_limits()
-    assert {limits[name] for name in OPERATIONAL} == {cap}
+    assert limits["playbook_optimization_history"] == 4 * cap
+    assert {
+        limits[name] for name in OPERATIONAL if name != "playbook_optimization_history"
+    } == {cap}
     assert limits["profiles"] == 9
     assert limits["interactions"] == 11
     assert limits["requests"] == 250_000
@@ -70,7 +75,12 @@ def test_independent_operational_override(monkeypatch, target, value):
     monkeypatch.setenv(f"REFLEXIO_ROW_LIMIT_{target.upper()}", str(value))
     limits = retention.get_row_retention_limits()
     assert limits[target] == value
-    assert {limits[name] for name in OPERATIONAL if name != target} == {250000}
+    assert all(
+        limits[name]
+        == (1_000_000 if name == "playbook_optimization_history" else 250000)
+        for name in OPERATIONAL
+        if name != target
+    )
 
 
 @pytest.mark.parametrize("target", OPERATIONAL)
@@ -96,19 +106,21 @@ def test_old_default_and_custom_shared_cap_require_disambiguation(monkeypatch, s
 
 def test_mapping_is_complete_policy_authority(monkeypatch):
     monkeypatch.setenv(SHARED, "bad ambient value")
-    assert set(retention.get_row_retention_limits(env={}).values()) == {250000}
+    assert set(retention.get_row_retention_limits(env={}).values()) == {
+        250000,
+        1_000_000,
+    }
     limits = retention.get_row_retention_limits(
         env={
             SHARED: "17",
             "REFLEXIO_ROW_LIMIT_SHARE_LINKS": "0",
-            "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_JOBS": "9",
+            "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_HISTORY": "9",
             "REFLEXIO_ROW_LIMIT_PROFILES": "21",
             "REFLEXIO_ROW_LIMIT_INTERACTIONS": "11",
         }
     )
     assert limits["share_links"] == 0
-    assert limits["playbook_optimization_jobs"] == 9
-    assert limits["playbook_optimization_candidates"] == 17
+    assert limits["playbook_optimization_history"] == 9
     assert limits["profiles"] == 21
     assert limits["interactions"] == 11
     assert limits["user_playbook_exposure_events"] == 250000
@@ -196,7 +208,10 @@ def test_managed_alert_cap_remains_separate_from_operational_cleanup(monkeypatch
         customer_cap_action="alert", customer_cap_limit=2_000_000
     )
     limits = _effective_limits(policy)
-    assert {limits[name] for name in OPERATIONAL} == {17}
+    assert limits["playbook_optimization_history"] == 68
+    assert {
+        limits[name] for name in OPERATIONAL if name != "playbook_optimization_history"
+    } == {17}
     assert {limits[name] for name in CUSTOMER} == {2_000_000}
     assert limits["user_playbook_exposure_events"] == 250_000
 

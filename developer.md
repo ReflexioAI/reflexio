@@ -1338,9 +1338,18 @@ only the SDK does not authorize a remote configuration upgrade.
 
 ### Optimizer capacity retention
 
-The four optimizer history caps preserve active/pending job graphs, live leases,
-publishing stages and unconsumed publication claims. Each backend checks eligibility
-and deletes within one write transaction. SQLite uses its existing `commit_scope`
-(`BEGIN IMMEDIATE`); open-world graphs require the enterprise lifecycle owner and
-are not capacity-evicted locally. Adapters without a qualified atomic optimizer
-cleanup hook retain history. Independent caps and zero-disable semantics remain.
+Optimizer history uses one aggregate physical-row budget across job, candidate,
+evaluation and event rows. Cleanup removes complete eligible job graphs, retaining
+pending/running work, live leases, publishing stages and unconsumed publication
+claims. The unset budget preserves the four former physical-table defaults in
+aggregate; zero disables capacity cleanup. Retired per-table assignments are
+rejected without copying values: explicitly select the aggregate capacity when
+migrating a custom or disabled policy. Age-based cleanup remains independent.
+
+Each backend checks eligibility, accounts physical rows and deletes within one
+writer transaction. SQLite uses `commit_scope` (`BEGIN IMMEDIATE`); open-world
+graphs require the enterprise lifecycle owner and are not reclaimed locally.
+A batch may reclaim one graph larger than its requested physical-row count to
+make progress without leaving dangling winner/evaluation history. Selection uses
+the existing bounded delete chunk. Unqualified adapters retain histories; a
+jobs-only size estimate cannot bypass the aggregate budget.

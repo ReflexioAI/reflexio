@@ -21,6 +21,8 @@ from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
 
+GRAPH = "playbook_optimization_history"
+
 TARGETS = (
     "playbook_optimization_jobs",
     "playbook_optimization_candidates",
@@ -91,25 +93,18 @@ def snapshot(store: SQLiteStorage, job_id: int) -> list[list[tuple]]:
     ]
 
 
-@pytest.mark.parametrize("target", TARGETS)
 @pytest.mark.parametrize("status", ["pending", "running"])
-def test_live_history_survives_and_does_not_starve_terminal_cleanup(
-    store, target, status
-):
+def test_live_history_survives_and_does_not_starve_terminal_cleanup(store, status):
     live = seed(store, status, 1)
     terminal = seed(store, "completed", 2)
     before = snapshot(store, live.job_id)
-    assert store.delete_oldest_retention_target_rows(target, 1) == 1
+    assert store.delete_oldest_retention_target_rows(GRAPH, 1) == 4
     assert snapshot(store, live.job_id) == before
     assert store.get_playbook_optimization_job(live.job_id) is not None
-    if target == "playbook_optimization_jobs":
-        assert all(not rows for rows in snapshot(store, terminal.job_id))
-    else:
-        assert store.count_retention_target_rows(target) == 1
+    assert all(not rows for rows in snapshot(store, terminal.job_id))
 
 
-@pytest.mark.parametrize("target", TARGETS)
-def test_live_lease_protects_even_a_terminal_job(store, target):
+def test_live_lease_protects_even_a_terminal_job(store):
     job = seed(store, "completed", 1)
     store.conn.execute(
         "UPDATE playbook_optimization_jobs SET lease_owner = ?, lease_fence = 1, "
@@ -118,19 +113,18 @@ def test_live_lease_protects_even_a_terminal_job(store, target):
     )
     store.conn.commit()
     before = snapshot(store, job.job_id)
-    assert store.delete_oldest_retention_target_rows(target, 1) == 0
+    assert store.delete_oldest_retention_target_rows(GRAPH, 1) == 0
     assert snapshot(store, job.job_id) == before
 
 
-@pytest.mark.parametrize("target", TARGETS)
-def test_expired_terminal_history_can_be_reclaimed(store, target):
+def test_expired_terminal_history_can_be_reclaimed(store):
     job = seed(store, "failed", 1)
     store.conn.execute(
         "UPDATE playbook_optimization_jobs SET lease_expires_at = ? WHERE job_id = ?",
         (int(time.time()) - 1, job.job_id),
     )
     store.conn.commit()
-    assert store.delete_oldest_retention_target_rows(target, 1) == 1
+    assert store.delete_oldest_retention_target_rows(GRAPH, 1) == 4
 
 
 def test_optimizer_cascade_rolls_back_if_parent_delete_fails(store, monkeypatch):
@@ -142,13 +136,12 @@ def test_optimizer_cascade_rolls_back_if_parent_delete_fails(store, monkeypatch)
 
     monkeypatch.setattr(store, "_retention_delete_target_rows", fail)
     with pytest.raises(StorageError, match="owned target deletion failure"):
-        store.delete_oldest_retention_target_rows("playbook_optimization_jobs", 1)
+        store.delete_oldest_retention_target_rows(GRAPH, 1)
     assert snapshot(store, job.job_id) == before
 
 
-@pytest.mark.parametrize("target", TARGETS)
 @pytest.mark.parametrize("hold", ["publishing", "claim", "open_world"])
-def test_publication_evidence_is_not_capacity_evictable(store, target, hold):
+def test_publication_evidence_is_not_capacity_evictable(store, hold):
     job = seed(store, "completed", 1)
     if hold == "claim":
         store.conn.execute(
@@ -169,7 +162,7 @@ def test_publication_evidence_is_not_capacity_evictable(store, target, hold):
         )
     store.conn.commit()
     before = snapshot(store, job.job_id)
-    assert store.delete_oldest_retention_target_rows(target, 1) == 0
+    assert store.delete_oldest_retention_target_rows(GRAPH, 1) == 0
     assert snapshot(store, job.job_id) == before
 
 
@@ -186,9 +179,7 @@ def test_job_activation_commits_before_waiting_capacity_cleanup(store):
             "UPDATE playbook_optimization_jobs SET status = 'running' WHERE job_id = ?",
             (job.job_id,),
         )
-        cleanup = pool.submit(
-            store.delete_oldest_retention_target_rows, "playbook_optimization_jobs", 1
-        )
+        cleanup = pool.submit(store.delete_oldest_retention_target_rows, GRAPH, 1)
         try:
             assert attempted.wait(timeout=5), (
                 "cleanup never attempted its write transaction"
