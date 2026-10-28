@@ -4,8 +4,9 @@ Replaces thread-per-fire in the debounce schedulers (tagging, group
 evaluation, playbook optimization) so thread count is O(1) instead of
 O(active keys) (spec section 6.2). Sizes are module constants, not env vars.
 
-Overflow policy: drop-oldest (a dropped fire is a stale debounced trigger —
-the next event for that key re-creates it) with one warning log per drop and
+Optional keys coalesce queued work and serialize callbacks for the same key.
+Ready keys can proceed past a blocked successor. Overflow remains best-effort
+drop-oldest; another trigger can recreate discarded work. Emit a warning per drop and
 a throttled anomaly when drops exceed ``_DROP_RATE_PER_MINUTE`` in a rolling
 minute (the "this is routine, resize it" signal).
 """
@@ -16,7 +17,8 @@ import logging
 import threading
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
+from dataclasses import dataclass
 from typing import NamedTuple
 
 from reflexio.server.background_work import background_work
@@ -29,6 +31,13 @@ _WORKERS = 16
 _QUEUE_SIZE = 256
 _DROP_RATE_PER_MINUTE = 10
 _DROP_ANOMALY_THROTTLE_SECONDS = 3600.0
+
+
+@dataclass
+class _Callback:
+    name: str
+    fn: Callable[[], None]
+    coalesce_key: Hashable | None
 
 
 class _DropFacts(NamedTuple):
@@ -45,7 +54,7 @@ class _DropFacts(NamedTuple):
 
 
 class BoundedCallbackExecutor:
-    """Fixed worker pool + bounded FIFO queue with drop-oldest overflow.
+    """Fixed worker pool + bounded queue, FIFO among ready callbacks.
 
     Args:
         workers: Number of daemon worker threads.
@@ -55,7 +64,9 @@ class BoundedCallbackExecutor:
     def __init__(
         self, *, workers: int = _WORKERS, queue_size: int = _QUEUE_SIZE
     ) -> None:
-        self._queue: deque[tuple[str, Callable[[], None]]] = deque()
+        self._queue: deque[_Callback] = deque()
+        self._pending_by_key: dict[Hashable, _Callback] = {}
+        self._active_keys: set[Hashable] = set()
         self._queue_size = queue_size
         self._cond = threading.Condition()
         self._active = 0
@@ -68,19 +79,39 @@ class BoundedCallbackExecutor:
                 name=f"callback-exec-{i}",
             ).start()
 
-    def submit(self, name: str, fn: Callable[[], None]) -> None:
+    def submit(
+        self,
+        name: str,
+        fn: Callable[[], None],
+        *,
+        coalesce_key: Hashable | None = None,
+    ) -> None:
         """Enqueue a callback; on a full queue, evict the oldest queued fire.
 
         Args:
             name: Short label for logs (e.g. the scheduler key).
             fn: Zero-arg callback to run on a worker.
+            coalesce_key: Optional identity with one active and one queued callback.
+                Queued replacements keep their position; unrelated keys can proceed.
         """
+        # A key owns at most one queued successor as well as one active fire.
+        # Replacement keeps its queue position; running callbacks are immutable.
         drop_facts: _DropFacts | None = None
         with self._cond:
+            if coalesce_key is not None:
+                pending = self._pending_by_key.get(coalesce_key)
+                if pending is not None:
+                    pending.name, pending.fn = name, fn
+                    return
             if len(self._queue) >= self._queue_size:
-                dropped_name, _ = self._queue.popleft()
-                drop_facts = self._record_drop_locked(dropped_name)
-            self._queue.append((name, fn))
+                dropped = self._queue.popleft()
+                if dropped.coalesce_key is not None:
+                    del self._pending_by_key[dropped.coalesce_key]
+                drop_facts = self._record_drop_locked(dropped.name)
+            callback = _Callback(name, fn, coalesce_key)
+            self._queue.append(callback)
+            if coalesce_key is not None:
+                self._pending_by_key[coalesce_key] = callback
             self._cond.notify_all()
         if drop_facts is not None:
             self._emit_drop(drop_facts)
@@ -149,9 +180,27 @@ class BoundedCallbackExecutor:
     def _worker_loop(self) -> None:
         while True:
             with self._cond:
-                while not self._queue:
+                # Skip successors of active keys, preserving FIFO among ready
+                # work. The scan is bounded by the existing queue capacity.
+                while True:
+                    ready = next(
+                        (
+                            index
+                            for index, callback in enumerate(self._queue)
+                            if callback.coalesce_key is None
+                            or callback.coalesce_key not in self._active_keys
+                        ),
+                        None,
+                    )
+                    if ready is not None:
+                        callback = self._queue[ready]
+                        del self._queue[ready]
+                        break
                     self._cond.wait()
-                name, fn = self._queue.popleft()
+                name, fn, key = callback.name, callback.fn, callback.coalesce_key
+                if key is not None:
+                    del self._pending_by_key[key]
+                    self._active_keys.add(key)
                 self._active += 1
             try:
                 fn()
@@ -184,27 +233,34 @@ class BoundedCallbackExecutor:
             finally:
                 with self._cond:
                     self._active -= 1
-                    if not self._queue and self._active == 0:
-                        self._cond.notify_all()
+                    if key is not None:
+                        self._active_keys.remove(key)
+                    self._cond.notify_all()
 
 
 _executor: BoundedCallbackExecutor | None = None
 _executor_lock = threading.Lock()
 
 
-def submit_callback(name: str, fn: Callable[[], None]) -> None:
+def submit_callback(
+    name: str,
+    fn: Callable[[], None],
+    *,
+    coalesce_key: Hashable | None = None,
+) -> None:
     """Submit to the lazily-created process-wide executor.
 
     Args:
         name: Short label for logs.
         fn: Zero-arg callback.
+        coalesce_key: Optional identity for serialized, coalesced dispatch.
     """
     global _executor  # noqa: PLW0603
     if _executor is None:
         with _executor_lock:
             if _executor is None:
                 _executor = BoundedCallbackExecutor()
-    _executor.submit(name, fn)
+    _executor.submit(name, fn, coalesce_key=coalesce_key)
 
 
 def drain_callbacks(*, timeout_seconds: float = 5.0) -> bool:

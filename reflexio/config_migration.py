@@ -4,6 +4,7 @@ Current schemas own canonical validation. Historical rewrite rules live here so
 explicit upgrades remain usable after runtime compatibility hooks are removed.
 """
 
+import threading
 from enum import StrEnum
 from typing import Annotated, Any
 
@@ -19,6 +20,9 @@ _LEGACY_MERGE_LIMIT = TypeAdapter(Annotated[int, Field(ge=0)])
 _LEGACY_METRIC_CALL_LIMIT = TypeAdapter(Annotated[int, Field(gt=0)])
 _LEGACY_RETRIEVAL_POOL = TypeAdapter(Annotated[int, Field(gt=0)])
 _LEGACY_AUDIT_RETENTION_DAYS = TypeAdapter(Annotated[int, Field(gt=0)])
+_LEGACY_OPTIMIZER_JITTER = TypeAdapter(
+    Annotated[float, Field(ge=0, le=threading.TIMEOUT_MAX, allow_inf_nan=False)]
+)
 _LEGACY_STOP_SCORE = TypeAdapter(
     Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 )
@@ -40,6 +44,22 @@ def strip_retired_optimizer_stop_score(data: Any) -> Any:
 
 class OptimizerSchedulingMigrationError(ConfigurationMigrationError):
     """Invalid saved scheduling policy must not trigger a storage-default fallback."""
+
+
+def retire_optimizer_jitter_policy(data: Any) -> Any:
+    """Retire the timer only at an explicit historical conversion boundary."""
+    if not isinstance(data, dict) or "scheduler_jitter_seconds" not in data:
+        return data
+    try:
+        _LEGACY_OPTIMIZER_JITTER.validate_python(data["scheduler_jitter_seconds"])
+    except ValidationError:
+        raise OptimizerSchedulingMigrationError(
+            "Invalid optimizer scheduling setting: scheduler_jitter_seconds"
+        ) from None
+    # Queue coalescing replaces the mechanism, not its delay with a constant.
+    return {
+        key: value for key, value in data.items() if key != "scheduler_jitter_seconds"
+    }
 
 
 def canonicalize_optimizer_work_budget(data: Any) -> Any:
@@ -158,7 +178,7 @@ def _normalize_optimizer_policy(data: Any) -> Any:
         OptimizerSchedulingPolicy,
     )
 
-    normalized = dict(data)
+    normalized = dict(retire_optimizer_jitter_policy(data))
     scheduling = {
         key: data[key] for key in OptimizerSchedulingPolicy.model_fields if key in data
     }

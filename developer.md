@@ -1397,3 +1397,15 @@ migration is needed. Link storage can now grow with valid relationships until
 parent cleanup; independent link truncation is no longer a supported capacity
 backstop. Managed customer-data holds/alert policy must not be bypassed by
 classifying this provenance as disposable metadata.
+
+### Optimizer dispatch upgrade
+
+Local-file generation6 retires `scheduler_jitter_seconds` through the existing
+prelaunch `prepare_local_config` owner. It validates historical jitter and removes
+only that field before atomic publication with original preservation. Ordinary
+reads reject obsolete jitter. Custom abort thresholds, cooldowns, work budgets and
+opaque data survive. The optimizer now uses keyed work in the shared bounded
+callback executor: one active callback plus one queued successor per target,
+immediately eligible instead of delayed by a timer. Queue overflow stays
+best-effort/drop-oldest. Stop old writers before preparation; enterprise remote
+configuration uses its separate canonical-v9 startup migration owner.

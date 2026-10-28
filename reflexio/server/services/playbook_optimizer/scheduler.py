@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import heapq
 import logging
 import threading
 import time
@@ -8,10 +7,6 @@ from collections.abc import Callable
 from functools import partial
 
 from reflexio.models.config_schema import OptimizerSchedulingPolicy
-from reflexio.server.background_work import (
-    report_background_failure,
-    report_background_success,
-)
 from reflexio.server.callback_executor import submit_callback
 from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.work_scope import (
@@ -25,33 +20,19 @@ from .optimizer import PlaybookOptimizationRunStatus, PlaybookOptimizationTarget
 
 logger = logging.getLogger(__name__)
 
-# (org_id, project_id, target.kind, target.target_id)
-#
-# ``project_id`` is part of the DEBOUNCE IDENTITY, not decoration. Without it,
-# two projects in one org optimizing the same target inside one debounce window
-# collapse into a single fire, and that fire is attributed to whichever request
-# won the race. ``None`` in OSS, where projects do not exist.
+# Queue coalescing and abort policy share this attribution identity.
 ScheduleKey = tuple[str, str | None, str, int]
 ScheduledCallback = Callable[[], PlaybookOptimizationRunStatus | None]
 
 
 class PlaybookOptimizationScheduler:
-    """Process-local scheduler that debounces optimization runs.
+    """Admit optimizer work to the bounded process callback executor.
 
-    Behaviour:
-
-    - **Debounce** by ``(org_id, project_id, target.kind, target.target_id)`` — repeated
-      enqueues for the same playbook collapse into one fire.
-    - **Jitter** the fire time by up to ``policy.scheduler_jitter_seconds`` to spread load
-      across simultaneous saves.
-    - **Cooldown** when a callback returns ``"aborted"`` (the assistant
-      backend repeatedly failed). After ``policy.abort_cooldown_threshold``
-      consecutive aborts, further enqueues for the same key are silently
-      dropped for ``policy.cooldown_after_aborts_seconds``. A ``completed`` or
-      ``skipped`` outcome resets the counter.
-
-    The scheduler is a singleton with a daemon thread; multiple processes
-    schedule independently, so debounce is per-process.
+    The executor coalesces queued work by org/project/target and serializes
+    matching active work. No timer or elapsed-time debounce window is needed.
+    Captured failure policy still suppresses new admission during abort cooldown.
+    Callbacks retain the executor's existing best-effort overflow behavior;
+    this is neither a durable queue nor cross-process deduplication.
     """
 
     _instance = None
@@ -66,19 +47,8 @@ class PlaybookOptimizationScheduler:
         return cls._instance
 
     def __init__(self) -> None:
-        self._scheduled: dict[
-            ScheduleKey, tuple[float, ScheduledCallback, OptimizerSchedulingPolicy]
-        ] = {}
-        self._heap: list[tuple[float, ScheduleKey]] = []
         self._mutex = threading.Lock()
-        self._wake_event = threading.Event()
         self._abort_counts: dict[ScheduleKey, tuple[int, float]] = {}
-        self._thread = threading.Thread(
-            target=self._scheduler_loop,
-            daemon=True,
-            name="playbook-optimizer-scheduler",
-        )
-        self._thread.start()
 
     def enqueue(
         self,
@@ -90,70 +60,24 @@ class PlaybookOptimizationScheduler:
     ) -> None:
         if policy is None:
             policy = OptimizerSchedulingPolicy()
-        # Resolved on the enqueueing thread: by fire time the scope is gone.
+        # Resolve scope on the enqueueing thread, before its request ends.
         key: ScheduleKey = (
             org_id,
             current_project_id(),
             target.kind,
             target.target_id,
         )
-        now = time.monotonic()
-        jitter = (time.monotonic() % 1.0) * policy.scheduler_jitter_seconds
-        fire_time = now + jitter
         with self._mutex:
-            if self._cooldown_remaining_locked(key, now) > 0:
+            if self._cooldown_remaining_locked(key, time.monotonic()) > 0:
                 logger.info(
                     "Skipping playbook optimization enqueue during cooldown: %s", key
                 )
                 return
-            self._scheduled[key] = (
-                fire_time,
-                callback,
-                policy,
-            )
-            heapq.heappush(self._heap, (fire_time, key))
-        self._wake_event.set()
-
-    def _scheduler_loop(self) -> None:
-        while True:
-            try:
-                with self._mutex:
-                    next_fire_time = self._heap[0][0] if self._heap else None
-                if next_fire_time is None:
-                    self._wake_event.wait()
-                    self._wake_event.clear()
-                    continue
-                wait_seconds = next_fire_time - time.monotonic()
-                if wait_seconds > 0:
-                    self._wake_event.wait(timeout=wait_seconds)
-                    self._wake_event.clear()
-                    continue
-                with self._mutex:
-                    while self._heap and self._heap[0][0] <= time.monotonic():
-                        fire_time, key = heapq.heappop(self._heap)
-                        current = self._scheduled.get(key)
-                        if current is None or abs(current[0] - fire_time) > 0.001:
-                            continue
-                        _, callback, policy = current
-                        del self._scheduled[key]
-                        submit_callback(
-                            f"playbook-opt-{key[2]}-{key[3]}",
-                            partial(
-                                self._run_callback,
-                                key,
-                                callback,
-                                policy,
-                            ),
-                        )
-                report_background_success("playbook-optimizer-loop")
-            except Exception as exc:
-                report_background_failure(
-                    logger,
-                    "playbook_optimizer_scheduler_loop_failed",
-                    exc,
-                    scope="playbook-optimizer-loop",
-                )
-                time.sleep(1)
+        submit_callback(
+            f"playbook-opt-{key[2]}-{key[3]}",
+            partial(self._run_callback, key, callback, policy),
+            coalesce_key=("playbook-optimization", *key),
+        )
 
     def _run_callback(
         self,
