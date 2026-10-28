@@ -126,7 +126,7 @@ def test_local_startup_prepares_previous_generation_once_without_losing_original
     owner = LocalConfigFile(path)
     assert owner.prepare() is True
     current = json.loads(path.read_bytes())
-    assert current["_reflexio_config_file"]["version"] == 5
+    assert current["_reflexio_config_file"]["version"] == 6
     assert current["playbook_optimizer_config"] == {
         "metric_call_budget": expected,
         "user_playbooks_enabled": True,

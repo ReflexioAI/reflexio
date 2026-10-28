@@ -5,7 +5,7 @@ Description: GEPA-driven optimization of playbook content using assistant rollou
 
 
 - `optimizer.py` orchestrates one optimization run and persists candidates, evaluations, events, and optional successor playbooks.
-- `scheduler.py` owns deferred optimization scheduling.
+- `scheduler.py` owns optimizer admission and captured failure policy.
 - `models.py` owns optimizer-local data shapes.
 - `judge.py`, `rollout.py`, `gepa_adapter.py`, `assistant_webhook.py`, and `scenario_resolver.py` are mature implementation units and intentionally remain at the package root.
 
@@ -44,15 +44,25 @@ authority remains immutable; durable publication uses its recorded snapshot.
 ## Scheduling policy
 
 Both production enqueue paths resolve `PlaybookOptimizerConfig.scheduling_policy`
-and pass one validated immutable `OptimizerSchedulingPolicy` to the scheduler.
-The original org fields `scheduler_jitter_seconds`, `abort_cooldown_threshold`
-and `cooldown_after_aborts_seconds` remain supported and saved. Defaults are
-1.0 seconds, two aborts and 3600 seconds; zero jitter/cooldown removes that delay.
+and pass one validated immutable `OptimizerSchedulingPolicy` to admission.
+`abort_cooldown_threshold` and `cooldown_after_aborts_seconds` remain supported;
+defaults are two aborts and 3600 seconds. Zero cooldown disables that delay.
 A queued callback keeps its enqueue-time policy even when configuration changes.
-Completed/skipped outcomes reset the abort counter. Debounce and failure state
-remain process-local and scoped by org, project and target.
+Completed/skipped outcomes reset the abort counter. Failure state remains
+process-local and scoped by org, project and target. Cooldown suppresses new
+admissions; previously accepted successors can still run.
 
-Malformed/nonfinite/unsafe settings raise `OptimizerSchedulingMigrationError`
-before stored-config pruning. Storage adapters and CLI bootstrap must propagate
-that error rather than loading defaults or overwriting saved configuration.
-Valid custom scheduling values are never stripped or replaced with constants.
+The shared bounded callback executor owns dispatch. Each target has at most one
+active callback and one queued successor. A new queued callback replaces its
+predecessor without moving its queue position. Different targets remain runnable
+while a target is active. Queue overflow retains observable drop-oldest behavior.
+This is best-effort process-local work, not a durable queue or rate limiter.
+
+The timer heap, daemon and `scheduler_jitter_seconds` setting are retired. Work
+becomes runnable immediately; coalescing follows queued/in-flight work rather than
+an elapsed delay. Normal prelaunch preparation upgrades saved files to generation6:
+it validates historical jitter before removing only that field. Strict runtime
+reads reject obsolete jitter, including a former default value. Custom failure
+policy and unrelated data survive conversion. Malformed/nonfinite/unsafe settings
+raise `OptimizerSchedulingMigrationError` before pruning or any stored-file write;
+storage adapters and CLI bootstrap must propagate that error.

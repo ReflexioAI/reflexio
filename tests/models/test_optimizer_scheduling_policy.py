@@ -14,7 +14,6 @@ from reflexio.server.services.configurator.local_file_config_storage import (
 )
 
 SCHEDULING_DEFAULTS = {
-    "scheduler_jitter_seconds": 1.0,
     "abort_cooldown_threshold": 2,
     "cooldown_after_aborts_seconds": 3600,
 }
@@ -115,7 +114,6 @@ def test_invalid_saved_policy_is_not_rewritten(tmp_path):
 
 def test_custom_scheduling_policy_is_supported_and_saved(tmp_path):
     custom = {
-        "scheduler_jitter_seconds": 0.25,
         "abort_cooldown_threshold": 4,
         "cooldown_after_aborts_seconds": 60,
     }
@@ -144,9 +142,7 @@ def test_custom_scheduling_policy_is_supported_and_saved(tmp_path):
     )
 
 
-@pytest.mark.parametrize(
-    "key", ["scheduler_jitter_seconds", "cooldown_after_aborts_seconds"]
-)
+@pytest.mark.parametrize("key", ["cooldown_after_aborts_seconds"])
 def test_zero_delay_remains_supported(key):
     policy = PlaybookOptimizerConfig.model_validate({key: 0}).scheduling_policy
     assert getattr(policy, key) == 0

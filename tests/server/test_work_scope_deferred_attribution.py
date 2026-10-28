@@ -209,18 +209,38 @@ def test_group_evaluation_key_keeps_projects_distinct(
 
 def test_playbook_optimization_enqueue_keeps_projects_distinct(
     provider: _FakeProvider,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scheduler = pb_sched.PlaybookOptimizationScheduler()
+    executor = BoundedCallbackExecutor(workers=1, queue_size=4)
+    monkeypatch.setattr(pb_sched, "submit_callback", executor.submit)
     target = pb_sched.PlaybookOptimizationTarget(kind="user_playbook", target_id=7)
+    fired: list[str | None] = []
+    occupied = threading.Event()
+    release = threading.Event()
 
-    for project in ("proj-a", "proj-b"):
-        with bind_work_scope(WorkScope(org_id="org-1", project_id=project)):
-            scheduler.enqueue(org_id="org-1", target=target, callback=lambda: None)
+    def occupy():
+        occupied.set()
+        assert release.wait(5)
 
-    assert len(scheduler._scheduled) == 2, (
-        "two projects optimizing the same target collapsed into one scheduled "
-        f"run: {list(scheduler._scheduled)}"
-    )
+    def callback():
+        fired.append(current_project_id())
+
+    executor.submit("occupy", occupy)
+    assert occupied.wait(3)
+    try:
+        # Both callbacks must be queued together, so a missing project key really
+        # would coalesce them rather than pass by lucky immediate execution.
+        for project in ("proj-a", "proj-b"):
+            with bind_work_scope(WorkScope(org_id="org-1", project_id=project)):
+                scheduler.enqueue(org_id="org-1", target=target, callback=callback)
+    finally:
+        release.set()
+    assert executor.drain(timeout_seconds=5)
+    assert sorted(project for project in fired if project is not None) == [
+        "proj-a",
+        "proj-b",
+    ]
 
 
 def test_enqueue_time_project_is_captured_not_fire_time(

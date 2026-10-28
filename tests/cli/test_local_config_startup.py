@@ -123,6 +123,7 @@ def test_ordinary_restart_preserves_database_and_unrelated_raw_fields(
     enabled = optimizer.pop("enabled")
     limit = optimizer.pop("max_metric_calls")
     optimizer["metric_call_budget"] = limit if enabled else 0
+    optimizer.pop("scheduler_jitter_seconds")
     expected["playbook_optimizer_config"] = optimizer
     floor = dict(expected["retrieval_floor"])
     assert floor.pop("enabled") is False

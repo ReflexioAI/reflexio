@@ -52,7 +52,6 @@ def test_production_enqueue_keeps_custom_admission_policy(kind):
         metric_call_budget=20,
         user_playbooks_enabled=True,
         agent_playbooks_enabled=True,
-        scheduler_jitter_seconds=0.25,
         abort_cooldown_threshold=4,
         cooldown_after_aborts_seconds=60,
     )
@@ -95,7 +94,6 @@ def test_production_enqueue_keeps_custom_admission_policy(kind):
     assert enqueue["target"].kind == kind
     policy = enqueue["policy"]
     assert policy.model_dump() == {
-        "scheduler_jitter_seconds": 0.25,
         "abort_cooldown_threshold": 4,
         "cooldown_after_aborts_seconds": 60,
     }

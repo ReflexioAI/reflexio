@@ -33,9 +33,6 @@ from .api_schema.validators import (
 )
 
 DEFAULT_MAX_MERGE_INVOCATIONS = 5
-_SchedulerJitter = Annotated[
-    float, Field(ge=0, le=threading.TIMEOUT_MAX, allow_inf_nan=False)
-]
 _SchedulerThreshold = Annotated[int, Field(ge=1)]
 _SchedulerCooldown = Annotated[int, Field(ge=0, le=threading.TIMEOUT_MAX)]
 
@@ -43,8 +40,7 @@ _SchedulerCooldown = Annotated[int, Field(ge=0, le=threading.TIMEOUT_MAX)]
 class OptimizerSchedulingPolicy(BaseModel):
     """Validated, immutable admission-time policy for deferred optimizer work."""
 
-    model_config = ConfigDict(frozen=True, hide_input_in_errors=True)
-    scheduler_jitter_seconds: _SchedulerJitter = 1.0
+    model_config = ConfigDict(frozen=True, hide_input_in_errors=True, extra="forbid")
     abort_cooldown_threshold: _SchedulerThreshold = 2
     cooldown_after_aborts_seconds: _SchedulerCooldown = 3600
 
@@ -680,9 +676,6 @@ class PlaybookOptimizerConfig(BaseModel):
     assistant_script_args: list[str] = Field(default_factory=list)
 
     # Scheduling and optimizer search budgets have separate owners.
-    scheduler_jitter_seconds: _SchedulerJitter = (
-        _DEFAULT_OPTIMIZER_SCHEDULING_POLICY.scheduler_jitter_seconds
-    )
     abort_cooldown_threshold: _SchedulerThreshold = (
         _DEFAULT_OPTIMIZER_SCHEDULING_POLICY.abort_cooldown_threshold
     )
@@ -693,7 +686,6 @@ class PlaybookOptimizerConfig(BaseModel):
     @property
     def scheduling_policy(self) -> OptimizerSchedulingPolicy:
         return OptimizerSchedulingPolicy(
-            scheduler_jitter_seconds=self.scheduler_jitter_seconds,
             abort_cooldown_threshold=self.abort_cooldown_threshold,
             cooldown_after_aborts_seconds=self.cooldown_after_aborts_seconds,
         )
@@ -712,6 +704,7 @@ class PlaybookOptimizerConfig(BaseModel):
                 "early_stop_score",
                 "enabled",
                 "max_metric_calls",
+                "scheduler_jitter_seconds",
             ),
         )
 
