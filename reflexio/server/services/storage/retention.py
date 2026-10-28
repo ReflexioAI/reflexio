@@ -132,12 +132,9 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
         ("reward_label_id",),
     ),
     RetentionTarget("share_links", "share_links", "created_at", ("id",)),
-    RetentionTarget(
-        "agent_playbook_source_user_playbooks",
-        "agent_playbook_source_user_playbooks",
-        "created_at",
-        ("agent_playbook_id", "user_playbook_id"),
-    ),
+    # Source links determine source-filtered search and remain valid while both
+    # parents survive. Their existing parent cascades own deletion; independent
+    # operational eviction would silently remove live playbooks from results.
     RetentionTarget(
         "playbook_optimization_history",
         "playbook_optimization_jobs",
@@ -335,6 +332,7 @@ def get_row_retention_limits(*, env: Mapping[str, str] | None = None) -> dict[st
     )
     limits: dict[str, int] = {}
     reject_removed_env(env, canonical="REFLEXIO_ROW_LIMIT_INTERACTIONS")
+    reject_removed_env(env, canonical="REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOKS")
     reject_removed_env(
         env, canonical="REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_HISTORY"
     )

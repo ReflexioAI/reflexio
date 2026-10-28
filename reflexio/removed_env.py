@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOK_SOURCE_USER_PLAYBOOKS": "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOKS",
     "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_JOBS": "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_HISTORY",
     "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_CANDIDATES": "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_HISTORY",
     "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_EVALUATIONS": "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_HISTORY",
@@ -52,7 +53,19 @@ def reject_removed_env(
         if name in env and (canonical is None or aliases[name] == canonical)
     )
     if obsolete:
-        migration = "; ".join(f"{name} -> {aliases[name]}" for name in obsolete)
+        source_cap = "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOK_SOURCE_USER_PLAYBOOKS"
+        migration = "; ".join(
+            f"{name} (remove assignment)"
+            if name == source_cap
+            else f"{name} -> {aliases[name]}"
+            for name in obsolete
+        )
+        if "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOK_SOURCE_USER_PLAYBOOKS" in obsolete:
+            migration += (
+                "; source provenance now follows its parent playbooks. Remove "
+                "the source-link cap assignment; do not copy its value. Existing "
+                "agent/user playbook limits keep their original units and values"
+            )
         if {"WEB_CONCURRENCY", "REFLEXIO_SERVER_WORKERS"}.intersection(obsolete):
             migration += (
                 "; preserve the actual worker count with explicit server --workers N; "
@@ -101,7 +114,7 @@ def reject_removed_env(
                 "disabling embeddings. See the embedding upgrade guide"
             )
         raise ValueError(
-            f"Removed environment names: {migration}. Migrate the effective "
-            "policy to the canonical setting and remove the old assignments; "
+            f"Removed environment names: {migration}. Follow the name-specific "
+            "guidance above and remove the old assignments; "
             "see the configuration upgrade guide. Values are never copied."
         )
