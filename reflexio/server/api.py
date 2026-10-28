@@ -69,6 +69,7 @@ from reflexio.server.routes import (
     search,
     system,
 )
+from reflexio.server.services.storage.error import ReadinessUnavailableError
 from reflexio.server.validation_errors import safe_validation_errors
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,17 @@ async def _storage_not_configured_handler(
     does not report this expected caller state as a server error.
     """
     return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
+async def _readiness_unavailable_handler(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    """Preserve the typed readiness refusal without exposing provider details."""
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "embedding_readiness_unavailable"},
+        headers={"Cache-Control": "no-store", "Retry-After": "30"},
+    )
 
 
 def _add_openapi_security(app: FastAPI, *, allow_local_access: bool = False) -> None:
@@ -606,6 +618,7 @@ def create_app(  # noqa: C901
         StorageNotConfiguredError,
         _storage_not_configured_handler,  # type: ignore[reportArgumentType]
     )
+    app.add_exception_handler(ReadinessUnavailableError, _readiness_unavailable_handler)
 
     if auth_required:
         _add_openapi_security(app)

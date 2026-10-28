@@ -60,6 +60,7 @@ FULL_EXC = [
     "<class 'fastapi.exceptions.RequestValidationError'>",
     "<class 'fastapi.exceptions.WebSocketRequestValidationError'>",
     "<class 'reflexio.lib._base.StorageNotConfiguredError'>",
+    "<class 'reflexio.server.services.storage.error.ReadinessUnavailableError'>",
     "<class 'slowapi.errors.RateLimitExceeded'>",
     "<class 'starlette.exceptions.HTTPException'>",
 ]
