@@ -22,6 +22,12 @@ def embedding_device() -> str:
     return env_str(_DEVICE, "cpu")
 
 
+def embedding_batch_size(default: int) -> int:
+    """Resolve the sole native embedding capacity; never revive a queue cap."""
+    reject_removed_env(os.environ, canonical="REFLEXIO_EMBED_BATCH_SIZE")
+    return positive_int_env("REFLEXIO_EMBED_BATCH_SIZE", default, _LOGGER)
+
+
 class SentenceEncoder(ABC):
     """Shared lazy model owner; adapters retain model identity and vector space.
 
@@ -77,13 +83,19 @@ class SentenceEncoder(ABC):
                 self._model = SentenceTransformer(self.model_name, **options)
         return self._model
 
+    @property
+    def batch_size(self) -> int:
+        """The native batch capacity, also used by daemon scheduling."""
+        return embedding_batch_size(self.default_batch_size)
+
+    def __call__(self, texts: list[str]) -> list[list[float]]:
+        return self.embed(texts)
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Serialize the shared model with the process's actual mini-batch budget."""
         model = self._load()
         safe = [(text or "")[: self.max_chars] for text in texts]
-        batch_size = positive_int_env(
-            "REFLEXIO_EMBED_BATCH_SIZE", self.default_batch_size, _LOGGER
-        )
+        batch_size = self.batch_size
         with self._model_lock:
             raw = model.encode(
                 safe,

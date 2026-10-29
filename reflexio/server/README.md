@@ -222,9 +222,17 @@ Key files:
   scheduler hook receives bounded embedding/rerank chunks and cancels queued
   work on disconnect. The ordinary unscheduled daemon remains supported. Its
   single queue owner dispatches the active model immediately and coalesces
-  compatible requests already waiting, bounded by
-  `REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS`. Runner encode batching remains
-  independently configurable. The competing processor-count and batch-fill-delay
+  compatible requests already waiting, bounded by the selected encoder's actual
+  `REFLEXIO_EMBED_BATCH_SIZE`. Large requests yield between native-sized turns;
+  each caller receives its original row order, never partial success. Native
+  defaults remain Nomic4, E5 16 and MiniLM32; MiniLM now honors an explicit batch
+  setting too. Model encoder instances expose their capacity; opaque custom
+  callbacks retain one atomic invocation per original request, without cross-request
+  coalescing. Request timeouts discard queued continuations
+  while a running native call keeps physical ownership until it returns. Startup
+  warmup has no HTTP request budget; its launcher owns startup expiry.
+  Remove `REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS` without copying its value; it is
+  rejected as obsolete. Preserve the existing native batch setting. The competing processor-count and batch-fill-delay
   mechanisms were removed; `REFLEXIO_EMBED_MAX_CONCURRENCY` and
   `REFLEXIO_EMBED_MICRO_BATCH_DELAY_MS` no longer control execution. Direct model
   callers retain the runner's serialization lock. A failed worker launch releases

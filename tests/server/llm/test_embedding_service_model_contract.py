@@ -174,3 +174,4 @@ def test_extension_encoder_runs_through_embedding_service(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert calls == [["中文", "English"]]
+    assert [row["index"] for row in response.json()["data"]] == [0, 1]
