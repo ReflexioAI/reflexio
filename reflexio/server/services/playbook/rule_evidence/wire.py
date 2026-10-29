@@ -7,9 +7,9 @@ Dynamic input enums and deterministic validators use the existing correction tur
 import json
 import re
 from enum import IntEnum
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 
-from pydantic import BaseModel, Field, create_model, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, create_model, model_validator
 
 import reflexio.server.services.playbook.rule_evidence as core
 
@@ -181,15 +181,26 @@ def judge_schema(data: models.RuleEvidenceInput, source: models.Session) -> Any:
     turn: Any = IntEnum(
         "OriginalTurn", {"TURN_" + str(m.turn): m.turn for m in source.messages}
     )
+
+    def original_turn(value: Any) -> Any:
+        # Providers decode JSON before strict Python-mode validation. Convert
+        # only exact integers; bools, floats and strings must remain invalid.
+        if type(value) is int:
+            return turn(value)
+        if isinstance(value, turn):
+            return value
+        raise ValueError("Evidence references must be original integer turn IDs")
+
+    turn_id: Any = Annotated[turn, BeforeValidator(original_turn)]
     fields: dict[str, Any] = {
-        "r1": (turn, ...),
-        **{f"r{i}": (turn | None, None) for i in range(2, 7)},
+        "r1": (turn_id, ...),
+        **{f"r{i}": (turn_id | None, None) for i in range(2, 7)},
     }
     support = create_model("SupportTurns", __base__=models.EvidenceModel, **fields)
     contrary = create_model(
         "CounterTurns",
         __base__=models.EvidenceModel,
-        **cast(dict[str, Any], {f"r{i}": (turn | None, None) for i in range(1, 5)}),
+        **cast(dict[str, Any], {f"r{i}": (turn_id | None, None) for i in range(1, 5)}),
     )
     observation = create_model(
         "SlotObservation",
