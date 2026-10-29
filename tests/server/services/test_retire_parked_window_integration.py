@@ -1,4 +1,4 @@
-"""An operator retire closes a parked window unlearned so later inputs proceed."""
+"""An operator retire closes a parked window unextracted so later inputs proceed."""
 
 import pytest
 
@@ -69,7 +69,7 @@ def test_retire_releases_the_user_without_learning_the_window(pipeline, monkeypa
     }
     profiles = storage.get_all_profiles(user_id="u")
     assert profiles and dispatch.called
-    # Nothing is ever learned from the retired window's request.
+    # The retired request is never extracted as its own window.
     assert {p.generated_from_request_id for p in profiles} == {"after-retire"}
 
 

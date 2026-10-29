@@ -1171,12 +1171,15 @@ class ExtractionStreamStore:
         expected_attempts: int,
         expected_last_error: str,
     ) -> None:
-        """Operator-only close of a parked window without learning from it.
+        """Operator-only close of a parked window that is never extracted itself.
 
         The cursor advances past the window exactly as a completion would, so
         the user's later inputs are selected next, but nothing is written and no
         derived work or billing effect runs: the window lands in the state an
-        acknowledged, skipped effect leaves. Like erasure, the parent run is
+        acknowledged, skipped effect leaves. As after any completion, an
+        overlapping policy (``stride_size < window_size``) still shows up to
+        ``window_size - stride_size`` of its last inputs to the next window as
+        context; retiring is not erasure, which ``invalidate_extraction`` owns. Like erasure, the parent run is
         cancelled and its staged quotations and continuations are dropped; the
         consumed attempt journal stays as content-free audit data. The caller
         must hold the ordinary user lease and name the exact parked state it

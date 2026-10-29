@@ -5,8 +5,8 @@ This is not an automatic retry policy. Missing parents cannot establish original
 quota authority and remain held. Callers provide an already project-scoped store.
 A receipt's ``action`` selects what applying it does: ``rearm`` (the default)
 re-arms a held cursor, ``reset_legacy_policy`` restarts a legacy checkpoint held
-by a policy mismatch, and ``retire`` closes a parked window without learning
-from it so the user's later inputs can proceed.
+by a policy mismatch, and ``retire`` closes a parked window without extracting
+it so the user's later inputs can proceed.
 """
 
 import hashlib
@@ -164,8 +164,9 @@ def plan_input_budget_recovery(
     ``reset_legacy_policy`` asks whether the window's legacy checkpoint can
     restart under the current policy: it reruns every chunk, so it spends
     attempts from the same budget. ``retire`` asks whether the window is parked
-    and can be closed unlearned: its inputs are never extracted. An operator
-    chooses either per window.
+    and can be closed without being extracted; an overlapping policy still
+    shows the next window its last inputs as context, as after any completion.
+    An operator chooses either per window.
     """
     return _inspect(storage, window_id, action=action)[1]
 
