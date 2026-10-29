@@ -245,6 +245,44 @@ def test_empty_role_retry_replays(tmp_path, worker_id):
     assert _counts(store) == rows
 
 
+def test_retry_omitting_agent_version_replays_after_default_changes(
+    tmp_path, worker_id, monkeypatch
+):
+    """An omitted agent_version is the server's choice, not the caller's.
+
+    The server resolves it from its configuration, which a restart can change
+    between the attempt and its retry. The retry is still the same publish.
+    """
+    svc = _service(tmp_path, worker_id)
+    store = svc.storage
+    assert isinstance(store, SQLiteStorage)
+    monkeypatch.setenv("REFLEXIO_AGENT_VERSION", "before-restart")
+    first = svc.run(_request(), defer_learning=True)
+    rows = _counts(store)
+
+    monkeypatch.setenv("REFLEXIO_AGENT_VERSION", "after-restart")
+    replay = svc.run(_request(), defer_learning=True)
+
+    assert replay.replayed
+    assert replay.interaction_ids == first.interaction_ids
+    assert _counts(store) == rows
+    assert store.get_request("caller-id").agent_version == "before-restart"
+
+
+def test_retry_stating_a_different_agent_version_is_a_conflict(tmp_path, worker_id):
+    svc = _service(tmp_path, worker_id)
+    store = svc.storage
+    assert isinstance(store, SQLiteStorage)
+    svc.run(_request().model_copy(update={"agent_version": "v1"}), defer_learning=True)
+    rows = _counts(store)
+
+    with pytest.raises(PublishRequestIdConflictError, match="different publish"):
+        svc.run(
+            _request().model_copy(update={"agent_version": "v2"}), defer_learning=True
+        )
+    assert _counts(store) == rows
+
+
 def test_two_workers_racing_the_insert_admit_once(tmp_path, worker_id, monkeypatch):
     """Both attempts finish preparation before either inserts; one admits.
 
