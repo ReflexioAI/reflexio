@@ -74,3 +74,15 @@ def test_worker_upgrade_diagnostic_preserves_execution_count():
         reject_removed_env({"WEB_CONCURRENCY": "private-value"})
     assert "never selected execution capacity" in str(error.value)
     assert "private-value" not in str(error.value)
+
+
+def test_statement_timeout_retirement_explains_the_policy_change():
+    with pytest.raises(
+        ValueError, match="REFLEXIO_POSTGRES_STATEMENT_TIMEOUT_MS"
+    ) as error:
+        reject_removed_env({"REFLEXIO_POSTGRES_STATEMENT_TIMEOUT_MS": "private-value"})
+    message = str(error.value)
+    assert "remaining checked-out connection lease" in message
+    assert "do not automatically copy the old value" in message
+    assert "REFLEXIO_DB_LEASE_TIMEOUT_SECONDS" in message
+    assert "private-value" not in message

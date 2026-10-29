@@ -13,6 +13,7 @@ REMOVED_ENV_ALIASES = {
     "NOMIC_EMBED_DEVICE": "REFLEXIO_EMBEDDING_DEVICE",
     "REFLEXIO_SEARCH_DEADLINE_ENABLED": "REFLEXIO_SEARCH_TIMEOUT_SECONDS",
     "REFLEXIO_SEARCH_CONCURRENCY_TIMEOUT_SECONDS": "REFLEXIO_SEARCH_TIMEOUT_SECONDS",
+    "REFLEXIO_POSTGRES_STATEMENT_TIMEOUT_MS": "REFLEXIO_DB_LEASE_TIMEOUT_SECONDS",
     "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "REFLEXIO_EMBEDDING_PROVIDER",
     "PUBLIC_SCHEMA_AUDIT_ENABLED": "PUBLIC_SCHEMA_AUDIT_INTERVAL_SECONDS",
     "REFLEXIO_SEARCH_RECENCY_ENABLED": "REFLEXIO_SEARCH_RECENCY_POOL_SIZE",
@@ -93,6 +94,15 @@ def reject_removed_env(
                 "REFLEXIO_SEARCH_TIMEOUT_SECONDS budget (0 inherits HTTP). "
                 "Independent early queue rejection is no longer supported; "
                 "do not automatically copy its value"
+            )
+        if "REFLEXIO_POSTGRES_STATEMENT_TIMEOUT_MS" in obsolete:
+            migration += (
+                "; ordinary storage SQL now consumes the remaining checked-out "
+                "connection lease, including transaction cleanup. Remove the "
+                "statement assignment and deliberately choose the whole-borrow "
+                "REFLEXIO_DB_LEASE_TIMEOUT_SECONDS budget. Units and semantics "
+                "differ; do not automatically copy the old value. Independent deployment-wide "
+                "per-statement policy is no longer supported"
             )
         if "REFLEXIO_SEARCH_RECENCY_ENABLED" in obsolete:
             migration += (
