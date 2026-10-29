@@ -75,7 +75,8 @@ def test_first_run_creates_user_env_from_package_template(
     secret = content.split("PROV_SECRET=", 1)[1].splitlines()[0]
     assert len(secret) == 64 and int(secret, 16) >= 0
     assert "PROV_PLAIN=template" in content
-    assert (created.stat().st_mode & 0o777) == 0o600
+    if os.name != "nt":  # Windows chmod only toggles the read-only bit
+        assert (created.stat().st_mode & 0o777) == 0o600
     assert os.environ["PROV_SECRET"] == secret
     assert env_loader.get_loaded_env_path() == created.resolve()
     out = capsys.readouterr().out
@@ -183,7 +184,8 @@ def test_mode_first_run_creates_home_mode_file_from_package_template(
     target = isolated_env / ".env.covmode"
     assert created == target
     assert target.read_text() == "PROV_MODE_VALUE=bundled\n"
-    assert (target.stat().st_mode & 0o777) == 0o600
+    if os.name != "nt":  # Windows chmod only toggles the read-only bit
+        assert (target.stat().st_mode & 0o777) == 0o600
     assert os.environ["PROV_MODE_VALUE"] == "bundled"
     assert env_loader.get_loaded_env_path() == target.resolve()
     # The created home file is found on the next start instead of recreated.

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import socket
 import threading
 import time
@@ -163,7 +164,8 @@ class TestRefreshAndFreshTokens:
         assert fresh.expires_at == exp
         assert fresh.plan_type == "pro"
         assert codex_auth.load_tokens_raw() == fresh
-        assert (token_store.stat().st_mode & 0o777) == 0o600
+        if os.name != "nt":  # Windows chmod only toggles the read-only bit
+            assert (token_store.stat().st_mode & 0o777) == 0o600
 
     def test_none_without_store(self, token_store: Path) -> None:
         assert codex_auth.get_fresh_tokens() is None
