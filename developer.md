@@ -1420,3 +1420,12 @@ callback executor: one active callback plus one queued successor per target,
 immediately eligible instead of delayed by a timer. Queue overflow stays
 best-effort/drop-oldest. Stop old writers before preparation; enterprise remote
 configuration uses its separate canonical-v9 startup migration owner.
+
+
+### Pending-question lifetime
+
+A pending human question can acquire another dependent run only while both its
+coalescing window and request lifetime remain open. Reaching the expiry instant
+prevents new attachment immediately, without waiting for the periodic sweep to
+change the stored status. This does not remove old questions or dependencies,
+change resolved-answer freshness, or combine the configurable lifetimes.

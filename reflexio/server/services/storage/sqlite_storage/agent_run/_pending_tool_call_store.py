@@ -161,6 +161,7 @@ class SQLitePendingToolCallStoreMixin:
                       AND dedup_key = ?
                       AND status = ?
                       AND cache_until > ?
+                      AND expires_at > ?
                     ORDER BY created_at ASC
                     LIMIT 1
                     """,
@@ -170,6 +171,7 @@ class SQLitePendingToolCallStoreMixin:
                         record.tool_name,
                         record.dedup_key,
                         PendingToolCallStatus.PENDING.value,
+                        _dt_str(current),
                         _dt_str(current),
                     ),
                 ).fetchone()
@@ -399,6 +401,7 @@ class SQLitePendingToolCallStoreMixin:
               AND dedup_key = ?
               AND status = ?
               AND cache_until > ?
+              AND expires_at > ?
             ORDER BY created_at ASC
             LIMIT 1
             """,
@@ -408,6 +411,7 @@ class SQLitePendingToolCallStoreMixin:
                 tool_name,
                 dedup_key,
                 PendingToolCallStatus.PENDING.value,
+                now_s,
                 now_s,
             ),
         )
