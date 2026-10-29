@@ -20,8 +20,7 @@ Gold shapes
 ==========  ============================================================
 kind        gold keys
 ==========  ============================================================
-``learn``   ``{"consolidation_kind": "unify|reject_new|differentiate|
-            independent", "extraction_signal": "<text>"}``
+``learn``   ``{"consolidation_kind": "create|replace|remove|mixed", "extraction_signal": "<text>"}``
 ==========  ============================================================
 """
 
@@ -30,6 +29,8 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+from reflexio.server.services.playbook.components.reconciliation import Reference
 
 
 class BookRule(BaseModel):
@@ -42,7 +43,8 @@ class BookRule(BaseModel):
 
     Attributes:
         id: Stable integer id of the rule. Rules are referenced by *list
-            position* in unify decisions (see ``book.apply_consolidation``).
+            position* as EXISTING-i in audited decision batches
+            (see ``book.apply_consolidation``).
         content: Current content text of the rule.
         trigger: Current trigger (None when unscoped).
         rationale: Current rationale text, if any.
@@ -52,6 +54,7 @@ class BookRule(BaseModel):
     content: str = ""
     trigger: str | None = None
     rationale: str = ""
+    evidence_refs: list[Reference] = Field(default_factory=list)
 
 
 class ScenarioRound(BaseModel):

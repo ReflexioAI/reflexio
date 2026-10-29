@@ -1,25 +1,9 @@
-"""Runner + metrics for the consolidation decision-eval harness.
+"""Metrics for complete audited consolidation decision batches.
 
-Given a list of cases and, for each, a *produced* consolidation decision
-(either precomputed or obtained by running the live consolidator), this
-module:
-
-- reads each produced decision's explicit kind,
-- compares it to the case's ``gold_kind``,
-- optionally asks the AI judge whether the decision matches intent (and,
-  for a ``unify``, whether it self-contradicts), and
-- computes aggregate metrics: kind accuracy (overall + per-kind confusion),
-  over-merge / under-merge rates, and the self-contradiction rate.
-
-Two notions of "correct" are tracked separately:
-
-- **kind accuracy** — does the explicit produced kind equal the gold kind?
-  (cheap, deterministic, no LLM)
-- **judge agreement** — does the AI judge say the decision matches the gold
-  intent? (the headline AI-judged metric)
-
-A case can be kind-wrong but judge-right (e.g. a defensible decision the
-case author didn't anticipate), which is exactly why the AI judge exists.
+Compare each batch's action summary to the fixture expectation, and optionally
+ask an independent judge about semantic correctness and output contradictions.
+Action-summary accuracy and judge agreement are separate metrics: Replace may
+split or combine, so its action name does not establish memory quality.
 """
 
 from __future__ import annotations
@@ -34,18 +18,11 @@ from tests.eval.consolidation.judge import judge_consolidation_decision
 
 if TYPE_CHECKING:
     from reflexio.server.llm.litellm_client import LiteLLMClient
-    from reflexio.server.services.playbook.components.consolidator import (
-        ConsolidationDecision,
-    )
+    from reflexio.server.services.playbook.components.reconciliation import Decisions
 
 # A callable mapping a case to a produced decision (e.g. one that runs the
 # live consolidator's decision step).
-DecisionProvider = Callable[[ConsolidationEvalCase], "ConsolidationDecision"]
-
-# Gold/produced kinds that mean "keep the rules separate".
-_SEPARATE_KINDS = frozenset({"differentiate", "independent"})
-# Gold/produced kinds that mean "fold the rules together".
-_MERGE_KINDS = frozenset({"unify", "reject_new"})
+DecisionProvider = Callable[[ConsolidationEvalCase], "Decisions"]
 
 
 @dataclass
@@ -58,9 +35,8 @@ class CaseOutcome:
         produced_kind: The explicit kind of the produced decision.
         kind_match: Whether ``produced_kind == gold_kind``.
         judge_correct: AI-judge verdict, or None when the judge was not run.
-        self_contradiction: AI-judge self-contradiction flag for a produced
-            ``unify``, or None when the judge was not run or the produced
-            kind was not ``unify`` (the flag is only meaningful for unify).
+        self_contradiction: AI-judge contradiction flag across the complete
+            output memory, or None when the judge was not run.
         judge_reason: The judge's one-line reason, if any.
     """
 
@@ -109,53 +85,14 @@ class EvalResults:
         return sum(bool(o.judge_correct) for o in judged) / len(judged)
 
     @property
-    def over_merge_rate(self) -> float:
-        """Fraction of should-stay-separate cases that were merged.
-
-        An *over-merge* is a case whose gold kind says the rules should stay
-        separate (``differentiate`` / ``independent``) but whose produced
-        decision folded them together (``unify`` / ``reject_new``).
-        Denominator is all should-stay-separate gold cases. Returns 0.0
-        when there are no such cases.
-        """
-        eligible = [o for o in self.outcomes if o.gold_kind in _SEPARATE_KINDS]
-        if not eligible:
-            return 0.0
-        over_merges = sum(o.produced_kind in _MERGE_KINDS for o in eligible)
-        return over_merges / len(eligible)
-
-    @property
-    def under_merge_rate(self) -> float:
-        """Fraction of should-merge cases that were kept separate.
-
-        An *under-merge* is a case whose gold kind says the rules should be
-        folded together (``unify`` / ``reject_new``) but whose produced
-        decision kept them separate (``differentiate`` / ``independent``).
-        Denominator is all should-merge gold cases. Returns 0.0 when there
-        are no such cases.
-        """
-        eligible = [o for o in self.outcomes if o.gold_kind in _MERGE_KINDS]
-        if not eligible:
-            return 0.0
-        under_merges = sum(o.produced_kind in _SEPARATE_KINDS for o in eligible)
-        return under_merges / len(eligible)
-
-    @property
     def self_contradiction_rate(self) -> float | None:
-        """Fraction of judged ``unify`` decisions flagged self-contradictory.
-
-        Restricted to outcomes whose produced kind is ``unify`` AND which
-        were judged (``self_contradiction is not None``). Returns None when
-        there are no such outcomes.
-        """
-        judged_unify = [
-            o
-            for o in self.outcomes
-            if o.produced_kind == "unify" and o.self_contradiction is not None
-        ]
-        if not judged_unify:
+        """Fraction of judged batches flagged as self-contradictory."""
+        judged_batches = [o for o in self.outcomes if o.self_contradiction is not None]
+        if not judged_batches:
             return None
-        return sum(bool(o.self_contradiction) for o in judged_unify) / len(judged_unify)
+        return sum(bool(o.self_contradiction) for o in judged_batches) / len(
+            judged_batches
+        )
 
     def summary(self) -> str:
         """Render a short human-readable summary block."""
@@ -170,8 +107,6 @@ class EvalResults:
             if ja is not None
             else "  judge agreement:    (not run)"
         )
-        lines.append(f"  over-merge rate:    {self.over_merge_rate:.3f}")
-        lines.append(f"  under-merge rate:   {self.under_merge_rate:.3f}")
         scr = self.self_contradiction_rate
         lines.append(
             f"  self-contradiction: {scr:.3f}"
@@ -187,7 +122,7 @@ class EvalResults:
 def score_case(
     *,
     case: ConsolidationEvalCase,
-    produced_decision: ConsolidationDecision,
+    produced_decision: Decisions,
     llm_client: LiteLLMClient | Any | None = None,
     rubric: dict[str, Any] | None = None,
     panel_size: int = 1,
@@ -196,9 +131,7 @@ def score_case(
 
     When ``llm_client`` is provided the AI judge is invoked; otherwise only
     the deterministic kind comparison is computed. The ``self_contradiction``
-    flag is recorded only when the produced kind is ``unify`` (it is not
-    meaningful otherwise); for any other kind it stays None even when the
-    judge ran.
+    flag covers all produced output memory and stays None when no judge ran.
 
     Args:
         case: The eval case.
@@ -226,7 +159,9 @@ def score_case(
         )
         judge_correct = verdict.correct
         judge_reason = verdict.reason
-        if produced_kind == "unify":
+        if any(
+            getattr(decision, "outputs", []) for decision in produced_decision.decisions
+        ):
             self_contradiction = verdict.self_contradiction
 
     return CaseOutcome(
@@ -243,7 +178,7 @@ def score_case(
 def run_eval(
     *,
     cases: list[ConsolidationEvalCase],
-    decisions: list[ConsolidationDecision] | None = None,
+    decisions: list[Decisions] | None = None,
     decision_provider: DecisionProvider | None = None,
     llm_client: LiteLLMClient | Any | None = None,
     rubric: dict[str, Any] | None = None,

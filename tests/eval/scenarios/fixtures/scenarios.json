@@ -24,7 +24,7 @@
           }
         ],
         "gold": {
-          "consolidation_kind": "unify",
+          "consolidation_kind": "replace",
           "extraction_signal": "avoidance rule about deploy timing"
         }
       }
@@ -56,7 +56,7 @@
           }
         ],
         "gold": {
-          "consolidation_kind": "differentiate",
+          "consolidation_kind": "replace",
           "extraction_signal": "opposing advice on the same trigger"
         }
       }

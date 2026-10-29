@@ -58,7 +58,7 @@ def setup_ordinary(pipeline, monkeypatch, kind, state):
     # Reproduce deployed label/strategy and warning-threshold serialization.
     policy["extractor"]["extractor_name"] = None
     if kind == "playbook":
-        policy["extractor"]["deduplication_config"].pop("strategy")
+        policy["extractor"]["deduplication_config"].pop("strategy", None)
         policy["extractor"]["deduplication_config"]["max_unified_content_chars"] = 37
     with storage.conn:
         storage.conn.execute(
@@ -195,7 +195,7 @@ def test_ordinary_old_schema_resumes_or_replays_without_rewriting_admission(
 
 
 @pytest.mark.parametrize(
-    "tamper", ["no_policy", "policy", "prompt", "audited", "identity", "unknown"]
+    "tamper", ["no_policy", "policy", "prompt", "search_policy", "identity", "unknown"]
 )
 def test_ordinary_compatibility_rejects_unproven_or_changed_work(
     pipeline, monkeypatch, tamper
@@ -212,8 +212,8 @@ def test_ordinary_compatibility_rejects_unproven_or_changed_work(
         service._window_extractor_config.extraction_definition_prompt = (
             "Changed instructions"
         )
-    elif tamper == "audited":
-        service._window_extractor_config.deduplication_config.strategy = "audited"
+    elif tamper == "search_policy":
+        service._window_extractor_config.deduplication_config.search_threshold = 0.9
     elif tamper == "identity":
         service.service_config.window_interactions[0].interactions[
             0

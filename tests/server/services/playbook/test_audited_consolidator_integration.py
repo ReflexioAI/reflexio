@@ -89,9 +89,7 @@ def consolidator(storage, tmp_path, monkeypatch):
         manager.return_value.get_site_var.return_value = {
             "default_generation_model_name": "gpt-4o"
         }
-        yield PlaybookConsolidator(
-            context, client, DeduplicationConfig(strategy="audited")
-        )
+        yield PlaybookConsolidator(context, client, DeduplicationConfig())
 
 
 def source(storage, *, owner="owner", agent_version="v1", expert=False):
@@ -798,7 +796,7 @@ def test_uncapped_client_durable_admission_suspends_and_resumes_once_per_call(
 
 
 def _publication_case(
-    consolidator, storage, monkeypatch, *, expert=False, pending=False
+    consolidator, storage, monkeypatch, *, expert=False, pending=False, output_count=2
 ):
     """Keep real method/service/storage; replace only external inference and search."""
     monkeypatch.setattr(storage, "_get_embedding", lambda _text: [0.1] * 512)
@@ -815,7 +813,9 @@ def _publication_case(
             "rationale": "See cited evidence.",
             "evidence_refs": [ref],
         }
-        for text in ["Check authorization.", "Report authorization result."]
+        for text in ["Check authorization.", "Report authorization result."][
+            :output_count
+        ]
     ]
     answers = iter(
         [
@@ -845,7 +845,7 @@ def _publication_case(
         "user_playbook_extractor_config",
         UserPlaybookExtractorConfig(
             extraction_definition_prompt="Extract source-supported instructions",
-            deduplication_config=DeduplicationConfig(strategy="audited"),
+            deduplication_config=DeduplicationConfig(),
         ),
     )
     service = PlaybookGenerationService(
@@ -881,15 +881,21 @@ def _publication_case(
 
 @pytest.mark.parametrize("expert", [False, True])
 @pytest.mark.parametrize("pending", [False, True])
-def test_audited_multioutput_service_publication_preserves_each_source_link(
-    consolidator, storage, monkeypatch, expert, pending
+@pytest.mark.parametrize("output_count", [1, 2])
+def test_audited_service_publication_preserves_each_source_link(
+    consolidator, storage, monkeypatch, expert, pending, output_count
 ):
     case = _publication_case(
-        consolidator, storage, monkeypatch, expert=expert, pending=pending
+        consolidator,
+        storage,
+        monkeypatch,
+        expert=expert,
+        pending=pending,
+        output_count=output_count,
     )
     original_events = storage.get_lineage_events()
     plan = case.service._resolve_write_plan([[case.candidate]])
-    assert plan is not None and len(plan.new_playbooks) == 2
+    assert plan is not None and len(plan.new_playbooks) == output_count
     assert len(case.calls) == 2  # One decision and its independent audit.
     assert all(playbook.embedding for playbook in plan.new_playbooks)
     monkeypatch.setattr(
@@ -912,14 +918,20 @@ def test_audited_multioutput_service_publication_preserves_each_source_link(
     original = storage.get_user_playbook_by_id(
         case.incumbent.user_playbook_id, include_tombstones=True
     )
-    assert original is not None and original.status == Status.SUPERSEDED
-    assert original.merged_into is None  # A split has no arbitrary single survivor.
+    assert original is not None
+    assert original.status == (
+        Status.MERGED if output_count == 1 else Status.SUPERSEDED
+    )
+    assert original.merged_into == (
+        current[0].user_playbook_id if output_count == 1 else None
+    )
+    # A split has no arbitrary single survivor; a single replacement does.
     created = [
         event
         for event in storage.get_lineage_events(request_id="generation")
         if event.op == "create"
     ]
-    assert len(created) == 2
+    assert len(created) == output_count
     assert {event.entity_id for event in created} == {
         str(playbook.user_playbook_id) for playbook in current
     }
@@ -929,13 +941,16 @@ def test_audited_multioutput_service_publication_preserves_each_source_link(
 
 
 @pytest.mark.parametrize("failure_point", ["partial_insert", "after_retirement"])
+@pytest.mark.parametrize("output_count", [1, 2])
 def test_audited_service_publication_rolls_back_rows_and_lineage_together(
-    consolidator, storage, monkeypatch, failure_point
+    consolidator, storage, monkeypatch, failure_point, output_count
 ):
-    case = _publication_case(consolidator, storage, monkeypatch)
+    case = _publication_case(
+        consolidator, storage, monkeypatch, output_count=output_count
+    )
     original_events = storage.get_lineage_events()
     plan = case.service._resolve_write_plan([[case.candidate]])
-    assert plan is not None and len(plan.new_playbooks) == 2
+    assert plan is not None and len(plan.new_playbooks) == output_count
     assert len(case.calls) == 2
     monkeypatch.setattr(
         storage,
@@ -955,20 +970,24 @@ def test_audited_service_publication_rolls_back_rows_and_lineage_together(
 
         monkeypatch.setattr(storage, "save_user_playbooks", fail_after_first_insert)
     else:
-        retire = storage.supersede_user_playbooks_by_ids
+        retirement_method = (
+            "merge_records" if output_count == 1 else "supersede_user_playbooks_by_ids"
+        )
+        retire = getattr(storage, retirement_method)
 
         def fail_after_retirement(*args, **kwargs):
             retire(*args, **kwargs)
             original = storage.get_user_playbook_by_id(
                 case.incumbent.user_playbook_id, include_tombstones=True
             )
-            assert original is not None and original.status == Status.SUPERSEDED
+            assert original is not None
+            assert original.status == (
+                Status.MERGED if output_count == 1 else Status.SUPERSEDED
+            )
             observed.append("incumbent retired")
             raise RuntimeError("injected publication failure")
 
-        monkeypatch.setattr(
-            storage, "supersede_user_playbooks_by_ids", fail_after_retirement
-        )
+        monkeypatch.setattr(storage, retirement_method, fail_after_retirement)
     with (
         pytest.raises(RuntimeError, match="injected publication failure"),
         storage.commit_scope(),
@@ -978,3 +997,198 @@ def test_audited_service_publication_rolls_back_rows_and_lineage_together(
     assert storage.get_user_playbooks() == [case.incumbent]
     assert storage.get_lineage_events() == original_events
     assert len(case.calls) == 2  # Persistence never dispatches another model call.
+
+
+@pytest.mark.parametrize("spent", [126, 127, 128])
+def test_method_upgrade_keeps_legacy_receipts_and_original_window_allowance(
+    durable_pipeline, monkeypatch, spent
+):
+    from copy import deepcopy
+
+    from reflexio.server.llm._litellm_types import (
+        ModelProvenance,
+        ProviderRequestGuardError,
+    )
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        OverflowAttemptBudgetExceededError,
+    )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-no-provider")
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    old_attempts = [
+        {"id": f"paid-legacy-{i}", "usage": None, "model_provenance": None}
+        for i in range(spent)
+    ]
+    storage, window, token = _overflow_coordinator(
+        durable_pipeline, attempts=old_attempts
+    )
+    parent = storage.get_agent_run(f"window:{window.window_id}")
+    coordinator = OverflowCoordinator(
+        storage,
+        window,
+        token,
+        parent.generation_request_snapshot["overflow"],
+        source_digest="captured-source",
+        context_limits={"gpt-4o": 128000},
+        turn_seconds=300,
+    )
+    # A historical four-action proposal is an immutable paid receipt, not an
+    # audited decision. The new engine must neither reuse nor relabel it.
+    legacy_key = coordinator.step_key(
+        "consolidation-proposal-v1", {"historical": "exact original binding"}
+    )
+    coordinator.complete_step(
+        legacy_key,
+        {"decisions": [{"kind": "independent", "new_id": "NEW-0"}]},
+        ModelProvenance(),
+    )
+    original_receipt = deepcopy(coordinator.completed_step(legacy_key))
+    client = LiteLLMClient(
+        LiteLLMConfig(model="gpt-4o", max_tokens=8192, fallback_models=[])
+    )
+    answers = iter(
+        [
+            {"decisions": [reconciliation_replacement()]},
+            {"findings": []},
+        ]
+    )
+    dispatched = []
+
+    def dispatch(params, _timeout):
+        dispatched.append(params)
+        return response(next(answers))
+
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
+    with coordinator.provider_scope():
+        engine = Reconciler(client, "gpt-4o")
+        if spent == 126:
+            engine.run(reconciliation_payload(), {("request", 17): object()})
+        else:
+            with pytest.raises(ProviderRequestGuardError) as stopped:
+                engine.run(reconciliation_payload(), {("request", 17): object()})
+            assert isinstance(
+                stopped.value.__cause__, OverflowAttemptBudgetExceededError
+            )
+    saved = storage.get_agent_run(parent.id)
+    journal = saved.generation_request_snapshot["overflow"]
+    assert journal["attempt_limit"] == 128
+    assert journal["attempts"][:spent] == old_attempts
+    assert len(journal["attempts"]) == 128
+    assert len(dispatched) == 128 - spent
+    assert engine.calls == 128 - spent
+    assert coordinator.completed_step(legacy_key) == original_receipt
+    assert saved.binding == parent.binding
+    assert (
+        saved.generation_request_snapshot["extractor_config"]
+        == parent.generation_request_snapshot["extractor_config"]
+    )
+
+
+@pytest.mark.parametrize("fallback_enabled", [False, True])
+def test_audited_publication_uses_owned_fallback_without_unaudited_save(
+    consolidator, storage, monkeypatch, fallback_enabled
+):
+    from litellm.exceptions import APIConnectionError
+
+    from reflexio.server.llm.litellm_client import LiteLLMClientError
+
+    case = _publication_case(consolidator, storage, monkeypatch)
+    consolidator.client.config.fallback_models = (
+        ["gpt-5.4-mini"] if fallback_enabled else []
+    )
+    completed = consolidator.client._completion_with_hard_timeout
+    attempts = []
+
+    def dispatch(params, timeout):
+        attempts.append(params)
+        assert params["num_retries"] == 0
+        assert "fallbacks" not in params
+        if len(attempts) == 1:
+            raise APIConnectionError(
+                message="scripted primary failure",
+                llm_provider="openai",
+                model="gpt-4o",
+            )
+        return completed(params, timeout)
+
+    monkeypatch.setattr(consolidator.client, "_completion_with_hard_timeout", dispatch)
+    if fallback_enabled:
+        plan = case.service._resolve_write_plan([[case.candidate]])
+        assert plan is not None and len(plan.new_playbooks) == 2
+        assert [attempt["model"] for attempt in attempts] == [
+            "gpt-4o",
+            "gpt-5.4-mini",
+            "gpt-4o",
+        ]
+        assert len(case.calls) == 2  # Successful proposal and independent audit.
+    else:
+        with pytest.raises(LiteLLMClientError):
+            case.service._resolve_write_plan([[case.candidate]])
+        assert len(attempts) == 1 and case.calls == []
+    assert storage.get_user_playbooks() == [case.incumbent]
+
+
+@pytest.mark.parametrize("prefetched", [False, True])
+def test_audited_work_preserves_stored_source_quoted_recovery_row(
+    consolidator, storage, monkeypatch, prefetched
+):
+    from reflexio.server.services.playbook.source_quoted_overflow import POLICY
+
+    interaction_id = source(storage)
+    copied = row(ids=[interaction_id])
+    copied.content = "Do not deploy without named approval."
+    copied.source_span = copied.content
+    copied.notes = json.dumps({"policy": POLICY})
+    storage.save_user_playbooks([copied], skip_embedding=True)
+    before = storage.get_user_playbook_by_id(copied.user_playbook_id).model_dump(
+        mode="json"
+    )
+    monkeypatch.setattr(
+        consolidator, "retrieve_existing_playbooks", lambda *_args, **_kwargs: [copied]
+    )
+    answers = iter(
+        [
+            {
+                "decisions": [
+                    {
+                        "kind": "create",
+                        "new_ids": ["NEW-0"],
+                        "reason": "supported",
+                        "outputs": [
+                            {
+                                "trigger": "before submitting",
+                                "content": "Check authorization.",
+                                "rationale": "See cited evidence.",
+                                "evidence_refs": [
+                                    {"session_id": "evidence", "turn": interaction_id}
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            },
+            {"findings": []},
+        ]
+    )
+    calls = []
+
+    def dispatch(params, _timeout):
+        payload = json.loads(params["messages"][1]["content"])
+        assert payload["existing"] == []
+        calls.append(params)
+        return response(next(answers))
+
+    monkeypatch.setattr(consolidator.client, "_completion_with_hard_timeout", dispatch)
+    rows, retired, merged = consolidator.deduplicate(
+        [[row(ids=[interaction_id])]],
+        generation_request_id="generation",
+        user_id="owner",
+        agent_version="v1",
+        existing_playbooks=[copied] if prefetched else None,
+    )
+    assert len(calls) == 2 and len(rows) == 1
+    assert retired == [] and merged == []
+    assert (
+        storage.get_user_playbook_by_id(copied.user_playbook_id).model_dump(mode="json")
+        == before
+    )

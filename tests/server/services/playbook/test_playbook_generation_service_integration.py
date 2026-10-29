@@ -1,6 +1,7 @@
 """Integration tests for PlaybookGenerationService."""
 
 import contextlib
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
@@ -31,10 +32,6 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
-from reflexio.server.services.playbook.components.consolidator import (
-    IndependentDecision,
-    PlaybookConsolidationOutput,
-)
 from reflexio.server.services.playbook.components.reviewer import (
     CandidateReviewDecision,
     PlaybookCandidateReviewOutput,
@@ -111,6 +108,8 @@ def mock_request_context():
     context.storage.try_acquire_in_progress_lock.return_value = {"acquired": True}
     # Mock get_user_playbooks to return empty list (for existing playbooks check)
     context.storage.get_user_playbooks.return_value = []
+    context.storage.search_user_playbooks.return_value = []
+    context.storage.governance_subject_ref_for_user.return_value = "subject-test-user"
     # Mock get_last_k_interactions_grouped to return empty by default
     context.storage.get_last_k_interactions_grouped.return_value = ([], [])
     context.configurator = MagicMock()
@@ -189,10 +188,40 @@ def _setup_mock_chat_completion(
     def mock_generate_chat_response(messages, **kwargs):
         """Route on prompt content / extraction mode to the right mock response."""
         response_format = kwargs.get("response_format")
-        if response_format is PlaybookConsolidationOutput:
-            return PlaybookConsolidationOutput(
-                decisions=[IndependentDecision(new_id="NEW-0")]
-            )
+        if len(messages) >= 2:
+            try:
+                payload = json.loads(messages[1]["content"])
+            except (ValueError, TypeError, KeyError):
+                payload = None
+            if (
+                isinstance(payload, dict)
+                and {"new", "existing", "sessions"} <= payload.keys()
+            ):
+                if "proposed_memory" in payload:
+                    return json.dumps({"findings": []})
+                return json.dumps(
+                    {
+                        "decisions": [
+                            {
+                                "kind": "create",
+                                "new_ids": [row["id"]],
+                                "reason": "Preserve the supported candidate",
+                                "outputs": [
+                                    {
+                                        key: row[key]
+                                        for key in (
+                                            "trigger",
+                                            "content",
+                                            "rationale",
+                                            "evidence_refs",
+                                        )
+                                    }
+                                ],
+                            }
+                            for row in payload["new"]
+                        ]
+                    }
+                )
         if response_format is PlaybookCandidateReviewOutput:
             return PlaybookCandidateReviewOutput(
                 decisions=[

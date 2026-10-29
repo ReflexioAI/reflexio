@@ -40,6 +40,7 @@ def _records(
         current["deduplication_config"] = DeduplicationConfig().model_dump(mode="json")
     frozen = {**deepcopy(current), "extractor_name": "historical-label"}
     if kind == "playbook":
+        frozen["deduplication_config"]["strategy"] = "legacy"
         frozen["deduplication_config"]["max_unified_content_chars"] = 37
     binding = AgentBinding(
         org_id="org-1",
@@ -255,7 +256,9 @@ def test_incomplete_witness_does_not_enable_compatibility(invalid: str) -> None:
 
 
 @pytest.mark.parametrize("retired_label", [False, True])
-def test_missing_dedup_strategy_means_only_legacy(retired_label: bool) -> None:
+def test_missing_dedup_strategy_preserves_extraction_identity(
+    retired_label: bool,
+) -> None:
     prior, expected, frozen = _records()
     frozen["deduplication_config"].pop("strategy")
     if not retired_label:
@@ -269,19 +272,9 @@ def test_missing_dedup_strategy_means_only_legacy(retired_label: bool) -> None:
     assert matches_frozen_extractor_binding(prior, expected, frozen)
     assert (prior, expected, frozen) == original
 
-    current = expected.generation_request_snapshot["extractor_config"]
-    current["deduplication_config"]["strategy"] = "audited"
-    expected = replace(
-        expected,
-        binding=replace(
-            expected.binding, extractor_config_hash=build_scope_hash(current)
-        ),
-    )
-    assert not matches_frozen_extractor_binding(prior, expected, frozen)
-
 
 @pytest.mark.parametrize(
-    "change", ["unknown", "threshold", "null_strategy", "removed_strategy"]
+    "change", ["unknown", "threshold", "null_strategy", "unknown_strategy"]
 )
 def test_nested_dedup_policy_changes_are_not_schema_compatibility(change: str) -> None:
     prior, expected, frozen = _records()
@@ -292,18 +285,7 @@ def test_nested_dedup_policy_changes_are_not_schema_compatibility(change: str) -
     elif change == "null_strategy":
         frozen["deduplication_config"]["strategy"] = None
     else:
-        expected.generation_request_snapshot["extractor_config"][
-            "deduplication_config"
-        ].pop("strategy")
-        expected = replace(
-            expected,
-            binding=replace(
-                expected.binding,
-                extractor_config_hash=build_scope_hash(
-                    expected.generation_request_snapshot["extractor_config"]
-                ),
-            ),
-        )
+        frozen["deduplication_config"]["strategy"] = "unrecognized"
     prior = replace(
         prior,
         binding=replace(prior.binding, extractor_config_hash=build_scope_hash(frozen)),
@@ -509,3 +491,98 @@ def test_normalized_parent_window_compatibility_refuses_other_changes(change):
     assert not matches_frozen_window_binding(
         prior, expected, frozen, project_id=project_id
     )
+
+
+@pytest.mark.parametrize("strategy", ["legacy", "audited"])
+def test_retired_consolidation_selector_preserves_extraction_receipts(strategy):
+    prior, expected, frozen = _records()
+    frozen["deduplication_config"]["strategy"] = strategy
+    current = expected.generation_request_snapshot["extractor_config"]
+    current["deduplication_config"].pop("strategy", None)
+    expected = replace(
+        expected,
+        binding=replace(
+            expected.binding, extractor_config_hash=build_scope_hash(current)
+        ),
+    )
+    prior = replace(
+        prior,
+        binding=replace(prior.binding, extractor_config_hash=build_scope_hash(frozen)),
+        generation_request_snapshot={
+            **prior.generation_request_snapshot,
+            "extractor_config": deepcopy(frozen),
+        },
+    )
+    before = deepcopy((prior, expected, frozen))
+    assert matches_frozen_extractor_binding(prior, expected, frozen)
+    assert (prior, expected, frozen) == before
+
+
+@pytest.mark.parametrize("strategy", [None, "unknown", False, ["legacy"]])
+def test_unknown_historical_strategy_cannot_authorize_extraction(strategy):
+    prior, expected, frozen = _records()
+    frozen["deduplication_config"]["strategy"] = strategy
+    current = expected.generation_request_snapshot["extractor_config"]
+    current["deduplication_config"].pop("strategy", None)
+    expected = replace(
+        expected,
+        binding=replace(
+            expected.binding, extractor_config_hash=build_scope_hash(current)
+        ),
+    )
+    prior = replace(
+        prior,
+        binding=replace(prior.binding, extractor_config_hash=build_scope_hash(frozen)),
+        generation_request_snapshot={"extractor_config": deepcopy(frozen)},
+    )
+    assert not matches_frozen_extractor_binding(prior, expected, frozen)
+
+
+@pytest.mark.parametrize("strategy", ["legacy", "audited"])
+@pytest.mark.parametrize("with_cap", [False, True])
+def test_first_parent_after_method_retirement_authenticates_historical_window(
+    strategy, with_cap
+):
+    from reflexio.server.services.extraction.agent_run_records import (
+        effective_frozen_extractor_config,
+    )
+
+    current = UserPlaybookExtractorConfig(
+        extraction_definition_prompt="Preserve deployment safeguards",
+        deduplication_config=DeduplicationConfig(
+            search_threshold=0.73, search_top_k=11
+        ),
+    )
+    frozen = snapshot_extractor_config(current)
+    frozen["extractor_name"] = "historical-playbook"
+    frozen["deduplication_config"]["strategy"] = strategy
+    if with_cap:
+        frozen["deduplication_config"]["max_unified_content_chars"] = 37
+    decoded = UserPlaybookExtractorConfig.model_validate(
+        effective_frozen_extractor_config(frozen, extractor_kind="playbook")
+    )
+    parent = build_extractor_agent_run_record(
+        org_id="org-1",
+        extractor_kind="playbook",
+        user_id="user-1",
+        request_id="request-1",
+        agent_version=None,
+        source="published",
+        request_interaction_data_models=[],
+        extractor_config=decoded,
+        service_config=SimpleNamespace(frozen_extractor_config=frozen),
+        agent_context="",
+    )
+    before = deepcopy((parent, frozen))
+    assert matches_frozen_window_binding(parent, parent, frozen, project_id="")
+    assert (parent, frozen) == before
+    for changed in ("strategy", "search_threshold", "unknown"):
+        tampered = deepcopy(frozen)
+        tampered["deduplication_config"][changed] = {
+            "strategy": "unsupported",
+            "search_threshold": 0.9,
+            "unknown": True,
+        }[changed]
+        assert not matches_frozen_window_binding(
+            parent, parent, tampered, project_id=""
+        )

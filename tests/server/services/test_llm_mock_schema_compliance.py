@@ -315,3 +315,54 @@ class TestSchemaCompliance:
         data = json.loads(response.choices[0].message.content)
         result = StructuredProfilesOutput.model_validate(data)
         assert result.profiles is not None
+
+
+def test_audited_mock_accounts_for_each_supplied_candidate_without_inventing_evidence():
+    from reflexio.server.services.playbook.components.reconciliation import (
+        Audit,
+        Decisions,
+    )
+    from reflexio.test_support.llm_mock import _mock_completion
+
+    evidence = [{"session_id": "source", "turn": 17}]
+    payload = {
+        "new": [
+            {
+                "id": "NEW-0",
+                "trigger": "deploying",
+                "content": "Check authorization",
+                "rationale": "",
+                "evidence_refs": evidence,
+            }
+        ],
+        "existing": [],
+        "sessions": [],
+    }
+
+    def respond(body):
+        return (
+            _mock_completion(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Production representation: session_id identifies a persisted request",
+                    },
+                    {"role": "user", "content": json.dumps(body)},
+                ]
+            )
+            .choices[0]
+            .message.content
+        )
+
+    batch = Decisions.model_validate_json(respond(payload))
+    assert batch.decisions[0].new_ids == ["NEW-0"]
+    decision = batch.decisions[0]
+    assert decision.kind == "create"
+    assert decision.outputs[0].evidence_refs[0].model_dump() == evidence[0]
+    assert (
+        Audit.model_validate_json(respond({**payload, "proposed_memory": []})).findings
+        == []
+    )
+    payload["new"][0]["evidence_refs"] = []
+    with pytest.raises(AssertionError, match="supplied source references"):
+        respond(payload)

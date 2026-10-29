@@ -112,10 +112,12 @@ def snapshot_extractor_config(
 def effective_frozen_extractor_config(
     frozen: dict[str, Any], *, extractor_kind: str
 ) -> dict[str, Any]:
-    """Apply only known behavior-preserving deployed schema transitions.
+    """Project a historical witness onto extraction-phase policy only.
 
-    Do not round-trip this witness through a model: that would silently accept
-    unknown retired fields, changed defaults, or other future schema changes.
+    Consolidation happens after extraction and now has one audited method. Its
+    retired selector is not an extraction input. This projection cannot approve
+    an old consolidation proposal: that phase retains its own exact bindings.
+    Never round-trip the witness through a model or erase unknown fields.
     """
     effective = deepcopy(frozen)
     effective.pop("extractor_name", None)
@@ -124,8 +126,10 @@ def effective_frozen_extractor_config(
     dedup = effective.get("deduplication_config")
     if isinstance(dedup, dict):
         dedup.pop("max_unified_content_chars", None)
-        if "strategy" not in dedup:
-            dedup["strategy"] = "legacy"
+        if extractor_kind == "playbook" and "strategy" in dedup:
+            if dedup["strategy"] not in ("legacy", "audited"):
+                raise ValueError("Unknown historical consolidation strategy")
+            dedup.pop("strategy")
     return effective
 
 
@@ -136,13 +140,19 @@ def matches_frozen_extractor_config(
     extractor_kind: str,
     original_hash: str | None,
 ) -> bool:
-    """Require an authentic historical snapshot before normalizing inert fields."""
+    """Authenticate the historical snapshot before comparing extraction policy."""
     comparison = deepcopy(current)
     if extractor_kind == "playbook":
         comparison.pop("context_prompt", None)
-    return build_scope_hash(frozen) == original_hash and build_scope_hash(
-        effective_frozen_extractor_config(frozen, extractor_kind=extractor_kind)
-    ) == build_scope_hash(comparison)
+    if build_scope_hash(frozen) != original_hash:
+        return False
+    try:
+        effective = effective_frozen_extractor_config(
+            frozen, extractor_kind=extractor_kind
+        )
+    except ValueError:
+        return False
+    return build_scope_hash(effective) == build_scope_hash(comparison)
 
 
 def frozen_extractor_config_identity(config: BaseModel, frozen: dict[str, Any]) -> str:
@@ -159,15 +169,17 @@ def frozen_extractor_config_identity(config: BaseModel, frozen: dict[str, Any]) 
     for name, value in config.__repr_args__():
         if name == "deduplication_config" and isinstance(value, BaseModel):
             dedup = frozen.get("deduplication_config")
-            if isinstance(dedup, dict) and (
-                "strategy" not in dedup or "max_unified_content_chars" in dedup
-            ):
-                args = [
-                    f"{key}={item!r}"
-                    for key, item in value.__repr_args__()
-                    if key != "max_unified_content_chars"
-                    and (key != "strategy" or "strategy" in dedup)
-                ]
+            if isinstance(dedup, dict):
+                args = []
+                if "strategy" in dedup:
+                    args.append(f"strategy={dedup['strategy']!r}")
+                args.extend(
+                    [
+                        f"{key}={item!r}"
+                        for key, item in value.__repr_args__()
+                        if key not in {"max_unified_content_chars", "strategy"}
+                    ]
+                )
                 if "max_unified_content_chars" in dedup:
                     args.append(
                         f"max_unified_content_chars={dedup['max_unified_content_chars']!r}"
@@ -195,11 +207,11 @@ def matches_frozen_window_binding(
 ) -> bool:
     """Authenticate a window's policy against its unchanged stored parent.
 
-    A window admitted before label retirement can create its first parent after
-    retirement. That parent's snapshot is normalized, while the immutable window
-    still has ``extractor_name``. Accept only that exact extra field; arbitrary
-    model round-tripping could hide unknown fields or changed defaults. Existing
-    historical parents keep their original snapshots, hashes and lookup identity.
+    A historical window can create its first parent after schema retirement.
+    Its new parent omits the retired label, warning threshold and consolidation
+    selector; only those exact known differences are permitted. Arbitrary model
+    round-tripping could hide unknown fields or changed defaults. Historical
+    parents retain their original snapshots, hashes and prior-answer identity.
     """
     if prior.binding.extractor_kind not in {"profile", "playbook"}:
         return False
@@ -212,14 +224,23 @@ def matches_frozen_window_binding(
     if build_scope_hash(saved) != original_hash:
         return False
     if build_scope_hash(frozen_config) != original_hash:
-        if "extractor_name" not in frozen_config or "extractor_name" in saved:
-            return False
-        without_label = {
-            name: value
-            for name, value in frozen_config.items()
-            if name != "extractor_name"
-        }
-        if build_scope_hash(without_label) != original_hash:
+        # A historical window can create its first parent after retirement.
+        # Compare only the exact known fields omitted by that new snapshot.
+        # All remaining bytes, including context and unknown fields, stay bound.
+        projected = deepcopy(frozen_config)
+        if "extractor_name" not in saved:
+            projected.pop("extractor_name", None)
+        if prior.binding.extractor_kind == "playbook":
+            old_dedup = projected.get("deduplication_config")
+            saved_dedup = saved.get("deduplication_config")
+            if isinstance(old_dedup, dict) and isinstance(saved_dedup, dict):
+                if "strategy" not in saved_dedup and "strategy" in old_dedup:
+                    if old_dedup["strategy"] not in ("legacy", "audited"):
+                        return False
+                    old_dedup.pop("strategy")
+                if "max_unified_content_chars" not in saved_dedup:
+                    old_dedup.pop("max_unified_content_chars", None)
+        if build_scope_hash(projected) != original_hash:
             return False
     return matches_frozen_extractor_binding(prior, expected, saved)
 
@@ -227,11 +248,12 @@ def matches_frozen_window_binding(
 def matches_frozen_extractor_binding(
     prior: AgentRunRecord, expected: AgentRunRecord, frozen_config: dict[str, Any]
 ) -> bool:
-    """Accept exact bindings or the known inert schema transitions.
+    """Accept exact bindings or authenticated extraction-phase compatibility.
 
-    The compatibility case requires the immutable window policy and saved run
-    snapshot to witness the original hash. It never rewrites historical state.
-    Ad-hoc resumes without a frozen window policy must keep their strict check.
+    The immutable window policy and saved run snapshot must witness the original
+    hash. Retiring the downstream method selector authorizes extraction reuse,
+    never reuse of a legacy consolidation decision as audited approval. No
+    historical state is rewritten. Ad-hoc resumes remain strictly bound.
     """
     if build_scope_hash(asdict(prior.binding)) == build_scope_hash(
         asdict(expected.binding)

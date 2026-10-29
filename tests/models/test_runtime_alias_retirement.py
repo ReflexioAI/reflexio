@@ -22,9 +22,18 @@ CASES = json.loads(
 def test_explicit_upgrade_preserves_reviewed_policy(case):
     source = deepcopy(case["input"])
     converted = canonicalize_config_document(source)
-    assert converted == case["expected"]
+    expected = deepcopy(case["expected"])
+    # The frozen alias corpus predates retirement of the consolidation method
+    # selector. Keep that historical witness; assert the new method upgrade
+    # independently rather than changing its recorded expected document.
+    extractor = expected.get("user_playbook_extractor_config")
+    if isinstance(extractor, dict) and isinstance(
+        policy := extractor.get("deduplication_config"), dict
+    ):
+        policy.pop("strategy", None)
+    assert converted == expected
     assert source == case["input"]
-    assert validate_stored_config(converted) == validate_stored_config(case["expected"])
+    assert validate_stored_config(converted) == validate_stored_config(expected)
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["alias"])

@@ -1,34 +1,20 @@
-# /tests/eval/scenarios
-Description: Controlled multi-round extraction/consolidation evaluation.
+# Multi-round memory evaluation
 
-## Main Entry Points
+Each round extracts against literal source interactions, runs the audited
+Create/Replace/Remove method, independently judges the complete decision batch,
+and projects every output into the next round's in-memory book. Projection uses
+the production decision validator and projector. Existing-only cleanup is valid;
+unmentioned rows retain their identities. Evidence coordinates remain stable
+across rounds, so retained rules still cite their original observations.
 
-
-- **`case.py`** — scenario model
-- **`runner.py`** — round orchestration
-- **`book.py`** — test-only state application
-- **`fixtures/scenarios.json`** — illustrative scenarios
-
-## Purpose
-
-
-Inspect how learning evolves over multiple rounds and detect contradictory consolidation.
-
-## Architecture Pattern
-
-
-Each round extracts, consolidates against the accumulated in-memory book, judges the decision, and applies it through the test shim.
-
-The fixtures cover:
-
-- composing a new rule into an existing deploy skill; and
-- differentiating opposing advice instead of creating a contradiction.
-
-Run the deterministic mocked tests with:
+`case.py` defines scenarios; `runner.py` orchestrates rounds; `book.py` applies
+validated batches. The two synthetic scenarios exercise composition and
+contradiction avoidance. They establish harness behavior, not production quality
+or SQL transaction correctness.
 
 ```bash
 uv run pytest tests/eval/scenarios -o 'addopts=' -q
 ```
 
-The `@skip_low_priority` smoke uses live Haiku providers and judges when
-`RUN_LOW_PRIORITY=1` and provider credentials are available.
+Default tests use scripted providers. The low-priority live smoke requires a
+manual paid-provider opt-in and credentials.

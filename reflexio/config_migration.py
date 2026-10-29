@@ -28,6 +28,29 @@ _LEGACY_STOP_SCORE = TypeAdapter(
 )
 
 
+def retire_playbook_consolidation_strategy(data: Any) -> Any:
+    """Retire a known method selector during an explicit settings upgrade.
+
+    Preserve independent search policy and opaque metadata. This is an
+    intentional method upgrade, not an alias accepted by runtime validation.
+    """
+    if not isinstance(data, dict):
+        return data
+    policy = data.get("deduplication_config")
+    if not isinstance(policy, dict) or "strategy" not in policy:
+        return data
+    if policy["strategy"] not in ("legacy", "audited"):
+        raise ConfigurationMigrationError(
+            "Invalid user_playbook_extractor_config.deduplication_config.strategy"
+        )
+    return {
+        **data,
+        "deduplication_config": {
+            key: value for key, value in policy.items() if key != "strategy"
+        },
+    }
+
+
 def strip_retired_optimizer_stop_score(data: Any) -> Any:
     """Validate and retire historical policy only during explicit conversion."""
     if not isinstance(data, dict) or "early_stop_score" not in data:
@@ -566,6 +589,8 @@ def canonicalize_stored_config_fields(data: dict[str, Any]) -> dict[str, Any]:
             value["aggregation_config"] = _migrate_dict(
                 aggregator, _AGGREGATOR_FIELD_MIGRATION
             )
+        if config_field == "user_playbook_extractor_config":
+            value = retire_playbook_consolidation_strategy(value)
         payload[config_field] = value
     return payload
 

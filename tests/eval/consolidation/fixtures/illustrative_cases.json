@@ -7,17 +7,46 @@
         "id": 201,
         "content": "Always include a short summary at the top of a generated report.",
         "trigger": "generating a report for the user",
-        "rationale": "Readers skim the summary before deciding to read on."
+        "rationale": "Readers skim the summary before deciding to read on.",
+        "evidence_refs": [
+          {
+            "session_id": "unify_same_trigger_duplicate",
+            "turn": 1
+          }
+        ]
       }
     ],
     "candidate": {
       "new_id": "NEW-1",
       "content": "Always add a brief summary at the start of any report you produce.",
       "trigger": "generating a report for the user",
-      "rationale": "A leading summary helps the reader orient quickly."
+      "rationale": "A leading summary helps the reader orient quickly.",
+      "evidence_refs": [
+        {
+          "session_id": "unify_same_trigger_duplicate",
+          "turn": 2
+        }
+      ]
     },
-    "gold_kind": "unify",
-    "notes": "Classic dedup: the candidate restates the existing same-trigger rule almost verbatim. Unify (absorb the existing) with no self-contradiction."
+    "gold_kind": "replace",
+    "notes": "Synthetic method-evaluation fixture, not curated quality evidence. Classic dedup: the candidate restates the existing same-trigger rule almost verbatim. Unify (absorb the existing) with no self-contradiction.",
+    "sessions": [
+      {
+        "id": "unify_same_trigger_duplicate",
+        "messages": [
+          {
+            "turn": 1,
+            "role": "user",
+            "content": "When summarizing a report, always start with an executive summary so I can skim it."
+          },
+          {
+            "turn": 2,
+            "role": "user",
+            "content": "Keep starting each report summary with a short executive summary."
+          }
+        ]
+      }
+    ]
   },
   {
     "id": "unify_compose_related_subaspects",
@@ -27,17 +56,46 @@
         "id": 202,
         "content": "Always greet the recipient by name in the email opening.",
         "trigger": "drafting a customer email",
-        "rationale": "A personal greeting improves the open and reply rate."
+        "rationale": "A personal greeting improves the open and reply rate.",
+        "evidence_refs": [
+          {
+            "session_id": "unify_compose_related_subaspects",
+            "turn": 1
+          }
+        ]
       }
     ],
     "candidate": {
       "new_id": "NEW-2",
       "content": "Do not attach internal-only files to a customer email.",
       "trigger": "drafting a customer email",
-      "rationale": "Internal files can leak confidential data to the customer."
+      "rationale": "Internal files can leak confidential data to the customer.",
+      "evidence_refs": [
+        {
+          "session_id": "unify_compose_related_subaspects",
+          "turn": 2
+        }
+      ]
     },
-    "gold_kind": "unify",
-    "notes": "Compose case: existing is a do-rule about the greeting; candidate is an avoid-rule about a DIFFERENT sub-aspect (attachments) of the SAME task (drafting a customer email). Unify into one multi-rule skill holding both the do-rule and the avoid-rule. No self-contradiction: they govern distinct sub-aspects, not the same situation."
+    "gold_kind": "replace",
+    "notes": "Synthetic method-evaluation fixture, not curated quality evidence. Compose case: existing is a do-rule about the greeting; candidate is an avoid-rule about a DIFFERENT sub-aspect (attachments) of the SAME task (drafting a customer email). Unify into one multi-rule skill holding both the do-rule and the avoid-rule. No self-contradiction: they govern distinct sub-aspects, not the same situation.",
+    "sessions": [
+      {
+        "id": "unify_compose_related_subaspects",
+        "messages": [
+          {
+            "turn": 1,
+            "role": "user",
+            "content": "When drafting a customer email, greet the recipient by name in the opening."
+          },
+          {
+            "turn": 2,
+            "role": "user",
+            "content": "When drafting a customer email, never attach internal-only files."
+          }
+        ]
+      }
+    ]
   },
   {
     "id": "differentiate_same_situation_contradiction",
@@ -47,17 +105,46 @@
         "id": 203,
         "content": "Always answer the question immediately without asking for confirmation.",
         "trigger": "the user asks a factual question",
-        "rationale": "Fast answers keep the conversation moving."
+        "rationale": "Fast answers keep the conversation moving.",
+        "evidence_refs": [
+          {
+            "session_id": "differentiate_same_situation_contradiction",
+            "turn": 1
+          }
+        ]
       }
     ],
     "candidate": {
       "new_id": "NEW-3",
       "content": "Do not answer immediately; ask a clarifying question first.",
       "trigger": "the user asks a factual question",
-      "rationale": "Some questions are ambiguous and answering blindly misleads the user."
+      "rationale": "Some questions are ambiguous and answering blindly misleads the user.",
+      "evidence_refs": [
+        {
+          "session_id": "differentiate_same_situation_contradiction",
+          "turn": 2
+        }
+      ]
     },
-    "gold_kind": "differentiate",
-    "notes": "Linchpin: existing is positive and candidate is negative on the SAME trigger/situation (opposite advice). These must NOT be unified into one row (that would be a self-contradiction). Differentiate: refine both triggers so the contexts no longer overlap."
+    "gold_kind": "replace",
+    "notes": "Synthetic method-evaluation fixture, not curated quality evidence. Linchpin: existing is positive and candidate is negative on the SAME trigger/situation (opposite advice). These must NOT be unified into one row (that would be a self-contradiction). Differentiate: refine both triggers so the contexts no longer overlap.",
+    "sessions": [
+      {
+        "id": "differentiate_same_situation_contradiction",
+        "messages": [
+          {
+            "turn": 1,
+            "role": "user",
+            "content": "Answer factual questions immediately when their meaning is unambiguous."
+          },
+          {
+            "turn": 2,
+            "role": "user",
+            "content": "For ambiguous factual questions, ask a clarifying question before answering. Keep answering unambiguous questions directly."
+          }
+        ]
+      }
+    ]
   },
   {
     "id": "reject_new_redundant",
@@ -67,17 +154,46 @@
         "id": 204,
         "content": "Always run the full test suite and the linter before approving a change.",
         "trigger": "reviewing a proposed code change",
-        "rationale": "Catches regressions and style violations before merge."
+        "rationale": "Catches regressions and style violations before merge.",
+        "evidence_refs": [
+          {
+            "session_id": "reject_new_redundant",
+            "turn": 1
+          }
+        ]
       }
     ],
     "candidate": {
       "new_id": "NEW-4",
       "content": "Always run the tests before approving a change.",
       "trigger": "reviewing a proposed code change",
-      "rationale": "Tests catch regressions."
+      "rationale": "Tests catch regressions.",
+      "evidence_refs": [
+        {
+          "session_id": "reject_new_redundant",
+          "turn": 2
+        }
+      ]
     },
-    "gold_kind": "reject_new",
-    "notes": "The candidate is strictly weaker than the existing rule (tests only, no linter) on the same trigger. The existing rule supersedes it. Reject the candidate as redundant (a storage no-op)."
+    "gold_kind": "remove",
+    "notes": "Synthetic method-evaluation fixture, not curated quality evidence. The candidate is strictly weaker than the existing rule (tests only, no linter) on the same trigger. The existing rule supersedes it. Reject the candidate as redundant (a storage no-op).",
+    "sessions": [
+      {
+        "id": "reject_new_redundant",
+        "messages": [
+          {
+            "turn": 1,
+            "role": "user",
+            "content": "Before approving a proposed code change, run the full test suite and the linter."
+          },
+          {
+            "turn": 2,
+            "role": "user",
+            "content": "Run tests before approving a code change; the earlier full-suite and linter requirements still apply."
+          }
+        ]
+      }
+    ]
   },
   {
     "id": "independent_unrelated",
@@ -87,16 +203,45 @@
         "id": 205,
         "content": "Always propose three meeting time options when scheduling.",
         "trigger": "scheduling a meeting between two people",
-        "rationale": "Offering choices reduces back-and-forth."
+        "rationale": "Offering choices reduces back-and-forth.",
+        "evidence_refs": [
+          {
+            "session_id": "independent_unrelated",
+            "turn": 1
+          }
+        ]
       }
     ],
     "candidate": {
       "new_id": "NEW-5",
       "content": "Use metric units when reporting measurements.",
       "trigger": "reporting a physical measurement to the user",
-      "rationale": "The user's region uses the metric system."
+      "rationale": "The user's region uses the metric system.",
+      "evidence_refs": [
+        {
+          "session_id": "independent_unrelated",
+          "turn": 2
+        }
+      ]
     },
-    "gold_kind": "independent",
-    "notes": "The candidate (measurement units) is unrelated to any existing row (meeting scheduling). Insert it as-is, independent of the existing rule."
+    "gold_kind": "create",
+    "notes": "Synthetic method-evaluation fixture, not curated quality evidence. The candidate (measurement units) is unrelated to any existing row (meeting scheduling). Insert it as-is, independent of the existing rule.",
+    "sessions": [
+      {
+        "id": "independent_unrelated",
+        "messages": [
+          {
+            "turn": 1,
+            "role": "user",
+            "content": "When scheduling a meeting between two people, propose three meeting time options."
+          },
+          {
+            "turn": 2,
+            "role": "user",
+            "content": "Use metric units when reporting physical measurements to me."
+          }
+        ]
+      }
+    ]
   }
 ]

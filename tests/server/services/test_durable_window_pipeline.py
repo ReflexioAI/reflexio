@@ -27,6 +27,44 @@ from reflexio.server.services.profile.service import ProfileGenerationService
 pytestmark = pytest.mark.integration
 
 
+def _scripted_audited_response(params: dict) -> dict | None:
+    """Respond to the real downstream method, never to extraction retries."""
+    import json
+
+    messages = params.get("messages", [])
+    if len(messages) < 2:
+        return None
+    try:
+        payload = json.loads(messages[1]["content"])
+    except (TypeError, KeyError, ValueError):
+        return None
+    if (
+        not isinstance(payload, dict)
+        or not {"new", "existing", "sessions"} <= payload.keys()
+    ):
+        return None
+    if "proposed_memory" in payload:
+        return {"findings": []}
+    return {
+        "decisions": [
+            {
+                "kind": "create",
+                "new_ids": [row["id"]],
+                "reason": "scripted supported candidate",
+                "outputs": [
+                    {
+                        "trigger": row["trigger"],
+                        "content": row["content"],
+                        "rationale": "See cited evidence.",
+                        "evidence_refs": row["evidence_refs"],
+                    }
+                ],
+            }
+            for row in payload["new"]
+        ]
+    }
+
+
 def _prepared_presentation_text() -> str:
     from reflexio.server.services.extraction.overflow_presentation import (
         current_overflow_presentation,
@@ -981,468 +1019,6 @@ def test_historical_playbook_fence_keeps_full_evidence_and_rejects_stale_rows(
         storage.validate_extraction_historical_playbooks(window, witnesses)
     assert coordinator.checkpoint["historical_playbooks"] == witnesses
     assert historical.source_span == span
-    assert storage.count_all_profiles() == 0
-    assert storage.pending_extraction_effects() == []
-
-
-@pytest.mark.parametrize("verdict", ["verified", "unsafe", "undetermined"])
-def test_historical_consolidation_scans_complete_source_and_replays_without_calls(
-    pipeline, monkeypatch, verdict
-):
-    import json
-
-    from reflexio.models.api_schema.service_schemas import UserPlaybook
-    from reflexio.models.config_schema import DeduplicationConfig
-    from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
-    from reflexio.server.llm.token_accounting import RunTokenTotals
-    from reflexio.server.services.durable_learning.window_executor import (
-        load_window_inputs,
-    )
-    from reflexio.server.services.extraction.input_preparation import (
-        prepare_extraction_input,
-    )
-    from reflexio.server.services.extraction.overflow_coordinator import (
-        OverflowCoordinator,
-    )
-    from reflexio.server.services.extraction.protected_record import (
-        ProtectedEvidence,
-        ProtectedRecord,
-        ProtectedRecordUpdate,
-    )
-    from reflexio.server.services.playbook.components.consolidator import (
-        IndependentDecision,
-        PlaybookConsolidationOutput,
-        PlaybookConsolidator,
-        UnifyDecision,
-    )
-    from reflexio.server.services.playbook.components.overflow_consolidation import (
-        ConsolidationVerification,
-        HistoricalScanSelection,
-        verified_consolidation_decisions,
-    )
-
-    storage, window, token = _overflow_coordinator(pipeline, actual_source=True)
-    prepared = prepare_extraction_input(
-        load_window_inputs(storage, window), user_id=window.user_id
-    )
-    span = prepared.chunks[0].spans[0]
-    record = ProtectedRecord().merge(
-        ProtectedRecordUpdate(
-            evidence=[
-                ProtectedEvidence(
-                    kind="instruction",
-                    evidence_refs=(span.evidence_ref,),
-                    quote=span.text,
-                    role=span.role,
-                    source_order=span.source_order,
-                )
-            ]
-        ),
-        visible_spans=(span,),
-    )
-    old_text = (
-        "tool result with no new policy. " * 12000
-        + "Deployment needs separate approval."
-    )
-    old = UserPlaybook(
-        user_playbook_id=51,
-        user_id=window.user_id,
-        agent_version="v1",
-        request_id="older",
-        content="Prepare only. Deployment needs separate approval.",
-        trigger="after preparation",
-        rationale="Preserve approval scope",
-        source_span=old_text,
-        source_interaction_ids=[9001],
-        notes="Original note",
-    )
-    new = old.model_copy(
-        update={
-            "user_playbook_id": 0,
-            "request_id": "current",
-            "source_interaction_ids": [span.interaction_id],
-            "source_span": span.text,
-        }
-    )
-    output = PlaybookConsolidationOutput(
-        decisions=[
-            UnifyDecision(
-                new_id="NEW-0",
-                archive_existing_ids=[0],
-                content=old.content,
-                trigger=old.trigger or "",
-                rationale=old.rationale or "",
-            )
-        ]
-    )
-    owner = PlaybookConsolidator.__new__(PlaybookConsolidator)
-    owner.model_name = "gpt-4o"
-    owner.model_provenance = None
-    owner._dedup_config = DeduplicationConfig()
-    owner.consolidated_output_indices = set()
-    owner.consolidation_not_cleared = False
-    owner.request_context = pipeline[0].request_context
-    calls = []
-    primary_ranges = []
-    active = None
-    provenance = ModelProvenance(model_name="gpt-4o", provider="openai")
-
-    def dispatch(**kwargs):
-        assert active is not None
-        calls.append(kwargs["response_format"])
-        active._guard(
-            {
-                "model": "gpt-4o",
-                "messages": kwargs["messages"],
-                "max_tokens": 4096,
-                "response_format": kwargs["response_format"],
-            },
-            1,
-            (),
-            True,
-        )
-        active._observe(
-            provenance, RunTokenTotals(prompt_tokens=100, completion_tokens=10)
-        )
-        payload_data = json.loads(kwargs["messages"][-1]["content"])
-        if kwargs["response_format"] is HistoricalScanSelection:
-            chunk = payload_data["chunk"]
-            primary_ranges.append((chunk["primary_start"], chunk["primary_end"]))
-            assert (
-                "".join(item["text"] for item in chunk["snippets"])
-                == old_text[chunk["start"] : chunk["end"]]
-            )
-            assert payload_data["author_role"] == "unknown"
-            quote = "Deployment needs separate approval."
-            result = HistoricalScanSelection(
-                coverage="complete",
-                snippet_ids=[
-                    item["snippet_id"]
-                    for item in chunk["snippets"]
-                    if quote in item["text"]
-                ],
-            )
-            assert kwargs["structured_output_validator"](result) == []
-        else:
-            assert kwargs["response_format"] is ConsolidationVerification
-            assert payload_data["historical_evidence"][0]["quotes"][-1][
-                "text"
-            ].endswith("Deployment needs separate approval.")
-            assert old_text not in kwargs["messages"][-1]["content"]
-            result = ConsolidationVerification(
-                verdict=verdict, reason="fixture verdict"
-            )
-        return CompletionResult(value=result, provenance=provenance)
-
-    owner.client = Mock(
-        generate_chat_response_with_provenance=Mock(side_effect=dispatch)
-    )
-    monkeypatch.setattr(
-        owner, "_render_consolidation_prompt", lambda *_: "metadata-only proposal"
-    )
-
-    def propose(*_):
-        assert active is not None
-        active._guard(
-            {
-                "model": "gpt-4o",
-                "messages": [{"role": "user", "content": "metadata-only proposal"}],
-                "max_tokens": 4096,
-            },
-            1,
-            (),
-            True,
-        )
-        active._observe(
-            provenance, RunTokenTotals(prompt_tokens=100, completion_tokens=10)
-        )
-        owner.model_provenance = provenance
-        calls.append("proposal")
-        return output
-
-    monkeypatch.setattr(owner, "_consolidation_decisions", propose)
-
-    def replay():
-        nonlocal active
-        parent = storage.get_agent_run(f"window:{window.window_id}")
-        active = OverflowCoordinator(
-            storage,
-            window,
-            token,
-            parent.generation_request_snapshot["overflow"],
-            source_digest=prepared.source_digest,
-            context_limits={"gpt-4o": 65536},
-            prepared=prepared,
-        )
-        active.candidate_records[active.playbook_key(new)] = record
-        active.remember_historical_playbooks([old])
-        with active.provider_scope():
-            return verified_consolidation_decisions(owner, active, [new], [old])
-
-    # An uncleared verdict is a saved receipt: raising would replay it on every
-    # worker retry forever. It yields the no-merge plan instead: NEW is kept
-    # unchanged and OLD is not archived or rewritten.
-    no_merge = PlaybookConsolidationOutput(
-        decisions=[IndependentDecision(new_id="NEW-0")]
-    )
-    expected = output if verdict == "verified" else no_merge
-    assert replay() == expected
-    assert len(primary_ranges) > 1
-    assert primary_ranges[0][0] == 0 and primary_ranges[-1][1] == len(old_text)
-    assert all(
-        a[1] == b[0] for a, b in zip(primary_ranges, primary_ranges[1:], strict=False)
-    )
-    first_calls = len(calls)
-    assert active is not None
-    first_usage = active.token_totals.prompt_tokens
-    # Fully completed history and verification remain reusable even when all
-    # provider capacity has since been reserved. No speculative call is needed.
-    current = storage.get_agent_run(
-        f"window:{window.window_id}"
-    ).generation_request_snapshot["overflow"]
-    for index in range(len(current["attempts"]), 128):
-        current = storage.checkpoint_extraction_overflow(
-            window,
-            token,
-            expected_revision=current["revision"],
-            source_digest=prepared.source_digest,
-            reserve_attempt_id=f"reserved-{index}",
-        )
-    # The replay is identical and needs no provider capacity.
-    assert replay() == expected
-    assert owner.consolidation_not_cleared is (verdict != "verified")
-    rows, archived, groups = owner._build_deduplicated_results(
-        new_playbooks=[new],
-        existing_playbooks=[old],
-        dedup_output=expected,
-        generation_request_id="current",
-        agent_version="v1",
-        admit_overlapping_survivors=owner.consolidation_not_cleared,
-    )
-    if verdict == "verified":
-        assert archived == [51] and groups == [(0, [51])]
-        assert rows[0].source_span is not None
-        assert old_text in rows[0].source_span
-        assert 9001 in rows[0].source_interaction_ids
-    else:
-        # No unverified change reaches history: nothing archived or merged,
-        # and the NEW lesson survives verbatim beside the untouched OLD.
-        assert archived == [] and groups == []
-        assert [row.content for row in rows] == [new.content]
-    assert len(calls) == first_calls
-    assert active is not None
-    assert active.token_totals.prompt_tokens == first_usage
-    assert len(active.checkpoint["historical_chunks"]) == 1
-    assert old.source_span == old_text and old.notes == "Original note"
-    assert storage.count_all_profiles() == 0
-    assert storage.pending_extraction_effects() == []
-
-
-def test_legacy_history_without_source_span_merges_on_stored_rule_and_replays(
-    pipeline, monkeypatch
-):
-    """A pre-quote legacy OLD (source_span NULL) is shortlisted.
-
-    It used to raise a retryable configuration error on every retry, forever.
-    Its stored rule text is now the scanned evidence, so the normal scan and
-    verification run, the verified merge applies, and a replay is free.
-    """
-    import json
-
-    from reflexio.models.api_schema.service_schemas import UserPlaybook
-    from reflexio.models.config_schema import DeduplicationConfig
-    from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
-    from reflexio.server.llm.token_accounting import RunTokenTotals
-    from reflexio.server.services.durable_learning.window_executor import (
-        load_window_inputs,
-    )
-    from reflexio.server.services.extraction.input_preparation import (
-        prepare_extraction_input,
-    )
-    from reflexio.server.services.extraction.overflow_coordinator import (
-        OverflowCoordinator,
-    )
-    from reflexio.server.services.extraction.protected_record import (
-        ProtectedEvidence,
-        ProtectedRecord,
-        ProtectedRecordUpdate,
-    )
-    from reflexio.server.services.playbook.components.consolidator import (
-        PlaybookConsolidationOutput,
-        PlaybookConsolidator,
-        UnifyDecision,
-    )
-    from reflexio.server.services.playbook.components.overflow_consolidation import (
-        STORED_RULE_EVIDENCE_NOTE,
-        STORED_RULE_SCAN_SELECTION_POLICY,
-        ConsolidationVerification,
-        HistoricalScanSelection,
-        historical_evidence,
-        verified_consolidation_decisions,
-    )
-
-    storage, window, token = _overflow_coordinator(pipeline, actual_source=True)
-    prepared = prepare_extraction_input(
-        load_window_inputs(storage, window), user_id=window.user_id
-    )
-    span = prepared.chunks[0].spans[0]
-    record = ProtectedRecord().merge(
-        ProtectedRecordUpdate(
-            evidence=[
-                ProtectedEvidence(
-                    kind="instruction",
-                    evidence_refs=(span.evidence_ref,),
-                    quote=span.text,
-                    role=span.role,
-                    source_order=span.source_order,
-                )
-            ]
-        ),
-        visible_spans=(span,),
-    )
-    old = UserPlaybook(
-        user_playbook_id=51,
-        user_id=window.user_id,
-        agent_version="v1",
-        request_id="older",
-        content="Prepare only. Deployment needs separate approval.",
-        trigger="after preparation",
-        rationale="Preserve approval scope",
-        source_span=None,
-        source_interaction_ids=[9001],
-        notes="Original note",
-    )
-    rule_text = historical_evidence(old).text
-    new = old.model_copy(
-        update={
-            "user_playbook_id": 0,
-            "request_id": "current",
-            "source_interaction_ids": [span.interaction_id],
-            "source_span": span.text,
-        }
-    )
-    output = PlaybookConsolidationOutput(
-        decisions=[
-            UnifyDecision(
-                new_id="NEW-0",
-                archive_existing_ids=[0],
-                content=old.content,
-                trigger=old.trigger or "",
-                rationale=old.rationale or "",
-            )
-        ]
-    )
-    owner = PlaybookConsolidator.__new__(PlaybookConsolidator)
-    owner.model_name = "gpt-4o"
-    owner.model_provenance = None
-    owner._dedup_config = DeduplicationConfig()
-    owner.consolidated_output_indices = set()
-    owner.consolidation_not_cleared = False
-    owner.request_context = pipeline[0].request_context
-    calls = []
-    active = None
-    provenance = ModelProvenance(model_name="gpt-4o", provider="openai")
-
-    def observe(messages, response_format=None):
-        assert active is not None
-        request = {"model": "gpt-4o", "messages": messages, "max_tokens": 4096}
-        if response_format is not None:
-            request["response_format"] = response_format
-        active._guard(request, 1, (), True)
-        active._observe(
-            provenance, RunTokenTotals(prompt_tokens=100, completion_tokens=10)
-        )
-
-    def dispatch(**kwargs):
-        calls.append(kwargs["response_format"])
-        observe(kwargs["messages"], kwargs["response_format"])
-        payload_data = json.loads(kwargs["messages"][-1]["content"])
-        if kwargs["response_format"] is HistoricalScanSelection:
-            assert kwargs["messages"][0]["content"] == STORED_RULE_SCAN_SELECTION_POLICY
-            assert payload_data["evidence_kind"] == "stored_rule"
-            assert payload_data["evidence_note"] == STORED_RULE_EVIDENCE_NOTE
-            assert payload_data["author_role"] == "unknown"
-            chunk = payload_data["chunk"]
-            assert "".join(item["text"] for item in chunk["snippets"]) == rule_text
-            result = HistoricalScanSelection(
-                coverage="complete",
-                snippet_ids=[item["snippet_id"] for item in chunk["snippets"]],
-            )
-            assert kwargs["structured_output_validator"](result) == []
-        else:
-            assert kwargs["response_format"] is ConsolidationVerification
-            evidence = payload_data["historical_evidence"][0]
-            assert evidence["evidence_kind"] == "stored_rule"
-            assert evidence["author_role"] == "unknown"
-            assert "".join(quote["text"] for quote in evidence["quotes"]) == rule_text
-            result = ConsolidationVerification(verdict="verified", reason="fixture")
-        return CompletionResult(value=result, provenance=provenance)
-
-    owner.client = Mock(
-        generate_chat_response_with_provenance=Mock(side_effect=dispatch)
-    )
-    monkeypatch.setattr(
-        owner, "_render_consolidation_prompt", lambda *_: "metadata-only proposal"
-    )
-
-    def propose(*_):
-        observe([{"role": "user", "content": "metadata-only proposal"}])
-        owner.model_provenance = provenance
-        calls.append("proposal")
-        return output
-
-    monkeypatch.setattr(owner, "_consolidation_decisions", propose)
-
-    def replay():
-        nonlocal active
-        parent = storage.get_agent_run(f"window:{window.window_id}")
-        active = OverflowCoordinator(
-            storage,
-            window,
-            token,
-            parent.generation_request_snapshot["overflow"],
-            source_digest=prepared.source_digest,
-            context_limits={"gpt-4o": 65536},
-            prepared=prepared,
-        )
-        active.candidate_records[active.playbook_key(new)] = record
-        active.remember_historical_playbooks([old])
-        with active.provider_scope():
-            return verified_consolidation_decisions(owner, active, [new], [old])
-
-    assert replay() == output
-    assert calls == ["proposal", HistoricalScanSelection, ConsolidationVerification]
-    assert owner.consolidation_not_cleared is False
-    current = storage.get_agent_run(
-        f"window:{window.window_id}"
-    ).generation_request_snapshot["overflow"]
-    for index in range(len(current["attempts"]), 128):
-        current = storage.checkpoint_extraction_overflow(
-            window,
-            token,
-            expected_revision=current["revision"],
-            source_digest=prepared.source_digest,
-            reserve_attempt_id=f"reserved-{index}",
-        )
-    # Every receipt replays with all provider capacity reserved: zero calls.
-    assert replay() == output
-    assert len(calls) == 3
-    persisted = storage.get_agent_run(
-        f"window:{window.window_id}"
-    ).generation_request_snapshot["overflow"]["checkpoint"]
-    (digest,) = persisted["historical_chunks"]
-    assert digest.startswith("stored_rule:")
-    rows, archived, groups = owner._build_deduplicated_results(
-        new_playbooks=[new],
-        existing_playbooks=[old],
-        dedup_output=output,
-        generation_request_id="current",
-        agent_version="v1",
-        admit_overlapping_survivors=owner.consolidation_not_cleared,
-    )
-    assert archived == [51] and groups == [(0, [51])]
-    assert 9001 in rows[0].source_interaction_ids
-    assert old.source_span is None
     assert storage.count_all_profiles() == 0
     assert storage.pending_extraction_effects() == []
 
@@ -3527,7 +3103,10 @@ def test_http_overflow_human_answer_resumes_same_window_and_commits_once(
         name = getattr(schema, "__name__", "") or json.dumps(schema, default=str)
         tool_calls = None
         finish = "stop"
-        if params.get("tools") and not requested:
+        audited = _scripted_audited_response(params)
+        if audited is not None:
+            result = audited
+        elif params.get("tools") and not requested:
             requested = True
             result = None
             tool_calls = [
@@ -4719,7 +4298,10 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
         elif "unique_ids" in prompt:
             name = "ProfileDeduplicationOutput"
         schemas.append(name)
-        if "ProtectedRecordSelection" in name:
+        audited = _scripted_audited_response(params)
+        if audited is not None:
+            result = audited
+        elif "ProtectedRecordSelection" in name:
             result = {
                 "candidate_evidence": [
                     {
@@ -4847,7 +4429,7 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
                 assert (
                     candidate.source_span == span.text
                     and candidate.reader_angle is None
-                    and candidate.rationale is None
+                    and candidate.rationale == "See cited evidence."
                 )
             assert any("ReviewOutput" in name for name in schemas)
         else:

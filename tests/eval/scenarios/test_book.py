@@ -1,105 +1,111 @@
-"""Deterministic unit tests for the thin apply shim (``book.py``).
+"""Benchmark books apply all audited outputs and preserve untouched identities."""
 
-Pure logic, no LLM and no storage: build a small book + each real
-decision kind, apply it via the shim, and assert the exact resulting
-book. Covers the position-vs-id mapping (unify uses ``existing_order``
-list positions; differentiate uses ``existing_id`` = a ``BookRule.id``)
-for every consolidation decision kind.
-"""
+import pytest
 
-from __future__ import annotations
-
-from reflexio.server.services.playbook.components.consolidator import (
-    DifferentiateDecision,
-    IndependentDecision,
-    RejectNewDecision,
-    UnifyDecision,
+from reflexio.server.services.playbook.components.reconciliation import (
+    Decisions,
+    Reference,
 )
-from tests.eval.scenarios.book import (
-    _next_id,
-    apply_consolidation,
-)
+from tests.eval.scenarios.book import _next_id, apply_consolidation
 from tests.eval.scenarios.case import BookRule
 
-
-def _seed() -> tuple[BookRule, BookRule]:
-    r1 = BookRule(id=1, content="use spaces", trigger="formatting", rationale="r1")
-    r2 = BookRule(id=2, content="run tests", trigger="ci", rationale="r2")
-    return r1, r2
+REF = {"session_id": "source", "turn": 1}
 
 
-def test_next_id() -> None:
+def rule(idx, content):
+    return BookRule(
+        id=idx,
+        content=content,
+        trigger="deploying",
+        evidence_refs=[Reference.model_validate(REF)],
+    )
+
+
+def action(kind="replace", outputs=1):
+    data = {"kind": kind, "new_ids": ["NEW-0"], "reason": "supported"}
+    if kind == "replace":
+        data["existing_ids"] = ["EXISTING-0"]
+    if kind == "remove":
+        data["evidence_refs"] = [REF]
+    else:
+        data["outputs"] = [
+            {
+                "content": f"authored-{i}",
+                "trigger": "deploying",
+                "rationale": "cited",
+                "evidence_refs": [REF],
+            }
+            for i in range(outputs)
+        ]
+    return data
+
+
+@pytest.mark.parametrize("kind", ["create", "replace", "remove"])
+def test_apply_uses_authored_outputs_and_keeps_unconsumed_ids(kind):
+    book = [rule(10, "prior"), rule(20, "unrelated")]
+    candidate = rule(21, "candidate")
+    original = [row.model_dump() for row in book]
+    result = apply_consolidation(
+        book,
+        candidate,
+        Decisions.model_validate({"decisions": [action(kind)]}),
+        existing_order=book,
+    )
+    assert [row.model_dump() for row in book] == original
+    assert any(row.id == 20 and row.content == "unrelated" for row in result)
+    assert len({row.id for row in result}) == len(result)
+    if kind == "create":
+        assert [row.id for row in result[:2]] == [10, 20]
+        assert result[-1].content == "authored-0"
+    elif kind == "replace":
+        assert all(row.id != 10 for row in result)
+        assert result[-1].content == "authored-0"
+    else:
+        assert result == book
+
+
+def test_split_keeps_every_output_with_distinct_ids_and_evidence():
+    book = [rule(10, "prior")]
+    result = apply_consolidation(
+        book,
+        rule(11, "new"),
+        Decisions.model_validate({"decisions": [action(outputs=2)]}),
+        existing_order=book,
+    )
+    assert [row.content for row in result] == ["authored-0", "authored-1"]
+    assert len({row.id for row in result}) == 2
+    assert all(row.evidence_refs[0].session_id == "source" for row in result)
+
+
+def test_existing_only_cleanup_after_new_removal_is_not_discarded():
+    replace = action()
+    replace["new_ids"] = []
+    batch = Decisions.model_validate({"decisions": [action("remove"), replace]})
+    book = [rule(10, "prior")]
+    result = apply_consolidation(book, rule(11, "new"), batch, existing_order=book)
+    assert len(result) == 1 and result[0].content == "authored-0"
+
+
+def test_unknown_existing_id_and_changed_order_fail_closed():
+    book = [rule(10, "prior")]
+    invalid = action()
+    invalid["existing_ids"] = ["EXISTING-99"]
+    with pytest.raises(ValueError):
+        apply_consolidation(
+            book,
+            rule(11, "new"),
+            Decisions.model_validate({"decisions": [invalid]}),
+            existing_order=book,
+        )
+    with pytest.raises(ValueError):
+        apply_consolidation(
+            book,
+            rule(11, "new"),
+            Decisions.model_validate({"decisions": [action()]}),
+            existing_order=[],
+        )
+
+
+def test_next_id_does_not_reuse_holes():
     assert _next_id([]) == 1
-    assert _next_id([BookRule(id=3), BookRule(id=7)]) == 8
-
-
-def test_unify_removes_by_position_and_merges() -> None:
-    r1, r2 = _seed()
-    book = [r1, r2]
-    candidate = BookRule(id=99, content="cand", trigger="t-cand")
-    decision = UnifyDecision(
-        new_id="NEW-0",
-        archive_existing_ids=[0],  # list position 0 -> r1
-        content="merged",
-        trigger="t",
-        rationale="",
-    )
-
-    result = apply_consolidation(book, candidate, decision, existing_order=[r1, r2])
-
-    # r1 (position 0) removed, r2 retained, one merged rule appended;
-    # candidate is NOT appended.
-    assert result == [
-        BookRule(id=2, content="run tests", trigger="ci", rationale="r2"),
-        BookRule(id=3, content="merged", trigger="t", rationale=""),
-    ]
-
-
-def test_differentiate_refines_both_triggers() -> None:
-    r1, r2 = _seed()
-    book = [r1, r2]
-    candidate = BookRule(id=99, content="cand", trigger="t-cand")
-    decision = DifferentiateDecision(
-        new_id="NEW-0",
-        existing_id=r1.id,  # matched by BookRule.id
-        refined_new_trigger="A",
-        refined_existing_trigger="B",
-    )
-
-    result = apply_consolidation(book, candidate, decision, existing_order=[r1, r2])
-
-    # r1's trigger refined to B; r2 untouched; candidate appended with
-    # trigger A and a fresh id. Both the existing and new rule present.
-    assert result == [
-        BookRule(id=1, content="use spaces", trigger="B", rationale="r1"),
-        BookRule(id=2, content="run tests", trigger="ci", rationale="r2"),
-        BookRule(id=3, content="cand", trigger="A", rationale=""),
-    ]
-
-
-def test_reject_new_is_noop() -> None:
-    r1, r2 = _seed()
-    book = [r1, r2]
-    candidate = BookRule(id=99, content="cand")
-    decision = RejectNewDecision(new_id="NEW-0", superseded_by_existing_id=r1.id)
-
-    result = apply_consolidation(book, candidate, decision, existing_order=[r1, r2])
-
-    # Book unchanged; candidate absent.
-    assert result == [r1, r2]
-    assert all(rule.id != 99 for rule in result)
-
-
-def test_independent_appends_candidate() -> None:
-    r1, r2 = _seed()
-    book = [r1, r2]
-    candidate = BookRule(id=99, content="cand", trigger="t-cand", rationale="rc")
-    decision = IndependentDecision(new_id="NEW-0")
-
-    result = apply_consolidation(book, candidate, decision, existing_order=[r1, r2])
-
-    assert result == [
-        r1,
-        r2,
-        BookRule(id=3, content="cand", trigger="t-cand", rationale="rc"),
-    ]
+    assert _next_id([rule(10, "prior"), rule(30, "other")]) == 31
