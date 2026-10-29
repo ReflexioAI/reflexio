@@ -141,8 +141,11 @@ class _RequestIdTakenError(Exception):
 # What makes a retry "the same publish". Server-assigned values are excluded:
 # ``created_at`` on the request is server time, and an interaction's
 # ``created_at`` defaults to the time the payload was parsed, so a retry that
-# omits it differs on every attempt. Everything else the caller states is
-# compared, so success is never reported for a different payload.
+# omits it differs on every attempt. ``agent_version`` is compared only when
+# the caller states it: an omitted one is resolved from server configuration,
+# which can change between an attempt and its retry. Everything else the
+# caller states is compared, so success is never reported for a different
+# payload.
 _REPLAY_REQUEST_FIELDS = (
     "user_id",
     "session_id",
@@ -189,11 +192,14 @@ def _is_same_publish(
     stored: list[Interaction],
     request: Request,
     interactions: list[Interaction],
+    *,
+    agent_version_stated: bool,
 ) -> bool:
     """Whether a committed request and its rows are exactly this publish."""
     if any(
         getattr(existing, name) != getattr(request, name)
         for name in _REPLAY_REQUEST_FIELDS
+        if agent_version_stated or name != "agent_version"
     ):
         return False
     if len(stored) != len(interactions):
@@ -317,6 +323,7 @@ class GenerationService:
         agent_version = resolve_agent_version(
             publish_user_interaction_request.agent_version
         )
+        agent_version_stated = bool(publish_user_interaction_request.agent_version)
         admitted = False
 
         try:
@@ -378,7 +385,10 @@ class GenerationService:
             # replayed or refused after that rollback (below).
             if admission_participant is not None:
                 replay = self._replay_existing_request(
-                    admission_participant, new_request, new_interactions
+                    admission_participant,
+                    new_request,
+                    new_interactions,
+                    agent_version_stated=agent_version_stated,
                 )
                 if replay is not None:
                     return replay
@@ -435,7 +445,11 @@ class GenerationService:
             publish_timing.record("n_interactions", len(new_interactions))
             with publish_timing.phase("embeddings"):
                 replay = self._prepare_or_replay_publish(
-                    storage, admission_participant, new_request, new_interactions
+                    storage,
+                    admission_participant,
+                    new_request,
+                    new_interactions,
+                    agent_version_stated=agent_version_stated,
                 )
                 if replay is not None:
                     return replay
@@ -493,7 +507,10 @@ class GenerationService:
                 # The id is already committed (a retry, a concurrent duplicate,
                 # or a reuse). Nothing of ours committed: replay or refuse.
                 replay = self._replay_existing_request(
-                    admission_participant, new_request, new_interactions
+                    admission_participant,
+                    new_request,
+                    new_interactions,
+                    agent_version_stated=agent_version_stated,
                 )
                 if replay is None:
                     # Taken, but not visible to this caller (another project).
@@ -579,6 +596,8 @@ class GenerationService:
         participant: ExternalAdmissionParticipant | None,
         new_request: Request,
         new_interactions: list[Interaction],
+        *,
+        agent_version_stated: bool,
     ) -> GenerationServiceResult | None:
         """Prepare new vectors, or recover a committed replay while unready."""
         from reflexio.server.services.storage.error import ReadinessUnavailableError
@@ -591,7 +610,10 @@ class GenerationService:
             # committed work needs no new vector admission. Successful first
             # attempts still pay no extra replay read.
             replay = self._replay_existing_request(
-                participant, new_request, new_interactions
+                participant,
+                new_request,
+                new_interactions,
+                agent_version_stated=agent_version_stated,
             )
             if replay is not None:
                 return replay
@@ -721,6 +743,8 @@ class GenerationService:
         participant: ExternalAdmissionParticipant | None,
         new_request: Request,
         new_interactions: list[Interaction],
+        *,
+        agent_version_stated: bool,
     ) -> GenerationServiceResult | None:
         """Answer a retry of an already committed publish without re-admitting it.
 
@@ -760,7 +784,13 @@ class GenerationService:
                 storage.get_interactions_by_request_ids([request_id]),
                 key=lambda interaction: interaction.interaction_id,
             )
-        if not _is_same_publish(existing, stored, new_request, new_interactions):
+        if not _is_same_publish(
+            existing,
+            stored,
+            new_request,
+            new_interactions,
+            agent_version_stated=agent_version_stated,
+        ):
             raise PublishRequestIdConflictError(request_id)
         return GenerationServiceResult(
             request_id=existing.request_id,
