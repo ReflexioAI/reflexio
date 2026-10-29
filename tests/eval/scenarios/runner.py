@@ -47,10 +47,14 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from reflexio.server.services.playbook.components.reconciliation import Reference
 from tests.eval.consolidation.case import (
     CandidatePlaybook,
     ConsolidationEvalCase,
+    EvidenceMessage,
+    EvidenceSession,
     ExistingPlaybook,
+    kind_for_decision,
 )
 from tests.eval.consolidation.judge import judge_consolidation_decision
 from tests.eval.scenarios.book import (
@@ -144,8 +148,8 @@ def _book_to_existing(book: list[BookRule]) -> list[ExistingPlaybook]:
     """Project the current book into the consolidation case's EXISTING rows.
 
     Order is preserved — this exact ordering is what the runner also passes
-    to :func:`apply_consolidation` as ``existing_order``, so a unify
-    decision's list-position ``archive_existing_ids`` line up.
+    to :func:`apply_consolidation` as ``existing_order``, so EXISTING-i
+    references identify the same original row throughout projection.
     """
     return [
         ExistingPlaybook(
@@ -153,6 +157,7 @@ def _book_to_existing(book: list[BookRule]) -> list[ExistingPlaybook]:
             content=rule.content,
             trigger=rule.trigger,
             rationale=rule.rationale,
+            evidence_refs=rule.evidence_refs,
         )
         for rule in book
     ]
@@ -170,6 +175,7 @@ def _candidate(rule: BookRule) -> CandidatePlaybook:
         content=rule.content,
         trigger=rule.trigger,
         rationale=rule.rationale,
+        evidence_refs=rule.evidence_refs,
     )
 
 
@@ -183,6 +189,7 @@ def _run_learn_round(
     consolidation_provider: Callable[[ConsolidationEvalCase], Any],
     consolidation_judge_client: Any,
     extraction_judge: LLMJudge | None,
+    sessions: list[EvidenceSession],
 ) -> tuple[list[BookRule], RoundOutcome]:
     """Run one learn round: extract -> consolidate -> judge -> apply.
 
@@ -193,20 +200,43 @@ def _run_learn_round(
         {"id": f"{scenario.id}-{idx}", "sessions": round.interactions}
     )
 
+    session_id = f"{scenario.id}-{idx}"
+    sessions.append(
+        EvidenceSession(
+            id=session_id,
+            messages=[
+                EvidenceMessage(
+                    turn=index,
+                    role=str(message.get("role", "user")),
+                    content=str(message.get("content", "")),
+                )
+                for index, message in enumerate(round.interactions, 1)
+            ],
+        )
+    )
     all_correct = True
     kinds: list[str] = []
     reasons: list[str] = []
-    gold_kind = round.gold.get("consolidation_kind", "independent")
+    gold_kind = round.gold.get("consolidation_kind", "create")
 
     for p in playbooks:
         existing_order = list(book)
         cand_rule = _to_book_rule(p, new_id=_next_id(book))
+        source_ids = (
+            p.get("source_interaction_ids", [])
+            if isinstance(p, dict)
+            else getattr(p, "source_interaction_ids", [])
+        )
+        cand_rule.evidence_refs = [
+            Reference(session_id=session_id, turn=turn) for turn in source_ids
+        ]
         cand_case = ConsolidationEvalCase(
             id=f"{scenario.id}-{idx}-{cand_rule.id}",
             agent_context=scenario.agent_context,
             existing=_book_to_existing(book),
             candidate=_candidate(cand_rule),
             gold_kind=gold_kind,
+            sessions=sessions,
         )
         decision = consolidation_provider(cand_case)
         verdict = judge_consolidation_decision(
@@ -215,7 +245,7 @@ def _run_learn_round(
             llm_client=consolidation_judge_client,
         )
         all_correct = all_correct and verdict.correct
-        kinds.append(getattr(decision, "kind", "?"))
+        kinds.append(kind_for_decision(decision))
         if verdict.reason:
             reasons.append(verdict.reason)
         book = apply_consolidation(
@@ -280,6 +310,7 @@ def run_scenario(
     """
     book: list[BookRule] = [r.model_copy() for r in scenario.seed_book]
     outcomes: list[RoundOutcome] = []
+    sessions: list[EvidenceSession] = []
 
     for idx, round in enumerate(scenario.rounds):
         book, outcome = _run_learn_round(
@@ -291,6 +322,7 @@ def run_scenario(
             consolidation_provider=consolidation_provider,
             consolidation_judge_client=consolidation_judge_client,
             extraction_judge=extraction_judge,
+            sessions=sessions,
         )
         outcomes.append(outcome)
 

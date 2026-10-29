@@ -1,599 +1,214 @@
-"""Unit tests for the consolidation decision-eval harness.
+"""The benchmark runs and scores complete audited batches without paid calls."""
 
-All LLM interaction is mocked — the judge client is a ``MagicMock`` and
-produced decisions are hand-built ``ConsolidationDecision`` objects. No real
-API is hit. The one test that *would* hit a real judge is decorated with
-``@skip_low_priority``.
-"""
-
-from __future__ import annotations
-
+import json
 from unittest.mock import MagicMock
 
 import pytest
 
 from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
-from reflexio.server.services.playbook.components.consolidator import (
-    ConsolidationDecision,
-    DifferentiateDecision,
-    IndependentDecision,
-    PlaybookConsolidationOutput,
-    RejectNewDecision,
-    UnifyDecision,
+from reflexio.server.services.playbook.components.reconciliation import (
+    Decisions,
 )
-from reflexio.test_support.llm_mock import assert_litellm_unpatched
-from reflexio.test_support.skip_decorators import skip_low_priority
-from tests.eval.consolidation.case import (
-    ConsolidationEvalCase,
-    kind_for_decision,
-)
+from tests.eval.consolidation.case import kind_for_decision
 from tests.eval.consolidation.fixtures import load_illustrative_cases
 from tests.eval.consolidation.judge import (
     ConsolidationVerdict,
     judge_consolidation_decision,
 )
 from tests.eval.consolidation.providers import make_consolidation_decision_provider
-from tests.eval.consolidation.runner import EvalResults, run_eval, score_case
-
-# ---------------------------------------------------------------------------
-# Builders for hand-made decisions.
-# ---------------------------------------------------------------------------
+from tests.eval.consolidation.runner import run_eval, score_case
 
 
-def _unify(new_id: str = "NEW-1", **kw: object) -> UnifyDecision:
-    base: dict[str, object] = {
-        "new_id": new_id,
-        "content": "Always summarize the report.",
-        "trigger": "generating a report",
-        "rationale": "Readers skim the summary first.",
+def case():
+    return load_illustrative_cases()[0]
+
+
+def batch(kind="replace"):
+    item = case()
+    draft = {
+        key: getattr(item.candidate, key) for key in ("trigger", "content", "rationale")
     }
-    base.update(kw)
-    return UnifyDecision.model_validate(base)
+    draft["evidence_refs"] = [ref.model_dump() for ref in item.candidate.evidence_refs]
+    action = {
+        "kind": kind,
+        "new_ids": ["NEW-0"],
+        "reason": "Synthetic supported result",
+    }
+    if kind == "replace":
+        action["existing_ids"] = ["EXISTING-0"]
+    if kind == "remove":
+        action["evidence_refs"] = draft["evidence_refs"]
+    else:
+        action["outputs"] = [draft]
+    return Decisions.model_validate({"decisions": [action]})
 
 
-def _reject(
-    new_id: str = "NEW-1", superseded_by_existing_id: int = 1
-) -> RejectNewDecision:
-    return RejectNewDecision(
-        new_id=new_id, superseded_by_existing_id=superseded_by_existing_id
+def provider(client):
+    client.config.model = "test-model"
+    return make_consolidation_decision_provider(llm_client=client)
+
+
+@pytest.mark.parametrize("kind", ["create", "replace", "remove"])
+def test_kind_reads_the_current_action(kind):
+    assert kind_for_decision(batch(kind)) == kind
+
+
+def test_multiple_kinds_are_not_truncated_to_first_action():
+    actions = batch("replace").model_dump()["decisions"]
+    actions[0]["new_ids"] = []
+    actions.extend(batch("remove").model_dump()["decisions"])
+    assert (
+        kind_for_decision(Decisions.model_validate({"decisions": actions})) == "mixed"
     )
 
 
-def _differentiate(
-    new_id: str = "NEW-1", existing_id: int = 1
-) -> DifferentiateDecision:
-    return DifferentiateDecision(
-        new_id=new_id,
-        existing_id=existing_id,
-        refined_new_trigger="situation A only",
-        refined_existing_trigger="situation B only",
-    )
+def test_empty_output_is_never_automatic_acceptance():
+    with pytest.raises(ValueError, match="nonempty"):
+        kind_for_decision(Decisions(decisions=[]))
 
 
-def _independent(new_id: str = "NEW-1") -> IndependentDecision:
-    return IndependentDecision(new_id=new_id)
-
-
-def _case(case_id: str = "c1", gold_kind: str = "unify") -> ConsolidationEvalCase:
-    return ConsolidationEvalCase.model_validate(
-        {
-            "id": case_id,
-            "agent_context": "ctx",
-            "existing": [
-                {"id": 1, "content": "existing rule", "trigger": "t", "rationale": ""}
-            ],
-            "candidate": {
-                "new_id": "NEW-1",
-                "content": "candidate rule",
-                "trigger": "t",
-                "rationale": "",
-            },
-            "gold_kind": gold_kind,
-        }
-    )
-
-
-# ---------------------------------------------------------------------------
-# Kind mapping: each decision kind maps to its own literal.
-# ---------------------------------------------------------------------------
-
-
-def test_kind_for_unify():
-    assert kind_for_decision(_unify()) == "unify"
-
-
-def test_kind_for_reject_new():
-    assert kind_for_decision(_reject()) == "reject_new"
-
-
-def test_kind_for_differentiate():
-    assert kind_for_decision(_differentiate()) == "differentiate"
-
-
-def test_kind_for_independent():
-    assert kind_for_decision(_independent()) == "independent"
-
-
-# ---------------------------------------------------------------------------
-# run_eval mechanics: precomputed decisions, source validation, length check.
-# ---------------------------------------------------------------------------
-
-
-def test_run_eval_kind_accuracy_and_confusion():
-    cases = [
-        _case("a", "unify"),
-        _case("b", "reject_new"),
-        _case("c", "differentiate"),
-    ]
-    decisions = [
-        _unify(),  # a: correct
-        _reject(),  # b: correct
-        _independent(),  # c: WRONG (produced independent, gold differentiate)
-    ]
-    res = run_eval(cases=cases, decisions=decisions)
-    assert isinstance(res, EvalResults)
-    assert res.n == 3
-    assert res.kind_accuracy == pytest.approx(2 / 3)
-    assert res.judge_accuracy is None  # no judge client passed
-    assert res.confusion[("unify", "unify")] == 1
-    assert res.confusion[("reject_new", "reject_new")] == 1
-    assert res.confusion[("differentiate", "independent")] == 1
-
-
-def test_run_eval_requires_exactly_one_decision_source():
-    cases = [_case("a", "unify")]
-    # Neither source given.
+@pytest.mark.parametrize("source", ["neither", "both", "wrong-length"])
+def test_runner_requires_one_complete_result_per_case(source):
     with pytest.raises(ValueError):
-        run_eval(cases=cases)
-    # Both sources given.
-    with pytest.raises(ValueError):
-        run_eval(
-            cases=cases,
-            decisions=[_unify()],
-            decision_provider=lambda _case: _unify(),
-        )
+        if source == "both":
+            run_eval(
+                cases=[case()], decisions=[batch()], decision_provider=lambda _: batch()
+            )
+        elif source == "wrong-length":
+            run_eval(cases=[case()], decisions=[])
+        else:
+            run_eval(cases=[case()])
 
 
-def test_run_eval_rejects_mismatched_decisions_length():
-    cases = [_case("a", "unify")]
-    with pytest.raises(ValueError):
-        run_eval(cases=cases, decisions=[])
-
-
-def test_run_eval_with_decision_provider():
-    cases = [_case("a", "reject_new")]
-
-    def provider(case: ConsolidationEvalCase) -> RejectNewDecision:
-        return _reject()
-
-    res = run_eval(cases=cases, decision_provider=provider)
-    assert res.kind_accuracy == pytest.approx(1.0)
-
-
-# ---------------------------------------------------------------------------
-# Over-merge / under-merge metrics.
-# ---------------------------------------------------------------------------
-
-
-def test_over_merge_when_differentiate_gold_is_unified():
-    # gold differentiate (should stay separate) but produced unify (merged).
-    cases = [_case("a", "differentiate")]
-    decisions: list[ConsolidationDecision] = [_unify()]
-    res = run_eval(cases=cases, decisions=decisions)
-    assert res.over_merge_rate > 0
-    assert res.over_merge_rate == pytest.approx(1.0)
-    # No should-merge gold cases => under-merge denominator empty => 0.0.
-    assert res.under_merge_rate == pytest.approx(0.0)
-
-
-def test_under_merge_when_unify_gold_is_kept_independent():
-    # gold unify (should merge) but produced independent (kept separate).
-    cases = [_case("a", "unify")]
-    decisions: list[ConsolidationDecision] = [_independent()]
-    res = run_eval(cases=cases, decisions=decisions)
-    assert res.under_merge_rate > 0
-    assert res.under_merge_rate == pytest.approx(1.0)
-    # No should-stay-separate gold cases => over-merge denominator empty => 0.0.
-    assert res.over_merge_rate == pytest.approx(0.0)
-
-
-# ---------------------------------------------------------------------------
-# Judge path (mocked): judge_accuracy + self_contradiction_rate semantics.
-# ---------------------------------------------------------------------------
-
-
-def test_judge_parses_mocked_verdict():
-    client = MagicMock()
-    client.generate_chat_response.return_value = ConsolidationVerdict(
-        correct=True, reason="matches"
+def test_metrics_separate_action_shape_from_judged_semantics():
+    item = case().model_copy(update={"gold_kind": "create"})
+    judge = MagicMock()
+    judge.generate_chat_response.return_value = ConsolidationVerdict(
+        correct=False,
+        self_contradiction=True,
+        reason="The new content contradicts a retained row",
     )
-    v = judge_consolidation_decision(
-        case=_case(gold_kind="unify"),
-        produced_decision=_unify(),
-        llm_client=client,
+    result = run_eval(cases=[item], decisions=[batch("create")], llm_client=judge)
+    assert result.kind_accuracy == 1 and result.judge_accuracy == 0
+    assert result.self_contradiction_rate == 1
+    assert result.confusion[("create", "create")] == 1
+    assert "self-contradiction" in result.summary()
+    prompt = judge.generate_chat_response.call_args.kwargs["messages"][0]["content"]
+    assert item.sessions[0].messages[0].content in prompt
+    assert '"id": "NEW-0"' in prompt
+    assert '"id": "EXISTING-0"' in prompt
+
+
+@pytest.mark.parametrize("kind", ["create", "replace"])
+def test_contradiction_judging_includes_all_authored_output_kinds(kind):
+    judge = MagicMock()
+    judge.generate_chat_response.return_value = ConsolidationVerdict(
+        correct=False, self_contradiction=True
     )
-    assert v.correct is True
-    assert v.reason == "matches"
-    client.generate_chat_response.assert_called_once()
+    assert score_case(
+        case=case(), produced_decision=batch(kind), llm_client=judge
+    ).self_contradiction
 
 
-def test_run_eval_with_judge_client_computes_judge_accuracy():
-    client = MagicMock()
-    client.generate_chat_response.return_value = ConsolidationVerdict(correct=True)
-    cases = [_case("a", "unify")]
-    decisions: list[ConsolidationDecision] = [_unify()]
-    res = run_eval(cases=cases, decisions=decisions, llm_client=client)
-    assert res.judge_accuracy == pytest.approx(1.0)
-    assert res.outcomes[0].judge_correct is True
-
-
-def test_self_contradiction_rate_counts_only_produced_unify():
-    """The contradiction denominator is produced-``unify`` judged cases only.
-
-    Two judged cases: one produced ``unify`` (eligible) and one produced
-    ``differentiate`` (NOT eligible — ``score_case`` records
-    ``self_contradiction`` only for ``unify``). The non-unify case must be
-    excluded from the contradiction denominator even though it was judged.
-    """
-    client = MagicMock()
-    # Both cases are judged correct=True; the contradiction flag only matters
-    # for the unify case. score_case leaves self_contradiction=None on the
-    # non-unify outcome regardless of the verdict's flag.
-    client.generate_chat_response.return_value = ConsolidationVerdict(
+def test_remove_does_not_invent_an_output_contradiction_denominator():
+    judge = MagicMock()
+    judge.generate_chat_response.return_value = ConsolidationVerdict(
         correct=True, self_contradiction=True
     )
-    cases = [_case("u", "unify"), _case("d", "differentiate")]
-    decisions = [_unify(), _differentiate()]
-    res = run_eval(cases=cases, decisions=decisions, llm_client=client)
-
-    # The differentiate outcome is excluded from the denominator.
-    outcomes = {o.case_id: o for o in res.outcomes}
-    assert outcomes["u"].self_contradiction is True
-    assert outcomes["d"].self_contradiction is None  # non-unify => not recorded
-    # Denominator = 1 (the unify case only); numerator = 1 => 1.0.
-    assert res.self_contradiction_rate == pytest.approx(1.0)
-
-
-def test_self_contradiction_rate_surfaces_flagged_unify():
-    client = MagicMock()
-    client.generate_chat_response.return_value = ConsolidationVerdict(
-        correct=True, self_contradiction=True
+    assert (
+        score_case(
+            case=case(), produced_decision=batch("remove"), llm_client=judge
+        ).self_contradiction
+        is None
     )
-    res = score_case(
-        case=_case(gold_kind="unify"),
-        produced_decision=_unify(),
-        llm_client=client,
-    )
-    assert res.self_contradiction is True
 
 
-def test_self_contradiction_none_for_non_unify_even_when_judged():
-    client = MagicMock()
-    # Verdict claims a contradiction, but the produced kind is not unify, so
-    # score_case must NOT record it.
-    client.generate_chat_response.return_value = ConsolidationVerdict(
-        correct=True, self_contradiction=True
-    )
-    res = score_case(
-        case=_case(gold_kind="reject_new"),
-        produced_decision=_reject(),
-        llm_client=client,
-    )
-    assert res.judge_correct is True
-    assert res.self_contradiction is None
+def test_unjudged_metrics_remain_unknown():
+    result = run_eval(cases=[case()], decision_provider=lambda _: batch())
+    assert result.judge_accuracy is None and result.self_contradiction_rate is None
 
 
-# ---------------------------------------------------------------------------
-# Panel voting: opposite tie-break directions for correct vs self_contradiction.
-# ---------------------------------------------------------------------------
-
-
-def test_panel_correct_majority():
-    client = MagicMock()
-    client.generate_chat_response.side_effect = [
-        ConsolidationVerdict(correct=True, reason="a"),
-        ConsolidationVerdict(correct=True, reason="b"),
-        ConsolidationVerdict(correct=False, reason="c"),
+@pytest.mark.parametrize(
+    "votes,correct,contradiction",
+    [
+        ([(True, False), (False, True)], False, True),
+        ([(True, False), (True, False), (False, True)], True, False),
+    ],
+)
+def test_panel_ties_and_majorities_remain_conservative(votes, correct, contradiction):
+    judge = MagicMock()
+    judge.generate_chat_response.side_effect = [
+        ConsolidationVerdict(correct=c, self_contradiction=s) for c, s in votes
     ]
-    v = judge_consolidation_decision(
-        case=_case(gold_kind="unify"),
-        produced_decision=_unify(),
-        llm_client=client,
-        panel_size=3,
+    verdict = judge_consolidation_decision(
+        case=case(), produced_decision=batch(), llm_client=judge, panel_size=len(votes)
     )
-    assert v.correct is True
-    assert "2/3 correct" in v.reason
+    assert verdict.correct is correct and verdict.self_contradiction is contradiction
 
 
-def test_panel_correct_tie_resolves_false():
-    """`correct` tie -> False (conservative reject for a regression detector)."""
-    client = MagicMock()
-    client.generate_chat_response.side_effect = [
-        ConsolidationVerdict(correct=True),
-        ConsolidationVerdict(correct=False),
-    ]
-    v = judge_consolidation_decision(
-        case=_case(gold_kind="unify"),
-        produced_decision=_unify(),
-        llm_client=client,
-        panel_size=2,
-    )
-    assert v.correct is False
-
-
-def test_panel_self_contradiction_tie_resolves_true():
-    """`self_contradiction` tie -> True (conservatively flag a bad merge).
-
-    A 1-1 split on the contradiction flag must resolve to True — the
-    OPPOSITE direction from the ``correct`` tie-break. We hold ``correct``
-    unanimous so only the contradiction tie is under test.
-    """
-    client = MagicMock()
-    client.generate_chat_response.side_effect = [
-        ConsolidationVerdict(correct=True, self_contradiction=True),
-        ConsolidationVerdict(correct=True, self_contradiction=False),
-    ]
-    v = judge_consolidation_decision(
-        case=_case(gold_kind="unify"),
-        produced_decision=_unify(),
-        llm_client=client,
-        panel_size=2,
-    )
-    assert v.correct is True  # unanimous
-    assert v.self_contradiction is True  # tie -> True (conservative)
-
-
-def test_panel_three_way_split_minority_loses_both_dimensions():
-    """A 1-2 split (no ties) confirms a minority vote loses on both dimensions.
-
-    correct votes: True, False, False  -> minority True => majority False.
-    contradiction votes: True, False, False -> 1 vs 2 => below threshold =>
-    False. The contradiction `>=` tie-break only flips on an *actual* tie
-    (covered by ``test_panel_self_contradiction_tie_resolves_true``), not on a
-    losing minority — which this asserts.
-    """
-    client = MagicMock()
-    client.generate_chat_response.side_effect = [
-        ConsolidationVerdict(correct=True, self_contradiction=True),
-        ConsolidationVerdict(correct=False, self_contradiction=False),
-        ConsolidationVerdict(correct=False, self_contradiction=False),
-    ]
-    v = judge_consolidation_decision(
-        case=_case(gold_kind="unify"),
-        produced_decision=_unify(),
-        llm_client=client,
-        panel_size=3,
-    )
-    assert v.correct is False  # 1/3 correct => majority False
-    assert v.self_contradiction is False  # 1/3 contradiction => not a tie => False
-
-
-def test_panel_rejects_zero_size():
-    client = MagicMock()
+def test_zero_judges_and_unparseable_verdicts_fail():
     with pytest.raises(ValueError):
         judge_consolidation_decision(
-            case=_case(gold_kind="unify"),
-            produced_decision=_unify(),
-            llm_client=client,
-            panel_size=0,
+            case=case(), produced_decision=batch(), llm_client=MagicMock(), panel_size=0
         )
-
-
-def test_judge_raises_on_non_verdict_response():
-    client = MagicMock()
-    client.generate_chat_response.return_value = "not a verdict"
+    judge = MagicMock()
+    judge.generate_chat_response.return_value = object()
     with pytest.raises(TypeError):
         judge_consolidation_decision(
-            case=_case(gold_kind="unify"),
-            produced_decision=_unify(),
-            llm_client=client,
+            case=case(), produced_decision=batch(), llm_client=judge
         )
 
 
-# ---------------------------------------------------------------------------
-# Fixture loads + scores end-to-end with a mocked all-correct judge.
-# ---------------------------------------------------------------------------
-
-
-def _decision_for_gold(case: ConsolidationEvalCase) -> ConsolidationDecision:
-    """Build a produced decision whose kind matches the case's gold kind."""
-    new_id = case.candidate.new_id
-    if case.gold_kind == "unify":
-        return UnifyDecision(
-            new_id=new_id,
-            archive_existing_ids=[e.id for e in case.existing],
-            content=case.candidate.content,
-            trigger=case.candidate.trigger or "",
-            rationale=case.candidate.rationale,
-        )
-    if case.gold_kind == "reject_new":
-        return RejectNewDecision(
-            new_id=new_id,
-            superseded_by_existing_id=case.existing[0].id,
-        )
-    if case.gold_kind == "differentiate":
-        return DifferentiateDecision(
-            new_id=new_id,
-            existing_id=case.existing[0].id,
-            refined_new_trigger=(case.candidate.trigger or "candidate context")
-            + " (candidate-only)",
-            refined_existing_trigger=(case.existing[0].trigger or "existing context")
-            + " (existing-only)",
-        )
-    if case.gold_kind == "independent":
-        return IndependentDecision(new_id=new_id)
-    raise AssertionError(f"unhandled gold kind {case.gold_kind}")
-
-
-def test_illustrative_fixture_loads_and_covers_expected_kinds():
-    cases = load_illustrative_cases()
-    assert len(cases) >= 5
-    kinds = {c.gold_kind for c in cases}
-    assert {"unify", "reject_new", "differentiate", "independent"} <= kinds
-    for c in cases:
-        assert c.id
-        assert c.candidate.new_id
-
-
-def test_harness_smoke_run_over_fixture_with_mocked_judge():
-    cases = load_illustrative_cases()
-    decisions = [_decision_for_gold(c) for c in cases]
-
+def test_live_adapter_runs_the_actual_method_and_independent_audit():
     client = MagicMock()
-    client.generate_chat_response.return_value = ConsolidationVerdict(correct=True)
-    res = run_eval(cases=cases, decisions=decisions, llm_client=client)
-
-    assert res.n == len(cases)
-    assert res.kind_accuracy == pytest.approx(1.0)
-    assert res.judge_accuracy == pytest.approx(1.0)
-
-
-def test_summary_is_renderable():
-    cases = [_case("a", "unify")]
-    decisions: list[ConsolidationDecision] = [_unify()]
-    res = run_eval(cases=cases, decisions=decisions)
-    summary = res.summary()
-    assert "Consolidation decision-eval summary" in summary
-    assert "self-contradiction" in summary
-
-
-# ---------------------------------------------------------------------------
-# Live consolidation decision provider: mocked-seam unit tests (CI-covered)
-# exercise entity construction + the consolidator decision seam without a real
-# LLM; the ``@skip_low_priority`` smoke below runs it end-to-end for real.
-# ---------------------------------------------------------------------------
+    expected = batch()
+    client.generate_chat_response_with_provenance.side_effect = [
+        CompletionResult(expected.model_dump_json(), ModelProvenance()),
+        CompletionResult(json.dumps({"findings": []}), ModelProvenance()),
+    ]
+    item = case()
+    original = item.model_dump_json()
+    assert provider(client)(item) == expected
+    assert item.model_dump_json() == original
+    assert client.generate_chat_response_with_provenance.call_count == 2
+    draft, audit = client.generate_chat_response_with_provenance.call_args_list
+    original_payload = json.loads(draft.kwargs["messages"][1]["content"])
+    assert original_payload["new"][0]["id"] == "NEW-0"
+    assert original_payload["sessions"] == [
+        session.model_dump() for session in item.sessions
+    ]
+    audited_payload = json.loads(audit.kwargs["messages"][1]["content"])
+    assert audited_payload["proposed_memory"]
 
 
-def test_live_provider_returns_canned_decision(tmp_path):
-    """Provider builds the EXISTING + candidate entities, renders the real
-    ``playbook_consolidation`` prompt, reaches the decision seam, and returns
-    the LLM's decision — proving the construction + call path under a mocked
-    LLM seam (CI-covered, no real API)."""
-    from reflexio.server.api_endpoints.request_context import RequestContext
-
-    canned = UnifyDecision(new_id="NEW-0", content="x", trigger="t", rationale="r")
-    mock = MagicMock()
-    mock.generate_chat_response_with_provenance.return_value = CompletionResult(
-        PlaybookConsolidationOutput(decisions=[canned]), ModelProvenance()
+def test_invalid_empty_provider_output_abstains_instead_of_accepting():
+    client = MagicMock()
+    client.generate_chat_response_with_provenance.return_value = CompletionResult(
+        '{"decisions": []}', ModelProvenance()
     )
-
-    ctx = RequestContext(org_id="eval-cons-prov", storage_base_dir=str(tmp_path))
-    provider = make_consolidation_decision_provider(
-        llm_client=mock, request_context=ctx
-    )
-
-    case = _case(gold_kind="unify")  # has >= 1 existing row
-    decision = provider(case)
-
-    assert decision == canned
-    assert kind_for_decision(decision) == "unify"
-    # The provider reached the LLM call (entity build + prompt render succeeded).
-    mock.generate_chat_response_with_provenance.assert_called_once()
+    with pytest.raises(ValueError, match="consumed exactly once"):
+        provider(client)(case())
 
 
-def test_live_provider_empty_output_maps_to_independent(tmp_path):
-    """An empty ``PlaybookConsolidationOutput`` makes the provider fall back to
-    an ``IndependentDecision`` carrying the case's ``candidate.new_id``."""
-    from reflexio.server.api_endpoints.request_context import RequestContext
-
-    mock = MagicMock()
-    mock.generate_chat_response_with_provenance.return_value = CompletionResult(
-        PlaybookConsolidationOutput(decisions=[]), ModelProvenance()
-    )
-
-    ctx = RequestContext(org_id="eval-cons-noop", storage_base_dir=str(tmp_path))
-    provider = make_consolidation_decision_provider(
-        llm_client=mock, request_context=ctx
-    )
-
-    case = _case(gold_kind="independent")
-    decision = provider(case)
-
-    assert isinstance(decision, IndependentDecision)
-    assert kind_for_decision(decision) == "independent"
-    assert decision.new_id == case.candidate.new_id
+@pytest.mark.parametrize(
+    "invalid", ["missing-citation", "absent-message", "duplicate-coordinate"]
+)
+def test_adapter_refuses_unwitnessed_or_ambiguous_evidence_before_dispatch(invalid):
+    item = case()
+    if invalid == "missing-citation":
+        item.candidate.evidence_refs = []
+    elif invalid == "absent-message":
+        item.sessions = []
+    else:
+        item.sessions[0].messages.append(item.sessions[0].messages[0].model_copy())
+    client = MagicMock()
+    with pytest.raises(ValueError):
+        provider(client)(item)
+    client.generate_chat_response_with_provenance.assert_not_called()
 
 
-@skip_low_priority
-def test_live_consolidation_provider_real(tmp_path):  # pragma: no cover - manual
-    """Real end-to-end smoke: live consolidator decision step + real LLM over
-    the fixture. Asserts only pipeline mechanics (every case produced one of
-    the four kinds), never exact kinds. Run manually with API keys +
-    RUN_LOW_PRIORITY=1."""
-    # This test lives outside ``tests/e2e_tests/``, so the session-wide
-    # ``litellm.completion`` patch is installed for it. Without this it would
-    # grade canned mock text while reporting a real model.
-    assert_litellm_unpatched()
-    from reflexio.server.api_endpoints.request_context import RequestContext
-    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-
-    client = LiteLLMClient(LiteLLMConfig(model="claude-haiku-4-5"))
-    ctx = RequestContext(org_id="eval", storage_base_dir=str(tmp_path))
-    provider = make_consolidation_decision_provider(
-        llm_client=client, request_context=ctx
-    )
-
+def test_synthetic_fixture_has_independent_source_messages_and_current_kinds():
     cases = load_illustrative_cases()
-    res = run_eval(cases=cases, decision_provider=provider, llm_client=None)
-
-    assert res.n == len(cases)
-    valid_kinds = {"unify", "reject_new", "differentiate", "independent"}
-    assert all(o.produced_kind in valid_kinds for o in res.outcomes)
-
-
-# ---------------------------------------------------------------------------
-# Real-API judge (manual only).
-# ---------------------------------------------------------------------------
-
-
-@skip_low_priority
-def test_real_judge_smoke():  # pragma: no cover - manual, costs money
-    """Smoke test against a real judge model. Run manually with API keys."""
-    # This test lives outside ``tests/e2e_tests/``, so the session-wide
-    # ``litellm.completion`` patch is installed for it. Without this it would
-    # grade canned mock text while reporting a real model.
-    assert_litellm_unpatched()
-    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-
-    client = LiteLLMClient(LiteLLMConfig(model="claude-haiku-4-5"))
-    # One compose case + its unify decision (the consolidation-specific path).
-    case = ConsolidationEvalCase.model_validate(
-        {
-            "id": "compose_smoke",
-            "agent_context": "Assistant that drafts outbound customer emails.",
-            "existing": [
-                {
-                    "id": 1,
-                    "content": "Always greet the recipient by name.",
-                    "trigger": "drafting a customer email",
-                    "rationale": "A personal greeting improves reply rate.",
-                }
-            ],
-            "candidate": {
-                "new_id": "NEW-1",
-                "content": "Do not attach internal-only files to a customer email.",
-                "trigger": "drafting a customer email",
-                "rationale": "Internal files can leak confidential data.",
-            },
-            "gold_kind": "unify",
-            "notes": "Compose: do-rule (greeting) + avoid-rule (attachments) for "
-            "different sub-aspects of the same task; no self-contradiction.",
-        }
-    )
-    decision = UnifyDecision(
-        new_id="NEW-1",
-        archive_existing_ids=[1],
-        content=(
-            "Always greet the recipient by name; do not attach internal-only "
-            "files to a customer email."
-        ),
-        trigger="drafting a customer email",
-        rationale="Personal greeting plus no confidential-file leaks.",
-    )
-    v = judge_consolidation_decision(
-        case=case,
-        produced_decision=decision,
-        llm_client=client,
-        rubric={"judge_model": "claude-haiku-4-5"},
-    )
-    assert isinstance(v, ConsolidationVerdict)
+    assert {item.gold_kind for item in cases} == {"create", "replace", "remove"}
+    assert len({item.id for item in cases}) == len(cases) == 5
+    assert all(item.candidate.evidence_refs and item.sessions for item in cases)

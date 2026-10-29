@@ -34,10 +34,6 @@ from reflexio.server.services.extraction.resume_worker import (
     _run_playbook_contract_selection,
     _run_uses_strict_playbook_evidence,
 )
-from reflexio.server.services.playbook.components.consolidator import (
-    PlaybookConsolidationOutput,
-    UnifyDecision,
-)
 from reflexio.server.services.playbook.service import (
     PlaybookGenerationService,
     PlaybookGenerationServiceConfig,
@@ -1140,17 +1136,21 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
                 next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
             )
         )
-        consolidation = PlaybookConsolidationOutput(
-            decisions=[
-                UnifyDecision(
-                    new_id="NEW-0",
-                    archive_existing_ids=[0],
-                    content="Prefer AWS ECS as the deployment target.",
-                    trigger="when selecting a deployment target",
-                    rationale="The team standardizes on AWS.",
-                )
-            ]
-        )
+
+        def consolidate_for_receipt_test(consolidator, results, *_args, **_kwargs):
+            # This regression targets finalization receipt/scheduler replay,
+            # independently of decision generation (as for the profile above).
+            # Exercise the publisher with one replacement and real lineage.
+            consolidator.consolidated_output_indices = {0}
+            consolidator.lineage_sources_by_output_index = {
+                0: [str(seed.user_playbook_id)]
+            }
+            return (
+                [row for group in results for row in group],
+                [seed.user_playbook_id],
+                [(0, [seed.user_playbook_id])],
+            )
+
         with (
             patch.object(
                 PlaybookGenerationService,
@@ -1159,16 +1159,9 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
             ),
             patch(
                 "reflexio.server.services.playbook.components.consolidator."
-                "PlaybookConsolidator.retrieve_existing_playbooks",
-                side_effect=lambda _new, **_kwargs: storage.get_user_playbooks(
-                    user_id="user_1",
-                    agent_version="v1",
-                ),
-            ),
-            patch(
-                "reflexio.server.services.playbook.components.consolidator."
-                "PlaybookConsolidator._consolidation_decisions",
-                return_value=consolidation,
+                "PlaybookConsolidator.deduplicate",
+                autospec=True,
+                side_effect=consolidate_for_receipt_test,
             ),
             patch.object(
                 PlaybookGenerationService,
@@ -1223,10 +1216,11 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
     playbook_receipt_ids = storage.get_agent_run_finalization_receipt(
         run_id="run_playbook_retry", entity_type="user_playbook"
     )
-    playbook_lineage_ids = [
-        event.event_id
-        for event in storage.get_lineage_events(request_id=playbook_request_id)
-    ]
+    lineage_events = storage.get_lineage_events(request_id=playbook_request_id)
+    assert sorted(event.op for event in lineage_events) == ["create", "merge"]
+    assert {event.entity_id for event in lineage_events} == set(playbook_survivor_ids)
+    playbook_lineage_ids = [event.event_id for event in lineage_events]
+    assert len(set(playbook_lineage_ids)) == 2
     observed = {
         "profile_persisted": len(profile_survivor_ids),
         "profile_events": len(profile_keys),
@@ -1241,7 +1235,7 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
         "profile_events": 1,
         "profile_distinct_keys": 1,
         "playbook_persisted": 1,
-        "playbook_lineage_events": 1,
+        "playbook_lineage_events": 2,
         "playbook_events": 1,
         "playbook_distinct_keys": 1,
     }

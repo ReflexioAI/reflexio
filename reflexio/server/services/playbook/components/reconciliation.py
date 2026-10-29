@@ -9,10 +9,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -258,10 +259,42 @@ class _ConversationState(BaseModel):
     repaired: bool
 
 
+_PROMPT_STAGES = ("reconcile-method", "reconcile-audit", "reconcile-revise")
+
+
+def load_reconciliation_prompts(directory: Path) -> dict[str, str]:
+    """Read one versioned asset bundle; callers retain these exact bytes."""
+    return {
+        name: (directory / f"{name}.md").read_text(encoding="utf-8")
+        for name in _PROMPT_STAGES
+    }
+
+
 class Reconciler:
     """One owner-scoped audit loop and one shared physical-request allowance."""
 
-    def __init__(self, client: LiteLLMClient, model: str, max_calls: int = 24):
+    def __init__(
+        self,
+        client: LiteLLMClient,
+        model: str,
+        max_calls: int = 24,
+        *,
+        prompts: Mapping[str, str] | None = None,
+    ):
+        assets = (
+            dict(prompts)
+            if prompts is not None
+            else load_reconciliation_prompts(
+                Path(__file__).with_name("reconciliation_prompts")
+            )
+        )
+        if set(assets) != set(_PROMPT_STAGES) or any(
+            not isinstance(value, str) or not value.strip() for value in assets.values()
+        ):
+            raise ValueError(
+                "A reconciliation prompt bundle requires all three nonempty assets"
+            )
+        self._prompts = MappingProxyType(assets)
         self.client, self.model, self.max_calls = client, model, max_calls
         self.calls = 0
         self.provenance = None
@@ -286,12 +319,7 @@ class Reconciler:
     def bind(self, payload: dict) -> None:
         if self.coordinator is None:
             return
-        policy = {
-            name: (
-                Path(__file__).with_name("reconciliation_prompts") / f"{name}.md"
-            ).read_text()
-            for name in ("reconcile-method", "reconcile-audit", "reconcile-revise")
-        }
+        policy = dict(self._prompts)
         self.budget_key = self.coordinator.step_key(
             "audited-consolidation-v1",
             {
@@ -338,9 +366,7 @@ class Reconciler:
         validate: Callable[[T], None],
         collections: dict[str, list[dict]],
     ) -> T:
-        prompt = (
-            Path(__file__).with_name("reconciliation_prompts") / f"{stage}.md"
-        ).read_text()
+        prompt = self._prompts[stage]
         prompt += (
             "\nProduction representation: session_id identifies a persisted request; "
             "turn is the explicit persisted interaction coordinate shown on each message, "

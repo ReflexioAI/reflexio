@@ -38,8 +38,9 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
         RetrievedLearningImpactOutput,
         RetrievedLearningRelevanceOutput,
     )
-    from reflexio.server.services.playbook.components.consolidator import (
-        PlaybookConsolidationOutput,
+    from reflexio.server.services.playbook.components.reconciliation import (
+        Audit,
+        Decisions,
     )
     from reflexio.server.services.playbook.playbook_service_utils import (
         PlaybookAggregationOutput,
@@ -80,12 +81,12 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
             },
         ),
         "playbook_consolidation": ModelRegistryEntry(
-            model_class=PlaybookConsolidationOutput,
-            minimal_valid={
-                "decisions": [
-                    {"kind": "independent", "new_id": "NEW-0"},
-                ],
-            },
+            model_class=Decisions,
+            minimal_valid={"decisions": []},
+        ),
+        "playbook_consolidation_audit": ModelRegistryEntry(
+            model_class=Audit,
+            minimal_valid={"findings": []},
         ),
         "profile_extraction": ModelRegistryEntry(
             model_class=StructuredProfilesOutput,

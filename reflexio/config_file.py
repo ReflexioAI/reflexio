@@ -19,7 +19,7 @@ from filelock import FileLock
 from reflexio.config_document import decode_config_document, encode_config_document
 from reflexio.config_env import StoredConfigurationError
 
-FILE_FORMAT_VERSION = 7
+FILE_FORMAT_VERSION = 8
 _METADATA_KEY = "_reflexio_config_file"
 
 
@@ -244,6 +244,7 @@ class LocalConfigFile:
             canonicalize_retrieval_floor_policy,
             retire_optimizer_jitter_policy,
             retire_optimizer_replay_policy,
+            retire_playbook_consolidation_strategy,
         )
 
         target = self._target()
@@ -290,6 +291,12 @@ class LocalConfigFile:
             if version < 7 and "playbook_optimizer_config" in canonical:
                 canonical["playbook_optimizer_config"] = retire_optimizer_replay_policy(
                     canonical["playbook_optimizer_config"]
+                )
+            if version < 8 and "user_playbook_extractor_config" in canonical:
+                canonical["user_playbook_extractor_config"] = (
+                    retire_playbook_consolidation_strategy(
+                        canonical["user_playbook_extractor_config"]
+                    )
                 )
             self._validate(canonical)
             digest = hashlib.sha256(original).hexdigest()

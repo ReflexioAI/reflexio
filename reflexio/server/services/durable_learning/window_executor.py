@@ -27,6 +27,7 @@ from reflexio.server.services.durable_learning.window_codec import (
 )
 from reflexio.server.services.extraction.agent_run_records import (
     build_extractor_agent_run_record,
+    effective_frozen_extractor_config,
     matches_frozen_window_binding,
     source_interaction_digest,
 )
@@ -127,7 +128,9 @@ class WindowExecutor:
                 **common, agent_version=attribution.agent_version
             )
             config = UserPlaybookExtractorConfig.model_validate(
-                window.policy["extractor"]
+                effective_frozen_extractor_config(
+                    window.policy["extractor"], extractor_kind="playbook"
+                )
             )
         return self._configure(service, request, config, groups, window)
 

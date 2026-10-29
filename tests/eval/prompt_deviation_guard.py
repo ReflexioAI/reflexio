@@ -1,33 +1,19 @@
-"""Prompt deviation guard — gate a candidate prompt version against a baseline.
+"""Compare exact audited reconciliation prompt bundles on the eval harness.
 
-When you iterate on a memory prompt and add a new version, this runs that
-component's deterministic eval harness under **two pinned prompt versions** —
-the prior (baseline) and the new (candidate) — and fails if any guard metric
-regresses beyond a tolerance, so a degrading edit is caught before you adopt it.
+The candidate directory supplies all three prompt assets; the baseline defaults
+to the shipped bundle. Each bundle is frozen before execution and identified by
+its content digest in the report. The configured client model is used for the
+actual planner and independent audit. This manual tool makes paid provider and
+judge calls; default tests exercise its gate logic with scripted clients.
 
-The playbook-consolidation component is covered through its existing live
-provider and judge under ``tests/eval/consolidation``.
+Usage from the repository root::
 
-Version pinning needs no core change: ``RequestContext`` builds its own
-``PromptManager``, but the providers read ``ctx.prompt_manager``, so we swap in
-``PromptManager(version_override={prompt_id: version})`` after constructing the
-context. A non-active version file loads fine as long as it exists in the
-prompt bank.
-
-This makes real LLM calls (provider + optional judge), so it is a manual /
-gated tool — run with API keys. The pure gate logic (:func:`compare`) is unit
-tested without any LLM.
-
-Usage (from the repository root)::
-
-    uv run python -m tests.eval.prompt_deviation_guard \\
-        --component consolidation \\
-        --candidate-version v2.4.0 \\
+    uv run python -m tests.eval.prompt_deviation_guard \
+        --component consolidation --candidate-prompts /path/to/candidate \
         --judge-model claude-haiku-4-5
 
-Exit codes: 0 when the candidate holds (PASS), 1 when it regresses (FAIL), and
-2 on an eval/infra error (provider or judge failed) — distinct from 1 so an
-orchestrator never misreads an outage as a prompt regression.
+Exit codes: 0 for pass, 1 for metric regression, and 2 for evaluation or
+infrastructure failure.
 """
 
 from __future__ import annotations
@@ -35,7 +21,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import tempfile
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -63,14 +48,12 @@ class MetricSpec:
 
 
 # Guard metrics per component. ``judge_accuracy`` / ``self_contradiction_rate``
-# can be None (no judge, or no judged ``unify``); such metrics are skipped, not
+# can be None (no judge, or no judged output batches); such metrics are skipped, not
 # failed (see :func:`compare`).
 _METRIC_SPECS: dict[Component, tuple[MetricSpec, ...]] = {
     "consolidation": (
         MetricSpec("kind_accuracy", higher_is_better=True),
         MetricSpec("judge_accuracy", higher_is_better=True),
-        MetricSpec("over_merge_rate", higher_is_better=False),
-        MetricSpec("under_merge_rate", higher_is_better=False),
         MetricSpec("self_contradiction_rate", higher_is_better=False),
     ),
 }
@@ -213,7 +196,7 @@ def compare(
     Pure (no LLM): operates on two already-computed ``EvalResults``. A metric
     with a None value on either side is skipped (not failed) — judge metrics
     are None when no judge ran, and ``self_contradiction_rate`` is None when no
-    ``unify`` was produced.
+    batch was judged.
 
     Args:
         component: Which component's metric specs to apply.
@@ -260,72 +243,41 @@ def compare(
     return report
 
 
-def _run_component_eval(
-    *,
-    component: Component,
-    version: str | None,
-    model: str,
-    judge_model: str | None,
-):
-    """Run a component's eval harness under a pinned prompt version.
+def _load_prompt_bundle(directory=None):
+    from pathlib import Path
 
-    Builds a real ``LiteLLMClient`` for the provider (and an optional judge
-    client), a ``RequestContext`` with a version-pinned ``PromptManager``, then
-    runs the component's live provider over its illustrative fixtures. Makes
-    real LLM calls.
+    from reflexio.server.services.playbook.components import reconciliation
 
-    Args:
-        component: Which component to evaluate.
-        version: Prompt version to pin, or None to use the active version.
-        model: Model for the provider's LLM client.
-        judge_model: Model for the AI judge, or None to skip judging.
+    source = (
+        Path(directory)
+        if directory is not None
+        else Path(reconciliation.__file__).with_name("reconciliation_prompts")
+    )
+    return reconciliation.load_reconciliation_prompts(source)
 
-    Returns:
-        The component's ``EvalResults``.
-    """
-    from reflexio.server.api_endpoints.request_context import RequestContext
+
+def _bundle_digest(bundle):
+    import hashlib
+
+    return hashlib.sha256(json.dumps(bundle, sort_keys=True).encode()).hexdigest()
+
+
+def _run_component_eval(*, component, prompts, model, judge_model):
+    """Run the real method with one explicit, frozen prompt artifact bundle."""
     from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-    from reflexio.server.prompt.prompt_manager import PromptManager
+    from tests.eval.consolidation.fixtures import load_illustrative_cases
+    from tests.eval.consolidation.providers import make_consolidation_decision_provider
+    from tests.eval.consolidation.runner import run_eval
 
-    prompt_id = _prompt_id(component)
     client = LiteLLMClient(LiteLLMConfig(model=model))
     judge = LiteLLMClient(LiteLLMConfig(model=judge_model)) if judge_model else None
-
-    with tempfile.TemporaryDirectory() as tmp:
-        ctx = RequestContext(org_id="prompt-deviation-guard", storage_base_dir=tmp)
-        if version is not None:
-            ctx.prompt_manager = PromptManager(version_override={prompt_id: version})
-
-        from tests.eval.consolidation.fixtures import load_illustrative_cases
-        from tests.eval.consolidation.providers import (
-            make_consolidation_decision_provider,
-        )
-        from tests.eval.consolidation.runner import run_eval as run_consolidation
-
-        cons_provider = make_consolidation_decision_provider(
-            llm_client=client, request_context=ctx
-        )
-        return run_consolidation(
-            cases=load_illustrative_cases(),
-            decision_provider=cons_provider,
-            llm_client=judge,
-        )
-
-
-def _prompt_id(component: Component) -> str:
-    """Return the prompt-bank id for a component."""
-    from reflexio.server.services.playbook.components.consolidator import (
-        PlaybookConsolidator,
+    return run_eval(
+        cases=load_illustrative_cases(),
+        decision_provider=make_consolidation_decision_provider(
+            llm_client=client, prompts=prompts
+        ),
+        llm_client=judge,
     )
-
-    return PlaybookConsolidator.DEDUPLICATION_PROMPT_ID
-
-
-def _active_version(component: Component) -> str | None:
-    """Return the currently-active prompt version for a component."""
-    from reflexio.server.prompt.prompt_manager import PromptManager
-
-    return PromptManager().get_active_version(_prompt_id(component))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -338,14 +290,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--component", required=True, choices=COMPONENTS)
     parser.add_argument(
-        "--candidate-version",
+        "--candidate-prompts",
         required=True,
-        help="Prompt version to gate (e.g. v2.4.0); must exist in the bank.",
+        help="Directory containing all three candidate reconciliation .md assets.",
     )
     parser.add_argument(
-        "--baseline-version",
+        "--baseline-prompts",
         default=None,
-        help="Baseline version; defaults to the currently-active version.",
+        help="Baseline asset directory; defaults to the current installed bundle.",
     )
     parser.add_argument("--model", default="claude-haiku-4-5")
     parser.add_argument(
@@ -365,19 +317,22 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--tolerance must be >= 0")
     component: Component = args.component
 
-    baseline_version = args.baseline_version or _active_version(component)
     # Eval execution (LLM provider + judge) can fail for infra reasons —
     # surface those as exit code 2, distinct from a regression FAIL (1).
     try:
+        baseline_prompts = _load_prompt_bundle(args.baseline_prompts)
+        candidate_prompts = _load_prompt_bundle(args.candidate_prompts)
+        baseline_version = _bundle_digest(baseline_prompts)
+        candidate_version = _bundle_digest(candidate_prompts)
         baseline = _run_component_eval(
             component=component,
-            version=baseline_version,
+            prompts=baseline_prompts,
             model=args.model,
             judge_model=args.judge_model,
         )
         candidate = _run_component_eval(
             component=component,
-            version=args.candidate_version,
+            prompts=candidate_prompts,
             model=args.model,
             judge_model=args.judge_model,
         )
@@ -390,7 +345,7 @@ def main(argv: list[str] | None = None) -> int:
         candidate=candidate,
         tolerance=args.tolerance,
         baseline_version=baseline_version,
-        candidate_version=args.candidate_version,
+        candidate_version=candidate_version,
     )
     print(report.render())
     if args.json_path:

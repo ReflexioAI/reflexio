@@ -26,7 +26,9 @@ def _cons(rows, *, judged: bool = False) -> ConsResults:
                 produced_kind=produced,
                 kind_match=(gold == produced),
                 judge_correct=(gold == produced) if judged else None,
-                self_contradiction=False if (judged and produced == "unify") else None,
+                self_contradiction=False
+                if (judged and produced in {"create", "replace", "mixed"})
+                else None,
             )
         )
     return res
@@ -83,17 +85,16 @@ def test_kind_accuracy_drop_fails() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_over_merge_rate_rise_fails() -> None:
-    # kind_accuracy held constant (both mismatch) to isolate over_merge_rate.
-    base = _cons([("a", "differentiate", "independent")])  # separate, no over-merge
-    cand = _cons([("a", "differentiate", "unify")])  # separate gold, merged -> over
-    report = guard.compare(component="consolidation", baseline=base, candidate=cand)
-    om = _metric(report, "over_merge_rate")
-    assert om.baseline == 0.0
-    assert om.candidate == 1.0
-    assert om.regressed
+def test_judged_contradiction_rise_fails_without_inferring_it_from_action_names():
+    base = _cons([("a", "replace", "replace")], judged=True)
+    candidate = _cons([("a", "replace", "replace")], judged=True)
+    candidate.outcomes[0].self_contradiction = True
+    report = guard.compare(
+        component="consolidation", baseline=base, candidate=candidate
+    )
+    metric = _metric(report, "self_contradiction_rate")
+    assert metric.baseline == 0 and metric.candidate == 1 and metric.regressed
     assert not report.passed
-    # kind_accuracy unchanged (0.0 -> 0.0), so it must NOT be flagged.
     assert not _metric(report, "kind_accuracy").regressed
 
 
@@ -127,8 +128,13 @@ def test_agreement_rate_counts_unchanged_cases() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_prompt_id_resolves() -> None:
-    assert guard._prompt_id("consolidation") == "playbook_consolidation"
+@pytest.mark.parametrize(
+    "stage", ["reconcile-method", "reconcile-audit", "reconcile-revise"]
+)
+def test_digest_tracks_each_actual_prompt_asset(stage):
+    baseline = guard._load_prompt_bundle()
+    candidate = {**baseline, stage: baseline[stage] + "\nCandidate treatment."}
+    assert guard._bundle_digest(baseline) != guard._bundle_digest(candidate)
 
 
 def test_metric_specs_cover_every_component() -> None:
@@ -180,7 +186,7 @@ def test_main_rejects_negative_tolerance() -> None:
             [
                 "--component",
                 "consolidation",
-                "--candidate-version",
+                "--candidate-prompts",
                 "v2.3.0",
                 "--tolerance",
                 "-0.1",
@@ -188,12 +194,53 @@ def test_main_rejects_negative_tolerance() -> None:
         )
 
 
-def test_main_returns_2_on_eval_infra_error(monkeypatch) -> None:
-    # An eval/provider failure must surface as exit code 2, not 1 (regression).
-    def _boom(**_kwargs):
+def test_main_returns_2_on_eval_infra_error(monkeypatch, tmp_path):
+    def fail(**_kwargs):
         raise RuntimeError("provider down")
 
-    monkeypatch.setattr(guard, "_active_version", lambda _c: "v2.3.0")
-    monkeypatch.setattr(guard, "_run_component_eval", _boom)
-    rc = guard.main(["--component", "consolidation", "--candidate-version", "v2.3.0"])
-    assert rc == 2
+    for name, content in guard._load_prompt_bundle().items():
+        (tmp_path / f"{name}.md").write_text(content)
+    monkeypatch.setattr(guard, "_run_component_eval", fail)
+    assert (
+        guard.main(
+            ["--component", "consolidation", "--candidate-prompts", str(tmp_path)]
+        )
+        == 2
+    )
+
+
+def test_main_passes_both_exact_bundles_to_execution(monkeypatch, tmp_path):
+    baseline = guard._load_prompt_bundle()
+    candidate = {
+        **baseline,
+        "reconcile-audit": baseline["reconcile-audit"] + "\nStricter audit treatment.",
+    }
+    for name, content in candidate.items():
+        (tmp_path / f"{name}.md").write_text(content)
+    seen = []
+
+    def execute(**kwargs):
+        seen.append(kwargs["prompts"])
+        return _cons([("case", "replace", "replace")])
+
+    monkeypatch.setattr(guard, "_run_component_eval", execute)
+    assert (
+        guard.main(
+            ["--component", "consolidation", "--candidate-prompts", str(tmp_path)]
+        )
+        == 0
+    )
+    assert seen == [baseline, candidate]
+
+
+def test_missing_candidate_asset_fails_before_any_provider_call(monkeypatch, tmp_path):
+    def forbidden(**_kwargs):
+        raise AssertionError("missing artifact must fail before paid execution")
+
+    monkeypatch.setattr(guard, "_run_component_eval", forbidden)
+    assert (
+        guard.main(
+            ["--component", "consolidation", "--candidate-prompts", str(tmp_path)]
+        )
+        == 2
+    )

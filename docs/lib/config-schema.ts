@@ -78,7 +78,6 @@ export interface PlaybookAggregatorConfig {
 }
 
 export interface DeduplicationConfig {
-  strategy: "legacy" | "audited";
   search_threshold: number;
   search_top_k: number;
 }
@@ -218,7 +217,7 @@ export function hydrateConfig(raw: unknown): ReflexioConfig {
 // a clean payload. The Pydantic model rejects empty strings for `NonEmptyStr`
 // fields, so leaving them in would produce confusing 422s.
 export function serializeConfig(config: ReflexioConfig) {
-  const clean = <T,>(v: T): T | null => {
+  const clean = <T>(v: T): T | null => {
     if (v === null || v === undefined) return null;
     if (typeof v === "string" && v.trim() === "") return null;
     return v;
@@ -247,7 +246,9 @@ export function serializeConfig(config: ReflexioConfig) {
       out.openai = { ...out.openai, azure_config: azure };
     }
     if (out.openai && clean(out.openai.api_key) === null) {
-      out.openai = out.openai.azure_config ? { ...out.openai, api_key: null } : null;
+      out.openai = out.openai.azure_config
+        ? { ...out.openai, api_key: null }
+        : null;
     }
     if (out.dashscope && clean(out.dashscope.api_key) === null) {
       out.dashscope = null;
@@ -260,10 +261,7 @@ export function serializeConfig(config: ReflexioConfig) {
     }
     if (out.custom_endpoint) {
       const ce = out.custom_endpoint;
-      if (
-        clean(ce.api_key) === null ||
-        clean(ce.api_base) === null
-      ) {
+      if (clean(ce.api_key) === null || clean(ce.api_base) === null) {
         out.custom_endpoint = null;
       }
     }
@@ -307,7 +305,9 @@ export function serializeConfig(config: ReflexioConfig) {
     agentSuccess: AgentSuccessConfig | null,
   ): AgentSuccessConfig | null => {
     if (!agentSuccess) return null;
-    const current: AgentSuccessConfig & Record<string, unknown> = { ...agentSuccess };
+    const current: AgentSuccessConfig & Record<string, unknown> = {
+      ...agentSuccess,
+    };
     for (const key of [
       "window_size_override",
       "stride_size_override",
@@ -320,20 +320,23 @@ export function serializeConfig(config: ReflexioConfig) {
     }
     return {
       ...current,
-      tagging_definition_prompt: clean(
-        agentSuccess.tagging_definition_prompt,
-      ),
+      tagging_definition_prompt: clean(agentSuccess.tagging_definition_prompt),
     };
   };
 
-  const { extraction_preset: _retiredPreset, ...canonical } = config as ReflexioConfig & {
-    extraction_preset?: unknown;
-  };
+  const { extraction_preset: _retiredPreset, ...canonical } =
+    config as ReflexioConfig & {
+      extraction_preset?: unknown;
+    };
   return {
     ...canonical,
-    storage_config: config.storage_config && "db_path" in config.storage_config
-      ? { ...config.storage_config, db_path: clean(config.storage_config.db_path) }
-      : config.storage_config,
+    storage_config:
+      config.storage_config && "db_path" in config.storage_config
+        ? {
+            ...config.storage_config,
+            db_path: clean(config.storage_config.db_path),
+          }
+        : config.storage_config,
     agent_context_prompt: clean(config.agent_context_prompt),
     tool_can_use: config.tool_can_use?.length ? config.tool_can_use : null,
     profile_extractor_config: cleanExtractor(config.profile_extractor_config),

@@ -621,3 +621,84 @@ def test_current_generation_cannot_accept_historical_gateway_pin(tmp_path):
         LocalConfigFile(path).prepare()
     assert path.read_bytes() == original
     assert not (tmp_path / ".config-migrations").exists()
+
+
+@pytest.mark.parametrize("strategy", ["legacy", "audited"])
+def test_consolidation_retirement_preserves_original_and_independent_search(
+    tmp_path, strategy
+):
+    path = tmp_path / "config.json"
+    original = json.dumps(
+        {
+            "_reflexio_config_file": {"version": 7},
+            "storage_config": {"type": "sqlite"},
+            "user_playbook_extractor_config": {
+                "extraction_definition_prompt": "Learn deployment safeguards",
+                "deduplication_config": {
+                    "strategy": strategy,
+                    "search_threshold": 0.75,
+                    "search_top_k": 11,
+                    "opaque": {"keep": "verbatim"},
+                },
+            },
+        }
+    ).encode()
+    path.write_bytes(original)
+    owner = LocalConfigFile(path)
+    assert owner.prepare()
+    policy = owner.read_document()["user_playbook_extractor_config"][
+        "deduplication_config"
+    ]
+    assert policy == {
+        "search_threshold": 0.75,
+        "search_top_k": 11,
+        "opaque": {"keep": "verbatim"},
+    }
+    digest = hashlib.sha256(original).hexdigest()
+    assert (
+        tmp_path / ".config-migrations/config.json" / f"{digest}.json"
+    ).read_bytes() == original
+    prepared = path.read_bytes()
+    assert not owner.prepare()
+    assert path.read_bytes() == prepared
+
+
+@pytest.mark.parametrize("strategy", [None, "unknown", False, ["legacy"]])
+def test_invalid_historical_consolidation_selector_never_mutates_file(
+    tmp_path, strategy
+):
+    path = tmp_path / "config.json"
+    original = json.dumps(
+        {
+            "_reflexio_config_file": {"version": 7},
+            "storage_config": {"type": "sqlite"},
+            "user_playbook_extractor_config": {
+                "deduplication_config": {"strategy": strategy},
+            },
+        }
+    ).encode()
+    path.write_bytes(original)
+    with pytest.raises(StoredConfigurationError):
+        LocalConfigFile(path).prepare()
+    assert path.read_bytes() == original
+    assert not (tmp_path / ".config-migrations").exists()
+
+
+@pytest.mark.parametrize("strategy", ["legacy", "audited", None])
+def test_current_file_does_not_silently_accept_retired_consolidation_selector(
+    tmp_path, strategy
+):
+    path = tmp_path / "config.json"
+    original = json.dumps(
+        {
+            "_reflexio_config_file": {"version": FILE_FORMAT_VERSION},
+            "storage_config": {"type": "sqlite"},
+            "user_playbook_extractor_config": {
+                "deduplication_config": {"strategy": strategy},
+            },
+        }
+    ).encode()
+    path.write_bytes(original)
+    with pytest.raises(StoredConfigurationError):
+        LocalConfigFile(path).prepare()
+    assert path.read_bytes() == original

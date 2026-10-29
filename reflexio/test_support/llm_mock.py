@@ -187,6 +187,45 @@ def _mock_completion(*args: Any, **kwargs: Any) -> MagicMock:
         if isinstance(message, dict) and "content" in message:
             prompt_content += str(message["content"])
 
+    # The audited method includes its schema in the system message and its
+    # exact source-bearing payload separately. Mock only that explicit shape;
+    # never manufacture source references or reuse four-action fixtures.
+    if len(messages) >= 2 and "Production representation: session_id" in str(
+        messages[0].get("content", "")
+    ):
+        try:
+            payload = json.loads(messages[1]["content"])
+        except (ValueError, TypeError, KeyError):
+            payload = None
+        if (
+            isinstance(payload, dict)
+            and {"new", "existing", "sessions"} <= payload.keys()
+        ):
+            if "proposed_memory" in payload:
+                return make_structured_finish({"findings": []})
+            decisions = []
+            for row in payload["new"]:
+                if not row.get("evidence_refs"):
+                    raise AssertionError(
+                        "Audited mock requires real supplied source references"
+                    )
+                decisions.append(
+                    {
+                        "kind": "create",
+                        "new_ids": [row["id"]],
+                        "reason": "scripted test output",
+                        "outputs": [
+                            {
+                                "trigger": row["trigger"],
+                                "content": row["content"],
+                                "rationale": "See cited evidence.",
+                                "evidence_refs": row["evidence_refs"],
+                            }
+                        ],
+                    }
+                )
+            return make_structured_finish({"decisions": decisions})
+
     # Extraction now delivers its result as a native structured response
     # (response_format=output_schema): the tool loop reads the final answer from
     # message CONTENT (parsed into the schema), with ask_human /

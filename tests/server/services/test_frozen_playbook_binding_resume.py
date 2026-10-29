@@ -33,11 +33,11 @@ pipeline = durable.pipeline
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.parametrize("missing_strategy", [False, True])
+@pytest.mark.parametrize("historical_strategy", [None, "legacy", "audited"])
 @pytest.mark.parametrize("retired_cap", [False, True])
 @pytest.mark.parametrize("retired_context", [None, "Historical playbook instructions"])
 def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
-    pipeline, monkeypatch, missing_strategy, retired_cap, retired_context
+    pipeline, monkeypatch, historical_strategy, retired_cap, retired_context
 ):
     engine, _, http = pipeline
     configurator = engine.request_context.configurator
@@ -76,8 +76,10 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
         snapshot["extractor_config"]["deduplication_config"][
             "max_unified_content_chars"
         ] = 37
-    if missing_strategy:
-        snapshot["extractor_config"]["deduplication_config"].pop("strategy")
+    if historical_strategy is not None:
+        snapshot["extractor_config"]["deduplication_config"]["strategy"] = (
+            historical_strategy
+        )
     original_hash = build_scope_hash(snapshot["extractor_config"])
     journal = snapshot["overflow"]
     journal["attempts"] = [
@@ -198,16 +200,20 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
         legacy_fields[name] = (field.annotation, copy.deepcopy(field))
         if name == "extraction_definition_prompt":
             legacy_fields["context_prompt"] = (str | None, None)
-    if missing_strategy or retired_cap:
-        dedup_fields: dict[str, Any] = {
+    dedup_fields: dict[str, Any] = {}
+    if historical_strategy is not None:
+        dedup_fields["strategy"] = (str, historical_strategy)
+    dedup_fields.update(
+        {
             name: (field.annotation, copy.deepcopy(field))
             for name, field in DeduplicationConfig.model_fields.items()
-            if name != "strategy" or not missing_strategy
+            if name != "strategy"
         }
-        if retired_cap:
-            dedup_fields["max_unified_content_chars"] = (int, 1200)
-        legacy_dedup = create_model("DeduplicationConfig", **dedup_fields)
-        legacy_fields["deduplication_config"] = (legacy_dedup, legacy_dedup())
+    )
+    if retired_cap:
+        dedup_fields["max_unified_content_chars"] = (int, 1200)
+    legacy_dedup = create_model("DeduplicationConfig", **dedup_fields)
+    legacy_fields["deduplication_config"] = (legacy_dedup, legacy_dedup())
     legacy_type = create_model("LegacyPlaybookExtractorConfig", **legacy_fields)
     legacy_config = legacy_type.model_validate(snapshot["extractor_config"])
     from reflexio.server.services.extraction.agent_run_records import (

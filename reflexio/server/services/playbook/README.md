@@ -25,7 +25,7 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 | `playbook_service_utils.py` | Request dataclasses, Pydantic output schemas, message construction utilities |
 | `playbook_evidence.py` | Strict evidence validation, call-local reference checks, and persisted provenance helpers |
 | `rule_evidence/` | Owned/version-matched source schemas, packaged judge/tuner prompts, compact diagnostics and indexed exact-clause repair; see [usage](rule_evidence/README.md) |
-| `components/overflow_consolidation.py` | Bounded metadata proposals, exact historical quotations, and semantic verification before overflow consolidation applies original rows |
+| `components/reconciliation.py` | Evidence-backed Create/Replace/Remove planning with independent audit and immutable prompt bindings |
 | `components/overflow_evidence.py` | Canonical historical row fingerprints checked under final commit locks |
 | `source_quoted_overflow.py` | Multi-chunk recovery: original User-message copying, bounded publication, immutable source-policy receipt and cached-plan validation |
 | `review_window.py` | Shared fail-closed reconstruction of persisted review chronology for automatic and manual review |
@@ -212,60 +212,35 @@ post-processes generated outputs before storage or model-response logging.
 
 ### Playbook Consolidation (`components/consolidator.py`)
 
+Every nonempty generation batch uses one evidence-backed Create/Replace/Remove
+method. Configured `search_threshold` and `search_top_k` bound incumbent retrieval;
+they do not decide semantic equivalence. The planner accounts for every NEW input,
+can replace multiple originals with multiple outputs, and independently audits the
+complete proposed memory before publication. Unmentioned incumbents remain.
+Empty batches make no model call. Source-quoted rows remain outside consolidation.
 
-Consolidates newly extracted playbooks against existing playbooks in the database via LLM semantic matching. For each NEW vs EXISTING pair the LLM returns one of four decision kinds, and the consolidator applies the chosen kind:
+The method uses persisted source observations and validated evidence references.
+Missing or unverified evidence cannot authorize retiring an incumbent. Failed
+retrieval, evidence validation, or audit propagates an explicit failure or
+abstention; there is no unaudited insert-all or alternate decision engine fallback.
+The three shipped prompt assets are copied and frozen at admission. Durable
+approval binds those exact bytes, payload, model, transport, and remaining call
+allowance. Phase limits remain 24 calls and the shared journal ceiling remains
+128 attempts; historical attempts are not refunded.
 
-- `unify` — merge multiple rows into one, archiving members and emitting one merged row.
-- `reject_new` — drop the new candidate because one or more existing rows already cover it.
-- `differentiate` — archive the existing row and emit two refined rows (one per side) with sharpened triggers.
-- `independent` — both rows are kept; the new candidate is inserted alongside the existing row.
+The existing storage plan owns atomic publication: insertions, source retirement,
+and lineage share the commit fence. A single replacement may record its actual
+`merged_into` target; split outputs supersede sources without inventing one
+survivor. Governance and individually validated output evidence are preserved.
+Saved committed plans retain their existing replay and source-quoted fences.
 
-The LLM must account for every new candidate exactly once and receives validated
-evidence groups rather than raw database identifiers. Malformed, blank,
-partition-invalid, or overlapping-survivor decisions receive one bounded repair
-attempt. Reject-all is a valid result. If repair exhausts, the batch fails closed
-rather than inserting unreviewed candidates. Deterministic guards preserve
-source unions and reviewer revisions and prevent overlapping duplicate survivors.
-
-When extraction overflow admission is enabled, the grounding reviewer uses each
-candidate's original quotations and leaves historical redundancy to consolidation.
-Consolidation proposes actions from per-candidate retrieval metadata, scans the
-complete selected historical spans into bounded exact quotations, then verifies
-the combined decisions before applying the original storage models. Equal source
-bytes share source geometry; row-specific semantic receipts, fingerprints and
-original source IDs remain distinct. A proposal that verification does not
-clear (unsafe or undetermined verdict, undetermined coverage, no verified
-quotation) completes with the no-merge plan: every NEW is inserted unchanged and
-no historical row is touched. Final row locks protect scope, status, content and
-evidence changes.
-A historical row's evidence comes from one helper, `historical_evidence`. Its
-`source_span` is used when non-blank. Legacy rows created before extraction
-stored the verbatim quote have none; their stored rule text (`Trigger`,
-`Content`, `Rationale`, `Blocking issue`, in that order, blank fields omitted)
-is scanned and quoted instead, under the same exact-offset rules. Scan and
-verification payloads mark such a row `evidence_kind: "stored_rule"` with a fixed
-note, and its partition plan is keyed by a `stored_rule:`-prefixed digest that
-never collides with a span digest. The guarantee is weaker: for stored-rule
-evidence, verification proves no stored constraint is dropped, not fidelity to
-the original conversation. Rows with a span keep their exact scan and
-verification payloads, step keys and partition digests. A row with neither a
-span nor any rule text completes with the no-merge plan.
-Missing historical scan receipts now use lossless bounded original snippets:
-the model selects displayed IDs, and the server copies exact text and absolute
-character ranges into the existing quotation receipt format. Every primary and
-neighbor character remains visible, author role stays unknown, and earlier
-quotations cannot be removed. Physical quoted coverage avoids saving repeated
-neighbor evidence. Conservative snippet costs guide selection within the unchanged
-2048-token carrier limit; insufficient coverage or capacity blocks publication.
-Valid v1 quotation receipts remain reusable without provider calls; missing work
-and new receipts use a separate v2 key bound to the complete presentation and schema.
-Overflow review and final verification preserve the local scope of code examples
-and test values, including conditional permission checks and admission versus
-execution. Incomplete upstream excerpts cannot establish omitted prerequisites
-or universal requirements. Their trusted policy is separate from source data;
-normal non-overflow reviewer prompts remain unchanged.
-
-Inline consolidation always runs during generation (the legacy `deduplicator` feature flag is retired). The enterprise repo additionally ships a **scheduled second-pass job** (`reflexio_ext/server/services/playbook_reconsolidation/`) that re-runs consolidation daily over already-persisted rows — user playbooks per `(user_id, agent_version)` and agent playbooks per `agent_version` — by rendering each duplicate group as NEW candidates against an empty EXISTING side via `_consolidation_decisions`, then tombstoning merged sources with `merge_records` lineage.
+`DeduplicationConfig.strategy` is retired. Explicit configuration migration removes
+known old selectors while retaining custom search policy and original backups.
+Historical extraction snapshots are authenticated before projecting the retired
+selector out of the extraction phase; their hashes, paid answers, and journals
+remain unchanged. Old consolidation proposal receipts do not constitute approval
+under the current audited method. Rollback uses the previous release and preserved
+configuration originals, rather than a runtime engine selector.
 
 ## Key Endpoints / Commands / Contracts
 

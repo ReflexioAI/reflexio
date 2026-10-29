@@ -1,20 +1,8 @@
-"""Linchpin fixtures for the multi-round memory-scenario harness.
+"""Synthetic multi-round extraction/consolidation scenarios.
 
-These scenarios are *scaffolding*, not a curated eval set — they exist to
-exercise the runner end to end across the three memory components
-(extract -> consolidate -> reflect) on shared, domain-agnostic fixtures.
-Each one isolates a single behavior the harness must demonstrate:
-
-- ``compose_grows_skill`` — a learn round whose new avoid-rule for a
-  different sub-aspect ``unify``-composes into the seeded do-rule, growing
-  one skill (Option-B compose).
-- ``no_self_contradiction`` — a learn round implying the opposite advice on
-  the SAME trigger must ``differentiate`` (two refined triggers), never
-  collapse into a self-contradicting merge.
-- ``reflect_corrects`` — an unrelated learn round (``independent``) followed
-  by a reflect round that tightens a cited rule the window shows misfired.
-
-See ``case.py`` for the scenario schema.
+Composition and contradiction-avoidance cases exercise stable evidence references
+and complete batch projection into subsequent rounds. They are harness fixtures,
+not a curated quality dataset.
 """
 
 from __future__ import annotations

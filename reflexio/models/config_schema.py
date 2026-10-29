@@ -401,16 +401,16 @@ class DeduplicationConfig(BaseModel):
     performs the final duplicate decision.
 
     Args:
-        strategy: Select legacy four-action or independently audited three-action consolidation.
         search_threshold: Minimum similarity score for deduplication candidates
             (0.0-1.0), independent from user-facing retrieval defaults.
         search_top_k: Maximum number of existing playbooks to retrieve per new playbook.
     """
 
-    strategy: Literal["legacy", "audited"] = Field(
-        default="legacy",
-        description="Playbook consolidation strategy. audited uses Create/Replace/Remove with independent audit; legacy restores the existing four actions.",
-    )
+    @model_validator(mode="before")
+    @classmethod
+    def reject_retired_strategy(cls, data: Any) -> Any:
+        return _reject_obsolete_fields(data, ("strategy",))
+
     search_threshold: float = Field(
         default=0.4,
         ge=0.0,

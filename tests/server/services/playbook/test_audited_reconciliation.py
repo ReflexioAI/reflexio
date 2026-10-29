@@ -458,3 +458,42 @@ def test_deterministic_rejections_still_abstain():
         with pytest.raises(AuditedConsolidationAbstainedError) as raised:
             _run_audited(engine, payload(), {("request", 17): object()})
         assert isinstance(raised.value.__cause__, ValueError | type(repair))
+
+
+def test_execution_and_durable_binding_use_one_frozen_prompt_bundle(monkeypatch):
+    from copy import deepcopy
+    from pathlib import Path
+
+    from reflexio.server.services.playbook.components import reconciliation
+
+    supplied = reconciliation.load_reconciliation_prompts(
+        Path(reconciliation.__file__).with_name("reconciliation_prompts")
+    )
+    original = dict(supplied)
+    coordinator = CheckpointCoordinator()
+    token = current_overflow_coordinator.set(cast(Any, coordinator))
+    try:
+        client = ScriptedClient([{"decisions": [replacement()]}, {"findings": []}])
+        engine = Reconciler(cast(LiteLLMClient, client), "scripted", prompts=supplied)
+        supplied["reconcile-method"] = "Changed after admission"
+
+        def unexpected_reload(*_args, **_kwargs):
+            raise AssertionError("A running method must not reread its prompt assets")
+
+        monkeypatch.setattr(Path, "read_text", unexpected_reload)
+        engine.run(payload(), {("request", 17): object()})
+        assert client.requests[0]["messages"][0]["content"].startswith(
+            original["reconcile-method"]
+        )
+        assert client.requests[1]["messages"][0]["content"].startswith(
+            original["reconcile-audit"]
+        )
+        saved = deepcopy(coordinator.checkpoint)
+        changed = ScriptedClient([])
+        with pytest.raises(AuditedConsolidationAbstainedError, match="binding changed"):
+            Reconciler(cast(LiteLLMClient, changed), "scripted", prompts=supplied).run(
+                payload(), {("request", 17): object()}
+            )
+        assert changed.requests == [] and coordinator.checkpoint == saved
+    finally:
+        current_overflow_coordinator.reset(token)

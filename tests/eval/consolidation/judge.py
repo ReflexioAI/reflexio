@@ -4,8 +4,8 @@ Wraps a ``LiteLLMClient``-style client (anything exposing
 ``generate_chat_response(messages,
 response_format, model)``) and asks an LLM whether a *produced*
 consolidation decision matches the *intended* outcome captured by a case's
-``gold_kind`` — and, for a ``unify``, whether the merge introduced a
-self-contradiction.
+``gold_kind`` and source observations, including contradictions across the
+complete output memory.
 
 No human gold labels are required at scoring time — the LLM judge is the
 oracle, and the harness metric is agreement with the judge. A panel of N
@@ -30,9 +30,7 @@ from tests.eval.consolidation.case import ConsolidationEvalCase, kind_for_decisi
 
 if TYPE_CHECKING:
     from reflexio.server.llm.litellm_client import LiteLLMClient
-    from reflexio.server.services.playbook.components.consolidator import (
-        ConsolidationDecision,
-    )
+    from reflexio.server.services.playbook.components.reconciliation import Decisions
 
 
 class ConsolidationVerdict(BaseModel):
@@ -41,10 +39,9 @@ class ConsolidationVerdict(BaseModel):
     Attributes:
         correct: True iff the judge believes the produced decision matches
             the case's intended outcome.
-        self_contradiction: True iff the produced decision is a ``unify``
-            whose merged content contradicts itself on the *same* situation
-            OR collapses distinct do/avoid rules. For non-``unify``
-            decisions this is always False.
+        self_contradiction: Whether the complete proposed memory contains
+            contradictory advice for the same situation or collapses
+            distinct do/avoid rules.
         reason: One-sentence justification, logged / surfaced in reports.
     """
 
@@ -54,49 +51,25 @@ class ConsolidationVerdict(BaseModel):
 
 
 _DEFAULT_PROMPT = (
-    "You are a strict playbook-consolidation judge. A consolidation step "
-    "looked at a NEW candidate rule and the EXISTING rules search surfaced, "
-    "then produced one decision of exactly one of these four kinds:\n\n"
-    "  - unify: collapse the candidate (and 0..N existing rows) into one "
-    "row. A unified skill MAY hold mixed-polarity rules (a do-rule and an "
-    "avoid-rule) but ONLY when they govern DIFFERENT sub-aspects of the "
-    "same task. The compose MUST preserve the distinct do/avoid rules.\n"
-    "  - reject_new: the candidate is redundant; an existing row supersedes "
-    "it (a storage no-op).\n"
-    "  - differentiate: both rules are valid but in distinct contexts; "
-    "refine both triggers so they no longer overlap.\n"
-    "  - independent: the candidate is unrelated to any existing row; insert "
-    "it as-is.\n\n"
-    "OPTION-B CONTRACT (critical): a unify MAY hold mixed-polarity rules for "
-    "DIFFERENT sub-aspects, but it MUST NOT merge rules that contradict on "
-    "the SAME situation (give opposite advice for the same trigger). Two "
-    "rules that contradict on the same situation belong in a differentiate "
-    "(distinct contexts) or a reject_new (one supersedes), NEVER a unify. A "
-    "unify that merges same-situation contradictions, or that collapses two "
-    "genuinely distinct do/avoid rules into one muddled rule, is a "
-    "SELF-CONTRADICTION.\n\n"
-    "Agent context: {agent_context}\n"
-    "EXISTING rows (json): {existing}\n"
-    "NEW candidate (json): {candidate}\n"
-    "Produced decision (json): {produced_decision}\n"
-    "Produced decision kind: {produced_kind}\n\n"
-    "The INTENDED outcome kind for this case is: {gold_kind}\n"
-    "Case notes: {notes}\n\n"
-    "Decide two things:\n"
-    "  1. correct: does the produced decision's kind and content match the "
-    "intended outcome?\n"
-    "  2. self_contradiction: ONLY for a unify, did the merge violate the "
-    "Option-B contract (merge same-situation contradictions, or collapse "
-    "distinct do/avoid rules)? For any non-unify decision return false.\n\n"
-    'Respond ONLY with JSON: {"correct": bool, "self_contradiction": bool, '
-    '"reason": str}'
+    "Judge the complete audited playbook consolidation batch against the supplied "
+    "source messages and intended memory. Create adds grounded instructions; "
+    "Replace can split or combine existing instructions into multiple outputs; "
+    "Remove consumes unsupported, obsolete or redundant inputs. Unmentioned "
+    "existing rows remain. Do not infer semantic correctness merely from an "
+    "action name. Check omissions, unsupported scope, and contradictions across "
+    "the entire resulting memory. Distinct do/avoid rules can coexist when their "
+    "conditions differ; opposite advice for the same condition is a contradiction.\n"
+    "Agent context: {agent_context}\nExisting: {existing}\nCandidate: {candidate}\n"
+    "Produced batch: {produced_decision}\nProduced action summary: {produced_kind}\n"
+    "Expected action summary: {gold_kind}\nIntended behavior: {notes}\n"
+    "Return correct, self_contradiction, and reason."
 )
 
 
 def _render_prompt(
     *,
     case: ConsolidationEvalCase,
-    produced_decision: ConsolidationDecision,
+    produced_decision: Decisions,
     produced_kind: str,
     template: str,
 ) -> str:
@@ -105,13 +78,21 @@ def _render_prompt(
     The EXISTING list is serialized as a JSON array (each row dumped via
     its model), and the candidate + produced decision via ``model_dump_json``.
     """
-    existing_json = json.dumps([e.model_dump() for e in case.existing])
+    existing_json = json.dumps(
+        [
+            {**row.model_dump(mode="json", exclude={"id"}), "id": f"EXISTING-{index}"}
+            for index, row in enumerate(case.existing)
+        ]
+    )
+    candidate_json = json.dumps(
+        {**case.candidate.model_dump(mode="json", exclude={"new_id"}), "id": "NEW-0"}
+    )
     return (
         template.replace("{agent_context}", case.agent_context)
         .replace("{gold_kind}", case.gold_kind)
         .replace("{notes}", case.notes or "")
         .replace("{existing}", existing_json)
-        .replace("{candidate}", case.candidate.model_dump_json())
+        .replace("{candidate}", candidate_json)
         .replace("{produced_decision}", produced_decision.model_dump_json())
         .replace("{produced_kind}", produced_kind)
     )
@@ -120,7 +101,7 @@ def _render_prompt(
 def judge_consolidation_decision(
     *,
     case: ConsolidationEvalCase,
-    produced_decision: ConsolidationDecision,
+    produced_decision: Decisions,
     llm_client: LiteLLMClient | Any,
     rubric: dict[str, Any] | None = None,
     panel_size: int = 1,
@@ -164,6 +145,10 @@ def judge_consolidation_decision(
         produced_decision=produced_decision,
         produced_kind=produced_kind,
         template=template,
+    )
+
+    prompt += "\nOriginal source sessions: " + json.dumps(
+        [session.model_dump(mode="json") for session in case.sessions]
     )
 
     votes: list[ConsolidationVerdict] = []

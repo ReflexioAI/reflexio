@@ -281,24 +281,24 @@ See [`client_ts/`](client_ts/README.md) for the full TypeScript client guide.
 - Clusters similar entries and aggregates with LLM (with change detection to skip unchanged clusters)
 - Approval workflow: review and approve/reject agent playbooks
 
-An extractor can opt into the independently audited consolidator with
-`UserPlaybookExtractorConfig.deduplication_config.strategy="audited"`.
-It drafts Create/Replace/Remove decisions, audits the complete proposed memory,
-and repairs affected decisions before saving. Replace can produce multiple
-playbooks. One 24-request allowance covers draft, read-only searches, audits,
-repairs and provider fallback attempts. Exhaustion or failed audits preserve
-committed memory; drafts are never saved as a fallback. Durable continuation
-retains bounded tool history and validation-repair progress within each stage,
-as well as validated stage results, without resetting the request allowance.
+Playbook consolidation uses one independently audited method. It drafts
+Create/Replace/Remove decisions, audits the complete proposed memory, and repairs
+affected decisions before saving. Replace can produce multiple playbooks. One
+24-request allowance covers draft, read-only searches, audits, repairs and provider
+fallback attempts. A nonempty batch requires a draft and audit even when no
+incumbent matches. Exhaustion or failed audits preserve committed memory; drafts
+are never saved as a fallback. Candidate search threshold and top-k remain
+independent controls.
 
-The default `"legacy"` keeps the existing four-action behavior and is the rollback
-setting. First audited rollouts require new candidates with persisted, owner-scoped
-source evidence. Expert examples with persisted source observations are supported;
-manual and older extraction flows without that evidence should explicitly retain
-`"legacy"`. Missing new evidence causes audited consolidation to abstain. Missing
-historical evidence alone does not invalidate an existing playbook. The offline
-component comparison supports this method choice, but does not establish online
-task improvement; measure that separately after rollout.
+New candidates require persisted, owner-scoped source evidence. Expert examples
+with persisted source observations are supported. Missing new evidence causes
+consolidation to abstain. Missing historical evidence alone does not invalidate
+an existing playbook. Manual publication remains available through its own API.
+The historical `deduplication_config.strategy` selector is retired: explicit
+configuration upgrades preserve originals and remove either known selector value.
+Rollback uses the previous release and its original configuration, rather than a
+second runtime engine. This standardization does not establish online quality or
+cost improvements; measure those separately.
 
 [Read more about agent playbooks →](https://www.reflexio.ai/docs/concepts/agent-playbook)
 
@@ -562,13 +562,18 @@ interactions stored before stream admission are not automatically replayed.
 Upgrade retries preserve admitted extraction windows, original configuration hashes,
 snapshots and saved output. Ordinary and overflow retries accept known inert
 schema changes: removal of `extractor_name`, the unused playbook `context_prompt`
-and the retired deduplication warning threshold, plus an absent
-`deduplication_config.strategy` becoming `"legacy"`. Compatibility requires both
+and the retired deduplication warning threshold. For extraction-phase recovery,
+a historically absent, `"legacy"`, or `"audited"` consolidation selector is also
+compatible: it never controlled extraction. Compatibility requires both
 the saved run and frozen window policy to prove the original hash. Historical
 prior-answer lookups retain the old representation. Selected finalization recovery
 also authenticates its saved snapshot before applying these comparisons. Changed
-prompts, live profile context, identities, unknown removed fields and `"audited"`
-strategy remain rejected. No cursor reset or deletion of pending work is needed.
+prompts, live profile context, identities, search settings and unknown removed
+fields remain rejected. Old consolidation proposals are not audited approvals;
+new consolidation draws from the original window's remaining physical-call
+allowance. Existing audited conversations retain exact payload, prompt, model and
+transport bindings. Saved write plans replay without recomputing decisions. No
+cursor reset or deletion of pending work is needed.
 The playbook context field is no longer exposed or serialized as configuration;
 profile context remains supported. Raw upgrades preserve old unused text as opaque
 data. A separate durable snapshot adapter keeps the historical nullable metadata

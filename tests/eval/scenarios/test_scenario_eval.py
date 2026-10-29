@@ -1,174 +1,126 @@
-"""Tests for the multi-round extraction and consolidation scenario harness."""
+"""Chained benchmarks preserve all audited outputs and their source windows."""
 
-from __future__ import annotations
-
-from typing import Any
+import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
-from reflexio.server.services.playbook.components.consolidator import (
-    ConsolidationDecision,
-    DifferentiateDecision,
-    IndependentDecision,
-    RejectNewDecision,
-    UnifyDecision,
-)
+from reflexio.server.services.playbook.components.reconciliation import Decisions
 from reflexio.test_support.llm_mock import assert_litellm_unpatched
 from reflexio.test_support.skip_decorators import skip_low_priority
 from tests.eval.consolidation.judge import ConsolidationVerdict
-from tests.eval.scenarios.book import _next_id, apply_consolidation
-from tests.eval.scenarios.case import BookRule
 from tests.eval.scenarios.fixtures import load_scenarios
-from tests.eval.scenarios.runner import ScenarioResult, run_scenario
-
-_CANDIDATE_TRIGGER = "a freshly extracted trigger"
+from tests.eval.scenarios.runner import run_scenario
 
 
-def _extraction_provider(case: dict) -> tuple[list[Any], list[Any]]:
-    return (
-        [],
-        [
+def extraction_provider(_case):
+    return [], [
+        {
+            "content": "A supported instruction",
+            "trigger": "deploying",
+            "rationale": "cited",
+            "source_interaction_ids": [1],
+        }
+    ]
+
+
+def consolidation_provider(case):
+    ref = [source.model_dump() for source in case.candidate.evidence_refs]
+    outputs = [
+        {
+            "content": "Announce the deploy in the channel and avoid Friday-afternoon deploys.",
+            "trigger": "deploying a service",
+            "rationale": "cited",
+            "evidence_refs": ref,
+        }
+    ]
+    if case.id.startswith("no_self_contradiction"):
+        outputs = [
             {
-                "content": "A freshly extracted candidate rule.",
-                "trigger": _CANDIDATE_TRIGGER,
-                "rationale": "",
+                "content": content,
+                "trigger": trigger,
+                "rationale": "cited",
+                "evidence_refs": ref,
             }
-        ],
+            for content, trigger in [
+                ("Answer immediately.", "unambiguous factual question"),
+                ("Ask a clarifying question.", "ambiguous factual question"),
+            ]
+        ]
+    return Decisions.model_validate(
+        {
+            "decisions": [
+                {
+                    "kind": "replace",
+                    "new_ids": ["NEW-0"],
+                    "existing_ids": ["EXISTING-0"],
+                    "reason": "synthetic provider result",
+                    "outputs": outputs,
+                }
+            ]
+        }
     )
 
 
-def _consolidation_provider(case: Any) -> ConsolidationDecision:
-    new_id = case.candidate.new_id
-    if case.gold_kind == "unify":
-        return UnifyDecision(
-            new_id=new_id,
-            archive_existing_ids=[0],
-            content=(
-                "Announce the deploy in the channel and avoid Friday-afternoon deploys."
-            ),
-            trigger="deploying a service",
-            rationale="",
-        )
-    if case.gold_kind == "differentiate":
-        return DifferentiateDecision(
-            new_id=new_id,
-            existing_id=case.existing[0].id,
-            refined_new_trigger="user asks an ambiguous factual question",
-            refined_existing_trigger="user asks an unambiguous factual question",
-        )
-    if case.gold_kind == "reject_new":
-        return RejectNewDecision(
-            new_id=new_id,
-            superseded_by_existing_id=case.existing[0].id,
-        )
-    return IndependentDecision(new_id=new_id)
-
-
-def _verdict_client(verdict: ConsolidationVerdict) -> MagicMock:
-    client = MagicMock()
-    client.generate_chat_response.return_value = verdict
-    return client
-
-
-def _run_with_stubs(
-    scenario: Any,
-    *,
-    consolidation_verdict: ConsolidationVerdict,
-) -> ScenarioResult:
-    return run_scenario(
+def run(
+    scenario, *, correct=True, end_state_correct=True, provider=consolidation_provider
+):
+    judge = MagicMock()
+    judge.generate_chat_response.return_value = ConsolidationVerdict(correct=correct)
+    end = MagicMock()
+    end.score.return_value = SimpleNamespace(signal_f1=1 if end_state_correct else 0)
+    result = run_scenario(
         scenario=scenario,
-        extraction_provider=_extraction_provider,
-        consolidation_provider=_consolidation_provider,
-        consolidation_judge_client=_verdict_client(consolidation_verdict),
+        extraction_provider=extraction_provider,
+        consolidation_provider=provider,
+        consolidation_judge_client=judge,
+        end_state_judge=end,
     )
+    return result, json.loads(end.score.call_args.kwargs["actual"])
 
 
-def _expected_final_book(scenario: Any) -> list[BookRule]:
-    book = [rule.model_copy() for rule in scenario.seed_book]
-    for scenario_round in scenario.rounds:
-        gold_kind = scenario_round.gold.get("consolidation_kind", "independent")
-        _profiles, playbooks = _extraction_provider({})
-        for playbook in playbooks:
-            existing_order = list(book)
-            candidate = BookRule(
-                id=_next_id(book),
-                content=playbook["content"],
-                trigger=playbook["trigger"],
-                rationale=playbook["rationale"],
-            )
-            case = MagicMock(
-                gold_kind=gold_kind,
-                existing=existing_order,
-                candidate=MagicMock(new_id=f"new-{candidate.id}"),
-            )
-            decision = _consolidation_provider(case)
-            book = apply_consolidation(
-                book,
-                candidate,
-                decision,
-                existing_order=existing_order,
-            )
-    return book
-
-
-def test_fixtures_load_distinct_learning_scenarios() -> None:
-    scenarios = load_scenarios()
-    assert {scenario.id for scenario in scenarios} == {
-        "compose_grows_skill",
-        "no_self_contradiction",
-    }
-    assert all(scenario.rounds for scenario in scenarios)
-
-
-@pytest.mark.parametrize("scenario", load_scenarios(), ids=lambda scenario: scenario.id)
-def test_scenario_chain_passes_with_correct_judges(scenario: Any) -> None:
-    result = _run_with_stubs(
-        scenario,
-        consolidation_verdict=ConsolidationVerdict(correct=True),
-    )
-    assert result.scenario_passed is True
+@pytest.mark.parametrize("scenario", load_scenarios(), ids=lambda row: row.id)
+def test_scenario_passes_only_with_correct_round_and_end_state(scenario):
+    result, _book = run(scenario)
+    assert result.scenario_passed
     assert len(result.round_outcomes) == len(scenario.rounds)
-    assert all(outcome.judged_correct for outcome in result.round_outcomes)
+    assert not run(scenario, correct=False)[0].scenario_passed
+    assert not run(scenario, end_state_correct=False)[0].scenario_passed
 
 
-def test_compose_scenario_unifies_into_one_skill() -> None:
+def test_compose_keeps_both_rules_in_one_actual_final_output():
+    scenario = next(row for row in load_scenarios() if row.id == "compose_grows_skill")
+    _result, book = run(scenario)
+    assert len(book) == 1
+    assert "announce" in book[0]["content"].lower()
+    assert "friday" in book[0]["content"].lower()
+
+
+def test_split_keeps_both_actual_outputs_and_distinct_conditions():
     scenario = next(
-        scenario
-        for scenario in load_scenarios()
-        if scenario.id == "compose_grows_skill"
+        row for row in load_scenarios() if row.id == "no_self_contradiction"
     )
-    final_book = _expected_final_book(scenario)
-    assert len(final_book) == 1
-    assert "announce" in final_book[0].content.lower()
-    assert "friday" in final_book[0].content.lower()
+    _result, book = run(scenario)
+    assert len(book) == 2 and len({row["trigger"] for row in book}) == 2
+    assert all(row["evidence_refs"] for row in book)
 
 
-def test_differentiate_scenario_keeps_two_rules() -> None:
-    scenario = next(
-        scenario
-        for scenario in load_scenarios()
-        if scenario.id == "no_self_contradiction"
-    )
-    final_book = _expected_final_book(scenario)
-    assert len(final_book) == 2
-    assert len({rule.trigger for rule in final_book}) == 2
+def test_later_round_keeps_earlier_source_coordinates_and_original_messages():
+    scenario = load_scenarios()[0].model_copy(deep=True)
+    scenario.rounds.append(scenario.rounds[0].model_copy(deep=True))
+    captured = []
 
+    def provider(case):
+        captured.append(case.model_copy(deep=True))
+        return consolidation_provider(case)
 
-def test_wrong_consolidation_verdict_fails_scenario() -> None:
-    scenario = next(
-        scenario
-        for scenario in load_scenarios()
-        if scenario.id == "compose_grows_skill"
-    )
-    result = _run_with_stubs(
-        scenario,
-        consolidation_verdict=ConsolidationVerdict(
-            correct=False,
-            reason="bad merge",
-        ),
-    )
-    assert result.scenario_passed is False
+    run(scenario, provider=provider)
+    assert len(captured[0].sessions) == 1 and len(captured[1].sessions) == 2
+    prior = captured[0].candidate.evidence_refs[0]
+    assert captured[1].existing[0].evidence_refs == [prior]
+    assert captured[1].candidate.evidence_refs[0].session_id != prior.session_id
+    assert captured[1].sessions[0] == captured[0].sessions[0]
 
 
 @skip_low_priority
@@ -195,7 +147,6 @@ def test_scenario_real(tmp_path) -> None:  # pragma: no cover - manual, costs mo
         ),
         consolidation_provider=make_consolidation_decision_provider(
             llm_client=client,
-            request_context=context,
         ),
         consolidation_judge_client=client,
     )
