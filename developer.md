@@ -110,6 +110,17 @@ never infer a cloud model from available keys or grant CLI access from a binary
 on PATH. Client plugin installers/dashboard producers must be upgraded together
 with their bundled SDK before claiming the old input is fully retired.
 
+### Inference operation deadlines
+
+Embedding and reranking share the existing search/compute deadline owner. Each
+request uses the earlier of its configured stage allowance and the remaining
+operation time, and checks that time again before accepting results. Expired
+compute work propagates its deadline error; ordinary reranker unavailability
+retains retrieval's fail-open behavior. Calls without an enclosing operation
+retain their configured stage allowance. These are cooperative dispatch/result
+checks; they do not forcibly stop synchronous HTTP transport. The separate
+embedding, bulk and reranking stage settings remain supported.
+
 ### Standalone OSS access
 
 The standalone backend binds `127.0.0.1` by default. With no

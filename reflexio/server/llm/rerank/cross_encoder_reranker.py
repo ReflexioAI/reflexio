@@ -10,8 +10,10 @@ import httpx
 from reflexio.server.env_utils import env_str
 from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
+    checkpoint,
     inference_http_client,
     inference_service_url,
+    remaining,
     resolve_inference_service_capabilities,
     resolve_service_configured_reranker_model,
     search_reranker_service_url,
@@ -23,7 +25,7 @@ from reflexio.server.llm.rerank.common import (
     CrossEncoderUnavailableError,
     reranker_enabled,
 )
-from reflexio.server.search_runtime import increment, remaining
+from reflexio.server.search_runtime import increment
 from reflexio.server.tracing import profile_step
 
 _SERVICE_TIMEOUT_MS_ENV_VAR = "REFLEXIO_RERANK_SERVICE_TIMEOUT_MS"
@@ -66,6 +68,7 @@ def _score_pairs_with_model(
         raise CrossEncoderUnavailableError(
             f"Reranker is disabled by {RERANK_ENABLED_ENV_VAR}"
         )
+    checkpoint()
     service_url = inference_service_url()
     expected_local_unavailability = not isolated and _is_colocated_service(service_url)
     try:
@@ -79,10 +82,12 @@ def _score_pairs_with_model(
         else:
             model = resolve_service_configured_reranker_model()
     except EmbeddingUnavailableError as exc:
+        checkpoint()
         raise CrossEncoderUnavailableError(
             f"Could not discover reranker model: {exc}",
             report_failure=not expected_local_unavailability,
         ) from exc
+    checkpoint()
     scores = (
         []
         if not docs
@@ -126,7 +131,7 @@ def _score_pairs_remote(
     payload = {"model": model, "query": query, "documents": docs}
     if search:
         payload["priority"] = "search"
-    timeout_seconds = _rerank_service_timeout_seconds()
+    timeout_seconds = remaining(_rerank_service_timeout_seconds())
     payload["timeout_ms"] = max(1, min(600_000, int(remaining(timeout_seconds) * 1000)))
     with profile_step(
         "search.rerank.api",
@@ -139,21 +144,25 @@ def _score_pairs_remote(
             response = inference_http_client().post(
                 url,
                 json=payload,
-                timeout=timeout_seconds,
+                timeout=remaining(timeout_seconds),
             )
+            checkpoint()
             span.set_data("http_status_code", response.status_code)
             response.raise_for_status()
             body = response.json()
             scores = _ordered_scores_from_response(body.get("data"), len(docs))
+            checkpoint()
             span.set_data("outcome", "success")
             return scores
         except httpx.TransportError as exc:
+            checkpoint()
             span.set_data("outcome", "transport_error")
             raise CrossEncoderUnavailableError(
                 f"Rerank service request failed at {url}: {exc}",
                 report_failure=not expected_local_unavailability,
             ) from exc
         except httpx.HTTPStatusError as exc:
+            checkpoint()
             span.set_data("outcome", "http_error")
             expected_local_503 = (
                 expected_local_unavailability
@@ -164,6 +173,7 @@ def _score_pairs_remote(
                 report_failure=not expected_local_503,
             ) from exc
         except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            checkpoint()
             span.set_data("outcome", "invalid_response")
             raise CrossEncoderUnavailableError(
                 f"Rerank service request failed at {url}: {exc}"
