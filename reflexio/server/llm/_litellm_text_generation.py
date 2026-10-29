@@ -1424,8 +1424,18 @@ class TextGenerationMixin:
                 ),
                 cache_write_input_tokens=cache_creation,
             )
+            choices = getattr(response, "choices", None)
+            finish_reason = (
+                getattr(choices[0], "finish_reason", None)
+                if isinstance(choices, list) and choices
+                else None
+            )
             try:
-                observer(self._build_model_provenance(response), observed)
+                observer(
+                    self._build_model_provenance(response),
+                    observed,
+                    finish_reason=finish_reason,
+                )
             except ProviderRequestGuardError:
                 raise
             except Exception as exc:

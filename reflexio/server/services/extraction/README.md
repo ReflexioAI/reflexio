@@ -168,6 +168,13 @@ textual manifests cannot switch protocols or erase quota. Configuration failures
 remain visible and retry with existing backoff after correction; capacity/quota
 failures stay held. Full human answers that exceed the complete-prompt target
 fail before dispatch without clipping, publication or an automatic retry loop.
+A response cut off by its output limit (`finish_reason="length"`) is counted
+against its exact request fingerprint in the checkpoint. After
+`MAX_TRUNCATED_REQUEST_DISPATCHES` (2) such dispatches, the same request is
+refused before dispatch (`OutputTruncatedRequestError`) and the window is held as
+`input_budget_exceeded`, instead of resending it until the 128-attempt budget is
+spent. A re-armed window is held again unless the request changed (model, output
+cap or input).
 
 ### Resume discovery
 
