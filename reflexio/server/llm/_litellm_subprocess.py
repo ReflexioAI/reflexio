@@ -51,7 +51,17 @@ def retire_completion_worker(
             result_queue.close()
             result_queue.join_thread()
         finally:
-            process.close()
+            try:
+                process.close()
+            except ValueError:
+                # join() returned without recording an exit code: another
+                # thread's poll (multiprocessing reaps finished children on
+                # every Process.start) collected this worker's status first.
+                # The worker is gone, so there is nothing left to close.
+                logger.info(
+                    "event=completion_worker_exit_collected_elsewhere pid=%s",
+                    process.pid,
+                )
 
     if process.pid is None:
         close_handles()
