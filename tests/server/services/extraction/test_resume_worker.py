@@ -1940,6 +1940,90 @@ def test_bounded_user_lease_wait_does_not_claim_when_budget_busy(storage, monkey
     assert storage.claim_extraction("automatic", 300) is None
 
 
+@pytest.mark.parametrize("lease_seconds", [1, 90, 600])
+def test_explicit_user_lease_uses_shared_duration_without_polling(
+    storage, monkeypatch, lease_seconds
+):
+    from reflexio.server.services.durable_learning.user_lease import (
+        user_extraction_lease,
+    )
+
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS", str(lease_seconds))
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_POLL_SECONDS", "not-a-poll")
+    with (
+        user_extraction_lease(storage, "user_1"),
+        storage._stream_sql(coordination=True) as db,
+    ):
+        row = db.query(
+            "SELECT lease_until FROM learning_work WHERE org_id=? AND user_id=?",
+            (storage.org_id, "user_1"),
+        )[0]
+        assert lease_seconds - 1 <= row["lease_until"] - db.now() <= lease_seconds
+
+
+def test_explicit_user_lease_renews_configured_duration(storage, monkeypatch):
+    from reflexio.server.services.durable_learning.user_lease import (
+        user_extraction_lease,
+    )
+
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS", "1")
+    renewed = threading.Event()
+    durations = []
+    original = storage.renew_extraction
+
+    def renew(user_id, token, seconds):
+        result = original(user_id, token, seconds)
+        durations.append(seconds)
+        renewed.set()
+        return result
+
+    monkeypatch.setattr(storage, "renew_extraction", renew)
+    with user_extraction_lease(storage, "user_1"):
+        assert renewed.wait(2), "configured one-second lease was not renewed"
+        assert durations and set(durations) == {1}
+
+
+def test_invalid_explicit_lease_fails_before_admission(storage, monkeypatch):
+    from reflexio.server.services.durable_learning import user_lease as module
+
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS", "0")
+    reserve = MagicMock(side_effect=AssertionError("capacity was touched"))
+    monkeypatch.setattr(module, "_reserve", reserve)
+    with (
+        pytest.raises(ValueError, match="REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS"),
+        module.user_extraction_lease(storage, "user_1"),
+    ):
+        pytest.fail("invalid lease entered")
+    reserve.assert_not_called()
+
+
+def test_explicit_heartbeat_launch_failure_releases_lease_and_capacity(
+    storage, monkeypatch
+):
+    from reflexio.server.services.durable_learning import user_lease as module
+    from reflexio.server.services.durable_learning import worker
+
+    monkeypatch.setattr(worker, "_budget", threading.BoundedSemaphore(1))
+    original = threading.Thread.start
+
+    def start(thread):
+        if thread.name == "reflexio-explicit-extraction-heartbeat":
+            raise RuntimeError("cannot start heartbeat")
+        return original(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    with (
+        pytest.raises(RuntimeError, match="cannot start heartbeat"),
+        module.user_extraction_lease(storage, "user_1"),
+    ):
+        pytest.fail("unrenewable lease entered")
+    assert worker._reserve(), "failed launch leaked execution capacity"
+    worker._release()
+    token = storage.claim_user_extraction("user_1", "next-owner", 30)
+    assert token is not None, "failed launch left the user leased"
+    storage.release_user_extraction("user_1", token)
+
+
 def test_busy_resume_claims_do_not_spend_execution_attempts(
     storage, request_context, monkeypatch
 ):

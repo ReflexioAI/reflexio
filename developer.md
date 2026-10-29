@@ -1429,3 +1429,14 @@ coalescing window and request lifetime remain open. Reaching the expiry instant
 prevents new attachment immediately, without waiting for the periodic sweep to
 change the stored status. This does not remove old questions or dependencies,
 change resolved-answer freshness, or combine the configurable lifetimes.
+
+### Renewable extraction ownership
+
+`REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS` owns the renewable per-user lease for
+automatic, manual and pending-tool resumed extraction. All renew at lease/3;
+the default duration remains 300 seconds. Manual/resume execution previously
+used fixed 300/60 timings and now honors the configured duration (default
+renewal becomes 100 seconds). A manual lease does not require a discovery poll
+policy. The separate nonrenewable run-claim TTL and its recovery contract remain
+independent. Failed execution/heartbeat launches release acquired capacity and
+user ownership before retry; they cannot leave a slot permanently unavailable.

@@ -133,6 +133,34 @@ def _run_turn(monkeypatch: pytest.MonkeyPatch, storage: _Storage) -> None:
     DurableLearningWorker(factory)._turn("org1", 30)
 
 
+def test_failed_turn_launch_returns_reserved_capacity(monkeypatch):
+    monkeypatch.setattr(worker_module, "_budget", threading.BoundedSemaphore(1))
+
+    def fail_start(_thread):
+        raise RuntimeError("cannot start turn")
+
+    monkeypatch.setattr(threading.Thread, "start", fail_start)
+    worker = DurableLearningWorker(lambda _: pytest.fail("unstarted turn claimed"))
+    with pytest.raises(RuntimeError, match="cannot start turn"):
+        worker.start_org("org1", 30)
+    assert worker_module._reserve(), "failed launch leaked execution capacity"
+    worker_module._release()
+
+
+def test_failed_worker_heartbeat_launch_releases_claim(monkeypatch):
+    storage = _Storage()
+    released = Mock()
+    monkeypatch.setattr(storage, "release_user_extraction", released)
+
+    def fail_start(_thread):
+        raise RuntimeError("cannot start heartbeat")
+
+    monkeypatch.setattr(threading.Thread, "start", fail_start)
+    _run_turn(monkeypatch, storage)
+    released.assert_called_once_with("u1", "tok")
+    assert storage.deferred == 1
+
+
 def _one_record(caplog: pytest.LogCaptureFixture, needle: str) -> str:
     records = [r for r in caplog.records if needle in r.getMessage()]
     assert len(records) == 1, caplog.text
