@@ -19,6 +19,7 @@ def extraction_admission(
         "force": request.force_extraction,
         "session_finished": request.session_finished,
         "idle_timeout_seconds": config.extraction_idle_timeout_seconds,
+        "max_batch_wait_seconds": config.extraction_max_batch_wait_seconds,
         "skip_aggregation": request.skip_aggregation,
     }
     for kind, extractor in (
