@@ -20,7 +20,6 @@ from reflexio.server.services.durable_learning.waiting import (
     AdmissionDeadlineExceededError,
     admission_deadline,
 )
-from reflexio.server.services.storage.error import ReadinessUnavailableError
 
 
 @pytest.fixture(autouse=True)
@@ -110,35 +109,3 @@ def test_other_publish_failures_still_log_error(caplog, worker_id):
             and "Failed to refresh user profile" in r.getMessage()
             for r in caplog.records
         ), caplog.text
-
-
-def test_readiness_unavailable_propagates_as_a_warning(caplog, worker_id):
-    """A host that is not yet qualified answers a retryable 503, not a fault.
-
-    A restarting host refuses vector work until readiness is confirmed, so a
-    publish in that window is a transient refusal like the deadline above.
-    """
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        reflexio = Reflexio(org_id=f"readiness-{worker_id}", storage_base_dir=tmp_dir)
-        storage = reflexio.get_storage()
-
-        def not_ready(*_args, **_kwargs):
-            raise ReadinessUnavailableError("embedding_readiness_unavailable")
-
-        storage.prepare_interaction_embeddings = not_ready  # type: ignore[method-assign]
-        caplog.set_level(logging.WARNING)
-
-        response = reflexio.publish_interaction(
-            _payload("readiness-req"), defer_learning=True
-        )
-
-        assert response.success is False
-        assert storage.get_request("readiness-req") is None
-        assert any(
-            "publish_readiness_unavailable" in r.getMessage()
-            and r.levelno == logging.WARNING
-            for r in caplog.records
-        ), caplog.text
-        assert not [r for r in caplog.records if r.levelno >= logging.ERROR], (
-            caplog.text
-        )

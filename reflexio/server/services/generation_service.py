@@ -43,7 +43,6 @@ from reflexio.server.services.shadow_comparison.worker import (
     ShadowComparisonJob,
     enqueue_shadow_comparison,
 )
-from reflexio.server.services.storage.error import ReadinessUnavailableError
 from reflexio.server.usage_metrics import record_usage_event
 from reflexio.server.work_scope import current_project_id
 
@@ -700,16 +699,6 @@ class GenerationService:
             # as a server fault.
             logger.warning(
                 "event=publish_admission_deadline_exceeded user_id=%s request_id=%s",
-                sanitise_for_log(user_id),
-                sanitise_for_log(request_id or ""),
-            )
-            return
-        if isinstance(error, ReadinessUnavailableError):
-            # Not yet qualified (a host restarting or still warming up), so
-            # nothing was admitted and the host answers with a retryable 503.
-            # Same reasoning as the deadline above: transient, not a fault.
-            logger.warning(
-                "event=publish_readiness_unavailable user_id=%s request_id=%s",
                 sanitise_for_log(user_id),
                 sanitise_for_log(request_id or ""),
             )
