@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 
+from reflexio import durable_learning_policy
 from reflexio.server.background_work import background_work
 from reflexio.server.services.durable_learning.worker import _release, _reserve
 from reflexio.server.services.storage.storage_base import BaseStorage
@@ -28,6 +29,7 @@ def fence_explicit_extraction(storage: BaseStorage) -> None:
 def user_extraction_lease(
     storage: BaseStorage, user_id: str, *, max_wait_seconds: float | None = None
 ) -> Iterator[None]:
+    lease_seconds = durable_learning_policy.resolve_user_lease_seconds()
     deadline = None if max_wait_seconds is None else time.monotonic() + max_wait_seconds
     token = None
     while token is None:
@@ -35,7 +37,9 @@ def user_extraction_lease(
             raise UserLeaseBusyError("Extraction capacity or user lease is busy")
         if _reserve():
             try:
-                token = storage.claim_user_extraction(user_id, "explicit", 300)
+                token = storage.claim_user_extraction(
+                    user_id, "explicit", lease_seconds
+                )
             except Exception:
                 _release()
                 raise
@@ -48,21 +52,26 @@ def user_extraction_lease(
 
     @background_work()
     def heartbeat() -> None:
-        while not stop.wait(60):
+        while not stop.wait(
+            durable_learning_policy.renewal_interval_seconds(lease_seconds)
+        ):
             try:
-                if not storage.renew_extraction(user_id, token, 300):
+                if not storage.renew_extraction(user_id, token, lease_seconds):
                     lost.set()
                     return
             except Exception:
                 lost.set()
                 return
 
-    thread = threading.Thread(
-        target=heartbeat, daemon=True, name="reflexio-explicit-extraction-heartbeat"
-    )
-    thread.start()
+    thread = None
+    started = False
     binding = _active_lease.set((user_id, token))
     try:
+        thread = threading.Thread(
+            target=heartbeat, daemon=True, name="reflexio-explicit-extraction-heartbeat"
+        )
+        thread.start()
+        started = True
         yield
         if lost.is_set():
             raise LeaseLostError("Explicit extraction lease expired")
@@ -73,7 +82,8 @@ def user_extraction_lease(
             storage.release_user_extraction(user_id, token)
         finally:
             _release()
-        thread.join(timeout=1)
+        if started and thread is not None:
+            thread.join(timeout=1)
 
 
 class UserLeaseBusyError(RuntimeError):

@@ -32,7 +32,6 @@ def resolve_discovery_timing(env: Mapping[str, str] | None = None) -> DiscoveryT
     """
     environment = os.environ if env is None else env
     poll_raw = environment.get("REFLEXIO_DURABLE_LEARNING_POLL_SECONDS", "").strip()
-    lease_raw = environment.get("REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS", "").strip()
     try:
         poll = float(poll_raw) if poll_raw else float(DISCOVERY_POLL_SECONDS)
     except ValueError:
@@ -42,6 +41,15 @@ def resolve_discovery_timing(env: Mapping[str, str] | None = None) -> DiscoveryT
             "REFLEXIO_DURABLE_LEARNING_POLL_SECONDS must be finite, positive "
             "and no greater than threading.TIMEOUT_MAX."
         )
+    return DiscoveryTiming(
+        poll_seconds=poll, lease_seconds=resolve_user_lease_seconds(environment)
+    )
+
+
+def resolve_user_lease_seconds(env: Mapping[str, str] | None = None) -> int:
+    """Resolve renewable user ownership without requiring a polling policy."""
+    environment = os.environ if env is None else env
+    lease_raw = environment.get("REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS", "").strip()
     try:
         lease = float(lease_raw) if lease_raw else float(CLAIM_LEASE_SECONDS)
     except ValueError:
@@ -55,7 +63,12 @@ def resolve_discovery_timing(env: Mapping[str, str] | None = None) -> DiscoveryT
             "REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS must be a positive integer "
             "within the signed-64-bit epoch and heartbeat wait range."
         )
-    return DiscoveryTiming(poll_seconds=poll, lease_seconds=int(lease))
+    return int(lease)
+
+
+def renewal_interval_seconds(lease_seconds: int) -> float:
+    """Renew a validated user lease three times within its lifetime."""
+    return lease_seconds / 3
 
 
 def validate_discovery_timing_env(env: Mapping[str, str]) -> None:

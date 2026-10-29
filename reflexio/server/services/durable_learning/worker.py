@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from reflexio import durable_learning_policy
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.background_work import (
     background_work,
@@ -280,12 +281,16 @@ class DurableLearningWorker:
         """Reserve capacity BEFORE a thread may claim one user."""
         if not _reserve():
             return False
-        threading.Thread(
-            target=self._reserved_turn,
-            args=(org_id, lease_seconds),
-            daemon=True,
-            name="reflexio-extraction-window",
-        ).start()
+        try:
+            threading.Thread(
+                target=self._reserved_turn,
+                args=(org_id, lease_seconds),
+                daemon=True,
+                name="reflexio-extraction-window",
+            ).start()
+        except Exception:
+            _release()
+            raise
         return True
 
     def drain_org(self, org_id: str, batch_size: int, lease_seconds: int) -> int:
@@ -458,7 +463,9 @@ class DurableLearningWorker:
 
         @background_work()
         def heartbeat() -> None:
-            while not stop.wait(max(0.1, lease_seconds / 3)):
+            while not stop.wait(
+                durable_learning_policy.renewal_interval_seconds(lease_seconds)
+            ):
                 try:
                     if not storage.renew_extraction(user_id, token, lease_seconds):
                         return
@@ -476,12 +483,15 @@ class DurableLearningWorker:
                         org_id=org_id,
                     )
 
-        thread = threading.Thread(
-            target=heartbeat, daemon=True, name="reflexio-extraction-heartbeat"
-        )
-        thread.start()
+        thread = None
+        heartbeat_started = False
         window: Window | None = None
         try:
+            thread = threading.Thread(
+                target=heartbeat, daemon=True, name="reflexio-extraction-heartbeat"
+            )
+            thread.start()
+            heartbeat_started = True
             for effect_window, effects in storage.pending_extraction_effects(
                 user_id=user_id, token=token
             ):
@@ -589,4 +599,5 @@ class DurableLearningWorker:
                 storage.release_user_extraction(user_id, token)
             finally:
                 stop.set()
-                thread.join(timeout=1)
+                if heartbeat_started and thread is not None:
+                    thread.join(timeout=1)
