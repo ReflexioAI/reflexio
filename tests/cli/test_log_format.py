@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -234,21 +236,22 @@ class TestPrintStartupBanner:
     ) -> None:
         home = tmp_path / "home"
         home.mkdir()
-        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+        outside = tmp_path / "etc" / "config.json"
         out = self._banner(
             capsys,
             {},
             supabase_port=None,
             config_paths={
                 "env": str(home / ".reflexio" / ".env"),
-                "config": "/etc/reflexio/config.json",
+                "config": str(outside),
             },
             log_file=str(home / "logs" / "dev.log"),
         )
-        assert "env        ~/.reflexio/.env" in out
-        assert "config     /etc/reflexio/config.json" in out
-        assert "Dev log    ~/logs/dev.log" in out
-        assert str(home) not in out
+        assert f"env        {os.path.join('~', '.reflexio', '.env')}" in out
+        assert f"config     {outside}" in out
+        assert f"Dev log    {os.path.join('~', 'logs', 'dev.log')}" in out
+        assert f"{home}{os.sep}" not in out
 
     def test_tty_banner_colors_status(self, capsys) -> None:
         from reflexio.cli.log_format import print_startup_banner

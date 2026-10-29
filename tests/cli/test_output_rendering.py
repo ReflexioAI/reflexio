@@ -22,15 +22,13 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from tests.cli.test_output import _capture_rich
 
-NOW = int(time.time())
-
 
 def _profile(**overrides) -> UserProfile:
     fields = {
         "profile_id": "p1",
         "user_id": "u1",
         "content": "Prefers concise answers",
-        "last_modified_timestamp": NOW - 120,
+        "last_modified_timestamp": int(time.time()) - 120,
         "generated_from_request_id": "req-1",
     }
     return UserProfile(**{**fields, **overrides})
