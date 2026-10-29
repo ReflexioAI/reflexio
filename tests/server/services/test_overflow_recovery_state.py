@@ -18,7 +18,10 @@ from reflexio.server.services.playbook.components.reviewer import (
 )
 from reflexio.server.services.storage.storage_base import AgentRunStatus
 from reflexio.test_support.skip_decorators import skip_in_precommit
-from tests.server.services.test_durable_window_pipeline import _saved_legacy_window
+from tests.server.services.test_durable_window_pipeline import (
+    _saved_legacy_window,
+    _scripted_audited_response,
+)
 from tests.server.services.test_durable_window_pipeline import (
     pipeline as imported_pipeline,
 )
@@ -48,7 +51,11 @@ def _prepare_failed_saved_output(pipeline, monkeypatch, *, kind, cached):
 
     def respond(params, hard_timeout):
         prompt = json.dumps(params["messages"], ensure_ascii=False)
-        if "Select original evidence needed" in prompt:
+        audited = _scripted_audited_response(params)
+        if audited is not None:
+            stages.append("consolidate")
+            result = audited
+        elif "Select original evidence needed" in prompt:
             stages.append("protect")
             result = {
                 "candidate_evidence": [
@@ -175,6 +182,8 @@ def test_corrected_saved_output_retry_publishes_and_becomes_discoverably_finaliz
         == attempts
     )
     assert stages.count("protect") == 1
+    # Playbook publication always passes through audited consolidation.
+    assert ("consolidate" in stages) == (kind == "playbook")
     assert storage.count_all_profiles() == (1 if kind == "profile" else 0)
     assert len(storage.get_user_playbooks(user_id=window.user_id)) == (
         1 if kind == "playbook" else 0
