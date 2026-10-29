@@ -147,6 +147,28 @@ class _CompletionResponseSnapshot:
 
 
 @dataclass
+class _CompletionModelSnapshot:
+    """Transport plain provider fields; build deferred SDK models in the parent."""
+
+    fields: dict[str, Any]
+    hidden_params: dict[str, Any]
+
+    def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
+        # A rich model can pickle successfully while its nested serializers
+        # were built only in the child. Reconstruct through the SDK constructor
+        # during unpickling, before any parent consumer sees the response.
+        return _restore_completion_model, (self.fields, self.hidden_params)
+
+
+def _restore_completion_model(
+    fields: dict[str, Any], hidden_params: dict[str, Any]
+) -> Any:
+    response = litellm.ModelResponse(**fields)
+    response._hidden_params = hidden_params
+    return response
+
+
+@dataclass
 class _CompletionErrorSnapshot:
     type_name: str
     message: str
@@ -238,6 +260,17 @@ def _snapshot_completion_response(response: Any) -> _CompletionResponseSnapshot:
 
 
 def _picklable_completion_result(response: Any) -> Any:
+    if isinstance(response, litellm.ModelResponse):
+        hidden_params = getattr(response, "_hidden_params", {}) or {}
+        return _CompletionModelSnapshot(
+            fields=response.model_dump(mode="json"),
+            hidden_params={
+                str(key): _ensure_picklable(value)
+                for key, value in hidden_params.items()
+            }
+            if isinstance(hidden_params, dict)
+            else {},
+        )
     try:
         pickle.dumps(response)
     except Exception:
