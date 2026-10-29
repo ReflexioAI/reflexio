@@ -12,6 +12,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from reflexio.models.api_schema.domain.entities import UserProfile
 from reflexio.models.api_schema.retriever_schema import (
     ReformulationResult,
@@ -248,3 +250,75 @@ def test_no_signals_keeps_fetch_pool_untouched():
     _run(storage, ReformulationResult(standalone_query="q"), top_k=2)
     fetch_request = storage.search_user_profile.call_args[0][0]
     assert fetch_request.top_k == 2
+
+
+@pytest.mark.parametrize("pool_owner", ["relevance_floor", "recency", "session"])
+@pytest.mark.parametrize("signal", [None, "wants_current", "recency_dominant"])
+def test_temporal_ordering_uses_the_complete_admitted_pool(
+    monkeypatch, pool_owner, signal
+):
+    """An admitted candidate beyond rank20 must reach temporal ordering."""
+    from reflexio.models.config_schema import RetrievalFloorConfig
+    from reflexio.server.llm.rerank.common import ENGLISH_RERANK_MODEL
+    from reflexio.server.services import unified_search_service as uss
+    from reflexio.server.services.retrieval.recency import RecencyConfig, ScoredItem
+
+    profiles = [
+        _profile(f"old-{i}", 100 + i, content="User uses pip for Python packages.")
+        for i in range(29)
+    ]
+    profiles.append(_profile("newest", 1, content="User uses uv for Python packages."))
+    reformulation = ReformulationResult(
+        standalone_query="package manager", **({signal: True} if signal else {})
+    )
+    monkeypatch.setattr(uss, "_run_phase_a", lambda **_kw: (reformulation, None, False))
+    monkeypatch.setattr(uss, "reranker_enabled", lambda: True)
+    monkeypatch.setattr(
+        uss.session_seen_cache,
+        "seen",
+        lambda *_: frozenset(("profile", f"unrelated-{i}") for i in range(10)),
+    )
+    monkeypatch.setattr(uss.session_seen_cache, "record", lambda *_: None)
+    fetches = []
+    scored_batches = []
+
+    def retrieve(**kwargs):
+        fetches.append(kwargs["top_k"])
+        candidates = profiles[: kwargs["top_k"]]
+        if kwargs["recency_on"]:
+            candidates = [ScoredItem(profile, 1.0) for profile in candidates]
+        return candidates, [], []
+
+    def score(_query, docs):
+        scored_batches.append(len(docs))
+        return ENGLISH_RERANK_MODEL, [1.0] * len(docs)
+
+    monkeypatch.setattr(uss, "_run_phase_b", retrieve)
+    monkeypatch.setattr(
+        "reflexio.server.services.retrieval.relevance_floor.score_pairs_with_model",
+        score,
+    )
+    result = uss.run_unified_search(
+        request=UnifiedSearchRequest(
+            query="package manager",
+            user_id="u1",
+            top_k=2,
+            session_id="owned-session" if pool_owner == "session" else None,
+        ),
+        org_id="test-org",
+        storage=_mock_storage(),
+        llm_client=MagicMock(),
+        prompt_manager=MagicMock(),
+        retrieval_floor=RetrievalFloorConfig(
+            candidate_pool_size=30 if pool_owner == "relevance_floor" else 0
+        ),
+        recency=RecencyConfig(pool_size=30, max_penalty_frac=0)
+        if pool_owner == "recency"
+        else None,
+    )
+
+    assert result.success
+    assert len(result.profiles) == 2
+    assert result.profiles[0].profile_id == ("newest" if signal else "old-0")
+    assert fetches == [12 if pool_owner == "session" and signal is None else 30]
+    assert scored_batches == ([30] if pool_owner == "relevance_floor" else [])
