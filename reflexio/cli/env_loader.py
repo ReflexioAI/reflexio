@@ -483,7 +483,12 @@ def ensure_user_env_for_setup(
     package_data_module: str = "reflexio.data",
     auto_generate_keys: list[str] | None = None,
 ) -> Path | None:
-    """Return ``~/.reflexio/.env``, creating it from the template if missing.
+    """Return the user-level .env, creating it from the template if missing.
+
+    The user-level file is :func:`user_env_file`: ``REFLEXIO_ENV_FILE`` when
+    set, else ``~/.reflexio/.env``. It is the same file the runtime loader
+    reads, so setup never writes keys the server would not load, and an
+    existing override file is reused rather than recreated.
 
     Distinct from :func:`load_reflexio_env`: that function honors a CWD-local
     ``./.env`` (intentional for ``services start``, where a project-level
@@ -501,17 +506,18 @@ def ensure_user_env_for_setup(
             tokens when creating from the template.
 
     Returns:
-        Path to ``~/.reflexio/.env`` (existing or newly created), or
+        Path to the user-level .env (existing or newly created), or
         ``None`` if no template could be found.
     """
     global _loaded_env_path
-    if _USER_ENV_FILE.exists():
-        _load_dotenv_pruned(_USER_ENV_FILE)
-        resolved = _USER_ENV_FILE.resolve()
+    target = user_env_file()
+    if target.exists():
+        _load_dotenv_pruned(target)
+        resolved = target.resolve()
         _logger.debug("Loaded user env from: %s", resolved)
         _loaded_env_path = resolved
-        _backfill_missing_keys(_USER_ENV_FILE, auto_generate_keys or [])
-        return _USER_ENV_FILE
+        _backfill_missing_keys(target, auto_generate_keys or [])
+        return target
     created = _create_default_env(package_data_module, auto_generate_keys or [])
     if created is not None:
         _loaded_env_path = created.resolve()

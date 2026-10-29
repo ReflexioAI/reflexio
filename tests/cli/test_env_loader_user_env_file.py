@@ -85,3 +85,48 @@ def test_generated_env_uses_only_canonical_backfill_budget(monkeypatch, tmp_path
     assert vbs._resolve_cap() == 0
     monkeypatch.setenv(vbs.CAP_ENV_VAR, "2")
     assert vbs._resolve_cap() == 2
+
+
+def _isolate_home(monkeypatch, tmp_path):
+    home = tmp_path / "home" / ".reflexio"
+    monkeypatch.setattr(env_loader, "_USER_ENV_DIR", home)
+    monkeypatch.setattr(env_loader, "_USER_ENV_FILE", home / ".env")
+    monkeypatch.setattr(
+        env_loader, "_find_env_example", lambda *_a, **_k: "TEMPLATE_KEY=\n"
+    )
+    monkeypatch.setattr(env_loader, "_load_dotenv_pruned", lambda *_a, **_k: None)
+    return home / ".env"
+
+
+def test_setup_env_reuses_existing_override_file(monkeypatch, tmp_path):
+    """A second setup run must not recreate the override from the template."""
+    default = _isolate_home(monkeypatch, tmp_path)
+    override = tmp_path / "claude-smart" / ".env"
+    monkeypatch.setenv(_ENV, str(override))
+
+    first = env_loader.ensure_user_env_for_setup()
+    assert first == override
+    env_loader.set_env_var(override, "MY_API_KEY", "secret")
+
+    second = env_loader.ensure_user_env_for_setup()
+
+    assert second == override
+    assert 'MY_API_KEY="secret"' in override.read_text()
+    assert not default.exists()
+
+
+def test_setup_env_targets_override_even_when_default_exists(monkeypatch, tmp_path):
+    """Setup writes go to the file the runtime loads, not ~/.reflexio/.env."""
+    default = _isolate_home(monkeypatch, tmp_path)
+    default.parent.mkdir(parents=True)
+    default.write_text("DEFAULT_ONLY=1\n")
+    override = tmp_path / "claude-smart" / ".env"
+    override.parent.mkdir(parents=True)
+    override.write_text("OVERRIDE_ONLY=1\n")
+    monkeypatch.setenv(_ENV, str(override))
+
+    resolved = env_loader.ensure_user_env_for_setup()
+
+    assert resolved == override == env_loader.user_env_file()
+    assert override.read_text() == "OVERRIDE_ONLY=1\n"
+    assert default.read_text() == "DEFAULT_ONLY=1\n"
