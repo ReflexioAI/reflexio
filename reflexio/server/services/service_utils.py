@@ -2,13 +2,11 @@
 Utils for service layer
 """
 
-import ast
 import base64
 import binascii
 import json
 import logging
 import os
-import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -600,118 +598,6 @@ def construct_messages_from_interactions(
     return messages
 
 
-def extract_json_from_string(text: str) -> dict:
-    """
-    Extract JSON from a string, handling both JSON-style and Python-style booleans.
-
-    This function attempts to extract JSON from text in the following order:
-    1. From code blocks (```json...```)
-    2. From content between first { and last }
-
-    It also handles Python-style boolean values (True/False/None) by converting
-    them to JSON-style (true/false/null) before parsing, and falls back to
-    Python literal parsing for dict-like responses that use single quotes.
-
-    Args:
-        text (str): string to extract JSON from
-
-    Returns:
-        dict: JSON object, or empty dict if parsing fails
-    """
-
-    def normalize_json_string(json_str: str) -> str:
-        """Convert Python-style syntax to JSON-friendly syntax.
-
-        Handles:
-        - Python booleans (True/False/None) -> JSON (true/false/null)
-        """
-        # Replace Python boolean/null values with JSON equivalents
-        # Use word boundaries to avoid replacing parts of strings
-        json_str = re.sub(r"\bTrue\b", "true", json_str)
-        json_str = re.sub(r"\bFalse\b", "false", json_str)
-        json_str = re.sub(r"\bNone\b", "null", json_str)
-
-        return json_str  # noqa: RET504
-
-    def fix_unescaped_inner_quotes(json_str: str) -> str:
-        """
-        Attempt to fix common cases where apostrophes are returned as double quotes.
-
-        Many LLMs occasionally substitute `customer's` with `customer"s`, leaving the JSON
-        invalid because the double quote isn't escaped. We treat double quotes that sit
-        between two word characters as apostrophes.
-        """
-        return re.sub(r"(?<=\w)\"(?=\w)", "'", json_str)
-
-    def parse_json_candidate(json_str: str) -> tuple[dict | None, str | None]:
-        """
-        Try to parse a JSON candidate string using multiple strategies.
-
-        Strategies:
-        1. Direct json.loads
-        2. json.loads after normalizing Python syntax
-        3. ast.literal_eval as a fallback for Python-style dicts
-        """
-        candidates = [json_str]
-        last_error: str | None = None
-
-        normalized_json_str = normalize_json_string(json_str)
-        if normalized_json_str != json_str:
-            candidates.append(normalized_json_str)
-
-        repaired_json_str = fix_unescaped_inner_quotes(normalized_json_str)
-        if repaired_json_str not in candidates:
-            candidates.append(repaired_json_str)
-
-        for candidate in candidates:
-            try:
-                parsed = json.loads(candidate)
-                if isinstance(parsed, dict):
-                    return parsed, None
-            except json.JSONDecodeError as err:  # noqa: PERF203
-                last_error = str(err)
-                continue
-
-        for candidate in candidates:
-            try:
-                parsed = ast.literal_eval(candidate)
-                if isinstance(parsed, dict):
-                    return parsed, None
-            except (ValueError, SyntaxError) as err:  # noqa: PERF203
-                last_error = str(err)
-                continue
-
-        return None, last_error
-
-    # Pattern to match content between triple backticks and json keyword
-    # Allow optional whitespace around json keyword and content
-    pattern = r"```json\s*(.*?)\s*```"
-
-    # Find the match using regex
-    match = re.search(pattern, text, re.DOTALL)
-
-    if match:
-        json_str = match.group(1)
-        parsed_json, error_message = parse_json_candidate(json_str)
-        if parsed_json is not None:
-            return parsed_json
-        if error_message:
-            logger.warning("Failed to parse JSON from code block: %s", error_message)
-
-    # Try to find JSON content between first { and last }
-    start_idx = text.find("{")
-    end_idx = text.rfind("}")
-    if start_idx != -1 and end_idx != -1:
-        json_str = text[start_idx : end_idx + 1]
-        parsed_json, error_message = parse_json_candidate(json_str)
-        if parsed_json is not None:
-            return parsed_json
-        if error_message:
-            logger.warning("Failed to parse JSON from braces: %s", error_message)
-
-    return {}
-
-
 def _format_tool_calls(tool_calls: list[Any]) -> list[str]:
     """Render an assistant message's ``tool_calls`` list for the log.
 
@@ -826,11 +712,3 @@ def format_messages_for_logging(messages: list[dict[str, Any]]) -> str:
         formatted_parts.append("")  # Empty line between messages
 
     return "\n".join(formatted_parts)
-
-
-# Example usage
-if __name__ == "__main__":
-    test_string = """'Based on the existing profiles (which are currently empty) and the new interaction indicating a preference for sushi, the update would involve adding a new profile that reflects this preference. Here's the JSON format for the updates:\n\n```json\n{\n    "add_profile": ["I like sushi"],\n    "delete_profile": []\n}\n```'"""
-
-    result = extract_json_from_string(test_string)
-    print("Extracted JSON:", result)
