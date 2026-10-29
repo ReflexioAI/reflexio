@@ -3,6 +3,7 @@ LiteLLM-based unified LLM client.
 
 This module provides a unified interface to multiple LLM providers (OpenAI, Claude, Azure OpenAI)
 using LiteLLM. It maintains the same interface as the existing LLMClient for easy replacement.
+CompletionResult and ModelProvenance expose the provenance-bearing return contract.
 """
 
 import hashlib
@@ -83,8 +84,10 @@ from reflexio.server.llm._litellm_text_generation import (
     structured_output_repair_idempotency_key,
 )
 from reflexio.server.llm._litellm_types import (
+    CompletionResult,
     LiteLLMClientError,
     LiteLLMConfig,
+    ModelProvenance,
     StructuredOutputRepairError,
     ToolCallingChatResponse,
 )
@@ -122,6 +125,8 @@ _register_openclaw()
 # them here is the sanctioned route: the allowlist in that guard is documented
 # as only ever SHRINKING.
 __all__ = [
+    "CompletionResult",
+    "ModelProvenance",
     "LiteLLMClient",
     "LiteLLMConfig",
     "LiteLLMClientError",

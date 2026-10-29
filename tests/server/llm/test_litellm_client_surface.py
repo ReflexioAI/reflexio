@@ -28,6 +28,8 @@ FACADE = "reflexio.server.llm.litellm_client"
 
 # Public names (facade ``__all__``), also re-exported via server/llm/__init__.
 PUBLIC_SYMBOLS = [
+    "CompletionResult",
+    "ModelProvenance",
     "LiteLLMClient",
     "LiteLLMConfig",
     "LiteLLMClientError",
@@ -176,6 +178,12 @@ def test_snapshot_class_identity(facade, name):
     if not hasattr(facade, name):
         pytest.skip(f"{name} not re-exported yet")
     assert getattr(facade, name) is getattr(subprocess_mod, name)
+
+
+@pytest.mark.parametrize("name", ["CompletionResult", "ModelProvenance"])
+def test_provenance_return_contract_identity(facade, name):
+    implementation = importlib.import_module("reflexio.server.llm._litellm_types")
+    assert getattr(facade, name) is getattr(implementation, name)
 
 
 def test_truncation_warned_models_identity(facade):

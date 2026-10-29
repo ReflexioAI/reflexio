@@ -6,9 +6,11 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .litellm_client import (
         STRUCTURED_OUTPUT_CORRECTION_PREFIX,
+        CompletionResult,
         LiteLLMClient,
         LiteLLMClientError,
         LiteLLMConfig,
+        ModelProvenance,
         ProviderRequestGuardError,
         StructuredOutputRepairError,
         StructuredOutputValidator,
@@ -29,6 +31,8 @@ _EXPORTS = {
     for module, names in {
         "reflexio.server.llm.litellm_client": (
             "STRUCTURED_OUTPUT_CORRECTION_PREFIX",
+            "CompletionResult",
+            "ModelProvenance",
             "LiteLLMClient",
             "LiteLLMClientError",
             "LiteLLMConfig",
@@ -51,6 +55,8 @@ _EXPORTS = {
 }
 
 __all__ = [
+    "CompletionResult",
+    "ModelProvenance",
     "LiteLLMClient",
     "LiteLLMConfig",
     "LiteLLMClientError",
