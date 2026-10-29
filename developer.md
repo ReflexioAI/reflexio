@@ -675,7 +675,10 @@ Admission expiry now returns 504 rather than the former early queue-only 429;
 process-capacity exhaustion remains 503. Per-org concurrency sizes are unchanged.
 Successful direct-route metering and exposure writes now follow the same response
 acceptance boundary as unified search. Internal limiter callers can still supply
-an explicit per-call wait; they receive no implicit HTTP search clock. Ordinary
+an explicit per-call wait; they receive no implicit HTTP search clock. Without
+an ingress deadline they must explicitly pass `timeout_seconds` or `wait_forever`;
+a missing owner fails before waiting. Custom HTTP hosts must install
+`SearchRuntimeMiddleware` at ingress. Ordinary
 embedded SDK search methods still acquire neither HTTP scope nor admission.
 
 Retiring the independent queue policy removes one supported environment input.

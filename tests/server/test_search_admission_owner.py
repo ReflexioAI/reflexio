@@ -24,6 +24,34 @@ def test_ingress_owner_covers_every_registered_search_route():
     } == runtime.SEARCH_HTTP_PATHS
 
 
+@pytest.mark.parametrize("recording_scope", [False, True])
+def test_search_admission_requires_deadline_or_explicit_wait(recording_scope):
+    token = runtime._scope.set(runtime.SearchScope() if recording_scope else None)
+    try:
+        with (
+            pytest.raises(ValueError, match="explicit.*wait"),
+            limiter.operation_limit("missing-search-owner", "search"),
+        ):
+            pass
+    finally:
+        runtime._scope.reset(token)
+
+
+@pytest.mark.parametrize("wait_forever", [False, True])
+def test_internal_search_admission_keeps_explicit_wait_choice(wait_forever):
+    token = runtime._scope.set(None)
+    try:
+        with limiter.operation_limit(
+            "explicit-search-wait",
+            "search",
+            timeout_seconds=None if wait_forever else 0,
+            wait_forever=wait_forever,
+        ):
+            assert limiter._state_for("explicit-search-wait", "search").active == 1
+    finally:
+        runtime._scope.reset(token)
+
+
 @pytest.mark.parametrize("value", ["", "0", "0.25", "invalid"])
 def test_removed_queue_clock_is_rejected_at_http_startup(monkeypatch, value):
     monkeypatch.setenv("REFLEXIO_SEARCH_CONCURRENCY_TIMEOUT_SECONDS", value)

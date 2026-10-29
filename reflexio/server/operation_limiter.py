@@ -474,6 +474,16 @@ def operation_limit(
     from reflexio.server import search_runtime
 
     search_scope = search_runtime.current() if operation == "search" else None
+    if (
+        operation == "search"
+        and timeout_seconds is None
+        and not wait_forever
+        and (search_scope is None or search_scope.deadline is None)
+    ):
+        raise ValueError(
+            "Search admission requires an ingress deadline or an explicit wait "
+            "(timeout_seconds or wait_forever)"
+        )
     if search_scope is not None:
         search_runtime.checkpoint()
         if search_scope.deadline is not None:
