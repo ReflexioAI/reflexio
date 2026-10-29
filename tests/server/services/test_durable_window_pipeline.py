@@ -4791,7 +4791,7 @@ def test_post_commit_followup_failure_preserves_admission(pipeline, monkeypatch,
         assert evaluations == ["followup"]
 
 
-@pytest.mark.parametrize("completion", ["explicit", "publish", "idle"])
+@pytest.mark.parametrize("completion", ["explicit", "publish", "idle", "batch_wait"])
 def test_two_short_messages_reach_judge_and_negative_is_covered(
     pipeline, monkeypatch, completion
 ):
@@ -4801,6 +4801,13 @@ def test_two_short_messages_reach_judge_and_negative_is_covered(
     )
 
     engine, worker, client = pipeline
+    if completion == "batch_wait":
+        configurator = engine.request_context.configurator
+        configurator.set_config(
+            configurator.get_config().model_copy(
+                update={"extraction_max_batch_wait_seconds": 30}
+            )
+        )
     clock = [1000.0]
     monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: clock[0])
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
@@ -4821,6 +4828,17 @@ def test_two_short_messages_reach_judge_and_negative_is_covered(
         assert result.json()["accepted"]
     elif completion == "idle":
         clock[0] += 21600
+    elif completion == "batch_wait":
+        # A later settings edit cannot change the accepted input's deadline.
+        configurator.set_config(
+            configurator.get_config().model_copy(
+                update={"extraction_max_batch_wait_seconds": 0}
+            )
+        )
+        clock[0] += 29
+        worker.drain_org("stream-test", 1, 300)
+        judge.assert_not_called()
+        clock[0] += 1
     worker.drain_org("stream-test", 1, 300)
     judge.assert_called_once()
     storage = engine.get_storage()

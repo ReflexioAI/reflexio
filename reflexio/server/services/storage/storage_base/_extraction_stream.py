@@ -537,6 +537,31 @@ class ExtractionStreamStore:
                 deadlines.append(due)
         return boundary
 
+    def _batch_wait_boundary(
+        self,
+        db: StreamSQL,
+        pending: list[dict[str, Any]],
+        deadlines: list[float] | None,
+    ) -> int | None:
+        # Read only the already bounded eligible prefix. Each admission owns
+        # its deadline: new messages or configuration edits cannot postpone it.
+        due: float | None = None
+        for row in pending:
+            admission = decoded(row["learning_admission"])
+            wait = admission.get("max_batch_wait_seconds", 0)
+            admitted_at = admission.get("admitted_at")
+            if wait and admitted_at is not None:
+                candidate = float(admitted_at) + int(wait)
+                due = candidate if due is None else min(due, candidate)
+        if due is None:
+            return None
+        if due <= db.now():
+            # Coalesce the available prefix, retaining the configured judge.
+            return int(pending[-1]["ingestion_seq"])
+        if deadlines is not None:
+            deadlines.append(due)
+        return None
+
     def _select(
         self,
         db: StreamSQL,
@@ -575,6 +600,8 @@ class ExtractionStreamStore:
         forced = barrier is not None
         if not forced:
             barrier = self._completion_boundary(db, user_id, kind, after, project_id)
+            if barrier is None and len(new) < needed:
+                barrier = self._batch_wait_boundary(db, new, deadlines)
             if barrier is None and len(new) < needed:
                 barrier = self._idle_boundary(db, user_id, project_id, new, deadlines)
         if barrier is not None:

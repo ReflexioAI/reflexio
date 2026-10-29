@@ -24,6 +24,7 @@ def publish(
     session="s",
     finished=False,
     idle_timeout=0,
+    max_batch_wait=0,
     playbook_width=None,
 ):
     items = [
@@ -63,6 +64,7 @@ def publish(
                 "force": force,
                 "session_finished": finished,
                 "idle_timeout_seconds": idle_timeout,
+                "max_batch_wait_seconds": max_batch_wait,
             },
         )
     return items
@@ -234,6 +236,96 @@ def _due_at(storage, user="u"):
             f"SELECT due_at FROM {db.table('learning_work')} WHERE user_id=?",  # noqa: S608 -- registered identifier; bound values.
             (user,),
         )[0]["due_at"]
+
+
+def test_batch_wait_is_fixed_across_continuous_arrivals(storage, monkeypatch):
+    clock = _clock(monkeypatch, 1000)
+    publish(storage, 1, max_batch_wait=30, idle_timeout=21600)
+    assert drain(storage) == []
+    assert _due_at(storage) == 1030
+    clock[0] = 1020
+    # A later configuration and another session cannot postpone the first input.
+    publish(storage, 1, request_id="later", session="other", max_batch_wait=300)
+    assert drain(storage) == []
+    assert _due_at(storage) == 1030
+    clock[0] = 1029
+    assert drain(storage) == []
+    clock[0] = 1030
+    windows = drain(storage)
+    assert [(w.end_seq, w.force) for w in windows] == [(2, False)]
+    assert storage.extraction_status("u", "r")["status"] == "done"
+    assert storage.extraction_status("u", "later")["status"] == "done"
+
+
+@pytest.mark.parametrize("missing", [None, "max_batch_wait_seconds", "admitted_at"])
+def test_disabled_or_legacy_batch_wait_has_no_inferred_deadline(
+    storage, monkeypatch, missing
+):
+    clock = _clock(monkeypatch, 1000)
+    publish(storage, 1, max_batch_wait=30 if missing else 0)
+    if missing:
+        import json
+
+        with storage.commit_scope(), storage._stream_sql() as db:
+            row = db.query(
+                "SELECT learning_admission FROM requests WHERE request_id='r'"
+            )[0]
+            admission = json.loads(row["learning_admission"])
+            del admission[missing]
+            db.query(
+                "UPDATE requests SET learning_admission=?", (json.dumps(admission),)
+            )
+    clock[0] += 86400
+    assert drain(storage) == []
+    assert storage.extraction_status("u", "r")["status"] == "pending"
+
+
+def test_batch_wait_still_requires_all_eligible_extractors(storage, monkeypatch):
+    clock = _clock(monkeypatch, 1000)
+    publish(
+        storage,
+        2,
+        width=2,
+        stride=1,
+        playbook=True,
+        playbook_width=10,
+        max_batch_wait=30,
+    )
+    windows = drain(storage)
+    assert [w.kind for w in windows] == ["profile"]
+    assert storage.extraction_status("u", "r")["status"] == "pending"
+    clock[0] = 1030
+    assert [w.kind for w in drain(storage)] == ["playbook"]
+    assert storage.extraction_status("u", "r")["status"] == "done"
+
+
+def test_batch_wait_cannot_bypass_lease_or_retry_backoff(storage, monkeypatch):
+    clock = _clock(monkeypatch, 1000)
+    publish(storage, 1, max_batch_wait=1)
+    clock[0] += 1
+    user, token = storage.claim_extraction("owner", 300)
+    assert storage.claim_extraction("other", 300) is None
+    window = storage.prepare_extraction(user, token)
+    assert window is not None and not window.force
+    storage.retry_extraction(window, token, "ProviderUnavailable")
+    assert drain(storage) == []
+    assert storage.extraction_status("u", "r")["reason"] == "retrying"
+
+
+def test_erased_input_does_not_keep_an_expired_batch_deadline(storage, monkeypatch):
+    clock = _clock(monkeypatch, 1000)
+    items = publish(storage, 1, max_batch_wait=30)
+    with storage.commit_scope(), storage._stream_sql() as db:
+        db.query(
+            "DELETE FROM interactions WHERE interaction_id=?",
+            (items[0].interaction_id,),
+        )
+    clock[0] = 1030
+    publish(storage, 1, request_id="survivor", max_batch_wait=30)
+    assert drain(storage) == []
+    assert _due_at(storage) == 1060
+    clock[0] = 1060
+    assert [w.end_seq for w in drain(storage)] == [2]
 
 
 def _fail_repeatedly(storage, clock, *, attempts, gap):

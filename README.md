@@ -556,6 +556,14 @@ to subsequent publications. Existing pre-upgrade admissions have no inferred
 idle deadline; explicitly finalize those surviving sessions when needed.
 The library scheduler needs a live process and reachable `Reflexio` handle;
 reopening resumes durable deadlines without another publish.
+To bound batching even while a session remains active, set
+`extraction_max_batch_wait_seconds` to a positive number. Its default `0` keeps
+this limit disabled pending workload qualification. Each eligible publication
+keeps its own accepted deadline; later messages and settings edits cannot extend
+it. Expiry makes a partial batch runnable through the same workers and judge;
+queueing, retries and model execution can still delay completion. Smaller batches
+can increase model calls. Older admissions missing this policy get no inferred
+deadline, but may be covered in a later admitted batch.
 Provider fallback remains enabled. Existing extracted data is preserved, and
 interactions stored before stream admission are not automatically replayed.
 
