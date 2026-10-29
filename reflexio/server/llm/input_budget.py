@@ -4,7 +4,7 @@ import json
 import math
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, Protocol
 
 import litellm
 
@@ -20,9 +20,27 @@ from reflexio.server.llm.token_accounting import RunTokenTotals
 extraction_provider_guard: ContextVar[ProviderRequestGuard | None] = ContextVar(
     "extraction_provider_guard", default=None
 )
-extraction_usage_observer: ContextVar[
-    Callable[[ModelProvenance, RunTokenTotals], None] | None
-] = ContextVar("extraction_usage_observer", default=None)
+
+
+class ExtractionUsageObserver(Protocol):
+    """Called once per provider response that reports usage.
+
+    ``finish_reason`` is the response's normalized reason; ``"length"`` means
+    the output limit cut it off.
+    """
+
+    def __call__(
+        self,
+        provenance: ModelProvenance,
+        totals: RunTokenTotals,
+        *,
+        finish_reason: str | None = None,
+    ) -> None: ...
+
+
+extraction_usage_observer: ContextVar[ExtractionUsageObserver | None] = ContextVar(
+    "extraction_usage_observer", default=None
+)
 extraction_request_identity: ContextVar[dict[str, Any] | None] = ContextVar(
     "extraction_request_identity", default=None
 )
@@ -54,6 +72,15 @@ class ComputationEvidenceChangedError(InputBudgetConfigurationError):
 
 class InputBudgetExceededError(ProviderRequestGuardError):
     """The complete prompt plus reserved output exceeds its admission budget."""
+
+
+class OutputTruncatedRequestError(InputBudgetExceededError):
+    """An unchanged request already cut off by its output limit is not resent.
+
+    Resending it repeats the same truncation, so it would only spend the
+    window's attempt budget. The window is held for an operator, who can
+    re-arm it once the request changes (model, output cap or input).
+    """
 
 
 class ProviderInputOverflowError(InputBudgetExceededError):

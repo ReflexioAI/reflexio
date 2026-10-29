@@ -27,6 +27,7 @@ from reflexio.server.llm.input_budget import (
     ComputationEvidenceChangedError,
     InputBudgetConfigurationError,
     InputBudgetExceededError,
+    OutputTruncatedRequestError,
     ProviderInputOverflowError,
     check_request_input_budget,
     extraction_provider_guard,
@@ -78,6 +79,13 @@ def legacy_observed_usage(payload: dict[str, Any] | None) -> dict[str, int] | No
     if any(type(value) is not int or value < 0 for value in totals.values()):
         raise InputBudgetConfigurationError("Invalid observed historical usage")
     return totals
+
+
+# Dispatches of one byte-identical request allowed after its responses were
+# cut off by the output limit: the first call and the client's own re-issue.
+# A third identical dispatch repeats the same truncation, so the window is held
+# instead of spending the rest of its attempt budget.
+MAX_TRUNCATED_REQUEST_DISPATCHES = 2
 
 
 current_overflow_coordinator: ContextVar[OverflowCoordinator | None] = ContextVar(
@@ -667,6 +675,13 @@ class OverflowCoordinator:
             raise InputBudgetExceededError(
                 "An unchanged rejected request cannot be resent"
             )
+        if (
+            self.checkpoint.get("truncated_requests", {}).get(fingerprint, 0)
+            >= MAX_TRUNCATED_REQUEST_DISPATCHES
+        ):
+            raise OutputTruncatedRequestError(
+                "An unchanged request truncated by its output limit cannot be resent"
+            )
         # Don't start a call that can outlive this turn. Each fallback/repair
         # reaches this boundary again, so a late rung yields without dispatch.
         if hard_timeout <= 0 or hard_timeout + 5 > self._deadline - time.monotonic():
@@ -817,17 +832,35 @@ class OverflowCoordinator:
             )
             self.save_checkpoint(checkpoint)
 
-    def _observe(self, provenance: ModelProvenance, totals: RunTokenTotals) -> None:
+    def _observe(
+        self,
+        provenance: ModelProvenance,
+        totals: RunTokenTotals,
+        *,
+        finish_reason: str | None = None,
+    ) -> None:
         attempt_id = self._active_attempt.get()
         if attempt_id is None:
             raise ProviderRequestGuardError("Provider usage lacks an active attempt")
-        self._advance(
-            observed_attempt={
+        change: dict[str, Any] = {
+            "observed_attempt": {
                 "id": attempt_id,
                 "usage": asdict(totals),
                 "model_provenance": asdict(provenance),
             }
+        }
+        fingerprint = (extraction_request_identity.get() or {}).get(
+            "request_fingerprint"
         )
+        with self._lock:
+            if finish_reason == "length" and isinstance(fingerprint, str):
+                # Counted in the attempt's own journal write, so no later turn
+                # can dispatch the same request before the count is durable.
+                checkpoint = self.checkpoint
+                truncated = checkpoint.setdefault("truncated_requests", {})
+                truncated[fingerprint] = truncated.get(fingerprint, 0) + 1
+                change["checkpoint"] = checkpoint
+            self._advance(**change)
         self._active_attempt.set(None)
 
     @contextmanager
