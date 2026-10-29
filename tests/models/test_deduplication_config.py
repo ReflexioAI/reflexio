@@ -11,14 +11,12 @@ from reflexio.models.config_schema import DeduplicationConfig
 def test_retired_length_warning_does_not_survive_schema_or_serialization():
     config = DeduplicationConfig.model_validate(
         {
-            "strategy": "audited",
             "max_unified_content_chars": 700,
             "search_threshold": 0.6,
             "search_top_k": 7,
         }
     )
     assert config.model_dump() == {
-        "strategy": "audited",
         "search_threshold": 0.6,
         "search_top_k": 7,
     }

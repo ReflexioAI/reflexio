@@ -21,6 +21,7 @@ from reflexio.server.services.extraction.input_preparation import (
 )
 from reflexio.server.services.extraction.overflow_coordinator import OverflowCoordinator
 from tests.server.services.test_durable_window_pipeline import (
+    _scripted_audited_response,
     payload,
 )
 from tests.server.services.test_durable_window_pipeline import (
@@ -90,7 +91,10 @@ def test_http_mixed_image_keeps_native_prompt_and_persistence_without_overflow(
                     for block in message["content"]
                     if block.get("type") == "image_url"
                 )
-        if "unique_ids" in prompt or "ProfileDeduplicationOutput" in name:
+        audited = _scripted_audited_response(params)
+        if audited is not None:
+            output = audited
+        elif "unique_ids" in prompt or "ProfileDeduplicationOutput" in name:
             output = {"duplicate_groups": [], "unique_ids": ["NEW-0"], "deletions": []}
         elif "reason_code" in prompt or "Review" in name:
             output = {

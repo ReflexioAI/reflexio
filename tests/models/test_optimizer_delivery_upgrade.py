@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from reflexio.cli.config_upgrade import prepare_local_config
+from reflexio.config_file import FILE_FORMAT_VERSION
 from reflexio.config_migration import (
     ConfigurationMigrationError,
     strip_retired_config_fields,
@@ -76,7 +77,10 @@ def test_local_generation6_upgrade_retains_original_bytes(tmp_path):
         storage.load_config()
     assert prepare_local_config("delivery", base_dir=str(tmp_path))
     assert storage.load_config().playbook_optimizer_config.webhook_timeout_seconds == 23
-    assert json.loads(path.read_text())["_reflexio_config_file"]["version"] == 7
+    assert (
+        json.loads(path.read_text())["_reflexio_config_file"]["version"]
+        == FILE_FORMAT_VERSION
+    )
     backups = list((path.parent / ".config-migrations" / path.name).rglob("*"))
     assert any(p.is_file() and p.read_bytes() == original.encode() for p in backups)
     current = path.read_bytes()
