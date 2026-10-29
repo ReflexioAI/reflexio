@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -499,6 +500,8 @@ def test_process_returned_tool_call_reaches_search_and_independent_audit(tmp_pat
     result = subprocess.run(  # noqa: S603 -- owned synthetic script, no provider access.
         [sys.executable, str(probe)],
         cwd=Path(__file__).resolve().parents[4],
+        # The temporary script imports test helpers, which are absent from wheels.
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[4])},
         capture_output=True,
         text=True,
         timeout=60,
