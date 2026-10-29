@@ -638,7 +638,8 @@ The provider should retain the scope until that remaining delay expires.
 ### Search request deadlines
 
 The HTTP search work budget is `REFLEXIO_SEARCH_TIMEOUT_SECONDS` for unified
-search, profiles, user/agent playbooks, interactions and profile reranking:
+search, profiles, user/agent playbooks, interactions, profile reranking and
+GET `/api/storage_stats`:
 finite nonnegative seconds, default `5`. Zero inherits the original HTTP
 backstop (normally 60 seconds, or the existing synchronous/wait budget).
 Positive values are also bounded by that backstop. Blank means the documented
@@ -668,7 +669,7 @@ results. Tracing sampling never controls request timing or outcome metrics.
 The separate `REFLEXIO_SEARCH_CONCURRENCY_TIMEOUT_SECONDS` queue clock is retired
 and rejected, including blank assignments. Remove it and select the total search
 budget; there is no exact conversion from independent queue and execution limits.
-Do not automatically copy the former queue value. All six HTTP routes now use the
+Do not automatically copy the former queue value. All seven HTTP read routes now use the
 same total budget (default five seconds); use zero to inherit their original
 transport backstop. Queued cancellation wakes admission without a polling timer.
 Admission expiry now returns 504 rather than the former early queue-only 429;

@@ -1,13 +1,14 @@
 """HTTP search owns admission until its actual work has drained."""
 
+import ast
 import asyncio
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
-from fastapi.routing import APIRoute
 
 from reflexio.server import operation_limiter as limiter
 from reflexio.server import search_runtime as runtime
@@ -16,12 +17,90 @@ from reflexio.server.routes._common import _run_limited_api
 from .test_search_runtime import call
 
 
-def test_ingress_owner_covers_every_registered_search_route():
-    from reflexio.server.routes.search import router
+def test_ingress_owner_covers_all_route_module_search_admission_callers():
+    required = {}
+    entries = {"_run_limited_api", "run_with_operation_limit", "operation_limit"}
+    for source in (Path(runtime.__file__).parent / "routes").rglob("*.py"):
+        tree = ast.parse(source.read_text())
+        aliases = entries | {
+            alias.asname or alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            for alias in node.names
+            if alias.name in entries
+        }
+        for function in ast.walk(tree):
+            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            searches = []
+            for call_node in ast.walk(function):
+                if not isinstance(call_node, ast.Call):
+                    continue
+                name = getattr(
+                    call_node.func, "id", getattr(call_node.func, "attr", None)
+                )
+                if name not in aliases:
+                    continue
+                operation = (
+                    call_node.args[1]
+                    if len(call_node.args) > 1
+                    else next(
+                        (
+                            kw.value
+                            for kw in call_node.keywords
+                            if kw.arg == "operation"
+                        ),
+                        None,
+                    )
+                )
+                if isinstance(operation, ast.Constant) and operation.value == "search":
+                    searches.append(call_node)
+            if not searches:
+                continue
+            routes = [
+                dec
+                for dec in function.decorator_list
+                if isinstance(dec, ast.Call)
+                and isinstance(dec.func, ast.Attribute)
+                and dec.func.attr in {"get", "post", "put", "patch", "delete"}
+            ]
+            assert routes, f"Unmapped search admission: {source.name}:{function.lineno}"
+            for route in routes:
+                assert isinstance(route.func, ast.Attribute)
+                assert route.args and isinstance(route.args[0], ast.Constant)
+                required[(route.func.attr.upper(), route.args[0].value)] = (
+                    f"{source.name}:{function.lineno}"
+                )
+    assert required
+    covered = runtime.SEARCH_HTTP_ROUTES
+    missing = required.keys() - covered
+    assert not missing, {route: required[route] for route in missing}
 
-    assert {
-        route.path for route in router.routes if isinstance(route, APIRoute)
-    } == runtime.SEARCH_HTTP_PATHS
+
+@pytest.mark.parametrize("success", [True, False])
+def test_storage_stats_keeps_owned_admission_and_business_outcome(monkeypatch, success):
+    from reflexio.models.api_schema.retriever_schema import StorageStatsResponse
+
+    from .routes.test_search_exposure_boundary import _client, _search_results
+
+    events = []
+    monkeypatch.setattr(
+        runtime, "record_health", lambda name, *_args, **kw: events.append((name, kw))
+    )
+    with _search_results([]) as reflexio:
+        reflexio.storage_stats.return_value = StorageStatsResponse(
+            success=success, profile_count=2, playbook_count=3
+        )
+        response = _client("dashboard").get(
+            "/api/storage_stats", params={"user_id": "user-1"}
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["profile_count"] == 2
+    assert response.json()["success"] is success
+    assert (
+        "search.requests",
+        {"outcome": "success" if success else "application_failure", "status": "200"},
+    ) in events
 
 
 @pytest.mark.parametrize("recording_scope", [False, True])

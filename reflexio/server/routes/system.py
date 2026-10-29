@@ -118,13 +118,17 @@ def storage_stats(
     Returns:
         StorageStatsResponse: Counts and timestamp range for the user.
     """
-    return _run_limited_api(
+    response = _run_limited_api(
         org_id,
         "search",
         lambda: reflexio_cache.get_reflexio(org_id=org_id).storage_stats(
             StorageStatsRequest(user_id=user_id)
         ),
     )
+    from reflexio.server import search_runtime
+
+    search_runtime.set_outcome(response.success)
+    return response
 
 
 @router.post(

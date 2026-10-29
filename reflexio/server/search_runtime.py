@@ -32,14 +32,15 @@ from reflexio.server.operational_metrics import record_health
 from reflexio.server.work_scope import current_project_id, current_work_scope
 
 logger = logging.getLogger(__name__)
-SEARCH_HTTP_PATHS = frozenset(
+SEARCH_HTTP_ROUTES = frozenset(
     {
-        "/api/search",
-        "/api/search_profiles",
-        "/api/rerank_user_profiles",
-        "/api/search_interactions",
-        "/api/search_user_playbooks",
-        "/api/search_agent_playbooks",
+        ("POST", "/api/search"),
+        ("POST", "/api/search_profiles"),
+        ("POST", "/api/rerank_user_profiles"),
+        ("POST", "/api/search_interactions"),
+        ("POST", "/api/search_user_playbooks"),
+        ("POST", "/api/search_agent_playbooks"),
+        ("GET", "/api/storage_stats"),
     }
 )
 # Production defaults first-party logs to WARNING. Opt in only this compact,
@@ -933,8 +934,8 @@ class SearchRuntimeMiddleware:
 
         if (
             scope["type"] != "http"
-            or scope.get("method") != "POST"
-            or route_relative_path(scope) not in SEARCH_HTTP_PATHS
+            or (scope.get("method"), route_relative_path(scope))
+            not in SEARCH_HTTP_ROUTES
             or current() is not None
         ):
             await self.app(scope, receive, send)

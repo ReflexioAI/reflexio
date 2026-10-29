@@ -13,9 +13,9 @@ from reflexio.server import search_runtime as runtime
 @pytest.mark.parametrize(
     ("configured", "expected"), [(None, 5), ("", 5), ("8", 8), ("0", 19), ("40", 19)]
 )
-@pytest.mark.parametrize("path", sorted(runtime.SEARCH_HTTP_PATHS))
+@pytest.mark.parametrize(("method", "path"), sorted(runtime.SEARCH_HTTP_ROUTES))
 def test_search_work_uses_the_explicit_budget_within_original_http_backstop(
-    monkeypatch, configured, expected, path
+    monkeypatch, configured, expected, method, path
 ):
     monkeypatch.delenv("REFLEXIO_SEARCH_DEADLINE_ENABLED", raising=False)
     if configured is None:
@@ -25,7 +25,7 @@ def test_search_work_uses_the_explicit_budget_within_original_http_backstop(
     monkeypatch.setattr(http_middleware, "backstop_for", lambda *_args: 19.0)
     app = FastAPI()
 
-    @app.post(path)
+    @app.api_route(path, methods=[method])
     async def search():
         # Exercise the real worker context handoff, not only constructor parsing.
         return {
@@ -33,7 +33,7 @@ def test_search_work_uses_the_explicit_budget_within_original_http_backstop(
         }
 
     with TestClient(runtime.SearchRuntimeMiddleware(app)) as client:
-        response = client.post(path, json={})
+        response = client.request(method, path, json={})
     assert response.status_code == 200, response.text
     assert expected - 1 < response.json()["remaining"] <= expected
 
