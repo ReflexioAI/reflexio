@@ -15,7 +15,10 @@ from reflexio.models.api_schema.domain.entities import (
     UserPlaybook,
 )
 from reflexio.models.api_schema.domain.enums import Status
-from reflexio.models.config_schema import DeduplicationConfig
+from reflexio.models.config_schema import (
+    DeduplicationConfig,
+    UserPlaybookExtractorConfig,
+)
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.extraction.agent_run_records import (
@@ -40,7 +43,14 @@ from reflexio.server.services.playbook.components.reconciliation import (
     AuditedConsolidationAbstainedError,
     Reconciler,
 )
+from reflexio.server.services.playbook.components.reviewer import (
+    PlaybookCandidateReviewer,
+)
 from reflexio.server.services.playbook.review_window import PlaybookReviewWindowError
+from reflexio.server.services.playbook.service import (
+    PlaybookGenerationService,
+    PlaybookGenerationServiceConfig,
+)
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from tests.server.services.playbook.test_audited_reconciliation import (
     payload as reconciliation_payload,
@@ -785,3 +795,186 @@ def test_uncapped_client_durable_admission_suspends_and_resumes_once_per_call(
         assert requests[2].get("tools") is None
         assert "deterministic validation" in requests[2]["messages"][-1]["content"]
     assert all(attempt["usage"] is not None for attempt in attempts)
+
+
+def _publication_case(
+    consolidator, storage, monkeypatch, *, expert=False, pending=False
+):
+    """Keep real method/service/storage; replace only external inference and search."""
+    monkeypatch.setattr(storage, "_get_embedding", lambda _text: [0.1] * 512)
+    interaction_id = source(storage, expert=expert)
+    incumbent = row(ids=[interaction_id])
+    incumbent.request_id = "incumbent-generation"
+    storage.save_user_playbooks([incumbent], skip_embedding=True)
+    assert incumbent.user_playbook_id > 0
+    ref = {"session_id": "evidence", "turn": interaction_id}
+    outputs = [
+        {
+            "trigger": "before submitting",
+            "content": text,
+            "rationale": "See cited evidence.",
+            "evidence_refs": [ref],
+        }
+        for text in ["Check authorization.", "Report authorization result."]
+    ]
+    answers = iter(
+        [
+            {
+                "decisions": [
+                    {
+                        "kind": "replace",
+                        "new_ids": ["NEW-0"],
+                        "existing_ids": ["EXISTING-0"],
+                        "outputs": outputs,
+                        "reason": "separate supported steps",
+                    }
+                ]
+            },
+            {"findings": []},
+        ]
+    )
+    calls = []
+
+    def dispatch(params, _timeout):
+        calls.append(params)
+        return response(next(answers))
+
+    monkeypatch.setattr(consolidator.client, "_completion_with_hard_timeout", dispatch)
+    context = consolidator.request_context
+    context.configurator.set_config_by_name(
+        "user_playbook_extractor_config",
+        UserPlaybookExtractorConfig(
+            extraction_definition_prompt="Extract source-supported instructions",
+            deduplication_config=DeduplicationConfig(strategy="audited"),
+        ),
+    )
+    service = PlaybookGenerationService(
+        consolidator.client,
+        context,
+        skip_aggregation=True,
+        output_pending_status=pending,
+    )
+    service.service_config = PlaybookGenerationServiceConfig(
+        request_id="generation",
+        agent_version="v1",
+        user_id="owner",
+        source="agent",
+        auto_run=False,
+    )
+    # Candidate extraction/review and nearest-neighbor quality are separate
+    # contracts; exercise consolidation through the configured service here.
+    monkeypatch.setattr(PlaybookCandidateReviewer, "is_enabled", lambda _self: False)
+    monkeypatch.setattr(
+        PlaybookConsolidator,
+        "retrieve_existing_playbooks",
+        lambda *_args, **_kwargs: [incumbent],
+    )
+    return SimpleNamespace(
+        service=service,
+        candidate=row(ids=[interaction_id]),
+        incumbent=incumbent,
+        calls=calls,
+        interaction_id=interaction_id,
+        contents={output["content"] for output in outputs},
+    )
+
+
+@pytest.mark.parametrize("expert", [False, True])
+@pytest.mark.parametrize("pending", [False, True])
+def test_audited_multioutput_service_publication_preserves_each_source_link(
+    consolidator, storage, monkeypatch, expert, pending
+):
+    case = _publication_case(
+        consolidator, storage, monkeypatch, expert=expert, pending=pending
+    )
+    original_events = storage.get_lineage_events()
+    plan = case.service._resolve_write_plan([[case.candidate]])
+    assert plan is not None and len(plan.new_playbooks) == 2
+    assert len(case.calls) == 2  # One decision and its independent audit.
+    assert all(playbook.embedding for playbook in plan.new_playbooks)
+    monkeypatch.setattr(
+        storage,
+        "_get_embedding",
+        MagicMock(side_effect=AssertionError("Persistence must reuse embeddings")),
+    )
+    # Computing a valid plan must not publish outputs or retire its incumbent.
+    assert storage.get_user_playbooks() == [case.incumbent]
+    assert storage.get_lineage_events() == original_events
+    with storage.commit_scope():
+        case.service._persist_write_plan(plan)
+    current = storage.get_user_playbooks(user_id="owner", agent_version="v1")
+    assert {playbook.content for playbook in current} == case.contents
+    assert all(
+        playbook.status == (Status.PENDING if pending else None)
+        and playbook.source_interaction_ids == [case.interaction_id]
+        for playbook in current
+    )
+    original = storage.get_user_playbook_by_id(
+        case.incumbent.user_playbook_id, include_tombstones=True
+    )
+    assert original is not None and original.status == Status.SUPERSEDED
+    assert original.merged_into is None  # A split has no arbitrary single survivor.
+    created = [
+        event
+        for event in storage.get_lineage_events(request_id="generation")
+        if event.op == "create"
+    ]
+    assert len(created) == 2
+    assert {event.entity_id for event in created} == {
+        str(playbook.user_playbook_id) for playbook in current
+    }
+    assert all(
+        str(case.incumbent.user_playbook_id) in event.source_ids for event in created
+    )
+
+
+@pytest.mark.parametrize("failure_point", ["partial_insert", "after_retirement"])
+def test_audited_service_publication_rolls_back_rows_and_lineage_together(
+    consolidator, storage, monkeypatch, failure_point
+):
+    case = _publication_case(consolidator, storage, monkeypatch)
+    original_events = storage.get_lineage_events()
+    plan = case.service._resolve_write_plan([[case.candidate]])
+    assert plan is not None and len(plan.new_playbooks) == 2
+    assert len(case.calls) == 2
+    monkeypatch.setattr(
+        storage,
+        "_get_embedding",
+        MagicMock(side_effect=AssertionError("Persistence must reuse embeddings")),
+    )
+    observed = []
+    if failure_point == "partial_insert":
+        save = storage.save_user_playbooks
+
+        def fail_after_first_insert(playbooks, **kwargs):
+            kwargs["lineage_contexts"] = kwargs["lineage_contexts"][:1]
+            save(playbooks[:1], **kwargs)
+            assert len(storage.get_user_playbooks()) == 2
+            observed.append("first output inserted")
+            raise RuntimeError("injected publication failure")
+
+        monkeypatch.setattr(storage, "save_user_playbooks", fail_after_first_insert)
+    else:
+        retire = storage.supersede_user_playbooks_by_ids
+
+        def fail_after_retirement(*args, **kwargs):
+            retire(*args, **kwargs)
+            original = storage.get_user_playbook_by_id(
+                case.incumbent.user_playbook_id, include_tombstones=True
+            )
+            assert original is not None and original.status == Status.SUPERSEDED
+            observed.append("incumbent retired")
+            raise RuntimeError("injected publication failure")
+
+        monkeypatch.setattr(
+            storage, "supersede_user_playbooks_by_ids", fail_after_retirement
+        )
+    with (
+        pytest.raises(RuntimeError, match="injected publication failure"),
+        storage.commit_scope(),
+    ):
+        case.service._persist_write_plan(plan)
+    assert len(observed) == 1  # The fault must happen after a real mutation.
+    assert storage.get_user_playbooks() == [case.incumbent]
+    assert storage.get_lineage_events() == original_events
+    assert len(case.calls) == 2  # Persistence never dispatches another model call.
