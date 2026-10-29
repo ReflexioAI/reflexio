@@ -714,7 +714,8 @@ def test_receipt_issuance_cannot_accept_an_expired_response() -> None:
     assert response.status_code == 504, response.text
 
 
-def test_deadline_after_route_completion_discards_all_served_state() -> None:
+@pytest.mark.parametrize("path", ["/api/search", "/api/search_user_playbooks"])
+def test_deadline_after_route_completion_discards_all_served_state(path: str) -> None:
     import time
 
     from fastapi import FastAPI
@@ -757,8 +758,9 @@ def test_deadline_after_route_completion_discards_all_served_state() -> None:
             return result
 
         reflexio.unified_search.side_effect = retrieve
+        reflexio.search_user_playbooks.side_effect = retrieve
         response = client.post(
-            "/api/search",
+            path,
             json={"query": "answer", "user_id": "user-1", "session_id": "s1"},
         )
     assert response.status_code == 504, response.text
@@ -844,7 +846,8 @@ def test_search_without_either_exposure_provider_remains_supported(path: str) ->
     assert [row["content"] for row in response.json()["user_playbooks"]] == ["First"]
 
 
-def test_unified_legacy_recording_waits_for_response_acceptance() -> None:
+@pytest.mark.parametrize("path", ["/api/search", "/api/search_user_playbooks"])
+def test_legacy_recording_waits_for_response_acceptance(path: str) -> None:
     from reflexio.server.services.search_exposure import SEARCH_EXPOSURE_RECORDER
 
     recorder = MagicMock()
@@ -859,9 +862,7 @@ def test_unified_legacy_recording_waits_for_response_acceptance() -> None:
             ),
         ),
     ):
-        response = _client().post(
-            "/api/search", json={"query": "answer", "user_id": "user-1"}
-        )
+        response = _client().post(path, json={"query": "answer", "user_id": "user-1"})
     assert response.status_code == 200
     recorder.record.assert_not_called()
     exposure = [item for item in callbacks if item[0] == "exposure"]

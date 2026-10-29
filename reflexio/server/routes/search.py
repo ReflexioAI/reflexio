@@ -128,7 +128,8 @@ def search_user_profiles(
             msg=response.msg,
             experiment=assignment,
         )
-    enqueue_search_metering(
+    meter = partial(
+        enqueue_search_metering,
         org_id=org_id,
         caller_type=caller_type,
         surfaced_count=len(resp.user_profiles),
@@ -136,6 +137,10 @@ def search_user_profiles(
         request_id=getattr(payload, "request_id", None),
         session_id=getattr(payload, "session_id", None),
     )
+    if resp.success:
+        search_runtime.on_response_accepted("metering", meter, order=20)
+    else:
+        meter()
     return resp
 
 
@@ -252,6 +257,7 @@ def search_user_playbooks_endpoint(
             nonlocal storage
             reflexio = reflexio_cache.get_reflexio(org_id=org_id)
             storage = reflexio.get_storage()
+            search_runtime.remember_search_storage(org_id, storage)
             return reflexio.search_user_playbooks(payload)
 
         response = _run_limited_api(org_id, "search", run_search)
@@ -277,13 +283,20 @@ def search_user_playbooks_endpoint(
                 # Enterprise retains synchronous recording until it installs
                 # receipt issuance and publication ingestion together.
                 if response.success and response.user_playbooks and storage is not None:
-                    with search_runtime.search_exposure_scope(org_id, storage):
-                        record_search_exposures(batch)
+
+                    def record_exposures() -> None:
+                        with search_runtime.search_exposure_scope(org_id, storage):
+                            record_search_exposures(batch)
+
+                    search_runtime.on_response_accepted(
+                        "exposure", record_exposures, order=0
+                    )
             else:
                 receipts = issue_search_exposure_receipts(batch)
                 for playbook in resp.user_playbooks:
                     playbook.exposure_receipt = receipts.get(playbook.user_playbook_id)
-    enqueue_search_metering(
+    meter = partial(
+        enqueue_search_metering,
         org_id=org_id,
         caller_type=caller_type,
         surfaced_count=len(resp.user_playbooks),
@@ -291,6 +304,10 @@ def search_user_playbooks_endpoint(
         request_id=getattr(payload, "request_id", None),
         session_id=getattr(payload, "session_id", None),
     )
+    if resp.success:
+        search_runtime.on_response_accepted("metering", meter, order=20)
+    else:
+        meter()
     return resp
 
 
@@ -347,7 +364,8 @@ def search_agent_playbooks_endpoint(
             msg=response.msg,
             experiment=assignment,
         )
-    enqueue_search_metering(
+    meter = partial(
+        enqueue_search_metering,
         org_id=org_id,
         caller_type=caller_type,
         surfaced_count=len(resp.agent_playbooks),
@@ -355,6 +373,10 @@ def search_agent_playbooks_endpoint(
         request_id=getattr(payload, "request_id", None),
         session_id=getattr(payload, "session_id", None),
     )
+    if resp.success:
+        search_runtime.on_response_accepted("metering", meter, order=20)
+    else:
+        meter()
     return resp
 
 
