@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
+import pytest
+
 
 class TestInteractionsList:
     """Tests for 'interactions list'."""
@@ -613,6 +615,23 @@ class TestPublishUserIdResolution:
 
         assert result.exit_code != 0
         assert "REFLEXIO_USER_ID" in result.output or "user-id" in result.output.lower()
+        mock_client.publish_interaction.assert_not_called()
+
+    @pytest.mark.parametrize("raw", ["5", '"text"', "null", "1\n2"])
+    def test_non_object_payload_is_a_validation_error(
+        self, runner, app, mock_client, tmp_path, raw
+    ) -> None:
+        """Scalar JSON (single value or JSONL line) exits 2 without publishing."""
+        path = tmp_path / "payload.json"
+        path.write_text(raw)
+
+        result = runner.invoke(
+            app, ["interactions", "publish", "--user-id", "u", "--file", str(path)]
+        )
+
+        assert result.exit_code == 2, result.output
+        assert not isinstance(result.exception, AttributeError)
+        assert "object" in result.output
         mock_client.publish_interaction.assert_not_called()
 
     def test_single_turn_env_fallback(
