@@ -6,11 +6,13 @@ import logging
 import math
 import os
 import threading
+import time
 from _thread import LockType
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, runtime_checkable
 
 import anyio
 from anyio.to_thread import run_sync
@@ -22,7 +24,6 @@ from reflexio.server.background_work import (
     report_background_failure,
     report_background_success,
 )
-from reflexio.server.env_utils import positive_int_env
 from reflexio.server.llm.providers.local_embedding_provider import LocalEmbedder
 from reflexio.server.llm.providers.nomic_embedding_provider import (
     NomicEmbedder,
@@ -61,13 +62,12 @@ DEFAULT_OSS_EMBEDDING_MODEL = MINILM_MODEL
 # runners also serialize direct callers; competing queue processors only wait
 # on those model locks and fragment batches. Coalesce work already waiting,
 # without delaying an idle request to fill a batch.
-_DEFAULT_MICRO_BATCH_MAX_TEXTS = 64
-_ENV_MICRO_BATCH_MAX_TEXTS = "REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS"
 _MICRO_BATCH_LOCK = threading.Lock()
 _MICRO_BATCH_QUEUE: list[_EmbeddingJob] = []
 _BATCH_WORKER_RUNNING = False
-# Failsafe bound for a submitter waiting on its job (see _embed_texts).
-_JOB_WAIT_TIMEOUT_SECONDS = 600.0
+# Public request default; the queue uses this same budget rather than a
+# separate submitter failsafe. HTTP requests pass their selected timeout.
+_DEFAULT_TIMEOUT_MS = 30_000
 
 EmbeddingEncoder = Callable[[list[str]], list[list[float]]]
 InferenceSubmit = Callable[
@@ -88,14 +88,46 @@ class _EmbeddingJob:
     texts: list[str]
     encoder: EmbeddingEncoder | None = None
     done: threading.Event = field(default_factory=threading.Event)
-    result: list[list[float]] | None = None
+    result: list[list[float]] = field(default_factory=list)
+    pending: deque[int] = field(init=False)
+    turn: list[int] = field(default_factory=list)
+    rows: dict[int, list[float]] = field(default_factory=dict)
+    capacity: int | None = field(init=False)
+    deadline: float = float("inf")
     error: BaseException | None = None
 
+    def __post_init__(self) -> None:
+        encoder = (
+            self.encoder if self.encoder is not None else _model_encoder(self.model)
+        )
+        batched = isinstance(encoder, _BatchedEncoder)
+        self.capacity = encoder.batch_size if batched else None
+        if self.capacity is not None and self.capacity <= 0:
+            raise ValueError("Embedding encoder batch capacity must be positive")
+        indices = range(len(self.texts))
+        # Native sentence encoders already sort by text length to avoid padding.
+        # Preserve that packing across requests, then restore original row order.
+        self.pending = deque(
+            sorted(indices, key=lambda i: len(self.texts[i]), reverse=True)
+            if batched
+            else indices
+        )
 
-def _micro_batch_max_texts() -> int:
-    return positive_int_env(
-        _ENV_MICRO_BATCH_MAX_TEXTS, _DEFAULT_MICRO_BATCH_MAX_TEXTS, logger
-    )
+
+@runtime_checkable
+class _BatchedEncoder(Protocol):
+    @property
+    def batch_size(self) -> int: ...
+
+    def __call__(self, texts: list[str]) -> list[list[float]]: ...
+
+
+def _model_encoder(model: str) -> _BatchedEncoder:
+    if is_nomic_model(model):
+        return NomicEmbedder.get()
+    if model == MINILM_MODEL:
+        return LocalEmbedder.get()
+    raise HTTPException(status_code=400, detail=f"Unsupported model: {model}")
 
 
 class EmbeddingRequest(BaseModel):
@@ -104,7 +136,7 @@ class EmbeddingRequest(BaseModel):
     dimensions: int | None = Field(default=None, gt=0)
     priority: Literal["interactive", "bulk"] = "bulk"
     purpose: Literal["document", "query"] = "document"
-    timeout_ms: int = Field(default=30_000, gt=0, le=600_000)
+    timeout_ms: int = Field(default=_DEFAULT_TIMEOUT_MS, gt=0, le=600_000)
 
 
 class EmbeddingData(BaseModel):
@@ -288,12 +320,15 @@ def create_embedding_app(
     runner = reranker_runner or CrossEncoderRunner(reranker_model)
     recovery_lock = threading.Lock()
 
-    def embed_texts(model: str, texts: list[str]) -> list[list[float]]:
+    def embed_texts(
+        model: str, texts: list[str], timeout_ms: int | None = None
+    ) -> list[list[float]]:
         return _embed_texts(
             model,
             texts,
             encoder=effective_encoders.get(model),
             allowed_models=effective_allowed_models,
+            timeout_ms=timeout_ms,
         )
 
     @asynccontextmanager
@@ -426,7 +461,9 @@ def create_embedding_app(
                 ),
             )
         else:
-            embeddings = await run_in_threadpool(embed_texts, request.model, texts)
+            embeddings = await run_in_threadpool(
+                embed_texts, request.model, texts, request.timeout_ms
+            )
 
         _validate_embedding_width(request.model, embeddings, expected_dimensions)
 
@@ -493,12 +530,20 @@ def _embed_texts(
     *,
     encoder: EmbeddingEncoder | None = None,
     allowed_models: set[str] | None = None,
+    timeout_ms: int | None = _DEFAULT_TIMEOUT_MS,
 ) -> list[list[float]]:
     _activate_model(model, allowed_models=allowed_models)
     if not texts:
         return []
 
-    job = _EmbeddingJob(model=model, texts=list(texts), encoder=encoder)
+    job = _EmbeddingJob(
+        model=model,
+        texts=list(texts),
+        encoder=encoder,
+        deadline=time.monotonic() + timeout_ms / 1000
+        if timeout_ms is not None
+        else float("inf"),
+    )
     global _BATCH_WORKER_RUNNING
     with _MICRO_BATCH_LOCK:
         _MICRO_BATCH_QUEUE.append(job)
@@ -516,18 +561,18 @@ def _embed_texts(
             _fail_queued_jobs(error)
             raise
 
-    # Last-resort failsafe: a processor thread that dies between taking and
-    # completing jobs would otherwise leave this request hanging forever. The
-    # bound is far above any legitimate CPU bulk encode.
-    if not job.done.wait(timeout=_JOB_WAIT_TIMEOUT_SECONDS):
-        raise RuntimeError(
-            f"Embedding micro-batch did not complete within "
-            f"{_JOB_WAIT_TIMEOUT_SECONDS:.0f}s"
-        )
+    wait_seconds = (
+        max(0, job.deadline - time.monotonic()) if timeout_ms is not None else None
+    )
+    if not job.done.wait(timeout=wait_seconds):
+        with _MICRO_BATCH_LOCK:
+            if not job.done.is_set():
+                job.error = HTTPException(504, "Embedding deadline exceeded")
+                job.done.set()
+                if job in _MICRO_BATCH_QUEUE:
+                    _MICRO_BATCH_QUEUE.remove(job)
     if job.error is not None:
         raise job.error
-    if job.result is None:
-        raise RuntimeError("Embedding micro-batch completed without a result")
     return job.result
 
 
@@ -575,31 +620,63 @@ def _run_micro_batch_processor() -> None:
 
 
 def _take_micro_batch() -> list[_EmbeddingJob]:
-    max_texts = _micro_batch_max_texts()
     with _MICRO_BATCH_LOCK:
-        first = _MICRO_BATCH_QUEUE.pop(0)
-        jobs = [first]
-        total_texts = len(first.texts)
-        for candidate in list(_MICRO_BATCH_QUEUE):
-            if (
-                candidate.model == first.model
-                and candidate.encoder is first.encoder
-                and total_texts + len(candidate.texts) <= max_texts
-            ):
-                _MICRO_BATCH_QUEUE.remove(candidate)
-                jobs.append(candidate)
-                total_texts += len(candidate.texts)
+        # Expired submitters may be waiting to acquire this lock. They must not
+        # dispatch another physical model turn while their deadline is over.
+        now = time.monotonic()
+        for job in list(_MICRO_BATCH_QUEUE):
+            if job.done.is_set() or now >= job.deadline:
+                _MICRO_BATCH_QUEUE.remove(job)
+                if not job.done.is_set():
+                    job.error = HTTPException(504, "Embedding deadline exceeded")
+                    job.done.set()
+        if not _MICRO_BATCH_QUEUE:
+            return []
+        first = _MICRO_BATCH_QUEUE[0]
+        if first.capacity is None:
+            # A custom callback without native capacity is an opaque atomic
+            # invocation. Preserve its request contract; do not invent a cap or
+            # combine independent calls into an undocumented oversized batch.
+            _MICRO_BATCH_QUEUE.pop(0)
+            first.turn = list(first.pending)
+            first.pending.clear()
+            return [first]
+        anchor_length = len(first.texts[first.pending[0]])
+        candidates = [
+            job
+            for job in _MICRO_BATCH_QUEUE
+            if job.model == first.model and job.encoder is first.encoder
+        ]
+        jobs: list[_EmbeddingJob] = []
+        selected = first
+        for _ in range(first.capacity):
+            if not selected.turn:
+                _MICRO_BATCH_QUEUE.remove(selected)
+                jobs.append(selected)
+            selected.turn.append(selected.pending.popleft())
+            if not selected.pending:
+                candidates.remove(selected)
+            if not candidates:
+                break
+            # The oldest request always anchors a turn, so nearest-length
+            # packing cannot starve a waiting request. No delay or target fill.
+            selected = min(
+                candidates,
+                key=lambda job: abs(len(job.texts[job.pending[0]]) - anchor_length),
+            )
         return jobs
 
 
 def _process_micro_batch(jobs: list[_EmbeddingJob]) -> None:
-    texts: list[str] = []
-    slices: list[tuple[_EmbeddingJob, int, int]] = []
-    for job in jobs:
-        start = len(texts)
-        texts.extend(job.texts)
-        slices.append((job, start, len(texts)))
-
+    with _MICRO_BATCH_LOCK:
+        for job in jobs:
+            if not job.done.is_set() and time.monotonic() >= job.deadline:
+                job.error = HTTPException(504, "Embedding deadline exceeded")
+                job.done.set()
+        jobs = [job for job in jobs if not job.done.is_set()]
+    if not jobs:
+        return
+    texts = [text for job in jobs for index in job.turn for text in [job.texts[index]]]
     try:
         encoder = jobs[0].encoder
         embeddings = (
@@ -607,27 +684,40 @@ def _process_micro_batch(jobs: list[_EmbeddingJob]) -> None:
             if encoder is not None
             else _encode_texts_now(jobs[0].model, texts)
         )
+        if len(embeddings) != len(texts):
+            raise RuntimeError(
+                f"Embedding count mismatch: encoded {len(texts)} texts but got "
+                f"{len(embeddings)} embeddings"
+            )
     except BaseException as exc:
-        for job in jobs:
-            job.error = exc
-            job.done.set()
+        with _MICRO_BATCH_LOCK:
+            for job in jobs:
+                if not job.done.is_set():
+                    job.error = exc
+                    job.done.set()
         return
 
-    if len(embeddings) != len(texts):
-        # Slicing a short result would silently hand jobs truncated/empty
-        # vectors; fail every job loudly at the source instead.
-        mismatch = RuntimeError(
-            f"Embedding count mismatch: encoded {len(texts)} texts but got "
-            f"{len(embeddings)} embeddings"
-        )
+    with _MICRO_BATCH_LOCK:
+        start = 0
         for job in jobs:
-            job.error = mismatch
-            job.done.set()
-        return
-
-    for job, start, end in slices:
-        job.result = embeddings[start:end]
-        job.done.set()
+            end = start + len(job.turn)
+            if not job.done.is_set():
+                if time.monotonic() >= job.deadline:
+                    job.error = HTTPException(504, "Embedding deadline exceeded")
+                    job.done.set()
+                else:
+                    job.rows.update(zip(job.turn, embeddings[start:end], strict=True))
+                    if not job.pending:
+                        job.result = [
+                            job.rows[index] for index in range(len(job.texts))
+                        ]
+                        job.done.set()
+                    else:
+                        # Arrivals already waiting get a turn before this large
+                        # request continues. Never return its partial result.
+                        job.turn.clear()
+                        _MICRO_BATCH_QUEUE.append(job)
+            start = end
 
 
 def _encode_texts_now(model: str, texts: list[str]) -> list[list[float]]:

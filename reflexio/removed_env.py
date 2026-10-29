@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS": "REFLEXIO_EMBED_BATCH_SIZE",
     "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOK_SOURCE_USER_PLAYBOOKS": "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOKS",
     "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_JOBS": "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_HISTORY",
     "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_CANDIDATES": "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_HISTORY",
@@ -99,6 +100,12 @@ def reject_removed_env(
                 "and reclaims complete eligible job graphs. Select its capacity "
                 "explicitly; zero disables it. Independent old caps, including "
                 "zero and blank assignments, are never silently converted"
+            )
+        if "REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS" in obsolete:
+            migration += (
+                "; remove the queue-cap assignment, do not copy its value. "
+                "REFLEXIO_EMBED_BATCH_SIZE now owns native encoder and queue-turn "
+                "capacity together; preserve its existing value"
             )
         if "PUBLIC_SCHEMA_AUDIT_ENABLED" in obsolete:
             migration += (

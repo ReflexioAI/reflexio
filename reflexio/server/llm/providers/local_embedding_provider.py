@@ -30,6 +30,7 @@ from typing import Any, BinaryIO, cast
 
 from reflexio.native_compute import configure_native_compute
 from reflexio.removed_env import reject_removed_env
+from reflexio.server.llm.sentence_encoder import embedding_batch_size
 
 try:
     import fcntl
@@ -172,9 +173,11 @@ class ONNXMiniLM:
             self._load_model()
         np = self._np
         vectors: list[list[float]] = []
-        for start in range(0, len(documents), 32):
+        batch_size = embedding_batch_size(32)
+        for start in range(0, len(documents), batch_size):
             encoded = [
-                self._tokenizer.encode(text) for text in documents[start : start + 32]
+                self._tokenizer.encode(text)
+                for text in documents[start : start + batch_size]
             ]
             ids = np.array([item.ids for item in encoded], dtype=np.int64)
             attention = np.array(
@@ -245,6 +248,14 @@ class LocalEmbedder:
                 ONNXMiniLM.DOWNLOAD_PATH,
             )
             return self._ef
+
+    @property
+    def batch_size(self) -> int:
+        """Share the ONNX capacity with the daemon's model turns."""
+        return embedding_batch_size(32)
+
+    def __call__(self, texts: list[str]) -> list[list[float]]:
+        return self.embed(texts)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of documents, returning 512-dim padded vectors.
