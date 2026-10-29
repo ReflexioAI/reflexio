@@ -128,6 +128,7 @@ def search_user_profiles(
             msg=response.msg,
             experiment=assignment,
         )
+    search_runtime.set_outcome(resp.success)
     meter = partial(
         enqueue_search_metering,
         org_id=org_id,
@@ -183,11 +184,13 @@ def rerank_user_profiles(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Reranking is currently unavailable",
         ) from exc
-    return SearchProfilesViewResponse(
+    resp = SearchProfilesViewResponse(
         success=response.success,
         user_profiles=[to_profile_view(p) for p in response.user_profiles],
         msg=response.msg,
     )
+    search_runtime.set_outcome(resp.success)
+    return resp
 
 
 @router.post(
@@ -206,11 +209,13 @@ def search_interactions(
         "search",
         lambda: reflexio_cache.get_reflexio(org_id=org_id).search_interactions(payload),
     )
-    return SearchInteractionsViewResponse(
+    resp = SearchInteractionsViewResponse(
         success=response.success,
         interactions=[to_interaction_view(i) for i in response.interactions],
         msg=response.msg,
     )
+    search_runtime.set_outcome(resp.success)
+    return resp
 
 
 @router.post(
@@ -295,6 +300,7 @@ def search_user_playbooks_endpoint(
                 receipts = issue_search_exposure_receipts(batch)
                 for playbook in resp.user_playbooks:
                     playbook.exposure_receipt = receipts.get(playbook.user_playbook_id)
+    search_runtime.set_outcome(resp.success)
     meter = partial(
         enqueue_search_metering,
         org_id=org_id,
@@ -364,6 +370,7 @@ def search_agent_playbooks_endpoint(
             msg=response.msg,
             experiment=assignment,
         )
+    search_runtime.set_outcome(resp.success)
     meter = partial(
         enqueue_search_metering,
         org_id=org_id,
