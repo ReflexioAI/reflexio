@@ -226,7 +226,6 @@ def run_unified_search(
         recency.pool_size if recency_on and recency is not None else 0,
         _TEMPORAL_POOL_SIZE if temporal_reorder else 0,
     )
-    result_cap = max(top_k, _TEMPORAL_POOL_SIZE) if temporal_reorder else top_k
 
     # Session dedup: a request that carries a session_id skips items already
     # served to that (org, session) and backfills from a widened pool.
@@ -236,6 +235,11 @@ def run_unified_search(
     )
     if seen_keys:
         fetch_k += min(len(seen_keys), _SESSION_DEDUP_FETCH_BUMP_CAP)
+
+    # Temporal ordering must see the full admitted working pool, including
+    # configured rerank/recency candidates and session backfill. Cutting to the
+    # default temporal floor here would discard fresh candidates already fetched.
+    result_cap = fetch_k if temporal_reorder else top_k
 
     # --- Phase B: parallel searches across all entity types ---
     profiles, agent_playbooks, user_playbooks = _run_phase_b(

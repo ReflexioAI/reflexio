@@ -83,6 +83,11 @@ strings before deleting old import paths in the same PR.
 
 Translate admitted interactions into profiles/playbooks, evaluate sessions, and retrieve learning through shared storage and configuration contracts.
 
+For current/latest search queries, temporal ordering consumes the full admitted
+candidate pool after relevance filtering, including configured recency/floor
+pools and session backfill. Apply the request's final `top_k` after that ordering;
+the default temporal working-pool minimum is not an intermediate result ceiling.
+
 ## Architecture Pattern
 
 
