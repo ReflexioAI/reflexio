@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -44,6 +44,7 @@ class _LimiterState:
     limit: int
     waiting: int = 0
     active: int = 0
+    available: threading.Condition = field(default_factory=threading.Condition)
 
 
 _limiters: dict[tuple[str, OperationName], _LimiterState] = {}
@@ -66,7 +67,7 @@ def operation_limit_value(operation: OperationName) -> int:
     return _limit_for(operation)
 
 
-def _timeout_for(operation: OperationName) -> float:
+def _timeout_for(operation: OperationName) -> float | None:
     # Publish admission owns its request deadline. Keep the old helper's default
     # for call compatibility without advertising an ineffective environment knob.
     if operation == "publish":
@@ -74,13 +75,59 @@ def _timeout_for(operation: OperationName) -> float:
     if operation == "aggregation":
         validate_aggregation_timing_env(os.environ)
         return aggregation_admission_wait_seconds()
-    raw = os.getenv("REFLEXIO_SEARCH_CONCURRENCY_TIMEOUT_SECONDS", "").strip()
-    if raw:
-        try:
-            return max(0.0, float(raw))
-        except ValueError:
-            pass
-    return 2.0
+    # HTTP searches consume their ingress deadline. Internal callers can pass
+    # an explicit per-call wait; there is no second implicit search clock.
+    return None
+
+
+def _acquire_search(state: _LimiterState, scope: Any, timeout: float | None) -> bool:
+    """Wait for capacity or cancellation without polling or abandoning a thread."""
+    from reflexio.server import search_runtime
+
+    deadline = None if timeout is None else time.monotonic() + timeout
+
+    def wake() -> None:
+        with state.available:
+            state.available.notify_all()
+
+    if scope is not None:
+        with scope.lock:
+            scope.cancel_wakeups.add(wake)
+    try:
+        with state.available:
+            while True:
+                # Cancellation is monotonic and the ingress deadline is already
+                # established. Do not acquire scope.lock under available:
+                # cancellation may notify us while its caller holds scope.lock.
+                if scope is not None and scope.cancelled:
+                    raise search_runtime.SearchDeadlineError()
+                budget = (
+                    None
+                    if scope is None or scope.deadline is None
+                    else scope.deadline - time.monotonic()
+                )
+                if budget is not None and budget <= 0:
+                    raise search_runtime.SearchDeadlineError()
+                if state.semaphore.acquire(blocking=False):
+                    return True
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    return False
+                if budget is not None:
+                    remaining = budget if remaining is None else min(remaining, budget)
+                state.available.wait(remaining)
+    finally:
+        if scope is not None:
+            with scope.lock:
+                scope.cancel_wakeups.discard(wake)
+
+
+def _release_operation(state: _LimiterState) -> None:
+    with state.available:
+        with _limiters_lock:
+            state.active = max(0, state.active - 1)
+        state.semaphore.release()
+        state.available.notify_all()
 
 
 def _resource_limit_nproc() -> int | str | None:
@@ -427,6 +474,16 @@ def operation_limit(
     from reflexio.server import search_runtime
 
     search_scope = search_runtime.current() if operation == "search" else None
+    if (
+        operation == "search"
+        and timeout_seconds is None
+        and not wait_forever
+        and (search_scope is None or search_scope.deadline is None)
+    ):
+        raise ValueError(
+            "Search admission requires an ingress deadline or an explicit wait "
+            "(timeout_seconds or wait_forever)"
+        )
     if search_scope is not None:
         search_runtime.checkpoint()
         if search_scope.deadline is not None:
@@ -437,6 +494,8 @@ def operation_limit(
         state.waiting += 1
         waiting = state.waiting
     acquired = False
+    waiting_registered = True
+    release_deferred = False
     try:
         with profile_step(
             f"{operation}.operation_limit.acquire",
@@ -445,15 +504,20 @@ def operation_limit(
             wait_forever=wait_forever,
         ) as span:
             acquired = (
-                state.semaphore.acquire()
-                if timeout is None
-                else state.semaphore.acquire(timeout=timeout)
+                _acquire_search(state, search_scope, timeout)
+                if operation == "search"
+                else (
+                    state.semaphore.acquire()
+                    if timeout is None
+                    else state.semaphore.acquire(timeout=timeout)
+                )
             )
             wait_ms = int((time.perf_counter() - start) * 1000)
             span.set_data("wait_ms", wait_ms)
             span.set_data("acquired", acquired)
         with _limiters_lock:
             state.waiting -= 1
+            waiting_registered = False
             waiting_after = state.waiting
             if acquired:
                 state.active += 1
@@ -514,12 +578,19 @@ def operation_limit(
             # Admission can race expiry: do not start retrieval after a 504.
             # The finally block still returns a successfully acquired permit.
             search_runtime.checkpoint()
+            if search_scope.http_owned:
+                with search_scope.lock:
+                    search_scope.admission_releases.append(
+                        lambda: _release_operation(state)
+                    )
+                    release_deferred = True
         yield
     finally:
-        if acquired:
+        if waiting_registered:
             with _limiters_lock:
-                state.active = max(0, state.active - 1)
-            state.semaphore.release()
+                state.waiting -= 1
+        if acquired and not release_deferred:
+            _release_operation(state)
 
 
 def run_with_operation_limit[T](
@@ -543,7 +614,8 @@ def run_with_operation_limit[T](
 
 def limiter_http_exception(operation: OperationName) -> HTTPException:
     """Return the API error used when an operation limiter is saturated."""
-    retry_after = str(max(1, int(_timeout_for(operation))))
+    timeout = _timeout_for(operation)
+    retry_after = None if timeout is None else str(max(1, int(timeout)))
     status_code = (
         status.HTTP_429_TOO_MANY_REQUESTS
         if operation == "search"
@@ -552,7 +624,7 @@ def limiter_http_exception(operation: OperationName) -> HTTPException:
     return HTTPException(
         status_code=status_code,
         detail=f"{operation} concurrency limit reached",
-        headers={"Retry-After": retry_after},
+        headers=None if retry_after is None else {"Retry-After": retry_after},
     )
 
 

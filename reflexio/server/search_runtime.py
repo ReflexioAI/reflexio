@@ -32,6 +32,17 @@ from reflexio.server.operational_metrics import record_health
 from reflexio.server.work_scope import current_project_id, current_work_scope
 
 logger = logging.getLogger(__name__)
+SEARCH_HTTP_ROUTES = frozenset(
+    {
+        ("POST", "/api/search"),
+        ("POST", "/api/search_profiles"),
+        ("POST", "/api/rerank_user_profiles"),
+        ("POST", "/api/search_interactions"),
+        ("POST", "/api/search_user_playbooks"),
+        ("POST", "/api/search_agent_playbooks"),
+        ("GET", "/api/storage_stats"),
+    }
+)
 # Production defaults first-party logs to WARNING. Opt in only this compact,
 # content-free request record, rather than enabling all application INFO logs.
 timing_logger = logging.getLogger(__name__ + ".timing")
@@ -101,6 +112,11 @@ class SearchScope:
     children: dict[int, SearchScope] = field(default_factory=dict, repr=False)
     operation_finished: bool = False
     operation_budget: bool = False
+    http_owned: bool = False
+    cancel_wakeups: set[Callable[[], None]] = field(default_factory=set, repr=False)
+    admission_releases: list[Callable[[], None]] = field(
+        default_factory=list, repr=False
+    )
     search_stores: dict[tuple[str, str | None], object] = field(default_factory=dict)
     config_versions: dict[tuple[str, int, object], tuple[Any, Any]] = field(
         default_factory=dict
@@ -146,6 +162,9 @@ class SearchScope:
             self.outcome = outcome
             futures, leases = tuple(self.futures.items()), tuple(self.leases)
             children = tuple(self.children.values())
+            wakeups = tuple(self.cancel_wakeups)
+        for wake in wakeups:
+            wake()
         for child in children:
             child.cancel(outcome)
         for future, cancel_queued in futures:
@@ -915,15 +934,15 @@ class SearchRuntimeMiddleware:
 
         if (
             scope["type"] != "http"
-            or scope.get("method") != "POST"
-            or route_relative_path(scope) != "/api/search"
+            or (scope.get("method"), route_relative_path(scope))
+            not in SEARCH_HTTP_ROUTES
             or current() is not None
         ):
             await self.app(scope, receive, send)
             return
         from reflexio.server.correlation import correlation_id_var
 
-        state = SearchScope()
+        state = SearchScope(http_owned=True)
         state.timing_id = correlation_id_var.get() or state.timing_id
         wait_for_response = (
             QueryParams(scope.get("query_string", b""))
@@ -932,7 +951,7 @@ class SearchRuntimeMiddleware:
             == "true"
         )
         ingress_backstop = state.started + backstop_for(
-            "/api/search", wait_for_response
+            route_relative_path(scope), wait_for_response
         )
         search_deadline = (
             min(ingress_backstop, state.started + self.timeout)
@@ -973,8 +992,7 @@ class SearchRuntimeMiddleware:
                 raise
             finally:
                 finished.set()
-                await finalized.wait()
-                await _drain_workers(state, lambda: response_at)
+                await _finish_request(state, finalized, lambda: response_at)
 
         receiver: asyncio.Task[None] | None = None
         try:
@@ -1137,21 +1155,61 @@ def _log_fields(fields: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def _finish_request(
+    state: SearchScope,
+    finalized: asyncio.Event,
+    response_at: Callable[[], float | None],
+) -> None:
+    """Keep request admission owned through finalization and descendant cleanup."""
+    cancelled = False
+    while not finalized.is_set():
+        try:
+            await finalized.wait()
+        except asyncio.CancelledError:
+            cancelled = True
+            state.cancel("disconnected")
+    try:
+        await _drain_workers(state, response_at)
+    finally:
+        # Admission belongs to this actual request and all its
+        # tracked descendants, not to the route's return value.
+        with state.lock:
+            releases, state.admission_releases = (
+                state.admission_releases,
+                [],
+            )
+        for release in releases:
+            release()
+    if cancelled:
+        raise asyncio.CancelledError
+
+
 async def _drain_workers(
     state: SearchScope, response_at: Callable[[], float | None]
 ) -> None:
     # The app can finish while executor jobs still own connections.
+    cancelled = False
     while True:
         with state.lock:
             outstanding = tuple(state.futures)
         if not outstanding:
             break
-        await asyncio.gather(
+        draining = asyncio.gather(
             *(asyncio.wrap_future(f) for f in outstanding), return_exceptions=True
         )
+        while not draining.done():
+            try:
+                await asyncio.shield(draining)
+            except asyncio.CancelledError:
+                cancelled = True
+                state.cancel("disconnected")
         # A tracked worker may enqueue descendants before it completes. Only
         # quiescence, rather than one snapshot, releases request admission.
-        await asyncio.sleep(0)
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            cancelled = True
+            state.cancel("disconnected")
     responded = response_at()
     if responded is not None:
         record_health(
@@ -1160,6 +1218,8 @@ async def _drain_workers(
             kind="distribution",
             unit="second",
         )
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 def http_request_deadline(request: Any) -> None:

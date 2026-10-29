@@ -352,7 +352,7 @@ def test_limiter_http_exception_maps_search_to_429():
     exc = limiter_http_exception("search")
 
     assert exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS
-    assert exc.headers == {"Retry-After": "2"}
+    assert exc.headers is None
 
 
 def test_search_limiter_wait_uses_remaining_http_deadline(monkeypatch):
@@ -362,7 +362,6 @@ def test_search_limiter_wait_uses_remaining_http_deadline(monkeypatch):
     from reflexio.server.routes._common import _run_limited_api
 
     monkeypatch.setenv("REFLEXIO_SEARCH_CONCURRENCY_LIMIT", "1")
-    monkeypatch.setenv("REFLEXIO_SEARCH_CONCURRENCY_TIMEOUT_SECONDS", "10")
     state = operation_limiter_module._state_for("deadline-org", "search")
     state.semaphore.acquire()
     scope = search_runtime.SearchScope(deadline=time.monotonic() + 0.03)
@@ -416,10 +415,9 @@ def test_retired_publish_timeout_cannot_change_legacy_wait(monkeypatch, retired_
     assert "publish_timeout_seconds" not in publish_hardware_capacity_snapshot()
 
 
-def test_search_wait_is_independent_of_owned_aggregation_wait(monkeypatch):
-    monkeypatch.setenv("REFLEXIO_SEARCH_CONCURRENCY_TIMEOUT_SECONDS", "0.25")
+def test_only_aggregation_retains_an_independent_admission_clock(monkeypatch):
     monkeypatch.setenv("REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS", "1.0")
-    assert operation_limiter_module._timeout_for("search") == 0.25
+    assert operation_limiter_module._timeout_for("search") is None
     assert operation_limiter_module._timeout_for("aggregation") == 1.0
 
 

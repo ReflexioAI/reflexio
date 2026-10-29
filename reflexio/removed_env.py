@@ -12,6 +12,7 @@ REMOVED_ENV_ALIASES = {
     "REFLEXIO_API_QUERY_EMBEDDING_ENABLED": "REFLEXIO_INFERENCE_WORKLOAD",
     "NOMIC_EMBED_DEVICE": "REFLEXIO_EMBEDDING_DEVICE",
     "REFLEXIO_SEARCH_DEADLINE_ENABLED": "REFLEXIO_SEARCH_TIMEOUT_SECONDS",
+    "REFLEXIO_SEARCH_CONCURRENCY_TIMEOUT_SECONDS": "REFLEXIO_SEARCH_TIMEOUT_SECONDS",
     "CLAUDE_SMART_USE_LOCAL_EMBEDDING": "REFLEXIO_EMBEDDING_PROVIDER",
     "PUBLIC_SCHEMA_AUDIT_ENABLED": "PUBLIC_SCHEMA_AUDIT_INTERVAL_SECONDS",
     "REFLEXIO_SEARCH_RECENCY_ENABLED": "REFLEXIO_SEARCH_RECENCY_POOL_SIZE",
@@ -84,6 +85,14 @@ def reject_removed_env(
                 "; preserve the former true work budget with 5 seconds or select "
                 "0 to inherit the original HTTP backstop (former false). "
                 "Accepted-response writes use the remaining HTTP budget"
+            )
+        if "REFLEXIO_SEARCH_CONCURRENCY_TIMEOUT_SECONDS" in obsolete:
+            migration += (
+                "; search admission and execution now share one ingress budget. "
+                "Remove the queue-timeout assignment and choose the total "
+                "REFLEXIO_SEARCH_TIMEOUT_SECONDS budget (0 inherits HTTP). "
+                "Independent early queue rejection is no longer supported; "
+                "do not automatically copy its value"
             )
         if "REFLEXIO_SEARCH_RECENCY_ENABLED" in obsolete:
             migration += (

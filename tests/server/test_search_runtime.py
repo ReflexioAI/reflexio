@@ -14,7 +14,15 @@ from reflexio.server import search_runtime as runtime
 from reflexio.server.tracing import profile_step
 
 
-async def call(app, *, disconnect=None, receive_input=None, messages=None):
+async def call(
+    app,
+    *,
+    disconnect=None,
+    receive_input=None,
+    messages=None,
+    path="/api/search",
+    method="POST",
+):
     messages = [] if messages is None else messages
     delivered = False
 
@@ -34,8 +42,8 @@ async def call(app, *, disconnect=None, receive_input=None, messages=None):
     await app(
         {
             "type": "http",
-            "method": "POST",
-            "path": "/api/search",
+            "method": method,
+            "path": path,
             "root_path": "",
             "headers": [],
             "query_string": b"",

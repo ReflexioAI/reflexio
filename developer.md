@@ -647,13 +647,15 @@ The provider should retain the scope until that remaining delay expires.
 
 ### Search request deadlines
 
-The HTTP `/api/search` work budget is `REFLEXIO_SEARCH_TIMEOUT_SECONDS`:
+The HTTP search work budget is `REFLEXIO_SEARCH_TIMEOUT_SECONDS` for unified
+search, profiles, user/agent playbooks, interactions, profile reranking and
+GET `/api/storage_stats`:
 finite nonnegative seconds, default `5`. Zero inherits the original HTTP
 backstop (normally 60 seconds, or the existing synchronous/wait budget).
 Positive values are also bounded by that backstop. Blank means the documented
 default; negative, nonnumeric and nonfinite values refuse startup.
 
-Body buffering, authentication, dispatch and retrieval share one absolute
+Body buffering, authentication, dispatch, concurrency admission and retrieval share one absolute
 server-arrival deadline. Queued finalization must enter before that deadline.
 Once the response is accepted, durable writes share the remaining original HTTP
 budget; no fresh five-second window or per-phase clock is created. Accepted
@@ -674,7 +676,24 @@ active in every mode. Expiry reports `search_deadline` when the configured work
 budget wins and `backstop_timeout` when the HTTP budget wins, without partial
 results. Tracing sampling never controls request timing or outcome metrics.
 
-This replaces one selector with one real budget and earns zero knob reductions.
+The separate `REFLEXIO_SEARCH_CONCURRENCY_TIMEOUT_SECONDS` queue clock is retired
+and rejected, including blank assignments. Remove it and select the total search
+budget; there is no exact conversion from independent queue and execution limits.
+Do not automatically copy the former queue value. All seven HTTP read routes now use the
+same total budget (default five seconds); use zero to inherit their original
+transport backstop. Queued cancellation wakes admission without a polling timer.
+Admission expiry now returns 504 rather than the former early queue-only 429;
+process-capacity exhaustion remains 503. Per-org concurrency sizes are unchanged.
+Successful direct-route metering and exposure writes now follow the same response
+acceptance boundary as unified search. Internal limiter callers can still supply
+an explicit per-call wait; they receive no implicit HTTP search clock. Without
+an ingress deadline they must explicitly pass `timeout_seconds` or `wait_forever`;
+a missing owner fails before waiting. Custom HTTP hosts must install
+`SearchRuntimeMiddleware` at ingress. Ordinary
+embedded SDK search methods still acquire neither HTTP scope nor admission.
+
+Retiring the independent queue policy removes one supported environment input.
+No fixed queue timeout replaces it.
 
 ### Mutation testing
 

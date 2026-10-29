@@ -71,8 +71,16 @@ def _treatment_user() -> str:
     ],
 )
 def test_holdout_returns_empty_contract_without_running_retrieval(
-    path: str, payload: dict[str, str], result_field: str
+    path: str, payload: dict[str, str], result_field: str, monkeypatch
 ) -> None:
+    from reflexio.server import search_runtime
+
+    outcomes = []
+    monkeypatch.setattr(
+        search_runtime,
+        "record_health",
+        lambda name, *_args, **kw: outcomes.append((name, kw)),
+    )
     record = RetrievalExperimentRecord(
         experiment_id="exp-1", holdout_percentage=10, started_at=100
     )
@@ -104,6 +112,7 @@ def test_holdout_returns_empty_contract_without_running_retrieval(
     body = response.json()
     assert body[result_field] == []
     assert body["experiment"] == {"experiment_id": "exp-1", "arm": "holdout"}
+    assert ("search.requests", {"outcome": "success", "status": "200"}) in outcomes
     fake_reflexio.unified_search.assert_not_called()
     fake_reflexio.search_user_profiles.assert_not_called()
     fake_reflexio.search_user_playbooks.assert_not_called()

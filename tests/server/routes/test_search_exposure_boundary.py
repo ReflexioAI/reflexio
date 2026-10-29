@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from reflexio.models.api_schema.domain import UserPlaybook
 from reflexio.models.config_schema import Config, StorageConfigSQLite
+from reflexio.server import search_runtime
 from reflexio.server.api import create_app
 from reflexio.server.callback_executor import drain_callbacks
 from reflexio.server.extensions import register_service
@@ -73,6 +75,55 @@ def _client(caller_type: str = "production_agent") -> TestClient:
         ),
         raise_server_exceptions=False,
     )
+
+
+@pytest.mark.parametrize("success", [True, False])
+@pytest.mark.parametrize(
+    "method",
+    [
+        "search_profiles",
+        "rerank_user_profiles",
+        "search_interactions",
+        "search_user_playbooks",
+        "search_agent_playbooks",
+    ],
+)
+def test_direct_search_health_distinguishes_business_outcome(
+    monkeypatch, method, success
+):
+    events = []
+    monkeypatch.setattr(
+        search_runtime,
+        "record_health",
+        lambda name, *_args, **kw: events.append((name, kw)),
+    )
+    result = SimpleNamespace(
+        success=success,
+        user_profiles=[],
+        interactions=[],
+        user_playbooks=[],
+        agent_playbooks=[],
+        msg="fixture",
+    )
+    with _search_results([]) as reflexio:
+        for name in (
+            "search_user_profiles",
+            "rerank_user_profiles",
+            "search_interactions",
+            "search_user_playbooks",
+            "search_agent_playbooks",
+        ):
+            getattr(reflexio, name).return_value = result
+        response = _client("dashboard").post(
+            "/api/" + method,
+            json={"query": "answer", "user_id": "user-1", "profile_ids": []},
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["success"] is success
+    assert (
+        "search.requests",
+        {"outcome": "success" if success else "application_failure", "status": "200"},
+    ) in events
 
 
 @dataclass
@@ -714,7 +765,8 @@ def test_receipt_issuance_cannot_accept_an_expired_response() -> None:
     assert response.status_code == 504, response.text
 
 
-def test_deadline_after_route_completion_discards_all_served_state() -> None:
+@pytest.mark.parametrize("path", ["/api/search", "/api/search_user_playbooks"])
+def test_deadline_after_route_completion_discards_all_served_state(path: str) -> None:
     import time
 
     from fastapi import FastAPI
@@ -757,8 +809,9 @@ def test_deadline_after_route_completion_discards_all_served_state() -> None:
             return result
 
         reflexio.unified_search.side_effect = retrieve
+        reflexio.search_user_playbooks.side_effect = retrieve
         response = client.post(
-            "/api/search",
+            path,
             json={"query": "answer", "user_id": "user-1", "session_id": "s1"},
         )
     assert response.status_code == 504, response.text
@@ -844,7 +897,8 @@ def test_search_without_either_exposure_provider_remains_supported(path: str) ->
     assert [row["content"] for row in response.json()["user_playbooks"]] == ["First"]
 
 
-def test_unified_legacy_recording_waits_for_response_acceptance() -> None:
+@pytest.mark.parametrize("path", ["/api/search", "/api/search_user_playbooks"])
+def test_legacy_recording_waits_for_response_acceptance(path: str) -> None:
     from reflexio.server.services.search_exposure import SEARCH_EXPOSURE_RECORDER
 
     recorder = MagicMock()
@@ -859,9 +913,7 @@ def test_unified_legacy_recording_waits_for_response_acceptance() -> None:
             ),
         ),
     ):
-        response = _client().post(
-            "/api/search", json={"query": "answer", "user_id": "user-1"}
-        )
+        response = _client().post(path, json={"query": "answer", "user_id": "user-1"})
     assert response.status_code == 200
     recorder.record.assert_not_called()
     exposure = [item for item in callbacks if item[0] == "exposure"]
