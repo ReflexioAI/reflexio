@@ -987,7 +987,7 @@ class ResumableExtractionAgent:
             )
         else:
             last_error = f"Extraction agent did not finish: {result.failure_label}"
-            self.storage.update_agent_run_status(
+            stored_run = self.storage.update_agent_run_status(
                 run.id,
                 AgentRunStatus.FAILED,
                 max_steps_remaining=result.max_steps_remaining,
@@ -995,10 +995,15 @@ class ResumableExtractionAgent:
                 expected_statuses=active_statuses,
                 **claim_fence,
             )
+            # A losing claim cannot establish a terminal failure of the run
+            # now owned by another worker. Keep its discarded attempt diagnostic.
             logger.warning(
-                "event=extraction_agent_failed org_id=%s user_id=%s "
+                "event=extraction_agent_failed release_blocking=%s org_id=%s user_id=%s "
                 "extractor_kind=%s run_id=%s request_id=%s "
                 "finished_reason=%s error_type=%s error_detail=%s has_output=%s",
+                "true"
+                if stored_run is not None and stored_run.status == AgentRunStatus.FAILED
+                else "false",
                 run.binding.org_id,
                 run.binding.user_id,
                 run.binding.extractor_kind,

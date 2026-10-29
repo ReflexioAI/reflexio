@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import tempfile
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -269,7 +270,7 @@ def test_resumable_agent_finishes_playbook_output(
     )
 
 
-def test_resumable_agent_marks_run_failed_on_loop_error(monkeypatch, storage):
+def test_resumable_agent_marks_run_failed_on_loop_error(monkeypatch, storage, caplog):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
     client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
@@ -293,6 +294,13 @@ def test_resumable_agent_marks_run_failed_on_loop_error(monkeypatch, storage):
     assert stored.committed_output is None
     assert stored.last_error == (
         "Extraction agent did not finish: error (RuntimeError/non_transient)"
+    )
+    assert any(
+        record.levelno == logging.WARNING
+        and record.getMessage().startswith(
+            "event=extraction_agent_failed release_blocking=true "
+        )
+        for record in caplog.records
     )
 
 
@@ -487,6 +495,7 @@ def test_resumable_agent_resume_uses_persisted_step_budget(
     monkeypatch,
     storage,
     tool_call_completion,
+    caplog,
 ):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
@@ -558,6 +567,16 @@ def test_resumable_agent_resume_uses_persisted_step_budget(
     assert stored.status == AgentRunStatus.FAILED
     assert stored.max_steps_remaining == 0
     assert stored.last_error == "Extraction agent did not finish: max_steps"
+    # Exhausting the tool budget returns normally and has no ERROR fallback;
+    # this terminal warning must carry the release veto itself.
+    assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+    assert any(
+        record.levelno == logging.WARNING
+        and record.getMessage().startswith(
+            "event=extraction_agent_failed release_blocking=true "
+        )
+        for record in caplog.records
+    )
 
 
 def _window_playbook_client(monkeypatch, side_effect):
@@ -748,7 +767,7 @@ def _claimed_resume(
 
 @pytest.mark.parametrize("outcome", ["agent_completed", "failed"])
 def test_a_stale_resume_worker_cannot_finish_a_reclaimed_run(
-    monkeypatch, storage, tool_call_completion, outcome: str
+    monkeypatch, storage, tool_call_completion, caplog, outcome: str
 ):
     """Terminal writes of a resume are fenced on the CLAIM, not on status alone.
 
@@ -791,6 +810,19 @@ def test_a_stale_resume_worker_cannot_finish_a_reclaimed_run(
     assert stored.last_error is None
     if outcome == "agent_completed":
         assert result.finished_reason == "late_output_discarded"
+    else:
+        assert any(
+            record.getMessage().startswith(
+                "event=extraction_agent_failed release_blocking=false "
+            )
+            for record in caplog.records
+        )
+    assert not any(
+        record.getMessage().startswith(
+            "event=extraction_agent_failed release_blocking=true "
+        )
+        for record in caplog.records
+    )
 
 
 @pytest.mark.parametrize("allowed_orgs", [[], ["org_1"]])
