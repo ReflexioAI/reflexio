@@ -68,6 +68,12 @@ def _parse_json_payload(raw: str) -> list[dict]:
             return data
     except json.JSONDecodeError:
         pass
+    else:
+        raise CliError(
+            error_type="validation",
+            message="JSON payload must be an object or an array of objects",
+            exit_code=EXIT_VALIDATION,
+        )
 
     # Fall back to JSONL (one JSON object per line)
     payloads: list[dict] = []
@@ -76,13 +82,20 @@ def _parse_json_payload(raw: str) -> list[dict]:
         if not line:
             continue
         try:
-            payloads.append(json.loads(line))
+            item = json.loads(line)
         except json.JSONDecodeError as exc:
             raise CliError(
                 error_type="validation",
                 message=f"Invalid JSON on line {lineno}: {exc}",
                 exit_code=EXIT_VALIDATION,
             ) from exc
+        if not isinstance(item, dict):
+            raise CliError(
+                error_type="validation",
+                message=f"Line {lineno} must be a JSON object",
+                exit_code=EXIT_VALIDATION,
+            )
+        payloads.append(item)
     return payloads
 
 

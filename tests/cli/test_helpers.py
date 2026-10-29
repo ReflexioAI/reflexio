@@ -33,6 +33,17 @@ class TestParseJsonPayload:
         with pytest.raises(CliError, match="array elements must be objects"):
             _parse_json_payload("[1, 2]")
 
+    @pytest.mark.parametrize("raw", ["5", '"text"', "null", "true"])
+    def test_parse_scalar_json_rejected(self, raw: str) -> None:
+        """A single scalar JSON value is not a payload."""
+        with pytest.raises(CliError, match="object or an array of objects"):
+            _parse_json_payload(raw)
+
+    def test_parse_jsonl_non_object_line_rejected(self) -> None:
+        """Every JSONL line must be an object; the error names the line."""
+        with pytest.raises(CliError, match="Line 2 must be a JSON object"):
+            _parse_json_payload('{"a": 1}\n[1]')
+
     def test_parse_jsonl(self) -> None:
         """Multi-line JSONL with one object per line."""
         raw = '{"a": 1}\n{"b": 2}'
