@@ -299,6 +299,16 @@ fixtures: `uv run pytest tests/server/llm/test_latest_provider_models.py -o addo
 They verify provider payloads, Responses routing, native schemas, and reasoning
 continuity through tool loops and subprocess snapshots without paid calls.
 
+The hard-timeout worker transports nonstreaming LiteLLM `ModelResponse` fields
+as plain data and reconstructs the response with the SDK constructor in the
+parent. Pickle compatibility alone is insufficient: deferred nested Pydantic
+serializers initialized only in the child can fail in the parent. Private
+`_hidden_params` travel separately to preserve cost and provenance metadata.
+The fresh-interpreter fork regression is
+`tests/server/llm/test_completion_response_transport.py`; in-process mocks do
+not exercise this boundary. Other provider return types retain their existing
+transport handling.
+
 `ToolCallingChatResponse` carries optional `reasoning_content`, `thinking_blocks`,
 `reasoning_items`, and `provider_specific_fields`. Tool history must replay these
 unchanged along with tool calls and any accompanying text. For the qualified
