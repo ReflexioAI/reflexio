@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
@@ -23,6 +24,7 @@ from reflexio.server.services.storage.storage_base import (
     AgentRunStatus,
     PendingToolCallRecord,
     PendingToolCallStatus,
+    RunToolDependencyRecord,
     build_pending_tool_call_dedup_key,
     build_scope_hash,
     human_feedback_scope,
@@ -291,3 +293,70 @@ def test_direct_handler_opt_out_refuses_before_storage_or_dispatch(storage, tool
         tool.handler(args, ctx)
     assert ctx.storage.mock_calls == []
     ctx.dispatcher.dispatch.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "expiry_delta,cache_delta,created",
+    [
+        (-1, 300, True),
+        (0, 300, True),
+        (1, 300, False),
+        (300, 0, True),
+        (300, -1, True),
+    ],
+)
+def test_dedup_respects_request_lifetime_before_expiry_sweep(
+    storage, expiry_delta, cache_delta, created
+):
+    now = datetime.now(UTC)
+    scope = human_feedback_scope("org_1")
+    old = PendingToolCallRecord(
+        id="old_question",
+        org_id="org_1",
+        user_id="user_1",
+        scope=scope,
+        scope_hash=build_scope_hash(scope),
+        tool_name="ask_human",
+        dedup_key=build_pending_tool_call_dedup_key(
+            tool_name="ask_human", question_text="Which environment?"
+        ),
+        status=PendingToolCallStatus.PENDING,
+        question_text="Which environment?",
+        created_at=now - timedelta(seconds=10),
+        expires_at=None
+        if expiry_delta is None
+        else now + timedelta(seconds=expiry_delta),
+        cache_until=now + timedelta(seconds=cache_delta),
+    )
+    storage.create_pending_tool_call(old)
+    active = storage.find_active_pending_tool_call(
+        org_id="org_1",
+        scope_hash=old.scope_hash,
+        tool_name=old.tool_name,
+        dedup_key=old.dedup_key,
+        now=now,
+    )
+    assert (active is None) is created
+    storage.create_agent_run(_agent_run("new_run"))
+    new = replace(
+        old,
+        id="new_question",
+        created_at=now,
+        expires_at=now + timedelta(seconds=60),
+        cache_until=now + timedelta(seconds=300),
+    )
+    result = storage.create_or_attach_pending_tool_call(
+        record=new,
+        dependency=RunToolDependencyRecord(
+            run_id="new_run", pending_tool_call_id=new.id
+        ),
+        now=now,
+    )
+    assert result.created is created
+    expected = new.id if created else old.id
+    assert result.pending_tool_call.id == expected
+    assert [
+        d.pending_tool_call_id for d in storage.list_run_tool_dependencies("new_run")
+    ] == [expected]
+    original = storage.get_pending_tool_call(old.id)
+    assert original is not None and original.status == PendingToolCallStatus.PENDING
