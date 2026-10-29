@@ -2,7 +2,11 @@
 
 import hashlib
 import json
+import subprocess
+import sys
+import textwrap
 from dataclasses import asdict
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -425,6 +429,82 @@ def test_well_formed_tool_call_still_searches_the_collection():
     tool = next(m for m in client.requests[1]["messages"] if m.get("role") == "tool")
     rows = json.loads(tool["content"])
     assert len(rows) == 1 and rows[0]["content"] == "check authorization"
+
+
+@pytest.mark.integration
+def test_process_returned_tool_call_reaches_search_and_independent_audit(tmp_path):
+    """A fresh parent must not depend on a provider model's lazy serializer.
+
+    Warming the tool-call class in this pytest process hides the defect, so
+    both the provider child and reconciliation parent run in fresh interpreters.
+    Only the provider response is synthetic; the tool history, search and audit
+    use the ordinary reconciliation path.
+    """
+    probe = tmp_path / "tool_call_transport.py"
+    probe.write_text(
+        textwrap.dedent("""\
+        import pickle
+        import subprocess
+        import sys
+
+        if len(sys.argv) > 1:
+            from litellm.types.utils import ModelResponse
+
+            response = ModelResponse(choices=[{
+                "message": {"role": "assistant", "content": None, "tool_calls": [{
+                    "id": "transported-call", "type": "function",
+                    "function": {"name": "search_playbooks", "arguments":
+                        '{"query": "authorization", "limit": 1}'},
+                }]},
+                "finish_reason": "tool_calls",
+            }])
+            sys.stdout.buffer.write(pickle.dumps(response))
+        else:
+            child = subprocess.run(
+                [sys.executable, __file__, "provider"], capture_output=True,
+                check=True, timeout=30,
+            )
+            response = pickle.loads(child.stdout)
+            call = response.choices[0].message.tool_calls[0]
+
+            from reflexio.server.llm._litellm_types import ToolCallingChatResponse
+            from reflexio.server.services.playbook.components.reconciliation import Reconciler
+            from tests.server.services.playbook.test_audited_reconciliation import (
+                ToolScriptedClient, payload, replacement,
+            )
+
+            client = ToolScriptedClient([
+                ToolCallingChatResponse(content=None, tool_calls=[call], finish_reason="tool_calls"),
+                {"decisions": [replacement()]}, {"findings": []},
+            ])
+            engine = Reconciler(client, "scripted")
+            batch = engine.run(payload(), {("request", 17): object()})
+            assert [d.kind for d in batch.decisions] == ["replace"]
+            history = client.requests[1]["messages"]
+            assistant = next(m for m in history if m.get("tool_calls"))
+            assert assistant["tool_calls"] == [{
+                "id": "transported-call", "type": "function",
+                "function": {"name": "search_playbooks", "arguments":
+                    '{"query": "authorization", "limit": 1}'},
+            }]
+            import json
+            tool = next(m for m in history if m.get("role") == "tool")
+            assert tool["tool_call_id"] == "transported-call"
+            assert json.loads(tool["content"])[0]["content"] == "check authorization"
+            assert client.requests[2]["messages"] != history  # independent full audit
+            assert engine.calls == 3
+        """),
+        encoding="utf-8",
+    )
+    result = subprocess.run(  # noqa: S603 -- owned synthetic script, no provider access.
+        [sys.executable, str(probe)],
+        cwd=Path(__file__).resolve().parents[4],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("error", [TypeError("bug"), KeyError("bug")])

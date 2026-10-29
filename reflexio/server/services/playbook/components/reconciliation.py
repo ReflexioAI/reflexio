@@ -31,6 +31,7 @@ from reflexio.server.llm.litellm_client import (
     StructuredOutputRepairError,
     ToolCallingChatResponse,
 )
+from reflexio.server.llm.tools import normalize_tool_call_for_history
 from reflexio.server.services.extraction.input_preparation import resolve_evidence_span
 from reflexio.server.services.extraction.overflow_coordinator import (
     current_overflow_coordinator,
@@ -470,8 +471,7 @@ class Reconciler:
                         "Read-only tool allowance exceeded"
                     )
                 calls = [
-                    call if isinstance(call, dict) else call.model_dump()
-                    for call in value.tool_calls
+                    normalize_tool_call_for_history(call) for call in value.tool_calls
                 ]
                 messages.append(
                     {

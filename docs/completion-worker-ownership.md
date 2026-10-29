@@ -30,3 +30,13 @@ by a remote provider, or that it terminates arbitrary descendant processes.
 
 No configuration input is removed by this repair. Tests use synthetic providers
 and processes; no paid provider or deployed qualification is implied.
+
+## Tool-call history after transport
+
+A provider object can survive pickling while its deferred Pydantic serializer
+remains uninitialized in the receiving process. Do not call its `model_dump()`
+to build assistant tool history. Use `normalize_tool_call_for_history` from
+`reflexio.server.llm.tools`, which reads the existing ID, type, function name and
+arguments into a plain wire dictionary. The ordinary tool loop and audited
+playbook reconciliation share this conversion. Tool validation, audit limits,
+provider admission and worker ownership remain with their existing owners.
