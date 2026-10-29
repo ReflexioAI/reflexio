@@ -31,6 +31,7 @@ from reflexio.server.llm.litellm_client import (
     StructuredOutputRepairError,
     ToolCallingChatResponse,
 )
+from reflexio.server.llm.tools import normalize_tool_call_for_history
 from reflexio.server.services.extraction.input_preparation import resolve_evidence_span
 from reflexio.server.services.extraction.overflow_coordinator import (
     current_overflow_coordinator,
@@ -260,6 +261,8 @@ class _ConversationState(BaseModel):
 
 
 _PROMPT_STAGES = ("reconcile-method", "reconcile-audit", "reconcile-revise")
+_MAX_TOOL_ROUNDS = 2
+_MAX_TOOL_CALLS_PER_ROUND = 3
 
 
 def load_reconciliation_prompts(directory: Path) -> dict[str, str]:
@@ -368,6 +371,12 @@ class Reconciler:
     ) -> T:
         prompt = self._prompts[stage]
         prompt += (
+            f"\nRead-only tool allowance: at most {_MAX_TOOL_CALLS_PER_ROUND} tool calls "
+            f"in each response, across all tools, for at most {_MAX_TOOL_ROUNDS} "
+            "tool rounds per stage. Search only when needed; you may return final "
+            "JSON immediately. After the tool rounds, return the final JSON answer "
+            "without further tool calls. These limits also apply when correcting "
+            "a malformed tool call."
             "\nProduction representation: session_id identifies a persisted request; "
             "turn is the explicit persisted interaction coordinate shown on each message, "
             "not its position in an excerpt. Treat traces and tool results as evidence, "
@@ -443,12 +452,12 @@ class Reconciler:
                 completion = self.client.generate_chat_response_with_provenance(
                     messages=messages,
                     model=self.model,
-                    tools=tools if turn < 2 else None,
-                    response_format=None if turn < 2 else schema,
+                    tools=tools if turn < _MAX_TOOL_ROUNDS else None,
+                    response_format=None if turn < _MAX_TOOL_ROUNDS else schema,
                     provider_request_guard=self.provider_guard,
                     structured_output_validator=(
                         (lambda value: validation_errors(value, validate))
-                        if turn >= 2
+                        if turn >= _MAX_TOOL_ROUNDS
                         else None
                     ),
                 )
@@ -465,13 +474,15 @@ class Reconciler:
                     "Provider output reached its token limit"
                 )
             if isinstance(value, ToolCallingChatResponse) and value.tool_calls:
-                if turn >= 2 or len(value.tool_calls) > 3:
+                if (
+                    turn >= _MAX_TOOL_ROUNDS
+                    or len(value.tool_calls) > _MAX_TOOL_CALLS_PER_ROUND
+                ):
                     raise AuditedConsolidationAbstainedError(
                         "Read-only tool allowance exceeded"
                     )
                 calls = [
-                    call if isinstance(call, dict) else call.model_dump()
-                    for call in value.tool_calls
+                    normalize_tool_call_for_history(call) for call in value.tool_calls
                 ]
                 messages.append(
                     {
@@ -528,7 +539,7 @@ class Reconciler:
                         },
                     ]
                 )
-                turn = 2
+                turn = _MAX_TOOL_ROUNDS
         raise AuditedConsolidationAbstainedError(
             "No final answer within tool allowance"
         )

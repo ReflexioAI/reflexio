@@ -395,8 +395,13 @@ def _serialize_tool_result_for_history(result: dict[str, Any]) -> str:
     return f"{payload[:_MULTI_STAGE_RESULT_CHAR_CAP]}... [truncated]"
 
 
-def _normalize_tool_call_for_history(tool_call: Any) -> dict[str, Any]:
-    """Return an OpenAI-compatible plain dict for assistant tool-call history."""
+def normalize_tool_call_for_history(tool_call: Any) -> dict[str, Any]:
+    """Return plain assistant history without invoking provider serializers.
+
+    Provider models transported from an isolated worker can have deferred
+    Pydantic serializers in the receiving process. Read their wire fields
+    directly; successful pickling does not guarantee ``model_dump`` works.
+    """
 
     if isinstance(tool_call, dict):
         function = tool_call.get("function") or {}
@@ -850,7 +855,7 @@ def run_tool_loop(
                     provenance=provenance,
                 )
             normalized_tool_calls = [
-                _normalize_tool_call_for_history(tc) for tc in tool_calls
+                normalize_tool_call_for_history(tc) for tc in tool_calls
             ]
             # Emit ONE assistant message carrying ALL tool_calls from this turn.
             # OpenAI/Anthropic strict mode requires this shape.

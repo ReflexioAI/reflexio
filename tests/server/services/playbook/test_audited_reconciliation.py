@@ -2,7 +2,12 @@
 
 import hashlib
 import json
+import os
+import subprocess
+import sys
+import textwrap
 from dataclasses import asdict
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -323,17 +328,18 @@ def test_suspension_before_dispatch_does_not_consume_method_allowance():
         current_overflow_coordinator.reset(coordinator_token)
 
 
-def _tool_turn(arguments, name="search_playbooks"):
+def _tool_turn(arguments, name="search_playbooks", *, count=1):
     from reflexio.server.llm._litellm_types import ToolCallingChatResponse
 
     return ToolCallingChatResponse(
         content=None,
         tool_calls=[
             {
-                "id": "call_1",
+                "id": f"call_{index + 1}",
                 "type": "function",
                 "function": {"name": name, "arguments": arguments},
             }
+            for index in range(count)
         ],
         finish_reason="tool_calls",
     )
@@ -349,6 +355,92 @@ class ToolScriptedClient(ScriptedClient):
         if not isinstance(output, dict):
             return SimpleNamespace(value=output, provenance=ModelProvenance())
         return SimpleNamespace(value=json.dumps(output), provenance=ModelProvenance())
+
+
+def test_tool_ceiling_allows_two_rounds_then_requires_json_and_independent_audit():
+    client = ToolScriptedClient(
+        [
+            _tool_turn('{"query": "authorization"}', count=3),
+            _tool_turn('{"query": "authorization"}', count=3),
+            {"decisions": [replacement()]},
+            {"findings": []},
+        ]
+    )
+    engine = Reconciler(cast(LiteLLMClient, client), "scripted", max_calls=4)
+    engine.run(payload(), {("request", 17): object()})
+    assert engine.calls == 4
+    final = client.requests[2]
+    assert final["tools"] is None
+    assert final["response_format"] == str(Decisions)
+    assert len([m for m in final["messages"] if m.get("role") == "tool"]) == 6
+    for request in (client.requests[0], client.requests[3]):
+        instructions = request["messages"][0]["content"]
+        assert "at most 3 tool calls in each response, across all tools" in instructions
+        assert "at most 2 tool rounds per stage" in instructions
+        assert "you may return final JSON immediately" in instructions
+        assert "correcting a malformed tool call" in instructions
+    assert client.requests[3]["messages"] != final["messages"]
+
+
+@pytest.mark.parametrize("excess", ["calls", "rounds"])
+def test_tool_instructions_do_not_relax_enforced_ceiling(excess):
+    tool = _tool_turn('{"query": "authorization"}')
+    if excess == "calls":
+        outputs = [_tool_turn('{"query": "authorization"}', count=4)]
+    else:
+        outputs = [tool, tool, tool]
+    client = ToolScriptedClient(outputs)
+    engine = Reconciler(cast(LiteLLMClient, client), "scripted")
+    with pytest.raises(AuditedConsolidationAbstainedError, match="allowance exceeded"):
+        engine.run(payload(), {("request", 17): object()})
+    assert len(client.requests) == len(outputs)
+
+
+def test_tool_rounds_and_physical_budget_survive_checkpoint_resume():
+    coordinator = CheckpointCoordinator()
+    admissions = []
+
+    def suspend_second(*_args):
+        admissions.append(True)
+        if len(admissions) == 2:
+            raise OverflowSuspendedError("yield before provider dispatch")
+
+    coordinator_token = current_overflow_coordinator.set(cast(Any, coordinator))
+    guard_token = extraction_provider_guard.set(suspend_second)
+    try:
+        first = ToolScriptedClient([_tool_turn('{"query": "authorization"}')])
+        with pytest.raises(OverflowSuspendedError):
+            Reconciler(cast(LiteLLMClient, first), "scripted", max_calls=4).run(
+                payload(), {("request", 17): object()}
+            )
+        assert coordinator.checkpoint["audited_conversation"]["turn"] == 1
+        assert coordinator.checkpoint["audited_consolidation_budget"]["calls"] == 1
+        resumed_client = ToolScriptedClient(
+            [
+                _tool_turn('{"query": "authorization"}'),
+                {"decisions": [replacement()]},
+                {"findings": []},
+            ]
+        )
+        resumed = Reconciler(
+            cast(LiteLLMClient, resumed_client), "scripted", max_calls=4
+        )
+        resumed.run(payload(), {("request", 17): object()})
+        assert resumed.calls == 4
+        assert resumed_client.requests[1]["tools"] is None
+        assert (
+            len(
+                [
+                    m
+                    for m in resumed_client.requests[1]["messages"]
+                    if m.get("role") == "tool"
+                ]
+            )
+            == 2
+        )
+    finally:
+        extraction_provider_guard.reset(guard_token)
+        current_overflow_coordinator.reset(coordinator_token)
 
 
 @pytest.mark.parametrize(
@@ -425,6 +517,84 @@ def test_well_formed_tool_call_still_searches_the_collection():
     tool = next(m for m in client.requests[1]["messages"] if m.get("role") == "tool")
     rows = json.loads(tool["content"])
     assert len(rows) == 1 and rows[0]["content"] == "check authorization"
+
+
+@pytest.mark.integration
+def test_process_returned_tool_call_reaches_search_and_independent_audit(tmp_path):
+    """A fresh parent must not depend on a provider model's lazy serializer.
+
+    Warming the tool-call class in this pytest process hides the defect, so
+    both the provider child and reconciliation parent run in fresh interpreters.
+    Only the provider response is synthetic; the tool history, search and audit
+    use the ordinary reconciliation path.
+    """
+    probe = tmp_path / "tool_call_transport.py"
+    probe.write_text(
+        textwrap.dedent("""\
+        import pickle
+        import subprocess
+        import sys
+
+        if len(sys.argv) > 1:
+            from litellm.types.utils import ModelResponse
+
+            response = ModelResponse(choices=[{
+                "message": {"role": "assistant", "content": None, "tool_calls": [{
+                    "id": "transported-call", "type": "function",
+                    "function": {"name": "search_playbooks", "arguments":
+                        '{"query": "authorization", "limit": 1}'},
+                }]},
+                "finish_reason": "tool_calls",
+            }])
+            sys.stdout.buffer.write(pickle.dumps(response))
+        else:
+            child = subprocess.run(
+                [sys.executable, __file__, "provider"], capture_output=True,
+                check=True, timeout=30,
+            )
+            response = pickle.loads(child.stdout)
+            call = response.choices[0].message.tool_calls[0]
+
+            from reflexio.server.llm._litellm_types import ToolCallingChatResponse
+            from reflexio.server.services.playbook.components.reconciliation import Reconciler
+            from tests.server.services.playbook.test_audited_reconciliation import (
+                ToolScriptedClient, payload, replacement,
+            )
+
+            client = ToolScriptedClient([
+                ToolCallingChatResponse(content=None, tool_calls=[call], finish_reason="tool_calls"),
+                {"decisions": [replacement()]}, {"findings": []},
+            ])
+            engine = Reconciler(client, "scripted")
+            batch = engine.run(payload(), {("request", 17): object()})
+            assert [d.kind for d in batch.decisions] == ["replace"]
+            history = client.requests[1]["messages"]
+            assistant = next(m for m in history if m.get("tool_calls"))
+            assert assistant["tool_calls"] == [{
+                "id": "transported-call", "type": "function",
+                "function": {"name": "search_playbooks", "arguments":
+                    '{"query": "authorization", "limit": 1}'},
+            }]
+            import json
+            tool = next(m for m in history if m.get("role") == "tool")
+            assert tool["tool_call_id"] == "transported-call"
+            assert json.loads(tool["content"])[0]["content"] == "check authorization"
+            assert client.requests[2]["messages"] != history  # independent full audit
+            assert engine.calls == 3
+        """),
+        encoding="utf-8",
+    )
+    result = subprocess.run(  # noqa: S603 -- owned synthetic script, no provider access.
+        [sys.executable, str(probe)],
+        cwd=Path(__file__).resolve().parents[4],
+        # The temporary script imports test helpers, which are absent from wheels.
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[4])},
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("error", [TypeError("bug"), KeyError("bug")])
