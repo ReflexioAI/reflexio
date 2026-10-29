@@ -413,7 +413,7 @@ Called by API endpoints via `Reflexio`
 - `extractor_interaction_utils.py`: Per-extractor utilities for stride_size checking and source filtering
 - `operation_state_utils.py`: Centralized `OperationStateManager` for all `_operation_state` table interactions (progress tracking, concurrency locks, extractor/aggregator bookmarks, simple locks)
 - `deduplication_utils.py`: Shared utilities for LLM-based deduplication (used by ProfileConsolidator and PlaybookConsolidator)
-- `service_utils.py`: Utilities (`construct_messages_from_interactions()`, `format_interactions_to_history_string()` (prepends tool usage info when `tools_used` is present), `extract_json_from_string()`, `log_model_response()` for colored LLM response logging)
+- `service_utils.py`: Utilities (`construct_messages_from_interactions()`, `format_interactions_to_history_string()` (prepends tool usage info when `tools_used` is present), `log_model_response()` for colored LLM response logging)
 
 **Operation State Management** (via `OperationStateManager` in `operation_state_utils.py`):
 
