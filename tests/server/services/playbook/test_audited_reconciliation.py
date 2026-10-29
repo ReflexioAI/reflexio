@@ -328,17 +328,18 @@ def test_suspension_before_dispatch_does_not_consume_method_allowance():
         current_overflow_coordinator.reset(coordinator_token)
 
 
-def _tool_turn(arguments, name="search_playbooks"):
+def _tool_turn(arguments, name="search_playbooks", *, count=1):
     from reflexio.server.llm._litellm_types import ToolCallingChatResponse
 
     return ToolCallingChatResponse(
         content=None,
         tool_calls=[
             {
-                "id": "call_1",
+                "id": f"call_{index + 1}",
                 "type": "function",
                 "function": {"name": name, "arguments": arguments},
             }
+            for index in range(count)
         ],
         finish_reason="tool_calls",
     )
@@ -354,6 +355,92 @@ class ToolScriptedClient(ScriptedClient):
         if not isinstance(output, dict):
             return SimpleNamespace(value=output, provenance=ModelProvenance())
         return SimpleNamespace(value=json.dumps(output), provenance=ModelProvenance())
+
+
+def test_tool_ceiling_allows_two_rounds_then_requires_json_and_independent_audit():
+    client = ToolScriptedClient(
+        [
+            _tool_turn('{"query": "authorization"}', count=3),
+            _tool_turn('{"query": "authorization"}', count=3),
+            {"decisions": [replacement()]},
+            {"findings": []},
+        ]
+    )
+    engine = Reconciler(cast(LiteLLMClient, client), "scripted", max_calls=4)
+    engine.run(payload(), {("request", 17): object()})
+    assert engine.calls == 4
+    final = client.requests[2]
+    assert final["tools"] is None
+    assert final["response_format"] == str(Decisions)
+    assert len([m for m in final["messages"] if m.get("role") == "tool"]) == 6
+    for request in (client.requests[0], client.requests[3]):
+        instructions = request["messages"][0]["content"]
+        assert "at most 3 tool calls in each response, across all tools" in instructions
+        assert "at most 2 tool rounds per stage" in instructions
+        assert "you may return final JSON immediately" in instructions
+        assert "correcting a malformed tool call" in instructions
+    assert client.requests[3]["messages"] != final["messages"]
+
+
+@pytest.mark.parametrize("excess", ["calls", "rounds"])
+def test_tool_instructions_do_not_relax_enforced_ceiling(excess):
+    tool = _tool_turn('{"query": "authorization"}')
+    if excess == "calls":
+        outputs = [_tool_turn('{"query": "authorization"}', count=4)]
+    else:
+        outputs = [tool, tool, tool]
+    client = ToolScriptedClient(outputs)
+    engine = Reconciler(cast(LiteLLMClient, client), "scripted")
+    with pytest.raises(AuditedConsolidationAbstainedError, match="allowance exceeded"):
+        engine.run(payload(), {("request", 17): object()})
+    assert len(client.requests) == len(outputs)
+
+
+def test_tool_rounds_and_physical_budget_survive_checkpoint_resume():
+    coordinator = CheckpointCoordinator()
+    admissions = []
+
+    def suspend_second(*_args):
+        admissions.append(True)
+        if len(admissions) == 2:
+            raise OverflowSuspendedError("yield before provider dispatch")
+
+    coordinator_token = current_overflow_coordinator.set(cast(Any, coordinator))
+    guard_token = extraction_provider_guard.set(suspend_second)
+    try:
+        first = ToolScriptedClient([_tool_turn('{"query": "authorization"}')])
+        with pytest.raises(OverflowSuspendedError):
+            Reconciler(cast(LiteLLMClient, first), "scripted", max_calls=4).run(
+                payload(), {("request", 17): object()}
+            )
+        assert coordinator.checkpoint["audited_conversation"]["turn"] == 1
+        assert coordinator.checkpoint["audited_consolidation_budget"]["calls"] == 1
+        resumed_client = ToolScriptedClient(
+            [
+                _tool_turn('{"query": "authorization"}'),
+                {"decisions": [replacement()]},
+                {"findings": []},
+            ]
+        )
+        resumed = Reconciler(
+            cast(LiteLLMClient, resumed_client), "scripted", max_calls=4
+        )
+        resumed.run(payload(), {("request", 17): object()})
+        assert resumed.calls == 4
+        assert resumed_client.requests[1]["tools"] is None
+        assert (
+            len(
+                [
+                    m
+                    for m in resumed_client.requests[1]["messages"]
+                    if m.get("role") == "tool"
+                ]
+            )
+            == 2
+        )
+    finally:
+        extraction_provider_guard.reset(guard_token)
+        current_overflow_coordinator.reset(coordinator_token)
 
 
 @pytest.mark.parametrize(

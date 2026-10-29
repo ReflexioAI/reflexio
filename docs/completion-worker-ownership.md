@@ -40,3 +40,12 @@ to build assistant tool history. Use `normalize_tool_call_for_history` from
 arguments into a plain wire dictionary. The ordinary tool loop and audited
 playbook reconciliation share this conversion. Tool validation, audit limits,
 provider admission and worker ownership remain with their existing owners.
+
+Audited reconciliation states its existing read-only tool allowance in each
+stage's instructions: at most three calls across all tools per response, for
+two tool rounds, followed by the final schema-valid JSON answer. A direct final
+answer is allowed; these are ceilings, not required searches. Malformed calls
+consume the same allowance. The request and enforcement use the same constants,
+and resumed conversations retain their consumed rounds and physical-call budget.
+Independent auditing and provider admission remain unchanged. Instruction clarity
+can reduce avoidable retries; it does not guarantee model compliance or a latency SLO.
