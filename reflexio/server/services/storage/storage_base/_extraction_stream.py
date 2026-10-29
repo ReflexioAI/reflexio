@@ -31,6 +31,14 @@ MAX_EXTRACTION_WINDOW_ATTEMPTS = 12
 # ``<ExceptionClass>@<locator>`` of the failure that parked it. Messages are
 # never stored. The prefix is what operator re-arm and status reads key on.
 RETRY_EXHAUSTED_PREFIX = "retry_exhausted:"
+# A policy mismatch parks as a configuration error, held directly or by the
+# retry ceiling; ``reset_legacy_extraction_policy`` applies to no other hold.
+LEGACY_POLICY_HOLDS = frozenset(
+    {
+        "input_budget_configuration_error",
+        f"{RETRY_EXHAUSTED_PREFIX}input_budget_configuration_error",
+    }
+)
 
 
 def is_retry_exhausted(last_error: Any) -> bool:
@@ -1054,6 +1062,100 @@ class ExtractionStreamStore:
             if not updated:
                 raise OverflowCheckpointConflictError(
                     "Exhausted hold changed or was already re-armed"
+                )
+            db.query(
+                f"UPDATE {db.table('learning_work')} SET due_at=? "
+                "WHERE org_id=? AND user_id=? AND lease_token=?",
+                (now, self.org_id, window.user_id, token),
+            )
+
+    def reset_legacy_extraction_policy(
+        self,
+        window: Window,
+        token: str,
+        *,
+        expected_revision: int,
+        source_digest: str,
+        expected_attempts: int,
+        expected_last_error: str,
+        expected_input_protocol: dict[str, Any] | None = None,
+    ) -> None:
+        """Operator-only restart of a legacy checkpoint held by a policy mismatch.
+
+        A checkpoint saved before the instruction witness existed cannot prove
+        that only extraction context changed, so its pinned policy holds it
+        forever. With nothing committed and no continuation in flight, dropping
+        the pin and the active child mapping lets the next attempt rerun every
+        chunk under the current policy and record the witness. Content-addressed
+        ``completed_steps``, attempt receipts and the cursor's attempt count are
+        kept, so no quota is refunded. The caller must hold the ordinary user
+        lease. No automatic worker calls this operation.
+        """
+        if expected_last_error not in LEGACY_POLICY_HOLDS:
+            raise OverflowCheckpointConflictError("Reset names no configuration hold")
+        with self.commit_scope(), self._stream_sql() as db:
+            run_id, snapshot, manifest = self._load_locked_extraction_overflow(
+                db,
+                window,
+                token,
+                expected_revision=expected_revision,
+                source_digest=source_digest,
+                expected_input_protocol=expected_input_protocol,
+            )
+            if not db.query(
+                f"SELECT id FROM {db.table('_agent_runs')} "
+                "WHERE id=? AND org_id=? AND user_id=? AND status='failed' "
+                "AND committed_output IS NULL",
+                (run_id, self.org_id, window.user_id),
+            ):
+                raise OverflowCheckpointConflictError(
+                    "Reset parent is not failed without output"
+                )
+            checkpoint = manifest["checkpoint"]
+            if (
+                "extraction_instruction_contract" in checkpoint
+                or "extraction_policy" not in checkpoint
+                or checkpoint.get("active_child")
+                or checkpoint.get("waiting_child")
+            ):
+                raise OverflowCheckpointConflictError(
+                    "Reset names no legacy policy checkpoint"
+                )
+            if len(manifest["attempts"]) >= manifest["attempt_limit"]:
+                raise OverflowAttemptBudgetExceededError("Reset has no remaining quota")
+            del checkpoint["extraction_policy"]
+            checkpoint.pop("extraction_children", None)
+            manifest["revision"] += 1
+            snapshot["overflow"] = manifest
+            db.query(
+                f"UPDATE {db.table('_agent_runs')} SET generation_request_snapshot=? "
+                "WHERE id=? AND org_id=? AND user_id=?",
+                (
+                    json.dumps(snapshot, separators=(",", ":")),
+                    run_id,
+                    self.org_id,
+                    window.user_id,
+                ),
+            )
+            now = db.now()
+            if not db.query(
+                f"UPDATE {db.table('extraction_cursors')} SET retry_at=? "
+                "WHERE user_id=? AND kind=? AND project_id=? AND window_id=? "
+                "AND attempts=? AND retry_at=? AND last_error=? "
+                "RETURNING window_id",
+                (
+                    now,
+                    window.user_id,
+                    window.kind,
+                    window.project_id,
+                    window.window_id,
+                    expected_attempts,
+                    float("inf"),
+                    expected_last_error,
+                ),
+            ):
+                raise OverflowCheckpointConflictError(
+                    "Reset hold changed or was already re-armed"
                 )
             db.query(
                 f"UPDATE {db.table('learning_work')} SET due_at=? "
