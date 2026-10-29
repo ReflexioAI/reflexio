@@ -3,13 +3,15 @@
 
 This is not an automatic retry policy. Missing parents cannot establish original
 quota authority and remain held. Callers provide an already project-scoped store.
-A receipt planned with ``reset_legacy_policy=True`` restarts a legacy checkpoint
-held by a policy mismatch instead of only re-arming it.
+A receipt's ``action`` selects what applying it does: ``rearm`` (the default)
+re-arms a held cursor, ``reset_legacy_policy`` restarts a legacy checkpoint held
+by a policy mismatch, and ``retire`` closes a parked window without learning
+from it so the user's later inputs can proceed.
 """
 
 import hashlib
 import json
-from typing import Any
+from typing import Any, Literal
 
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.services.storage.storage_base._extraction_stream import (
@@ -30,6 +32,8 @@ from reflexio.server.work_scope import current_project_id
 RECOVERABLE_HOLDS = frozenset(
     {"input_budget_exceeded", "input_budget_configuration_error"}
 )
+
+RecoveryAction = Literal["rearm", "reset_legacy_policy", "retire"]
 
 
 def _legacy_policy_reason(
@@ -55,7 +59,7 @@ def _legacy_policy_reason(
 
 
 def _inspect(
-    storage: BaseStorage, window_id: str, *, reset_legacy_policy: bool = False
+    storage: BaseStorage, window_id: str, *, action: RecoveryAction = "rearm"
 ) -> tuple[Window, dict[str, Any]]:
     with storage._stream_sql(read_only=True) as db:
         rows = db.query(
@@ -100,11 +104,17 @@ def _inspect(
         window.invalidated
         or rows[0]["completed"]
         or cursor.get("window_id") != window_id
-        or not (exhausted or cursor.get("last_error") in RECOVERABLE_HOLDS)
         or cursor.get("retry_at") != float("inf")
+        or not cursor.get("last_error")
     ):
         reason = "not_held"
-    elif exhausted and not reset_legacy_policy:
+    elif action == "retire":
+        # Retiring learns nothing and spends nothing, so any parked hold
+        # qualifies, whatever its parent or journal state.
+        reason = "ready"
+    elif not (exhausted or cursor.get("last_error") in RECOVERABLE_HOLDS):
+        reason = "not_held"
+    elif exhausted and action == "rearm":
         # The retry ceiling is not a quota decision: no parent or journal
         # authority is needed to grant one more attempt, and any journaled
         # provider quota is still enforced by the extraction itself.
@@ -121,13 +131,13 @@ def _inspect(
             reason = "invalid_or_unknown_journal"
         if manifest and len(manifest["attempts"]) >= manifest["attempt_limit"]:
             reason = "quota_exhausted"
-        elif manifest and reset_legacy_policy:
+        elif manifest and action == "reset_legacy_policy":
             reason = _legacy_policy_reason(
                 cursor.get("last_error"), parent["committed"], manifest["checkpoint"]
             )
     return window, {
         "version": 1,
-        "action": "reset_legacy_policy" if reset_legacy_policy else "rearm",
+        "action": action,
         "org_id": storage.org_id,
         "project_id": window.project_id,
         "window_id": window_id,
@@ -147,21 +157,23 @@ def _inspect(
 
 
 def plan_input_budget_recovery(
-    storage: BaseStorage, window_id: str, *, reset_legacy_policy: bool = False
+    storage: BaseStorage, window_id: str, *, action: RecoveryAction = "rearm"
 ) -> dict[str, Any]:
     """Return a metadata-only receipt; no leases, model calls or writes.
 
-    ``reset_legacy_policy`` asks instead whether the window's legacy checkpoint
-    can restart under the current policy: it reruns every chunk, so it spends
-    attempts from the same budget and is chosen per window by an operator.
+    ``reset_legacy_policy`` asks whether the window's legacy checkpoint can
+    restart under the current policy: it reruns every chunk, so it spends
+    attempts from the same budget. ``retire`` asks whether the window is parked
+    and can be closed unlearned: its inputs are never extracted. An operator
+    chooses either per window.
     """
-    return _inspect(storage, window_id, reset_legacy_policy=reset_legacy_policy)[1]
+    return _inspect(storage, window_id, action=action)[1]
 
 
 def apply_input_budget_recovery(storage: BaseStorage, receipt: dict[str, Any]) -> None:
     """Apply a reviewed receipt once; preserve failed history until completion."""
-    reset = receipt.get("action") == "reset_legacy_policy"
-    window, current = _inspect(storage, receipt["window_id"], reset_legacy_policy=reset)
+    action = receipt.get("action", "rearm")
+    window, current = _inspect(storage, receipt["window_id"], action=action)
     if current != receipt or not current["recoverable"]:
         raise OverflowCheckpointConflictError(
             "Recovery receipt changed or is not eligible"
@@ -172,11 +184,19 @@ def apply_input_budget_recovery(storage: BaseStorage, receipt: dict[str, Any]) -
     if token is None:
         raise LeaseLostError("Recovery user has an active lease")
     try:
-        if _inspect(storage, window.window_id, reset_legacy_policy=reset)[1] != receipt:
+        if _inspect(storage, window.window_id, action=action)[1] != receipt:
             raise OverflowCheckpointConflictError(
                 "Recovery changed before lease acquisition"
             )
-        if reset:
+        if action == "retire":
+            storage.retire_extraction_window(
+                window,
+                token,
+                expected_attempts=current["cursor_attempts"],
+                expected_last_error=current["last_error"],
+            )
+            return
+        if action == "reset_legacy_policy":
             storage.reset_legacy_extraction_policy(
                 window,
                 token,
