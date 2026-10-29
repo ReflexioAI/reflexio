@@ -981,6 +981,10 @@ class Config(BaseModel):
     stride_size: int = Field(default=DEFAULT_STRIDE_SIZE, gt=0)
     # Captured at admission; 0 disables idle finalization for new publications.
     extraction_idle_timeout_seconds: int = Field(default=21600, ge=0)
+    # Prospective maximum batching delay; qualify a positive value before enabling.
+    extraction_max_batch_wait_seconds: int = Field(
+        default=0, ge=0, le=threading.TIMEOUT_MAX
+    )
     # API key configuration for LLM providers
     api_key_config: APIKeyConfig | None = None
     # LLM model configuration overrides
