@@ -131,7 +131,9 @@ def test_reset_restarts_legacy_checkpoint_under_current_policy(pipeline, monkeyp
     assert checkpoint == frozen["checkpoint"]
     dispatch.assert_not_called()
 
-    receipt = plan_input_budget_recovery(storage, window_id, reset_legacy_policy=True)
+    receipt = plan_input_budget_recovery(
+        storage, window_id, action="reset_legacy_policy"
+    )
     assert receipt["recoverable"], receipt
     assert (
         receipt["action"] == "reset_legacy_policy"
@@ -204,12 +206,14 @@ def test_reset_refuses_windows_it_cannot_restart_safely(
     storage, _, window_id, _ = _park_legacy_mismatch(pipeline, monkeypatch)
     mutate(storage, window_id)
     before = _state(storage, window_id)
-    receipt = plan_input_budget_recovery(storage, window_id, reset_legacy_policy=True)
+    receipt = plan_input_budget_recovery(
+        storage, window_id, action="reset_legacy_policy"
+    )
     assert receipt["reason"] == reason and not receipt["recoverable"]
     with pytest.raises(OverflowCheckpointConflictError):
         apply_input_budget_recovery(storage, receipt)
     # A forged receipt cannot bypass the storage guard either.
-    window, current = _inspect(storage, window_id, reset_legacy_policy=True)
+    window, current = _inspect(storage, window_id, action="reset_legacy_policy")
     token = storage.claim_user_extraction("u", "test-reset", 300)
     assert token is not None
     try:

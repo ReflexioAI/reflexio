@@ -1163,6 +1163,115 @@ class ExtractionStreamStore:
                 (now, self.org_id, window.user_id, token),
             )
 
+    def retire_extraction_window(
+        self,
+        window: Window,
+        token: str,
+        *,
+        expected_attempts: int,
+        expected_last_error: str,
+    ) -> None:
+        """Operator-only close of a parked window that is never extracted itself.
+
+        The cursor advances past the window exactly as a completion would, so
+        the user's later inputs are selected next, but nothing is written and no
+        derived work or billing effect runs: the window lands in the state an
+        acknowledged, skipped effect leaves. As after any completion, an
+        overlapping policy (``stride_size < window_size``) still shows up to
+        ``window_size - stride_size`` of its last inputs to the next window as
+        context; retiring is not erasure, which ``invalidate_extraction`` owns. Like erasure, the parent run is
+        cancelled and its staged quotations and continuations are dropped; the
+        consumed attempt journal stays as content-free audit data. The caller
+        must hold the ordinary user lease and name the exact parked state it
+        inspected. No automatic worker calls this operation.
+        """
+        if not expected_last_error:
+            raise OverflowCheckpointConflictError("Retire names no parked hold")
+        if window.project_id != (current_project_id() or ""):
+            raise LeaseLostError("Extraction project scope changed")
+        with self.commit_scope(), self._stream_sql() as db:
+            self._fence(db, window.user_id, token)
+            now = db.now()
+            if not db.query(
+                f"UPDATE {db.table('extraction_cursors')} SET completed_seq=?,started=1,"
+                "window_id=NULL,attempts=0,retry_at=0,last_error=NULL,last_turn=? "
+                "WHERE user_id=? AND kind=? AND project_id=? AND window_id=? "
+                "AND completed_seq=? AND attempts=? AND retry_at=? AND last_error=? "
+                "RETURNING user_id",
+                (
+                    window.end_seq,
+                    now,
+                    window.user_id,
+                    window.kind,
+                    window.project_id,
+                    window.window_id,
+                    window.predecessor,
+                    expected_attempts,
+                    float("inf"),
+                    expected_last_error,
+                ),
+            ):
+                raise OverflowCheckpointConflictError(
+                    "Retire hold changed or was already released"
+                )
+            summary = {
+                "version": 1,
+                "skipped": True,
+                "retired": True,
+                "billing": None,
+                "request_ids": list(
+                    dict.fromkeys(
+                        m["request_id"]
+                        for m in window.manifest
+                        if m["seq"] > window.predecessor
+                    )
+                ),
+            }
+            if not db.query(
+                f"UPDATE {db.table('extraction_windows')} SET completed=1,completed_at=?,"
+                "effects=?,effects_done=1,derived_claimed=1,outcome=NULL,manifest='[]' "
+                "WHERE window_id=? AND user_id=? AND completed=0 AND invalidated=0 "
+                "RETURNING window_id",
+                (now, json.dumps(summary), window.window_id, window.user_id),
+            ):
+                raise OverflowCheckpointConflictError("Retire window is not active")
+            run_id = f"window:{window.window_id}"
+            runs = db.query(
+                f"SELECT generation_request_snapshot FROM {db.table('_agent_runs')} "
+                "WHERE id=? AND org_id=? AND user_id=?" + db.lock(),
+                (run_id, self.org_id, window.user_id),
+            )
+            if runs:
+                snapshot = decoded(runs[0]["generation_request_snapshot"])
+                if isinstance(snapshot, dict) and isinstance(
+                    snapshot.get("overflow"), dict
+                ):
+                    snapshot["overflow"]["checkpoint"] = {"stage": "retired"}
+                db.query(
+                    f"UPDATE {db.table('_agent_runs')} SET generation_request_snapshot=?,"
+                    "service_config_snapshot='{}',agent_context_snapshot='',"
+                    "committed_output=NULL,status='cancelled',claimed_by=NULL,"
+                    "claimed_at=NULL,updated_at=CURRENT_TIMESTAMP "
+                    "WHERE id=? AND org_id=? AND user_id=? "
+                    "AND status NOT IN ('finalized','cancelled','expired')",
+                    (
+                        json.dumps(snapshot, separators=(",", ":")),
+                        run_id,
+                        self.org_id,
+                        window.user_id,
+                    ),
+                )
+            # Same backlog-clock rule as a completion: progress restarts it
+            # unless a sibling cursor is still failing.
+            db.query(
+                f"UPDATE {db.table('learning_work')} SET due_at=0,"
+                "pending_since=CASE WHEN pending_since>0 AND NOT EXISTS ("
+                f"SELECT 1 FROM {db.table('extraction_cursors')} WHERE user_id=? AND attempts>0"
+                ") THEN ? ELSE pending_since END "
+                "WHERE org_id=? AND user_id=? AND lease_token=?",
+                (window.user_id, now, self.org_id, window.user_id, token),
+            )
+
     def suspend_extraction(self, window: Window, token: str) -> None:
         """Yield saved work without advancing coverage or counting a failure."""
         with self._stream_sql() as db:
