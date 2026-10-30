@@ -5016,9 +5016,6 @@ export interface components {
          *         learning_id (str): Stable storage id — ``profile_id`` for profiles,
          *             ``user_playbook_id`` for user playbooks, ``agent_playbook_id``
          *             for agent playbooks (numeric ids as decimal strings).
-         *         loaded (bool | None): True when the agent explicitly opened this
-         *             learning's full text after it was injected; False when it was
-         *             known not to; None (omitted) when the caller does not report it.
          */
         RetrievedLearning: {
             kind: components["schemas"]["RetrievedLearningKind"];
@@ -5028,8 +5025,6 @@ export interface components {
             exposure_receipt?: string | null;
             /** Exposure Receipt Digest */
             exposure_receipt_digest?: string | null;
-            /** Loaded */
-            loaded?: boolean | null;
         };
         /**
          * RetrievedLearningEvaluationResult
