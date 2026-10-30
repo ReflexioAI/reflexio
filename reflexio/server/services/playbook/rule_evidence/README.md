@@ -51,3 +51,10 @@ The bounded exposed DEV result was8/9versus7/9development, with one gain and no
 regressions/new critical harm. Watering remains UNKNOWN and diagnostic errors remain.
 Exact saved-output replay covers all nine ported cases with no new inference.
 This is proposal-quality evidence, not measured edited-agent or production benefit.
+
+Consumer admission may reuse `wire.diagnostic_request`, `proposal_request`, and
+`request_input_tokens` to measure the same prompt, source payload and dynamic
+schema that dispatch uses. These pure builders own no model calls or resource
+capacity. A proposal preview with empty diagnostics/audits measures only its fixed
+source envelope; the normal 60,000-token proxy check still validates the complete
+request after diagnosis, and the caller must enforce native provider headroom.

@@ -408,3 +408,30 @@ def test_generation_uses_measured_compact_profile():
             "extra_body": {"thinking": {"type": "disabled"}},
         }
         assert generation_profile(stage, provider="openai") == {"max_tokens": 4096}
+
+
+def test_admission_builders_match_dispatched_consumer_envelopes(data, diagnostic):
+    from reflexio.server.services.playbook.rule_evidence import (
+        proposal_request,
+        request_input_tokens,
+    )
+    from reflexio.server.services.playbook.rule_evidence.wire import diagnostic_request
+
+    calls = []
+
+    def invoke(system, payload, schema):
+        calls.append((system, payload, schema))
+        return schema.model_validate_json(
+            json.dumps(wire_diagnostic(diagnostic) if len(calls) == 1 else repair())
+        )
+
+    result = run_rule_evidence(data, invoke)
+    assert result.decision == "proposal"
+    judge = diagnostic_request(data, data.sessions[0])
+    # The resolved global audit is an output, not the per-session target audit.
+    # Compare that input from the actual invocation without synthesizing one.
+    tune = proposal_request(data, result.diagnostics, calls[1][1]["target_audits"])
+    for actual, rendered in zip(calls, (judge, tune), strict=True):
+        assert actual[:2] == rendered[:2]
+        assert actual[2].model_json_schema() == rendered[2].model_json_schema()
+        assert request_input_tokens(*rendered) > 0
