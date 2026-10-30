@@ -2,8 +2,9 @@
 """Print the project instruction files that apply to changed files.
 
 For each changed file, walk from its directory up to the checkout root and
-collect ``AGENTS.override.md`` and ``AGENTS.md``, nearest directory first and,
-within one directory, ``AGENTS.override.md`` before ``AGENTS.md``. Output is
+collect at most one instruction file per directory, nearest directory first:
+``AGENTS.override.md`` when present (it replaces the same-directory
+``AGENTS.md``, as Codex's discovery does), otherwise ``AGENTS.md``. Output is
 grouped by instruction file (deduplicated) with the changed files it covers
 and its content with line numbers, so a reviewer can cite a rule and its line
 range without searching directories.
@@ -104,11 +105,12 @@ def instruction_chain(changed: Path, root: Path) -> list[Path]:
     chain: list[Path] = []
     directory = start
     while True:
-        chain.extend(
-            directory / name
-            for name in INSTRUCTION_FILENAMES
-            if (directory / name).is_file()
-        )
+        # The first existing name wins: an override replaces, not extends,
+        # the same-directory AGENTS.md.
+        for name in INSTRUCTION_FILENAMES:
+            if (directory / name).is_file():
+                chain.append(directory / name)
+                break
         if directory == root:
             return chain
         directory = directory.parent

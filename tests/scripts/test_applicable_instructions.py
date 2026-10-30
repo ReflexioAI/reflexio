@@ -43,10 +43,9 @@ def _rel(paths: list[Path], root: Path) -> list[str]:
 
 
 def _assert_precedence(chain: list[str]) -> None:
-    """Nearest directory first; override before AGENTS.md in one directory."""
+    """Nearest directory first; an override replaces its directory's AGENTS.md."""
     assert chain == [
         "pkg/sub/AGENTS.override.md",
-        "pkg/sub/AGENTS.md",
         "pkg/AGENTS.md",
         "AGENTS.md",
     ]
