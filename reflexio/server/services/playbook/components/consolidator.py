@@ -72,10 +72,12 @@ class PlaybookConsolidator(BaseDeduplicator):
         For each new entry, uses its trigger field as the query with
         pre-computed embeddings for vector search.
 
-        A failed per-query search is logged and skipped rather than raised. This
+        An ordinary failed per-query search is logged and skipped rather than raised. This
         is a retrieval-recall degradation, not a correctness failure: consolidation
         still applies its full decision contract to whatever was retrieved. Only
         decision generation and application fail the batch closed.
+        Typed readiness refusals propagate so the durable owner can defer the
+        whole operation without consolidating against partial history.
 
         Args:
             new_playbooks: List of new entries to search against
@@ -132,17 +134,8 @@ class PlaybookConsolidator(BaseDeduplicator):
                     if fb.user_playbook_id and fb.user_playbook_id not in seen_ids:
                         seen_ids.add(fb.user_playbook_id)
                         existing_playbooks.append(fb)
-            except ReadinessUnavailableError as exc:  # noqa: PERF203
-                self._raise_overflow_retrieval_error(exc)
-                # Embedding not ready yet (a new task's warm-up after a deploy):
-                # expected and self-clearing, so not an ERROR. Recall degrades
-                # exactly as for any other failed search below.
-                logger.warning(
-                    "event=playbook_consolidation_search_not_ready query_index=%d "
-                    "error=%s",
-                    i,
-                    exc,
-                )
+            except ReadinessUnavailableError:  # noqa: PERF203
+                raise
             except Exception as exc:  # noqa: PERF203 — per-query isolation is the point
                 self._raise_overflow_retrieval_error(exc)
                 logger.exception(
