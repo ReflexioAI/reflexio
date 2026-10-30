@@ -77,6 +77,9 @@ def create_generation_litellm_client(
             model=generation_model_name,
             api_key_config=api_key_config,
             timeout=configured_timeout or GENERATION_TIMEOUT_SECONDS,
+            max_tokens=config_llm_config.generation_max_output_tokens
+            if config_llm_config
+            else None,
         )
     )
 

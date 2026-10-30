@@ -153,7 +153,13 @@ def _create_llm_client(request_context: RequestContext) -> LiteLLMClient:
         llm_config=llm_config,
         api_key_config=api_key_config,
     )
-    return LiteLLMClient(LiteLLMConfig(model=model_name, api_key_config=api_key_config))
+    return LiteLLMClient(
+        LiteLLMConfig(
+            model=model_name,
+            api_key_config=api_key_config,
+            max_tokens=llm_config.generation_max_output_tokens if llm_config else None,
+        )
+    )
 
 
 def _storage(request_context: RequestContext) -> BaseStorage:

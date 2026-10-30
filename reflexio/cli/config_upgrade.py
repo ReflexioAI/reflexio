@@ -25,7 +25,7 @@ def convert_config_file(source: Path, destination: Path) -> None:
             "Input and output paths must differ; keep the original configuration."
         )
     try:
-        payload = LocalConfigFile(source).read_document()
+        payload = LocalConfigFile(source).read_document_for_conversion()
         converted = canonicalize_config_document(payload)
         encoded = encode_local_config_document(converted)
     except ValueError:

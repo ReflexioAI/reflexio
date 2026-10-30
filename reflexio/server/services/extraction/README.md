@@ -255,7 +255,10 @@ that continuation. A pending human/tool dependency suspends the child, and its
 saved protocol continues through the protocol-aware resume routing. Custom extraction/gate
 templates that omit the complete prepared source fail before provider dispatch.
 
-Native overflow requests without a configured output cap explicitly request the
+The generation factory carries the tenant
+`llm_config.generation_max_output_tokens` into its client defaults. Custom
+gateways require this explicit positive output/cost budget; context declarations
+do not imply it. Native overflow requests without a configured output cap explicitly request the
 model's advertised output maximum before admission. Configured caps are preserved;
 custom endpoints require their own positive request/client cap and context
 capacity declaration. Other calls retain their original provider defaults.

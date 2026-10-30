@@ -291,8 +291,8 @@ def test_twenty_k_initial_geometry_runs_complete_http_window_under_original_quot
 ):
     import json
 
-    from reflexio.models.config_schema import UserPlaybookExtractorConfig
-    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+    from reflexio.models.config_schema import LLMConfig, UserPlaybookExtractorConfig
+    from reflexio.server.llm.litellm_client import LiteLLMClient
 
     engine, worker, http = pipeline
     configurator = engine.request_context.configurator
@@ -300,6 +300,11 @@ def test_twenty_k_initial_geometry_runs_complete_http_window_under_original_quot
         configurator.get_config().model_copy(
             update={
                 "profile_extractor_config": None,
+                "llm_config": LLMConfig(
+                    generation_model_name="minimax/MiniMax-M3",
+                    generation_max_output_tokens=128000,
+                    generation_timeout_seconds=5,
+                ),
                 "user_playbook_extractor_config": UserPlaybookExtractorConfig(
                     extraction_definition_prompt="Learn explicit user instructions"
                 ),
@@ -309,17 +314,6 @@ def test_twenty_k_initial_geometry_runs_complete_http_window_under_original_quot
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     monkeypatch.setenv(
         "REFLEXIO_LLM_CONTEXT_LIMITS_JSON", json.dumps({"minimax/MiniMax-M3": 512000})
-    )
-    monkeypatch.setattr(
-        "reflexio.lib._base.create_generation_litellm_client",
-        lambda _: LiteLLMClient(
-            LiteLLMConfig(
-                model="minimax/MiniMax-M3",
-                max_tokens=128000,
-                timeout=5,
-                fallback_models=[],
-            )
-        ),
     )
     storage = engine.get_storage()
     monkeypatch.setattr(

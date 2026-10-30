@@ -10,7 +10,7 @@ import pytest
 from pydantic import HttpUrl
 
 from reflexio.models.config_schema import APIKeyConfig, CustomEndpointConfig, LLMConfig
-from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.storage.sqlite_storage._extraction_stream import (
     SQLiteStreamSQL,
 )
@@ -19,7 +19,7 @@ from tests.server.services.test_durable_window_pipeline import pipeline as pipel
 
 
 @pytest.mark.parametrize(
-    "mode", ["recover", "policy_changed", "capacity", "operator_capacity"]
+    "mode", ["recover", "policy_changed", "capacity", "operator_capacity", "output_cap"]
 )
 def test_corrected_context_declaration_resumes_only_the_original_contract(
     pipeline, monkeypatch, mode
@@ -54,28 +54,26 @@ def test_corrected_context_declaration_resumes_only_the_original_contract(
         configurator.get_config().model_copy(
             update={
                 "api_key_config": keys,
-                "llm_config": LLMConfig(generation_model_name=model),
+                "llm_config": LLMConfig(
+                    generation_model_name=model,
+                    generation_max_output_tokens=None if mode == "output_cap" else 1024,
+                    generation_timeout_seconds=5,
+                ),
             }
         )
     )
     monkeypatch.setenv(
         "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
-        json.dumps({declaration_key: 512} if capacity_mode else {}),
-    )
-    # A custom endpoint must supply its output cap explicitly; this test isolates
-    # correction of context declarations, not the separate missing-output gate.
-    monkeypatch.setattr(
-        "reflexio.lib._base.create_generation_litellm_client",
-        lambda _: LiteLLMClient(
-            LiteLLMConfig(
-                model=model,
-                max_tokens=1024,
-                timeout=5,
-                fallback_models=[],
-                api_key_config=keys,
-            )
+        json.dumps(
+            {declaration_key: 512}
+            if capacity_mode
+            else {declaration_key: 65536}
+            if mode == "output_cap"
+            else {}
         ),
     )
+    # Use the actual worker factory: a persisted tenant cap must be sufficient
+    # to recover, without replacing production client construction in this test.
     monkeypatch.setattr(
         storage, "_get_embedding", lambda *_args, **_kwargs: [0.1] * 512
     )
@@ -158,6 +156,17 @@ def test_corrected_context_declaration_resumes_only_the_original_contract(
     monkeypatch.setenv(
         "REFLEXIO_LLM_CONTEXT_LIMITS_JSON", json.dumps({declaration_key: 65536})
     )
+    if mode == "output_cap":
+        updated = configurator.get_config()
+        configurator.set_config(
+            updated.model_copy(
+                update={
+                    "llm_config": updated.llm_config.model_copy(
+                        update={"generation_max_output_tokens": 1024}
+                    )
+                }
+            )
+        )
     if mode == "policy_changed":
         render = engine.request_context.prompt_manager.render_prompt
         monkeypatch.setattr(
@@ -196,10 +205,11 @@ def test_corrected_context_declaration_resumes_only_the_original_contract(
     assert frozen["source_digest"] == manifest["source_digest"]
     assert frozen["chunk_digests"] == manifest["chunk_digests"]
     assert frozen["attempt_limit"] == manifest["attempt_limit"] == 128
-    if mode in {"recover", "operator_capacity"}:
+    if mode in {"recover", "operator_capacity", "output_cap"}:
         assert result == 1 and storage.count_all_profiles() == 1
         assert complete.call_count == 1
         assert len(dispatched) == len(frozen["attempts"]) == 2
+        assert all(call["max_tokens"] == 1024 for call in dispatched)
         assert (
             storage.extraction_status("u", "declaration-recovery")["status"] == "done"
         )

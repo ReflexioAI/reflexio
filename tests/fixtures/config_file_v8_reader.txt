@@ -1,0 +1,35 @@
+"""Frozen reader from 49659ebc9bd0525a0cfe81cc59a938e8545499e7:reflexio/config_file.py.
+
+Function body copied verbatim; unrelated globals are supplied by the test.
+"""
+
+from __future__ import annotations
+
+def _decode(raw: bytes) -> tuple[dict[str, Any], dict[str, Any]]:
+    try:
+        document = decode_config_document(raw.decode("utf-8"))
+    except (ValueError, UnicodeError):
+        raise StoredConfigurationError(
+            "Saved configuration is not finite JSON"
+        ) from None
+    if _METADATA_KEY not in document:
+        return document, {}
+    metadata = document.pop(_METADATA_KEY)
+    if (
+        not isinstance(metadata, dict)
+        or set(metadata) - {"version", "original_sha256"}
+        or type(metadata.get("version")) is not int
+        or not 1 <= metadata["version"] <= FILE_FORMAT_VERSION
+        or (
+            "original_sha256" in metadata
+            and (
+                not isinstance(metadata["original_sha256"], str)
+                or re.fullmatch(r"[0-9a-f]{64}", metadata["original_sha256"]) is None
+            )
+        )
+    ):
+        raise StoredConfigurationError(
+            "Unrecognized local configuration file generation; use the matching SDK "
+            "or restore the original file before restarting"
+        )
+    return document, metadata

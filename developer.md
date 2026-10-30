@@ -283,7 +283,14 @@ Existing protocol journals and legacy continuations retain their original
 recovery contracts; image and mock execution are unchanged.
 
 Custom model endpoints must declare their actual context capacity in
-`REFLEXIO_LLM_CONTEXT_LIMITS_JSON` and supply an explicit positive output cap.
+`REFLEXIO_LLM_CONTEXT_LIMITS_JSON` and set the tenant
+`llm_config.generation_max_output_tokens` to a positive integer. Unset preserves
+native-provider defaults; context capacity never implies an output/cost budget.
+Local configuration files upgrade through the existing owner to generation 9,
+which previous readers refuse. Older unmarked/v8 documents with a non-null
+previously ignored budget require explicit publication with the current SDK;
+ordinary reads and automatic preparation refuse to activate it.
+Stop older writers before upgrade; restore original settings before rollback.
 Unknown or insufficient capacity blocks dispatch and preserves the input for
 recovery; disabling admission is no longer an escape from that check. Standard
 provider models retain their advertised-capacity lookup. This upgrade does not
