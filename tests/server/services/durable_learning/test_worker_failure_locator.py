@@ -73,6 +73,7 @@ class _Storage:
     """Just enough surface for ``_turn`` to reach each handler in turn."""
 
     def __init__(self, *, pending_effects: bool = False, claim_raises: bool = False):
+        self.org_id = "org1"
         self._pending_effects = pending_effects
         self._claim_raises = claim_raises
         self.retried: list[str] = []
@@ -194,6 +195,29 @@ def test_window_failure_reports_a_locator_but_not_the_message(
     assert SENTINEL not in stored
     assert stored.startswith("ValueError@"), stored
     assert _LOCATOR.search(stored), stored
+
+
+def test_window_readiness_refusal_defers_and_releases_without_spending_retry(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import sys
+
+    from reflexio.server.services.storage.error import ReadinessUnavailableError
+
+    def refuse() -> None:
+        raise ReadinessUnavailableError(SENTINEL)
+
+    monkeypatch.setattr(sys.modules[__name__], "_raise_from_a_dependency", refuse)
+    storage = _Storage()
+    released = Mock(wraps=storage.release_user_extraction)
+    monkeypatch.setattr(storage, "release_user_extraction", released)
+    _run_turn(monkeypatch, storage)
+    assert storage.deferred == 1
+    assert storage.retried == []
+    assert storage.effects_retried == []
+    released.assert_called_once_with("u1", "tok")
+    assert "event=extraction_readiness_deferred" in caplog.text
+    assert SENTINEL not in caplog.text
 
 
 def test_effects_failure_reports_a_locator_but_not_the_message(

@@ -29,6 +29,7 @@ from reflexio.server.services.durable_learning.window_executor import (
 from reflexio.server.services.extraction.overflow_coordinator import (
     OverflowSuspendedError,
 )
+from reflexio.server.services.storage.error import ReadinessUnavailableError
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.services.storage.storage_base._extraction_stream import (
     MAX_EXTRACTION_WINDOW_ATTEMPTS,
@@ -347,6 +348,23 @@ class DurableLearningWorker:
     def _handle_window_failure(
         storage: BaseStorage, window: Window, token: str, exc: Exception
     ) -> str:
+        if isinstance(exc, ReadinessUnavailableError):
+            # Dependency admission has not failed the logical extraction.
+            # Keep its window/output and ordinary retry budget intact. This
+            # existing token-CAS cannot change a replacement owner's schedule;
+            # _turn's finally still releases only this token.
+            storage.defer_extraction_setup(window.user_id, token)
+            report_background_failure(
+                logger,
+                "extraction_readiness_deferred",
+                exc,
+                scope=f"durable-learning-turn:{storage.org_id}:{_user_ref(window.user_id)}",
+                detail=lambda error: (
+                    f"{type(error).__name__}@{exception_locator(error)}"
+                ),
+            )
+            record_health("worker.retries", phase="readiness")
+            return "readiness_deferred"
         if isinstance(exc, OverflowSuspendedError):
             storage.suspend_extraction(window, token)
             return "suspended"

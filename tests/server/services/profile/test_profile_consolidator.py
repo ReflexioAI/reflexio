@@ -46,6 +46,36 @@ from reflexio.server.services.profile.components.consolidator import (
 )
 
 
+@pytest.mark.parametrize("phase", ["embedding", "search"])
+def test_readiness_refusal_never_consolidates_incomplete_history(
+    mock_request_context, mock_llm_client, mock_site_var_manager, phase
+):
+    from reflexio.server.services.storage.error import ReadinessUnavailableError
+
+    error = ReadinessUnavailableError("embedding_readiness_unavailable")
+    storage = mock_request_context.storage
+    storage._get_embedding.return_value = [0.1] * 10
+    if phase == "embedding":
+        storage._get_embedding.side_effect = error
+    else:
+        storage.search_user_profile.side_effect = [[], error]
+    consolidator = ProfileConsolidator(mock_request_context, mock_llm_client)
+    candidates = [
+        UserProfile(
+            profile_id=str(i),
+            user_id="u",
+            content=text,
+            last_modified_timestamp=100,
+            generated_from_request_id="request",
+        )
+        for i, text in enumerate(["Short replies", "Examples"])
+    ]
+    with pytest.raises(ReadinessUnavailableError) as caught:
+        consolidator.deduplicate(candidates, "u", "request")
+    assert caught.value is error
+    mock_llm_client.generate_chat_response_with_provenance.assert_not_called()
+
+
 @pytest.mark.parametrize("group_kind", ["new", "mixed", "existing"])
 @pytest.mark.parametrize("same_angle", [False, True])
 def test_merged_profiles_preserve_all_canonical_evidence_and_perspectives(
