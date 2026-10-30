@@ -76,6 +76,9 @@ from reflexio.server.llm._litellm_text_generation import (
     _LADDER_WALL_CLOCK_BUDGET_SECONDS as _LADDER_WALL_CLOCK_BUDGET_SECONDS,
 )
 from reflexio.server.llm._litellm_text_generation import (
+    ISOLATED_COMPLETION_EXECUTION as ISOLATED_COMPLETION_EXECUTION,
+)
+from reflexio.server.llm._litellm_text_generation import (
     STRUCTURED_OUTPUT_CORRECTION_PREFIX,
     ProviderRequestGuardError,
     StructuredOutputValidator,

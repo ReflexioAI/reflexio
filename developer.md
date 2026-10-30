@@ -1223,15 +1223,15 @@ query-isolation path's single-text requests.
 LLM dispatch, fallback, repair and provider admission use the actual remaining
 operation deadline. There is no private minimum-turn duration: a positive short
 budget can complete a fast call; an expired one never dispatches. Provider and
-whole-walk bounds, configured grace, cancellation and late-result accounting
-remain enforced. Grace is reserved when it fits; otherwise the remaining time
-bounds both provider I/O and the subprocess instead of imposing a one-second
-provider timeout beyond the caller's cutoff.
+whole-walk bounds, cancellation and late-result accounting remain enforced.
+One absolute attempt expiry bounds provider I/O, worker execution and acceptance;
+there is no independently configured grace period or fixed padding.
 
 The completion child receives the effective absolute deadline and checks it after
 provider initialization, immediately before dispatch. Startup cannot authorize a
 provider call after expiry. A shorter configured provider I/O timeout remains
-a bound even when the remaining caller time is shorter than cleanup grace.
+a bound; startup time is deducted before SDK dispatch. Parent parsing/validation
+checks reject late output but cannot interrupt arbitrary synchronous code.
 
 ### OpenAI-compatible gateways, including OrcaRouter (#492)
 
