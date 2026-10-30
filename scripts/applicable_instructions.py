@@ -25,6 +25,7 @@ merge base of HEAD and ``--base`` (default ``origin/main``).
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -92,7 +93,10 @@ def changed_files(cwd: Path, base: str) -> list[Path]:
 
 def instruction_chain(changed: Path, root: Path) -> list[Path]:
     """Instruction files for one changed path, highest precedence first."""
-    start = changed if changed.is_dir() else changed.parent
+    # A changed symlink is a file entry in Git even when it points at a
+    # directory, so its own directory decides the scope.
+    is_dir = changed.is_dir() and not changed.is_symlink()
+    start = changed if is_dir else changed.parent
     try:
         start.relative_to(root)
     except ValueError as exc:
@@ -172,7 +176,9 @@ def main(argv: list[str] | None = None, cwd: Path | None = None) -> int:
     try:
         root = checkout_root(here)
         if args.files:
-            changed = [(here / name).resolve() for name in args.files]
+            # Normalize lexically: resolve() would replace a changed symlink
+            # with its target and lose the path Git reports.
+            changed = [Path(os.path.normpath(here / name)) for name in args.files]
         else:
             changed = changed_files(here, args.base)
         applicable = collect(changed, root)

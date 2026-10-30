@@ -189,3 +189,19 @@ def test_not_a_git_repo(
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     assert ai.main(["x.py"], cwd=outside) == 2
     assert "not inside a git repository" in capsys.readouterr().err
+
+
+def test_changed_symlink_keeps_its_own_path_and_scope(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(repo / "pkg" / "AGENTS.md", "pkg rule\n")
+    _write(repo / "target" / "AGENTS.md", "target rule\n")
+    (repo / "pkg" / "link").symlink_to(Path("..") / "target", target_is_directory=True)
+    (repo / "pkg" / "outside").symlink_to(repo.parent, target_is_directory=True)
+    assert ai.main(["pkg/link", "pkg/outside"], cwd=repo) == 0
+    out = capsys.readouterr().out
+    assert "pkg/link" in out
+    assert "pkg/outside" in out
+    assert "target/AGENTS.md" not in out
+    assert ai.main(["--paths-only", "pkg/link"], cwd=repo) == 0
+    assert capsys.readouterr().out == "pkg/AGENTS.md\nAGENTS.md\n"
