@@ -71,10 +71,25 @@ def _freeze(
 
 @pytest.mark.parametrize(
     "drift",
-    ["instance_method", "helper", "config", "seed", "grace", "prompt_version"],
+    [
+        "instance_method",
+        "helper",
+        "config",
+        "seed",
+        "grace",
+        "prompt_version",
+        "native_launch",
+        "native_retirement",
+        "native_worker_alias",
+        "native_directory_alias",
+        "native_error_transport",
+        "native_launch_owner_alias",
+        "native_launch_execution",
+        "native_executable_source",
+    ],
 )
 def test_pairwise_judge_rejects_frozen_plan_drift_before_provider_execution(
-    monkeypatch, drift
+    monkeypatch, tmp_path, drift
 ):
     monkeypatch.setenv("REFLEXIO_LLM_SEED", "42")
     monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
@@ -82,6 +97,13 @@ def test_pairwise_judge_rejects_frozen_plan_drift_before_provider_execution(
     client = LiteLLMClient(LiteLLMConfig(model="azure/judge-deployment"))
     provider = Mock()
     cast(Any, client)._completion_with_hard_timeout = provider
+    if drift == "native_executable_source":
+        source = judge_module.native_cli_module._NATIVE_OWNER_SCRIPT
+        copied = tmp_path / source.name
+        copied.write_bytes(source.read_bytes())
+        monkeypatch.setattr(
+            judge_module.native_cli_module, "_NATIVE_OWNER_SCRIPT", copied
+        )
     frozen_plan = _freeze(prompt_manager, client)
     judge = PairwiseJudge(
         cast(Any, SimpleNamespace(prompt_manager=prompt_manager)),
@@ -98,6 +120,29 @@ def test_pairwise_judge_rejects_frozen_plan_drift_before_provider_execution(
             "build_pairwise_judge_request_plan",
             Mock(return_value=frozen_plan),
         )
+    elif drift == "native_launch":
+        monkeypatch.setattr(judge_module.claude_code_provider, "run_native_cli", Mock())
+    elif drift == "native_worker_alias":
+        monkeypatch.setattr(judge_module.worker_module, "native_cli_worker", Mock())
+    elif drift == "native_directory_alias":
+        monkeypatch.setattr(
+            judge_module.claude_code_provider, "native_cli_directory", Mock()
+        )
+    elif drift == "native_error_transport":
+        monkeypatch.setattr(generation, "_raise_completion_error", Mock())
+    elif drift == "native_launch_owner_alias":
+        monkeypatch.setattr(
+            judge_module.native_cli_module,
+            "native_owner_identity",
+            Mock(return_value={"sha256": "foreign"}),
+        )
+    elif drift == "native_executable_source":
+        with judge_module.native_cli_module._NATIVE_OWNER_SCRIPT.open("a") as stream:
+            stream.write("\n# changed executable source\n")
+    elif drift == "native_launch_execution":
+        monkeypatch.setattr(judge_module.native_process_module, "_run", Mock())
+    elif drift == "native_retirement":
+        monkeypatch.setattr(generation.NativeCLIOwner, "_run", Mock())
     elif drift == "config":
         client.config.top_p = 0.25
     elif drift == "seed":

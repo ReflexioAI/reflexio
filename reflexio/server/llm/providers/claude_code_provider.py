@@ -43,6 +43,7 @@ from litellm.types.utils import (
 )
 
 from reflexio.server.env_utils import env_str, env_truthy
+from reflexio.server.llm._native_cli import native_cli_directory, run_native_cli
 from reflexio.server.llm.providers.claude_code_stream_parser import (
     ParseResult,
     classify_stall,
@@ -441,7 +442,7 @@ def _run_claude_stream(
     env["CLAUDE_CODE_MAX_RETRIES"] = "3"
 
     try:
-        proc = subprocess.run(  # noqa: S603 — cmd is constructed from validated parts.
+        proc = run_native_cli(  # noqa: S603 — cmd is constructed from validated parts.
             cmd,
             input=stdin_text,
             capture_output=True,
@@ -494,7 +495,7 @@ def _run_codex_stream(
     env["CLAUDE_SMART_INTERNAL"] = "1"
 
     try:
-        proc = subprocess.run(  # noqa: S603 — cmd is constructed from validated parts.
+        proc = run_native_cli(  # noqa: S603 — cmd is constructed from validated parts.
             cmd,
             input=_codex_prompt(prompt=dialogue, system_prompt=system_prompt),
             capture_output=True,
@@ -516,8 +517,10 @@ def _run_codex_stream(
     except FileNotFoundError as exc:
         raise ClaudeCodeCLIError(f"codex CLI not found at {codex_path}") from exc
     finally:
-        with suppress(OSError):
-            output_path.unlink()
+        # Delegated output belongs to the parent until native reaping completes.
+        if native_cli_directory() is None:
+            with suppress(OSError):
+                output_path.unlink()
 
     return ParseResult(
         success=proc.returncode == 0 and bool(terminal_text),
@@ -530,7 +533,7 @@ def _run_codex_stream(
 
 def _temporary_output_path() -> Path:
     with tempfile.NamedTemporaryFile(
-        prefix="claude-smart-codex-", delete=False
+        prefix="claude-smart-codex-", delete=False, dir=native_cli_directory()
     ) as handle:
         return Path(handle.name)
 

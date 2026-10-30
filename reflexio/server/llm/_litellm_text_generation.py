@@ -49,6 +49,7 @@ from reflexio.server import search_runtime
 from reflexio.server.error_reporting import set_error_tags
 from reflexio.server.llm._litellm_subprocess import (
     _litellm_completion_worker,
+    _raise_completion_error,
     retire_completion_worker,
 )
 from reflexio.server.llm._litellm_types import (
@@ -68,6 +69,7 @@ from reflexio.server.llm._model_compat import (
     ensure_model_capabilities,
     model_completion,
 )
+from reflexio.server.llm._native_cli import NATIVE_CLI_REQUEST, NativeCLIOwner
 from reflexio.server.llm._provider_concurrency import (
     ProviderCapSaturatedError,
     provider_slot,
@@ -1247,16 +1249,15 @@ class TextGenerationMixin:
                 raise
 
         process_context = multiprocessing.get_context()
-        result_queue = process_context.Queue(maxsize=1)
-        process = process_context.Process(
-            target=_litellm_completion_worker,
-            args=(params, result_queue, deadline),
-            daemon=True,
+        native_owner = NativeCLIOwner(deadline)
+        process, result_queue = native_owner.create_worker(
+            process_context, _litellm_completion_worker, params
         )
         try:
             if time.monotonic() >= deadline:
                 raise LLMHardTimeoutError("LLM request deadline expired before startup")
             process.start()
+            native_owner.worker_started()
             # Drain the result queue BEFORE joining the child. A large completion
             # payload overflows the OS pipe buffer, so the child's queue-feeder
             # thread blocks on ``put`` until a reader drains it — and the child
@@ -1274,7 +1275,6 @@ class TextGenerationMixin:
                 remaining = deadline - time.monotonic()
                 try:
                     result = result_queue.get(timeout=max(0.0, min(0.1, remaining)))
-                    break
                 except queue.Empty as exc:
                     if remaining <= 0:
                         # True wall-clock timeout: the child ran past the hard
@@ -1305,37 +1305,24 @@ class TextGenerationMixin:
                                 f"(exitcode={process.exitcode})"
                             ) from exc2
 
+                if result is not None and result[0] == NATIVE_CLI_REQUEST:
+                    native_owner.dispatch(result[1])
+                    result = None
+
             # The loop only exits with a drained result (every no-result path
             # above raises); the assert makes that invariant explicit for pyright.
             assert result is not None  # noqa: S101
             status, payload = result
             if status == "ok":
                 return payload
-            if (
-                payload.input_capacity_exceeded
-                and extraction_provider_guard.get() is not None
-            ):
-                from reflexio.server.llm.input_budget import (
-                    ProviderInputOverflowError,
-                    extraction_request_identity,
-                )
-
-                # Only a typed upstream capacity error qualifies. Generic400,
-                # provider codes/messages, timeouts and schema failures do not.
-                raise ProviderInputOverflowError(extraction_request_identity.get())
-            # The worker always reports errors as a picklable snapshot.
-            context_parts = [f"model={payload.model}"]
-            if payload.llm_provider:
-                context_parts.append(f"provider={payload.llm_provider}")
-            raise LiteLLMClientError(
-                "litellm.completion failed in isolated worker: "
-                f"{payload.type_name}: {payload.message} "
-                f"({', '.join(context_parts)})",
-                upstream_error_type=payload.type_name,
-                upstream_status_code=payload.status_code,
-            )
+            if status != "error":
+                raise LiteLLMClientError("Unknown isolated completion result kind")
+            _raise_completion_error(payload)
         finally:
-            retire_completion_worker(process, result_queue)
+            try:
+                native_owner.close()
+            finally:
+                retire_completion_worker(process, result_queue, native_owner)
 
     def _hard_timeout_grace_seconds(self) -> float:
         raw = os.environ.get("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5") or "5"

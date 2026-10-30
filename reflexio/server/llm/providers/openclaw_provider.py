@@ -34,6 +34,7 @@ from litellm.types.utils import (
 )
 
 from reflexio.server.env_utils import env_truthy
+from reflexio.server.llm._native_cli import run_native_cli
 from reflexio.server.llm.providers.cli_tool_protocol import (
     append_schema_instruction,
     append_tools_instruction,
@@ -178,7 +179,7 @@ def _call_cli(*, prompt: str, model: str | None, timeout_s: int) -> str:
 
     for attempt in range(1, _BUSY_ATTEMPTS + 1):
         try:
-            proc = subprocess.run(  # noqa: S603 — argv is fully constructed.
+            proc = run_native_cli(  # noqa: S603 — argv is fully constructed.
                 argv,
                 env=env,
                 capture_output=True,

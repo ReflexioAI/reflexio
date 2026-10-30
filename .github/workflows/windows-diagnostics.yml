@@ -10,6 +10,7 @@ on:
       - uv.lock
       - tests/conftest.py
       - tests/cli/test_utils.py
+      - tests/server/llm/test_native_cli_ownership.py
       - tests/e2e_tests/test_local_publish_concurrency_diagnostic.py
       - tests/e2e_tests/test_local_model_cold_start_diagnostic.py
       - tests/test_scripts/local_publish_probe.py
@@ -39,6 +40,7 @@ jobs:
           tests/e2e_tests/test_local_model_cold_start_diagnostic.py
           tests/e2e_tests/test_local_publish_concurrency_diagnostic.py
           tests/cli/test_utils.py
+          tests/server/llm/test_native_cli_ownership.py
           -o addopts= --timeout=360 --junitxml=windows-diagnostics.xml -v -s
       - name: Preserve diagnostics
         if: always()
