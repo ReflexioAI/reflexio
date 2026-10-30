@@ -32,7 +32,10 @@ from reflexio.server.services.agent_success_evaluation.scheduler import (
     GroupEvaluationScheduler,
 )
 from reflexio.server.services.base_generation_service import ExtractorExecutionError
-from reflexio.server.services.external_admission import ExternalAdmissionParticipant
+from reflexio.server.services.external_admission import (
+    ExternalAdmissionFencedError,
+    ExternalAdmissionParticipant,
+)
 from reflexio.server.services.profile.service import (
     ProfileGenerationService,
 )
@@ -723,6 +726,21 @@ class GenerationService:
                 "event=publish_admission_deadline_exceeded user_id=%s request_id=%s",
                 sanitise_for_log(user_id),
                 sanitise_for_log(request_id or ""),
+            )
+            return
+        if isinstance(error, ExternalAdmissionFencedError):
+            # The admission participant lost its own fence (lease, revision,
+            # erasure generation) before commit. The transaction rolled back,
+            # nothing landed, and the participant's owner retries the work.
+            # The exception value is participant text, so only its type is
+            # logged.
+            logger.warning(
+                "event=publish_admission_fenced admitted=false org_id=%s "
+                "user_id=%s request_id=%s error_type=%s",
+                sanitise_for_log(self.org_id),
+                sanitise_for_log(user_id),
+                sanitise_for_log(request_id or ""),
+                type(error).__name__,
             )
             return
         with error_tags(
