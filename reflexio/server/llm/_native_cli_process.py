@@ -7,6 +7,7 @@ an unrelated forked SDK worker cannot inherit their writers.
 from __future__ import annotations
 
 import logging
+import os
 import pickle
 import subprocess
 import sys
@@ -52,6 +53,18 @@ def _run(
     timeout = kwargs.pop("timeout")
     kwargs.pop("check", None)
     kwargs.pop("capture_output", None)
+    # Reject malformed OS strings before entering uncertain child ownership.
+    # OpenClaw carries user prompt text in argv, including potentially NUL.
+    os_strings = list(argv)
+    if kwargs.get("cwd") is not None:
+        os_strings.append(kwargs["cwd"])
+    for key, value in kwargs.get("env", {}).items():
+        encoded_key = os.fsencode(key)
+        if os.name != "nt" and b"=" in encoded_key:
+            raise ValueError("illegal environment variable name")
+        os_strings.extend((key, value))
+    if any(b"\x00" in os.fsencode(value) for value in os_strings):
+        raise ValueError("embedded null byte")
     execution.exit_confirmed = False
     try:
         process = subprocess.Popen(  # noqa: S603 — constructed provider argv

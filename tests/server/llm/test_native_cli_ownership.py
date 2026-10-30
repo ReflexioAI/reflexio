@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -118,6 +119,7 @@ def _broker_completion(params):
                 ],
                 input=params.get("native_input", str(index)),
                 env=environment,
+                cwd=params.get("native_launch_cwd"),
                 timeout=params.get("native_timeout", 10),
                 capture_output=True,
                 text=True,
@@ -774,12 +776,12 @@ def test_cancellation_marker_failure_still_retires_live_sdk_worker(monkeypatch):
         with pytest.raises(Exception, match="hard timeout|timed out"):
             client._completion_with_hard_timeout({"model": "openai/gpt-4o"}, 0.2)
         deadline = time.monotonic() + 3
-        while native._live_owners != owners and time.monotonic() < deadline:
+        while not native._live_owners.issubset(owners) and time.monotonic() < deadline:
             time.sleep(0.01)
         assert retired and all(
             not alive and code is not None for alive, code in retired
         )
-        assert native._live_owners == owners
+        assert native._live_owners.issubset(owners)
     finally:
         for process in processes:
             try:
@@ -788,3 +790,30 @@ def test_cancellation_marker_failure_still_retires_live_sdk_worker(monkeypatch):
                     process.join()
             except ValueError:
                 pass  # Retirement already closed this owned handle.
+
+
+@pytest.mark.parametrize("invalid_field", ["argv", "env", "cwd"])
+def test_invalid_native_launch_retires_without_holding_capacity(
+    monkeypatch, invalid_field
+):
+    method = "spawn" if os.name == "nt" else "fork"
+    client = _broker_client(monkeypatch, method)
+    brokers = _capture_brokers(monkeypatch)
+    _, released = _permit(monkeypatch)
+    params: dict[str, Any] = {
+        "model": "openai/gpt-4o",
+        "native_code": "print('must not launch')",
+    }
+    if invalid_field == "argv":
+        params["native_code"] += "\x00"
+    elif invalid_field == "env":
+        params["native_env"] = {"INVALID_NATIVE_TEST": "nul\x00value"}
+    else:
+        params["native_launch_cwd"] = "nul\x00directory"
+    with (
+        admission.provider_slot("openai/gpt-4o"),
+        pytest.raises(Exception, match="embedded null byte"),
+    ):
+        client._completion_with_hard_timeout(params, 5)
+    assert released.wait(3), "Rejected input retained provider admission"
+    assert brokers and all(process.returncode == 0 for process in brokers)
