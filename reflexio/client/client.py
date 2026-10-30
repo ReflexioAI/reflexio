@@ -3080,6 +3080,7 @@ class ReflexioClient:
         request_id: str | None = None,
         session_id: str | None = None,
         interaction_id: int | None = None,
+        reset_session_seen: bool | None = None,
     ) -> UnifiedSearchViewResponse:
         """Search across all entity types (profiles, agent playbooks, user playbooks).
 
@@ -3120,6 +3121,10 @@ class ReflexioClient:
                 at most 255 characters. Also enables session-scoped result deduplication.
             interaction_id (Optional[int]): Caller interaction ID for the search
                 turn; must be a positive integer (minimum 1).
+            reset_session_seen (Optional[bool]): When True with ``session_id``,
+                forget the results already served to that session before
+                dedup, so they may be returned again (e.g. on the first search
+                after the agent's context was compacted). Default False.
 
         Returns:
             UnifiedSearchViewResponse: Combined search results from all entity types
@@ -3144,6 +3149,7 @@ class ReflexioClient:
             request_id=request_id,
             session_id=session_id,
             interaction_id=interaction_id,
+            reset_session_seen=reset_session_seen,
         )
         response = self._make_request(
             "POST", "/api/search", json=req.model_dump(mode="json")
@@ -3171,6 +3177,7 @@ class ReflexioClient:
         request_id: str | None = None,
         session_id: str | None = None,
         interaction_id: int | None = None,
+        reset_session_seen: bool | None = None,
     ) -> UnifiedSearchViewResponse:
         """Native-async counterpart to :meth:`search`."""
         req = self._build_request(
@@ -3193,6 +3200,7 @@ class ReflexioClient:
             request_id=request_id,
             session_id=session_id,
             interaction_id=interaction_id,
+            reset_session_seen=reset_session_seen,
         )
         response = await self._make_async_request(
             "POST", "/api/search", json=req.model_dump(mode="json")
@@ -3891,6 +3899,7 @@ class SessionScopedClient:
         request_id: str | None = None,
         session_id: str | None = None,
         interaction_id: int | None = None,
+        reset_session_seen: bool | None = None,
     ) -> UnifiedSearchViewResponse:
         """Search within the bound session.
 
@@ -3918,6 +3927,7 @@ class SessionScopedClient:
             request_id=request_id,
             session_id=self._resolve(session_id),
             interaction_id=interaction_id,
+            reset_session_seen=reset_session_seen,
         )
 
     async def search_async(
@@ -3941,6 +3951,7 @@ class SessionScopedClient:
         request_id: str | None = None,
         session_id: str | None = None,
         interaction_id: int | None = None,
+        reset_session_seen: bool | None = None,
     ) -> UnifiedSearchViewResponse:
         """Native-async counterpart to :meth:`search`."""
         return await self._client.search_async(
@@ -3962,6 +3973,7 @@ class SessionScopedClient:
             request_id=request_id,
             session_id=self._resolve(session_id),
             interaction_id=interaction_id,
+            reset_session_seen=reset_session_seen,
         )
 
     def search_user_playbooks(

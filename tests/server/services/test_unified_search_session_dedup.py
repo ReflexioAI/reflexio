@@ -82,12 +82,15 @@ def _mock_storage(*, single_rpc: bool) -> MagicMock:
     return storage
 
 
-def _search(storage: MagicMock, session_id: str | None) -> tuple:
+def _search(
+    storage: MagicMock, session_id: str | None, *, reset_session_seen: bool = False
+) -> tuple:
     request = UnifiedSearchRequest(
         query="how to refund",
         user_id="u1",
         top_k=2,
         session_id=session_id,
+        reset_session_seen=reset_session_seen,
     )
     response = run_unified_search(
         request=request,
@@ -221,6 +224,57 @@ class TestUnifiedSearchSessionDedup(unittest.TestCase):
             _, _, user_playbook_ids = _search(storage, "s1")
             self.assertEqual(user_playbook_ids, [0])
         self.assertEqual(session_seen_cache.seen(_ORG, "s1"), frozenset())
+
+    def test_reset_session_seen_returns_previously_served_items(self, reformulator_cls):
+        self._prep(reformulator_cls)
+        for single_rpc in (False, True):
+            with (
+                self.subTest(single_rpc=single_rpc),
+                patch.dict(
+                    os.environ,
+                    {"REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC": str(int(single_rpc))},
+                ),
+            ):
+                session_seen_cache.clear()
+                storage = _mock_storage(single_rpc=single_rpc)
+                self.assertEqual(
+                    _search(storage, "s1"), (["p1", "p2"], [1, 2], [11, 12])
+                )
+                _search(storage, "s2")
+
+                # Without the flag the seen items stay excluded.
+                self.assertEqual(
+                    _search(storage, "s1"), (["p3", "p4"], [3, 4], [13, 14])
+                )
+
+                # With the flag the session starts over and the top items return.
+                self.assertEqual(
+                    _search(storage, "s1", reset_session_seen=True),
+                    (["p1", "p2"], [1, 2], [11, 12]),
+                )
+                # The reset forgot p3/p4; only what it re-served is now seen.
+                self.assertEqual(
+                    _search(storage, "s1"), (["p3", "p4"], [3, 4], [13, 14])
+                )
+                # Another session's seen-state is untouched by s1's reset.
+                self.assertEqual(
+                    _search(storage, "s2"), (["p3", "p4"], [3, 4], [13, 14])
+                )
+
+    @patch.dict(os.environ, {"REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC": "0"})
+    def test_reset_session_seen_without_session_id_is_a_no_op(self, reformulator_cls):
+        self._prep(reformulator_cls)
+        storage = _mock_storage(single_rpc=False)
+        _search(storage, "s1")
+        seen_before = session_seen_cache.seen(_ORG, "s1")
+
+        for session_id in (None, "   "):
+            self.assertEqual(
+                _search(storage, session_id, reset_session_seen=True),
+                (["p1", "p2"], [1, 2], [11, 12]),
+            )
+        self.assertEqual(session_seen_cache.seen(_ORG, "s1"), seen_before)
+        self.assertEqual(list(session_seen_cache._sessions), [(_ORG, "s1")])
 
     @patch.dict(os.environ, {"REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC": "0"})
     def test_fetch_pool_widens_by_seen_count(self, reformulator_cls):

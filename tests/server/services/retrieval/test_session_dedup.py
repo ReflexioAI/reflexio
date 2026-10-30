@@ -23,6 +23,20 @@ class TestSessionSeenCache(unittest.TestCase):
         self.assertEqual(cache.seen("org", "s2"), frozenset())
         self.assertEqual(cache.seen("org", "s1"), frozenset({("profile", "p1")}))
 
+    def test_reset_forgets_only_that_session(self):
+        cache = SessionSeenCache()
+        cache.record("org", "s1", [("profile", "p1")])
+        cache.record("org", "s2", [("profile", "p1")])
+        cache.record("org-b", "s1", [("profile", "p1")])
+
+        cache.reset("org", "s1")
+
+        self.assertEqual(cache.seen("org", "s1"), frozenset())
+        self.assertEqual(cache.seen("org", "s2"), frozenset({("profile", "p1")}))
+        self.assertEqual(cache.seen("org-b", "s1"), frozenset({("profile", "p1")}))
+        # Resetting an unknown session is harmless.
+        cache.reset("org", "never-seen")
+
     def test_orgs_are_isolated(self):
         cache = SessionSeenCache()
         cache.record("org-a", "s1", [("profile", "p1")])

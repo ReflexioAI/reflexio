@@ -229,7 +229,11 @@ def run_unified_search(
 
     # Session dedup: a request that carries a session_id skips items already
     # served to that (org, session) and backfills from a widened pool.
+    # ``reset_session_seen`` first forgets what the session was served, so a
+    # client whose context was compacted can receive those items again.
     session_id = (request.session_id or "").strip()
+    if session_id and request.reset_session_seen:
+        session_seen_cache.reset(org_id, session_id)
     seen_keys = (
         session_seen_cache.seen(org_id, session_id) if session_id else frozenset()
     )
