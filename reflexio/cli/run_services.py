@@ -342,15 +342,17 @@ def execute(args: argparse.Namespace, *, storage: str | None = None) -> None:
     os.environ["EMBEDDING_PORT"] = str(ports["embedding"])
 
     only = parse_only_flag(args.only, {"backend", "docs"})
-    if "backend" in only:
+    if "backend" in only or storage is not None:
         from reflexio.cli.config_upgrade import prepare_local_config
         from reflexio.cli.utils import ensure_requested_ports_available
 
-        # Never rewrite a live predecessor's settings while a second start fails.
+        # Explicit storage selection writes even when only docs are requested.
+        # Do not rewrite a live predecessor's settings before a failed start.
         ensure_requested_ports_available(
             {"backend": ports["backend"]}, host=args.backend_host
         )
-        prepare_local_config()
+        if storage is None:
+            prepare_local_config()
     if "backend" in only or storage is not None:
         from reflexio.cli.bootstrap_config import (
             resolve_storage,
@@ -362,7 +364,13 @@ def execute(args: argparse.Namespace, *, storage: str | None = None) -> None:
         if storage is not None:
             from reflexio.cli.env_loader import get_env_path, set_env_var
 
+            # This owns selection and preparation together: preparing first
+            # would discard the old file generation needed to select its source.
             save_storage_to_config(resolved)
+            if "backend" in only:
+                # A missing DSN makes selection a no-op; normal preparation still
+                # belongs to backend startup, without an old native rewrite.
+                prepare_local_config()
             env_path = get_env_path()
             if env_path.exists():
                 set_env_var(env_path, "REFLEXIO_STORAGE", resolved)

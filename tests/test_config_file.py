@@ -817,3 +817,128 @@ def test_explicit_offline_conversion_adopts_selected_output_budget_without_chang
         ]
         == 1024
     )
+
+
+def test_preparation_edit_and_generation_publish_together(tmp_path):
+    path = tmp_path / "config.json"
+    original = json.dumps(
+        {
+            "_reflexio_config_file": {"version": FILE_FORMAT_VERSION - 1},
+            "storage_config": {"type": "sqlite", "db_path": "former.sqlite"},
+            "opaque": {"keep": True},
+        }
+    ).encode()
+    path.write_bytes(original)
+    selected = {
+        "type": "postgres",
+        "db_url": "postgresql://selected.invalid/db",
+        "pool_size": 3,
+        "pool_acquire_timeout": 7.5,
+        "read_pool_size": 2,
+        "read_pool_acquire_timeout": 4.5,
+    }
+    observed = []
+
+    def select_native(document, generation):
+        observed.append(generation)
+        document["storage_config"] = selected
+
+    assert LocalConfigFile(path).prepare(edit=select_native) is True
+    assert observed == [FILE_FORMAT_VERSION - 1]
+    document = decode_config_document(path.read_text())
+    assert document["_reflexio_config_file"]["version"] == FILE_FORMAT_VERSION
+    assert document["storage_config"] == selected
+    assert document["opaque"] == {"keep": True}
+    digest = hashlib.sha256(original).hexdigest()
+    assert (
+        tmp_path / ".config-migrations/config.json" / f"{digest}.json"
+    ).read_bytes() == original
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_preparation_edit_failure_publishes_no_file_or_backup(tmp_path, existing):
+    path = tmp_path / "config.json"
+    original = json.dumps(
+        {
+            "_reflexio_config_file": {"version": FILE_FORMAT_VERSION - 1},
+            "storage_config": {"type": "sqlite"},
+        }
+    ).encode()
+    if existing:
+        path.write_bytes(original)
+
+    def reject(_document, _generation):
+        raise StoredConfigurationError("Source decision refused")
+
+    with pytest.raises(StoredConfigurationError, match="Source decision refused"):
+        LocalConfigFile(path).prepare(
+            edit=reject, initial_document={"storage_config": {"type": "sqlite"}}
+        )
+    assert (path.read_bytes() if path.exists() else None) == (
+        original if existing else None
+    )
+    assert not (tmp_path / ".config-migrations").exists()
+
+
+def test_preparation_can_initialize_selected_policy_without_intermediate_defaults(
+    tmp_path,
+):
+    path = tmp_path / "nested/config.json"
+    initial = {"storage_config": {"type": "sqlite"}, "opaque": {"keep": True}}
+
+    def select_native(document, generation):
+        assert generation == FILE_FORMAT_VERSION
+        assert not path.exists()
+        document["storage_config"] = {
+            "type": "postgres",
+            "db_url": "postgresql://selected.invalid/db",
+            "pool_size": 3,
+        }
+
+    assert (
+        LocalConfigFile(path).prepare(edit=select_native, initial_document=initial)
+        is True
+    )
+    assert LocalConfigFile(path).read_document()["storage_config"]["pool_size"] == 3
+    assert initial["storage_config"] == {"type": "sqlite"}
+    assert not (path.parent / ".config-migrations").exists()
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_current_preparation_edits_fence_intervening_source_changes(tmp_path, changed):
+    path = tmp_path / "config.json"
+    owner = LocalConfigFile(path)
+    owner.publish_document(
+        '{"storage_config":{"type":"sqlite"},"window_size":23,"stride_size":7}'
+    )
+    later = path.read_text().replace('"window_size": 23', '"window_size": 31').encode()
+    assert later != path.read_bytes()
+
+    def race(document, generation):
+        assert generation == FILE_FORMAT_VERSION
+        if changed:
+            document["storage_config"]["db_path"] = "requested.sqlite"
+        path.write_bytes(later)
+
+    with pytest.raises(StoredConfigurationError, match="changed"):
+        owner.prepare(edit=race)
+    assert path.read_bytes() == later
+
+
+def test_current_preparation_edit_retains_noop_bytes_and_accepts_nested_edits(tmp_path):
+    path = tmp_path / "config.json"
+    owner = LocalConfigFile(path)
+    owner.publish_document(
+        '{"storage_config":{"type":"sqlite","db_path":"owned.sqlite"}}'
+    )
+    original = path.read_bytes()
+    assert owner.prepare(edit=lambda _doc, _version: None) is False
+    assert path.read_bytes() == original
+
+    def change(document, generation):
+        assert generation == FILE_FORMAT_VERSION
+        document["storage_config"]["db_path"] = "selected.sqlite"
+
+    assert owner.prepare(edit=change) is True
+    assert owner.read_document()["storage_config"]["db_path"] == "selected.sqlite"
+    assert not (tmp_path / ".config-migrations").exists()

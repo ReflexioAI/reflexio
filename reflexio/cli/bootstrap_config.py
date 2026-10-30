@@ -13,7 +13,13 @@ from typing import Any
 
 import typer
 
-from reflexio.config_env import resolve_data_db_url, resolve_postgres_pool_defaults
+from reflexio.config_env import (
+    POSTGRES_POOL_ENV_FIELDS,
+    PostgresPoolDefaults,
+    reject_postgres_pool_conflicts,
+    resolve_data_db_url,
+    resolve_postgres_pool_defaults,
+)
 from reflexio.config_migration import StoredConfigurationError
 
 from .paths import reflexio_home
@@ -139,9 +145,11 @@ def save_storage_to_config(
 ) -> None:
     """Update storage_config in the local config file.
 
-    Edits only ``storage_config`` under its file publication lock. Selecting
-    SQLite again preserves the existing database path. Unrelated raw fields,
-    including unknown extension fields, are preserved.
+    The caller owns stopping incompatible writers first. Select and prepare
+    only ``storage_config`` under its file publication lock. Old explicit native
+    selections retain their historical environment policy once; current files
+    own their canonical budgets. Selecting SQLite again preserves its database
+    path. Unrelated raw fields, including extension fields, are preserved.
 
     Args:
         storage_type: Backend name ("sqlite", "supabase", "postgres").
@@ -160,10 +168,11 @@ def save_storage_to_config(
     )
 
     org_id = org_id or default_org_id()
-    storage_obj = LocalFileConfigStorage(org_id, base_dir=base_dir)
-    storage_obj.load_config()  # Initialize only an absent file; never replace it.
-
     replacement = None
+    legacy_pool_fields: dict[str, Any] = {}
+    legacy_environment = {
+        name: os.environ.get(name, "") for name in POSTGRES_POOL_ENV_FIELDS
+    }
     match storage_type:
         case "sqlite":
             replacement = StorageConfigSQLite()
@@ -186,8 +195,11 @@ def save_storage_to_config(
                     "REFLEXIO_POSTGRES_READ_DB_URL", ""
                 ).strip()
                 or None,
-                **asdict(resolve_postgres_pool_defaults(os.environ)),
             }
+            # Validate the selected old source before creating/preparing a file.
+            legacy_pool_fields = asdict(
+                resolve_postgres_pool_defaults(legacy_environment)
+            )
             if db_url:
                 replacement = StorageConfigPostgres(**postgres_kwargs)
             else:
@@ -201,16 +213,55 @@ def save_storage_to_config(
     if replacement is None:
         return
 
-    from reflexio.config_file import LocalConfigFile
+    from reflexio.config_file import NATIVE_POOL_AUTHORITY_VERSION, LocalConfigFile
 
-    def update_storage(document: dict[str, Any]) -> None:
+    storage_obj = LocalFileConfigStorage(org_id, base_dir=base_dir)
+
+    def update_storage(document: dict[str, Any], generation: int) -> None:
         existing = validate_stored_config(document).storage_config
         if storage_type == "sqlite" and isinstance(existing, StorageConfigSQLite):
             # A backend selection does not request a different SQLite database.
             return
-        document["storage_config"] = replacement.model_dump(mode="json")
+        selected = replacement
+        if isinstance(selected, StorageConfigPostgres):
+            fields = selected.model_dump(mode="json")
+            if generation < NATIVE_POOL_AUTHORITY_VERSION:
+                # An old explicit native backend selection reconstructed these
+                # budgets from its selected environment, even from SQLite.
+                fields.update(legacy_pool_fields)
+            else:
+                if isinstance(existing, StorageConfigPostgres):
+                    fields.update(
+                        existing.model_dump(
+                            mode="json", include=set(POSTGRES_POOL_ENV_FIELDS.values())
+                        )
+                    )
+                current = StorageConfigPostgres.model_validate(fields)
+                reject_postgres_pool_conflicts(
+                    legacy_environment,
+                    PostgresPoolDefaults(
+                        pool_size=current.pool_size,
+                        pool_acquire_timeout=current.pool_acquire_timeout,
+                        read_pool_size=current.read_pool_size,
+                        read_pool_acquire_timeout=current.read_pool_acquire_timeout,
+                    ),
+                )
+                if any(value.strip() for value in legacy_environment.values()):
+                    logger.warning(
+                        "Obsolete native pool assignments no longer select capacity; "
+                        "remove them after verifying canonical storage_config."
+                    )
+            selected = StorageConfigPostgres.model_validate(fields)
+        document["storage_config"] = selected.model_dump(mode="json")
 
-    LocalConfigFile(storage_obj.config_file).edit_document(update_storage)
+    initial = (
+        storage_obj.get_default_config().model_dump(mode="json")
+        if not Path(storage_obj.config_file).exists()
+        else None
+    )
+    LocalConfigFile(storage_obj.config_file).prepare(
+        edit=update_storage, initial_document=initial
+    )
 
 
 def resolve_storage(cli_flag: str | None) -> str:
