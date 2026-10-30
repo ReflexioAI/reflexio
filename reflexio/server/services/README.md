@@ -51,6 +51,7 @@ strings before deleting old import paths in the same PR.
 | `durable_learning/` | `admission.py` commits incoming streams; `scheduler.py` / `worker.py` run bounded user turns; `window_executor.py` / `window_codec.py` compute frozen windows; `profile_package_executor.py` explicitly qualifies source-package profile publication without changing worker selection; `user_lease.py` shares ownership with manual/resumed generation; `waiting.py` bounds HTTP waits; `local.py` recovers standalone-library work. |
 | `extraction/` | Shared async extraction runtime: `resumable_agent.py`, `resume_scheduler.py`, `resume_worker.py`, `pending_tool_call_dispatch.py` (`ask_human`), `prior_answer_search.py`, `agent_run_records.py`, and `outcome.py`. Long-horizon / tool-mediated extraction continues outside the request path. See [README](extraction/README.md). |
 | `input_compression.py`, `input_compression_llm.py` | Shared source-backed compression with extraction/session policies, exact original excerpts, bounded hierarchical selection, provider-free admission planning and guarded provider dispatch. Callable qualification adapters; importing them does not switch worker protocols. |
+| `playbook/components/context_compression.py`, `extraction/reconciliation_journal.py` | Consolidator integration: authorized excerpt rendering, complete consumer request sizing, and immutable selections with atomic attribution to existing durable request reservations. Uses the shared compressor; owns no executor or publication path. |
 
 ### Evaluation, Search & Integrations
 
@@ -154,3 +155,16 @@ wait between them. `CompressionPlan.check_requests(checker)` is the low-level
 seam for these fresh initial messages; a checker cannot change saved geometry.
 These library interfaces do not admit new durable work or enable compression in
 production workers.
+
+The consolidator caller uses these interfaces through
+`playbook/components/context_compression.py`. It keeps small fitting input
+presentations unchanged and checks every actual consumer request, including
+tool replies and revisions. Oversized evidence is selected under the same
+24-request owner as drafting and auditing, reserving at least two downstream
+calls. Existing durable windows store the plan witness and node receipts in
+`reconciliation_context`; parent attempt reservation and consolidation attribution
+commit atomically. Cached selections are revalidated against the original
+authorized sources on resume. Legacy admitted conversations keep their original
+protocol. This code path needs separate evidence-preservation and total-duration
+qualification before promotion; the shared library's qualification alone does
+not qualify the consolidator.

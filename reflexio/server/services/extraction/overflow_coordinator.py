@@ -173,6 +173,9 @@ class OverflowCoordinator:
         self._active_attempt: ContextVar[str | None] = ContextVar(
             "reflexio_overflow_active_attempt", default=None
         )
+        self._reconciliation_operation: ContextVar[tuple[str, int] | None] = ContextVar(
+            "reflexio_reconciliation_operation", default=None
+        )
         self._attempt_stage: ContextVar[tuple[str, int, list[str]] | None] = ContextVar(
             "reflexio_overflow_attempt_stage", default=None
         )
@@ -463,6 +466,61 @@ class OverflowCoordinator:
     def save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         self._advance(checkpoint=copy.deepcopy(checkpoint))
 
+    def begin_reconciliation(self, key: str, limit: int) -> None:
+        """Bind a new source-preparation operation without resetting old work."""
+        from reflexio.server.services.extraction.reconciliation_journal import KEY
+
+        with self._lock:
+            checkpoint = self.checkpoint
+            current = checkpoint.get(KEY)
+            if current is not None:
+                if current["operation_key"] != key or current["limit"] != limit:
+                    raise InputBudgetConfigurationError(
+                        "Reconciliation source contract changed"
+                    )
+                return
+            if (
+                self._manifest["version"] != 1
+                or checkpoint.get("audited_consolidation_budget")
+                or checkpoint.get("audited_conversation")
+            ):
+                raise InputBudgetConfigurationError(
+                    "Admitted reconciliation protocol cannot change"
+                )
+            checkpoint[KEY] = {
+                "version": 1,
+                "operation_key": key,
+                "limit": limit,
+                "plan": None,
+                "attempt_ids": [],
+                "nodes": {},
+            }
+            checkpoint["audited_consolidation_budget"] = {"key": key, "calls": 0}
+            self.save_checkpoint(checkpoint)
+
+    @contextmanager
+    def reconciliation_request(self, key: str, limit: int) -> Iterator[None]:
+        """Attribute this dispatch to the same atomic parent reservation."""
+        token = self._reconciliation_operation.set((key, limit))
+        try:
+            yield
+        finally:
+            self._reconciliation_operation.reset(token)
+
+    def save_reconciliation_selection(self, key: str, receipt: dict[str, Any]) -> None:
+        """Persist host-normalized selections, never fabricated model output."""
+        from reflexio.server.services.extraction.reconciliation_journal import KEY
+
+        with self._lock:
+            checkpoint = self.checkpoint
+            nodes = checkpoint[KEY]["nodes"]
+            if key in nodes and nodes[key] != receipt:
+                raise OverflowCheckpointConflictError(
+                    "Reconciliation selection is immutable"
+                )
+            nodes[key] = copy.deepcopy(receipt)
+            self.save_checkpoint(checkpoint)
+
     def step_key(self, stage: str, inputs: Any) -> str:
         """Bind reuse to source, presentation, prompt/config and protected context."""
         encoded = json.dumps(
@@ -723,6 +781,30 @@ class OverflowCoordinator:
             )
         try:
             with self._lock:
+                operation = self._reconciliation_operation.get()
+                if operation is not None:
+                    from reflexio.server.services.extraction.reconciliation_journal import (
+                        KEY,
+                    )
+
+                    checkpoint = self.checkpoint
+                    context = checkpoint.get(KEY)
+                    if (
+                        context is None
+                        or (context["operation_key"], context["limit"]) != operation
+                    ):
+                        raise InputBudgetConfigurationError(
+                            "Reconciliation reservation changed"
+                        )
+                    if len(context["attempt_ids"]) >= operation[1]:
+                        raise OverflowAttemptBudgetExceededError(
+                            "Reconciliation physical-request allowance exhausted"
+                        )
+                    context["attempt_ids"].append(attempt_id)
+                    checkpoint["audited_consolidation_budget"]["calls"] = len(
+                        context["attempt_ids"]
+                    )
+                    reservation["checkpoint"] = checkpoint
                 binding = self._profile_request.get()
                 if self._manifest["version"] == 2 and binding is not None:
                     checkpoint = self.checkpoint

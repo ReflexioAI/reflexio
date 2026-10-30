@@ -35,6 +35,7 @@ information, and resumes outside the request path.
 | `protected_record.py` | Accumulates source-verified quotations for cross-chunk context; capacity failure never silently removes an earlier correction. |
 | `protected_pass.py` | Builds that context with checkpointed source-validated model passes; keeps scoped approvals and reported versus observed outcomes distinct. Bounded repair feedback identifies invalid quotation entries without disclosing source text; inner-JSON escaping and exact spelling remain source invariants. |
 | `overflow_coordinator.py` | Owns scoped provider admission, monotonic durable attempt reservations, immutable step receipts and historical observed usage. Never publishes child learnings. |
+| `reconciliation_journal.py` | Validates the consolidator's immutable compression selections and their attribution to the same atomic parent attempt reservation. Legacy journals remain valid; no separate request allowance or storage owner is introduced. |
 | `overflow_presentation.py` | Supplies prepared history only to extraction prompts, retaining original models and global source labels. |
 | `overflow_pipeline.py` | Stages all original chunks, reconciles candidates, verifies coverage and reuses source-bound saved output. |
 | `overflow_answers.py` | Pins complete human answers, resumes saved children under the window lease, and validates answer/dependency witnesses before writes. |

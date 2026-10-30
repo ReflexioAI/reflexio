@@ -257,6 +257,16 @@ def validate_extraction_overflow_manifest(manifest: Any) -> dict[str, Any]:
         provenance = attempt["model_provenance"]
         if provenance is not None and not _valid_overflow_provenance(provenance):
             raise OverflowCheckpointConflictError("Invalid extraction model provenance")
+    from reflexio.server.services.extraction.reconciliation_journal import (
+        validate_context,
+    )
+
+    try:
+        validate_context(manifest)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise OverflowCheckpointConflictError(
+            "Invalid reconciliation source journal"
+        ) from exc
     if manifest["version"] == 2:
         from reflexio.server.services.extraction.overflow_protocol import (
             validate_package_manifest,
@@ -2084,6 +2094,16 @@ class ExtractionStreamStore:
                 validate_extraction_overflow_manifest(
                     {**manifest, "checkpoint": checkpoint}
                 )
+                from reflexio.server.services.extraction.reconciliation_journal import (
+                    validate_advance,
+                )
+
+                try:
+                    validate_advance(manifest["checkpoint"], checkpoint)
+                except (ValueError, KeyError, TypeError) as exc:
+                    raise OverflowCheckpointConflictError(
+                        "Reconciliation source journal is immutable"
+                    ) from exc
                 previous_steps = manifest.get("checkpoint", {}).get(
                     "completed_steps", {}
                 )

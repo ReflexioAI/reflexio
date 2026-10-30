@@ -24,7 +24,11 @@ from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.extraction.agent_run_records import (
     source_interaction_digest,
 )
-from reflexio.server.services.extraction.input_preparation import SourceSpan
+from reflexio.server.services.extraction.input_preparation import (
+    PreparedChunk,
+    PreparedExtractionInput,
+    SourceSpan,
+)
 from reflexio.server.services.extraction.overflow_coordinator import (
     OverflowCoordinator,
     OverflowSuspendedError,
@@ -587,21 +591,24 @@ def test_existing_only_remove_reaches_audited_engine(consolidator, storage):
 
 
 def test_overflow_uses_verified_quotations_not_full_large_interaction(
-    consolidator, storage
+    consolidator, durable_pipeline, monkeypatch
 ):
+    storage, window, lease = _overflow_coordinator(durable_pipeline)
+    consolidator.request_context.storage = storage
     quote = "Check authorization before submitting."
     large = "noise " * 20000 + quote + " trailing noise" * 10000
     storage.add_request(
         Request(
             request_id="evidence",
-            user_id="owner",
+            user_id=window.user_id,
             session_id="session",
             agent_version="v1",
             source="agent",
         )
     )
     storage.add_user_interaction(
-        "owner", Interaction(user_id="owner", request_id="evidence", content=large)
+        window.user_id,
+        Interaction(user_id=window.user_id, request_id="evidence", content=large),
     )
     interaction_id = storage.get_interactions_by_request_ids(["evidence"])[
         0
@@ -617,13 +624,30 @@ def test_overflow_uses_verified_quotations_not_full_large_interaction(
         text=quote,
         source_order=1,
     )
-    coordinator = MagicMock()
-    coordinator.require_prepared.return_value = SimpleNamespace(
-        chunks=[SimpleNamespace(spans=[span], neighbors=[])]
+    parent = storage.get_agent_run(f"window:{window.window_id}")
+    coordinator = OverflowCoordinator(
+        storage,
+        window,
+        lease,
+        parent.generation_request_snapshot["overflow"],
+        source_digest="captured-source",
+        context_limits={},
     )
-    coordinator.playbook_key.return_value = "new"
-    coordinator.candidate_records = {
-        "new": ProtectedRecord.model_validate(
+    coordinator.prepared = PreparedExtractionInput(
+        source_digest="captured-source", chunks=(PreparedChunk(index=0, spans=(span,)),)
+    )
+    checkpoint = coordinator.checkpoint
+    checkpoint.update(
+        stage="extracted",
+        source_coverage=[
+            coordinator.candidate_key(coordinator.prepared.chunks[0].text)
+        ],
+    )
+    coordinator.save_checkpoint(checkpoint)
+    candidate = row(ids=[interaction_id])
+    candidate.user_id = window.user_id
+    coordinator.candidate_records[coordinator.playbook_key(candidate)] = (
+        ProtectedRecord.model_validate(
             {
                 "evidence": [
                     {
@@ -634,12 +658,9 @@ def test_overflow_uses_verified_quotations_not_full_large_interaction(
                 ]
             }
         )
-    }
-    coordinator.checkpoint = {"completed_steps": {}}
-    coordinator.step_key.side_effect = lambda stage, data: hashlib.sha256(
-        json.dumps([stage, data], sort_keys=True).encode()
-    ).hexdigest()
-    coordinator.completed_step.return_value = None
+    )
+    coverage = MagicMock(wraps=coordinator.require_full_source_coverage)
+    monkeypatch.setattr(coordinator, "require_full_source_coverage", coverage)
     ref = {"session_id": "evidence", "turn": interaction_id}
     answers = iter(
         [
@@ -671,13 +692,18 @@ def test_overflow_uses_verified_quotations_not_full_large_interaction(
 
     token = current_overflow_coordinator.set(coordinator)
     try:
-        with patch.object(
-            consolidator.client, "_completion_with_hard_timeout", side_effect=complete
+        with (
+            coordinator.provider_scope(),
+            patch.object(
+                consolidator.client,
+                "_completion_with_hard_timeout",
+                side_effect=complete,
+            ),
         ):
             rows, _archives, _merges = consolidator.deduplicate(
-                [[row(ids=[interaction_id])]],
+                [[candidate]],
                 generation_request_id="generation",
-                user_id="owner",
+                user_id=window.user_id,
                 agent_version="v1",
                 existing_playbooks=[],
             )
@@ -688,7 +714,7 @@ def test_overflow_uses_verified_quotations_not_full_large_interaction(
         shown = json.loads(request["messages"][1]["content"])
         assert shown["sessions"][0]["messages"][0]["content"] == quote
         assert len(json.dumps(shown)) < 4000
-    coordinator.require_full_source_coverage.assert_called_once()
+    coverage.assert_called_once()
 
 
 @pytest.mark.parametrize("tool_and_repair", [False, True])
