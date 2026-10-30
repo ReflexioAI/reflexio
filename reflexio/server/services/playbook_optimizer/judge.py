@@ -432,6 +432,9 @@ def _implementation_helper_identities() -> dict[str, dict[str, str]]:
         "text_generation._litellm_completion_worker": (
             text_generation_module._litellm_completion_worker
         ),
+        "text_generation._raise_completion_error": text_generation_module._raise_completion_error,
+        "worker._snapshot_completion_error": worker_module._snapshot_completion_error,
+        "worker._CompletionErrorSnapshot": worker_module._CompletionErrorSnapshot,
         "text_generation.retire_completion_worker": text_generation_module.retire_completion_worker,
         "native_cli.run_native_cli": native_cli_module.run_native_cli,
         "native_cli.native_cli_worker": native_cli_module.native_cli_worker,

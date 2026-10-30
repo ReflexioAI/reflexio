@@ -49,6 +49,7 @@ from reflexio.server import search_runtime
 from reflexio.server.error_reporting import set_error_tags
 from reflexio.server.llm._litellm_subprocess import (
     _litellm_completion_worker,
+    _raise_completion_error,
     retire_completion_worker,
 )
 from reflexio.server.llm._litellm_types import (
@@ -1316,29 +1317,7 @@ class TextGenerationMixin:
                 return payload
             if status != "error":
                 raise LiteLLMClientError("Unknown isolated completion result kind")
-            if (
-                payload.input_capacity_exceeded
-                and extraction_provider_guard.get() is not None
-            ):
-                from reflexio.server.llm.input_budget import (
-                    ProviderInputOverflowError,
-                    extraction_request_identity,
-                )
-
-                # Only a typed upstream capacity error qualifies. Generic400,
-                # provider codes/messages, timeouts and schema failures do not.
-                raise ProviderInputOverflowError(extraction_request_identity.get())
-            # The worker always reports errors as a picklable snapshot.
-            context_parts = [f"model={payload.model}"]
-            if payload.llm_provider:
-                context_parts.append(f"provider={payload.llm_provider}")
-            raise LiteLLMClientError(
-                "litellm.completion failed in isolated worker: "
-                f"{payload.type_name}: {payload.message} "
-                f"({', '.join(context_parts)})",
-                upstream_error_type=payload.type_name,
-                upstream_status_code=payload.status_code,
-            )
+            _raise_completion_error(payload)
         finally:
             native_owner.close()
             retire_completion_worker(process, result_queue, native_owner)

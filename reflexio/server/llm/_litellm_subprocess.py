@@ -24,12 +24,16 @@ import threading
 import time
 from dataclasses import dataclass, field
 from multiprocessing.process import BaseProcess
-from typing import Any
+from typing import Any, NoReturn
 
 import litellm
 from litellm.exceptions import ContextWindowExceededError
 
-from reflexio.server.llm._litellm_types import LLMHardTimeoutError, completion_metadata
+from reflexio.server.llm._litellm_types import (
+    LiteLLMClientError,
+    LLMHardTimeoutError,
+    completion_metadata,
+)
 from reflexio.server.llm._model_compat import model_completion
 from reflexio.server.llm._native_cli import (
     NativeCLIContext,
@@ -186,6 +190,7 @@ class _CompletionErrorSnapshot:
     llm_provider: str | None = None
     input_capacity_exceeded: bool = False
     status_code: int | None = None
+    hard_timeout: bool = False
 
 
 def _snapshot_completion_error(
@@ -196,11 +201,40 @@ def _snapshot_completion_error(
     status_code = getattr(exc, "status_code", None)
     return _CompletionErrorSnapshot(
         type_name=type(exc).__name__,
+        hard_timeout=isinstance(exc, LLMHardTimeoutError),
         message=str(exc),
         model=str(model) if model else None,
         llm_provider=str(llm_provider) if llm_provider else None,
         input_capacity_exceeded=isinstance(exc, ContextWindowExceededError),
         status_code=status_code if isinstance(status_code, int) else None,
+    )
+
+
+def _raise_completion_error(payload: _CompletionErrorSnapshot) -> NoReturn:
+    """Restore typed local expiry before treating provider failures generically."""
+    from reflexio.server.llm.input_budget import extraction_provider_guard
+
+    if payload.hard_timeout:
+        raise LLMHardTimeoutError(payload.message)
+    if payload.input_capacity_exceeded and extraction_provider_guard.get() is not None:
+        from reflexio.server.llm.input_budget import (
+            ProviderInputOverflowError,
+            extraction_request_identity,
+        )
+
+        # Only a typed upstream capacity error qualifies. Generic400,
+        # provider codes/messages, timeouts and schema failures do not.
+        raise ProviderInputOverflowError(extraction_request_identity.get())
+    # The worker always reports errors as a picklable snapshot.
+    context_parts = [f"model={payload.model}"]
+    if payload.llm_provider:
+        context_parts.append(f"provider={payload.llm_provider}")
+    raise LiteLLMClientError(
+        "litellm.completion failed in isolated worker: "
+        f"{payload.type_name}: {payload.message} "
+        f"({', '.join(context_parts)})",
+        upstream_error_type=payload.type_name,
+        upstream_status_code=payload.status_code,
     )
 
 

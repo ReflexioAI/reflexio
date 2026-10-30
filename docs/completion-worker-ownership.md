@@ -63,7 +63,9 @@ isolated worker instead of reading the server terminal.
 Requests/replies use atomically published private files and exact request IDs.
 Only small request notifications use the existing completion queue; socketpair
 notifications wake reply readers without shared multiprocessing locks or a
-second large payload pipe. A notification never substitutes for response identity.
+second large payload pipe. A notification never substitutes for response identity. Socket response expiry
+remains a typed hard timeout across the worker boundary, including when the
+worker reports expiry before the parent observes its own deadline.
 
 This owns the **immediate CLI**, not arbitrary grandchildren, detached hooks or
 remote provider work. A descendant retaining a pipe can prevent stream cleanup;

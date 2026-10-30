@@ -137,6 +137,11 @@ def _broker_worker(params, result_queue, deadline, native_context=None):
     )
 
 
+def _early_deadline_worker(params, result_queue, deadline, native_context=None):
+    # Make the worker's real socket expiry win the parent queue-read race.
+    _broker_worker(params, result_queue, deadline - 0.5, native_context)
+
+
 def _broker_client(monkeypatch, method):
     context = multiprocessing.get_context(method)
     monkeypatch.setattr(generation.multiprocessing, "get_context", lambda: context)
@@ -341,9 +346,14 @@ def test_worker_environment_and_cwd_are_preserved(monkeypatch, tmp_path):
 def test_codex_scratch_and_permit_survive_until_native_reaping(monkeypatch, tmp_path):
     import subprocess
 
+    from reflexio.server.llm._litellm_types import LLMHardTimeoutError
+
     method = "fork" if "fork" in multiprocessing.get_all_start_methods() else "spawn"
     client = _broker_client(monkeypatch, method)
     _, released = _permit(monkeypatch)
+    monkeypatch.setattr(
+        generation, "_litellm_completion_worker", _early_deadline_worker
+    )
     reaping, allow_reap = threading.Event(), threading.Event()
     wait = subprocess.Popen.wait
 
@@ -363,7 +373,7 @@ def test_codex_scratch_and_permit_survive_until_native_reaping(monkeypatch, tmp_
     try:
         with (
             admission.provider_slot("openai/gpt-4o"),
-            pytest.raises(Exception, match="hard timeout"),
+            pytest.raises(LLMHardTimeoutError, match="hard timeout"),
         ):
             client._completion_with_hard_timeout(
                 {
@@ -480,3 +490,31 @@ def test_delegated_no_input_uses_null_stdin(monkeypatch):
     )
     assert response == "''\n"
     assert observed == [subprocess.DEVNULL]
+
+
+def test_real_response_socket_expiry_is_a_typed_hard_timeout(monkeypatch, tmp_path):
+    import queue
+    import socket
+
+    from reflexio.server.llm import _native_cli
+    from reflexio.server.llm._litellm_types import LLMHardTimeoutError
+
+    monkeypatch.setattr(_native_cli, "_worker_context", None)
+    sender, receiver = socket.socketpair()
+    try:
+        _native_cli.native_cli_worker(
+            _native_cli.NativeCLIContext(str(tmp_path), receiver),
+            queue.SimpleQueue(),
+            time.monotonic() + 0.5,
+        )
+        with pytest.raises(LLMHardTimeoutError, match="hard timeout"):
+            _native_cli.run_native_cli(
+                [vars(sys)["_base_executable"], "-c", "print('never launched')"],
+                timeout=10,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+    finally:
+        sender.close()
+        receiver.close()

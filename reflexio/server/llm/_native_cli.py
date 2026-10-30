@@ -115,7 +115,12 @@ def run_native_cli(argv: list[str], **kwargs: Any) -> subprocess.CompletedProces
         notification = bytearray()
         while len(notification) < 8:
             worker.context.response_socket.settimeout(_remaining(worker.deadline))
-            part = worker.context.response_socket.recv(8 - len(notification))
+            try:
+                part = worker.context.response_socket.recv(8 - len(notification))
+            except TimeoutError as exc:
+                raise LLMHardTimeoutError(
+                    "Native CLI response exceeded hard timeout"
+                ) from exc
             if not part:
                 raise LLMHardTimeoutError(
                     "Native CLI owner closed before returning a result"

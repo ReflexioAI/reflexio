@@ -82,6 +82,7 @@ def _freeze(
         "native_retirement",
         "native_worker_alias",
         "native_directory_alias",
+        "native_error_transport",
     ],
 )
 def test_pairwise_judge_rejects_frozen_plan_drift_before_provider_execution(
@@ -117,6 +118,8 @@ def test_pairwise_judge_rejects_frozen_plan_drift_before_provider_execution(
         monkeypatch.setattr(
             judge_module.claude_code_provider, "native_cli_directory", Mock()
         )
+    elif drift == "native_error_transport":
+        monkeypatch.setattr(generation, "_raise_completion_error", Mock())
     elif drift == "native_retirement":
         monkeypatch.setattr(generation.NativeCLIOwner, "_run", Mock())
     elif drift == "config":
