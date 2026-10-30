@@ -290,6 +290,17 @@ incumbent matches. Exhaustion or failed audits preserve committed memory; drafts
 are never saved as a fallback. Candidate search threshold and top-k remain
 independent controls.
 
+Fresh consolidations prepare oversized evidence with the shared hierarchical
+compressor (`input_compression.py` through `input_compression_llm.py`). Small
+fitting inputs pass through unchanged. Compression selects original quotations;
+it does not rewrite the advice or replace the independent audit. Its selections,
+merges and repairs use the same 24-request allowance as the consumer. Durable
+windows save selections and request reservations through the existing parent
+checkpoint so a restart reuses committed work without refunding unknown calls.
+Already-admitted legacy conversations keep their original protocol. Opaque CLI providers retain their existing audited adapter without native capacity claims. Total
+compression-plus-consolidation latency and evidence preservation require separate
+real-model qualification; deterministic tests do not establish that benefit.
+
 New candidates require persisted, owner-scoped source evidence. Expert examples
 with persisted source observations are supported. Missing new evidence causes
 consolidation to abstain. Missing historical evidence alone does not invalidate
