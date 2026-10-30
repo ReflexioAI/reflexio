@@ -630,6 +630,45 @@ def _delivering_storage(user_id: str) -> MagicMock:
     return storage
 
 
+def test_readiness_and_escaping_failure_share_the_claimed_users_streak(
+    transient_failure_classifier: type[Exception],
+) -> None:
+    from reflexio.server import background_work
+    from reflexio.server.services.storage.error import ReadinessUnavailableError
+
+    background_work.configure_transient_failure_classifier(
+        lambda error: isinstance(
+            error, (ReadinessUnavailableError, transient_failure_classifier)
+        )
+    )
+    storage = _Storage()
+    DurableLearningWorker._handle_window_failure(
+        cast(Any, storage), _window(), "tok", ReadinessUnavailableError(SENTINEL)
+    )
+    scope = f"durable-learning-turn:org1:{worker_module._user_ref('u1')}"
+    assert background_work._streaks[scope][0] == 1
+    assert storage.deferred == 1
+    assert not storage.retried
+
+    failed = _claimed_storage(
+        "u1", release_fails=transient_failure_classifier("SSL EOF")
+    )
+    worker = DurableLearningWorker(
+        lambda _org: cast(RequestContext, SimpleNamespace(storage=failed))
+    )
+    assert worker.drain_org("org1", batch_size=1, lease_seconds=30) == 0
+    assert background_work._streaks[scope][0] == 2
+
+    with _executor_stubbed():
+        for user_id in ("other-user", "u1"):
+            worker._factory = lambda _org, user_id=user_id: cast(
+                RequestContext,
+                SimpleNamespace(storage=_delivering_storage(user_id)),
+            )
+            assert worker.drain_org("org1", batch_size=1, lease_seconds=30) == 1
+            assert (scope in background_work._streaks) == (user_id != "u1")
+
+
 def _executor_stubbed():
     from contextlib import ExitStack
     from unittest.mock import patch

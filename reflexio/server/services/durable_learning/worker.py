@@ -172,6 +172,31 @@ def _user_ref(user_id: str) -> str:
     return hashlib.sha256(user_id.encode()).hexdigest()[:12]
 
 
+def _report_turn_failure(
+    org_id: str,
+    user_id: str,
+    exc: Exception,
+    *,
+    readiness_deferred: bool = False,
+) -> None:
+    """One reporting owner for the claimed user's completion-bound streak."""
+    report_background_failure(
+        logger,
+        "extraction_readiness_deferred"
+        if readiness_deferred
+        else "extraction_turn_failed",
+        exc,
+        scope=f"durable-learning-turn:{org_id}:{_user_ref(user_id)}",
+        detail=(
+            (lambda error: f"{type(error).__name__}@{exception_locator(error)}")
+            if readiness_deferred
+            else None
+        ),
+        org_id=org_id,
+        stage="readiness" if readiness_deferred else "claimed",
+    )
+
+
 @dataclass
 class _TurnRecord:
     """What one turn did, for the caller that reports its outcome.
@@ -315,15 +340,7 @@ class DurableLearningWorker:
             completed = self._turn(org_id, lease_seconds, record)
         except Exception as exc:
             if record.user_id is not None:
-                user_ref = _user_ref(record.user_id)
-                report_background_failure(
-                    logger,
-                    "extraction_turn_failed",
-                    exc,
-                    scope=f"durable-learning-turn:{org_id}:{user_ref}",
-                    org_id=org_id,
-                    stage="claimed",
-                )
+                _report_turn_failure(org_id, record.user_id, exc)
             else:
                 report_background_failure(
                     logger,
@@ -354,14 +371,8 @@ class DurableLearningWorker:
             # existing token-CAS cannot change a replacement owner's schedule;
             # _turn's finally still releases only this token.
             storage.defer_extraction_setup(window.user_id, token)
-            report_background_failure(
-                logger,
-                "extraction_readiness_deferred",
-                exc,
-                scope=f"durable-learning-turn:{storage.org_id}:{_user_ref(window.user_id)}",
-                detail=lambda error: (
-                    f"{type(error).__name__}@{exception_locator(error)}"
-                ),
+            _report_turn_failure(
+                storage.org_id, window.user_id, exc, readiness_deferred=True
             )
             record_health("worker.retries", phase="readiness")
             return "readiness_deferred"
