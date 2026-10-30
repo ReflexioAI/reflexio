@@ -16,6 +16,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from functools import partial
 from unittest.mock import patch
 
 import pytest
@@ -369,6 +370,7 @@ def test_rerank_outage_surfaces_as_http_503(live):
         pytest.raises(HTTPError) as error,
     ):
         live.client.rerank_user_profiles(user_id="cy", query="vim", profile_ids=ids)
+    assert error.value.response is not None
     assert error.value.response.status_code == 503
 
 
@@ -453,7 +455,13 @@ def _progress(live: LiveServer, service_name: str) -> dict | None:
     return OperationStateManager(live.storage, live.org_id, service_name).get_progress()
 
 
-def test_rerun_generation_waits_for_the_admitted_attempt(live):
+def test_rerun_generation_waits_for_the_admitted_attempt(live, monkeypatch):
+    # Poll real server state frequently in this transport/attempt-identity check.
+    monkeypatch.setattr(
+        live.client,
+        "_poll_operation_status",
+        partial(live.client._poll_operation_status, poll_interval=0.05),
+    )
     _publish(live, "gina", "s-1", "I always deploy on Mondays.")
 
     profile_run = live.client.rerun_profile_generation(
