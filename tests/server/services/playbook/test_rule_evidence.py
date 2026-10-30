@@ -24,6 +24,7 @@ from reflexio.server.services.playbook.rule_evidence.wire import (
 )
 
 
+@pytest.mark.unit
 def test_provider_parser_accepts_original_integer_turn_ids(data, diagnostic):
     from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 
@@ -40,6 +41,7 @@ def test_provider_parser_accepts_original_integer_turn_ids(data, diagnostic):
     }
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("bad", [True, False, 1.0, "1", 2, "TURN_1"])
 @pytest.mark.parametrize("mode", ["python", "json"])
 @pytest.mark.parametrize("counterevidence", [False, True])
@@ -67,6 +69,7 @@ def test_provider_turn_slots_reject_coercion_and_unknown_ids(
             schema.model_validate(body)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("repair_first_response", [False, True])
 def test_provider_boundary_runs_judge_and_tuner(
     data, diagnostic, monkeypatch, repair_first_response
