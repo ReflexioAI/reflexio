@@ -2120,25 +2120,26 @@ class TextGenerationMixin:
                         )
                     )
                 schema_name = getattr(rf, "__name__", "structured output")
-                # The COUNT, not the errors. An ``extra_forbidden`` entry puts a
-                # MODEL-CHOSEN key in the pydantic ``loc``, and this line reaches
-                # external telemetry via the logging bridge. The errors
-                # themselves go into the retry prompt verbatim, back to the
-                # provider that produced them. Where a log line does need them
-                # (``_run_rung_validated``), they go through
-                # ``_log_safe_validation_errors`` first -- ``loc`` is built from
-                # ``str(part)`` with no charset, length or count clamp of its
-                # own, so nothing else bounds what reaches the sink.
+                # The errors go into the retry prompt verbatim, back to the
+                # provider that produced them. This LOG line reaches external
+                # telemetry via the logging bridge, and an ``extra_forbidden``
+                # entry puts a MODEL-CHOSEN key in the pydantic ``loc`` -- so
+                # here they pass through ``_log_safe_validation_errors``, which
+                # bounds count, length and charset (``loc`` is built from
+                # ``str(part)`` with no clamp of its own). The rendered field
+                # paths are what make a rejected reply diagnosable at all: the
+                # count alone says how many fields failed, never which.
                 self.logger.warning(
                     "event=llm_parse_retry_corrective model=%s schema=%s "
-                    "validation_error_count=%d failure_kind=%s %s — malformed "
-                    "structured output, retrying once on the same model with "
-                    "the validation errors fed back",
+                    "validation_error_count=%d failure_kind=%s %s errors=%s — "
+                    "malformed structured output, retrying once on the same "
+                    "model with the validation errors fed back",
                     params.get("model"),
                     schema_name,
                     len(exc.validation_errors),
                     exc.failure_kind,
                     exc.log_fields(),
+                    _log_safe_validation_errors(exc.validation_errors),
                 )
                 (
                     retry_params,
@@ -2383,12 +2384,15 @@ class TextGenerationMixin:
                         exc.first_parsed_provenance = ladder_first_parsed_provenance
                     raise
                 if isinstance(exc, StructuredOutputParseError):
+                    # ``errors=`` names the final attempt's failing field paths,
+                    # clamped exactly as on the corrective-retry line.
                     self.logger.error(
-                        "event=llm_request_end model=%s success=False error_type=%s failure_kind=%s %s error=%s",
+                        "event=llm_request_end model=%s success=False error_type=%s failure_kind=%s %s errors=%s error=%s",
                         rung,
                         type(exc).__name__,
                         exc.failure_kind,
                         exc.log_fields(),
+                        _log_safe_validation_errors(exc.validation_errors),
                         exc,
                     )
                 wrapped = LiteLLMClientError(

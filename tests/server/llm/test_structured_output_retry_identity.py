@@ -481,3 +481,78 @@ def test_the_validated_rung_does_not_log_a_model_chosen_key(
         "FABRICATED_BY_THE_MODEL" not in message for message in validation_records
     )
     assert all("<redacted>" in message for message in validation_records)
+
+
+def _plain_rung_failure_lines(client: LiteLLMClient, caplog: Any) -> list[str]:
+    """Run the plain (no-validator) rung to exhaustion; return its two log lines.
+
+    Those are the corrective-retry WARNING and the final ``llm_request_end``
+    ERROR -- the only lines a rejected reply leaves on this rung.
+    """
+    with (
+        caplog.at_level(logging.WARNING),
+        pytest.raises(Exception, match="ValidationError"),
+    ):
+        client.generate_chat_response(
+            [{"role": "user", "content": "hi"}], response_format=SampleResponse
+        )
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if "event=llm_parse_retry_corrective " in record.getMessage()
+        or (
+            "event=llm_request_end " in record.getMessage()
+            and "success=False" in record.getMessage()
+        )
+    ]
+
+
+def test_the_plain_rung_logs_which_fields_failed_validation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A rejected reply must be diagnosable from the log lines alone.
+
+    The plain rung logged only a COUNT on its corrective retry and nothing on
+    its final failure, so a complete reply that failed the schema twice said
+    how many fields were wrong but never which: the location had to be
+    reconstructed from the code. Both lines now carry the same bounded,
+    sanitized rendering the validated rung already uses.
+    """
+    client = LiteLLMClient(LiteLLMConfig(model=_MODEL))
+    with patch(
+        "litellm.completion", side_effect=lambda **_: _response(_SCHEMA_FAIL_BODY)
+    ):
+        lines = _plain_rung_failure_lines(client, caplog)
+
+    assert len(lines) == 2
+    for line in lines:
+        assert "errors=" in line
+        assert "answer: missing" in line
+        assert "score: missing" in line
+        # Schema paths only: the provider's body never reaches the line.
+        assert "wrong_field" not in line
+
+
+def test_the_plain_rung_does_not_log_a_model_chosen_key(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The new location lines pass through the same clamp as the validated rung."""
+    hostile = "evil\nWARNING event=FABRICATED_BY_THE_MODEL: extra_forbidden"
+    client = LiteLLMClient(LiteLLMConfig(model=_MODEL))
+
+    def failing_parse(content: Any, response_format: Any, parse: bool) -> BaseModel:
+        raise StructuredOutputParseError(
+            "Structured output parse failed: ValidationError",
+            raw_content="{}",
+            validation_errors=(hostile,),
+        )
+
+    with (
+        patch("litellm.completion", side_effect=lambda **_: _response(_VALID_BODY)),
+        patch.object(client, "_maybe_parse_structured_output", failing_parse),
+    ):
+        lines = _plain_rung_failure_lines(client, caplog)
+
+    assert len(lines) == 2
+    assert all("FABRICATED_BY_THE_MODEL" not in line for line in lines)
+    assert all("errors=<redacted>" in line for line in lines)
