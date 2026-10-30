@@ -137,6 +137,20 @@ def test_default_mode_uses_diff_against_merge_base(
     assert capsys.readouterr().out == "pkg/AGENTS.md\nAGENTS.md\n"
 
 
+def test_default_mode_keeps_non_ascii_paths_exact(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Git C-quotes non-ASCII paths in line output ("na\303\257ve/..."), which
+    # would point the walk at a directory that does not exist.
+    _git(repo, "checkout", "-q", "-b", "feature")
+    _write(repo / "naïve" / "AGENTS.md", "scoped rule\n")
+    _write(repo / "naïve" / "mod.py", "x = 1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "change")
+    assert ai.main(["--base", "main", "--paths-only"], cwd=repo) == 0
+    assert capsys.readouterr().out == "naïve/AGENTS.md\nAGENTS.md\n"
+
+
 def test_submodule_file_uses_submodule_then_superproject(
     tmp_path: Path, repo: Path
 ) -> None:

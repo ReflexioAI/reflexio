@@ -85,8 +85,9 @@ def changed_files(cwd: Path, base: str) -> list[Path]:
     """Return absolute paths changed versus the merge base of HEAD and base."""
     top = repo_toplevel(cwd)
     merge_base = _git(top, "merge-base", "HEAD", base).strip()
-    names = _git(top, "diff", "--name-only", merge_base).splitlines()
-    return [top / name for name in names if name.strip()]
+    # -z keeps paths exact; line output C-quotes non-ASCII, tabs and newlines.
+    names = _git(top, "diff", "--name-only", "-z", merge_base).split("\0")
+    return [top / name for name in names if name]
 
 
 def instruction_chain(changed: Path, root: Path) -> list[Path]:
