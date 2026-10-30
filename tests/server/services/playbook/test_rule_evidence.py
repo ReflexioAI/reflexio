@@ -410,6 +410,7 @@ def test_generation_uses_measured_compact_profile():
         assert generation_profile(stage, provider="openai") == {"max_tokens": 4096}
 
 
+@pytest.mark.unit
 def test_admission_builders_match_dispatched_consumer_envelopes(data, diagnostic):
     from reflexio.server.services.playbook.rule_evidence import (
         proposal_request,
