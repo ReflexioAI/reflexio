@@ -737,10 +737,18 @@ def test_cancellation_marker_failure_still_retires_live_sdk_worker(monkeypatch):
 
     context = multiprocessing.get_context("fork")
     processes = []
+    retired = []
     real_factory = context.Process
 
     def factory(*args, **kwargs):
         process = real_factory(*args, **kwargs)
+        original_close = process.close
+
+        def close():
+            retired.append((process.is_alive(), process.exitcode))
+            original_close()
+
+        process.close = close
         processes.append(process)
         return process
 
@@ -768,10 +776,15 @@ def test_cancellation_marker_failure_still_retires_live_sdk_worker(monkeypatch):
         deadline = time.monotonic() + 3
         while native._live_owners != owners and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert processes and all(not process.is_alive() for process in processes)
+        assert retired and all(
+            not alive and code is not None for alive, code in retired
+        )
         assert native._live_owners == owners
     finally:
         for process in processes:
-            if process.is_alive():
-                process.kill()
-                process.join()
+            try:
+                if process.is_alive():
+                    process.kill()
+                    process.join()
+            except ValueError:
+                pass  # Retirement already closed this owned handle.
