@@ -15,6 +15,7 @@ from typing import Any
 import litellm
 
 from reflexio.models.config_schema import APIKeyConfig
+from reflexio.removed_env import reject_removed_env
 from reflexio.server.llm._litellm_embedding import (
     _TRUNCATION_WARNED_MODELS as _TRUNCATION_WARNED_MODELS,
 )
@@ -171,6 +172,7 @@ class LiteLLMClient(TextGenerationMixin, EmbeddingMixin, StructuredOutputMixin):
         Raises:
             LiteLLMClientError: If initialization fails.
         """
+        reject_removed_env(os.environ, canonical="REFLEXIO_GENERATION_TIMEOUT_SECONDS")
         self.config = config
         self.logger = logging.getLogger(__name__)
         self.logger.info("LiteLLM client initialized with model: %s", config.model)

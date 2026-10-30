@@ -10,6 +10,7 @@ always ``LiteLLMClientError``.
 
 import logging
 import multiprocessing
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,6 +27,7 @@ from reflexio.server.llm.litellm_client import (
     LiteLLMConfig,
     _CompletionErrorSnapshot,
 )
+from reflexio.test_support.llm_mock import use_isolated_completion
 
 
 class _Answer(BaseModel):
@@ -112,9 +114,7 @@ def test_isolated_worker_error_carries_status_to_parent(monkeypatch) -> None:
     process_context.Queue.return_value = result_queue
     process_context.Process.return_value = process
     monkeypatch.setattr(multiprocessing, "get_context", lambda: process_context)
-    monkeypatch.setattr(
-        client, "_should_process_isolate_completion", lambda *_args: True
-    )
+    use_isolated_completion(client)
     params = {
         "model": "minimax/MiniMax-M3",
         "messages": [{"role": "user", "content": "hi"}],
@@ -122,7 +122,7 @@ def test_isolated_worker_error_carries_status_to_parent(monkeypatch) -> None:
     }
 
     with pytest.raises(LiteLLMClientError) as exc_info:
-        client._completion_with_hard_timeout(params, hard_timeout=5.0)
+        client._completion_with_deadline(params, deadline=time.monotonic() + (5.0))
 
     assert exc_info.value.upstream_status_code == 529
     assert _is_expected_transient_llm_error(exc_info.value)

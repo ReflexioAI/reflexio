@@ -34,6 +34,7 @@ from reflexio.test_support.llm_mock import (
     litellm_is_patched,
     patched_litellm,
     unpatched_litellm,
+    use_isolated_completion,
 )
 
 MODELS = sorted(OPENAI_MODELS | ANTHROPIC_MODELS) + ["claude-haiku-4-5-20251001"]
@@ -346,15 +347,17 @@ def transport(monkeypatch):
         return httpx.Response(status, json=payload, request=request)
 
     monkeypatch.setattr(httpx.Client, "send", send)
-    monkeypatch.setattr(
-        LiteLLMClient, "_should_process_isolate_completion", lambda *_a: False
-    )
     with unpatched_litellm(), monkeypatch.context() as completion_patch:
         # An enterprise + OSS selection can install nested session patchers.
         # Bind the exported real entry point explicitly so this test cannot
         # pass through a remaining session mock.
         from litellm.main import completion
 
+        from reflexio.test_support.llm_mock import _execute_mock_completion
+
+        completion_patch.setattr(
+            LiteLLMClient, "_execute_completion", _execute_mock_completion
+        )
         completion_patch.setattr(litellm, "completion", completion)
         yield requests, responses
     assert not responses, "The expected provider exchange did not complete"
@@ -371,6 +374,14 @@ def test_transport_teardown_preserves_the_session_mock():
         finally:
             fixture.close()
             patches.undo()
+        with unpatched_litellm():
+            from reflexio.test_support.llm_mock import (
+                assert_litellm_unpatched,
+                completion_is_isolated,
+            )
+
+            assert_litellm_unpatched()
+            assert completion_is_isolated(LiteLLMClient(LiteLLMConfig(model="offline")))
         assert litellm_is_patched(), (
             "Adapter teardown must not disable later unit mocks"
         )
@@ -611,7 +622,7 @@ def test_real_adapter_refusal_stops_without_retry(snapshot, transport, monkeypat
     responses.append(refusal)
     client = LiteLLMClient(LiteLLMConfig(model="claude-opus-5-5"))
     if snapshot:
-        completion = client._completion_with_hard_timeout
+        completion = client._completion_with_deadline
 
         def force_snapshot(params, timeout):
             raw = completion(params, timeout)
@@ -622,7 +633,7 @@ def test_real_adapter_refusal_stops_without_retry(snapshot, transport, monkeypat
             )
             return pickle.loads(pickle.dumps(_picklable_completion_result(raw)))  # noqa: S301 — trusted fixture
 
-        monkeypatch.setattr(client, "_completion_with_hard_timeout", force_snapshot)
+        monkeypatch.setattr(client, "_completion_with_deadline", force_snapshot)
     with pytest.raises(StructuredOutputRepairError) as caught:
         client.generate_chat_response(
             [{"role": "user", "content": "hello"}],
@@ -665,7 +676,7 @@ def test_interleaved_signed_thinking_keeps_exact_provider_block_order(
         lambda *_a, **_k: model,
     )
     if snapshot:
-        completion = client._completion_with_hard_timeout
+        completion = client._completion_with_deadline
 
         def force_snapshot(params, timeout):
             raw = completion(params, timeout)
@@ -676,7 +687,7 @@ def test_interleaved_signed_thinking_keeps_exact_provider_block_order(
             )
             return pickle.loads(pickle.dumps(_picklable_completion_result(raw)))  # noqa: S301 — trusted fixture
 
-        monkeypatch.setattr(client, "_completion_with_hard_timeout", force_snapshot)
+        monkeypatch.setattr(client, "_completion_with_deadline", force_snapshot)
     calls = []
 
     def lookup(args: BaseModel, _ctx):
@@ -842,9 +853,7 @@ def test_secondary_tool_loop_through_actual_subprocess(model, monkeypatch):
         "reflexio.server.llm._litellm_text_generation.resolve_model_name",
         lambda *_a, **_k: model,
     )
-    monkeypatch.setattr(
-        LiteLLMClient, "_should_process_isolate_completion", lambda *_: True
-    )
+    use_isolated_completion(client)
     calls = []
     registry = ToolRegistry()
 

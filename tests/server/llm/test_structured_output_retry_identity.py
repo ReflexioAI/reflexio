@@ -58,6 +58,32 @@ from reflexio.server.llm.litellm_client import (
     structured_output_repair_idempotency_key,
 )
 
+
+@pytest.fixture(autouse=True)
+def _stable_attempt_clock(monkeypatch):
+    """Compare prepared request identity with identical remaining transport time.
+
+    Deadline accounting has dedicated lifecycle tests; real elapsed startup
+    legitimately reduces an attempt's HTTP timeout without changing its prompt
+    or idempotency identity.
+    """
+    import time
+    from types import SimpleNamespace
+
+    from reflexio.server.llm import _litellm_text_generation as generation
+
+    monkeypatch.setattr(
+        generation,
+        "time",
+        SimpleNamespace(
+            monotonic=lambda: 1000.0,
+            perf_counter=time.perf_counter,
+            time=time.time,
+            sleep=time.sleep,
+        ),
+    )
+
+
 _MODEL = "primary-model"
 _CALLER_KEY = "a" * 64
 _CALLER_HEADERS = {"Idempotency-Key": _CALLER_KEY, "X-Reflexio-Caller": "unit-test"}

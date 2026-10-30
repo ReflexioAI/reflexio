@@ -13,6 +13,7 @@ from reflexio.server.llm import _litellm_text_generation as generation
 from reflexio.server.llm import _provider_concurrency as admission
 from reflexio.server.llm import call_deadline
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.test_support.llm_mock import use_isolated_completion
 
 
 @pytest.fixture
@@ -86,17 +87,21 @@ def test_live_worker_retains_permit_after_caller_finishes(
     )
     monkeypatch.setattr(generation.multiprocessing, "get_context", lambda: context)
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
-    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
+    use_isolated_completion(client)
     try:
         with admission.provider_slot("gpt-4o"):
             if outcome == "success":
                 assert (
-                    client._completion_with_hard_timeout({"model": "gpt-4o"}, 30)
+                    client._completion_with_deadline(
+                        {"model": "gpt-4o"}, time.monotonic() + (30)
+                    )
                     == "ready"
                 )
             else:
                 with pytest.raises(RuntimeError, match="synthetic receiver failure"):
-                    client._completion_with_hard_timeout({"model": "gpt-4o"}, 30)
+                    client._completion_with_deadline(
+                        {"model": "gpt-4o"}, time.monotonic() + (30)
+                    )
         assert worker.killed.is_set()
         assert worker.reaping.wait(2)
         assert not provider_permit.is_set()
@@ -127,12 +132,12 @@ def test_start_failure_closes_unstarted_worker_and_queue(monkeypatch, provider_p
     )
     monkeypatch.setattr(generation.multiprocessing, "get_context", lambda: context)
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
-    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
+    use_isolated_completion(client)
     with (
         pytest.raises(RuntimeError, match="synthetic start failure"),
         admission.provider_slot("gpt-4o"),
     ):
-        client._completion_with_hard_timeout({"model": "gpt-4o"}, 30)
+        client._completion_with_deadline({"model": "gpt-4o"}, time.monotonic() + (30))
     assert provider_permit.is_set()
     assert worker.closed.is_set()
     assert not worker.killed.is_set()
@@ -169,7 +174,7 @@ def test_rejected_late_public_result_keeps_live_worker_permit(
     )
     monkeypatch.setattr(generation.multiprocessing, "get_context", lambda: context)
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
-    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
+    use_isolated_completion(client)
     try:
         with (
             call_deadline.model_deadline(1000.03),
@@ -232,10 +237,12 @@ def test_actual_lingering_worker_is_reaped_without_blocking_caller(
     monkeypatch.setattr(generation.multiprocessing, "get_context", lambda: context)
     monkeypatch.setattr(generation, "_litellm_completion_worker", _publish_then_linger)
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
-    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
+    use_isolated_completion(client)
     started = time.monotonic()
     with admission.provider_slot("gpt-4o"):
-        result = client._completion_with_hard_timeout({"model": "gpt-4o"}, 30)
+        result = client._completion_with_deadline(
+            {"model": "gpt-4o"}, time.monotonic() + (30)
+        )
     elapsed = time.monotonic() - started
     assert result["value"] == "ready"
     assert provider_permit.wait(3)
@@ -271,12 +278,12 @@ def test_reaper_releases_permit_when_exit_status_was_collected_elsewhere(
     thread_errors = []
     monkeypatch.setattr(threading, "excepthook", thread_errors.append)
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
-    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
+    use_isolated_completion(client)
     try:
         with admission.provider_slot("gpt-4o"):
-            assert client._completion_with_hard_timeout({"model": "gpt-4o"}, 30) == (
-                "ready"
-            )
+            assert client._completion_with_deadline(
+                {"model": "gpt-4o"}, time.monotonic() + (30)
+            ) == ("ready")
         assert worker.reaping.wait(2)
     finally:
         worker.allow_exit.set()

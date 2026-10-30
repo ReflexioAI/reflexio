@@ -15,6 +15,7 @@ from reflexio.server.llm import _litellm_text_generation as generation
 from reflexio.server.llm import call_deadline
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.token_accounting import RunTokenCapture, run_token_capture
+from reflexio.test_support.llm_mock import use_isolated_completion
 
 
 @pytest.fixture
@@ -61,8 +62,7 @@ def completion(monkeypatch):
         lambda: SimpleNamespace(Queue=lambda **_: result_queue, Process=process),
     )
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o", max_retries=0, timeout=1))
-    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
-    monkeypatch.setattr(client, "_hard_timeout_grace_seconds", lambda: 0)
+    use_isolated_completion(client)
     usage = Mock(wraps=client._log_token_usage)
     monkeypatch.setattr(client, "_log_token_usage", usage)
     capture = RunTokenCapture()
@@ -130,7 +130,9 @@ def test_expired_model_deadline_does_not_construct_worker(completion):
         call_deadline.model_deadline(999.0),
         pytest.raises(TimeoutError),
     ):
-        completion.client._completion_with_hard_timeout({"model": "gpt-4o"}, 1)
+        completion.client._completion_with_deadline(
+            {"model": "gpt-4o"}, generation.time.monotonic() + (1)
+        )
     completion.process.assert_not_called()
     completion.worker.start.assert_not_called()
 
@@ -138,7 +140,9 @@ def test_expired_model_deadline_does_not_construct_worker(completion):
 def test_construction_exhausting_budget_does_not_start_worker(completion):
     completion.clock.construct = 0.075
     with pytest.raises(generation.LLMHardTimeoutError):
-        completion.client._completion_with_hard_timeout({"model": "gpt-4o"}, 0.03)
+        completion.client._completion_with_deadline(
+            {"model": "gpt-4o"}, generation.time.monotonic() + (0.03)
+        )
     completion.worker.start.assert_not_called()
     assert completion.worker.close.called and completion.queue.close.called
 
@@ -154,7 +158,9 @@ def test_exited_child_final_read_spends_only_remaining_budget(completion):
     completion.clock.startup = 0.02
     completion.queue.get.side_effect = empty
     with pytest.raises(generation.LiteLLMClientError):
-        completion.client._completion_with_hard_timeout({"model": "gpt-4o"}, 0.03)
+        completion.client._completion_with_deadline(
+            {"model": "gpt-4o"}, generation.time.monotonic() + (0.03)
+        )
     assert sum(waits) <= 0.010001
     assert completion.clock.now <= 1000.030001
 
@@ -190,7 +196,9 @@ def test_public_parsing_cannot_return_output_after_deadline(completion, monkeypa
 @pytest.mark.parametrize("budget", [0, -0.01])
 def test_spent_attempt_budget_cannot_be_restarted(completion, budget):
     with pytest.raises(generation.LLMHardTimeoutError):
-        completion.client._completion_with_hard_timeout({"model": "gpt-4o"}, budget)
+        completion.client._completion_with_deadline(
+            {"model": "gpt-4o"}, generation.time.monotonic() + (budget)
+        )
     completion.process.assert_not_called()
 
 
@@ -270,3 +278,25 @@ def test_child_startup_expiry_prevents_provider_dispatch(monkeypatch):
     status, error = result_queue.put.call_args.args[0]
     assert status == "error"
     assert error.type_name == "LLMHardTimeoutError"
+
+
+def test_semantic_validator_cannot_accept_after_attempt_expiry(completion):
+    from pydantic import BaseModel
+
+    class Output(BaseModel):
+        value: str
+
+    completion.response.choices[0].message.content = '{"value":"ok"}'
+    completion.client.config.timeout = 0.03
+
+    def validate(_output):
+        completion.clock.now += 0.075
+        return []
+
+    with pytest.raises(generation.LiteLLMClientError, match="attempt deadline"):
+        completion.client.generate_chat_response(
+            [{"role": "user", "content": "synthetic"}],
+            response_format=Output,
+            structured_output_validator=validate,
+        )
+    assert completion.usage.call_count == 1

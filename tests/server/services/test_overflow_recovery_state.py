@@ -111,7 +111,7 @@ def _prepare_failed_saved_output(pipeline, monkeypatch, *, kind, cached):
         )
 
     monkeypatch.setattr(
-        LiteLLMClient, "_completion_with_hard_timeout", staticmethod(respond)
+        LiteLLMClient, "_completion_with_deadline", staticmethod(respond)
     )
     target = "complete_extraction" if cached else "save_extraction_outcome"
     original = getattr(storage, target)

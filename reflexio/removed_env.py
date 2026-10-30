@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS": "REFLEXIO_GENERATION_TIMEOUT_SECONDS",
     "REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS": "REFLEXIO_EMBED_BATCH_SIZE",
     "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOK_SOURCE_USER_PLAYBOOKS": "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOKS",
     "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_JOBS": "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_HISTORY",
@@ -94,6 +95,14 @@ def reject_removed_env(
                 "REFLEXIO_SEARCH_TIMEOUT_SECONDS budget (0 inherits HTTP). "
                 "Independent early queue rejection is no longer supported; "
                 "do not automatically copy its value"
+            )
+        if "REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS" in obsolete:
+            migration += (
+                "; LLM attempts now use one absolute deadline for worker execution "
+                "and result acceptance. Remove the grace assignment and deliberately "
+                "choose the existing generation timeout; do not automatically add or "
+                "copy the old grace. Parent parsing is cooperatively checked and "
+                "worker reaping retains capacity until actual exit"
             )
         if "REFLEXIO_POSTGRES_STATEMENT_TIMEOUT_MS" in obsolete:
             migration += (

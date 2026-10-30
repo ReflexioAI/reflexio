@@ -468,7 +468,7 @@ def test_actual_native_dispatch_requires_stage_and_full_consumer_contract(
         _hidden_params={"custom_llm_provider": "openai"},
     )
     wire = Mock(return_value=response)
-    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
+    monkeypatch.setattr(client, "_completion_with_deadline", wire)
     current = coordinator(storage, window, token, manifest)
 
     def call():
@@ -584,7 +584,7 @@ def test_frozen_old_reader_failure_preserves_new_journal_and_cached_output(
     frozen = old_reader()
     assert frozen(OverflowCoordinator.initial_manifest("legacy-source"))["version"] == 1
     wire = Mock(side_effect=AssertionError("Unsupported worker must not dispatch"))
-    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", wire)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_deadline", wire)
     executor = window_executor.WindowExecutor(
         engine.request_context, create_generation_litellm_client(engine.request_context)
     )

@@ -1480,3 +1480,20 @@ budget, including transaction cleanup. Milliseconds and per-statement semantics
 cannot be copied losslessly into seconds and whole-borrow semantics. Adopt the
 matching storage release with this SDK; this registry does not implement a
 connection lease or introduce a runtime alias.
+
+### One model attempt deadline
+
+Generation attempts use one absolute expiry after provider admission. The
+existing configured timeout now bounds worker startup, provider I/O, transport
+and acceptance rather than receiving separately configurable overhead padding.
+Remove `REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS`, including blank assignments,
+with the matching storage release; choose existing generation/per-call timeouts
+deliberately instead of automatically adding old grace. The child receives only
+post-startup remaining I/O time. Parent parsing/validation checks are cooperative;
+late available usage is accounted before output rejection. Async worker reaping
+retains provider capacity through actual exit and does not add caller latency.
+
+Production always uses the isolated completion executor. Deterministic tests
+replace its private execution adapter explicitly; actual process/transport tests
+select the real adapter. Live-test helpers restore both execution and provider
+callables. Timeout magnitude and mock module identity never select architecture.

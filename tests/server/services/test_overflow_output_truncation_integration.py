@@ -74,7 +74,7 @@ def _run(pipeline, monkeypatch, respond):
         "reflexio.server.llm.input_budget.litellm.token_counter", lambda **_: 100
     )
     dispatch = Mock(side_effect=respond)
-    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_deadline", dispatch)
     assert client.post(
         "/api/publish_interaction", json=payload("truncated", force=True)
     ).json()["success"]

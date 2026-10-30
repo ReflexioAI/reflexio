@@ -464,7 +464,7 @@ def test_actual_native_agent_and_semantic_repair_pass_the_frozen_checker(
     validator = Mock(
         side_effect=[["Try again\n" + "E" * 10000 if long_echo else "Try again"], []]
     )
-    monkeypatch.setattr(client, "_completion_with_hard_timeout", transport)
+    monkeypatch.setattr(client, "_completion_with_deadline", transport)
     token = extraction_provider_guard.set(guard)
     try:
         result = client.generate_chat_response(
@@ -601,7 +601,7 @@ def test_fitting_initial_request_refuses_oversized_native_repair_before_reservat
             ]
         )
     )
-    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
+    monkeypatch.setattr(client, "_completion_with_deadline", wire)
     token = extraction_provider_guard.set(guard)
     try:
         with pytest.raises(InputBudgetExceededError):
@@ -790,7 +790,7 @@ def test_actual_fallback_uses_its_own_frozen_native_contract(monkeypatch):
             ]
         )
 
-    monkeypatch.setattr(client, "_completion_with_hard_timeout", transport)
+    monkeypatch.setattr(client, "_completion_with_deadline", transport)
     token = extraction_provider_guard.set(guard)
     try:
         result = client.generate_chat_response(
@@ -920,7 +920,7 @@ def test_consumer_drift_refuses_before_cache_or_provider(
     load = Mock(side_effect=AssertionError("cache must not run"))
     before = Mock(side_effect=AssertionError("provider admission must not run"))
     wire = Mock(side_effect=AssertionError("provider must not run"))
-    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
+    monkeypatch.setattr(client, "_completion_with_deadline", wire)
     with pytest.raises(
         (ValueError, InputBudgetConfigurationError),
         match="drifted|schema changed|contract changed",
