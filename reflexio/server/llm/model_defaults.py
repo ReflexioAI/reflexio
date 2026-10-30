@@ -335,6 +335,15 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
 _PROVIDER_DEFAULT_MAX_TOKENS: dict[str, int] = {"minimax": 8192, "zai": 8192}
 
 
+def default_completion_api_base(model: str) -> str | None:
+    """Return the built-in native route, never a caller gateway override."""
+    if model == "zai/glm-5.3-flashx":
+        return "https://api.z.ai/api/paas/v4"
+    if model.lower().startswith("zai/"):
+        return "https://api.z.ai/api/coding/paas/v4"
+    return None
+
+
 def default_max_tokens_for_model(model: str) -> int | None:
     """Return the provider-level default output-token cap for ``model``.
 
@@ -382,6 +391,10 @@ class ModelRole(StrEnum):
     EXTRACTION_AGENT = "extraction_agent"
 
 
+class ModelRoleUnavailableError(RuntimeError):
+    """Available providers have no model for this optional role."""
+
+
 def _auto_detect_model(
     role: ModelRole,
     providers: list[str],
@@ -416,7 +429,9 @@ def _auto_detect_model(
         model_name = getattr(defaults, role.value)
         if model_name:
             return model_name
-    raise RuntimeError(f"No provider in {providers} supports role={role.value}.")
+    raise ModelRoleUnavailableError(
+        f"No provider in {providers} supports role={role.value}."
+    )
 
 
 def resolve_model_name(

@@ -20,6 +20,7 @@ from reflexio.server.llm.input_budget import (
     declared_context_limits,
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.llm.model_defaults import ModelRole, ModelRoleUnavailableError
 from reflexio.server.operational_metrics import record_health
 from reflexio.server.services.durable_learning.window_codec import (
     decode_plan,
@@ -259,8 +260,33 @@ class WindowExecutor:
         groups = service.service_config.window_interactions
         if self._requires_compatibility_execution(window, known, manifest, groups):
             return None
-        # The source-preserving coordinator owns all new eligible text work.
-        # Only saved-state and evidence compatibility select another adapter.
+        if known is None:
+            # Host CLIs select opaque models and do not honor max_tokens. Keep
+            # their real existing adapter rather than inventing capacity/usage
+            # guarantees. Saved protocol work must never switch adapters.
+            try:
+                agent_models = self.client.get_completion_model_ladder(
+                    model_role=ModelRole.EXTRACTION_AGENT
+                )
+            except ModelRoleUnavailableError:
+                # This provider cohort cannot run the coordinator's agent
+                # stages. Preserve its established adapter rather than invent
+                # a model fallback or fail before an ordinary negative gate.
+                return None
+            models = (
+                *self.client.get_completion_model_ladder(),
+                *self.client.get_completion_model_ladder(
+                    model=service._resolve_should_run_model()
+                ),
+                *agent_models,
+            )
+            if any(
+                model.partition("/")[0] in {"claude-code", "openclaw"}
+                for model in models
+            ):
+                return None
+        # The coordinator owns eligible native text work. Existing CLI, image,
+        # mock and saved-state contracts retain their compatibility adapters.
         prepared, chunk_tokens, preparation_version = self._prepare_coordinator_sources(
             groups, window.user_id, known, manifest
         )

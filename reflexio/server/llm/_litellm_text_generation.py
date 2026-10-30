@@ -90,6 +90,7 @@ from reflexio.server.llm.input_budget import (
 from reflexio.server.llm.llm_utils import is_pydantic_model
 from reflexio.server.llm.model_defaults import (
     ModelRole,
+    default_completion_api_base,
     default_max_tokens_for_model,
     resolve_model_name,
 )
@@ -98,9 +99,6 @@ from reflexio.server.operational_metrics import record_health
 
 if TYPE_CHECKING:
     from reflexio.server.llm._litellm_types import LiteLLMConfig
-
-
-_ZAI_CODING_API_BASE = "https://api.z.ai/api/coding/paas/v4"
 
 
 # Upstream-provider errors that are EXPECTED and transient. By the time one of
@@ -1061,11 +1059,10 @@ class TextGenerationMixin:
             params["api_key"] = api_key
         if api_base:
             params["api_base"] = api_base
-        elif actual_model == "zai/glm-5.3-flashx":
-            # FlashX is available through the general API, not the coding plan.
-            params["api_base"] = "https://api.z.ai/api/paas/v4"
-        elif actual_model.lower().startswith("zai/"):
-            params["api_base"] = _ZAI_CODING_API_BASE
+        elif not (kwargs.get("api_base") or kwargs.get("base_url")) and (
+            native_api_base := default_completion_api_base(actual_model)
+        ):
+            params["api_base"] = native_api_base
         if api_version:
             params["api_version"] = api_version
 
