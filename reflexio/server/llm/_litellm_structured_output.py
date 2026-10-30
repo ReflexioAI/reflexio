@@ -68,6 +68,33 @@ def _safe_validation_errors(error: Exception) -> tuple[str, ...]:
     )
 
 
+def _typed_validation_errors(
+    error: Exception,
+) -> tuple[tuple[tuple[str | int, ...], str], ...]:
+    """Return each error's typed ``loc`` tuple and tag, content-free.
+
+    Unlike ``_safe_validation_errors`` the location is NOT joined: pydantic
+    emits an ``int`` for a list index and a ``str`` for a key, and a log sink
+    must keep that distinction to tell a position from a model-chosen numeric
+    key. A JSON syntax error has no location; its tag carries the position.
+    """
+    if isinstance(error, json.JSONDecodeError):
+        return (((), f"json_invalid at line {error.lineno} column {error.colno}"),)
+    if not isinstance(error, ValidationError):
+        return ()
+    return tuple(
+        (
+            tuple(part if isinstance(part, int) else str(part) for part in item["loc"]),
+            str(item["type"]),
+        )
+        for item in error.errors(
+            include_url=False,
+            include_context=False,
+            include_input=False,
+        )
+    )
+
+
 def _single_list_field_name(response_format: type[BaseModel]) -> str | None:
     """Return the wrapper field for schemas shaped as ``{"items": [...]}``."""
     fields = getattr(response_format, "model_fields", {})
@@ -506,4 +533,5 @@ class StructuredOutputMixin:
                         f"(content omitted from logs).",
                         raw_content=content if isinstance(content, str) else None,
                         validation_errors=_safe_validation_errors(e),
+                        validation_error_locations=_typed_validation_errors(e),
                     ) from e

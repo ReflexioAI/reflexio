@@ -227,6 +227,7 @@ class StructuredOutputParseError(Exception):
         finish_reason: str | None = None,
         provenance: ModelProvenance | None = None,
         validation_errors: tuple[str, ...] = (),
+        validation_error_locations: tuple[tuple[tuple[str | int, ...], str], ...] = (),
         empty_response: bool = False,
     ) -> None:
         super().__init__(message)
@@ -234,6 +235,12 @@ class StructuredOutputParseError(Exception):
         self.finish_reason = finish_reason
         self.provenance = provenance
         self.validation_errors = validation_errors
+        # The same errors as ``validation_errors`` but TYPED: pydantic's own
+        # ``loc`` tuple (an int is a list index, a str is a key) and its error
+        # tag. Joined into a string the two kinds look alike, so only this form
+        # can tell a list position from a model-chosen numeric key. Log sinks
+        # read this; the retry prompt reads the joined strings.
+        self.validation_error_locations = validation_error_locations
         # True when the body was ``None`` or whitespace-only: nothing was
         # written, so there is nothing to correct -- only to re-issue.
         self.empty_response = empty_response

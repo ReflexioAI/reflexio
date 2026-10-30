@@ -508,43 +508,47 @@ def _schema_field_names(schema: Any) -> frozenset[str]:
     return frozenset(names)
 
 
-def _log_safe_validation_error(entry: str, owned: frozenset[str]) -> str:
-    """Render one ``"<dotted.loc>: <type>"`` entry with only schema-owned parts.
+def _log_safe_validation_error(
+    location: tuple[str | int, ...], error_type: str, owned: frozenset[str]
+) -> str:
+    """Render one TYPED error with only schema-owned location parts.
 
-    A charset clamp alone is not enough: an ASCII key the MODEL invented (say
-    under ``extra="forbid"``) passes any identifier pattern unchanged. So each
-    location component is kept only when it is a list index, the ``<root>``
-    marker or a property the schema declares; anything else becomes
-    ``<redacted>``. Every token emitted is therefore schema-owned or fixed.
-    Pydantic's internal union tags are not declared properties and are redacted
-    too -- the cost of a rule that never has to judge provider text.
+    Decided from pydantic's typed ``loc``, never from string shape: an ``int``
+    component is a list index pydantic itself produced, and a ``str`` component
+    is a key -- kept only when the schema declares it. A model-chosen key is
+    therefore redacted whatever it looks like, digits included (joined into a
+    string, ``"1234"`` the key and ``1234`` the index are indistinguishable).
+    Every token emitted is schema-owned, an index, or fixed. Pydantic's
+    internal union tags are not declared properties and are redacted too --
+    the cost of a rule that never has to judge provider text.
     """
-    location, separator, error_type = entry.rpartition(": ")
-    if not separator or not _LOG_SAFE_ERROR_TYPE.fullmatch(error_type):
+    if not _LOG_SAFE_ERROR_TYPE.fullmatch(error_type):
         return _REDACTED_VALIDATION_ERROR
     components = [
-        part
-        if (part.isascii() and part.isdecimal()) or part == "<root>" or part in owned
+        str(part)
+        if type(part) is int or (isinstance(part, str) and part in owned)
         else _REDACTED_VALIDATION_ERROR
-        for part in location.split(".")
-    ]
+        for part in location
+    ] or ["<root>"]
     rendered = f"{'.'.join(components)}: {error_type}"
     if len(rendered) > MAX_LOGGED_ERROR_LENGTH:
         return _REDACTED_VALIDATION_ERROR
     return rendered
 
 
-def _log_safe_validation_errors(errors: Sequence[str], schema: Any) -> str:
-    """Render validation errors for a log sink, bounded in count and content.
+def _log_safe_validation_errors(exc: StructuredOutputParseError, schema: Any) -> str:
+    """Render a parse failure's validation errors for a log sink.
 
-    Each location component is reduced to what the schema itself owns (see
-    ``_log_safe_validation_error``). The RETRY PROMPT still receives the
-    unclamped errors: they go back to the provider that produced them, which
-    is a different trust boundary from a log sink, and clamping there would
-    blunt the correction the plain rung's corrective retry depends on.
+    Reads ONLY the typed ``validation_error_locations``; see
+    ``_log_safe_validation_error`` for what survives. An error carrying only
+    joined strings (no typed form) renders each entry as ``<redacted>``: a
+    string cannot say which of its parts the model chose. The RETRY PROMPT
+    still receives the unclamped strings: they go back to the provider that
+    produced them, which is a different trust boundary from a log sink, and
+    clamping there would blunt the correction the corrective retry depends on.
 
     Args:
-        errors (Sequence[str]): Entries from ``_safe_validation_errors``
+        exc (StructuredOutputParseError): The failure whose errors to render
         schema (Any): The ``response_format`` the errors were raised against
 
     Returns:
@@ -553,13 +557,18 @@ def _log_safe_validation_errors(errors: Sequence[str], schema: Any) -> str:
             standing in for anything past the cap
     """
     owned = _schema_field_names(schema)
-    entries = list(errors)
-    rendered = [
-        _log_safe_validation_error(entry, owned)
-        for entry in entries[:MAX_LOGGED_VALIDATION_ERRORS]
-    ]
-    if len(entries) > len(rendered):
-        rendered.append(f"...({len(entries) - len(rendered)} more)")
+    typed = exc.validation_error_locations
+    total = len(typed) if typed else len(exc.validation_errors)
+    rendered = (
+        [
+            _log_safe_validation_error(location, error_type, owned)
+            for location, error_type in typed[:MAX_LOGGED_VALIDATION_ERRORS]
+        ]
+        if typed
+        else [_REDACTED_VALIDATION_ERROR] * min(total, MAX_LOGGED_VALIDATION_ERRORS)
+    )
+    if total > len(rendered):
+        rendered.append(f"...({total - len(rendered)} more)")
     return ",".join(rendered)
 
 
@@ -2188,7 +2197,7 @@ class TextGenerationMixin:
                     exc.failure_kind,
                     exc.log_fields(),
                     _log_safe_validation_errors(
-                        exc.validation_errors, original_kwargs.get("response_format")
+                        exc, original_kwargs.get("response_format")
                     ),
                 )
                 (
@@ -2247,8 +2256,7 @@ class TextGenerationMixin:
                         failure_kind,
                         exc.log_fields(),
                         _log_safe_validation_errors(
-                            exc.validation_errors,
-                            original_kwargs.get("response_format"),
+                            exc, original_kwargs.get("response_format")
                         ),
                     )
                 raw_content = exc.raw_content
@@ -2332,8 +2340,7 @@ class TextGenerationMixin:
                         failure_kind,
                         exc.log_fields(),
                         _log_safe_validation_errors(
-                            exc.validation_errors,
-                            original_kwargs.get("response_format"),
+                            exc, original_kwargs.get("response_format")
                         ),
                     )
             except (LiteLLMClientError, ProviderCapSaturatedError) as exc:
@@ -2449,8 +2456,7 @@ class TextGenerationMixin:
                         exc.failure_kind,
                         exc.log_fields(),
                         _log_safe_validation_errors(
-                            exc.validation_errors,
-                            original_kwargs.get("response_format"),
+                            exc, original_kwargs.get("response_format")
                         ),
                         exc,
                     )

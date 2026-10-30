@@ -407,10 +407,25 @@ class _Items(BaseModel):
     items: list[_Item]
 
 
+def _failure(*entries: tuple[tuple[str | int, ...], str]) -> StructuredOutputParseError:
+    """A parse failure carrying TYPED errors, as the parser now produces them."""
+    return StructuredOutputParseError(
+        "Structured output parse failed: ValidationError",
+        validation_errors=tuple(
+            f"{'.'.join(str(p) for p in loc) or '<root>'}: {t}" for loc, t in entries
+        ),
+        validation_error_locations=entries,
+    )
+
+
 def test_a_log_safe_rendering_passes_ordinary_schema_paths_through() -> None:
     """Clamping must not cost the diagnostic its whole value."""
     rendered = _log_safe_validation_errors(
-        ("items.0.name: missing", "<root>: json_invalid at line 3 column 5"), _Items
+        _failure(
+            (("items", 0, "name"), "missing"),
+            ((), "json_invalid at line 3 column 5"),
+        ),
+        _Items,
     )
     assert rendered == "items.0.name: missing,<root>: json_invalid at line 3 column 5"
 
@@ -418,58 +433,81 @@ def test_a_log_safe_rendering_passes_ordinary_schema_paths_through() -> None:
 @pytest.mark.parametrize(
     "hostile",
     [
-        "evil\nWARNING event=fabricated: extra_forbidden",  # log-line injection
-        "k" * 200 + ": extra_forbidden",  # unbounded length
-        'say "hi": extra_forbidden',  # quotes
-        "ключ: extra_forbidden",  # non-ASCII
-        "a\x00b: extra_forbidden",  # control character
-        "patient_diagnosis_positive: extra_forbidden",  # plain ASCII, still content
+        "evil\nWARNING event=fabricated",  # log-line injection
+        "k" * 200,  # unbounded length
+        'say "hi"',  # quotes
+        "ключ",  # non-ASCII
+        "a\x00b",  # control character
+        "patient_diagnosis_positive",  # plain ASCII, still content
+        "1234567890123456",  # digits only: a KEY, not an index
     ],
 )
 def test_a_log_safe_rendering_redacts_a_model_chosen_key(hostile: str) -> None:
-    """``loc`` is built from ``str(part)`` with no clamp; an ``extra_forbidden``
-    entry therefore carries whatever key the MODEL invented. Only the fixed
-    marker and the pydantic error tag survive."""
-    assert (
-        _log_safe_validation_errors((hostile,), _Items) == "<redacted>: extra_forbidden"
+    """An ``extra_forbidden`` entry carries whatever key the MODEL invented.
+    Only the fixed marker and the pydantic error tag survive."""
+    rendered = _log_safe_validation_errors(
+        _failure(((hostile,), "extra_forbidden")), _Items
     )
+    assert rendered == "<redacted>: extra_forbidden"
+
+
+def test_an_int_location_is_an_index_and_a_digit_string_is_a_key() -> None:
+    """The distinction is the TYPE pydantic emits, not the text's shape."""
+    rendered = _log_safe_validation_errors(
+        _failure(
+            (("items", 3, "name"), "missing"),
+            (("items", "3", "name"), "missing"),
+        ),
+        _Items,
+    )
+    assert rendered == "items.3.name: missing,items.<redacted>.name: missing"
 
 
 def test_a_log_safe_rendering_keeps_owned_parts_around_a_redacted_key() -> None:
     """A model-chosen key nested under declared fields redacts only itself."""
     rendered = _log_safe_validation_errors(
-        ("items.3.patient_diagnosis_positive: extra_forbidden",), _Items
+        _failure((("items", 3, "patient_diagnosis_positive"), "extra_forbidden")),
+        _Items,
     )
     assert rendered == "items.3.<redacted>: extra_forbidden"
 
 
 @pytest.mark.parametrize(
-    "entry",
+    "error_type",
     [
-        "name: Field required (input was secret)",  # message text, not a tag
-        "name missing",  # no separator
-        "name: missing\nWARNING event=x",  # injection through the type
+        "Field required (input was secret)",  # message text, not a tag
+        "missing\nWARNING event=x",  # injection through the type
     ],
 )
 def test_a_log_safe_rendering_redacts_an_entry_whose_type_is_not_a_tag(
-    entry: str,
+    error_type: str,
 ) -> None:
-    assert _log_safe_validation_errors((entry,), _Items) == "<redacted>"
+    rendered = _log_safe_validation_errors(_failure((("name",), error_type)), _Items)
+    assert rendered == "<redacted>"
+
+
+def test_untyped_errors_render_only_as_redaction_markers() -> None:
+    """A joined string cannot say which of its parts the model chose."""
+    failure = StructuredOutputParseError(
+        "Structured output parse failed: ValidationError",
+        validation_errors=("items.0.name: missing", "1234: extra_forbidden"),
+    )
+    assert _log_safe_validation_errors(failure, _Items) == "<redacted>,<redacted>"
 
 
 def test_a_schema_that_cannot_be_introspected_owns_no_names() -> None:
-    """Fail closed: with no schema every location component is redacted."""
+    """Fail closed: with no schema every key component is redacted."""
     assert (
-        _log_safe_validation_errors(("items.0.name: missing",), None)
+        _log_safe_validation_errors(_failure((("items", 0, "name"), "missing")), None)
         == "<redacted>.0.<redacted>: missing"
     )
 
 
 def test_a_log_safe_rendering_bounds_the_error_count() -> None:
     """A pathological body can produce an unbounded number of entries."""
-    errors = tuple(f"field{index}: missing" for index in range(20))
+    failure = _failure(*(((f"field{index}",), "missing") for index in range(20)))
 
-    rendered = _log_safe_validation_errors(errors, _Items)
+    rendered = _log_safe_validation_errors(failure, _Items)
 
     assert rendered.count(",") == MAX_LOGGED_VALIDATION_ERRORS
     assert rendered.endswith(f"...({20 - MAX_LOGGED_VALIDATION_ERRORS} more)")
@@ -646,3 +684,67 @@ def test_no_log_line_names_a_key_the_schema_does_not_own(
     assert error_lines, "no line carried the validation errors at all"
     assert all(_SENSITIVE_KEY not in m for m in messages)
     assert all("<redacted>: extra_forbidden" in m for m in error_lines)
+
+
+#: A model-chosen NUMERIC key. Joined into a dotted string it is
+#: indistinguishable from a list index, so only pydantic's typed ``loc`` (int
+#: for an index, str for a key) can tell the two apart.
+_NUMERIC_KEY = "1234567890123456"
+
+
+@pytest.mark.parametrize("validated", [False, True], ids=["plain", "validated"])
+def test_no_log_line_names_a_numeric_key_the_schema_does_not_own(
+    validated: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A digit-only key is still provider content, never a list position."""
+    client = LiteLLMClient(LiteLLMConfig(model=_MODEL))
+    kwargs: dict[str, Any] = {"response_format": ForbidExtraResponse}
+    if validated:
+        kwargs["structured_output_validator"] = lambda _parsed: []
+    body = '{"answer": "ok", "score": 42, "' + _NUMERIC_KEY + '": true}'
+    with (
+        patch("litellm.completion", side_effect=lambda **_: _response(body)),
+        caplog.at_level(logging.DEBUG),
+        pytest.raises(Exception),  # noqa: B017 - either rung's terminal error
+    ):
+        client.generate_chat_response([{"role": "user", "content": "hi"}], **kwargs)
+
+    messages = [record.getMessage() for record in caplog.records]
+    error_lines = [m for m in messages if "errors=" in m]
+    assert error_lines, "no line carried the validation errors at all"
+    assert all(_NUMERIC_KEY not in m for m in messages)
+    assert all("<redacted>: extra_forbidden" in m for m in error_lines)
+
+
+class _StrictItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+
+
+class _Listed(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[_StrictItem]
+
+
+def test_a_real_list_index_still_renders(caplog: pytest.LogCaptureFixture) -> None:
+    """The fix must not cost the diagnostic its positions: an int ``loc``
+    component is a list index pydantic itself produced."""
+    client = LiteLLMClient(LiteLLMConfig(model=_MODEL))
+    body = '{"items": [{"name": "a"}, {"nome": "b"}]}'
+    with (
+        patch("litellm.completion", side_effect=lambda **_: _response(body)),
+        caplog.at_level(logging.WARNING),
+        pytest.raises(Exception),  # noqa: B017 - the plain rung's terminal error
+    ):
+        client.generate_chat_response(
+            [{"role": "user", "content": "hi"}], response_format=_Listed
+        )
+
+    error_lines = [
+        r.getMessage() for r in caplog.records if "errors=" in r.getMessage()
+    ]
+    assert error_lines
+    assert all("items.1.name: missing" in m for m in error_lines)
+    assert all("items.1.<redacted>: extra_forbidden" in m for m in error_lines)
