@@ -297,7 +297,7 @@ it does not rewrite the advice or replace the independent audit. Its selections,
 merges and repairs use the same 24-request allowance as the consumer. Durable
 windows save selections and request reservations through the existing parent
 checkpoint so a restart reuses committed work without refunding unknown calls.
-Already-admitted legacy conversations keep their original protocol. Total
+Already-admitted legacy conversations keep their original protocol. Opaque CLI providers retain their existing audited adapter without native capacity claims. Total
 compression-plus-consolidation latency and evidence preservation require separate
 real-model qualification; deterministic tests do not establish that benefit.
 

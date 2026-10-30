@@ -165,6 +165,7 @@ calls. Existing durable windows store the plan witness and node receipts in
 `reconciliation_context`; parent attempt reservation and consolidation attribution
 commit atomically. Cached selections are revalidated against the original
 authorized sources on resume. Legacy admitted conversations keep their original
-protocol. This code path needs separate evidence-preservation and total-duration
+protocol. Opaque CLI providers retain their existing audited adapter without
+native capacity claims. This code path needs separate evidence-preservation and total-duration
 qualification before promotion; the shared library's qualification alone does
 not qualify the consolidator.

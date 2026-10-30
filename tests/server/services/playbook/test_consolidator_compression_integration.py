@@ -139,6 +139,37 @@ def run(client, coordinator, data, references):
         return actor, result
 
 
+@pytest.mark.parametrize("model", ["claude-code/default", "openclaw/default"])
+def test_opaque_cli_consolidation_retains_audit_and_existing_owner(model, monkeypatch):
+    from reflexio.server.llm.input_budget import extraction_provider_guard
+    from reflexio.server.services.playbook.components import context_compression
+
+    def reject_native_capacity(*args, **kwargs):
+        raise AssertionError("Opaque CLI adapters must not claim native capacity")
+
+    monkeypatch.setattr(context_compression, "_budgets", reject_native_capacity)
+    client = ScriptedClient()
+    client.config.model = model
+    data, refs = evidence("user")
+    before = deepcopy(data)
+    reservations = []
+    token = extraction_provider_guard.set(lambda *args: reservations.append(args))
+    try:
+        actor = Reconciler(
+            client,
+            model,
+            source_scope={"org_id": "org", "project_id": "project", "user_id": "user"},
+        )
+        result = actor.run(data, refs)
+    finally:
+        extraction_provider_guard.reset(token)
+    assert result.decisions and data == before
+    assert len(client.calls) == actor.calls == len(reservations) == 2
+    assert all(call["model"] == model for call in client.calls)
+    assert "proposed_memory" in json.loads(client.calls[-1]["messages"][1]["content"])
+    assert actor.citation_sources == refs
+
+
 def test_small_input_uses_passthrough_and_keeps_the_independent_audit(durable_pipeline):
     storage, window, token = _overflow_coordinator(durable_pipeline)
     coordinator = owner(storage, window, token)

@@ -306,6 +306,18 @@ class Reconciler:
         self.coordinator = current_overflow_coordinator.get()
         self.source_scope = dict(source_scope) if source_scope is not None else None
         self.citation_sources: dict[tuple[str, int], Any] | None = None
+        if self.coordinator is None and self.source_scope is not None:
+            models = (
+                *client.get_completion_model_ladder(model=model),
+                *client.get_completion_model_ladder(),
+            )
+            if any(
+                name.partition("/")[0] in {"claude-code", "openclaw"} for name in models
+            ):
+                # The window executor preserves these opaque host adapters.
+                # They cannot claim native capacity, but still use this audit
+                # loop and its existing owner. Saved native work never switches.
+                self.source_scope = None
         if (
             self.coordinator is not None
             and (
