@@ -1088,21 +1088,19 @@ def reconcile_playbooks(
         "sessions": sessions,
         "context_is_reference_excerpt": True,
     }
-    from reflexio.server.work_scope import current_project_id
-
     coordinator = current_overflow_coordinator.get()
     engine = Reconciler(
         consolidator.client,
         consolidator.model_name,
-        source_scope={
-            "org_id": storage.org_id,
-            "project_id": (
-                coordinator.window.project_id
-                if coordinator is not None
-                else current_project_id() or ""
-            ),
-            "user_id": user_id,
-        },
+        source_scope=(
+            {
+                "org_id": storage.org_id,
+                "project_id": coordinator.window.project_id,
+                "user_id": user_id,
+            }
+            if coordinator is not None
+            else None
+        ),
     )
     try:
         observe_consolidator_input(

@@ -61,12 +61,18 @@ class ScriptedClient(LiteLLMClient):
         )
         self.calls = []
         self.fail_consumer = False
+        self.selected_field: str | None = None
 
     def _completion_with_hard_timeout(self, params, hard_timeout):
         self.calls.append(deepcopy(params))
         data = json.loads(params["messages"][1]["content"])
         if "input_packets" in data:
-            ref = data["input_packets"][0]["evidence"][0]["source_id"]
+            available = data["input_packets"][0]["evidence"]
+            selected = next(
+                (item for item in available if item["field"] == self.selected_field),
+                available[0],
+            )
+            ref = selected["source_id"]
             value = {"points": [{"evidence_refs": [ref]}]}
         elif self.fail_consumer:
             raise RuntimeError("scripted interruption after completed compression")
@@ -170,13 +176,44 @@ def test_opaque_cli_consolidation_retains_audit_and_existing_owner(model, monkey
     assert actor.citation_sources == refs
 
 
+def test_compressed_expert_field_remains_citable_without_joined_content(
+    durable_pipeline,
+):
+    storage, window, token = _overflow_coordinator(durable_pipeline)
+    coordinator = owner(storage, window, token)
+    data, refs = evidence(window.user_id, large=True)
+    feedback = "Explicit expert correction: check authorization before submitting."
+    data["sessions"][0]["messages"][0]["expert_feedback"] = feedback
+    client = ScriptedClient()
+    client.selected_field = "expert_feedback"
+    actor, result = run(client, coordinator, data, refs)
+    assert result.decisions and actor.calls > 2
+    assert actor.citation_sources is not None
+    visible = actor.citation_sources[("request", 17)]
+    assert feedback in visible.evidence_texts
+    assert visible.role == refs[("request", 17)].role
+    assert visible.request_source == refs[("request", 17)].request_source
+
+
 def test_small_input_uses_passthrough_and_keeps_the_independent_audit(durable_pipeline):
     storage, window, token = _overflow_coordinator(durable_pipeline)
     coordinator = owner(storage, window, token)
     data, refs = evidence(window.user_id)
+    message = data["sessions"][0]["messages"][0]
+    original = message["content"]
+    feedback = "Keep authorization scoped to this user."
+    message.update(
+        content=original + "\n\n" + feedback,
+        agent_response=original,
+        expert_feedback=feedback,
+    )
+    refs[("request", 17)] = replace(
+        refs[("request", 17)], evidence_texts=(original, feedback)
+    )
     before = deepcopy(data)
     client = ScriptedClient()
     actor, result = run(client, coordinator, data, refs)
+    assert actor.citation_sources == refs
     assert result.decisions and data == before
     assert len(client.calls) == actor.calls == 2
     assert "proposed_memory" in json.loads(client.calls[-1]["messages"][1]["content"])

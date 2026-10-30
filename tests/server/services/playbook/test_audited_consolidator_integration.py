@@ -317,10 +317,16 @@ def isolated_presentation():
         current_overflow_presentation.reset(token)
 
 
+@pytest.mark.parametrize("custom_endpoint", [False, True])
 @pytest.mark.parametrize("expert", [False, True])
 def test_dispatch_preserves_pending_metadata_and_each_output_evidence(
-    consolidator, storage, expert, isolated_presentation, monkeypatch
+    consolidator, storage, expert, custom_endpoint, isolated_presentation, monkeypatch
 ):
+    if custom_endpoint:
+        monkeypatch.setattr(
+            consolidator.client, "_api_base", "https://scripted.invalid/v1"
+        )
+        consolidator.client.config.max_tokens = 8192
     monkeypatch.setattr(
         storage, "governance_subject_ref_for_user", lambda _user_id: "owner-subject"
     )
@@ -375,6 +381,10 @@ def test_dispatch_preserves_pending_metadata_and_each_output_evidence(
         remember.assert_called_once_with([old])
         assert current_overflow_presentation.get() is isolated_presentation
     assert len(calls) == 2
+    if custom_endpoint:
+        assert all(
+            call.get("api_base") == "https://scripted.invalid/v1" for call in calls
+        )
     assert len(rows) == 2 and archives == [123] and merges == []
     assert consolidator.lineage_sources_by_output_index == {0: ["123"], 1: ["123"]}
     assert all(

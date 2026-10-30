@@ -360,4 +360,4 @@ def prepare_context(
         key: replace(references[key], evidence_texts=tuple(texts))
         for key, texts in selected.items()
     }
-    return view, visible
+    return view, references if list(compressed.packet.evidence) == sources else visible

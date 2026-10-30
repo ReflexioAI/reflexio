@@ -156,7 +156,7 @@ seam for these fresh initial messages; a checker cannot change saved geometry.
 These library interfaces do not admit new durable work or enable compression in
 production workers.
 
-The consolidator caller uses these interfaces through
+The admitted durable consolidator caller uses these interfaces through
 `playbook/components/context_compression.py`. It keeps small fitting input
 presentations unchanged and checks every actual consumer request, including
 tool replies and revisions. Oversized evidence is selected under the same
@@ -166,6 +166,10 @@ calls. Existing durable windows store the plan witness and node receipts in
 commit atomically. Cached selections are revalidated against the original
 authorized sources on resume. Legacy admitted conversations keep their original
 protocol. Opaque CLI providers retain their existing audited adapter without
-native capacity claims. This code path needs separate evidence-preservation and total-duration
+native capacity claims. Coordinator-free manual consolidation retains its existing
+execution path. Unchanged packets retain the original citation sources, including
+expert-interaction field boundaries. Selected compressed fields remain valid
+citation evidence even when the joined content field is omitted.
+This code path needs separate evidence-preservation and total-duration
 qualification before promotion; the shared library's qualification alone does
 not qualify the consolidator.
