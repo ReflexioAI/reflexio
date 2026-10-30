@@ -1,10 +1,12 @@
 """Contracts for grounded sparse repairs, without any storage or LLM access."""
 
 import json
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import ValidationError
 
+from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.services.playbook.rule_evidence import (
     run_rule_evidence,
     validate_diagnostic,
@@ -17,8 +19,105 @@ from reflexio.server.services.playbook.rule_evidence.wire import (
     BoundedTargetDiagnostic,
     catalog,
     generation_profile,
+    judge_schema,
     tune_schema,
 )
+
+
+@pytest.mark.unit
+def test_provider_parser_accepts_original_integer_turn_ids(data, diagnostic):
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+    schema = judge_schema(data, data.sessions[0])
+    client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
+    parsed = client._maybe_parse_structured_output(
+        json.dumps(wire_diagnostic(diagnostic)), schema, True
+    )
+    assert isinstance(parsed, StrictStructuredOutput)
+    assert parsed.model_dump(mode="json")["observations"][0]["evidence_refs"]["r1"] == 8
+    assert schema.model_json_schema()["$defs"]["OriginalTurn"]["enum"] == [3, 8]
+    assert schema.model_json_schema()["$defs"]["SupportTurns"]["properties"]["r1"] == {
+        "$ref": "#/$defs/OriginalTurn"
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", [True, False, 1.0, "1", 2, "TURN_1"])
+@pytest.mark.parametrize("mode", ["python", "json"])
+@pytest.mark.parametrize("counterevidence", [False, True])
+def test_provider_turn_slots_reject_coercion_and_unknown_ids(
+    data, diagnostic, bad, mode, counterevidence
+):
+    source = data.sessions[0].model_copy(deep=True)
+    source.messages[0] = source.messages[0].model_copy(update={"turn": 1})
+    bound_data = data.model_copy(update={"sessions": [source]})
+    schema = judge_schema(bound_data, source)
+    body = wire_diagnostic(diagnostic)
+    body["rule_assessment"]["evidence_refs"]["r1"] = 1
+    body["observations"][0]["evidence_refs"]["r1"] = 1
+    schema.model_validate(body)
+    slots = (
+        body["rule_assessment"]["counterevidence_refs"]
+        if counterevidence
+        else body["observations"][0]["evidence_refs"]
+    )
+    slots["r1"] = bad
+    with pytest.raises(ValidationError):
+        if mode == "json":
+            schema.model_validate_json(json.dumps(body))
+        else:
+            schema.model_validate(body)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("repair_first_response", [False, True])
+def test_provider_boundary_runs_judge_and_tuner(
+    data, diagnostic, monkeypatch, repair_first_response
+):
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+    replies = []
+    if repair_first_response:
+        invalid = wire_diagnostic(diagnostic)
+        invalid["observations"][0]["evidence_refs"]["r1"] = 999
+        replies.append(invalid)
+    replies.extend([wire_diagnostic(diagnostic), repair()])
+    calls = []
+
+    def completion(**kwargs):
+        calls.append(kwargs)
+        response = MagicMock()
+        response.choices[0].message.content = json.dumps(replies.pop(0))
+        response.choices[0].message.refusal = None
+        response.choices[0].message.tool_calls = None
+        response.choices[0].finish_reason = "stop"
+        response.model = "gpt-4o-2024-08-06"
+        response._hidden_params = {"custom_llm_provider": "openai"}
+        response.usage = None
+        return response
+
+    monkeypatch.setattr("litellm.completion", completion)
+    client = LiteLLMClient(LiteLLMConfig(model="gpt-4o-2024-08-06"))
+
+    def invoke(system, payload, schema):
+        parsed = client.generate_chat_response(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(payload)},
+            ],
+            response_format=schema,
+        )
+        assert isinstance(parsed, StrictStructuredOutput)
+        return parsed
+
+    result = run_rule_evidence(data, invoke)
+    assert result.decision == "proposal"
+    assert result.revised_content == (
+        "Send once. Report queued as queued. Keep the recipient."
+    )
+    assert result.diagnostics == [diagnostic]
+    assert len(calls) == 2 + int(repair_first_response)
+    assert not replies
 
 
 @pytest.fixture
