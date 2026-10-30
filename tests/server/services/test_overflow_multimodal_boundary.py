@@ -49,7 +49,6 @@ def _publish_mixed(pipeline, monkeypatch, kind, image_kind):
             )
         )
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     data = payload("mixed-image", force=True)
     data["agent_version"] = "v1"
     for interaction in data["interaction_data_list"]:

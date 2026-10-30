@@ -19,7 +19,7 @@ from filelock import FileLock
 from reflexio.config_document import decode_config_document, encode_config_document
 from reflexio.config_env import StoredConfigurationError
 
-FILE_FORMAT_VERSION = 8
+FILE_FORMAT_VERSION = 9
 _METADATA_KEY = "_reflexio_config_file"
 
 
@@ -53,7 +53,22 @@ def _decode(raw: bytes) -> tuple[dict[str, Any], dict[str, Any]]:
     return document, metadata
 
 
+def _reject_ambiguous_output_policy(data: dict[str, Any], version: int) -> None:
+    llm = data.get("llm_config")
+    if (
+        version < 9
+        and isinstance(llm, dict)
+        and llm.get("generation_max_output_tokens") is not None
+    ):
+        raise StoredConfigurationError(
+            "Older configuration contains generation_max_output_tokens, which "
+            "was ignored by its schema. Stop old writers and deliberately "
+            "publish this output policy with the current SDK."
+        )
+
+
 def _reject_ambiguous_policy(data: dict[str, Any], version: int) -> None:
+    _reject_ambiguous_output_policy(data, version)
     retention = data.get("governance_retention")
     if (
         version < 3
@@ -172,12 +187,25 @@ class LocalConfigFile:
                 )
         return self.path.resolve()
 
-    def read_document(self) -> dict[str, Any]:
-        """Read one complete file without transforming or writing configuration."""
+    def _read_snapshot(self) -> tuple[dict[str, Any], dict[str, Any]]:
         target = self._target()
         if target.exists() and not target.is_file():
             raise StoredConfigurationError("Saved configuration must be a regular file")
-        document, _metadata = _decode(target.read_bytes())
+        return _decode(target.read_bytes())
+
+    def read_document(self) -> dict[str, Any]:
+        """Read strict runtime policy without transforming or writing it."""
+        document, metadata = self._read_snapshot()
+        _reject_ambiguous_output_policy(document, metadata.get("version", 0))
+        return document
+
+    def read_document_for_conversion(self) -> dict[str, Any]:
+        """Read historical policy only for an explicitly selected offline conversion.
+
+        Future/foreign formats still refuse; unlike runtime loading, conversion
+        may deliberately adopt a formerly ignored canonical spelling.
+        """
+        document, _metadata = self._read_snapshot()
         return document
 
     def publish_document(self, document: str, *, create_only: bool = False) -> bool:

@@ -42,7 +42,6 @@ def test_new_mock_windows_complete_without_admitting_overflow(
 ):
     engine, worker, client = mock_pipeline
     configure_kind(engine, kind)
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "true")
     dispatch = Mock(side_effect=AssertionError("mock simulation dispatched a provider"))
     monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
@@ -77,7 +76,6 @@ def test_mock_toggle_refuses_existing_real_work_without_writes_or_quota_changes(
 ):
     engine, _, _ = mock_pipeline
     configure_kind(engine, kind)
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "true")
     storage, window, token = _overflow_coordinator(
         mock_pipeline,

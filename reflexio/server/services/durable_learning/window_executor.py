@@ -29,7 +29,6 @@ from reflexio.server.services.extraction.agent_run_records import (
     build_extractor_agent_run_record,
     effective_frozen_extractor_config,
     matches_frozen_window_binding,
-    source_interaction_digest,
 )
 from reflexio.server.services.extraction.input_preparation import (
     PreparedExtractionInput,
@@ -40,7 +39,6 @@ from reflexio.server.services.extraction.input_preparation import (
 from reflexio.server.services.extraction.overflow_coordinator import (
     OverflowCoordinator,
     OverflowSuspendedError,
-    legacy_observed_usage,
 )
 from reflexio.server.services.extraction.protected_pass import build_protected_record
 from reflexio.server.services.extraction.resumable_agent import decode_committed_output
@@ -163,7 +161,7 @@ class WindowExecutor:
         return service, request, config
 
     @staticmethod
-    def _bypass_overflow_admission(
+    def _requires_compatibility_execution(
         window: Window,
         known: AgentRunRecord | None,
         manifest: dict[str, Any] | None,
@@ -191,9 +189,18 @@ class WindowExecutor:
             # Preserve the established multimodal prompt and evidence contract.
             # Text-only span witnesses cannot prove facts learned from images.
             return True
-        # Enabling admission cannot strand a validated legacy write plan whose
-        # computation finished before its persistence retry.
-        return manifest is None and window.outcome is not None
+        # Completed marker-free plans keep their original persistence adapter.
+        if manifest is None and window.outcome is not None:
+            return True
+        # Marker-free parents retain their original continuation/publication
+        # adapter, including committed output. Never re-admit historical work.
+        if known is not None and manifest is None:
+            if known.status == AgentRunStatus.FAILED and known.committed_output is None:
+                raise InputBudgetConfigurationError(
+                    "Failed legacy extraction needs explicit recovery; historical quota is unknown"
+                )
+            return True
+        return False
 
     @staticmethod
     def _overflow_manifest(known: AgentRunRecord | None) -> dict[str, Any] | None:
@@ -250,19 +257,10 @@ class WindowExecutor:
         known = self.storage.get_agent_run(f"window:{window.window_id}")
         manifest = self._overflow_manifest(known)
         groups = service.service_config.window_interactions
-        if self._bypass_overflow_admission(window, known, manifest, groups):
+        if self._requires_compatibility_execution(window, known, manifest, groups):
             return None
-        if manifest is None and not env_bool(
-            "REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", default=False
-        ):
-            return None
-        # Legacy unfinished agents keep their established continuation protocol.
-        if known is not None and manifest is None and known.committed_output is None:
-            if known.status == AgentRunStatus.FAILED:
-                raise InputBudgetConfigurationError(
-                    "Failed legacy extraction needs explicit recovery; historical quota is unknown"
-                )
-            return None
+        # The source-preserving coordinator owns all new eligible text work.
+        # Only saved-state and evidence compatibility select another adapter.
         prepared, chunk_tokens, preparation_version = self._prepare_coordinator_sources(
             groups, window.user_id, known, manifest
         )
@@ -326,10 +324,6 @@ class WindowExecutor:
             manifest = OverflowCoordinator.initial_manifest(prepared.source_digest)
             manifest["input_chunk_tokens"] = chunk_tokens
             manifest["preparation_version"] = preparation_version
-            if known is not None:
-                observed = legacy_observed_usage(known.committed_output)
-                if observed is not None:
-                    manifest["legacy_observed_usage"] = observed
             manifest["chunk_digests"] = [
                 OverflowCoordinator.candidate_key(chunk.text)
                 for chunk in prepared.chunks
@@ -339,23 +333,9 @@ class WindowExecutor:
                 self.storage.validate_extraction_source_digest(
                     window, prepared.source_digest
                 )
-                if known is None:
-                    run = replace(expected_run, id=f"window:{window.window_id}")
-                    run.generation_request_snapshot["overflow"] = manifest
-                    known = self.storage.create_agent_run(run)
-                else:
-                    digests = {
-                        str(item.interaction_id): source_interaction_digest(item)
-                        for group in groups
-                        for item in group.interactions
-                    }
-                    manifest = self.storage.adopt_extraction_overflow(
-                        window,
-                        token,
-                        source_digest=prepared.source_digest,
-                        source_digests=digests,
-                        manifest=manifest,
-                    )
+                run = replace(expected_run, id=f"window:{window.window_id}")
+                run.generation_request_snapshot["overflow"] = manifest
+                known = self.storage.create_agent_run(run)
         if known is None:
             raise RuntimeError("Extraction coordinator parent is unavailable")
         turn_seconds = max(240, self.client.config.timeout + 60)

@@ -27,7 +27,6 @@ def test_http_profile_provenance_survives_mixed_merge_and_storage_reopen(
     engine, worker, client = provenance_pipeline
     storage = engine.get_storage()
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     monkeypatch.setenv(
         "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
         '{"minimax/MiniMax-M3":1000000,"gpt-4o":65536}',

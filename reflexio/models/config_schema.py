@@ -909,6 +909,11 @@ class LLMConfig(BaseModel):
     # generation, aggregation and session evaluation, and real evaluations were
     # measured at 145-265s against a local-CLI bridge (claude-smart#162).
     generation_timeout_seconds: int | None = Field(default=None, gt=0)
+    # Explicit tenant output/cost policy, required for opaque custom gateways.
+    # None preserves native provider defaults; never infer it from context size.
+    generation_max_output_tokens: int | None = Field(
+        default=None, gt=0, strict=True, exclude_if=lambda value: value is None
+    )
 
 
 class RetrievalExperimentConfig(BaseModel):

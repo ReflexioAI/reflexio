@@ -84,7 +84,6 @@ def test_malformed_saved_journal_blocks_executor_constructor_and_locked_reservat
 ):
     engine, _, _ = journal_pipeline
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     storage, window, token = _overflow_coordinator(journal_pipeline, attempts=attempts)
     parent = storage.get_agent_run(f"window:{window.window_id}")
     assert parent is not None
@@ -223,7 +222,6 @@ def test_incomplete_checkpoint_blocks_load_and_locked_updates(
 ):
     engine, _, _ = journal_pipeline
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     storage, window, token = _overflow_coordinator(journal_pipeline, attempts=[UNKNOWN])
     parent = storage.get_agent_run(f"window:{window.window_id}")
     assert parent is not None

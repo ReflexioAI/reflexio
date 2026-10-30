@@ -702,3 +702,118 @@ def test_current_file_does_not_silently_accept_retired_consolidation_selector(
     with pytest.raises(StoredConfigurationError):
         LocalConfigFile(path).prepare()
     assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("metadata", [None, {"version": 8}])
+def test_pre_output_budget_files_cannot_activate_previously_ignored_policy(
+    tmp_path, metadata
+):
+    path = tmp_path / "config.json"
+    document = {
+        "storage_config": None,
+        "llm_config": {"generation_max_output_tokens": 1024},
+    }
+    if metadata is not None:
+        document["_reflexio_config_file"] = metadata
+    original = json.dumps(document).encode()
+    path.write_bytes(original)
+    with pytest.raises(StoredConfigurationError, match="ignored"):
+        LocalConfigFile(path).prepare()
+    assert path.read_bytes() == original
+    assert not (tmp_path / ".config-migrations").exists()
+
+
+def test_output_budget_file_upgrade_is_sparse_and_current_writes_preserve_policy(
+    tmp_path,
+):
+    path = tmp_path / "config.json"
+    original = b'{"_reflexio_config_file":{"version":8},"storage_config":null,"llm_config":{"generation_model_name":"gpt-4o"}}'
+    path.write_bytes(original)
+    owner = LocalConfigFile(path)
+    assert owner.prepare()
+    document = owner.read_document()
+    assert "generation_max_output_tokens" not in document["llm_config"]
+    document["llm_config"]["generation_max_output_tokens"] = 1024
+    owner.publish_document(encode_config_document(document))
+    document = owner.read_document()
+    document["window_size"] = 15
+    owner.publish_document(encode_config_document(document))
+    assert owner.read_document()["llm_config"]["generation_max_output_tokens"] == 1024
+    assert not owner.prepare()
+    digest = hashlib.sha256(original).hexdigest()
+    assert (
+        tmp_path / ".config-migrations/config.json" / f"{digest}.json"
+    ).read_bytes() == original
+
+
+def test_previous_file_reader_refuses_current_output_policy(tmp_path):
+    import re
+    import runpy
+
+    from reflexio.config_document import decode_config_document
+
+    path = tmp_path / "config.json"
+    owner = LocalConfigFile(path)
+    owner.publish_document(
+        '{"storage_config":null,"llm_config":{"generation_max_output_tokens":1024}}'
+    )
+    previous = runpy.run_path(
+        str(Path(__file__).parent / "fixtures/config_file_v8_reader.txt"),
+        init_globals={
+            "FILE_FORMAT_VERSION": 8,
+            "_METADATA_KEY": "_reflexio_config_file",
+            "decode_config_document": decode_config_document,
+            "StoredConfigurationError": StoredConfigurationError,
+            "re": re,
+        },
+    )["_decode"]
+    before = path.read_bytes()
+    with pytest.raises(
+        StoredConfigurationError,
+        match="Unrecognized local configuration file generation",
+    ):
+        previous(before)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("version", [None, 8])
+def test_direct_library_storage_load_cannot_activate_ignored_output_policy(
+    tmp_path, version
+):
+    from reflexio.server.services.configurator.local_file_config_storage import (
+        LocalFileConfigStorage,
+    )
+
+    storage = LocalFileConfigStorage("isolated-output-policy", str(tmp_path))
+    path = Path(storage.config_file)
+    path.parent.mkdir(parents=True)
+    document = {
+        "storage_config": None,
+        "llm_config": {"generation_max_output_tokens": 1024},
+    }
+    if version is not None:
+        document["_reflexio_config_file"] = {"version": version}
+    original = json.dumps(document).encode()
+    path.write_bytes(original)
+    with pytest.raises(StoredConfigurationError, match="ignored"):
+        storage.load_config()
+    assert path.read_bytes() == original
+    assert not (path.parent / ".config-migrations").exists()
+
+
+def test_explicit_offline_conversion_adopts_selected_output_budget_without_changing_source(
+    tmp_path,
+):
+    from reflexio.cli.config_upgrade import convert_config_file
+
+    source, output = tmp_path / "old.json", tmp_path / "selected.json"
+    original = b'{"_reflexio_config_file":{"version":8},"storage_config":null,"llm_config":{"generation_max_output_tokens":1024}}'
+    source.write_bytes(original)
+    convert_config_file(source, output)
+    assert source.read_bytes() == original
+    assert (
+        LocalConfigFile(output).read_document()["llm_config"][
+            "generation_max_output_tokens"
+        ]
+        == 1024
+    )

@@ -62,7 +62,6 @@ def test_http_oversized_answer_preserves_qualifier_and_fails_without_dispatch(
         )
     configurator.set_config(configurator.get_config().model_copy(update=updates))
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     monkeypatch.setenv(
         "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
         '{"minimax/MiniMax-M3":1000000,"gpt-4o":65536}',

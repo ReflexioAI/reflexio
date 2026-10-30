@@ -6,6 +6,7 @@ and the _require_storage decorator behavior.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from pydantic import BaseModel
 
 from reflexio.lib._base import (
@@ -427,3 +428,41 @@ def test_other_callers_keep_the_litellm_default() -> None:
     product to fix one slow path.
     """
     assert LiteLLMConfig(model="x").timeout == 120
+
+
+@pytest.mark.parametrize("cap", [None, 1, 1024])
+def test_generation_factories_preserve_explicit_output_policy(cap):
+    from reflexio.server.services.extraction.resume_worker import _create_llm_client
+
+    policy = LLMConfig(generation_max_output_tokens=cap)
+    client = _generation_client_with(policy)
+    assert client.config.max_tokens == cap
+    assert client.config.timeout == GENERATION_TIMEOUT_SECONDS
+    context = MagicMock()
+    context.configurator.get_config.return_value.api_key_config = None
+    context.configurator.get_config.return_value.llm_config = policy
+    with (
+        patch(
+            "reflexio.server.services.extraction.resume_worker.SiteVarManager"
+        ) as manager,
+        patch(
+            "reflexio.server.services.extraction.resume_worker.resolve_model_name",
+            return_value="test-model",
+        ),
+    ):
+        manager.return_value.get_site_var.return_value = {}
+        resumed = _create_llm_client(context)
+    assert resumed.config.max_tokens == cap
+    assert resumed.config.timeout == 120
+
+
+@pytest.mark.parametrize("cap", [0, -1, True, 1.5, "1024"])
+def test_output_policy_requires_positive_integer(cap):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        LLMConfig(generation_max_output_tokens=cap)
+
+
+def test_unset_output_policy_keeps_sparse_serialization():
+    assert "generation_max_output_tokens" not in LLMConfig().model_dump()
