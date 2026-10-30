@@ -144,3 +144,27 @@ def test_other_parse_failures_keep_retrying(
     assert "truncated_requests" not in checkpoint
     assert max(_request_counts(dispatch).values()) > MAX_TRUNCATED_REQUEST_DISPATCHES
     assert "OutputTruncatedRequestError" not in caplog.text
+
+
+def test_request_that_finishes_after_transient_truncation_is_learned(
+    pipeline, monkeypatch, caplog
+):
+    """Reasoning truncation is often transient; a later identical dispatch can finish."""
+    truncate = _failing_extraction("length", "")
+    sent: dict[str, int] = {}
+
+    def respond(params, hard_timeout):
+        if _extraction_request(params):
+            key = json.dumps(params.get("messages"), sort_keys=True, default=str)
+            sent[key] = sent.get(key, 0) + 1
+            # Every request is cut off until its last allowed dispatch.
+            if sent[key] < MAX_TRUNCATED_REQUEST_DISPATCHES:
+                return truncate(params, hard_timeout)
+        return _respond(params, hard_timeout)
+
+    storage, window_id, dispatch = _run(pipeline, monkeypatch, respond)
+    assert max(_request_counts(dispatch).values()) == MAX_TRUNCATED_REQUEST_DISPATCHES
+    assert MAX_TRUNCATED_REQUEST_DISPATCHES > 2
+    assert storage.extraction_status("u", "truncated")["status"] == "done"
+    assert storage.count_all_profiles() > 0
+    assert "OutputTruncatedRequestError" not in caplog.text
