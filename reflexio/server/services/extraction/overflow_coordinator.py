@@ -82,10 +82,11 @@ def legacy_observed_usage(payload: dict[str, Any] | None) -> dict[str, int] | No
 
 
 # Dispatches of one byte-identical request allowed after its responses were
-# cut off by the output limit: the first call and the client's own re-issue.
-# A third identical dispatch repeats the same truncation, so the window is held
-# instead of spending the rest of its attempt budget.
-MAX_TRUNCATED_REQUEST_DISPATCHES = 2
+# cut off by the output limit. Reasoning models truncate stochastically: the
+# same request often finishes on a later dispatch (each further one succeeded
+# about a fifth of the time in production), so a few are worth spending before
+# the window is held instead of exhausting the rest of its attempt budget.
+MAX_TRUNCATED_REQUEST_DISPATCHES = 4
 
 
 current_overflow_coordinator: ContextVar[OverflowCoordinator | None] = ContextVar(
