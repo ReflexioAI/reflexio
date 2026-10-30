@@ -247,9 +247,6 @@ class RetrievedLearning(CapturesUnknownFields):
         learning_id (str): Stable storage id — ``profile_id`` for profiles,
             ``user_playbook_id`` for user playbooks, ``agent_playbook_id``
             for agent playbooks (numeric ids as decimal strings).
-        loaded (bool | None): True when the agent explicitly opened this
-            learning's full text after it was injected; False when it was
-            known not to; None (omitted) when the caller does not report it.
     """
 
     kind: RetrievedLearningKind
@@ -260,7 +257,6 @@ class RetrievedLearning(CapturesUnknownFields):
     exposure_receipt_digest: str | None = Field(
         default=None, pattern=r"^[0-9a-f]{64}$", exclude_if=lambda value: value is None
     )
-    loaded: bool | None = Field(default=None, exclude_if=lambda value: value is None)
     _stored_receipt_identity: tuple[str, str, str | None] | None = PrivateAttr(
         default=None
     )
