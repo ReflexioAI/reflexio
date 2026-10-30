@@ -478,6 +478,11 @@ The shared legacy boolean parser lives in [env_utils.py](reflexio/env_utils.py)
 so launchers can reuse it without importing server startup. The existing
 `reflexio.server.env_utils.env_truthy` import remains a compatibility export.
 
+The [native CLI launch owner](reflexio/server/llm/_native_cli.py) keeps immediate
+Claude/Codex/OpenClaw processes and their files owned after an isolated SDK worker
+exits. See [worker ownership](docs/completion-worker-ownership.md) for guarantees
+and descendant limits. Timeout grace remains supported.
+
 See [developer.md](developer.md) for project structure, supported LLM providers, and development setup.
 
 ## Documentation

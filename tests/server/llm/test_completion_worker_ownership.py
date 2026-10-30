@@ -141,7 +141,7 @@ def test_start_failure_closes_unstarted_worker_and_queue(monkeypatch, provider_p
     result_queue.join_thread.assert_called_once()
 
 
-def _publish_then_linger(_params, result_queue, _deadline):
+def _publish_then_linger(_params, result_queue, _deadline, _native_context=None):
     result_queue.put(("ok", {"pid": os.getpid(), "value": "ready"}))
     time.sleep(10)
 

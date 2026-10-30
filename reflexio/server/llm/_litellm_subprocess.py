@@ -31,13 +31,20 @@ from litellm.exceptions import ContextWindowExceededError
 
 from reflexio.server.llm._litellm_types import LLMHardTimeoutError, completion_metadata
 from reflexio.server.llm._model_compat import model_completion
+from reflexio.server.llm._native_cli import (
+    NativeCLIContext,
+    NativeCLIOwner,
+    native_cli_worker,
+)
 from reflexio.server.llm._provider_concurrency import retain_current_provider_slot
 
 logger = logging.getLogger(__name__)
 
 
 def retire_completion_worker(
-    process: BaseProcess, result_queue: multiprocessing.Queue
+    process: BaseProcess,
+    result_queue: multiprocessing.Queue,
+    native_owner: NativeCLIOwner | None = None,
 ) -> None:
     """Stop a completed/abandoned call; hold admission until its worker is reaped.
 
@@ -62,6 +69,9 @@ def retire_completion_worker(
                     "event=completion_worker_exit_collected_elsewhere pid=%s",
                     process.pid,
                 )
+            finally:
+                if native_owner is not None:
+                    native_owner.worker_exited()
 
     if process.pid is None:
         close_handles()
@@ -328,7 +338,10 @@ def _register_local_cli_providers() -> None:
 
 
 def _litellm_completion_worker(
-    params: dict[str, Any], result_queue: multiprocessing.Queue, deadline: float
+    params: dict[str, Any],
+    result_queue: multiprocessing.Queue,
+    deadline: float,
+    native_context: NativeCLIContext | None = None,
 ) -> None:
     _reset_llm_client_state_after_fork()
     _register_local_cli_providers()
@@ -337,6 +350,7 @@ def _litellm_completion_worker(
             raise LLMHardTimeoutError(
                 "LLM request deadline expired during child startup"
             )
+        native_cli_worker(native_context, result_queue, deadline)
         result_queue.put(("ok", _picklable_completion_result(model_completion(params))))
     except BaseException as exc:
         result_queue.put(("error", _snapshot_completion_error(exc, params)))

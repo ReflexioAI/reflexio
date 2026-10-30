@@ -227,7 +227,7 @@ def test_isolated_capacity_classifier_does_not_guess_from_code_or_message(
     process_context = multiprocessing.get_context("fork")
     monkeypatch.setattr(module.multiprocessing, "get_context", lambda: process_context)
 
-    def reject_worker(_params, result_queue, _deadline):
+    def reject_worker(_params, result_queue, _deadline, _native_context=None):
         result_queue.put(("error", snapshot))
 
     monkeypatch.setattr(module, "_litellm_completion_worker", reject_worker)

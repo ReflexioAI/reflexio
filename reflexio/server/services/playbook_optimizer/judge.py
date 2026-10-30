@@ -12,8 +12,11 @@ import litellm
 from reflexio.models.api_schema.domain import AgentPlaybook
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm import _litellm_structured_output as structured_output_module
+from reflexio.server.llm import _litellm_subprocess as worker_module
 from reflexio.server.llm import _litellm_text_generation as text_generation_module
+from reflexio.server.llm import _native_cli as native_cli_module
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.llm.providers import claude_code_provider, openclaw_provider
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.service_utils import log_model_response
 
@@ -429,6 +432,36 @@ def _implementation_helper_identities() -> dict[str, dict[str, str]]:
         "text_generation._litellm_completion_worker": (
             text_generation_module._litellm_completion_worker
         ),
+        "text_generation.retire_completion_worker": text_generation_module.retire_completion_worker,
+        "native_cli.run_native_cli": native_cli_module.run_native_cli,
+        "native_cli.native_cli_worker": native_cli_module.native_cli_worker,
+        "worker.native_cli_worker": worker_module.native_cli_worker,
+        "claude_code_provider.native_cli_directory": claude_code_provider.native_cli_directory,
+        "native_cli.native_cli_directory": native_cli_module.native_cli_directory,
+        "native_cli._remaining": native_cli_module._remaining,
+        "native_cli._publish": native_cli_module._publish,
+        "native_cli.NativeCLIContext": native_cli_module.NativeCLIContext,
+        "native_cli._WorkerContext": native_cli_module._WorkerContext,
+        "native_cli._NativeTask": native_cli_module._NativeTask,
+        "claude_code_provider.run_native_cli": claude_code_provider.run_native_cli,
+        "openclaw_provider.run_native_cli": openclaw_provider.run_native_cli,
+        **{
+            f"native_cli.NativeCLIOwner.{name}": getattr(
+                text_generation_module.NativeCLIOwner, name
+            )
+            for name in (
+                "__init__",
+                "create_worker",
+                "worker_started",
+                "close",
+                "worker_exited",
+                "_cleanup_if_finished",
+                "dispatch",
+                "_finish",
+                "_execute",
+                "_run",
+            )
+        },
         "text_generation.default_max_tokens_for_model": (
             text_generation_module.default_max_tokens_for_model
         ),

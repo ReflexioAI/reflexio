@@ -71,7 +71,18 @@ def _freeze(
 
 @pytest.mark.parametrize(
     "drift",
-    ["instance_method", "helper", "config", "seed", "grace", "prompt_version"],
+    [
+        "instance_method",
+        "helper",
+        "config",
+        "seed",
+        "grace",
+        "prompt_version",
+        "native_launch",
+        "native_retirement",
+        "native_worker_alias",
+        "native_directory_alias",
+    ],
 )
 def test_pairwise_judge_rejects_frozen_plan_drift_before_provider_execution(
     monkeypatch, drift
@@ -98,6 +109,16 @@ def test_pairwise_judge_rejects_frozen_plan_drift_before_provider_execution(
             "build_pairwise_judge_request_plan",
             Mock(return_value=frozen_plan),
         )
+    elif drift == "native_launch":
+        monkeypatch.setattr(judge_module.claude_code_provider, "run_native_cli", Mock())
+    elif drift == "native_worker_alias":
+        monkeypatch.setattr(judge_module.worker_module, "native_cli_worker", Mock())
+    elif drift == "native_directory_alias":
+        monkeypatch.setattr(
+            judge_module.claude_code_provider, "native_cli_directory", Mock()
+        )
+    elif drift == "native_retirement":
+        monkeypatch.setattr(generation.NativeCLIOwner, "_run", Mock())
     elif drift == "config":
         client.config.top_p = 0.25
     elif drift == "seed":

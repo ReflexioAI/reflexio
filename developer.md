@@ -16,6 +16,7 @@ reflexio/
 │   │   ├── api_endpoints/ # Route handlers
 │   │   ├── services/      # Business logic and storage
 │   │   ├── llm/           # LLM provider integration
+│   │   │   └── _native_cli.py # Parent-owned immediate CLI launch/reaping
 │   │   ├── prompt/        # Prompt templates
 │   │   └── site_var/      # Site configuration
 │   └── test_support/      # Testing utilities
@@ -1480,3 +1481,22 @@ budget, including transaction cleanup. Milliseconds and per-statement semantics
 cannot be copied losslessly into seconds and whole-borrow semantics. Adopt the
 matching storage release with this SDK; this registry does not implement a
 connection lease or introduce a runtime alias.
+
+
+### Native provider CLI ownership
+
+Local Claude, Codex and OpenClaw commands use the shared private launcher in
+`reflexio/server/llm/_native_cli.py`. With completion isolation active, the parent
+owns the immediate native process and retains its provider permit through actual
+exit; SDK hooks and interpretation stay in the isolated worker. Native startup
+and communication consume the original worker deadline, additionally bounded by
+the existing CLI-specific timeout. Codex output files share the parent-owned
+attempt lifetime. Grace remains supported and this repair removes no inputs.
+See [completion worker ownership](docs/completion-worker-ownership.md) for early
+cancellation, uninterruptible startup and descendant/pipe limitations.
+
+Verify real local native-child behavior without paid providers:
+`uv run pytest tests/server/llm/test_native_cli_ownership.py -o addopts=`.
+The same file is selected by Windows local diagnostics; POSIX-only race cases are
+marked explicitly, while spawn, data transport, error, worker-death and temporary
+file ownership run on supported platforms.
