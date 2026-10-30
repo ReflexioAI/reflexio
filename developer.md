@@ -276,7 +276,10 @@ Never change env variable values in `.env` directly for port overrides — use s
 ### Extraction rollout upgrade
 
 New eligible text windows use the durable source-preserving coordinator in all
-deployment modes. Old `REFLEXIO_EXTRACTION_OVERFLOW_ENABLED` assignments no
+deployment modes. Opaque host-CLI providers and provider cohorts without an
+extraction-agent role retain their existing ordinary adapter; the server does
+not invent token-capacity, output-cap or usage guarantees for those routes.
+Saved protocol parents never switch adapters when provider configuration changes. Old `REFLEXIO_EXTRACTION_OVERFLOW_ENABLED` assignments no
 longer affect execution and have no replacement. Removing them is optional
 cleanup; ordinary upgrades remain image replacement and restart.
 Existing protocol journals and legacy continuations retain their original
@@ -293,7 +296,12 @@ ordinary reads and automatic preparation refuse to activate it.
 Stop older writers before upgrade; restore original settings before rollback.
 Unknown or insufficient capacity blocks dispatch and preserves the input for
 recovery; disabling admission is no longer an escape from that check. Standard
-provider models retain their advertised-capacity lookup. This upgrade does not
+provider models retain their advertised-capacity lookup. An automatically
+reserved native output maximum is bounded by the complete prompt's remaining
+context headroom; explicit tenant/call caps are unchanged. The built-in Z.ai
+route shares endpoint resolution with admission and does not need an opaque
+custom-gateway declaration. Similar URLs and conflicting route aliases remain
+untrusted. This upgrade does not
 activate the separate shared-input compressor/package executor.
 
 ## Supported LLM Providers

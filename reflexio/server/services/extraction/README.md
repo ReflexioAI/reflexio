@@ -225,7 +225,10 @@ Existing owner proof remains required for legacy playbook records.
 ### Standard source-preserving extraction
 
 The window executor admits new eligible text work through the source-preserving
-coordinator in every deployment mode. The completed rollout switch
+coordinator in every deployment mode when the resolved provider cohort supports
+its agent stages and request budgeting. Opaque host CLIs and cohorts without an
+extraction-agent role retain their existing adapters for new work; admitted
+parents never switch adapters. The completed rollout switch
 `REFLEXIO_EXTRACTION_OVERFLOW_ENABLED` is removed; old assignments are ignored.
 Saved protocol markers are validated before selecting an execution adapter.
 Marker-free unfinished continuations, cached ordinary results, image evidence
@@ -259,7 +262,9 @@ The generation factory carries the tenant
 `llm_config.generation_max_output_tokens` into its client defaults. Custom
 gateways require this explicit positive output/cost budget; context declarations
 do not imply it. Native overflow requests without a configured output cap explicitly request the
-model's advertised output maximum before admission. Configured caps are preserved;
+model's advertised output maximum, bounded by the complete counted prompt's
+remaining native context headroom, before admission. This introduces no fixed
+output/cost cap. Configured caps are preserved;
 custom endpoints require their own positive request/client cap and context
 capacity declaration. Other calls retain their original provider defaults.
 

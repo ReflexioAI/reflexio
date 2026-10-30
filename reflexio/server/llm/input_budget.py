@@ -13,6 +13,7 @@ from reflexio.server.llm._litellm_types import (
     ProviderRequestGuard,
     ProviderRequestGuardError,
 )
+from reflexio.server.llm.model_defaults import default_completion_api_base
 from reflexio.server.llm.token_accounting import RunTokenTotals
 
 # Scoped to one logical extraction; copied worker contexts carry the same
@@ -114,6 +115,19 @@ def declared_context_limits(raw: str) -> dict[str, int]:
     return value
 
 
+def _is_custom_endpoint(params: Mapping[str, Any]) -> bool:
+    api_base, base_url = params.get("api_base"), params.get("base_url")
+    if api_base and base_url and str(api_base).rstrip("/") != str(base_url).rstrip("/"):
+        raise InputBudgetConfigurationError(
+            "Conflicting provider endpoint declarations"
+        )
+    api_base = api_base or base_url
+    native = default_completion_api_base(str(params.get("model", "")))
+    return bool(api_base) and not (
+        native and isinstance(api_base, str) and api_base.rstrip("/") == native
+    )
+
+
 def supply_extraction_output_reservation(params: dict[str, Any]) -> None:
     """Bound uncapped native requests without replacing configured output caps.
 
@@ -125,18 +139,30 @@ def supply_extraction_output_reservation(params: dict[str, Any]) -> None:
         or params.get("max_tokens") is not None
     ):
         return
-    if params.get("api_base") or params.get("base_url"):
+    if _is_custom_endpoint(params):
         raise InputBudgetConfigurationError(
             "Custom endpoint requires an explicit output reservation"
         )
     try:
-        maximum = litellm.get_model_info(params["model"]).get("max_output_tokens")
+        info = litellm.get_model_info(params["model"])
+        maximum = info.get("max_output_tokens")
     except Exception as exc:
         raise InputBudgetConfigurationError(
             "Effective output reservation is required"
         ) from exc
     if type(maximum) is not int or maximum <= 0:
         raise InputBudgetConfigurationError("Effective output reservation is required")
+    context = info.get("max_input_tokens")
+    if type(context) is int and context > 0:
+        # This is the physical maximum for this complete request, not a new
+        # cost policy or fixed output fraction. Explicit caller caps never enter
+        # this branch. Retain the existing counting margin and prompt target.
+        remaining = context - measure_request_input_tokens(params)
+        if remaining <= 0:
+            raise InputBudgetExceededError(
+                "Complete extraction prompt exhausts native context capacity"
+            )
+        maximum = min(maximum, remaining)
     key = "max_completion_tokens" if "max_completion_tokens" in params else "max_tokens"
     params[key] = maximum
 
@@ -197,8 +223,11 @@ def request_input_capacity(
     api_base = params.get("api_base") or params.get("base_url")
     key = f"{model}@{api_base}" if api_base else model
     context_limit = context_limits.get(key)
+    custom_endpoint = _is_custom_endpoint(params)
+    if context_limit is None and not custom_endpoint and api_base:
+        context_limit = context_limits.get(model)
     if context_limit is None:
-        if api_base:
+        if custom_endpoint:
             raise InputBudgetConfigurationError(
                 "Custom endpoint requires a context declaration"
             )
