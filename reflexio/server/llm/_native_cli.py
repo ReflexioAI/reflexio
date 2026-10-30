@@ -6,24 +6,35 @@ its isolated worker. This is not containment of arbitrary CLI descendants.
 
 from __future__ import annotations
 
+import hashlib
+import locale
 import logging
 import math
 import os
 import pickle
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from reflexio.server.llm._litellm_types import LLMHardTimeoutError
+from reflexio.server.llm._native_cli_process import _publish
 from reflexio.server.llm._provider_concurrency import retain_current_provider_slot
 
 logger = logging.getLogger(__name__)
 NATIVE_CLI_REQUEST = "native_cli"
+_NATIVE_OWNER_SCRIPT = Path(__file__).with_name("_native_cli_process.py")
+
+
+def native_owner_identity() -> dict[str, str]:
+    """Bind the exact script executed by the fresh owner, not cached imports."""
+    return {"sha256": hashlib.sha256(_NATIVE_OWNER_SCRIPT.read_bytes()).hexdigest()}
 
 
 @dataclass(frozen=True)
@@ -70,14 +81,6 @@ def _remaining(deadline: float) -> float:
     return remaining
 
 
-def _publish(path: Path, value: Any) -> None:
-    temporary = path.with_suffix(".tmp")
-    with temporary.open("xb") as stream:
-        temporary.chmod(0o600)
-        pickle.dump(value, stream)
-    temporary.replace(path)
-
-
 def run_native_cli(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
     """Run the providers' captured-text commands, delegated inside a worker."""
     if (
@@ -100,11 +103,17 @@ def run_native_cli(argv: list[str], **kwargs: Any) -> subprocess.CompletedProces
         worker.counter += 1
         counter = worker.counter
         directory = Path(worker.context.directory)
+        encoding = kwargs.get("encoding")
+        if encoding is None:
+            encoding = "utf-8" if sys.flags.utf8_mode else locale.getencoding()
+        elif encoding == "locale":
+            encoding = locale.getencoding()
         request = {
             "counter": counter,
             "argv": argv,
             "kwargs": {
                 **kwargs,
+                "encoding": encoding,
                 "cwd": str(Path.cwd()) if kwargs.get("cwd") is None else kwargs["cwd"],
                 "env": dict(os.environ) if kwargs.get("env") is None else kwargs["env"],
             },
@@ -147,7 +156,7 @@ class _NativeTask:
     release: Any
     state: str = "created"
     exit_confirmed: bool = True
-    process: subprocess.Popen[str] | None = None
+    process: subprocess.Popen[bytes] | None = None
 
 
 class NativeCLIOwner:
@@ -194,6 +203,11 @@ class NativeCLIOwner:
         """Revoke launch admission without waiting for native startup or cleanup."""
         with self._lock:
             self._closed = True
+        # Already retired attempts have no native process left to cancel.
+        with suppress(OSError):
+            (Path(self.context.directory) / "cancelled").touch(
+                mode=0o600, exist_ok=True
+            )
 
     def worker_exited(self) -> None:
         with self._lock:
@@ -260,13 +274,7 @@ class NativeCLIOwner:
         try:
             directory = Path(self.context.directory)
             try:
-                with (directory / f"request-{counter}.pickle").open("rb") as stream:
-                    request = pickle.load(stream)  # noqa: S301 — private attempt files
-                (directory / f"request-{counter}.pickle").unlink()
-                if request["counter"] != counter:
-                    raise RuntimeError("Native CLI request file identity mismatch")
-                result = self._run(request, task)
-                status = "ok"
+                result, status = self._run(counter, task)
             except Exception as exc:
                 result, status = exc, "error"
             if not task.exit_confirmed:
@@ -292,56 +300,40 @@ class NativeCLIOwner:
             if task.exit_confirmed:
                 self._finish(counter, task)
 
-    def _run(
-        self, request: dict[str, Any], task: _NativeTask
-    ) -> subprocess.CompletedProcess[str]:
-        deadline = min(self.deadline, request["deadline"])
-        try:
-            _remaining(deadline)
-        except LLMHardTimeoutError as exc:
-            raise subprocess.TimeoutExpired(
-                request["argv"], request["kwargs"]["timeout"]
-            ) from exc
-        with self._lock:
-            if self._closed:
-                raise LLMHardTimeoutError("Native CLI launch cancelled")
-        kwargs = dict(request["kwargs"])
-        argv = request["argv"]
-        input_text = kwargs.pop("input", None)
-        timeout = kwargs.pop("timeout")
-        kwargs.pop("check", None)
-        kwargs.pop("capture_output", None)
-        process = subprocess.Popen(  # noqa: S603 — same validated provider argv
-            argv,
-            stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            **kwargs,
-        )
-        task.process = process
+    def _run(self, counter: int, task: _NativeTask) -> tuple[Any, str]:
+        """Retain the fresh launch owner until its terminal cleanup receipt."""
         task.exit_confirmed = False
         try:
-            with self._lock:
-                closed = self._closed
-            if closed:
-                raise LLMHardTimeoutError(
-                    "Native CLI launch completed after cancellation"
-                )
-            stdout, stderr = process.communicate(
-                input_text, timeout=_remaining(deadline)
+            # The helper needs only stdlib: use the underlying interpreter, not
+            # a venv redirector, and never re-execute an embedding app's main.
+            python = vars(sys).get("_base_executable") or sys.executable
+            broker = subprocess.Popen(  # noqa: S603 — owned stdlib-only helper
+                [
+                    python,
+                    "-I",
+                    "-S",
+                    str(_NATIVE_OWNER_SCRIPT),
+                    self.context.directory,
+                    str(counter),
+                    repr(self.deadline),
+                ],
+                stdin=subprocess.DEVNULL,
+                close_fds=True,
             )
+        except OSError:
             task.exit_confirmed = True
-            return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
-        except BaseException as exc:
-            process.kill()
-            process.wait()
-            task.exit_confirmed = True
-            if isinstance(exc, LLMHardTimeoutError):
-                raise subprocess.TimeoutExpired(argv, timeout) from exc
-            if isinstance(exc, subprocess.TimeoutExpired):
-                exc.timeout = timeout
             raise
-        finally:
-            for stream in (process.stdin, process.stdout, process.stderr):
-                if stream is not None:
-                    stream.close()
+        task.process = broker
+        broker.wait()
+        receipt = Path(self.context.directory) / f"retired-{counter}.pickle"
+        if not receipt.is_file():
+            raise RuntimeError(
+                "Native launch owner exited without a cleanup receipt; admission retained"
+            )
+        with receipt.open("rb") as stream:
+            identity, status, result = pickle.load(stream)  # noqa: S301 — private attempt files
+        if identity != counter or status not in {"ok", "error"}:
+            raise RuntimeError("Native cleanup receipt identity mismatch")
+        task.exit_confirmed = True
+        receipt.unlink()
+        return result, status

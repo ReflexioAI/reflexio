@@ -1319,8 +1319,10 @@ class TextGenerationMixin:
                 raise LiteLLMClientError("Unknown isolated completion result kind")
             _raise_completion_error(payload)
         finally:
-            native_owner.close()
-            retire_completion_worker(process, result_queue, native_owner)
+            try:
+                native_owner.close()
+            finally:
+                retire_completion_worker(process, result_queue, native_owner)
 
     def _hard_timeout_grace_seconds(self) -> float:
         raw = os.environ.get("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5") or "5"

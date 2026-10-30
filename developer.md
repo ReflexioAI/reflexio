@@ -16,7 +16,8 @@ reflexio/
 │   │   ├── api_endpoints/ # Route handlers
 │   │   ├── services/      # Business logic and storage
 │   │   ├── llm/           # LLM provider integration
-│   │   │   └── _native_cli.py # Parent-owned immediate CLI launch/reaping
+│   │   │   ├── _native_cli.py # Native launch protocol and retained controller
+│   │   │   └── _native_cli_process.py # Fresh stdlib-only native process owner
 │   │   ├── prompt/        # Prompt templates
 │   │   └── site_var/      # Site configuration
 │   └── test_support/      # Testing utilities
@@ -1485,13 +1486,20 @@ connection lease or introduce a runtime alias.
 
 ### Native provider CLI ownership
 
-Local Claude, Codex and OpenClaw commands use the shared private launcher in
-`reflexio/server/llm/_native_cli.py`. With completion isolation active, the parent
-owns the immediate native process and retains its provider permit through actual
-exit; SDK hooks and interpretation stay in the isolated worker. Native startup
-and communication consume the original worker deadline, additionally bounded by
-the existing CLI-specific timeout. Codex output files share the parent-owned
-attempt lifetime. Grace remains supported and this repair removes no inputs.
+Local Claude, Codex and OpenClaw commands use the shared private controller in
+`reflexio/server/llm/_native_cli.py` and fresh stdlib-only launch owner in
+`_native_cli_process.py`. SDK hooks and interpretation remain in their existing
+worker; its start method and inherited programmatic state are unchanged. Native
+pipes exist only in the fresh owner, preventing another forked SDK worker from
+retaining their writers. The owner is executed directly with `-I -S`, without
+re-importing the embedding application. Existing text encoding is captured in
+the SDK worker rather than re-selected by the isolated helper.
+
+Provider permits and Codex output files remain owned until actual native cleanup
+is acknowledged by a matching terminal receipt and launch-owner exit. Missing or
+foreign receipts and unknown exit fail closed with the actual owner retained.
+Startup and communication spend the original worker deadline, tightened by the
+existing CLI allowance. Grace stays supported; this repair removes no inputs.
 See [completion worker ownership](docs/completion-worker-ownership.md) for early
 cancellation, uninterruptible startup and descendant/pipe limitations.
 
