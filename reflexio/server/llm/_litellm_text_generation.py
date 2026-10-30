@@ -1018,7 +1018,13 @@ class TextGenerationMixin:
             params["temperature"] = 0.0
 
         max_tokens = kwargs.pop("max_tokens", self.config.max_tokens)
-        if max_tokens is None:
+        # An opaque gateway cannot inherit a native provider output/cost policy.
+        custom_extraction = extraction_provider_guard.get() is not None and (
+            (self.config.api_key_config and self.config.api_key_config.custom_endpoint)
+            or kwargs.get("api_base")
+            or kwargs.get("base_url")
+        )
+        if max_tokens is None and not custom_extraction:
             # Provider-level guard: some providers (MiniMax-M3) stall into the
             # request timeout when max_tokens is omitted. See model_defaults.
             max_tokens = default_max_tokens_for_model(actual_model)

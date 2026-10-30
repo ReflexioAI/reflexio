@@ -330,3 +330,30 @@ def test_contract_canonicalizes_actual_pydantic_passthrough_schema(monkeypatch):
     two = client.get_completion_request_contract(response_format=Text)
     assert one["generation_policy_digest"] != two["generation_policy_digest"]
     assert one == client.get_completion_request_contract(response_format=Count)
+
+
+@pytest.mark.parametrize("model", ["minimax/MiniMax-M3", "zai/glm-4.7"])
+@pytest.mark.parametrize("route", ["api_base", "base_url"])
+def test_custom_extraction_route_cannot_inherit_native_output_default(model, route):
+    from unittest.mock import Mock
+
+    from reflexio.server.llm.input_budget import (
+        InputBudgetConfigurationError,
+        extraction_provider_guard,
+    )
+
+    client = LiteLLMClient(
+        LiteLLMConfig(model=model, max_tokens=None, fallback_models=[])
+    )
+    token = extraction_provider_guard.set(Mock())
+    try:
+        with pytest.raises(
+            InputBudgetConfigurationError, match="explicit output reservation"
+        ):
+            client._build_completion_params([], **{route: "https://custom.invalid/v1"})
+        params = client._build_completion_params(
+            [], **{route: "https://custom.invalid/v1", "max_tokens": 1024}
+        )[0]
+        assert params["max_tokens"] == 1024
+    finally:
+        extraction_provider_guard.reset(token)

@@ -19,10 +19,13 @@ from tests.server.services.test_durable_window_pipeline import pipeline as pipel
 
 
 @pytest.mark.parametrize(
+    "model", ["openai/gpt-4o", "minimax/MiniMax-M3", "zai/glm-4.7"]
+)
+@pytest.mark.parametrize(
     "mode", ["recover", "policy_changed", "capacity", "operator_capacity", "output_cap"]
 )
 def test_corrected_context_declaration_resumes_only_the_original_contract(
-    pipeline, monkeypatch, mode
+    pipeline, monkeypatch, mode, model
 ):
     engine, worker, http = pipeline
     capacity_mode = mode in {"capacity", "operator_capacity"}
@@ -33,7 +36,6 @@ def test_corrected_context_declaration_resumes_only_the_original_contract(
     monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: started + elapsed[0])
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     endpoint = "https://custom.invalid/v1"
-    model = "openai/gpt-4o"
     declaration_key = f"{model}@{endpoint}"
     # This test stubs every provider dispatch. Keep endpoint safety validation
     # active while making its public DNS answer deterministic and network-free.
