@@ -62,6 +62,12 @@ def test_is_a_noop_when_no_session_patcher_is_registered(
 ) -> None:
     """An e2e-path invocation never starts one; suspending must still be safe."""
     monkeypatch.setattr(llm_mock, "_litellm_patcher", None)
+    monkeypatch.setattr(llm_mock, "_completion_executor_patcher", None)
+    monkeypatch.setattr(
+        llm_mock.TextGenerationMixin,
+        "_execute_completion",
+        llm_mock._ISOLATED_COMPLETION_EXECUTION,
+    )
 
     with unpatched_litellm():
         pass
@@ -80,6 +86,12 @@ def test_clears_a_stale_flag_left_without_a_session_patcher(
     the flag still takes its mock path.
     """
     monkeypatch.setattr(llm_mock, "_litellm_patcher", None)
+    monkeypatch.setattr(llm_mock, "_completion_executor_patcher", None)
+    monkeypatch.setattr(
+        llm_mock.TextGenerationMixin,
+        "_execute_completion",
+        llm_mock._ISOLATED_COMPLETION_EXECUTION,
+    )
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "true")
 
     with unpatched_litellm():
@@ -93,6 +105,12 @@ def test_leaves_no_flag_behind_when_none_was_set(
 ) -> None:
     """Restoring an absent prior value means removing it, not writing 'false'."""
     monkeypatch.setattr(llm_mock, "_litellm_patcher", None)
+    monkeypatch.setattr(llm_mock, "_completion_executor_patcher", None)
+    monkeypatch.setattr(
+        llm_mock.TextGenerationMixin,
+        "_execute_completion",
+        llm_mock._ISOLATED_COMPLETION_EXECUTION,
+    )
     monkeypatch.delenv("MOCK_LLM_RESPONSE", raising=False)
 
     with unpatched_litellm():
@@ -122,6 +140,12 @@ def test_assert_unpatched_rejects_a_set_flag_with_the_patcher_off(
     # without ever reaching the flag check it exists to cover.
     monkeypatch.setattr(litellm, "completion", _real_looking_completion)
     monkeypatch.setattr(llm_mock, "_litellm_patcher", None)
+    monkeypatch.setattr(llm_mock, "_completion_executor_patcher", None)
+    monkeypatch.setattr(
+        llm_mock.TextGenerationMixin,
+        "_execute_completion",
+        llm_mock._ISOLATED_COMPLETION_EXECUTION,
+    )
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "true")
 
     assert litellm_is_patched() is False
@@ -129,7 +153,7 @@ def test_assert_unpatched_rejects_a_set_flag_with_the_patcher_off(
         assert_litellm_unpatched()
 
 
-def test_assert_unpatched_passes_when_both_mechanisms_are_off(
+def test_assert_unpatched_passes_when_all_mock_mechanisms_are_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Guards the inverse, so the check above cannot pass by always raising."""
@@ -137,6 +161,12 @@ def test_assert_unpatched_passes_when_both_mechanisms_are_off(
 
     monkeypatch.setattr(litellm, "completion", _real_looking_completion)
     monkeypatch.setattr(llm_mock, "_litellm_patcher", None)
+    monkeypatch.setattr(llm_mock, "_completion_executor_patcher", None)
+    monkeypatch.setattr(
+        llm_mock.TextGenerationMixin,
+        "_execute_completion",
+        llm_mock._ISOLATED_COMPLETION_EXECUTION,
+    )
     monkeypatch.delenv("MOCK_LLM_RESPONSE", raising=False)
 
     assert_litellm_unpatched()

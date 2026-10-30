@@ -93,7 +93,6 @@ def test_preparation_workers_preserve_and_isolate_caller_context(
             _prepared_agent_playbooks=lambda: {},
             llm_client=SimpleNamespace(
                 config=SimpleNamespace(fallback_models=[]),
-                _hard_timeout_grace_seconds=lambda: 1,
             ),
         )
         row = _row(kind)

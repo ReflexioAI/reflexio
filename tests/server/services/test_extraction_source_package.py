@@ -245,7 +245,7 @@ def test_complete_native_profile_requests_supply_window_cost(monkeypatch):
 
     actual = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3", max_tokens=8192))
     transport = Mock(side_effect=AssertionError("Planning must not dispatch"))
-    monkeypatch.setattr(actual, "_completion_with_hard_timeout", transport)
+    monkeypatch.setattr(actual, "_completion_with_deadline", transport)
     manager = PromptManager()
     original = group()
     original.interactions[0].content = "Production requires separate approval."

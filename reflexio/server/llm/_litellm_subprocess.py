@@ -3,7 +3,7 @@
 The picklable ``_Completion*Snapshot`` dataclasses plus the
 snapshot builders and the ``_litellm_completion_worker`` that runs
 ``litellm.completion`` inside a child process. Used by ``TextGenerationMixin``'s
-``_completion_with_hard_timeout`` which sizes the subprocess deadline. The parent
+``_completion_with_deadline`` which sizes the subprocess deadline. The parent
 retires every worker through one helper; asynchronous reaping retains its existing
 provider permit until process exit, without extending caller latency.
 
@@ -18,6 +18,7 @@ the worker constructs and tests ``isinstance``-check. Bodies moved VERBATIM.
 """
 
 import logging
+import math
 import multiprocessing
 import pickle
 import threading
@@ -32,6 +33,7 @@ from litellm.exceptions import ContextWindowExceededError
 from reflexio.server.llm._litellm_types import LLMHardTimeoutError, completion_metadata
 from reflexio.server.llm._model_compat import model_completion
 from reflexio.server.llm._provider_concurrency import retain_current_provider_slot
+from reflexio.server.llm.call_deadline import model_deadline
 
 logger = logging.getLogger(__name__)
 
@@ -327,6 +329,23 @@ def _register_local_cli_providers() -> None:
     register_openclaw()
 
 
+def completion_params_before_deadline(
+    params: dict[str, Any], deadline: float, *, now: float | None = None
+) -> dict[str, Any]:
+    """Give provider I/O only the positive remainder, without mutating policy."""
+    remaining = deadline - (time.monotonic() if now is None else now)
+    if not math.isfinite(remaining):
+        raise ValueError("LLM execution requires a finite attempt deadline")
+    if remaining <= 0:
+        raise LLMHardTimeoutError(
+            "LLM request deadline expired before provider dispatch"
+        )
+    timeout = min(float(params.get("timeout", remaining)), remaining)
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("LLM provider timeout must be finite and positive")
+    return {**params, "timeout": timeout}
+
+
 def _litellm_completion_worker(
     params: dict[str, Any], result_queue: multiprocessing.Queue, deadline: float
 ) -> None:
@@ -337,6 +356,10 @@ def _litellm_completion_worker(
             raise LLMHardTimeoutError(
                 "LLM request deadline expired during child startup"
             )
-        result_queue.put(("ok", _picklable_completion_result(model_completion(params))))
+        dispatch_params = completion_params_before_deadline(params, deadline)
+        with model_deadline(deadline):
+            result_queue.put(
+                ("ok", _picklable_completion_result(model_completion(dispatch_params)))
+            )
     except BaseException as exc:
         result_queue.put(("error", _snapshot_completion_error(exc, params)))

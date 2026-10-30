@@ -76,7 +76,7 @@ def test_marker_rejection_precedes_every_admission_bypass(
     decode = Mock(side_effect=AssertionError("Cached output must not decode"))
     monkeypatch.setattr(service, "compute_generation", compute)
     monkeypatch.setattr(service, "persist_generation", persist)
-    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_deadline", dispatch)
     monkeypatch.setattr(
         "reflexio.server.services.durable_learning.window_executor.decode_plan", decode
     )
@@ -105,7 +105,7 @@ def test_worker_reports_null_marker_without_publication_or_journal_replacement(
     snapshot = _replace_marker(storage, run, None)
     monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", str(enabled).lower())
     dispatch = Mock(side_effect=AssertionError("No provider may run"))
-    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_deadline", dispatch)
     # Simulate the previous process losing its lease after saving the parent.
     with storage._stream_sql() as db:
         db.query("UPDATE learning_work SET lease_until=0,due_at=0 WHERE user_id='u'")

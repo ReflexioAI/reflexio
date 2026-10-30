@@ -12,6 +12,7 @@ import litellm
 from reflexio.models.api_schema.domain import AgentPlaybook
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm import _litellm_structured_output as structured_output_module
+from reflexio.server.llm import _litellm_subprocess as completion_process_module
 from reflexio.server.llm import _litellm_text_generation as text_generation_module
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.prompt.prompt_manager import PromptManager
@@ -37,10 +38,9 @@ _LLM_IMPLEMENTATION_METHODS = (
     "_structured_output_strategy",
     "_apply_structured_output_transport",
     "_provider_response_format",
-    "_completion_with_hard_timeout",
+    "_completion_with_deadline",
+    "_execute_completion",
     "_coerce_timeout_seconds",
-    "_hard_timeout_grace_seconds",
-    "_should_process_isolate_completion",
     "_maybe_parse_structured_output",
     "_apply_prompt_caching",
 )
@@ -118,7 +118,6 @@ def build_pairwise_judge_request_plan(
     client = cast(Any, llm_client)
     requested_model = model_name or llm_client.config.model
     ladder = client._resolve_ladder(model=requested_model)
-    grace_seconds = client._hard_timeout_grace_seconds()
     callables = _pairwise_judge_implementation_identities(prompt_manager, llm_client)
     return {
         "judge_class": _type_identity(PairwiseJudge),
@@ -140,10 +139,7 @@ def build_pairwise_judge_request_plan(
             "fallback_model_order": ladder[1:],
             "resolved_model_ladder": ladder,
             "pairwise_judge_max_retries": PAIRWISE_JUDGE_MAX_RETRIES,
-            "rungs": [
-                _pairwise_judge_rung(llm_client, model, grace_seconds)
-                for model in ladder
-            ],
+            "rungs": [_pairwise_judge_rung(llm_client, model) for model in ladder],
         },
     }
 
@@ -151,7 +147,6 @@ def build_pairwise_judge_request_plan(
 def _pairwise_judge_rung(
     llm_client: LiteLLMClient,
     model: str,
-    grace_seconds: float,
 ) -> dict[str, Any]:
     client = cast(Any, llm_client)
     params, _response_format, parse_structured_output, _max_retries, _fallbacks = (
@@ -168,6 +163,7 @@ def _pairwise_judge_rung(
     params.pop("fallbacks", None)
     resolved_model = str(params["model"])
     timeout_seconds = client._coerce_timeout_seconds(params)
+    params["timeout"] = timeout_seconds
     provider_params = sanitize_pairwise_judge_provider_params(params)
     return {
         "model": resolved_model,
@@ -176,11 +172,9 @@ def _pairwise_judge_rung(
         "max_tokens": provider_params.get("max_tokens"),
         "seed": provider_params["seed"],
         "timeout_seconds": _decimal_string(timeout_seconds),
-        "hard_timeout_grace_seconds": _decimal_string(grace_seconds),
-        "hard_timeout_seconds": _decimal_string(timeout_seconds + grace_seconds),
-        "process_isolation": client._should_process_isolate_completion(
-            timeout_seconds, grace_seconds
-        ),
+        "hard_timeout_seconds": _decimal_string(timeout_seconds),
+        "timeout_policy": "absolute_attempt_deadline",
+        "execution_adapter": _bound_callable_identity(client, "_execute_completion"),
         "provider_kind": client._provider_for_model(resolved_model) or "unconfigured",
         "api_base_digest": provider_params.get("api_base_digest"),
         "api_version": provider_params.get("api_version"),
@@ -333,13 +327,15 @@ class PairwiseJudge:
             (rung for rung in generation["rungs"] if rung["model"] == model),
             None,
         )
-        if expected_rung is None:
+        if (
+            expected_rung is None
+            or expected_rung.get("timeout_policy") != "absolute_attempt_deadline"
+            or "hard_timeout_grace_seconds" in expected_rung
+        ):
             raise FrozenEvaluatorPlanDriftError(
                 "PairwiseJudge provider rung drifted after job creation"
             )
         provider_params = sanitize_pairwise_judge_provider_params(params)
-        timeout_seconds = float(provider_params["timeout"])
-        grace_seconds = max(0.0, hard_timeout - timeout_seconds)
         provider_kind = (
             cast(Any, self.llm_client)._provider_for_model(model) or "unconfigured"
         )
@@ -348,10 +344,8 @@ class PairwiseJudge:
             or _decimal_string(hard_timeout) != expected_rung["hard_timeout_seconds"]
             or parse_structured_output != expected_rung["parse_structured_output"]
             or provider_kind != expected_rung["provider_kind"]
-            or cast(Any, self.llm_client)._should_process_isolate_completion(
-                timeout_seconds, grace_seconds
-            )
-            != expected_rung["process_isolation"]
+            or _bound_callable_identity(self.llm_client, "_execute_completion")
+            != expected_rung["execution_adapter"]
         ):
             raise FrozenEvaluatorPlanDriftError(
                 "PairwiseJudge provider request drifted after job creation"
@@ -426,6 +420,8 @@ def _implementation_helper_identities() -> dict[str, dict[str, str]]:
         "structured_output.strict_response_format_for_model": (
             structured_output_module.strict_response_format_for_model
         ),
+        "completion_process.completion_params_before_deadline": completion_process_module.completion_params_before_deadline,
+        "completion_process.retire_completion_worker": completion_process_module.retire_completion_worker,
         "text_generation._litellm_completion_worker": (
             text_generation_module._litellm_completion_worker
         ),

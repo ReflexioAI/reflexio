@@ -158,7 +158,7 @@ def test_http_mixed_image_keeps_native_prompt_and_persistence_without_overflow(
         )
 
     dispatch = Mock(side_effect=respond)
-    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_deadline", dispatch)
     worker.drain_org("stream-test", 1, 300)
     assert dispatch.call_count > 0
     assert expected_image in image_blocks
@@ -240,7 +240,7 @@ def test_existing_mixed_image_manifest_holds_without_reset_or_publication(
     dispatch = Mock(
         side_effect=AssertionError("Existing image manifest must not call a provider")
     )
-    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_deadline", dispatch)
     with pytest.raises(InputBudgetConfigurationError, match="image evidence"):
         executor.execute(window, token)
     dispatch.assert_not_called()

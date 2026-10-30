@@ -34,7 +34,7 @@ def test_real_client_repair_is_counted_and_safe_projection_is_private(monkeypatc
         for content in ("not JSON", '{"value": 5}')
     )
     transport = MagicMock(side_effect=lambda *_: next(responses))
-    monkeypatch.setattr(client, "_completion_with_hard_timeout", transport)
+    monkeypatch.setattr(client, "_completion_with_deadline", transport)
     log = logging.getLogger("reflexio.server.llm.litellm_client")
     previous = log.level
     metrics = ReviewCallMetrics("zai/glm-5.2", 8192, "high")

@@ -150,7 +150,7 @@ def test_public_corrected_consumed_answer_keeps_protocol_parent_out_of_legacy_wo
             "Correction must not dispatch a protocol parent through legacy code"
         )
     )
-    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_deadline", dispatch)
     response = pipeline[2].patch(
         "/api/pending_tool_calls/consumed-answer/answer",
         json={"answer": "Corrected draft approval", "valid_for_seconds": 3600},

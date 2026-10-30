@@ -57,6 +57,7 @@ def test_deferred_provider_models_serialize_in_parent_after_real_worker() -> Non
     script = textwrap.dedent(
         """
         import multiprocessing
+        import time
         import litellm
         from litellm.types.utils import Function, ModelResponse
         from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
@@ -98,9 +99,8 @@ def test_deferred_provider_models_serialize_in_parent_after_real_worker() -> Non
 
         litellm.completion = completion
         client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
-        client._should_process_isolate_completion = lambda *_: True
-        response = client._completion_with_hard_timeout(
-            {"model": "gpt-4o", "timeout": 5}, 20
+        response = client._completion_with_deadline(
+            {"model": "gpt-4o", "timeout": 5}, time.monotonic() + 20
         )
         assert isinstance(response, ModelResponse)
         message = response.choices[0].message

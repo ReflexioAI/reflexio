@@ -195,7 +195,7 @@ def test_sdk_schema_and_repair_use_selected_contract(
             ],
         )
 
-    monkeypatch.setattr(client, "_completion_with_hard_timeout", transport)
+    monkeypatch.setattr(client, "_completion_with_deadline", transport)
     monkeypatch.setattr(
         litellm, "completion", lambda **_kwargs: pytest.fail("No provider dispatch")
     )

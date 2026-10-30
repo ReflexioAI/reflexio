@@ -124,7 +124,7 @@ def test_corrected_context_declaration_resumes_only_the_original_contract(
         )
 
     monkeypatch.setattr(
-        LiteLLMClient, "_completion_with_hard_timeout", staticmethod(respond)
+        LiteLLMClient, "_completion_with_deadline", staticmethod(respond)
     )
     complete = Mock(wraps=storage.complete_extraction)
     monkeypatch.setattr(storage, "complete_extraction", complete)
