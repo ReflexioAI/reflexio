@@ -39,7 +39,9 @@ the provider JSON schema and native SQL authorization domain unchanged.
 A reply the schema rejects raises after the client's one corrective retry; both the
 retry line (`event=llm_parse_retry_corrective`) and the final failure line
 (`event=llm_request_end success=False`) carry `errors=` with the failing field
-paths and pydantic error types, bounded and sanitized, never provider content.
+paths and pydantic error types. Only field names the schema declares, list indices
+and error tags are logged; any other key is shown as `<redacted>`, so provider
+content never reaches the log.
 
 Both measured MiniMax stages reserve4096output tokens with thinking disabled.
 Other providers retain the same token bound without MiniMax-specific settings.

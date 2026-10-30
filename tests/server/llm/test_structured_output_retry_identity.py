@@ -44,7 +44,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from reflexio.server.llm._litellm_text_generation import (
     MAX_LOGGED_VALIDATION_ERRORS,
@@ -399,10 +399,18 @@ def test_the_scribbling_transport_would_expose_a_reused_params_dict() -> None:
 # ---------------------------------------------------------------------------
 
 
+class _Item(BaseModel):
+    name: str
+
+
+class _Items(BaseModel):
+    items: list[_Item]
+
+
 def test_a_log_safe_rendering_passes_ordinary_schema_paths_through() -> None:
     """Clamping must not cost the diagnostic its whole value."""
     rendered = _log_safe_validation_errors(
-        ("items.0.name: missing", "<root>: json_invalid at line 3 column 5")
+        ("items.0.name: missing", "<root>: json_invalid at line 3 column 5"), _Items
     )
     assert rendered == "items.0.name: missing,<root>: json_invalid at line 3 column 5"
 
@@ -415,19 +423,53 @@ def test_a_log_safe_rendering_passes_ordinary_schema_paths_through() -> None:
         'say "hi": extra_forbidden',  # quotes
         "ключ: extra_forbidden",  # non-ASCII
         "a\x00b: extra_forbidden",  # control character
+        "patient_diagnosis_positive: extra_forbidden",  # plain ASCII, still content
     ],
 )
 def test_a_log_safe_rendering_redacts_a_model_chosen_key(hostile: str) -> None:
     """``loc`` is built from ``str(part)`` with no clamp; an ``extra_forbidden``
-    entry therefore carries whatever key the MODEL invented."""
-    assert _log_safe_validation_errors((hostile,)) == "<redacted>"
+    entry therefore carries whatever key the MODEL invented. Only the fixed
+    marker and the pydantic error tag survive."""
+    assert (
+        _log_safe_validation_errors((hostile,), _Items) == "<redacted>: extra_forbidden"
+    )
+
+
+def test_a_log_safe_rendering_keeps_owned_parts_around_a_redacted_key() -> None:
+    """A model-chosen key nested under declared fields redacts only itself."""
+    rendered = _log_safe_validation_errors(
+        ("items.3.patient_diagnosis_positive: extra_forbidden",), _Items
+    )
+    assert rendered == "items.3.<redacted>: extra_forbidden"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "name: Field required (input was secret)",  # message text, not a tag
+        "name missing",  # no separator
+        "name: missing\nWARNING event=x",  # injection through the type
+    ],
+)
+def test_a_log_safe_rendering_redacts_an_entry_whose_type_is_not_a_tag(
+    entry: str,
+) -> None:
+    assert _log_safe_validation_errors((entry,), _Items) == "<redacted>"
+
+
+def test_a_schema_that_cannot_be_introspected_owns_no_names() -> None:
+    """Fail closed: with no schema every location component is redacted."""
+    assert (
+        _log_safe_validation_errors(("items.0.name: missing",), None)
+        == "<redacted>.0.<redacted>: missing"
+    )
 
 
 def test_a_log_safe_rendering_bounds_the_error_count() -> None:
     """A pathological body can produce an unbounded number of entries."""
     errors = tuple(f"field{index}: missing" for index in range(20))
 
-    rendered = _log_safe_validation_errors(errors)
+    rendered = _log_safe_validation_errors(errors, _Items)
 
     assert rendered.count(",") == MAX_LOGGED_VALIDATION_ERRORS
     assert rendered.endswith(f"...({20 - MAX_LOGGED_VALIDATION_ERRORS} more)")
@@ -556,3 +598,51 @@ def test_the_plain_rung_does_not_log_a_model_chosen_key(
     assert len(lines) == 2
     assert all("FABRICATED_BY_THE_MODEL" not in line for line in lines)
     assert all("errors=<redacted>" in line for line in lines)
+
+
+class ForbidExtraResponse(BaseModel):
+    """A schema that forbids extra keys, so an unexpected key becomes a ``loc``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    answer: str
+    score: int
+
+
+#: A plain-ASCII key that passes any charset clamp yet is pure provider
+#: content: under ``extra="forbid"`` it lands verbatim in the pydantic ``loc``.
+_SENSITIVE_KEY = "patient_diagnosis_positive"
+_SENSITIVE_BODY = (
+    '{"answer": "ok", "score": 42, "' + _SENSITIVE_KEY + '": true, '
+    '"nested": {"' + _SENSITIVE_KEY + '_too": 1}}'
+)
+
+
+@pytest.mark.parametrize("validated", [False, True], ids=["plain", "validated"])
+def test_no_log_line_names_a_key_the_schema_does_not_own(
+    validated: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Only schema-owned location components may reach a log sink.
+
+    A charset clamp is not enough: an ASCII identifier the MODEL invented
+    passes it unchanged, so ``<key>: extra_forbidden`` would carry provider
+    content into telemetry. Both rungs, every attempt: no captured record may
+    contain the key, while the failure stays diagnosable (the error type and a
+    redaction marker remain).
+    """
+    client = LiteLLMClient(LiteLLMConfig(model=_MODEL))
+    kwargs: dict[str, Any] = {"response_format": ForbidExtraResponse}
+    if validated:
+        kwargs["structured_output_validator"] = lambda _parsed: []
+    with (
+        patch("litellm.completion", side_effect=lambda **_: _response(_SENSITIVE_BODY)),
+        caplog.at_level(logging.DEBUG),
+        pytest.raises(Exception),  # noqa: B017 - either rung's terminal error
+    ):
+        client.generate_chat_response([{"role": "user", "content": "hi"}], **kwargs)
+
+    messages = [record.getMessage() for record in caplog.records]
+    error_lines = [m for m in messages if "errors=" in m]
+    assert error_lines, "no line carried the validation errors at all"
+    assert all(_SENSITIVE_KEY not in m for m in messages)
+    assert all("<redacted>: extra_forbidden" in m for m in error_lines)
