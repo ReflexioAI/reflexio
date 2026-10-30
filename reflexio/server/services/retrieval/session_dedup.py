@@ -109,6 +109,20 @@ class SessionSeenCache:
             while len(self._sessions) > self._max_sessions:
                 self._sessions.popitem(last=False)
 
+    def reset(self, org_id: str, session_id: str) -> None:
+        """Forget every entity key served to this org's session.
+
+        Used when the caller's agent no longer holds earlier results in
+        context (for example after conversation compaction), so items served
+        before the reset may be returned again. Other sessions are untouched.
+
+        Args:
+            org_id (str): Organization the session belongs to
+            session_id (str): Session identifier from the search request
+        """
+        with self._lock:
+            self._sessions.pop((org_id, session_id), None)
+
     def clear(self) -> None:
         """Drop all sessions (test hook)."""
         with self._lock:

@@ -821,6 +821,11 @@ class UnifiedSearchRequest(BaseModel):
             from results — a rejection in the dashboard immediately hides the
             playbook. Pass an explicit list to opt into REJECTED items.
         conversation_history (list[ConversationTurn], optional): Prior conversation turns for context-aware query rewriting
+        reset_session_seen (bool, optional): When true and ``session_id`` is
+            set, forget the results already served to that session before
+            dedup runs, so they may be returned again (e.g. after the agent's
+            conversation was compacted). Ignored without ``session_id``.
+            Defaults to False.
     """
 
     query: NonEmptyStr
@@ -845,6 +850,7 @@ class UnifiedSearchRequest(BaseModel):
     request_id: str | None = Field(default=None, max_length=255)
     session_id: str | None = Field(default=None, max_length=255)
     interaction_id: int | None = Field(default=None, gt=0)
+    reset_session_seen: bool = False
 
 
 class UnifiedSearchResponse(BaseModel):

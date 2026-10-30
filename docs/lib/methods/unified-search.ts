@@ -119,6 +119,13 @@ export const unifiedSearchMethods: MethodDef[] = [
         description:
           "Caller interaction ID for the search turn; must be a positive integer (minimum 1)",
       },
+      {
+        name: "reset_session_seen",
+        type: "boolean",
+        required: false,
+        description:
+          "When true and session_id is set, forget the results already returned to that session before deduplication, so they can be returned again. Use it on the first search after the agent's conversation was compacted. Ignored without session_id. Defaults to false",
+      },
     ],
   },
 ];

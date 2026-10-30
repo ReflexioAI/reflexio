@@ -5016,6 +5016,9 @@ export interface components {
          *         learning_id (str): Stable storage id — ``profile_id`` for profiles,
          *             ``user_playbook_id`` for user playbooks, ``agent_playbook_id``
          *             for agent playbooks (numeric ids as decimal strings).
+         *         loaded (bool | None): True when the agent explicitly opened this
+         *             learning's full text after it was injected; False when it was
+         *             known not to; None (omitted) when the caller does not report it.
          */
         RetrievedLearning: {
             kind: components["schemas"]["RetrievedLearningKind"];
@@ -5025,6 +5028,8 @@ export interface components {
             exposure_receipt?: string | null;
             /** Exposure Receipt Digest */
             exposure_receipt_digest?: string | null;
+            /** Loaded */
+            loaded?: boolean | null;
         };
         /**
          * RetrievedLearningEvaluationResult
@@ -6035,6 +6040,11 @@ export interface components {
          *             from results — a rejection in the dashboard immediately hides the
          *             playbook. Pass an explicit list to opt into REJECTED items.
          *         conversation_history (list[ConversationTurn], optional): Prior conversation turns for context-aware query rewriting
+         *         reset_session_seen (bool, optional): When true and ``session_id`` is
+         *             set, forget the results already served to that session before
+         *             dedup runs, so they may be returned again (e.g. after the agent's
+         *             conversation was compacted). Ignored without ``session_id``.
+         *             Defaults to False.
          */
         UnifiedSearchRequest: {
             /** Query */
@@ -6080,6 +6090,11 @@ export interface components {
             session_id?: string | null;
             /** Interaction Id */
             interaction_id?: number | null;
+            /**
+             * Reset Session Seen
+             * @default false
+             */
+            reset_session_seen?: boolean;
         };
         /**
          * UnifiedSearchViewResponse
