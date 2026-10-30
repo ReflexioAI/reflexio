@@ -110,3 +110,18 @@ def test_invalid_pool_wait_fails_with_setting_name(name, value):
 
     with pytest.raises(ValueError, match=name):
         resolve_postgres_pool_defaults({name: value})
+
+
+def test_historical_native_defaults_do_not_follow_current_storage_defaults(monkeypatch):
+    import reflexio.config_env as config_env
+
+    monkeypatch.setattr(config_env, "DEFAULT_STORAGE_POOL_SIZE", 99)
+    monkeypatch.setattr(config_env, "DEFAULT_STORAGE_POOL_ACQUIRE_TIMEOUT", 123.0)
+    assert config_env.resolve_postgres_pool_defaults(
+        {}
+    ) == config_env.PostgresPoolDefaults(
+        pool_size=10,
+        pool_acquire_timeout=30.0,
+        read_pool_size=None,
+        read_pool_acquire_timeout=None,
+    )

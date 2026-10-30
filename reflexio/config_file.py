@@ -11,6 +11,7 @@ import os
 import re
 import tempfile
 from collections.abc import Callable
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,8 @@ from filelock import FileLock
 from reflexio.config_document import decode_config_document, encode_config_document
 from reflexio.config_env import StoredConfigurationError
 
-FILE_FORMAT_VERSION = 9
+NATIVE_POOL_AUTHORITY_VERSION = 10
+FILE_FORMAT_VERSION = NATIVE_POOL_AUTHORITY_VERSION
 _METADATA_KEY = "_reflexio_config_file"
 
 
@@ -165,6 +167,59 @@ def _validate_sdk_document(data: dict[str, Any]) -> None:
     validate_stored_config(data)
 
 
+def _prepare_document(data: dict[str, Any], version: int) -> dict[str, Any]:
+    """Transform only generations older than this artifact, without publishing."""
+    from reflexio.config_migration import (
+        canonicalize_agent_optimizer_policy,
+        canonicalize_audit_retention_policy,
+        canonicalize_custom_endpoint_policy,
+        canonicalize_optimizer_work_budget,
+        canonicalize_retrieval_floor_policy,
+        retire_optimizer_jitter_policy,
+        retire_optimizer_replay_policy,
+        retire_playbook_consolidation_strategy,
+    )
+
+    if version == FILE_FORMAT_VERSION:
+        return deepcopy(data)
+    _reject_ambiguous_policy(data, version)
+    # Apply only changes introduced after this file's generation.
+    # Never replay the broad historical alias converter at startup.
+    canonical = deepcopy(data)
+    if version == 0 and "playbook_optimizer_config" in canonical:
+        canonical["playbook_optimizer_config"] = canonicalize_agent_optimizer_policy(
+            canonical["playbook_optimizer_config"]
+        )
+    if version < 2 and "retrieval_floor" in canonical:
+        canonical["retrieval_floor"] = canonicalize_retrieval_floor_policy(
+            canonical["retrieval_floor"]
+        )
+    if version < 3 and "governance_retention" in canonical:
+        canonical["governance_retention"] = canonicalize_audit_retention_policy(
+            canonical["governance_retention"]
+        )
+    canonical = canonicalize_custom_endpoint_policy(canonical)
+    if version < 5 and "playbook_optimizer_config" in canonical:
+        canonical["playbook_optimizer_config"] = canonicalize_optimizer_work_budget(
+            canonical["playbook_optimizer_config"]
+        )
+    if version < 6 and "playbook_optimizer_config" in canonical:
+        canonical["playbook_optimizer_config"] = retire_optimizer_jitter_policy(
+            canonical["playbook_optimizer_config"]
+        )
+    if version < 7 and "playbook_optimizer_config" in canonical:
+        canonical["playbook_optimizer_config"] = retire_optimizer_replay_policy(
+            canonical["playbook_optimizer_config"]
+        )
+    if version < 8 and "user_playbook_extractor_config" in canonical:
+        canonical["user_playbook_extractor_config"] = (
+            retire_playbook_consolidation_strategy(
+                canonical["user_playbook_extractor_config"]
+            )
+        )
+    return canonical
+
+
 class LocalConfigFile:
     """Serialize cooperating writers and preserve exact originals on upgrade."""
 
@@ -258,75 +313,66 @@ class LocalConfigFile:
             encoded = encode_local_config_document(data, metadata)
             return _publish_bytes(target, encoded.encode())
 
-    def prepare(self) -> bool:
+    def prepare(
+        self,
+        *,
+        edit: Callable[[dict[str, Any], int], None] | None = None,
+        initial_document: dict[str, Any] | None = None,
+    ) -> bool:
         """Upgrade an older generation before serving, retaining its original bytes.
 
-        The launcher must stop old serving writers first. The lock serializes
-        current product writers; it is not a CAS against arbitrary file editors.
+        The launcher must stop old serving writers first. A pure edit callback
+        can select storage from the observed source generation under this same
+        lock, before the upgraded file is published. An initial logical document
+        is used only for a missing file. Callbacks must perform no external I/O.
+        The lock serializes current product writers; observed source/link edits
+        still refuse publication, including an otherwise unchanged callback.
         """
-        from reflexio.config_migration import (
-            canonicalize_agent_optimizer_policy,
-            canonicalize_audit_retention_policy,
-            canonicalize_custom_endpoint_policy,
-            canonicalize_optimizer_work_budget,
-            canonicalize_retrieval_floor_policy,
-            retire_optimizer_jitter_policy,
-            retire_optimizer_replay_policy,
-            retire_playbook_consolidation_strategy,
-        )
-
         target = self._target()
-        if not target.exists():
+        if not target.exists() and initial_document is None:
+            if edit is not None:
+                raise StoredConfigurationError(
+                    "Saved configuration disappeared before editing; retry startup"
+                )
             return False
-        if not target.is_file():
+        if target.exists() and not target.is_file():
             raise StoredConfigurationError("Saved configuration must be a regular file")
+        if initial_document is not None:
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with FileLock(f"{target}.lock", timeout=30, mode=0o600):
-            original = target.read_bytes()
-            data, metadata = _decode(original)
-            if metadata.get("version") == FILE_FORMAT_VERSION:
-                self._validate(data)
-                return False
+            original = target.read_bytes() if target.exists() else None
+            if original is None:
+                if initial_document is None:
+                    raise StoredConfigurationError(
+                        "Saved configuration disappeared during preparation; retry startup"
+                    )
+                data, _ = _decode(encode_config_document(initial_document).encode())
+                metadata = {"version": FILE_FORMAT_VERSION}
+            else:
+                data, metadata = _decode(original)
             version = metadata.get("version", 0)
-            _reject_ambiguous_policy(data, version)
-            # Apply only changes introduced after this file's generation.
-            # Never replay the broad historical alias converter at startup.
-            canonical = dict(data)
-            if version == 0 and "playbook_optimizer_config" in canonical:
-                canonical["playbook_optimizer_config"] = (
-                    canonicalize_agent_optimizer_policy(
-                        canonical["playbook_optimizer_config"]
-                    )
-                )
-            if version < 2 and "retrieval_floor" in canonical:
-                canonical["retrieval_floor"] = canonicalize_retrieval_floor_policy(
-                    canonical["retrieval_floor"]
-                )
-            if version < 3 and "governance_retention" in canonical:
-                canonical["governance_retention"] = canonicalize_audit_retention_policy(
-                    canonical["governance_retention"]
-                )
-            canonical = canonicalize_custom_endpoint_policy(canonical)
-            if version < 5 and "playbook_optimizer_config" in canonical:
-                canonical["playbook_optimizer_config"] = (
-                    canonicalize_optimizer_work_budget(
-                        canonical["playbook_optimizer_config"]
-                    )
-                )
-            if version < 6 and "playbook_optimizer_config" in canonical:
-                canonical["playbook_optimizer_config"] = retire_optimizer_jitter_policy(
-                    canonical["playbook_optimizer_config"]
-                )
-            if version < 7 and "playbook_optimizer_config" in canonical:
-                canonical["playbook_optimizer_config"] = retire_optimizer_replay_policy(
-                    canonical["playbook_optimizer_config"]
-                )
-            if version < 8 and "user_playbook_extractor_config" in canonical:
-                canonical["user_playbook_extractor_config"] = (
-                    retire_playbook_consolidation_strategy(
-                        canonical["user_playbook_extractor_config"]
-                    )
-                )
+            if version == FILE_FORMAT_VERSION:
+                self._validate(data)
+            canonical = _prepare_document(data, version)
+            if edit is not None:
+                edit(canonical, version)
             self._validate(canonical)
+            if version == FILE_FORMAT_VERSION or original is None:
+                if (
+                    self._target() != target
+                    or (target.read_bytes() if target.exists() else None) != original
+                ):
+                    raise StoredConfigurationError(
+                        "Saved configuration changed during preparation; retry startup"
+                    )
+                if original is not None and canonical == data:
+                    return False
+                encoded = encode_local_config_document(canonical, metadata).encode()
+                if not _publish_bytes(target, encoded, create_only=original is None):
+                    raise StoredConfigurationError(
+                        "Saved configuration changed during preparation; retry startup"
+                    )
+                return True
             digest = hashlib.sha256(original).hexdigest()
             encoded = encode_local_config_document(
                 canonical, {"original_sha256": digest}

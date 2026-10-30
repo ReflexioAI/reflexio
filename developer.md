@@ -1539,3 +1539,36 @@ Verify real local native-child behavior without paid providers:
 The same file is selected by Windows local diagnostics; POSIX-only race cases are
 marked explicitly, while spawn, data transport, error, worker-death and temporary
 file ownership run on supported platforms.
+
+
+### Native pool policy ownership (local file generation10)
+
+The four `storage_config` fields own native capacity and acquisition policy:
+`pool_size`, `pool_acquire_timeout`, `read_pool_size`, and
+`read_pool_acquire_timeout`. Unset reader fields inherit the writer. Explicit
+backend selection may change deployment binding (DSN/schema/reader DSN), but a
+current native file retains all four saved fields.
+
+Generation10 is an authority fence: version9 readers/writers refuse the upgraded
+file. Stop incompatible writers before preparation. The existing file owner
+selects and publishes the policy in the same locked, source-checked operation
+as preparation, preserving exact original bytes. A previous-generation explicit
+`--storage postgres` selects the four historical pool environment values once,
+including their old defaults, because that is what its old writer would have
+selected. Ordinary implicit preparation preserves the saved policy instead.
+A missing `DATA_DB_URL` does not authorize a native replacement or env import.
+Explicit storage writes also check the backend port when only docs are requested.
+That check retains its documented scope: it is not proof that writers on other
+ports/addresses have stopped.
+
+On a current file, old pool exports only assert matching effective values; they
+never fill missing policy or select capacity. Conflicts/invalid values refuse
+before publication. Remove `REFLEXIO_POSTGRES_POOL_SIZE`,
+`REFLEXIO_POSTGRES_POOL_ACQUIRE_TIMEOUT`, `REFLEXIO_POSTGRES_READ_POOL_SIZE`, and
+`REFLEXIO_POSTGRES_READ_POOL_ACQUIRE_TIMEOUT` after verifying the canonical
+policy. Fresh native files use the model defaults unless a canonical document
+was explicitly prepared; nondefault old exports cannot configure a fresh file.
+Use the existing `config local` path and `config upgrade-file` operation to
+prepare that document. Originals are not a lossless image-rollback mechanism
+after later edits; use a corrected current-generation reader for forward repair.
+This local-file transition does not perform enterprise auth-row migration.
