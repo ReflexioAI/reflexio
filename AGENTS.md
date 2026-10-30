@@ -9,3 +9,4 @@ See [developer.md](developer.md) for full development guidelines, project struct
 - Use `curl` for API testing (faster); use Chrome for frontend tasks
 - Never change env variable values in `.env` file — use shell exports for overrides
 - API schemas live in `reflexio/models/api_schema/`
+- To cite instruction files for changed files, run `scripts/applicable_instructions.py [files]` instead of searching directories; it prints each applicable AGENTS.override.md/AGENTS.md with line numbers
