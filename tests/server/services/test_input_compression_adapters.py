@@ -431,7 +431,7 @@ def test_real_litellm_repair_dispatch_preserves_guards_and_parent_accounting(
             usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
         )
 
-    monkeypatch.setattr(live_client, "_completion_with_deadline", transport)
+    monkeypatch.setattr(live_client, "_completion_with_hard_timeout", transport)
     result = compress_extraction_window(
         [group()],
         org_id="org",
@@ -488,7 +488,7 @@ def test_capacity_feedback_repairs_or_keeps_explicit_whole_point_partial_result(
             usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
         )
 
-    monkeypatch.setattr(live_client, "_completion_with_deadline", transport)
+    monkeypatch.setattr(live_client, "_completion_with_hard_timeout", transport)
     monkeypatch.setattr(
         "reflexio.server.llm.input_budget.litellm.token_counter", Mock(return_value=100)
     )
@@ -560,7 +560,7 @@ def test_capacity_repair_preserves_all_constraints_without_neighboring_routine_l
             usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
         )
 
-    monkeypatch.setattr(live_client, "_completion_with_deadline", transport)
+    monkeypatch.setattr(live_client, "_completion_with_hard_timeout", transport)
     monkeypatch.setattr(
         "reflexio.server.llm.input_budget.litellm.token_counter", Mock(return_value=100)
     )
@@ -643,7 +643,7 @@ def test_bounded_repair_discards_only_whole_unverifiable_reference_groups(monkey
             usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
         )
 
-    monkeypatch.setattr(live_client, "_completion_with_deadline", transport)
+    monkeypatch.setattr(live_client, "_completion_with_hard_timeout", transport)
     monkeypatch.setattr(
         "reflexio.server.llm.input_budget.litellm.token_counter", Mock(return_value=100)
     )
@@ -866,7 +866,7 @@ def test_native_preparation_prices_actual_requests_without_dispatch_or_usage(
 
     actual_client = LiteLLMClient(LiteLLMConfig(model=model, max_tokens=8192))
     transport = Mock(side_effect=AssertionError("No provider in planning"))
-    monkeypatch.setattr(actual_client, "_completion_with_deadline", transport)
+    monkeypatch.setattr(actual_client, "_completion_with_hard_timeout", transport)
     checks = []
     check_budget = native.check_request_input_budget
 
@@ -921,7 +921,7 @@ def test_native_preparation_overflow_refuses_before_provider_and_cache(monkeypat
         LiteLLMConfig(model="minimax/MiniMax-M3", max_tokens=8192)
     )
     transport = Mock(side_effect=AssertionError("Over-budget input cannot dispatch"))
-    monkeypatch.setattr(actual_client, "_completion_with_deadline", transport)
+    monkeypatch.setattr(actual_client, "_completion_with_hard_timeout", transport)
     with pytest.raises(InputBudgetExceededError):
         plan_with_client(
             [
@@ -1035,7 +1035,7 @@ def test_actual_native_repair_overflow_stops_before_second_transport(monkeypatch
             usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
         )
 
-    monkeypatch.setattr(actual_client, "_completion_with_deadline", transport)
+    monkeypatch.setattr(actual_client, "_completion_with_hard_timeout", transport)
     prepared = plan_with_client(
         [
             EvidenceSource(

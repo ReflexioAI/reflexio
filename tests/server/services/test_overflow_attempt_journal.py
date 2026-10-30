@@ -90,7 +90,7 @@ def test_malformed_saved_journal_blocks_executor_constructor_and_locked_reservat
     assert parent is not None
     before = parent.generation_request_snapshot
     dispatch = Mock(side_effect=AssertionError("Malformed quota must not dispatch"))
-    monkeypatch.setattr(LiteLLMClient, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
     executor = WindowExecutor(
         engine.request_context, create_generation_litellm_client(engine.request_context)
     )
@@ -167,7 +167,7 @@ def test_actual_client_guard_rechecks_locked_journal_and_preserves_unknown_usage
         _hidden_params={"custom_llm_provider": "openai"},
     )
     wire = Mock(return_value=response)
-    monkeypatch.setattr(client, "_completion_with_deadline", wire)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
     with coordinator.provider_scope():
         if corruption is not None:
             with pytest.raises(ProviderRequestGuardError):
@@ -238,7 +238,7 @@ def test_incomplete_checkpoint_blocks_load_and_locked_updates(
             (json.dumps(snapshot), parent.id),
         )
     dispatch = Mock(side_effect=AssertionError("Damaged checkpoint must not dispatch"))
-    monkeypatch.setattr(LiteLLMClient, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
     executor = WindowExecutor(
         engine.request_context, create_generation_litellm_client(engine.request_context)
     )
@@ -357,7 +357,7 @@ def test_gate_cache_miss_cannot_dispatch_after_locked_receipt_becomes_null(
         LiteLLMConfig(model="gpt-4o", max_tokens=1024, fallback_models=[])
     )
     wire = Mock(side_effect=AssertionError("Null receipt cannot replay paid work"))
-    monkeypatch.setattr(client, "_completion_with_deadline", wire)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
     with pytest.raises(ProviderRequestGuardError):
         judge_extraction_chunks(
             coordinator=coordinator,

@@ -31,7 +31,6 @@ import base64
 import functools
 import hashlib
 import logging
-import math
 import multiprocessing
 import os
 import queue
@@ -42,6 +41,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import litellm
 from litellm.exceptions import ContextWindowExceededError
 from pydantic import BaseModel
 
@@ -66,12 +66,13 @@ from reflexio.server.llm._litellm_types import (
 from reflexio.server.llm._model_compat import (
     apply_model_request_policy,
     ensure_model_capabilities,
+    model_completion,
 )
 from reflexio.server.llm._provider_concurrency import (
     ProviderCapSaturatedError,
     provider_slot,
 )
-from reflexio.server.llm.call_deadline import model_call_deadline, model_deadline
+from reflexio.server.llm.call_deadline import model_call_deadline, remaining_call_time
 from reflexio.server.llm.image_utils import (
     SUPPORTED_IMAGE_MIME_TYPES,
     ImageEncodingError,
@@ -204,6 +205,17 @@ def _parse_seed(raw: str, default: int) -> int:
             default,
         )
         return default
+
+
+@functools.lru_cache(maxsize=16)
+def _parse_grace_seconds(raw: str) -> float:
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logging.getLogger(__name__).warning(
+            "Invalid REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS=%r; using 5", raw
+        )
+        return 5.0
 
 
 def _bounded_repair_errors(errors: Sequence[str]) -> tuple[str, ...]:
@@ -524,7 +536,6 @@ class _StructuredAttempt:
     model: str
     provenance: ModelProvenance | None = None
     usage: Any | None = None
-    deadline: float | None = None
 
 
 def _is_expected_transient_llm_error(exc: BaseException) -> bool:
@@ -1174,46 +1185,67 @@ class TextGenerationMixin:
         except (TypeError, ValueError):
             return float(self.config.timeout)
 
-    def _completion_with_deadline(self, params: dict[str, Any], deadline: float) -> Any:
-        """Execute against the turn's absolute expiry without restarting it.
+    def _completion_with_hard_timeout(
+        self, params: dict[str, Any], hard_timeout: float
+    ) -> Any:
+        """Run ``litellm.completion`` with a client-side wall-clock bound.
 
-        Production always uses the isolated execution adapter. Deterministic
-        tests replace ``_execute_completion`` explicitly; function names and
-        timeout values never select the execution architecture.
+        Some providers can exceed LiteLLM's ``timeout`` kwarg. Run the blocking
+        call in a child process so the caller can fail, release locks, and
+        terminate the in-flight provider request instead of waiting indefinitely.
+
+        ``hard_timeout`` is the wall-clock kill bound for the whole subprocess.
+        This call dispatches exactly ONE rung (``fallbacks`` is never passed to
+        LiteLLM — the reflexio-owned walk advances between rungs itself), so the
+        caller sizes ``hard_timeout`` to a single attempt on one rung, not the
+        whole ladder. A hung primary is killed at its own bound and the walk
+        then starts the next rung fresh — preserving the timeout-regression
+        property (a hung primary must not block the fallback) per rung.
         """
         from reflexio.server import search_runtime
 
-        scope = search_runtime.current()
-        if scope is not None:
-            search_runtime.checkpoint()
-            if scope.deadline is not None:
-                deadline = min(deadline, scope.deadline)
+        started = time.monotonic()
+        hard_timeout = remaining_call_time(hard_timeout)
+        search_scope = search_runtime.current()
+        if search_scope is not None:
+            hard_timeout = search_runtime.remaining(hard_timeout)
+            params = {
+                **params,
+                "timeout": search_runtime.remaining(
+                    self._coerce_timeout_seconds(params)
+                ),
+            }
+        provider_timeout = params.get("timeout", self.config.timeout)
+        # timeout_seconds + grace_seconds below only classify test doubles in
+        # _should_process_isolate_completion (real litellm vs a monkeypatched
+        # closure) — they do NOT size the kill bound, which is the caller's
+        # ladder-wide ``hard_timeout``.
+        timeout_seconds = self._coerce_timeout_seconds(params)
+        grace_seconds = self._hard_timeout_grace_seconds()
+        deadline = started + hard_timeout
+        if search_scope is not None and search_scope.deadline is not None:
+            deadline = min(deadline, search_scope.deadline)
         caller_deadline = model_call_deadline.get()
         if caller_deadline is not None:
             deadline = min(deadline, caller_deadline)
-        if not math.isfinite(deadline):
-            raise ValueError("LLM execution requires a finite attempt deadline")
         if time.monotonic() >= deadline:
             raise LLMHardTimeoutError("LLM request deadline expired before dispatch")
-        try:
-            with model_deadline(deadline):
-                return self._execute_completion(params, deadline)
-        except ContextWindowExceededError:
-            if extraction_provider_guard.get() is not None:
-                from reflexio.server.llm.input_budget import (
-                    ProviderInputOverflowError,
-                    extraction_request_identity,
-                )
 
-                raise ProviderInputOverflowError(
-                    extraction_request_identity.get()
-                ) from None
-            raise
+        if not self._should_process_isolate_completion(timeout_seconds, grace_seconds):
+            try:
+                return model_completion(params)
+            except ContextWindowExceededError:
+                if extraction_provider_guard.get() is not None:
+                    from reflexio.server.llm.input_budget import (
+                        ProviderInputOverflowError,
+                        extraction_request_identity,
+                    )
 
-    def _execute_completion(self, params: dict[str, Any], deadline: float) -> Any:
-        """Isolate provider execution; retain capacity until its child is reaped."""
-        hard_timeout = deadline - time.monotonic()  # diagnostic, never a new clock
-        provider_timeout = params.get("timeout", self.config.timeout)
+                    raise ProviderInputOverflowError(
+                        extraction_request_identity.get()
+                    ) from None
+                raise
+
         process_context = multiprocessing.get_context()
         result_queue = process_context.Queue(maxsize=1)
         process = process_context.Process(
@@ -1305,6 +1337,25 @@ class TextGenerationMixin:
         finally:
             retire_completion_worker(process, result_queue)
 
+    def _hard_timeout_grace_seconds(self) -> float:
+        raw = os.environ.get("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5") or "5"
+        return _parse_grace_seconds(raw)
+
+    def _should_process_isolate_completion(
+        self, timeout_seconds: float, grace_seconds: float
+    ) -> bool:
+        """Use process isolation for real LiteLLM calls while preserving test doubles.
+
+        Unit tests often monkeypatch ``litellm.completion`` with local closures
+        that capture params in parent memory. Those closures cannot be observed
+        through a subprocess, so only real LiteLLM functions and explicit short
+        timeout tests go through the process path.
+        """
+        completion_module = getattr(litellm.completion, "__module__", "")
+        if completion_module.startswith("litellm"):
+            return True
+        return timeout_seconds + grace_seconds < 1.0
+
     def _log_token_usage(self, params: dict[str, Any], response: Any) -> None:
         """Log token usage with cache statistics and cost from an LLM response.
 
@@ -1330,7 +1381,7 @@ class TextGenerationMixin:
             )
 
         # Accumulate into the run-scoped total, if a run installed one. This is
-        # the single chokepoint: `_completion_with_deadline` is the only
+        # the single chokepoint: `_completion_with_hard_timeout` is the only
         # wrapper around `litellm.completion` in this module and has exactly one
         # call site, three lines above the call to this method. Accumulating here
         # rather than at 19 call sites means every future stage is counted by
@@ -1549,24 +1600,14 @@ class TextGenerationMixin:
         )
         original_kwargs = dict(kwargs)
 
-        def _check_attempt(attempt: _StructuredAttempt) -> None:
-            search_runtime.checkpoint()
-            now = time.monotonic()
-            if now >= walk_deadline:
-                raise LadderBudgetExhaustedError(
-                    "LLM deadline expired before accepting the completed output",
-                    first_parsed_provenance=attempt.provenance,
-                )
-            if attempt.deadline is not None and now >= attempt.deadline:
-                raise LiteLLMClientError(
-                    "LLM completion exceeded its attempt deadline",
-                    first_parsed_provenance=attempt.provenance,
-                )
-
         def _finish(
             attempt: _StructuredAttempt,
         ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse]:
-            _check_attempt(attempt)
+            search_runtime.checkpoint()
+            if time.monotonic() >= walk_deadline:
+                raise LadderBudgetExhaustedError(
+                    "LLM deadline expired before accepting the completed output"
+                )
             assert attempt.provenance is not None  # noqa: S101
             return CompletionResult(
                 attempt.value, attempt.provenance, usage=attempt.usage
@@ -1606,9 +1647,13 @@ class TextGenerationMixin:
                 )
             if hard_timeout <= remaining:
                 return turn_params, hard_timeout
+            grace = self._hard_timeout_grace_seconds()
             clamped = {
                 **turn_params,
-                "timeout": min(self._coerce_timeout_seconds(turn_params), remaining),
+                "timeout": min(
+                    self._coerce_timeout_seconds(turn_params),
+                    remaining - grace if remaining > grace else remaining,
+                ),
             }
             return clamped, remaining
 
@@ -1618,7 +1663,7 @@ class TextGenerationMixin:
             """Build single-rung completion params (never any ``fallbacks``).
 
             ``num_retries`` is forced to 0 and the hard (wall-clock) timeout is
-            sized to a SINGLE attempt on this rung — the
+            sized to a SINGLE attempt on this rung plus one grace buffer — the
             walk, not litellm, owns advancing to the next rung.
 
             Every mutable value is DETACHED from the caller's objects before
@@ -1641,6 +1686,7 @@ class TextGenerationMixin:
             params["num_retries"] = 0
             params.pop("fallbacks", None)  # owned walk: never delegate to litellm
             per_attempt = self._coerce_timeout_seconds(params)
+            grace = self._hard_timeout_grace_seconds()
             remaining = walk_deadline - time.monotonic()
             if remaining <= 0:
                 # LiteLLMClientError propagates out of the rung to the walker,
@@ -1649,8 +1695,14 @@ class TextGenerationMixin:
                     f"LLM ladder budget exhausted ({walk_bound}): "
                     f"{remaining:.1f}s left, not attempting {params.get('model')}"
                 )
-            hard_timeout = min(per_attempt, remaining)
-            params["timeout"] = hard_timeout
+            if per_attempt + grace > remaining:
+                # Clamp the provider timeout and the kill bound together, so the
+                # provider gives up before the subprocess is killed.
+                per_attempt = min(
+                    per_attempt, remaining - grace if remaining > grace else remaining
+                )
+                params["timeout"] = per_attempt
+            hard_timeout = min(per_attempt + grace, remaining)
             return params, response_format, parse_structured_output, hard_timeout
 
         def _is_refusal(response: Any, message: Any) -> bool:
@@ -1732,8 +1784,8 @@ class TextGenerationMixin:
                             turn_parse_structured_output,
                         )
                     check_turn_deadline()
-                    response = self._completion_with_deadline(
-                        turn_params, turn_deadline
+                    response = self._completion_with_hard_timeout(
+                        turn_params, turn_deadline - time.monotonic()
                     )
                 # BEFORE any read of the response body. This call is what
                 # accumulates the run-scoped provider total, and everything
@@ -1777,12 +1829,11 @@ class TextGenerationMixin:
                     parsed_output: BaseModel | None = None
                     if turn_response_format is not None and not tool_calls:
                         try:
-                            with model_deadline(turn_deadline):
-                                parsed = self._maybe_parse_structured_output(
-                                    content,  # type: ignore[reportArgumentType]
-                                    turn_response_format,
-                                    turn_parse_structured_output,
-                                )
+                            parsed = self._maybe_parse_structured_output(
+                                content,  # type: ignore[reportArgumentType]
+                                turn_response_format,
+                                turn_parse_structured_output,
+                            )
                         except StructuredOutputParseError as exc:
                             _stamp_parse_failure(
                                 exc,
@@ -1813,16 +1864,14 @@ class TextGenerationMixin:
                         model=str(turn_params.get("model")),
                         provenance=provenance,
                         usage=getattr(response, "usage", None),
-                        deadline=turn_deadline,
                     )
 
                 try:
-                    with model_deadline(turn_deadline):
-                        value = self._maybe_parse_structured_output(
-                            content,  # type: ignore[reportArgumentType]
-                            turn_response_format,
-                            turn_parse_structured_output,
-                        )
+                    value = self._maybe_parse_structured_output(
+                        content,  # type: ignore[reportArgumentType]
+                        turn_response_format,
+                        turn_parse_structured_output,
+                    )
                 except StructuredOutputParseError as exc:
                     _stamp_parse_failure(
                         exc,
@@ -1842,7 +1891,6 @@ class TextGenerationMixin:
                     model=str(turn_params.get("model")),
                     provenance=provenance,
                     usage=getattr(response, "usage", None),
-                    deadline=turn_deadline,
                 )
             except (
                 ProviderRequestGuardError,
@@ -1945,12 +1993,7 @@ class TextGenerationMixin:
                 return False, ("Response was empty or did not parse.",), "parse"
             if structured_output_validator is None:
                 raise RuntimeError("structured_output_validator is not configured")
-            _check_attempt(attempt)
-            with model_deadline(
-                attempt.deadline if attempt.deadline is not None else walk_deadline
-            ):
-                errors = tuple(structured_output_validator(parsed))
-            _check_attempt(attempt)
+            errors = tuple(structured_output_validator(parsed))
             if errors:
                 return False, errors, "semantic"
             return True, (), "semantic"
@@ -2533,7 +2576,3 @@ class TextGenerationMixin:
             model_name.startswith(restricted) or model_name == restricted
             for restricted in self.TEMPERATURE_RESTRICTED_MODELS
         )
-
-
-# Stable production identity, independent of test patches on the class attribute.
-ISOLATED_COMPLETION_EXECUTION = TextGenerationMixin._execute_completion

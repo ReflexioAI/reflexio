@@ -412,7 +412,7 @@ def test_fresh_overflow_capacity_reaches_repair_before_output_is_accepted(monkey
             make_structured_finish(repaired_output.model_dump(mode="json")),
         ]
     )
-    monkeypatch.setattr(client, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
     result = client.generate_chat_response_with_provenance(
         messages=[
             {"role": "user", "content": "Extract the grounded preparation rule."}

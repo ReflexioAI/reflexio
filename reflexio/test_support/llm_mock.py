@@ -42,10 +42,6 @@ from unittest.mock import MagicMock, NonCallableMock, patch
 
 from reflexio.models.structured_output import find_schema_keyword as _find_schema_key
 from reflexio.server.env_utils import env_bool
-from reflexio.server.llm import _litellm_text_generation as generation
-from reflexio.server.llm._litellm_subprocess import completion_params_before_deadline
-from reflexio.server.llm._litellm_text_generation import TextGenerationMixin
-from reflexio.server.llm._model_compat import model_completion
 from reflexio.test_support.llm_model_registry import get_model_registry
 
 _LEARNING_REF_PATTERN = re.compile(r'"learning_ref":\s*"([^"]+)"')
@@ -261,54 +257,13 @@ def _is_e2e_test_run(config: Any) -> bool:
     return False
 
 
-# Explicit execution adapters: production never detects mocks or timeout sizes.
-_ISOLATED_COMPLETION_EXECUTION = generation.ISOLATED_COMPLETION_EXECUTION
-
-
-def use_isolated_completion(client: Any) -> None:
-    """Select the actual process adapter in worker/transport lifecycle tests."""
-    if isinstance(client, type):
-        raise TypeError(
-            "Select a completion adapter on a client instance, never a class"
-        )
-    client._execute_completion = _ISOLATED_COMPLETION_EXECUTION.__get__(
-        client, type(client)
-    )
-
-
-def use_mock_completion(client: Any) -> None:
-    """Select deterministic in-process execution explicitly in a test."""
-    if isinstance(client, type):
-        raise TypeError(
-            "Select a completion adapter on a client instance, never a class"
-        )
-    client._execute_completion = _execute_mock_completion.__get__(client, type(client))
-
-
-def completion_is_isolated(client: Any) -> bool:
-    """Inspect the selected adapter without inferring it from model or timeout."""
-    return client._execute_completion.__func__ is _ISOLATED_COMPLETION_EXECUTION
-
-
-def _execute_mock_completion(
-    _self: Any, params: dict[str, Any], deadline: float
-) -> Any:
-    """Run deterministic provider fakes in the test process with the same expiry."""
-    return model_completion(
-        completion_params_before_deadline(
-            params, deadline, now=generation.time.monotonic()
-        )
-    )
-
-
 # Global patcher reference kept alive across the test session.
 _litellm_patcher = None
-_completion_executor_patcher = None
 
 
 def configure_llm_mock(config: Any) -> None:
     """Call from ``pytest_configure`` to patch litellm for non-e2e tests."""
-    global _litellm_patcher, _completion_executor_patcher  # noqa: PLW0603
+    global _litellm_patcher  # noqa: PLW0603
 
     if _is_e2e_test_run(config):
         return
@@ -316,22 +271,15 @@ def configure_llm_mock(config: Any) -> None:
     os.environ["MOCK_LLM_RESPONSE"] = "true"
     _litellm_patcher = patch("litellm.completion", side_effect=_mock_completion)
     _litellm_patcher.start()
-    _completion_executor_patcher = patch.object(
-        TextGenerationMixin, "_execute_completion", _execute_mock_completion
-    )
-    _completion_executor_patcher.start()
 
 
 def cleanup_llm_mock(config: Any) -> None:  # noqa: ARG001
     """Call from ``pytest_unconfigure`` to stop the patcher."""
-    global _litellm_patcher, _completion_executor_patcher  # noqa: PLW0603
+    global _litellm_patcher  # noqa: PLW0603
 
     if _litellm_patcher:
         _litellm_patcher.stop()
         _litellm_patcher = None
-    if _completion_executor_patcher:
-        _completion_executor_patcher.stop()
-        _completion_executor_patcher = None
 
 
 def litellm_is_patched() -> bool:
@@ -370,19 +318,14 @@ def unpatched_litellm() -> Iterator[None]:
             and ``MOCK_LLM_RESPONSE`` is unset.
     """
     patcher = _litellm_patcher
-    executor_patcher = _completion_executor_patcher
     previous_flag = os.environ.get("MOCK_LLM_RESPONSE")
 
     if patcher is not None:
         patcher.stop()
-    if executor_patcher is not None:
-        executor_patcher.stop()
     os.environ.pop("MOCK_LLM_RESPONSE", None)
     try:
         yield
     finally:
-        if executor_patcher is not None:
-            executor_patcher.start()
         if patcher is not None:
             patcher.start()
         if previous_flag is None:
@@ -394,10 +337,9 @@ def unpatched_litellm() -> Iterator[None]:
 def assert_litellm_unpatched() -> None:
     """Fail a live-provider test that is about to assert against the mock.
 
-    Checks provider execution, callable and service flag, because any subset can pass while
+    Checks BOTH mock mechanisms, because either alone can be satisfied while
     the test still grades canned text:
 
-    * the completion executor -- deterministic parent execution replaces isolation;
     * the patcher -- ``litellm.completion`` replaced by a mock;
     * ``MOCK_LLM_RESPONSE`` -- read directly by service code that returns a
       canned payload *without ever calling litellm* (e.g.
@@ -415,15 +357,6 @@ def assert_litellm_unpatched() -> None:
         AssertionError: When ``litellm.completion`` is patched, or when
             ``MOCK_LLM_RESPONSE`` is set to "true".
     """
-    from reflexio.server.llm.litellm_client import LiteLLMClient
-
-    if (
-        TextGenerationMixin._execute_completion is not _ISOLATED_COMPLETION_EXECUTION
-        or LiteLLMClient._execute_completion is not _ISOLATED_COMPLETION_EXECUTION
-    ):
-        raise AssertionError(
-            "Completion execution adapter is patched; live verification would bypass process isolation"
-        )
     if litellm_is_patched():
         raise AssertionError(
             "litellm.completion is patched, so this live-provider test would "
@@ -456,14 +389,9 @@ def patched_litellm() -> Iterator[None]:
     os.environ["MOCK_LLM_RESPONSE"] = "true"
     patcher = patch("litellm.completion", side_effect=_mock_completion)
     patcher.start()
-    executor_patcher = patch.object(
-        TextGenerationMixin, "_execute_completion", _execute_mock_completion
-    )
-    executor_patcher.start()
     try:
         yield
     finally:
-        executor_patcher.stop()
         patcher.stop()
         # Leave MOCK_LLM_RESPONSE as-is — tests that read it should not
         # depend on its lifetime being tied to a single context block.

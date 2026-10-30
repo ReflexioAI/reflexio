@@ -215,7 +215,7 @@ def test_exact_input_capture_is_lazy_detached_and_fail_open(
         return response(next(answers))
 
     with patch.object(
-        consolidator.client, "_completion_with_deadline", side_effect=complete
+        consolidator.client, "_completion_with_hard_timeout", side_effect=complete
     ):
         result = consolidator.deduplicate(
             [[candidate]],
@@ -353,7 +353,7 @@ def test_dispatch_preserves_pending_metadata_and_each_output_evidence(
 
     with (
         patch.object(
-            consolidator.client, "_completion_with_deadline", side_effect=complete
+            consolidator.client, "_completion_with_hard_timeout", side_effect=complete
         ),
         patch(
             "reflexio.server.services.playbook.components.overflow_evidence.remember_historical_playbooks"
@@ -408,7 +408,7 @@ def test_wrong_owner_or_agent_evidence_never_reaches_provider(
     consolidator, storage, owner, version
 ):
     interaction_id = source(storage, owner=owner, agent_version=version)
-    with patch.object(consolidator.client, "_completion_with_deadline") as provider:
+    with patch.object(consolidator.client, "_completion_with_hard_timeout") as provider:
         with pytest.raises(
             (PlaybookReviewWindowError, AuditedConsolidationAbstainedError)
         ):
@@ -425,7 +425,7 @@ def test_wrong_owner_or_agent_evidence_never_reaches_provider(
 def test_missing_new_evidence_abstains_without_unaudited_independent_shortcut(
     consolidator,
 ):
-    with patch.object(consolidator.client, "_completion_with_deadline") as provider:
+    with patch.object(consolidator.client, "_completion_with_hard_timeout") as provider:
         with pytest.raises(
             AuditedConsolidationAbstainedError, match="persisted source"
         ):
@@ -445,7 +445,7 @@ def test_supplied_governance_subject_cannot_override_trusted_storage_owner(
     interaction_id = source(storage)
     incumbent = row(ids=[interaction_id], persisted_id=123)
     incumbent.governance_subject_ref = "other-subject"
-    with patch.object(consolidator.client, "_completion_with_deadline") as provider:
+    with patch.object(consolidator.client, "_completion_with_hard_timeout") as provider:
         with pytest.raises(AuditedConsolidationAbstainedError, match="trusted owner"):
             consolidator.deduplicate(
                 [[row(ids=[interaction_id])]],
@@ -535,7 +535,7 @@ def test_backfilled_event_chronology_is_independent_of_citation_ids(
         return response(next(answers))
 
     with patch.object(
-        consolidator.client, "_completion_with_deadline", side_effect=complete
+        consolidator.client, "_completion_with_hard_timeout", side_effect=complete
     ):
         consolidator.deduplicate(
             [[row(ids=[newer_id, older_id])]],
@@ -573,7 +573,7 @@ def test_existing_only_remove_reaches_audited_engine(consolidator, storage):
     )
     with patch.object(
         consolidator.client,
-        "_completion_with_deadline",
+        "_completion_with_hard_timeout",
         side_effect=lambda *_args: response(next(answers)),
     ):
         rows, archives, merges = consolidator.deduplicate(
@@ -672,7 +672,7 @@ def test_overflow_uses_verified_quotations_not_full_large_interaction(
     token = current_overflow_coordinator.set(coordinator)
     try:
         with patch.object(
-            consolidator.client, "_completion_with_deadline", side_effect=complete
+            consolidator.client, "_completion_with_hard_timeout", side_effect=complete
         ):
             rows, _archives, _merges = consolidator.deduplicate(
                 [[row(ids=[interaction_id])]],
@@ -738,7 +738,7 @@ def test_uncapped_client_durable_admission_suspends_and_resumes_once_per_call(
             return response({"decisions": []})
         return response(next(answers))
 
-    monkeypatch.setattr(client, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
 
     def coordinator(seconds):
         parent = storage.get_agent_run(f"window:{window.window_id}")
@@ -839,7 +839,7 @@ def _publication_case(
         calls.append(params)
         return response(next(answers))
 
-    monkeypatch.setattr(consolidator.client, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(consolidator.client, "_completion_with_hard_timeout", dispatch)
     context = consolidator.request_context
     context.configurator.set_config_by_name(
         "user_playbook_extractor_config",
@@ -1058,7 +1058,7 @@ def test_method_upgrade_keeps_legacy_receipts_and_original_window_allowance(
         dispatched.append(params)
         return response(next(answers))
 
-    monkeypatch.setattr(client, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
     with coordinator.provider_scope():
         engine = Reconciler(client, "gpt-4o")
         if spent == 126:
@@ -1096,7 +1096,7 @@ def test_audited_publication_uses_owned_fallback_without_unaudited_save(
     consolidator.client.config.fallback_models = (
         ["gpt-5.4-mini"] if fallback_enabled else []
     )
-    completed = consolidator.client._completion_with_deadline
+    completed = consolidator.client._completion_with_hard_timeout
     attempts = []
 
     def dispatch(params, timeout):
@@ -1111,7 +1111,7 @@ def test_audited_publication_uses_owned_fallback_without_unaudited_save(
             )
         return completed(params, timeout)
 
-    monkeypatch.setattr(consolidator.client, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(consolidator.client, "_completion_with_hard_timeout", dispatch)
     if fallback_enabled:
         plan = case.service._resolve_write_plan([[case.candidate]])
         assert plan is not None and len(plan.new_playbooks) == 2
@@ -1178,7 +1178,7 @@ def test_audited_work_preserves_stored_source_quoted_recovery_row(
         calls.append(params)
         return response(next(answers))
 
-    monkeypatch.setattr(consolidator.client, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(consolidator.client, "_completion_with_hard_timeout", dispatch)
     rows, retired, merged = consolidator.deduplicate(
         [[row(ids=[interaction_id])]],
         generation_request_id="generation",

@@ -235,7 +235,7 @@ def install_transport(
             usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
         )
 
-    monkeypatch.setattr(client, "_completion_with_deadline", wire)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
     return calls
 
 
@@ -273,7 +273,7 @@ def test_actual_native_consumer_replays_without_dispatch_or_parent_completion(
         for attempt in frozen["overflow"]["attempts"]
     )
     refuse = Mock(side_effect=AssertionError("replay must not dispatch"))
-    monkeypatch.setattr(client, "_completion_with_deadline", refuse)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", refuse)
     replay = consume_profile_package(
         preparation=preparation,
         coordinator=coordinator(preparation, storage, window, token),
@@ -340,7 +340,7 @@ def test_consumer_requires_exact_frozen_preparation_before_any_dispatch(
             (json.dumps(parent.generation_request_snapshot), parent.id),
         )
     wire = Mock(side_effect=AssertionError("no dispatch"))
-    monkeypatch.setattr(client, "_completion_with_deadline", wire)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
     with pytest.raises(InputBudgetConfigurationError, match="binding changed"):
         consume_profile_package(
             preparation=preparation,
@@ -363,7 +363,7 @@ def test_missing_cache_only_processing_receipt_cannot_start_paid_work(
         package_pipeline, monkeypatch
     )
     wire = Mock(side_effect=AssertionError("no dispatch"))
-    monkeypatch.setattr(client, "_completion_with_deadline", wire)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
     parent = storage.get_agent_run(f"window:{window.window_id}")
     frozen = copy.deepcopy(parent.generation_request_snapshot)
     with pytest.raises(InputBudgetConfigurationError, match="processing receipt"):
@@ -485,7 +485,7 @@ def test_actual_pending_tool_wait_resumes_full_answer_and_remaining_turns(
             usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
         )
 
-    monkeypatch.setattr(client, "_completion_with_deadline", wire)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
 
     def consume():
         return consume_profile_package(
@@ -608,7 +608,7 @@ def test_compressed_package_consumption_reuses_all_actual_selection_receipts(
         receipt = journal["checkpoint"]["completed_steps"][key]
         assert receipt["kind"] == "source_selection" and receipt["attempt_ids"]
     refuse = Mock(side_effect=AssertionError("cached package must not dispatch"))
-    monkeypatch.setattr(client, "_completion_with_deadline", refuse)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", refuse)
     replay = consume_profile_package(
         preparation=preparation,
         coordinator=coordinator(preparation, storage, window, token),
@@ -671,7 +671,7 @@ def test_cached_consumer_result_requires_exact_actual_attempts(
             (json.dumps(snapshot), parent.id),
         )
     wire = Mock(side_effect=AssertionError("damaged receipt must not dispatch"))
-    monkeypatch.setattr(client, "_completion_with_deadline", wire)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
     with pytest.raises(InputBudgetConfigurationError):
         consume_profile_package(
             preparation=preparation,
@@ -701,7 +701,7 @@ def test_unknown_crash_attempt_stays_paid_without_inventing_success_receipt(
         )
         raise OverflowSuspendedError("Simulated lost response after reservation")
 
-    monkeypatch.setattr(client, "_completion_with_deadline", lost_response)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", lost_response)
     with pytest.raises(OverflowSuspendedError):
         consume_profile_package(
             preparation=preparation,

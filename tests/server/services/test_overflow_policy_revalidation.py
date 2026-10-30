@@ -103,7 +103,7 @@ def test_saved_output_is_revalidated_under_changed_policy(
         "reflexio.server.llm.input_budget.litellm.token_counter", lambda **_: 100
     )
     dispatch = Mock(side_effect=_respond)
-    monkeypatch.setattr(LiteLLMClient, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
     # Fail once AFTER the parent output is committed, so the retry replays it.
     original_extract = overflow_pipeline.extract_overflow_window
     failures = []
@@ -246,7 +246,7 @@ def test_incomplete_policy_mismatch_stops_retrying_without_resetting_evidence(
         "reflexio.server.llm.input_budget.litellm.token_counter", lambda **_: 100
     )
     dispatch = Mock(side_effect=_respond)
-    monkeypatch.setattr(LiteLLMClient, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
     original_extract = overflow_pipeline.extract_overflow_window
     first = True
 

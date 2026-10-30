@@ -84,7 +84,7 @@ def setup(pipeline, monkeypatch, *, gate=True, profiles=True):
             usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
         )
 
-    monkeypatch.setattr(client, "_completion_with_deadline", wire)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
     return engine, storage, window, token, client, calls
 
 
@@ -314,7 +314,7 @@ def test_retired_name_resume_keeps_frozen_profile_candidates_and_paid_calls(
 @pytest.mark.parametrize("failure", ["invalid_first_parsed", "transport"])
 def test_native_dedup_host_fallback_is_durable(pipeline, monkeypatch, failure):
     engine, storage, window, token, client, calls = setup(pipeline, monkeypatch)
-    transport = client._completion_with_deadline
+    transport = client._completion_with_hard_timeout
 
     def wire(params, timeout):
         response = transport(params, timeout)
@@ -328,7 +328,7 @@ def test_native_dedup_host_fallback_is_durable(pipeline, monkeypatch, failure):
             )
         return response
 
-    monkeypatch.setattr(client, "_completion_with_deadline", wire)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
     original = storage.precompute_profile_embeddings
     monkeypatch.setattr(
         storage,
@@ -370,7 +370,7 @@ def test_native_eight_turns_keep_all_fallback_attempts(pipeline, monkeypatch, fi
         "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
         '{"gpt-4o-mini":128000,"gpt-4.1-mini":128000}',
     )
-    transport = client._completion_with_deadline
+    transport = client._completion_with_hard_timeout
     agent_calls = 0
 
     def wire(params, timeout):
@@ -415,7 +415,7 @@ def test_native_eight_turns_keep_all_fallback_attempts(pipeline, monkeypatch, fi
             )
         return response
 
-    monkeypatch.setattr(client, "_completion_with_deadline", wire)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
     executor = ProfilePackageWindowExecutor(engine.request_context, client)
     if finish:
         executor.execute(window, token)

@@ -287,7 +287,7 @@ def test_reconciliation_uses_actual_bounded_repair_for_unshown_evidence(monkeypa
             _hidden_params={"custom_llm_provider": "openai"},
         )
 
-    monkeypatch.setattr(client, "_completion_with_deadline", respond)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", respond)
     result = extract_overflow_window(
         coordinator=coordinator,
         client=client,

@@ -497,7 +497,7 @@ def test_v3_provider_context_keeps_internal_producer_and_original_quote_role(
     client = LiteLLMClient(
         LiteLLMConfig(model="gpt-4o", max_tokens=1024, fallback_models=[])
     )
-    monkeypatch.setattr(client, "_completion_with_deadline", respond)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", respond)
     result = client.generate_chat_response_with_provenance(
         messages=messages, response_format=StructuredProfilesOutput
     )

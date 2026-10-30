@@ -1223,15 +1223,15 @@ query-isolation path's single-text requests.
 LLM dispatch, fallback, repair and provider admission use the actual remaining
 operation deadline. There is no private minimum-turn duration: a positive short
 budget can complete a fast call; an expired one never dispatches. Provider and
-whole-walk bounds, cancellation and late-result accounting remain enforced.
-One absolute attempt expiry bounds provider I/O, worker execution and acceptance;
-there is no independently configured grace period or fixed padding.
+whole-walk bounds, configured grace, cancellation and late-result accounting
+remain enforced. Grace is reserved when it fits; otherwise the remaining time
+bounds both provider I/O and the subprocess instead of imposing a one-second
+provider timeout beyond the caller's cutoff.
 
 The completion child receives the effective absolute deadline and checks it after
 provider initialization, immediately before dispatch. Startup cannot authorize a
 provider call after expiry. A shorter configured provider I/O timeout remains
-a bound; startup time is deducted before SDK dispatch. Parent parsing/validation
-checks reject late output but cannot interrupt arbitrary synchronous code.
+a bound even when the remaining caller time is shorter than cleanup grace.
 
 ### OpenAI-compatible gateways, including OrcaRouter (#492)
 
@@ -1480,20 +1480,3 @@ budget, including transaction cleanup. Milliseconds and per-statement semantics
 cannot be copied losslessly into seconds and whole-borrow semantics. Adopt the
 matching storage release with this SDK; this registry does not implement a
 connection lease or introduce a runtime alias.
-
-### One model attempt deadline
-
-Generation attempts use one absolute expiry after provider admission. The
-existing configured timeout now bounds worker startup, provider I/O, transport
-and acceptance rather than receiving separately configurable overhead padding.
-Remove `REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS`, including blank assignments,
-with the matching storage release; choose existing generation/per-call timeouts
-deliberately instead of automatically adding old grace. The child receives only
-post-startup remaining I/O time. Parent parsing/validation checks are cooperative;
-late available usage is accounted before output rejection. Async worker reaping
-retains provider capacity through actual exit and does not add caller latency.
-
-Production always uses the isolated completion executor. Deterministic tests
-replace its private execution adapter explicitly; actual process/transport tests
-select the real adapter. Live-test helpers restore both execution and provider
-callables. Timeout magnitude and mock module identity never select architecture.

@@ -14,12 +14,7 @@ from litellm.main import completion
 from pydantic import BaseModel
 
 from reflexio.models.config_schema import APIKeyConfig, CustomEndpointConfig
-from reflexio.server.llm._litellm_text_generation import TextGenerationMixin
-from reflexio.server.llm.litellm_client import (
-    ISOLATED_COMPLETION_EXECUTION,
-    LiteLLMClient,
-    LiteLLMConfig,
-)
+from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import Tool, ToolRegistry, run_tool_loop
 from reflexio.test_support.llm_mock import assert_litellm_unpatched, unpatched_litellm
@@ -129,11 +124,6 @@ def test_custom_gateway_keeps_nested_model_id_and_bearer_key(
         with unpatched_litellm(), monkeypatch.context() as transport:
             # Lift the per-test fixture patch too; the only endpoint is local.
             transport.setattr(litellm, "completion", completion)
-            transport.setattr(
-                TextGenerationMixin,
-                "_execute_completion",
-                ISOLATED_COMPLETION_EXECUTION,
-            )
             assert_litellm_unpatched()
             if tool_mode:
 

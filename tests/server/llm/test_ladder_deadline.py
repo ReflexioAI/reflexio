@@ -72,6 +72,7 @@ def _walk(
         ),
     )
     monkeypatch.setattr(ttg, "_LADDER_WALL_CLOCK_BUDGET_SECONDS", 100.0)
+    monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
     client = LiteLLMClient(
         LiteLLMConfig(
             model="primary/a", timeout=timeout, fallback_models=["fallback/b"]
@@ -84,7 +85,7 @@ def _walk(
             {
                 "model": params["model"],
                 "timeout": params.get("timeout"),
-                "hard": hard_timeout - clock.now,
+                "hard": hard_timeout,
             }
         )
         if params["model"] == "primary/a":
@@ -92,7 +93,7 @@ def _walk(
             raise TimeoutError("primary stalled")
         return _response("from-fallback")
 
-    monkeypatch.setattr(client, "_completion_with_deadline", _fake)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", _fake)
     try:
         outcome: Any = client.generate_chat_response(_MESSAGES)
     except LiteLLMClientError as exc:
@@ -104,15 +105,16 @@ def test_a_fallback_with_ample_budget_gets_its_full_timeout(monkeypatch) -> None
     calls, outcome = _walk(monkeypatch, primary_burns=35)
     assert outcome == "from-fallback"
     assert calls[1]["model"] == "fallback/b"
-    assert calls[1]["hard"] == pytest.approx(30)  # one unchanged attempt allowance
+    assert calls[1]["hard"] == pytest.approx(35)  # 30 + 5 grace, unclamped
 
 
 def test_a_fallback_is_clamped_to_what_the_budget_has_left(monkeypatch) -> None:
     calls, outcome = _walk(monkeypatch, primary_burns=80)
     assert outcome == "from-fallback"
-    # The remaining20seconds bound both worker execution and transport.
+    # 20 s left: the kill bound is the remainder, and the provider timeout sits
+    # a grace below it so the provider gives up before the process is killed.
     assert calls[1]["hard"] == pytest.approx(20)
-    assert calls[1]["timeout"] == pytest.approx(20)
+    assert calls[1]["timeout"] == pytest.approx(15)
 
 
 def test_no_fallback_is_attempted_once_the_budget_is_spent(monkeypatch, caplog) -> None:
@@ -127,12 +129,13 @@ def test_a_long_configuration_is_not_re_warned_on_every_call(
     monkeypatch, caplog
 ) -> None:
     """The old per-call `llm_ladder_budget_exceeded` warning is gone."""
+    monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
     client = LiteLLMClient(
         LiteLLMConfig(model="primary/a", timeout=300, fallback_models=["fallback/b"])
     )
     monkeypatch.setattr(
         client,
-        "_completion_with_deadline",
+        "_completion_with_hard_timeout",
         lambda *_args, **_kwargs: _response("ok"),
     )
     with caplog.at_level(logging.WARNING):
@@ -143,7 +146,7 @@ def test_a_long_configuration_is_not_re_warned_on_every_call(
 
 @pytest.mark.parametrize(
     ("generation_timeout", "warns"),
-    [(300, False), (585, False), (590, False), (595, False), (600, True)],
+    [(300, False), (585, False), (590, False), (595, True)],
 )
 def test_boot_check_flags_a_timeout_that_leaves_no_fallback_time(
     monkeypatch, caplog, generation_timeout: int, warns: bool
@@ -154,7 +157,8 @@ def test_boot_check_flags_a_timeout_that_leaves_no_fallback_time(
     from reflexio.server.llm.model_defaults import _warn_if_fallback_cannot_run
 
     monkeypatch.setattr(lib_base, "GENERATION_TIMEOUT_SECONDS", generation_timeout)
-    # An attempt equal to the entire walk leaves no fallback time.
+    # A primary plus grace equal to the entire budget leaves no fallback time.
+    monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
     with caplog.at_level(logging.WARNING):
         _warn_if_fallback_cannot_run(["zai/glm-5.2"])
     assert ("event=llm_fallback_unreachable" in caplog.text) is warns
@@ -172,7 +176,7 @@ def test_boot_check_is_silent_without_fallbacks(monkeypatch, caplog) -> None:
 
 @pytest.mark.parametrize(
     ("slot_wait", "dispatched_hard", "provider_timeout"),
-    [(70, 30.0, 30), (95, 5.0, 30), (99.9, 0.1, 30), (100, None, 30), (97, 1.0, 1)],
+    [(70, 30.0, 30), (95, 5.0, 30), (99.9, 0.1, 30), (100, None, 30), (97, 3.0, 1)],
 )
 def test_a_provider_slot_wait_is_charged_to_the_budget(
     monkeypatch,
@@ -197,6 +201,7 @@ def test_a_provider_slot_wait_is_charged_to_the_budget(
         ),
     )
     monkeypatch.setattr(ttg, "_LADDER_WALL_CLOCK_BUDGET_SECONDS", 100.0)
+    monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
     waits: list[float | None] = []
 
     @contextmanager
@@ -212,10 +217,10 @@ def test_a_provider_slot_wait_is_charged_to_the_budget(
 
     def _fake(params, hard_timeout):
         assert params["timeout"] <= provider_timeout
-        sent.append(hard_timeout - clock.now)
+        sent.append(hard_timeout)
         return _response("ok")
 
-    monkeypatch.setattr(client, "_completion_with_deadline", _fake)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", _fake)
     if dispatched_hard is None:
         with pytest.raises(LiteLLMClientError):
             client.generate_chat_response(_MESSAGES)
@@ -232,11 +237,7 @@ class _Answer(BaseModel):
 
 
 def _repair_walk(
-    monkeypatch,
-    *,
-    first_burns: float,
-    caller_seconds: float | None,
-    attempt_timeout: int = 120,
+    monkeypatch, *, first_burns: float, caller_seconds: float | None
 ) -> tuple[list[dict[str, float]], Any, float | None]:
     """One rung, a validator that rejects the first answer, so a repair turn follows.
 
@@ -256,18 +257,19 @@ def _repair_walk(
             time=real_time.time,
         ),
     )
-    client = LiteLLMClient(LiteLLMConfig(model="primary/a", timeout=attempt_timeout))
+    monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
+    client = LiteLLMClient(LiteLLMConfig(model="primary/a", timeout=120))
     calls: list[dict[str, float]] = []
 
     def _fake(params, hard_timeout):
-        calls.append({"start": clock.now, "hard": hard_timeout - clock.now})
+        calls.append({"start": clock.now, "hard": hard_timeout})
         if len(calls) == 1:
             clock.now += first_burns
             return _response('{"value": "bad"}')
         clock.now += 1
         return _response('{"value": "good"}')
 
-    monkeypatch.setattr(client, "_completion_with_deadline", _fake)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", _fake)
 
     def _validator(output: BaseModel) -> list[str]:
         return [] if getattr(output, "value", None) == "good" else ["not good"]
@@ -288,15 +290,15 @@ def _repair_walk(
 def test_without_a_caller_deadline_the_repair_turn_gets_its_full_timeout(
     monkeypatch,
 ) -> None:
-    # A successful first turn must finish before its own 120-second attempt bound.
-    calls, outcome, _ = _repair_walk(monkeypatch, first_burns=119, caller_seconds=None)
+    # A successful first turn must finish before its own 125-second kill bound.
+    calls, outcome, _ = _repair_walk(monkeypatch, first_burns=124, caller_seconds=None)
     assert isinstance(outcome, _Answer)
-    assert [c["hard"] for c in calls] == [pytest.approx(120), pytest.approx(120)]
+    assert [c["hard"] for c in calls] == [pytest.approx(125), pytest.approx(125)]
 
 
 def test_a_repair_turn_is_clamped_to_end_by_the_caller_deadline(monkeypatch) -> None:
     calls, outcome, deadline = _repair_walk(
-        monkeypatch, first_burns=119, caller_seconds=164
+        monkeypatch, first_burns=124, caller_seconds=169
     )
     assert isinstance(outcome, _Answer)
     assert len(calls) == 2
@@ -310,7 +312,7 @@ def test_no_repair_turn_is_started_once_the_caller_deadline_is_spent(
 ) -> None:
     """A first attempt consuming the deadline cannot fund another provider call."""
     calls, outcome, deadline = _repair_walk(
-        monkeypatch, first_burns=129, caller_seconds=129, attempt_timeout=200
+        monkeypatch, first_burns=129, caller_seconds=129
     )
     assert isinstance(outcome, LiteLLMClientError)
     assert len(calls) == 1
@@ -340,7 +342,7 @@ def test_fallback_can_use_every_positive_remaining_budget(monkeypatch, remaining
 
 def test_repair_turn_can_finish_inside_a_short_positive_caller_budget(monkeypatch):
     calls, outcome, deadline = _repair_walk(
-        monkeypatch, first_burns=119, caller_seconds=124
+        monkeypatch, first_burns=124, caller_seconds=129
     )
     assert outcome == _Answer(value="good")
     assert len(calls) == 2
@@ -353,4 +355,4 @@ def test_preparation_preserves_shorter_provider_timeout(monkeypatch) -> None:
     calls, outcome = _walk(monkeypatch, primary_burns=97, timeout=1)
     assert outcome == "from-fallback"
     assert calls[-1]["timeout"] == 1
-    assert calls[-1]["hard"] == 1
+    assert calls[-1]["hard"] == 3
