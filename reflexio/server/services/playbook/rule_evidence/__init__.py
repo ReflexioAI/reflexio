@@ -7,6 +7,7 @@ method owns neither credentials, retries, completion labels nor publication.
 import json
 from collections.abc import Callable
 from importlib.resources import files
+from typing import Any
 
 import tiktoken
 
@@ -32,18 +33,22 @@ def prompt(name: str) -> str:
     return files(__package__).joinpath(f"{name}.md").read_text(encoding="utf-8")
 
 
+def request_input_tokens(
+    system: str, payload: dict[str, object], schema: type[StrictStructuredOutput]
+) -> int:
+    """Price the actual portable consumer envelope without dispatch or mutation."""
+    rendered = system + json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    rendered += json.dumps(schema.model_json_schema(), sort_keys=True)
+    return len(
+        tiktoken.get_encoding("cl100k_base").encode(rendered, disallowed_special=())
+    )
+
+
 def _check_budget(
     system: str, payload: dict[str, object], schema: type[StrictStructuredOutput]
 ) -> None:
-    rendered = system + json.dumps(payload, ensure_ascii=False, sort_keys=True)
-    rendered += json.dumps(schema.model_json_schema(), sort_keys=True)
     # Proxy only, not the provider tokenizer. Never silently drop evidence.
-    if (
-        len(
-            tiktoken.get_encoding("cl100k_base").encode(rendered, disallowed_special=())
-        )
-        > PAYLOAD_PROXY_TOKEN_LIMIT
-    ):
+    if request_input_tokens(system, payload, schema) > PAYLOAD_PROXY_TOKEN_LIMIT:
         raise ValueError(
             "rule evidence exceeds input budget; use a smaller source batch"
         )
@@ -106,9 +111,23 @@ def validate_diagnostic(
 def run_rule_evidence(data: RuleEvidenceInput, invoke: Invoke) -> RuleEvidenceResult:
     """Run the promoted V7 method; failures remain explicit, not abstentions."""
     data = RuleEvidenceInput.model_validate_json(data.model_dump_json())
-    from .wire import catalog, diagnose, rebuild, reference_catalog, tune_schema
+    from .wire import diagnose, rebuild
 
     diagnostics, audits = diagnose(data, invoke)
+    system, payload, schema = proposal_request(data, diagnostics, audits)
+    _check_budget(system, payload, schema)
+    value = invoke(system, payload, schema)
+    return rebuild(
+        data, diagnostics, schema.model_validate_json(value.model_dump_json())
+    )
+
+
+def proposal_request(
+    data: RuleEvidenceInput, diagnostics: list[Diagnostic], audits: list[dict[str, Any]]
+) -> tuple[str, dict[str, object], type[StrictStructuredOutput]]:
+    """Render the complete proposal envelope; partial diagnostics are sizing only."""
+    from .wire import catalog, reference_catalog, tune_schema
+
     payload = {
         "original_source": data.model_dump(mode="json"),
         "diagnostics": [d.model_dump(mode="json") for d in diagnostics],
@@ -120,8 +139,4 @@ def run_rule_evidence(data: RuleEvidenceInput, invoke: Invoke) -> RuleEvidenceRe
     }
     schema = tune_schema(data)
     system = prompt("tune")
-    _check_budget(system, payload, schema)
-    value = invoke(system, payload, schema)
-    return rebuild(
-        data, diagnostics, schema.model_validate_json(value.model_dump_json())
-    )
+    return system, payload, schema

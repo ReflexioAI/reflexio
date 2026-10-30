@@ -241,20 +241,26 @@ def judge_schema(data: models.RuleEvidenceInput, source: models.Session) -> Any:
     )
 
 
+def diagnostic_request(
+    data: models.RuleEvidenceInput, source: models.Session
+) -> tuple[str, dict[str, object], type[models.EvidenceModel]]:
+    """Render the exact diagnostic request for dispatch or admission planning."""
+    incumbent = data.incumbent.model_dump(mode="json")
+    incumbent.pop("content")
+    incumbent["content_clauses"] = [
+        {"id": entry["id"], "text": entry["text"]}
+        for entry in catalog(data.incumbent.content)
+    ]
+    payload = {**core._source(data, source), "incumbent": incumbent}
+    return core.prompt("judge"), payload, judge_schema(data, source)
+
+
 def diagnose(
     data: models.RuleEvidenceInput, invoke: core.Invoke
 ) -> tuple[list[models.Diagnostic], list[dict[str, Any]]]:
-    entries = catalog(data.incumbent.content)
     diagnostics, audits = [], []
     for source in data.sessions:
-        incumbent = data.incumbent.model_dump(mode="json")
-        incumbent.pop("content")
-        incumbent["content_clauses"] = [
-            {"id": e["id"], "text": e["text"]} for e in entries
-        ]
-        payload = {**core._source(data, source), "incumbent": incumbent}
-        schema = judge_schema(data, source)
-        system = core.prompt("judge")
+        system, payload, schema = diagnostic_request(data, source)
         core._check_budget(system, payload, schema)
         value = invoke(system, payload, schema)
         diagnostic, audit = resolve_diagnostic(
