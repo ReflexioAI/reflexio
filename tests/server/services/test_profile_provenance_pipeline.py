@@ -99,7 +99,7 @@ def test_http_profile_provenance_survives_mixed_merge_and_storage_reopen(
         )
 
     dispatch = Mock(side_effect=respond)
-    monkeypatch.setattr(LiteLLMClient, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
     request = payload("profile-first", force=True)
     for interaction in request["interaction_data_list"]:
         interaction["content"] = quotes[0]

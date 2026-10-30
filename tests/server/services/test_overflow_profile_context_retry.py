@@ -35,7 +35,7 @@ def _interrupt(pipeline, monkeypatch, after_child):
         "reflexio.server.llm.input_budget.litellm.token_counter", lambda **_: 100
     )
     dispatch = Mock(side_effect=_respond)
-    monkeypatch.setattr(LiteLLMClient, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
     extract = overflow_pipeline.extract_overflow_window
     first = True
 

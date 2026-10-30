@@ -128,7 +128,7 @@ def test_http_oversized_answer_preserves_qualifier_and_fails_without_dispatch(
         )
 
     dispatch = Mock(side_effect=respond)
-    monkeypatch.setattr(LiteLLMClient, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
     token_bill, learning_bill = Mock(), Mock()
     monkeypatch.setattr(
         "reflexio.server.metering_events.record_extraction_tokens", token_bill

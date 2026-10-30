@@ -20,22 +20,16 @@ the fallback/repair walk, queue-drain-before-reap and response/error/usage snaps
 are unchanged. Failure to reap a worker retains admission and logs the cleanup
 failure rather than allowing capacity to be reused without proof of exit.
 
-The subsequent single-deadline design retires
-`REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS` and rejects its presence, including
-blank assignments. One configured attempt allowance now covers startup, provider
-I/O, response transport and acceptance after admission; startup reduces the
-remaining provider timeout. No fixed padding replaces the setting. A former
-30-second timeout plus5seconds of grace becomes a30-second attempt, not an
-automatic35-second conversion. Remove obsolete assignments and choose the
-existing generation/role timeout deliberately.
+`REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS` remains supported and unchanged. It is
+a real margin between provider/socket timeout and the process deadline, not the
+removed cleanup wait. Replacing it with a constant or zero would lose policy.
+A future single-deadline design must also qualify custom providers' descendant
+process cleanup before retiring that input. This repair proves isolated-worker
+ownership; it does not claim that killing a worker cancels work already accepted
+by a remote provider, or that it terminates arbitrary descendant processes.
 
-The worker-ownership repair itself removed no configuration input; retirement
-belongs to the later absolute-deadline design. Neither design claims that killing
-a worker cancels remote accepted work or arbitrary descendant processes. Parent
-parsing and validation are checked cooperatively, and asynchronous retirement
-retains capacity until real worker exit. Tests use synthetic providers, actual
-isolated workers and local HTTP; no paid-provider or deployed qualification is
-implied.
+No configuration input is removed by this repair. Tests use synthetic providers
+and processes; no paid provider or deployed qualification is implied.
 
 ## Tool-call history after transport
 

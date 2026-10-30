@@ -83,7 +83,7 @@ def test_contradictory_draft_only_publishes_after_independent_correction(
             ) from None
         return response(answer)
 
-    monkeypatch.setattr(consolidator.client, "_completion_with_deadline", complete)
+    monkeypatch.setattr(consolidator.client, "_completion_with_hard_timeout", complete)
     if not final_audit_clear:
         with pytest.raises(LiteLLMClientError):
             case.service._resolve_write_plan([[case.candidate]])

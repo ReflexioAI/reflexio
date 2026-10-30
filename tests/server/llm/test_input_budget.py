@@ -1,6 +1,5 @@
 """Every built provider request is admitted before consuming durable quota."""
 
-import time
 from unittest.mock import Mock
 
 import pytest
@@ -11,7 +10,6 @@ from reflexio.server.llm.input_budget import (
     declared_context_limits,
     extraction_request_guard,
 )
-from reflexio.test_support.llm_mock import use_isolated_completion
 
 
 @pytest.fixture
@@ -157,7 +155,7 @@ def test_scoped_guard_runs_at_each_actual_fallback_dispatch_and_resets(monkeypat
     dispatch = Mock(
         side_effect=[LiteLLMClientError("fixture transport failure"), response]
     )
-    monkeypatch.setattr(client, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
     guard = Mock()
     token = extraction_provider_guard.set(guard)
     try:
@@ -183,7 +181,7 @@ def test_scoped_guard_rejection_never_dispatches_or_falls_back(monkeypatch):
         LiteLLMConfig(model="gpt-4o", fallback_models=["gpt-4o-mini"])
     )
     dispatch = Mock()
-    monkeypatch.setattr(client, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
     guard = Mock(side_effect=InputBudgetExceededError("fixture input budget"))
     token = extraction_provider_guard.set(guard)
     try:
@@ -234,7 +232,7 @@ def test_isolated_capacity_classifier_does_not_guess_from_code_or_message(
 
     monkeypatch.setattr(module, "_litellm_completion_worker", reject_worker)
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
-    use_isolated_completion(client)
+    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
     guard_token = extraction_provider_guard.set(Mock())
     identity = {
         "attempt_id": "reserved",
@@ -246,9 +244,7 @@ def test_isolated_capacity_classifier_does_not_guess_from_code_or_message(
         with pytest.raises(
             ProviderInputOverflowError if classified else LiteLLMClientError
         ) as caught:
-            client._completion_with_deadline(
-                {"model": "gpt-4o"}, time.monotonic() + (5)
-            )
+            client._completion_with_hard_timeout({"model": "gpt-4o"}, 5)
         if classified:
             assert isinstance(caught.value, ProviderInputOverflowError)
             assert caught.value.identity == identity
@@ -260,7 +256,7 @@ def test_isolated_capacity_classifier_does_not_guess_from_code_or_message(
         extraction_provider_guard.reset(guard_token)
     # Ordinary callers keep the existing error/fallback contract.
     with pytest.raises(LiteLLMClientError):
-        client._completion_with_deadline({"model": "gpt-4o"}, time.monotonic() + (5))
+        client._completion_with_hard_timeout({"model": "gpt-4o"}, 5)
 
 
 @pytest.mark.parametrize("prompt_tokens", [0, 10])
@@ -324,7 +320,7 @@ def test_usage_checkpoint_failure_never_dispatches_an_extra_fallback(monkeypatch
         usage=usage, model="gpt-4o", _hidden_params={"custom_llm_provider": "openai"}
     )
     dispatch = Mock(return_value=response)
-    monkeypatch.setattr(client, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
     observer = Mock(side_effect=RuntimeError("fixture checkpoint unavailable"))
     token = extraction_usage_observer.set(observer)
     try:
@@ -371,7 +367,7 @@ def test_native_worker_none_cap_is_explicit_before_actual_scoped_dispatch(
         _hidden_params={},
     )
     dispatch = Mock(return_value=response)
-    monkeypatch.setattr(client, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
     # Ordinary calls retain the provider's existing uncapped request behavior.
     ordinary = client._build_completion_params(
         [{"role": "user", "content": "evidence"}]

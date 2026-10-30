@@ -139,7 +139,7 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
             usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
         )
 
-    monkeypatch.setattr(client, "_completion_with_deadline", wire)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
     prepared = admitted.require_prepared()
     chunk = prepared.chunks[0]
     messages = [

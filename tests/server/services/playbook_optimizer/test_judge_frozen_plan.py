@@ -71,23 +71,17 @@ def _freeze(
 
 @pytest.mark.parametrize(
     "drift",
-    [
-        "instance_method",
-        "helper",
-        "config",
-        "seed",
-        "execution_adapter",
-        "prompt_version",
-    ],
+    ["instance_method", "helper", "config", "seed", "grace", "prompt_version"],
 )
 def test_pairwise_judge_rejects_frozen_plan_drift_before_provider_execution(
     monkeypatch, drift
 ):
     monkeypatch.setenv("REFLEXIO_LLM_SEED", "42")
+    monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
     prompt_manager = PromptManager()
     client = LiteLLMClient(LiteLLMConfig(model="azure/judge-deployment"))
     provider = Mock()
-    cast(Any, client)._completion_with_deadline = provider
+    cast(Any, client)._completion_with_hard_timeout = provider
     frozen_plan = _freeze(prompt_manager, client)
     judge = PairwiseJudge(
         cast(Any, SimpleNamespace(prompt_manager=prompt_manager)),
@@ -108,8 +102,8 @@ def test_pairwise_judge_rejects_frozen_plan_drift_before_provider_execution(
         client.config.top_p = 0.25
     elif drift == "seed":
         monkeypatch.setenv("REFLEXIO_LLM_SEED", "43")
-    elif drift == "execution_adapter":
-        cast(Any, client)._execute_completion = Mock()
+    elif drift == "grace":
+        monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "6")
     else:
         prompt_manager.version_override = {PLAYBOOK_OPTIMIZER_JUDGE_PROMPT_ID: "1.1.0"}
 
@@ -132,6 +126,7 @@ def test_pairwise_judge_provider_params_match_frozen_sanitized_plan(monkeypatch)
         ),
     )
     monkeypatch.setenv("REFLEXIO_LLM_SEED", "47")
+    monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "7")
     endpoint = "https://example.com:4443/"
     secret = "azure-secret"
     client = LiteLLMClient(
@@ -167,7 +162,7 @@ def test_pairwise_judge_provider_params_match_frozen_sanitized_plan(monkeypatch)
 
     def completion(params: dict[str, Any], hard_timeout: float) -> Any:
         captured["params"] = params
-        captured["hard_timeout"] = hard_timeout - generation.time.monotonic()
+        captured["hard_timeout"] = hard_timeout
         message = SimpleNamespace(
             content=json.dumps(
                 {
@@ -191,7 +186,7 @@ def test_pairwise_judge_provider_params_match_frozen_sanitized_plan(monkeypatch)
             stop_reason=None,
         )
 
-    cast(Any, client)._completion_with_deadline = completion
+    cast(Any, client)._completion_with_hard_timeout = completion
     prompt_manager = PromptManager()
     frozen_plan = _freeze(prompt_manager, client)
     judge = PairwiseJudge(
@@ -207,9 +202,7 @@ def test_pairwise_judge_provider_params_match_frozen_sanitized_plan(monkeypatch)
     assert result.verdict == "candidate"
     assert compared["params"] is captured["params"]
     assert sanitize(captured["params"]) == rung["provider_params"]
-    assert captured["hard_timeout"] == pytest.approx(
-        float(rung["hard_timeout_seconds"]), abs=0.1
-    )
+    assert captured["hard_timeout"] == float(rung["hard_timeout_seconds"])
     serialized = json.dumps(frozen_plan, sort_keys=True)
     assert rung["provider_params"]["seed"] == 47
     assert secret not in serialized
@@ -223,7 +216,7 @@ def test_pairwise_judge_rejects_drift_during_prompt_render_before_provider(
     prompt_manager = PromptManager()
     client = LiteLLMClient(LiteLLMConfig(model="azure/judge-deployment"))
     provider = Mock()
-    cast(Any, client)._completion_with_deadline = provider
+    cast(Any, client)._completion_with_hard_timeout = provider
     render = prompt_manager.render_prompt_from_identity
 
     def mutating_render(*args: Any, **kwargs: Any) -> str:
@@ -240,29 +233,6 @@ def test_pairwise_judge_rejects_drift_during_prompt_render_before_provider(
         frozen_request_plan=frozen_plan,
     )
 
-    with pytest.raises(judge_module.FrozenEvaluatorPlanDriftError):
-        judge.judge(**_inputs())
-    provider.assert_not_called()
-
-
-@pytest.mark.parametrize("old_policy", ["missing", "additive_grace"])
-def test_historical_timeout_plan_is_not_reinterpreted(monkeypatch, old_policy):
-    prompt_manager = PromptManager()
-    client = LiteLLMClient(LiteLLMConfig(model="azure/judge-deployment"))
-    provider = Mock()
-    cast(Any, client)._completion_with_deadline = provider
-    plan = _freeze(prompt_manager, client)
-    rung = plan["judge_generation_settings"]["rungs"][0]
-    if old_policy == "missing":
-        rung.pop("timeout_policy")
-    else:
-        rung["hard_timeout_grace_seconds"] = "5.0"
-    judge = PairwiseJudge(
-        cast(Any, SimpleNamespace(prompt_manager=prompt_manager)),
-        client,
-        "azure/judge-deployment",
-        frozen_request_plan=plan,
-    )
     with pytest.raises(judge_module.FrozenEvaluatorPlanDriftError):
         judge.judge(**_inputs())
     provider.assert_not_called()

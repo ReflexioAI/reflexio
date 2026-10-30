@@ -265,7 +265,7 @@ def test_actual_client_checks_audited_fallback_and_repair_before_dispatch(
         else None,
         return_value=response,
     )
-    monkeypatch.setattr(client, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
     reserve = Mock()
     token = extraction_provider_guard.set(
         extraction_request_guard(
@@ -371,7 +371,7 @@ def test_twenty_k_initial_geometry_runs_complete_http_window_under_original_quot
         )
 
     monkeypatch.setattr(
-        LiteLLMClient, "_completion_with_deadline", staticmethod(respond)
+        LiteLLMClient, "_completion_with_hard_timeout", staticmethod(respond)
     )
     result = http.post(
         "/api/publish_interaction",

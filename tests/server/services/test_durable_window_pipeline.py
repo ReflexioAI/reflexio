@@ -99,7 +99,7 @@ def test_input_budget_failure_reports_failed_without_immediate_replay_or_losing_
         side_effect=AssertionError("Guard failure must not reach a provider")
     )
     monkeypatch.setattr(
-        "reflexio.server.llm.litellm_client.LiteLLMClient._completion_with_deadline",
+        "reflexio.server.llm.litellm_client.LiteLLMClient._completion_with_hard_timeout",
         dispatch,
     )
     reason = (
@@ -2022,7 +2022,7 @@ def test_chunk_gate_requires_complete_valid_negative_coverage(
         assert presentation.chunk in prepared.chunks
         return dispatch(*args, **kwargs)
 
-    monkeypatch.setattr(client, "_completion_with_deadline", dispatch_with_source)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch_with_source)
     coordinator = OverflowCoordinator(
         storage,
         window,
@@ -2169,7 +2169,7 @@ def test_protected_pass_keeps_scoped_approval_and_adverse_outcomes_on_replay(
             )
         )
     dispatch = Mock(side_effect=responses)
-    monkeypatch.setattr(client, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
 
     def coordinator():
         return OverflowCoordinator(
@@ -2966,7 +2966,7 @@ def test_enabled_overflow_profile_uses_real_window_commit_once(
         return response
 
     dispatch = Mock(side_effect=respond)
-    monkeypatch.setattr(LiteLLMClient, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
     assert client.post(
         "/api/publish_interaction",
         json={
@@ -3197,7 +3197,7 @@ def test_http_overflow_human_answer_resumes_same_window_and_commits_once(
         )
 
     dispatch = Mock(side_effect=respond)
-    monkeypatch.setattr(LiteLLMClient, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
     data = payload("human-overflow", force=True)
     data["agent_version"] = "v1"
     for item in data["interaction_data_list"]:
@@ -3338,7 +3338,7 @@ def test_http_capacity_rejection_freezes_one_smaller_plan_without_refunding_work
         )
 
     dispatch = Mock(side_effect=respond)
-    monkeypatch.setattr(LiteLLMClient, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
     data = payload("repartition", force=True)
     data["interaction_data_list"][0]["content"] = "Synthetic tool progress. " * 6000
     assert client.post("/api/publish_interaction", json=data).json()["success"]
@@ -3418,7 +3418,7 @@ def test_computed_outcome_survives_failed_commit_without_model_replay(
         side_effect=AssertionError("Cached outcome must not reach a provider")
     )
     monkeypatch.setattr(
-        "reflexio.server.llm.litellm_client.LiteLLMClient._completion_with_deadline",
+        "reflexio.server.llm.litellm_client.LiteLLMClient._completion_with_hard_timeout",
         dispatch,
     )
     monkeypatch.setattr(
@@ -4211,7 +4211,7 @@ def test_single_chunk_adopted_empty_output_scans_source_and_publishes(
     monkeypatch.setattr(executor.client, "generate_chat_response_with_provenance", scan)
     monkeypatch.setattr(
         executor.client,
-        "_completion_with_deadline",
+        "_completion_with_hard_timeout",
         Mock(side_effect=AssertionError("Saved extraction must not redispatch")),
     )
     executor.execute(window, token)
@@ -4377,7 +4377,7 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
             _hidden_params={"custom_llm_provider": "minimax"},
         )
 
-    monkeypatch.setattr(executor.client, "_completion_with_deadline", respond)
+    monkeypatch.setattr(executor.client, "_completion_with_hard_timeout", respond)
     if failure and failure != "rewrite":
         from reflexio.server.llm._litellm_types import StructuredOutputRepairError
         from reflexio.server.llm.input_budget import InputBudgetConfigurationError
@@ -4542,7 +4542,7 @@ def test_profile_consolidation_control_failure_preserves_extracted_window_withou
         )
 
     dispatch = Mock(side_effect=respond)
-    monkeypatch.setattr(executor.client, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(executor.client, "_completion_with_hard_timeout", dispatch)
     generate = executor.client.generate_chat_response_with_provenance
     checkpoints = []
 
@@ -4926,7 +4926,7 @@ def _witnessing_playbook_window(pipeline, monkeypatch, *, supersede_after_first)
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     monkeypatch.setattr(
-        "reflexio.server.llm.litellm_client.LiteLLMClient._completion_with_deadline",
+        "reflexio.server.llm.litellm_client.LiteLLMClient._completion_with_hard_timeout",
         Mock(side_effect=AssertionError("Witness tests make no provider calls")),
     )
     storage = engine.get_storage()

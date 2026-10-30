@@ -11,10 +11,7 @@ from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import Tool, ToolRegistry, run_tool_loop
 from reflexio.test_support.llm_credentials import real_provider_key
-from reflexio.test_support.llm_mock import (
-    assert_litellm_unpatched,
-    completion_is_isolated,
-)
+from reflexio.test_support.llm_mock import assert_litellm_unpatched
 from reflexio.test_support.skip_decorators import skip_low_priority
 
 pytestmark = [pytest.mark.e2e, pytest.mark.requires_credentials]
@@ -56,7 +53,7 @@ def client(request, monkeypatch):
     result = LiteLLMClient(
         LiteLLMConfig(model=model, max_tokens=4096, timeout=60, fallback_models=[])
     )
-    assert completion_is_isolated(result)
+    assert result._should_process_isolate_completion(60, 5)
     # Limit thinking on models that document effort. The legacy baselines keep
     # their existing behavior, and the runtime provider defaults stay intact.
     if model not in {"minimax/MiniMax-M3", "zai/glm-5.2"}:

@@ -14,7 +14,6 @@ report the child-observed cache state back over a ``Queue``.
 """
 
 import multiprocessing
-import time
 
 import litellm
 
@@ -58,9 +57,7 @@ def _child_report_via_worker(result_queue: multiprocessing.Queue) -> None:
 
     litellm.completion = _fake_completion  # type: ignore[assignment]
     worker_queue: multiprocessing.Queue = multiprocessing.get_context().Queue(maxsize=1)
-    _litellm_completion_worker(
-        {"model": "gpt-5-mini"}, worker_queue, time.monotonic() + 30
-    )
+    _litellm_completion_worker({"model": "gpt-5-mini"}, worker_queue, float("inf"))
 
 
 def test_forked_child_resets_inherited_llm_client_cache():

@@ -45,7 +45,7 @@ def test_new_mock_windows_complete_without_admitting_overflow(
     monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "true")
     dispatch = Mock(side_effect=AssertionError("mock simulation dispatched a provider"))
-    monkeypatch.setattr(LiteLLMClient, "_completion_with_deadline", dispatch)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
     request_id = f"mock-{kind}"
     response = client.post(
         "/api/publish_interaction", json=payload(request_id, force=True)

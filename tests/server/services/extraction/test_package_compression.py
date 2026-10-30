@@ -167,7 +167,7 @@ def install_transport(client, monkeypatch):
             usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
         )
 
-    monkeypatch.setattr(client, "_completion_with_deadline", transport)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", transport)
     return dispatched
 
 
@@ -194,7 +194,7 @@ def test_native_selections_replay_from_real_durable_parent_without_new_dispatch(
         assert receipt["input_refs_digest"] != key
     frozen = copy.deepcopy(saved)
     forbidden = Mock(side_effect=AssertionError("Completed selections must be reused"))
-    monkeypatch.setattr(client, "_completion_with_deadline", forbidden)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", forbidden)
     fresh_plan = rebuild_plan(storage, window, client)
     assert fresh_plan.witness == plan.witness
     replay = compress_source_package(
@@ -235,7 +235,7 @@ def test_saved_node_witness_tamper_refuses_before_another_native_call(
             (json.dumps(snapshot), parent.id),
         )
     forbidden = Mock(side_effect=AssertionError("Tampered proof must not dispatch"))
-    monkeypatch.setattr(client, "_completion_with_deadline", forbidden)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", forbidden)
     with pytest.raises(
         InputBudgetConfigurationError, match="Saved compression node changed"
     ):
@@ -310,7 +310,7 @@ def test_replaced_original_source_refuses_before_native_dispatch(
             ("Replaced original source", window.manifest[0]["interaction_id"]),
         )
     forbidden = Mock(side_effect=AssertionError("Changed original must not dispatch"))
-    monkeypatch.setattr(client, "_completion_with_deadline", forbidden)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", forbidden)
     with pytest.raises(WindowInputsDeletedError, match="content was replaced"):
         compress_source_package(plan, coordinator(storage, window, token, manifest))
     forbidden.assert_not_called()
@@ -387,7 +387,7 @@ def test_cache_and_passthrough_revalidate_current_parent_authority(
     forbidden = Mock(
         side_effect=AssertionError("Invalid durable parent must not dispatch")
     )
-    monkeypatch.setattr(client, "_completion_with_deadline", forbidden)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", forbidden)
     with pytest.raises((OverflowCheckpointConflictError, WindowInputsDeletedError)):
         compress_source_package(plan, current)
     forbidden.assert_not_called()
