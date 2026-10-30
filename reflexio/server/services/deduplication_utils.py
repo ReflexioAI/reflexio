@@ -15,6 +15,7 @@ from reflexio.server.llm._litellm_types import ProviderRequestGuardError
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.embedding_text import embedding_input
+from reflexio.server.services.storage.error import ReadinessUnavailableError
 from reflexio.server.services.storage.storage_base._extraction_stream import (
     LeaseLostError,
     OverflowAttemptBudgetExceededError,
@@ -27,6 +28,7 @@ logger = logging.getLogger(__name__)
 # These errors stop the logical extraction; they cannot become best-effort
 # search/consolidation results that a worker might then publish successfully.
 EXTRACTION_CONTROL_ERRORS = (
+    ReadinessUnavailableError,
     ProviderRequestGuardError,
     OverflowAttemptBudgetExceededError,
     OverflowCheckpointConflictError,
@@ -58,11 +60,13 @@ def resolve_dedup_query_embeddings(
 
     Returns:
         One embedding (or None) per query text, in input order. On any
-        operational failure, all entries are None so the caller degrades to text-only
+        ordinary operational failure, all entries are None so the caller degrades to text-only
         search. A backend that signals embedding-service unavailability with
         an empty vector (e.g. the Supabase query path) is normalized to None
         so search falls back to its own embedding/FTS path instead of sending
         an empty vector to the database.
+        Typed readiness refusals propagate to the durable owner; unavailable
+        history must not be treated as an empty set of existing records.
     """
     try:
         get_storage_embedding = getattr(storage, "_get_embedding", None)

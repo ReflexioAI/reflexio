@@ -928,6 +928,14 @@ blip into replaced processes. Routing and uptime decisions use `/health/ready`.
 Hosts can raise `ReadinessUnavailableError` for temporarily unqualified vector
 operations. Resumable extraction keeps these runs queued without spending the
 retry budget; resume refunds remain protected by the claim and user lease fence.
+Profile and playbook consolidation also preserve this typed refusal instead of
+using incomplete historical candidates. The durable window owner uses its existing
+five-second, lease-token-bound setup deferral without increasing cursor attempts,
+discarding saved output, or marking the window complete. A replacement token
+cannot be rescheduled or released by the old owner. The existing background
+failure policy reports these deferrals and escalates persistent outages; only a
+completed turn clears its failure streak. Other window failures retain the normal
+retry ceiling, and pending effects retain their separate delivery retry path.
 The public publishing facade preserves this typed refusal before admission. The
 shared `create_app` factory maps it to HTTP 503 with
 `detail="embedding_readiness_unavailable"`, `Cache-Control: no-store`, and
