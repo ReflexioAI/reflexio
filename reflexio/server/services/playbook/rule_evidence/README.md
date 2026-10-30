@@ -32,6 +32,11 @@ outputs are retired. Observed raw wire output remains separate from this project
 The caller still owns durable invocation, publication and lifecycle authority.
 Invalid execution raises; it is not a successful abstention.
 
+Original-turn slots accept exact integer IDs from decoded provider JSON as well as
+JSON-mode validation. Strings, booleans, floats and IDs absent from the supplied
+session are rejected. This conversion is local to the source-bound enum and keeps
+the provider JSON schema and native SQL authorization domain unchanged.
+
 Both measured MiniMax stages reserve4096output tokens with thinking disabled.
 Other providers retain the same token bound without MiniMax-specific settings.
 Do not silently trim input; an oversized source batch is rejected explicitly.
