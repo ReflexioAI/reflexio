@@ -104,7 +104,16 @@ def _broker_completion(params):
         results = []
         for index in range(params.get("native_calls", 1)):
             result = run_native_cli(
-                [sys.executable, "-c", params["native_code"]],
+                # Exercise one actual native executable, not Windows' venv
+                # redirector plus a descendant. The synthetic CLI speaks UTF-8
+                # independently of the host console's default encoding.
+                [
+                    vars(sys)["_base_executable"],
+                    "-X",
+                    "utf8",
+                    "-c",
+                    params["native_code"],
+                ],
                 input=params.get("native_input", str(index)),
                 env=environment,
                 timeout=params.get("native_timeout", 10),
