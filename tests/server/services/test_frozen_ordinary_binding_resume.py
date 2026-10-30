@@ -235,7 +235,6 @@ def test_ordinary_saved_output_retry_commits_window_once(
     )
     engine, _, _ = pipeline
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "false")
     original = copy.deepcopy(storage.get_agent_run(run.id))
     executor = WindowExecutor(engine.request_context, Mock())
     with caplog.at_level("INFO", logger="reflexio.ops"):

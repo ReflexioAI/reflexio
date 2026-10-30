@@ -53,7 +53,6 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
         )
     )
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     monkeypatch.setenv("REFLEXIO_LLM_CONTEXT_LIMITS_JSON", '{"gpt-4o-mini":128000}')
     assert http.post(
         "/api/publish_interaction", json=durable.payload("aged-playbook", force=True)

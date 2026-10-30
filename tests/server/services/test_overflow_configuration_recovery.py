@@ -32,7 +32,6 @@ def test_corrected_context_declaration_resumes_only_the_original_contract(
     elapsed = [0.0]
     monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: started + elapsed[0])
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     endpoint = "https://custom.invalid/v1"
     model = "openai/gpt-4o"
     declaration_key = f"{model}@{endpoint}"

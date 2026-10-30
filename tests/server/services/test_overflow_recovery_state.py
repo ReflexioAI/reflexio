@@ -8,10 +8,6 @@ import pytest
 
 from reflexio.server.llm.input_budget import InputBudgetConfigurationError
 from reflexio.server.llm.litellm_client import LiteLLMClient
-from reflexio.server.services.durable_learning.window_executor import load_window_inputs
-from reflexio.server.services.extraction.input_preparation import (
-    prepare_extraction_input,
-)
 from reflexio.server.services.extraction.resumable_agent import ResumableExtractionAgent
 from reflexio.server.services.playbook.components.reviewer import (
     PlaybookCandidateReviewer,
@@ -21,6 +17,7 @@ from reflexio.test_support.skip_decorators import skip_in_precommit
 from tests.server.services.test_durable_window_pipeline import (
     _saved_legacy_window,
     _scripted_audited_response,
+    _seed_adopted_window,
 )
 from tests.server.services.test_durable_window_pipeline import (
     pipeline as imported_pipeline,
@@ -31,12 +28,10 @@ recovery_pipeline = imported_pipeline
 
 
 def _prepare_failed_saved_output(pipeline, monkeypatch, *, kind, cached):
-    (engine, storage, window, _, executor, _, _, _, _, run) = _saved_legacy_window(
+    (engine, storage, window, token, executor, _, _, _, _, run) = _saved_legacy_window(
         pipeline, monkeypatch, kind=kind
     )
-    prepared = prepare_extraction_input(
-        load_window_inputs(storage, window), user_id=window.user_id
-    )
+    prepared = _seed_adopted_window(storage, window, token, run)
     span = prepared.chunks[0].spans[0]
     monkeypatch.setenv(
         "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
@@ -264,7 +259,6 @@ def test_custom_extractor_saved_output_retry_restores_finalization(
     (_, storage, window, token, _, _, _, _, _, run) = _saved_legacy_window(
         recovery_pipeline, monkeypatch, kind="profile"
     )
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "false")
     monkeypatch.setattr(
         storage, "_get_embedding", lambda *_args, **_kwargs: [0.1] * 512
     )

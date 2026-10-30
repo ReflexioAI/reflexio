@@ -307,7 +307,6 @@ def test_twenty_k_initial_geometry_runs_complete_http_window_under_original_quot
         )
     )
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     monkeypatch.setenv(
         "REFLEXIO_LLM_CONTEXT_LIMITS_JSON", json.dumps({"minimax/MiniMax-M3": 512000})
     )

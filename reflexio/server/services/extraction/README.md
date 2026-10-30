@@ -103,8 +103,9 @@ usage and completed receipts. Only the rejected unfinished chunk is split;
 unaffected source geometry remains stable. A second rejection or an unsafe
 tool continuation holds the window rather than resetting work. Legacy cached
 write plans keep their existing publication path, and adoption preserves known
-original usage separately from new attempts. Unknown historical usage is never
-manufactured. Admission remains disabled by default.
+original usage separately from new attempts in historical adopted journals.
+Unknown historical usage is never manufactured. New eligible text admission is
+standard; marker-free saved parents retain their original adapter.
 
 New `MOCK_LLM_RESPONSE` simulations retain the ordinary mock extraction path,
 without admitting a provider-budget protocol. Switching an existing durable
@@ -221,18 +222,22 @@ All finalization retries with a receipt replay billing from stored result IDs,
 without source reconstruction or result generation, even after source deletion.
 Existing owner proof remains required for legacy playbook records.
 
-### Overflow preparation (implementation in progress)
+### Standard source-preserving extraction
 
-Coordinator admission, gates and domain chunk factories are wired behind the
-default-off overflow flag; the complete feature remains under qualification.
+The window executor admits new eligible text work through the source-preserving
+coordinator in every deployment mode. The completed rollout switch
+`REFLEXIO_EXTRACTION_OVERFLOW_ENABLED` is removed; old assignments are ignored.
+Saved protocol markers are validated before selecting an execution adapter.
+Marker-free unfinished continuations, cached ordinary results, image evidence
+and explicit mock execution retain their existing compatibility contracts.
+No new execution mode or shared-compressor activation replaces the flag.
 `llm/input_budget.py` admits complete built provider requests through a
 run-scoped guard, including schema, tools, output reserve and fallback attempts.
 The shared SQL storage checkpoint operation fences the window/user lease and
 uses a manifest revision to prevent stale checkpoint writes. Provider attempt
 reservations and immutable observed usage survive retries; unknown usage never
-refunds an attempt. Native pending-human staging is wired with race and rollback verification;
-full publish/answer/persistence qualification and bounded historical consolidation
-remain before enabling the end-to-end feature. The worker recognizes typed suspension
+refunds an attempt. Native pending-human staging retains its race and rollback
+checks. The worker recognizes typed suspension
 without completing a window or increasing its failure count. Protected-pass,
 gate and presentation helpers have deterministic provider verification; this
 does not establish real-model evidence-selection quality.
@@ -247,7 +252,7 @@ Under a scoped coordinator/presentation, the resumable agent stages child
 outputs without completing the parent. It checkpoints synchronous tool messages
 and the remaining child step count before the next model turn; retries reuse
 that continuation. A pending human/tool dependency suspends the child, and its
-protocol wake-up/resume routing still needs integration. Custom extraction/gate
+saved protocol continues through the protocol-aware resume routing. Custom extraction/gate
 templates that omit the complete prepared source fail before provider dispatch.
 
 Native overflow requests without a configured output cap explicitly request the
@@ -343,7 +348,7 @@ omission notice is reserved only when the complete selection cannot fit.
 Outer journal version 2 requires `input_protocol.name=source-package`, descriptor
 version 1 and preparation version 4. The unchanged current executor rejects that
 preparation version before legacy input preparation or cached publication. The
-existing enable flag does not admit this protocol. Outer-v1 fields, prompts,
+standard admission does not admit this protocol. Outer-v1 fields, prompts,
 partitions, model receipts and quota behavior retain their established path.
 An already admitted outer-v1 run or marker-free legacy output cannot be converted
 to outer2 through adoption.

@@ -273,6 +273,22 @@ Copy `.env.example` to `.env` and fill in values. Key variables:
 
 Never change env variable values in `.env` directly for port overrides — use shell exports instead.
 
+### Extraction rollout upgrade
+
+New eligible text windows use the durable source-preserving coordinator in all
+deployment modes. Old `REFLEXIO_EXTRACTION_OVERFLOW_ENABLED` assignments no
+longer affect execution and have no replacement. Removing them is optional
+cleanup; ordinary upgrades remain image replacement and restart.
+Existing protocol journals and legacy continuations retain their original
+recovery contracts; image and mock execution are unchanged.
+
+Custom model endpoints must declare their actual context capacity in
+`REFLEXIO_LLM_CONTEXT_LIMITS_JSON` and supply an explicit positive output cap.
+Unknown or insufficient capacity blocks dispatch and preserves the input for
+recovery; disabling admission is no longer an escape from that check. Standard
+provider models retain their advertised-capacity lookup. This upgrade does not
+activate the separate shared-input compressor/package executor.
+
 ## Supported LLM Providers
 
 | Provider | Env Variable | Model Prefix | Example Usage |

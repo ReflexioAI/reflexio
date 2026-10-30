@@ -94,7 +94,6 @@ def test_input_budget_failure_reports_failed_without_immediate_replay_or_losing_
         started = db.now()
     monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: started)
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     dispatch = Mock(
         side_effect=AssertionError("Guard failure must not reach a provider")
     )
@@ -2480,7 +2479,6 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
         )
     )
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     storage = engine.get_storage()
     old = UserPlaybook(
         user_id="u",
@@ -2906,7 +2904,6 @@ def test_enabled_overflow_profile_uses_real_window_commit_once(
 
     engine, worker, client = pipeline
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     monkeypatch.setenv(
         "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
         '{"minimax/MiniMax-M3":1000000,"gpt-4o":65536}',
@@ -3057,7 +3054,6 @@ def test_http_overflow_human_answer_resumes_same_window_and_commits_once(
         )
     config.set_config(root.model_copy(update=updates))
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     monkeypatch.setenv(
         "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
         '{"minimax/MiniMax-M3":1000000,"gpt-4o":65536}',
@@ -3294,7 +3290,6 @@ def test_http_capacity_rejection_freezes_one_smaller_plan_without_refunding_work
 
     engine, worker, client = pipeline
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     monkeypatch.setenv(
         "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
         '{"minimax/MiniMax-M3":1000000,"gpt-4o":65536}',
@@ -3413,7 +3408,6 @@ def test_computed_outcome_survives_failed_commit_without_model_replay(
     monkeypatch.setattr(ProfileGenerationService, "persist_generation", original)
     if enable_before_retry:
         monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-        monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     dispatch = Mock(
         side_effect=AssertionError("Cached outcome must not reach a provider")
     )
@@ -4111,7 +4105,6 @@ def _saved_legacy_window(pipeline, monkeypatch, *, kind, empty=False, schema=Non
             )
         )
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     source_text = "Prepare a draft only; obtain separate approval before deploying."
     data = payload("legacy-saved", force=True)
     data["agent_version"] = "v1"
@@ -4189,6 +4182,49 @@ def _saved_legacy_window(pipeline, monkeypatch, *, kind, empty=False, schema=Non
     )
 
 
+def _seed_adopted_window(storage, window, token, run):
+    """Reconstruct a historical adopted journal, never current worker admission."""
+    from reflexio.server.services.durable_learning.window_executor import (
+        load_window_inputs,
+    )
+    from reflexio.server.services.extraction.input_preparation import (
+        prepare_initial_extraction_input,
+    )
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+        legacy_observed_usage,
+    )
+
+    prepared, chunk_tokens = prepare_initial_extraction_input(
+        load_window_inputs(storage, window), user_id=window.user_id
+    )
+    # Reconstruct the historical adopted state through its fenced storage seam.
+    # Current admission must leave marker-free committed parents unchanged.
+    manifest = OverflowCoordinator.initial_manifest(prepared.source_digest)
+    manifest.update(
+        input_chunk_tokens=chunk_tokens,
+        preparation_version=3,
+        chunk_digests=[
+            OverflowCoordinator.candidate_key(c.text) for c in prepared.chunks
+        ],
+    )
+    usage = legacy_observed_usage(run.committed_output)
+    if usage is not None:
+        manifest["legacy_observed_usage"] = usage
+    with storage.commit_scope():
+        storage.validate_extraction_source_digest(window, prepared.source_digest)
+        storage.adopt_extraction_overflow(
+            window,
+            token,
+            source_digest=prepared.source_digest,
+            source_digests=run.generation_request_snapshot[
+                "source_interaction_digests"
+            ],
+            manifest=manifest,
+        )
+    return prepared
+
+
 @pytest.mark.parametrize("kind", ["profile", "playbook"])
 def test_single_chunk_adopted_empty_output_scans_source_and_publishes(
     pipeline, monkeypatch, kind
@@ -4203,6 +4239,7 @@ def test_single_chunk_adopted_empty_output_scans_source_and_publishes(
     _, storage, window, token, executor, _, _, _, _, run = _saved_legacy_window(
         pipeline, monkeypatch, kind=kind, empty=True
     )
+    _seed_adopted_window(storage, window, token, run)
     scan = Mock(
         return_value=SimpleNamespace(
             value=ProtectedRecordSelection(), provenance=ModelProvenance()
@@ -4241,12 +4278,6 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
     import json
     from types import SimpleNamespace
 
-    from reflexio.server.services.durable_learning.window_executor import (
-        load_window_inputs,
-    )
-    from reflexio.server.services.extraction.input_preparation import (
-        prepare_extraction_input,
-    )
     from reflexio.server.services.playbook.components.reviewer import (
         PlaybookCandidateReviewer,
     )
@@ -4261,9 +4292,7 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
         schema="UntrustedSchema" if failure == "unsupported_schema" else None,
     )
     assert run.committed_output is not None
-    prepared = prepare_extraction_input(
-        load_window_inputs(storage, window), user_id=window.user_id
-    )
+    prepared = _seed_adopted_window(storage, window, token, run)
     assert len(prepared.chunks) == 1
     span = prepared.chunks[0].spans[0]
     monkeypatch.setenv(
@@ -4478,7 +4507,6 @@ def test_profile_consolidation_control_failure_preserves_extracted_window_withou
 
     engine, _, http = pipeline
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     monkeypatch.setenv(
         "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
         '{"minimax/MiniMax-M3":1000000,"gpt-4o":65536}',
@@ -4674,7 +4702,6 @@ def test_ordinary_window_marker_notes_cannot_claim_source_projection(
         )
     )
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "true")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "false")
     assert client.post(
         "/api/publish_interaction", json=payload("ordinary-marker", force=True)
     ).json()["success"]
@@ -4804,9 +4831,10 @@ def test_two_short_messages_reach_judge_and_negative_is_covered(
     clock = [1000.0]
     monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: clock[0])
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "false")
-    judge = Mock(return_value="false")
-    monkeypatch.setattr(LiteLLMClient, "generate_chat_response", judge)
+    from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
+
+    judge = Mock(return_value=CompletionResult("false", ModelProvenance()))
+    monkeypatch.setattr(LiteLLMClient, "generate_chat_response_with_provenance", judge)
     data = {**payload("short", count=2), "session_finished": completion == "publish"}
     data["interaction_data_list"][0]["content"] = "Use uv"
     data["interaction_data_list"][1]["content"] = "OK"
@@ -4924,7 +4952,6 @@ def _witnessing_playbook_window(pipeline, monkeypatch, *, supersede_after_first)
         )
     )
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     monkeypatch.setattr(
         "reflexio.server.llm.litellm_client.LiteLLMClient._completion_with_hard_timeout",
         Mock(side_effect=AssertionError("Witness tests make no provider calls")),

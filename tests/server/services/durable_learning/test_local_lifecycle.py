@@ -224,11 +224,12 @@ def test_library_reopen_resumes_idle_deadline_without_another_publish(
 
     monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "off")
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "false")
     clock = [1000.0]
     monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: clock[0])
-    judge = Mock(return_value="false")
-    monkeypatch.setattr(LiteLLMClient, "generate_chat_response", judge)
+    from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
+
+    judge = Mock(return_value=CompletionResult("false", ModelProvenance()))
+    monkeypatch.setattr(LiteLLMClient, "generate_chat_response_with_provenance", judge)
     context = _context(tmp_path / "idle-reopen", "idle-reopen")
     config = context.configurator
     config.set_config(
