@@ -1469,3 +1469,14 @@ renewal becomes 100 seconds). A manual lease does not require a discovery poll
 policy. The separate nonrenewable run-claim TTL and its recovery contract remain
 independent. Failed execution/heartbeat launches release acquired capacity and
 user ownership before retry; they cannot leave a slot permanently unavailable.
+
+### Native SQL statement-budget upgrade
+
+The shared removed-name guard rejects `REFLEXIO_POSTGRES_STATEMENT_TIMEOUT_MS`,
+including blank assignments. The matching native storage release derives SQL
+limits from its remaining checked-out connection lease. Remove the old assignment
+and deliberately select the existing whole-borrow `REFLEXIO_DB_LEASE_TIMEOUT_SECONDS`
+budget, including transaction cleanup. Milliseconds and per-statement semantics
+cannot be copied losslessly into seconds and whole-borrow semantics. Adopt the
+matching storage release with this SDK; this registry does not implement a
+connection lease or introduce a runtime alias.
