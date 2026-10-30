@@ -469,50 +469,106 @@ def structured_output_repair_idempotency_key(base_key: str) -> str:
 # from ``str(part)`` in ``_safe_validation_errors`` with no clamp of its own, so
 # an ``extra_forbidden`` entry carries a MODEL-CHOSEN key straight into the
 # string. Whatever a log line renders bridges to external telemetry, so both the
-# COUNT and the SHAPE of each entry are bounded here.
+# COUNT and the CONTENT of each entry are bounded here.
 MAX_LOGGED_VALIDATION_ERRORS = 5
 MAX_LOGGED_ERROR_LENGTH = 128
 
-# ``_safe_validation_errors`` emits ``"<dotted.loc>: <error_type>"`` and, for a
-# JSON syntax error, ``"<root>: json_invalid at line L column C"``. This admits
-# exactly that alphabet -- identifiers, list indices, the ``<root>`` marker, the
-# separator and spaces. Anything else (a newline, a quote, a control character,
-# a non-ASCII key) fails the match and the whole entry is redacted. Commas are
-# deliberately excluded so the joined line stays unambiguous.
-_LOG_SAFE_VALIDATION_ERROR = re.compile(
-    rf"[A-Za-z0-9_.:<>\[\] ]{{1,{MAX_LOGGED_ERROR_LENGTH}}}"
+# The pydantic error tag (``missing``, ``extra_forbidden``, ...) and the one
+# non-tag shape ``_safe_validation_errors`` emits, for a JSON syntax error.
+_LOG_SAFE_ERROR_TYPE = re.compile(
+    r"[a-z_]{1,64}|json_invalid at line \d{1,9} column \d{1,9}"
 )
 _REDACTED_VALIDATION_ERROR = "<redacted>"
 
 
-def _log_safe_validation_errors(errors: Sequence[str]) -> str:
-    """Render validation errors for a log sink, bounded in count and shape.
+def _schema_field_names(schema: Any) -> frozenset[str]:
+    """Every property name the schema (and each model nested in it) declares.
 
-    The enterprise open-world diagnostics recorder clamps exactly this shape
-    (``_safe_loc_component`` / ``MAX_LOC_COMPONENTS``) before persisting it;
-    this is the same bound applied at the OSS logging boundary, which the
-    telemetry bridge reads. The RETRY PROMPT still receives the unclamped
-    errors: they go back to the provider that produced them, which is a
-    different trust boundary from a log sink, and clamping there would blunt
-    the correction the plain rung's corrective retry depends on.
+    These are the only location components a log line may name: they come from
+    the code's own schema, never from the provider. Fails closed -- a schema
+    that cannot be introspected owns no names, so every component is redacted.
 
     Args:
-        errors (Sequence[str]): Entries from ``_safe_validation_errors``
+        schema (Any): The call's ``response_format``, normally a Pydantic model
 
     Returns:
-        str: A comma-joined, bounded rendering; entries outside the schema
-            alphabet are replaced by a fixed marker, and a trailing count
-            stands in for anything past the cap
+        frozenset[str]: Declared property names, by their wire (alias) spelling
     """
-    entries = list(errors)
-    rendered = [
-        entry
-        if _LOG_SAFE_VALIDATION_ERROR.fullmatch(entry)
+    try:
+        document = schema.model_json_schema()
+    except Exception:
+        return frozenset()
+    names: set[str] = set()
+    definitions = document.get("$defs") if isinstance(document, dict) else None
+    nodes = [document, *(definitions.values() if isinstance(definitions, dict) else ())]
+    for node in nodes:
+        properties = node.get("properties") if isinstance(node, dict) else None
+        if isinstance(properties, dict):
+            names.update(name for name in properties if isinstance(name, str))
+    return frozenset(names)
+
+
+def _log_safe_validation_error(
+    location: tuple[str | int, ...], error_type: str, owned: frozenset[str]
+) -> str:
+    """Render one TYPED error with only schema-owned location parts.
+
+    Decided from pydantic's typed ``loc``, never from string shape: an ``int``
+    component is a list index pydantic itself produced, and a ``str`` component
+    is a key -- kept only when the schema declares it. A model-chosen key is
+    therefore redacted whatever it looks like, digits included (joined into a
+    string, ``"1234"`` the key and ``1234`` the index are indistinguishable).
+    Every token emitted is schema-owned, an index, or fixed. Pydantic's
+    internal union tags are not declared properties and are redacted too --
+    the cost of a rule that never has to judge provider text.
+    """
+    if not _LOG_SAFE_ERROR_TYPE.fullmatch(error_type):
+        return _REDACTED_VALIDATION_ERROR
+    components = [
+        str(part)
+        if type(part) is int or (isinstance(part, str) and part in owned)
         else _REDACTED_VALIDATION_ERROR
-        for entry in entries[:MAX_LOGGED_VALIDATION_ERRORS]
-    ]
-    if len(entries) > len(rendered):
-        rendered.append(f"...({len(entries) - len(rendered)} more)")
+        for part in location
+    ] or ["<root>"]
+    rendered = f"{'.'.join(components)}: {error_type}"
+    if len(rendered) > MAX_LOGGED_ERROR_LENGTH:
+        return _REDACTED_VALIDATION_ERROR
+    return rendered
+
+
+def _log_safe_validation_errors(exc: StructuredOutputParseError, schema: Any) -> str:
+    """Render a parse failure's validation errors for a log sink.
+
+    Reads ONLY the typed ``validation_error_locations``; see
+    ``_log_safe_validation_error`` for what survives. An error carrying only
+    joined strings (no typed form) renders each entry as ``<redacted>``: a
+    string cannot say which of its parts the model chose. The RETRY PROMPT
+    still receives the unclamped strings: they go back to the provider that
+    produced them, which is a different trust boundary from a log sink, and
+    clamping there would blunt the correction the corrective retry depends on.
+
+    Args:
+        exc (StructuredOutputParseError): The failure whose errors to render
+        schema (Any): The ``response_format`` the errors were raised against
+
+    Returns:
+        str: A comma-joined, bounded rendering naming only schema-owned
+            fields, list indices and error tags, with a trailing count
+            standing in for anything past the cap
+    """
+    owned = _schema_field_names(schema)
+    typed = exc.validation_error_locations
+    total = len(typed) if typed else len(exc.validation_errors)
+    rendered = (
+        [
+            _log_safe_validation_error(location, error_type, owned)
+            for location, error_type in typed[:MAX_LOGGED_VALIDATION_ERRORS]
+        ]
+        if typed
+        else [_REDACTED_VALIDATION_ERROR] * min(total, MAX_LOGGED_VALIDATION_ERRORS)
+    )
+    if total > len(rendered):
+        rendered.append(f"...({total - len(rendered)} more)")
     return ",".join(rendered)
 
 
@@ -2120,25 +2176,29 @@ class TextGenerationMixin:
                         )
                     )
                 schema_name = getattr(rf, "__name__", "structured output")
-                # The COUNT, not the errors. An ``extra_forbidden`` entry puts a
-                # MODEL-CHOSEN key in the pydantic ``loc``, and this line reaches
-                # external telemetry via the logging bridge. The errors
-                # themselves go into the retry prompt verbatim, back to the
-                # provider that produced them. Where a log line does need them
-                # (``_run_rung_validated``), they go through
-                # ``_log_safe_validation_errors`` first -- ``loc`` is built from
-                # ``str(part)`` with no charset, length or count clamp of its
-                # own, so nothing else bounds what reaches the sink.
+                # The errors go into the retry prompt verbatim, back to the
+                # provider that produced them. This LOG line reaches external
+                # telemetry via the logging bridge, and an ``extra_forbidden``
+                # entry puts a MODEL-CHOSEN key in the pydantic ``loc`` -- so
+                # here they pass through ``_log_safe_validation_errors``, which
+                # bounds the count and keeps only location components the
+                # schema itself declares (``loc`` is built from ``str(part)``
+                # with no clamp of its own). The rendered field
+                # paths are what make a rejected reply diagnosable at all: the
+                # count alone says how many fields failed, never which.
                 self.logger.warning(
                     "event=llm_parse_retry_corrective model=%s schema=%s "
-                    "validation_error_count=%d failure_kind=%s %s — malformed "
-                    "structured output, retrying once on the same model with "
-                    "the validation errors fed back",
+                    "validation_error_count=%d failure_kind=%s %s errors=%s — "
+                    "malformed structured output, retrying once on the same "
+                    "model with the validation errors fed back",
                     params.get("model"),
                     schema_name,
                     len(exc.validation_errors),
                     exc.failure_kind,
                     exc.log_fields(),
+                    _log_safe_validation_errors(
+                        exc, original_kwargs.get("response_format")
+                    ),
                 )
                 (
                     retry_params,
@@ -2195,7 +2255,9 @@ class TextGenerationMixin:
                         schema_name,
                         failure_kind,
                         exc.log_fields(),
-                        _log_safe_validation_errors(exc.validation_errors),
+                        _log_safe_validation_errors(
+                            exc, original_kwargs.get("response_format")
+                        ),
                     )
                 raw_content = exc.raw_content
                 finish_reason = exc.finish_reason
@@ -2277,7 +2339,9 @@ class TextGenerationMixin:
                         schema_name,
                         failure_kind,
                         exc.log_fields(),
-                        _log_safe_validation_errors(exc.validation_errors),
+                        _log_safe_validation_errors(
+                            exc, original_kwargs.get("response_format")
+                        ),
                     )
             except (LiteLLMClientError, ProviderCapSaturatedError) as exc:
                 # Cap saturation is not a LiteLLMClientError subclass; still stamp
@@ -2383,12 +2447,17 @@ class TextGenerationMixin:
                         exc.first_parsed_provenance = ladder_first_parsed_provenance
                     raise
                 if isinstance(exc, StructuredOutputParseError):
+                    # ``errors=`` names the final attempt's failing field paths,
+                    # clamped exactly as on the corrective-retry line.
                     self.logger.error(
-                        "event=llm_request_end model=%s success=False error_type=%s failure_kind=%s %s error=%s",
+                        "event=llm_request_end model=%s success=False error_type=%s failure_kind=%s %s errors=%s error=%s",
                         rung,
                         type(exc).__name__,
                         exc.failure_kind,
                         exc.log_fields(),
+                        _log_safe_validation_errors(
+                            exc, original_kwargs.get("response_format")
+                        ),
                         exc,
                     )
                 wrapped = LiteLLMClientError(
