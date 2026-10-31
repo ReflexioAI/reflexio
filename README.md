@@ -481,6 +481,14 @@ Client (SDK / CLI / HTTP API)
     └─ UnifiedSearchService      → Profiles + user/agent playbooks
 ```
 
+Scheduled and explicit extraction share the renewable user-work lifecycle in
+[`user_lease.py`](reflexio/server/services/durable_learning/user_lease.py).
+Acquisition retains responsibility for capacity and release; the common context
+owns heartbeat and fencing. A renewal I/O error leaves ownership uncertain until
+the database fence verifies it. Fencing and renewal check expiry after acquiring
+the user row lock, so lock waiting cannot revive an expired lease. Explicit
+claims retain the stream lock through clock sampling and token assignment.
+
 The import-light [inference launch resolver](reflexio/inference_launch.py) gives
 providers and launchers one endpoint and process-ownership contract. An explicit
 service URL attaches to an existing inference process; otherwise the launcher

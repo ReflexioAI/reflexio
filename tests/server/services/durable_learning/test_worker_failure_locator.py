@@ -572,6 +572,7 @@ def test_transient_turn_failure_is_a_warning_and_releases_the_slot(
 
 def _claimed_storage(user_id: str, *, release_fails: Exception | None) -> MagicMock:
     storage = MagicMock()
+    storage.org_id = "org1"
     storage.claim_extraction.return_value = (user_id, "token")
     storage.pending_extraction_effects.return_value = []
     storage.prepare_extraction.return_value = None
