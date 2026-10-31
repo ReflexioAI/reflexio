@@ -75,13 +75,13 @@ def test_changed_old_profile_blocks_publication(storage, mutation):
                 (value, row.profile_id),
             )
     with (
-        storage.commit_scope(),
         pytest.raises(
             InputBudgetConfigurationError,
             match="Historical profile is malformed"
             if mutation == "malformed"
             else "Historical profile changed",
         ),
+        storage.commit_scope(),
     ):
         storage.validate_extraction_historical_profiles(window, witnesses)
 
