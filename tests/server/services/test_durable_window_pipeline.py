@@ -332,8 +332,8 @@ def test_overflow_prior_answer_is_complete_pinned_and_fenced(
     assert second == first
     matches.assert_called_once()
     with (
-        storage.commit_scope(),
         pytest.raises(InputBudgetConfigurationError, match="answer changed"),
+        storage.commit_scope(),
     ):
         storage.validate_extraction_answers(witnesses)
     assert coordinator.checkpoint["answer_witnesses"] == witnesses
@@ -1010,10 +1010,10 @@ def test_historical_playbook_fence_keeps_full_evidence_and_rejects_stale_rows(
     with storage.commit_scope(), storage._stream_sql() as db:
         db.query(*mutations[change])
     with (
-        storage.commit_scope(),
         pytest.raises(
             ComputationEvidenceChangedError, match="Historical playbook changed"
         ),
+        storage.commit_scope(),
     ):
         storage.validate_extraction_historical_playbooks(window, witnesses)
     assert coordinator.checkpoint["historical_playbooks"] == witnesses
@@ -1084,8 +1084,8 @@ def test_saved_legacy_usage_is_fenced_and_added_once_without_fake_old_attempts(
         },
     )
     with (
-        storage.commit_scope(),
         pytest.raises(OverflowCheckpointConflictError, match="usage changed"),
+        storage.commit_scope(),
     ):
         storage.adopt_extraction_overflow(
             window,
@@ -1399,7 +1399,10 @@ def test_saved_output_adoption_requires_original_witnesses_and_retains_output(pi
     )
     manifest = OverflowCoordinator.initial_manifest(prepared.source_digest)
     for invalid in ({}, dict.fromkeys(original, "changed")):
-        with storage.commit_scope(), pytest.raises(OverflowCheckpointConflictError):
+        with (
+            pytest.raises(OverflowCheckpointConflictError),
+            storage.commit_scope(),
+        ):
             storage.validate_extraction_source_digest(window, prepared.source_digest)
             storage.adopt_extraction_overflow(
                 window,
@@ -2287,12 +2290,14 @@ def test_overflow_source_witness_rejects_replacement_with_unchanged_sequence(
                 "UPDATE requests SET source=? WHERE request_id=?",
                 ("replacement-source", "overflow-checkpoint"),
             )
-    with storage.commit_scope():
+    with (
+        pytest.raises(WindowInputsDeletedError, match="content was replaced"),
+        storage.commit_scope(),
+    ):
         # The old identity-only check passes; the source-content witness must
-        # detect the change before a cached result could publish.
+        # abort the transaction before a cached result could publish.
         storage.validate_extraction_inputs(window)
-        with pytest.raises(WindowInputsDeletedError, match="content was replaced"):
-            storage.validate_extraction_source_digest(window, prepared.source_digest)
+        storage.validate_extraction_source_digest(window, prepared.source_digest)
     assert storage.count_all_profiles() == 0
 
 

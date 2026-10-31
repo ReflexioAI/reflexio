@@ -1062,6 +1062,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self.db_path = db_path
         self._lock = threading.RLock()
         self._scope_depth = 0
+        self._scope_rollback_only = False
         self._deferred_index_ops: list[
             tuple[str, Any]
         ] = []  # (kind, args) flushed post-commit
@@ -1146,20 +1147,31 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
 
         Nested scopes join the outermost: only the outer scope commits. On
         exception the whole transaction rolls back and deferred index ops
-        are discarded.
+        are discarded. A nested failure marks the outer transaction rollback-only,
+        even when its caller catches the exception.
         """
         with self._lock:
             if self._scope_depth > 0:
+                if self._scope_rollback_only:
+                    raise StorageError("Transaction marked for rollback")
                 self._scope_depth += 1
                 try:
                     yield
+                except BaseException:
+                    self._scope_rollback_only = True
+                    raise
                 finally:
                     self._scope_depth -= 1
                 return
             self.conn.execute("BEGIN IMMEDIATE")
             self._scope_depth = 1
+            self._scope_rollback_only = False
             try:
                 yield
+                if self._scope_rollback_only:
+                    raise StorageError(
+                        "Nested operation marked transaction for rollback"
+                    )
                 # The COMMIT itself. Separated from the scope's other work
                 # because `commit_scope_ms` reported 15.6s on prod of which
                 # 11.7s was outside every phase it contains -- this says how
@@ -1183,6 +1195,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 raise
             finally:
                 self._scope_depth = 0
+                self._scope_rollback_only = False
 
     # ------------------------------------------------------------------
     # DDL / migration

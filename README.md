@@ -491,6 +491,11 @@ claims retain the stream lock through clock sampling and token assignment.
 Backend integrations catch `LeaseLostError` from the public
 `reflexio.server.services.storage.storage_base` package.
 
+`commit_scope` groups nested calls into one unit of work. An exception escaping
+a nested scope marks the unit for rollback, even if its caller catches it. The
+outer scope then raises `StorageError` and discards pending effects and deferred
+SQLite index work. Retry aborted units in a fresh scope.
+
 The import-light [inference launch resolver](reflexio/inference_launch.py) gives
 providers and launchers one endpoint and process-ownership contract. An explicit
 service URL attaches to an existing inference process; otherwise the launcher

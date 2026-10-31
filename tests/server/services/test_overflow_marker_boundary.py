@@ -140,8 +140,8 @@ def test_direct_adoption_cannot_replace_present_marker(
     _replace_marker(storage, run, marker)
     before = storage.get_agent_run(run.id)
     with (
-        storage.commit_scope(),
         pytest.raises(OverflowCheckpointConflictError, match="overflow marker"),
+        storage.commit_scope(),
     ):
         storage.adopt_extraction_overflow(
             window,

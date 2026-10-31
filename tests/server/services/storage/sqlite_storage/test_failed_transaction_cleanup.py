@@ -343,3 +343,19 @@ def test_failed_scope_rollback_preserves_committed_index_error(storage, monkeypa
         assert storage._deferred_index_ops == []
     assert storage._fetchone("SELECT id FROM cleanup_probe WHERE id=4") is not None
     _assert_second_writer_succeeds(storage)
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, KeyboardInterrupt])
+def test_caught_nested_scope_failure_requires_rollback(storage, failure):
+    with pytest.raises(StorageError, match="rollback"), storage.commit_scope():
+        storage._execute("INSERT INTO cleanup_probe VALUES (4)")
+        try:
+            with storage.commit_scope():
+                storage._execute("INSERT INTO cleanup_probe VALUES (5)")
+                raise failure("nested operation rejected")
+        except failure:
+            pass
+    assert storage._fetchone("SELECT id FROM cleanup_probe WHERE id IN (4,5)") is None
+    with storage.commit_scope():
+        storage._execute("INSERT INTO cleanup_probe VALUES (6)")
+    assert storage._fetchone("SELECT id FROM cleanup_probe WHERE id=6") is not None
