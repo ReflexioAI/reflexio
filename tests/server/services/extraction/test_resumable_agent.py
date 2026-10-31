@@ -350,6 +350,7 @@ def test_resumable_agent_failure_names_cause_without_tenant_text(
     assert "tenant" not in stored.last_error
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("asks_question", [False, True])
 def test_resumable_agent_uses_auto_tool_choice_with_extra_tools(
     monkeypatch,

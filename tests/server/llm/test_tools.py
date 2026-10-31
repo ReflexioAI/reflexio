@@ -28,6 +28,9 @@ from reflexio.server.llm.tools import (
 )
 
 
+pytestmark = pytest.mark.unit
+
+
 class EmitProfileArgs(BaseModel):
     """Emit a candidate user profile item."""
 
