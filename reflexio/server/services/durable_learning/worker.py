@@ -12,7 +12,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from reflexio import durable_learning_policy
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.background_work import (
     background_work,
@@ -484,108 +483,83 @@ class DurableLearningWorker:
         if record is None:
             record = _TurnRecord()
         record.user_id = user_id
-        user_ref = _user_ref(user_id)
+        from reflexio.server.services.durable_learning.user_lease import (
+            owned_user_work_context,
+        )
+
         started = time.monotonic()
         outcome = "setup_failure"
         phase = "prepare"
-        stop = threading.Event()
-
-        @background_work()
-        def heartbeat() -> None:
-            while not stop.wait(
-                durable_learning_policy.renewal_interval_seconds(lease_seconds)
-            ):
-                try:
-                    if not storage.renew_extraction(user_id, token, lease_seconds):
-                        return
-                    report_background_success(
-                        f"durable-learning-heartbeat:{org_id}:{user_ref}"
-                    )
-                except Exception as exc:
-                    # Renewal is per (org, user, token): scope it to this lease's
-                    # user so another user's renewals cannot mask a stuck one.
-                    report_background_failure(
-                        logger,
-                        "extraction_heartbeat_failed",
-                        exc,
-                        scope=f"durable-learning-heartbeat:{org_id}:{user_ref}",
-                        org_id=org_id,
-                    )
-
-        thread = None
-        heartbeat_started = False
         window: Window | None = None
         try:
-            thread = threading.Thread(
-                target=heartbeat, daemon=True, name="reflexio-extraction-heartbeat"
-            )
-            thread.start()
-            heartbeat_started = True
-            for effect_window, effects in storage.pending_extraction_effects(
-                user_id=user_id, token=token
-            ):
-                phase = "effects"
+            with owned_user_work_context(storage, user_id, token, lease_seconds):
+                for effect_window, effects in storage.pending_extraction_effects(
+                    user_id=user_id, token=token
+                ):
+                    phase = "effects"
+                    outcome = "failure"
+                    with bind_work_scope(
+                        WorkScope(
+                            org_id=org_id, project_id=effect_window.project_id or None
+                        )
+                    ):
+                        try:
+                            WindowExecutor(
+                                context, create_generation_litellm_client(context)
+                            ).deliver(effect_window, effects, token=token)
+                            outcome = "success"
+                        except WindowEffectsDeletedError:
+                            outcome = "cancelled"
+                            return 0
+                        except Exception as exc:
+                            outcome = (
+                                "lease_lost"
+                                if isinstance(exc, LeaseLostError)
+                                else "failure"
+                            )
+                            storage.retry_extraction_effects(effect_window)
+                            record_health("worker.retries", phase=phase)
+                            # Log-only, unlike the window handler below: the effects
+                            # retry has no error column to widen -
+                            # ``retry_extraction_effects`` stores only a due time.
+                            logger.warning(
+                                "Extraction effects will retry org_id=%s error=%s at=%s",
+                                org_id,
+                                type(exc).__name__,
+                                exception_locator(exc),
+                            )
+                    # One effect window per turn; it completed only if delivered.
+                    record.completed = outcome == "success"
+                    return 1
+                window = storage.prepare_extraction(user_id, token)
+                if window is None:
+                    outcome = "idle"
+                    return 0
+                phase = "window"
                 outcome = "failure"
                 with bind_work_scope(
-                    WorkScope(
-                        org_id=org_id, project_id=effect_window.project_id or None
-                    )
+                    WorkScope(org_id=org_id, project_id=window.project_id or None)
                 ):
+                    executor = WindowExecutor(
+                        context, create_generation_litellm_client(context)
+                    )
                     try:
-                        WindowExecutor(
-                            context, create_generation_litellm_client(context)
-                        ).deliver(effect_window, effects, token=token)
+                        executor.execute(window, token)
                         outcome = "success"
-                    except WindowEffectsDeletedError:
-                        outcome = "cancelled"
+                    except WindowInputsDeletedError:
+                        storage.invalidate_extraction(window, token)
+                        outcome = "invalidated"
+                    except LeaseLostError:
+                        outcome = "lease_lost"
                         return 0
                     except Exception as exc:
-                        outcome = (
-                            "lease_lost"
-                            if isinstance(exc, LeaseLostError)
-                            else "failure"
+                        outcome = self._handle_window_failure(
+                            storage, window, token, exc
                         )
-                        storage.retry_extraction_effects(effect_window)
-                        record_health("worker.retries", phase=phase)
-                        # Log-only, unlike the window handler below: the effects
-                        # retry has no error column to widen -
-                        # ``retry_extraction_effects`` stores only a due time.
-                        logger.warning(
-                            "Extraction effects will retry org_id=%s error=%s at=%s",
-                            org_id,
-                            type(exc).__name__,
-                            exception_locator(exc),
-                        )
-                # One effect window per turn; it completed only if delivered.
-                record.completed = outcome == "success"
+                        return 0
+                # Reached only when the window executed or was invalidated.
+                record.completed = True
                 return 1
-            window = storage.prepare_extraction(user_id, token)
-            if window is None:
-                outcome = "idle"
-                return 0
-            phase = "window"
-            outcome = "failure"
-            with bind_work_scope(
-                WorkScope(org_id=org_id, project_id=window.project_id or None)
-            ):
-                executor = WindowExecutor(
-                    context, create_generation_litellm_client(context)
-                )
-                try:
-                    executor.execute(window, token)
-                    outcome = "success"
-                except WindowInputsDeletedError:
-                    storage.invalidate_extraction(window, token)
-                    outcome = "invalidated"
-                except LeaseLostError:
-                    outcome = "lease_lost"
-                    return 0
-                except Exception as exc:
-                    outcome = self._handle_window_failure(storage, window, token, exc)
-                    return 0
-            # Reached only when the window executed or was invalidated.
-            record.completed = True
-            return 1
         except LeaseLostError:
             # A stale claim cannot schedule setup work; its new owner proceeds.
             outcome = "lease_lost"
@@ -624,9 +598,4 @@ class DurableLearningWorker:
                     phase=phase,
                     outcome=outcome,
                 )
-            try:
-                storage.release_user_extraction(user_id, token)
-            finally:
-                stop.set()
-                if heartbeat_started and thread is not None:
-                    thread.join(timeout=1)
+            storage.release_user_extraction(user_id, token)

@@ -402,24 +402,35 @@ class ExtractionStreamStore:
             )
             return user_id, token
 
+    def _live_user_work_clock(
+        self, db: StreamSQL, user_id: str, token: str
+    ) -> float | None:
+        # Lock before reading the clock: acquiring this row may wait past expiry.
+        rows = db.query(
+            f"SELECT lease_until FROM {db.table('learning_work')} "
+            "WHERE org_id=? AND user_id=? AND lease_token=?" + db.lock(),
+            (self.org_id, user_id, token),
+        )
+        if not rows:
+            return None
+        now = db.now()
+        return now if rows[0]["lease_until"] > now else None
+
     def renew_extraction(self, user_id: str, token: str, seconds: int) -> bool:
         with self._stream_sql(coordination=True) as db:
-            now = db.now()
+            now = self._live_user_work_clock(db, user_id, token)
+            if now is None:
+                return False
             return bool(
                 db.query(
                     f"UPDATE {db.table('learning_work')} SET lease_until=? "
-                    "WHERE org_id=? AND user_id=? AND lease_token=? AND lease_until>? RETURNING user_id",
-                    (now + seconds, self.org_id, user_id, token, now),
+                    "WHERE org_id=? AND user_id=? AND lease_token=? RETURNING user_id",
+                    (now + seconds, self.org_id, user_id, token),
                 )
             )
 
     def _fence(self, db: StreamSQL, user_id: str, token: str) -> None:
-        if not db.query(
-            f"SELECT user_id FROM {db.table('learning_work')} "
-            "WHERE org_id=? AND user_id=? AND lease_token=? AND lease_until>?"
-            + db.lock(),
-            (self.org_id, user_id, token, db.now()),
-        ):
+        if self._live_user_work_clock(db, user_id, token) is None:
             raise LeaseLostError("Extraction lease was superseded")
 
     def _inputs(
@@ -1793,7 +1804,8 @@ class ExtractionStreamStore:
         self, user_id: str, owner: str, seconds: int
     ) -> str | None:
         """Manual/resume operations share automatic extraction's user lease."""
-        with self._stream_sql() as db:
+        # Keep the stream lock, clock and token assignment on one transaction.
+        with self.commit_scope(), self._stream_sql() as db:
             self.lock_extraction_stream(user_id)
             token = uuid.uuid4().hex
             now = db.now()

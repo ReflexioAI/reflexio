@@ -2007,7 +2007,7 @@ def test_explicit_heartbeat_launch_failure_releases_lease_and_capacity(
     original = threading.Thread.start
 
     def start(thread):
-        if thread.name == "reflexio-explicit-extraction-heartbeat":
+        if thread.name == "reflexio-extraction-heartbeat":
             raise RuntimeError("cannot start heartbeat")
         return original(thread)
 
@@ -2431,3 +2431,61 @@ def test_direct_continuation_cannot_reopen_pending_tools_after_org_opt_out(
     tools, tool_context = worker._extra_tools_for_run(run)
     assert tools == []
     assert tool_context is None
+
+
+@pytest.mark.parametrize("recover_before_exit", [False, True])
+def test_transient_renewal_failure_preserves_valid_user_owner(
+    storage, monkeypatch, recover_before_exit
+):
+    from reflexio.server.services.durable_learning import user_lease as module
+
+    failed = threading.Event()
+    recovered = threading.Event()
+    renew = storage.renew_extraction
+    calls = 0
+
+    def intermittent_renewal(user_id, token, seconds):
+        nonlocal calls
+        calls += 1
+        if calls == 1 or not recover_before_exit:
+            failed.set()
+            raise OSError("synthetic coordination interruption")
+        result = renew(user_id, token, seconds)
+        recovered.set()
+        return result
+
+    monkeypatch.setattr(storage, "renew_extraction", intermittent_renewal)
+    monkeypatch.setattr(
+        module.durable_learning_policy, "renewal_interval_seconds", lambda _: 0.01
+    )
+    with module.user_extraction_lease(storage, "user_1"):
+        assert failed.wait(1), "heartbeat never exercised the transient failure"
+        row = storage.conn.execute(
+            "SELECT lease_token FROM learning_work WHERE org_id=? AND user_id=?",
+            (storage.org_id, "user_1"),
+        ).fetchone()
+        # The actual database still accepts this owner, despite the renewal I/O.
+        storage.fence_user_extraction("user_1", row["lease_token"])
+        if recover_before_exit:
+            assert recovered.wait(1), "a transient error permanently stopped renewal"
+
+
+def test_explicit_fence_is_bound_to_storage_identity(storage, tmp_path, monkeypatch):
+    from reflexio.server.services.durable_learning.user_lease import (
+        fence_explicit_extraction,
+        user_extraction_lease,
+    )
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        LeaseLostError,
+    )
+
+    other = SQLiteStorage(org_id=storage.org_id, db_path=str(tmp_path / "other.db"))
+    fence = MagicMock(wraps=other.fence_user_extraction)
+    monkeypatch.setattr(other, "fence_user_extraction", fence)
+    try:
+        with user_extraction_lease(storage, "user_1"):
+            with pytest.raises(LeaseLostError, match="different storage"):
+                fence_explicit_extraction(other)
+            fence.assert_not_called()
+    finally:
+        other.conn.close()
