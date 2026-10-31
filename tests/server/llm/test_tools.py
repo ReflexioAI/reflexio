@@ -28,6 +28,9 @@ from reflexio.server.llm.tools import (
 )
 
 
+pytestmark = pytest.mark.unit
+
+
 class EmitProfileArgs(BaseModel):
     """Emit a candidate user profile item."""
 
@@ -1069,3 +1072,82 @@ class TestSupportsToolCallingOverrides:
 
         monkeypatch.setattr("litellm.supports_function_calling", boom)
         assert tools_mod.supports_tool_calling("any/model") is True
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_structured_finish_preserves_pending_tool_ids(monkeypatch, wrapped):
+    """An answer after asking a human must retain its unresolved dependency."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+
+    class AskArgs(BaseModel):
+        question: str
+
+    class StructuredFinish(BaseModel):
+        value: str
+
+    provenance = ModelProvenance("synthetic-model", "synthetic-provider")
+    answer = StructuredFinish(value="available evidence")
+    structured = (
+        ToolCallingChatResponse(
+            content=answer.model_dump_json(),
+            tool_calls=None,
+            finish_reason="stop",
+            parsed_output=answer,
+        )
+        if wrapped
+        else answer
+    )
+    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
+    generate = MagicMock(
+        side_effect=[
+            CompletionResult(
+                ToolCallingChatResponse(
+                    content=None,
+                    tool_calls=[
+                        {
+                            "id": "question-1",
+                            "type": "function",
+                            "function": {
+                                "name": "ask_human",
+                                "arguments": json.dumps({"question": "Which target?"}),
+                            },
+                        }
+                    ],
+                    finish_reason="tool_calls",
+                ),
+                provenance,
+            ),
+            CompletionResult(structured, provenance),
+        ]
+    )
+    monkeypatch.setattr(client, "generate_chat_response_with_provenance", generate)
+    registry = ToolRegistry(
+        [
+            AsyncInfoTool(
+                name="ask_human",
+                args_model=AskArgs,
+                handler=lambda _args, _ctx: AsyncAccepted(
+                    pending_tool_call_id="pending-question",
+                    result={"status": "request_pending"},
+                ),
+            )
+        ]
+    )
+    result = run_tool_loop(
+        client=client,
+        messages=[{"role": "user", "content": "extract"}],
+        registry=registry,
+        model_role=ModelRole.EXTRACTION_AGENT,
+        response_format=StructuredFinish,
+    )
+    assert result.finished_reason == "structured_output"
+    assert result.structured_output == answer
+    assert result.pending_tool_call_ids == ["pending-question"]
+    assert result.provenance == provenance
+    assert generate.call_count == 2
+    assert [turn.tool_name for turn in result.trace.turns] == ["ask_human"]
+    assert any(
+        message.get("role") == "tool" and "request_pending" in message["content"]
+        for message in result.messages
+    )

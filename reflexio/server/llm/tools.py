@@ -474,7 +474,8 @@ def _run_multi_stage_fallback(
         trace (ToolLoopTrace): Trace to extend with per-turn entries.
 
     Returns:
-        ToolLoopResult: ``ctx``, trace, and the terminator reason.
+        ToolLoopResult: ``ctx``, trace, terminator reason, and pending tool IDs.
+            A structured answer does not resolve accepted asynchronous tools.
     """
     if log_label:
         from reflexio.server.services.service_utils import (
@@ -833,6 +834,7 @@ def run_tool_loop(
                             finished_reason="structured_output",
                             structured_output=structured,
                             messages=local_msgs,
+                            pending_tool_call_ids=pending_tool_call_ids,
                             # The structured answer is committed on this turn —
                             # one LLM call consumed, mirroring the finish_tool path.
                             max_steps_remaining=max_steps - _step - 1,

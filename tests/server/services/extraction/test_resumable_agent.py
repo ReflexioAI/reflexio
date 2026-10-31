@@ -350,10 +350,13 @@ def test_resumable_agent_failure_names_cause_without_tenant_text(
     assert "tenant" not in stored.last_error
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize("asks_question", [False, True])
 def test_resumable_agent_uses_auto_tool_choice_with_extra_tools(
     monkeypatch,
     storage,
     tool_call_completion,
+    asks_question,
 ):
     """With async-info tools registered, the loop uses tool_choice='auto'.
 
@@ -363,7 +366,7 @@ def test_resumable_agent_uses_auto_tool_choice_with_extra_tools(
     """
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
-    _make_tc, make_stop = tool_call_completion
+    make_tc, make_stop = tool_call_completion
     response = make_stop(json.dumps({"profiles": None}))
     client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
     agent = ResumableExtractionAgent(client=client, storage=storage)
@@ -385,7 +388,12 @@ def test_resumable_agent_uses_auto_tool_choice_with_extra_tools(
         extractor_kind="profile",
         config=PendingToolCallConfig(enabled=True),
     )
-    with patch("litellm.completion", side_effect=[response]):
+    responses = (
+        [make_tc("ask_human", {"question": "Which deployment standard?"}), response]
+        if asks_question
+        else [response]
+    )
+    with patch("litellm.completion", side_effect=responses):
         result = agent.start(
             run=_agent_run("run_auto"),
             messages=[{"role": "user", "content": "extract profiles"}],
@@ -400,6 +408,19 @@ def test_resumable_agent_uses_auto_tool_choice_with_extra_tools(
     assert captured["tool_choice"] == "auto"
     assert captured["response_format"] is StructuredProfilesOutput
     assert result.finished_reason == "structured_output"
+    stored = storage.get_agent_run("run_auto")
+    assert stored is not None
+    assert stored.pending_tool_call_ids == result.pending_tool_call_ids
+    assert len(result.pending_tool_call_ids) == int(asks_question)
+    if asks_question:
+        [pending_id] = result.pending_tool_call_ids
+        pending = storage.get_pending_tool_call(pending_id)
+        assert pending is not None and pending.status == PendingToolCallStatus.PENDING
+        assert pending.question_text == "Which deployment standard?"
+        dependencies = storage.list_run_tool_dependencies("run_auto")
+        assert [dependency.pending_tool_call_id for dependency in dependencies] == [
+            pending_id
+        ]
 
 
 def test_resumable_agent_resume_injects_resolved_tool_result(
