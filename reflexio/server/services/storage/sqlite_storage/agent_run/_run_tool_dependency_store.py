@@ -16,7 +16,7 @@ from .._base import SQLiteStorageBase
 class SQLiteRunToolDependencyStoreMixin:
     """SQLite-backed run-tool-dependency store primitives."""
 
-    _lock: Any
+    commit_scope: Any
     conn: sqlite3.Connection
     _fetchone: Any
     _fetchall: Any
@@ -26,7 +26,7 @@ class SQLiteRunToolDependencyStoreMixin:
     def attach_run_tool_dependency(
         self, record: RunToolDependencyRecord
     ) -> RunToolDependencyRecord:
-        with self._lock:
+        with self.commit_scope():
             self.conn.execute(
                 """
                 INSERT OR IGNORE INTO _run_tool_dependencies (
@@ -42,7 +42,6 @@ class SQLiteRunToolDependencyStoreMixin:
                     _dt_str(record.consumed_at),
                 ),
             )
-            self.conn.commit()
         row = self._fetchone(
             """
             SELECT * FROM _run_tool_dependencies
@@ -65,7 +64,7 @@ class SQLiteRunToolDependencyStoreMixin:
     @SQLiteStorageBase.handle_exceptions
     def consume_run_tool_dependencies(self, run_id: str) -> int:
         consumed_at = self._current_timestamp()
-        with self._lock:
+        with self.commit_scope():
             cur = self.conn.execute(
                 """
                 UPDATE _run_tool_dependencies
@@ -76,5 +75,4 @@ class SQLiteRunToolDependencyStoreMixin:
                 """,
                 (consumed_at, run_id),
             )
-            self.conn.commit()
         return int(cur.rowcount)

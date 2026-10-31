@@ -26,7 +26,7 @@ from reflexio.server.services.storage.storage_base import (
     PendingToolCallStatus,
 )
 
-from .._agent_run import _dt_str, _row_to_agent_run
+from .._agent_run import _dt, _dt_str, _row_to_agent_run
 from .._base import SQLiteStorageBase, _json_dumps
 
 
@@ -40,12 +40,11 @@ def _valid_finalized_learning_ids(value: object) -> bool:
 class SQLiteAgentRunStoreMixin:
     """SQLite-backed resumable extraction run store primitives."""
 
-    _lock: Any
+    commit_scope: Any
     conn: sqlite3.Connection
     _fetchone: Any
     _fetchall: Any
     _current_timestamp: Any
-    _own_transaction: Any
     org_id: str
 
     def _finalize_runs_without_pending_dependencies_unlocked(self, now_s: str) -> None:
@@ -169,7 +168,7 @@ class SQLiteAgentRunStoreMixin:
     @SQLiteStorageBase.handle_exceptions
     def create_agent_run(self, record: AgentRunRecord) -> AgentRunRecord:
         binding = record.binding
-        with self._lock:
+        with self.commit_scope():
             self.conn.execute(
                 """
                 INSERT INTO _agent_runs (
@@ -214,7 +213,6 @@ class SQLiteAgentRunStoreMixin:
                     record.last_error,
                 ),
             )
-            self.conn.commit()
         stored = self.get_agent_run(record.id)
         if stored is None:  # pragma: no cover
             raise RuntimeError(f"Failed to create agent run {record.id}")
@@ -267,7 +265,7 @@ class SQLiteAgentRunStoreMixin:
                 "agent-run finalization receipt learning ids must be non-empty strings"
             )
         encoded_ids = _json_dumps(learning_ids)
-        with self._lock:
+        with self.commit_scope():
             run = self.conn.execute(
                 "SELECT org_id, extractor_kind FROM _agent_runs WHERE id = ?",
                 (run_id,),
@@ -302,8 +300,6 @@ class SQLiteAgentRunStoreMixin:
             stored_ids = json.loads(stored["learning_ids"])
             if not _valid_finalized_learning_ids(stored_ids):
                 raise ValueError("agent-run finalization receipt is corrupt")
-            if self._own_transaction():
-                self.conn.commit()
             return inserted
 
     @SQLiteStorageBase.handle_exceptions
@@ -389,13 +385,11 @@ class SQLiteAgentRunStoreMixin:
         if expected_claimed_by is not None:
             status_filter += " AND claimed_by = ? AND claimed_at = ?"
             params.extend([expected_claimed_by, _dt_str(expected_claimed_at)])
-        with self._lock:
+        with self.commit_scope():
             changed = self.conn.execute(
                 f"UPDATE _agent_runs SET {', '.join(assignments)} WHERE id = ?{status_filter}",
                 params,
             ).rowcount
-            if self._own_transaction():
-                self.conn.commit()
         return (
             self.get_agent_run(run_id)
             if changed or expected_claimed_by is None
@@ -413,7 +407,7 @@ class SQLiteAgentRunStoreMixin:
         last_error: str,
     ) -> int:
         current_timestamp = self._current_timestamp()
-        with self._lock:
+        with self.commit_scope():
             cursor = self.conn.execute(
                 """
                 UPDATE _agent_runs
@@ -438,7 +432,6 @@ class SQLiteAgentRunStoreMixin:
                     AgentRunStatus.RESUMING.value,
                 ),
             )
-            self.conn.commit()
             return cursor.rowcount
 
     @SQLiteStorageBase.handle_exceptions
@@ -452,7 +445,7 @@ class SQLiteAgentRunStoreMixin:
     ) -> AgentRunRecord | None:
         current = now or datetime.now(UTC)
         stale_before = current - timedelta(seconds=claim_ttl_seconds)
-        with self._lock:
+        with self.commit_scope():
             row = self.conn.execute(
                 """
                 SELECT r.*
@@ -516,7 +509,6 @@ class SQLiteAgentRunStoreMixin:
                     row["id"],
                 ),
             )
-            self.conn.commit()
         return self.get_agent_run(row["id"])
 
     @SQLiteStorageBase.handle_exceptions
@@ -530,7 +522,7 @@ class SQLiteAgentRunStoreMixin:
     ) -> AgentRunRecord | None:
         current = now or datetime.now(UTC)
         stale_before = current - timedelta(seconds=claim_ttl_seconds)
-        with self._lock:
+        with self.commit_scope():
             # Claim runs that still need their committed output finalized:
             #  - FINALIZATION_FAILED: an explicit retry is due.
             #  - stale FINALIZING: a worker crashed mid-finalize.
@@ -593,7 +585,6 @@ class SQLiteAgentRunStoreMixin:
                     row["id"],
                 ),
             )
-            self.conn.commit()
         return self.get_agent_run(row["id"])
 
     @SQLiteStorageBase.handle_exceptions
@@ -642,7 +633,15 @@ class SQLiteAgentRunStoreMixin:
             raise ValueError("Recovery requires operation, worker and positive TTL")
         current = now or datetime.now(UTC)
         stale = _dt_str(current - timedelta(seconds=claim_ttl_seconds))
-        with self._lock:
+        with self.commit_scope():
+            revision = self.conn.execute(
+                "SELECT updated_at FROM _agent_runs WHERE id=? AND org_id=?",
+                (run_id, self.org_id),
+            ).fetchone()
+            if revision is None or _dt(revision["updated_at"]) != expected_updated_at:
+                return None
+            # Preserve the exact stored spelling for the CAS. SQLite defaults
+            # use Z, while Python's UTC serialization uses +00:00.
             changed = self.conn.execute(
                 """UPDATE _agent_runs SET status='finalizing', claimed_by=?,
                   claimed_at=?, updated_at=?, recovery_operation_id=?
@@ -668,15 +667,13 @@ class SQLiteAgentRunStoreMixin:
                     run_id,
                     org_id,
                     self.org_id,
-                    _dt_str(expected_updated_at),
+                    revision["updated_at"],
                     stale,
                     stale,
                     stale,
                     _dt_str(current),
                 ),
             ).rowcount
-            if self._own_transaction():
-                self.conn.commit()
         return self.get_agent_run(run_id) if changed else None
 
     @SQLiteStorageBase.handle_exceptions
