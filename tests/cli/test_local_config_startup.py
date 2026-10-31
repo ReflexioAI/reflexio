@@ -171,7 +171,17 @@ def test_real_server_upgrades_before_serving_and_keeps_owned_dataset(
     env = {
         key: value
         for key, value in os.environ.items()
-        if key in {"PATH", "LANG", "LC_ALL", "TMPDIR", "SYSTEMROOT"}
+        if key
+        in {
+            "PATH",
+            "LANG",
+            "LC_ALL",
+            "TMPDIR",
+            "SYSTEMROOT",
+            # The network-denying child needs its parent's tokenizer cache.
+            "TIKTOKEN_CACHE_DIR",
+            "DATA_GYM_CACHE_DIR",
+        }
     }
     env.update(
         HOME=str(tmp_path),
