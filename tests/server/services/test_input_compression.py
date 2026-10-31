@@ -89,7 +89,7 @@ def run(sources, complete=selected, **kwargs):
     return compress_input(sources, **options)
 
 
-def test_small_input_is_unchanged_without_model_or_cache_access():
+def test_small_input_is_unchanged_without_model_or_cache_access(caplog):
     original = source()
 
     def forbidden(*_args):
@@ -100,6 +100,7 @@ def test_small_input_is_unchanged_without_model_or_cache_access():
     assert result.packet.evidence == [original]
     assert result.calls == result.cache_hits == 0
     assert result.covered_source_ids == (original.source_id,)
+    assert caplog.messages == []
 
 
 def test_host_omission_totals_survive_paid_reductions_and_cache_replay():
@@ -814,15 +815,29 @@ def test_passthrough_plan_has_no_selection_sections_and_is_contract_bound():
     assert before.execute(complete=selected).packet.evidence == [source()]
 
 
-def test_source_section_and_call_limits_reject_during_planning():
-    originals = [source(text="diagnostic " * 3000)]
-    with pytest.raises(CompressionError, match="source section budget"):
+def test_source_section_and_call_limits_reject_during_planning(caplog):
+    originals = [source(text="PRIVATE_SOURCE_SENTINEL " + "diagnostic " * 3000)]
+    with pytest.raises(CompressionError, match="source section budget") as failure:
         plan(
             originals,
             budget=CompressionBudget(
                 output_tokens=1024, max_sections=1, section_tokens=1200
             ),
         )
+    assert type(failure.value) is CompressionError
+    assert len(caplog.records) == 1
+    assert caplog.records[0].msg == (
+        "event=compression_source_section_budget_exceeded "
+        "sections_packed=%d max_sections=%d section_tokens=%d input_tokens=%d "
+        "fragments_remaining=%d fragments_total=%d"
+    )
+    counts = caplog.records[0].args
+    assert isinstance(counts, tuple) and all(type(value) is int for value in counts)
+    assert counts[:4] == (1, 1, 1200, 32768)
+    remaining, total = counts[4:]
+    assert 1 <= remaining < total
+    assert "PRIVATE_SOURCE_SENTINEL" not in caplog.text
+    caplog.clear()
     with pytest.raises(CompressionError, match="call budget"):
         plan(
             originals,
@@ -830,6 +845,7 @@ def test_source_section_and_call_limits_reject_during_planning():
                 output_tokens=1024, max_calls=1, section_tokens=1200
             ),
         )
+    assert caplog.messages == []
 
 
 @pytest.mark.parametrize("mapping", [MappingProxyType, UserDict])

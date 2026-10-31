@@ -284,13 +284,19 @@ def test_short_conversation_survives_tool_only_selection_and_binds_cache(monkeyp
     assert changed.packet.evidence[0].text == "Production approval was revoked."
 
 
-def test_every_repair_is_guarded_and_counts_toward_provider_attempt_limit(monkeypatch):
+@pytest.mark.unit
+def test_every_repair_is_guarded_and_counts_toward_provider_attempt_limit(
+    monkeypatch, caplog
+):
     before = Mock()
 
     def repair(params, kwargs):
         kwargs["provider_request_guard"](params)
-        with pytest.raises(ProviderRequestGuardError, match="attempt budget"):
+        with pytest.raises(
+            ProviderRequestGuardError, match="attempt budget"
+        ) as failure:
             kwargs["provider_request_guard"](params)
+        assert type(failure.value) is ProviderRequestGuardError
 
     fake = client(monkeypatch, callback=repair)
     result = compress_with_client(
@@ -302,7 +308,7 @@ def test_every_repair_is_guarded_and_counts_toward_provider_attempt_limit(monkey
                 field="content",
                 speaker="User",
                 source_order=0,
-                text="approval " + "log " * 1500,
+                text="approval PRIVATE_SOURCE_SENTINEL " + "log " * 1500,
             )
         ],
         scope={"org_id": "org", "project_id": "project", "user_id": "alice"},
@@ -316,6 +322,11 @@ def test_every_repair_is_guarded_and_counts_toward_provider_attempt_limit(monkey
     assert result.provider_input_tokens is None  # First repair has no observation.
     assert result.provider_output_tokens is None
     assert run_token_capture.get() is None
+    assert caplog.messages == [
+        "event=compression_provider_attempt_budget_exhausted "
+        "attempts_used=2 max_calls=2 sections_planned=1"
+    ]
+    assert caplog.records[0].args == (2, 2, 1)
 
 
 def test_model_and_thinking_changes_rejected_before_dispatch(monkeypatch):

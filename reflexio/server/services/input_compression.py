@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -20,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 VERSION = "source-compression-v6"
 CompressionPolicy = Literal["extraction", "offline_tuning"]
+logger = logging.getLogger(__name__)
 
 
 class CompressionError(ValueError):
@@ -460,7 +462,7 @@ def _sections(
             or request_tokens([candidate]) > budget.input_tokens
         )
 
-    for fragment in fragments:
+    for position, fragment in enumerate(fragments, 1):
         candidate = EvidencePacket(evidence=[*current, fragment])
         if exceeds_capacity(candidate):
             if not current:
@@ -476,6 +478,17 @@ def _sections(
                 )
         current.append(fragment)
         if len(sections) >= budget.max_sections:
+            logger.warning(
+                "event=compression_source_section_budget_exceeded "
+                "sections_packed=%d max_sections=%d section_tokens=%d input_tokens=%d "
+                "fragments_remaining=%d fragments_total=%d",
+                len(sections),
+                budget.max_sections,
+                budget.section_tokens,
+                budget.input_tokens,
+                len(fragments) - position + 1,
+                len(fragments),
+            )
             raise CompressionError("Compression exceeds its source section budget")
     if current:
         sections.append(EvidencePacket(evidence=current))
