@@ -3,9 +3,7 @@
 import pytest
 
 from reflexio.models.api_schema.domain.entities import Interaction, Request
-from reflexio.server.services.storage.storage_base._extraction_stream import (
-    LeaseLostError,
-)
+from reflexio.server.services.storage.storage_base import LeaseLostError
 
 pytestmark = pytest.mark.integration
 
