@@ -488,6 +488,8 @@ owns heartbeat and fencing. A renewal I/O error leaves ownership uncertain until
 the database fence verifies it. Fencing and renewal check expiry after acquiring
 the user row lock, so lock waiting cannot revive an expired lease. Explicit
 claims retain the stream lock through clock sampling and token assignment.
+Backend integrations catch `LeaseLostError` from the public
+`reflexio.server.services.storage.storage_base` package.
 
 The import-light [inference launch resolver](reflexio/inference_launch.py) gives
 providers and launchers one endpoint and process-ownership contract. An explicit

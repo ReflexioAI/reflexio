@@ -23,7 +23,7 @@ from ._agent_run import (
 )
 from ._base import BaseStorageCore, matches_status_filter
 from ._commit_scope import CommitScopeMixin
-from ._extraction_stream import ExtractionStreamStore
+from ._extraction_stream import ExtractionStreamStore, LeaseLostError
 from ._extras import ExtrasMixin
 from ._lineage import EntityType, LineageEventMixin
 from ._operations import OperationMixin
@@ -283,6 +283,7 @@ __all__ = [
     "AgentRunMixin",
     "EntityType",
     "LineageEventMixin",
+    "LeaseLostError",
     "AgentRunRecord",
     "AgentRunStatus",
     "BaseStorage",
