@@ -300,6 +300,15 @@ The guarded LLM seam requests only evidence-reference groups,
 never generated factual descriptions, summaries, unresolved-status claims or
 omission claims. The host supplies fixed navigation text and measured omission
 metadata and labels. Preserved conversation fields have their own host-created group.
+The provider schema stays closed, but host parsing projects each reference group
+onto its exact `evidence_refs` list before strict validation. Surplus generated
+fields are discarded; none become evidence, labels or omission claims. Missing,
+empty or wrongly typed lists still fail, and unseen references retain the same
+bounded repair and whole-group rejection policy. The top-level envelope remains
+strict. Truncated JSON is not recovered. Projection semantics are versioned in
+the plan contract: old journal roots fail closed on changed witnesses rather
+than resetting their spent attempts. This is shared by extraction and offline
+tuning; it does not change budgets or provider routes.
 Every cached selection is revalidated against the current visible source and
 the caller's actual output renderer. Cache identities bind scope, source,
 policy/schema, effective model route/generation settings and rendering contract.
@@ -659,3 +668,12 @@ A non-neutral file cannot be used to authorize an allowlisted org after
 retirement; it requires the explicit adoption above. Missing configs and absent
 storage remain closed. Do not replace the deleted resolver with a helper that
 returns true, or reuse auth/tenant checks as a rollout gate.
+
+### Playbook evidence stage budgets
+
+Rule-evidence tuning preflights the fixed proposal and every session diagnosis at
+60,000 portable proxy tokens before dispatch. Generated diagnoses/audits may add
+up to 60,000 tokens above the fixed proposal, with native complete-request context
+and output-reservation checks still enforced. Original evidence is never silently
+truncated to accommodate generated findings. The input-budget policy participates
+in enterprise method identity; it is a ceiling, not a guarantee of semantic quality.

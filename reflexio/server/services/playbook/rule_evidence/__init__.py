@@ -24,6 +24,16 @@ Invoke = Callable[
     [str, dict[str, object], type[StrictStructuredOutput]], StrictStructuredOutput
 ]
 PAYLOAD_PROXY_TOKEN_LIMIT = 60_000
+GENERATED_CONTEXT_TOKEN_LIMIT = 60_000
+
+
+def input_budget_policy() -> dict[str, int | str]:
+    """Versioned portable stage ceilings; native provider admission still applies."""
+    return {
+        "version": "source-plus-generated-v1",
+        "source_tokens": PAYLOAD_PROXY_TOKEN_LIMIT,
+        "generated_tokens": GENERATED_CONTEXT_TOKEN_LIMIT,
+    }
 
 
 def prompt(name: str) -> str:
@@ -111,11 +121,24 @@ def validate_diagnostic(
 def run_rule_evidence(data: RuleEvidenceInput, invoke: Invoke) -> RuleEvidenceResult:
     """Run the promoted V7 method; failures remain explicit, not abstentions."""
     data = RuleEvidenceInput.model_validate_json(data.model_dump_json())
-    from .wire import diagnose, rebuild
+    from .wire import diagnose, diagnostic_request, rebuild
+
+    # Reject every fixed request before spending on any diagnosis.
+    fixed_request = proposal_request(data, [], [])
+    _check_budget(*fixed_request)
+    source_tokens = request_input_tokens(*fixed_request)
+    for session in data.sessions:
+        _check_budget(*diagnostic_request(data, session))
 
     diagnostics, audits = diagnose(data, invoke)
     system, payload, schema = proposal_request(data, diagnostics, audits)
-    _check_budget(system, payload, schema)
+    # Generated findings are additional context, not additional source evidence.
+    # Resolution may expand references; measure the actual complete envelope.
+    if (
+        request_input_tokens(system, payload, schema) - source_tokens
+        > GENERATED_CONTEXT_TOKEN_LIMIT
+    ):
+        raise ValueError("rule evidence exceeds generated context input budget")
     value = invoke(system, payload, schema)
     return rebuild(
         data, diagnostics, schema.model_validate_json(value.model_dump_json())
