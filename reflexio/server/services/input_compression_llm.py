@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -31,6 +32,8 @@ from reflexio.server.services.input_compression import (
     packet_tokens,
     plan_compression_input,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _ReferenceGroup(BaseModel):
@@ -281,6 +284,13 @@ def plan_with_client(
             nonlocal attempts
             check_params(params)
             if attempts >= budget.max_calls:
+                logger.warning(
+                    "event=compression_provider_attempt_budget_exhausted "
+                    "attempts_used=%d max_calls=%d sections_planned=%d",
+                    attempts,
+                    budget.max_calls,
+                    compression.sections,
+                )
                 raise ProviderRequestGuardError(
                     "Compression provider attempt budget exhausted"
                 )

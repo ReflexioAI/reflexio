@@ -311,6 +311,20 @@ complete-input target is 32,768 tokens with the existing 20% margin and output
 reservation. This does not silently change the old overflow guard's 65,536-token
 default or upgrade an admitted extraction journal.
 
+Two WARNING events describe budget refusals without source or response content:
+`compression_source_section_budget_exceeded` reports `sections_packed`,
+`max_sections`, `section_tokens`, `input_tokens`, `fragments_remaining` and
+`fragments_total`;
+`compression_provider_attempt_budget_exhausted` reports `attempts_used` and
+`max_calls` alongside `sections_planned`. Packed sections exclude the pending
+section that crossed the limit; they are not a full-input section count. Remaining
+fragments include the pending fragment that needs an additional section.
+Physical attempts include retries and
+repairs, not just successful model responses, and are local to this execution;
+the caller's durable journal separately enforces spent attempts across resumes.
+Each event is emitted immediately before its existing exception. These numeric
+diagnostics do not change admission, quota, checkpoint or exception behavior.
+
 These are separately callable qualification adapters, not a new default worker
 protocol. Existing extraction publication, source-quoted recovery branches,
 cursor/billing effects and human continuations are not switched by importing
