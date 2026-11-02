@@ -465,6 +465,12 @@ class ExtractionResumeWorker:
             )
         if finalization_retry:
             return self._retry_finalization(latest) or latest
+        if latest.resume_attempts >= pending_config.max_resume_attempts:
+            return self._update_claimed_status(
+                latest.id,
+                AgentRunStatus.FAILED,
+                last_error="Resumable extraction attempt allowance exhausted",
+            )
         if latest.max_steps_remaining is not None and latest.max_steps_remaining <= 0:
             # Refusal consumes no model attempt; the adopted witness still
             # fences the terminal transition under the actual user owner.
@@ -735,9 +741,11 @@ class ExtractionResumeWorker:
                     "Resume failure has no retained execution claim"
                 ) from exc
             if execution_input_is_busy(exc):
-                # The model already entered, so retain its charged attempt.
-                # No failure increment, backoff clock, finalization or new model
-                # turn: the next admitted turn may retry the still-current run.
+                # Keep any admitted attempt charged: absence of a returned
+                # response does not establish that no provider work entered.
+                # Returned model work uses the interrupted-turn failure path.
+                # Input-only refusal adds no failure or backoff; another model
+                # attempt must still pass the stored allowance before dispatch.
                 return self._update_claimed_status(
                     run.id,
                     AgentRunStatus.FINALIZATION_FAILED

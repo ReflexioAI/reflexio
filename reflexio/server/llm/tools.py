@@ -158,6 +158,36 @@ class ToolRegistry:
         return _tool_result_from_outcome(self.handle_outcome(name, args_json, ctx))
 
 
+class ModelTurnInputBusyError(RuntimeError):
+    """A returned model response could not finish its input-dependent work.
+
+    No retained result can be replayed: retrying is another model attempt,
+    governed by its existing budget, rather than a free writer-only yield.
+    """
+
+
+def _raise_interrupted_model_turn(error: Exception, response_seen: bool) -> None:
+    if isinstance(error, ModelTurnInputBusyError):
+        raise error
+    if response_seen and execution_input_is_busy(error):
+        # The original busy cause describes a free writer retry, but this
+        # boundary has unsaved paid work. Keep the diagnostic value-free.
+        raise ModelTurnInputBusyError(
+            "Model turn interrupted by input contention"
+        ) from None
+
+
+def _handle_model_tool_outcome(
+    registry: ToolRegistry, name: str, args_json: str, ctx: Any
+) -> ToolOutcome:
+    """Classify refusal after a model response for every tool protocol."""
+    try:
+        return registry.handle_outcome(name, args_json, ctx)
+    except Exception as error:
+        _raise_interrupted_model_turn(error, True)
+        raise
+
+
 class ToolLoopTurn(BaseModel):
     """A single tool call turn in a tool-loop trace."""
 
@@ -489,57 +519,83 @@ def _run_multi_stage_fallback(
         )
 
     latest_provenance: ModelProvenance | None = None
-    for turn_idx in range(max_steps):
-        turn_label = f"(multi-stage turn {turn_idx + 1})"
-        if log_label:
-            log_llm_messages(logger, f"{log_label} {turn_label}", messages)
-        tool_t0 = time.monotonic()
-        completion = client.generate_chat_response_with_provenance(
-            messages=messages,
-            response_format=multi_stage_schema,
-            model_role=model_role,
-        )
-        parsed = completion.value
-        latest_provenance = completion.provenance
-        if log_label:
-            log_model_response(logger, f"{log_label} {turn_label}", parsed)
-        if not isinstance(parsed, BaseModel):
-            raise RuntimeError(
-                f"Multi-stage structured call returned unexpected type {type(parsed)}"
+    response_seen = False
+    try:
+        for turn_idx in range(max_steps):
+            turn_label = f"(multi-stage turn {turn_idx + 1})"
+            if log_label:
+                log_llm_messages(logger, f"{log_label} {turn_label}", messages)
+            tool_t0 = time.monotonic()
+            completion = client.generate_chat_response_with_provenance(
+                messages=messages,
+                response_format=multi_stage_schema,
+                model_role=model_role,
+            )
+            response_seen = True
+            parsed = completion.value
+            latest_provenance = completion.provenance
+            if log_label:
+                log_model_response(logger, f"{log_label} {turn_label}", parsed)
+            if not isinstance(parsed, BaseModel):
+                raise RuntimeError(
+                    f"Multi-stage structured call returned unexpected type {type(parsed)}"
+                )
+
+            next_call = getattr(parsed, "next_call", None)
+            if next_call is None:
+                raise RuntimeError(
+                    "Multi-stage schema must expose a 'next_call' field; "
+                    f"got {type(parsed).__name__}"
+                )
+            tool_name = getattr(next_call, "tool", None)
+            if not isinstance(tool_name, str):
+                raise RuntimeError(
+                    "Multi-stage next_call must carry a 'tool' discriminator literal; "
+                    f"got {type(next_call).__name__}"
+                )
+
+            reasoning = getattr(parsed, "reasoning", "") or ""
+            args_dict = next_call.model_dump(exclude={"tool"})
+            args_json = next_call.model_dump_json(exclude={"tool"})
+
+            # Echo the agent's plan back into history so subsequent turns can
+            # reason about what was tried already.
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": (
+                        f"Reasoning: {reasoning}\nNext call: {tool_name}({args_json})"
+                    ),
+                }
             )
 
-        next_call = getattr(parsed, "next_call", None)
-        if next_call is None:
-            raise RuntimeError(
-                "Multi-stage schema must expose a 'next_call' field; "
-                f"got {type(parsed).__name__}"
-            )
-        tool_name = getattr(next_call, "tool", None)
-        if not isinstance(tool_name, str):
-            raise RuntimeError(
-                "Multi-stage next_call must carry a 'tool' discriminator literal; "
-                f"got {type(next_call).__name__}"
-            )
+            if tool_name == finish_tool_name:
+                # Dispatch finish through the registry so any ctx-side
+                # bookkeeping (e.g. stashing the answer) still runs.
+                outcome = _handle_model_tool_outcome(
+                    registry, tool_name, args_json, ctx
+                )
+                result = _tool_result_from_outcome(outcome, pending_tool_call_ids)
+                trace.turns.append(
+                    ToolLoopTurn(
+                        tool_name=tool_name,
+                        args=args_dict,
+                        result=result,
+                        latency_ms=int((time.monotonic() - tool_t0) * 1000),
+                    )
+                )
+                trace.finished = True
+                return ToolLoopResult(
+                    ctx=ctx,
+                    trace=trace,
+                    finished_reason="finish_tool",
+                    messages=messages,
+                    pending_tool_call_ids=pending_tool_call_ids,
+                    max_steps_remaining=max_steps - turn_idx - 1,
+                    provenance=latest_provenance,
+                )
 
-        reasoning = getattr(parsed, "reasoning", "") or ""
-        args_dict = next_call.model_dump(exclude={"tool"})
-        args_json = next_call.model_dump_json(exclude={"tool"})
-
-        # Echo the agent's plan back into history so subsequent turns can
-        # reason about what was tried already.
-        messages.append(
-            {
-                "role": "assistant",
-                "content": (
-                    f"Reasoning: {reasoning}\nNext call: {tool_name}({args_json})"
-                ),
-            }
-        )
-
-        if tool_name == finish_tool_name:
-            # Dispatch finish through the registry so any ctx-side
-            # bookkeeping (e.g. stashing the answer) still runs.
-            outcome = registry.handle_outcome(tool_name, args_json, ctx)
+            outcome = _handle_model_tool_outcome(registry, tool_name, args_json, ctx)
             result = _tool_result_from_outcome(outcome, pending_tool_call_ids)
             trace.turns.append(
                 ToolLoopTurn(
@@ -549,36 +605,19 @@ def _run_multi_stage_fallback(
                     latency_ms=int((time.monotonic() - tool_t0) * 1000),
                 )
             )
-            trace.finished = True
-            return ToolLoopResult(
-                ctx=ctx,
-                trace=trace,
-                finished_reason="finish_tool",
-                messages=messages,
-                pending_tool_call_ids=pending_tool_call_ids,
-                max_steps_remaining=max_steps - turn_idx - 1,
-                provenance=latest_provenance,
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"Tool {tool_name} returned: "
+                        f"{_serialize_tool_result_for_history(result)}"
+                    ),
+                }
             )
 
-        outcome = registry.handle_outcome(tool_name, args_json, ctx)
-        result = _tool_result_from_outcome(outcome, pending_tool_call_ids)
-        trace.turns.append(
-            ToolLoopTurn(
-                tool_name=tool_name,
-                args=args_dict,
-                result=result,
-                latency_ms=int((time.monotonic() - tool_t0) * 1000),
-            )
-        )
-        messages.append(
-            {
-                "role": "user",
-                "content": (
-                    f"Tool {tool_name} returned: "
-                    f"{_serialize_tool_result_for_history(result)}"
-                ),
-            }
-        )
+    except Exception as error:
+        _raise_interrupted_model_turn(error, response_seen)
+        raise
 
     trace.finished = False
     return ToolLoopResult(
@@ -753,7 +792,8 @@ def run_tool_loop(
         bounded_items = items[:max_steps]
         for item in bounded_items:
             tool_t0 = time.monotonic()
-            outcome = registry.handle_outcome(
+            outcome = _handle_model_tool_outcome(
+                registry,
                 fallback_tool_name,
                 item.model_dump_json(),
                 ctx,
@@ -784,6 +824,7 @@ def run_tool_loop(
 
     local_msgs = list(messages)
     provenance: ModelProvenance | None = None
+    response_seen = False
     try:
         tool_specs = registry.openai_specs()
         for _step in range(max_steps):
@@ -797,6 +838,7 @@ def run_tool_loop(
                 response_format=response_format,
                 structured_output_validator=structured_output_validator,
             )
+            response_seen = True
             resp = completion.value
             provenance = completion.provenance
             if log_label:
@@ -883,7 +925,7 @@ def run_tool_loop(
                 tool_t0 = time.monotonic()
                 name = tc["function"]["name"]
                 args_json = tc["function"]["arguments"]
-                outcome = registry.handle_outcome(name, args_json, ctx)
+                outcome = _handle_model_tool_outcome(registry, name, args_json, ctx)
                 result = _tool_result_from_outcome(outcome, pending_tool_call_ids)
                 try:
                     args_dict = json.loads(args_json or "{}")
@@ -926,8 +968,9 @@ def run_tool_loop(
                     provenance=provenance,
                 )
     except Exception as error:
+        _raise_interrupted_model_turn(error, response_seen)
         if execution_input_is_busy(error):
-            raise  # preserve the original cause for the admitted worker's safe yield
+            raise  # no response entered: preserve the input-only admission refusal
         _log_tool_loop_error(error)
         trace.finished = False
         error_type, error_detail = describe_tool_loop_error(error)

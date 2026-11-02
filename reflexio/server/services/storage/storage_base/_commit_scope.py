@@ -4,10 +4,11 @@ from contextlib import AbstractContextManager
 
 class CommitScopeMixin(ABC):
     @property
-    @abstractmethod
     def in_commit_scope(self) -> bool:
-        """Whether this thread already owns a multi-write transaction."""
-        raise NotImplementedError
+        """Ownership introspection is required on use, not for read-only adapters."""
+        raise NotImplementedError(
+            "Storage adapter does not expose transaction ownership"
+        )
 
     @abstractmethod
     def commit_scope(self) -> AbstractContextManager[None]:

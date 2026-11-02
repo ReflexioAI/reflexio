@@ -744,6 +744,9 @@ def test_preparation_readiness_preserves_previous_model_attempts(
     from reflexio.server.services.storage.error import ReadinessUnavailableError
 
     storage, worker, _kind, _, _ = publication
+    # Leave one real attempt available: this test covers readiness refusal,
+    # while the exhausted-stored-allowance regression covers admission at cap.
+    worker.request_context.configurator.get_config().pending_tool_call_config.max_resume_attempts = 4
     storage._execute("UPDATE _agent_runs SET resume_attempts=3 WHERE id='run_1'", ())
 
     def unavailable(_self, **_kwargs):
@@ -835,10 +838,16 @@ def test_in_model_attachment_cannot_mutate_after_owner_withdrawal(
     assert saved.resume_attempts == 1, "Already-entered model work stays charged"
 
 
+@pytest.mark.parametrize("allowance", [1, 2])
 @pytest.mark.parametrize("tool_name", ["ask_human", "attach_pending_info_request"])
 @pytest.mark.parametrize("wrapped", [False, True])
 def test_busy_pending_tool_aborts_real_loop_and_defers_resume(
-    shared_worker: DurableLearningWorker, publication, monkeypatch, tool_name, wrapped
+    shared_worker: DurableLearningWorker,
+    publication,
+    monkeypatch,
+    tool_name,
+    wrapped,
+    allowance,
 ):
     from types import SimpleNamespace
 
@@ -849,13 +858,11 @@ def test_busy_pending_tool_aborts_real_loop_and_defers_resume(
     if tool_name == "ask_human" and kind == "profile":
         pytest.skip("Profile extraction exposes only the attachment tool")
     _question(storage)
+    worker.request_context.configurator.get_config().pending_tool_call_config.max_resume_attempts = allowance
     calls = []
 
     def completion(**_kwargs):
         calls.append(1)
-        assert len(calls) == 1, (
-            "Busy tools must stop before another physical model call"
-        )
         return SimpleNamespace(
             value=SimpleNamespace(
                 content=None,
@@ -900,11 +907,20 @@ def test_busy_pending_tool_aborts_real_loop_and_defers_resume(
     assert shared_worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 1
     result = storage.get_agent_run("run_1")
     assert calls == [1] and refusals == [1]
-    assert result is not None and result.status == AgentRunStatus.RESUME_READY
-    assert result.last_error == "ExecutionInputBusyError"
+    assert result is not None
+    for _ in range(allowance * 3 + 3):
+        storage._execute(
+            "UPDATE _agent_runs SET next_resume_at=NULL WHERE id=?", ("run_1",)
+        )
+        shared_worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300)
+    result = storage.get_agent_run("run_1")
+    assert result is not None and result.status == AgentRunStatus.FAILED
+    assert len(calls) <= allowance, (
+        "Contended tools cannot authorize paid model replay beyond the configured allowance"
+    )
     saved = storage.get_agent_run("run_1")
     assert saved is not None and saved.committed_output is None
-    assert saved.resume_attempts == 1, "Already entered model work remains charged"
+    assert saved.resume_attempts == len(calls), "Every entered attempt remains charged"
     assert saved.finalization_attempts == 0
     assert {
         d.pending_tool_call_id for d in storage.list_run_tool_dependencies("run_1")
@@ -1276,3 +1292,35 @@ def test_unused_answer_expiry_during_status_write_stops_advertising_work(
     assert (
         shared_worker.drain_org(storage.org_id, batch_size=6, lease_seconds=300) == 0
     ), "Expired unused input must not keep reentering the queue"
+
+
+def test_exhausted_stored_resume_allowance_refuses_model_entry(
+    shared_worker: DurableLearningWorker, publication, monkeypatch
+):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from reflexio.server.llm._litellm_types import ModelProvenance
+
+    storage, worker, kind, _, _ = publication
+    worker.request_context.configurator.get_config().pending_tool_call_config.max_resume_attempts = 1
+    storage._execute("UPDATE _agent_runs SET resume_attempts=1 WHERE id='run_1'", ())
+    dispatch = Mock(
+        return_value=SimpleNamespace(
+            value=SimpleNamespace(content=None, tool_calls=[]),
+            provenance=ModelProvenance("gpt-4o-mini", "test"),
+        )
+    )
+    monkeypatch.setattr(
+        LiteLLMClient, "get_completion_model_ladder", lambda *_a, **_kw: ["gpt-4o-mini"]
+    )
+    monkeypatch.setattr(
+        LiteLLMClient,
+        "generate_chat_response_with_provenance",
+        lambda *_a, **kw: dispatch(**kw),
+    )
+    assert shared_worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 1
+    result = storage.get_agent_run("run_1")
+    assert result is not None and result.status == AgentRunStatus.FAILED
+    assert result.resume_attempts == 1 and dispatch.call_count == 0
+    assert result.committed_output is None

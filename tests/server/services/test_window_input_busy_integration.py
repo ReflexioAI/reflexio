@@ -132,3 +132,111 @@ def test_unrelated_failure_while_handling_busy_keeps_its_own_retry_classificatio
     cursor, _, _ = _state(engine.get_storage())
     assert cursor["attempts"] == 1
     assert "RuntimeError" in cursor["last_error"]
+
+
+def test_paid_compatibility_tool_contention_reaches_existing_window_ceiling(
+    pipeline, monkeypatch
+):
+    import json
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    from reflexio.server.llm._litellm_types import ModelProvenance
+    from reflexio.server.llm.litellm_client import LiteLLMClient
+    from reflexio.server.services.durable_learning.window_executor import WindowExecutor
+    from reflexio.server.services.storage.storage_base import (
+        PendingToolCallRecord,
+        PendingToolCallStatus,
+        build_pending_tool_call_dedup_key,
+        build_scope_hash,
+        human_feedback_scope,
+    )
+    from tests.server.services.test_window_retry_ceiling_integration import _drain_once
+
+    engine, worker, http = pipeline
+    storage = engine.get_storage()
+    config = engine.request_context.configurator.get_config()
+    config.pending_tool_call_config.enabled = True
+    engine.request_context.configurator.set_config(config)
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    # Select the established historical compatibility adapter; all ownership,
+    # actual tool dispatch and retry accounting remain production code.
+    monkeypatch.setattr(
+        WindowExecutor,
+        "_requires_compatibility_execution",
+        staticmethod(lambda *_a: True),
+    )
+    monkeypatch.setattr(
+        ProfileGenerationService,
+        "_should_run_before_extraction",
+        lambda *_a, **_kw: True,
+    )
+    scope = human_feedback_scope(storage.org_id)
+    question = "Which synthetic compatibility approval?"
+    storage.create_pending_tool_call(
+        PendingToolCallRecord(
+            id="held-window-question",
+            org_id=storage.org_id,
+            user_id="u",
+            scope=scope,
+            scope_hash=build_scope_hash(scope),
+            tool_name="ask_human",
+            question_text=question,
+            args={"question": question},
+            status=PendingToolCallStatus.PENDING,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            cache_until=datetime.now(UTC) + timedelta(minutes=10),
+            dedup_key=build_pending_tool_call_dedup_key(
+                tool_name="ask_human", question_text=question
+            ),
+        )
+    )
+    calls = []
+
+    def completion(*_a, **_kw):
+        calls.append(1)
+        return SimpleNamespace(
+            value=SimpleNamespace(
+                content=None,
+                tool_calls=[
+                    {
+                        "id": "compatibility-tool",
+                        "type": "function",
+                        "function": {
+                            "name": "attach_pending_info_request",
+                            "arguments": json.dumps(
+                                {"pending_tool_call_id": "held-window-question"}
+                            ),
+                        },
+                    }
+                ],
+            ),
+            provenance=ModelProvenance("gpt-4o-mini", "test"),
+        )
+
+    monkeypatch.setattr(
+        LiteLLMClient, "get_completion_model_ladder", lambda *_a, **_kw: ["gpt-4o-mini"]
+    )
+    monkeypatch.setattr(
+        LiteLLMClient, "generate_chat_response_with_provenance", completion
+    )
+    refusals = []
+
+    def busy(*_a, **_kw):
+        refusals.append(1)
+        raise ExecutionInputBusyError("synthetic input contention after model response")
+
+    monkeypatch.setattr(storage, "_lock_pending_tool_execution_inputs", busy)
+    assert http.post(
+        "/api/publish_interaction", json=payload("paid-busy", force=True)
+    ).json()["success"]
+    for _ in range(MAX_EXTRACTION_WINDOW_ATTEMPTS * 3 + 3):
+        _drain_once(worker, storage)
+    cursor, _, _ = _state(storage)
+    assert calls and len(calls) == len(refusals), (
+        "Exercise actual model/tool execution, not a gate failure"
+    )
+    assert len(calls) <= MAX_EXTRACTION_WINDOW_ATTEMPTS
+    assert cursor["attempts"] == MAX_EXTRACTION_WINDOW_ATTEMPTS
+    assert cursor["retry_at"] == float("inf")
+    assert storage.count_all_profiles() == 0
