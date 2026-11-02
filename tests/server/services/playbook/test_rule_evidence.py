@@ -557,3 +557,76 @@ def test_later_diagnostic_over_budget_rejects_before_any_model_call(data):
     with pytest.raises(ValueError, match="input budget"):
         run_rule_evidence(data, invoke)
     invoke.assert_not_called()
+
+
+@pytest.mark.parametrize("mode", ["python", "json", "native_parser"])
+@pytest.mark.parametrize(
+    "padding", [{"r5": None}, {"r6": None}, {"r5": None, "r6": None}]
+)
+@pytest.mark.parametrize("existing_refs", [{}, {"r1": 3}])
+def test_counter_reference_null_padding_preserves_exact_diagnosis(
+    data, diagnostic, mode, padding, existing_refs
+):
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+    from reflexio.server.services.playbook.rule_evidence.wire import resolve_diagnostic
+
+    schema = judge_schema(data, data.sessions[0])
+    original = wire_diagnostic(diagnostic)
+    original["rule_assessment"]["counterevidence_refs"] = existing_refs
+    expected = resolve_diagnostic(
+        schema.model_validate_json(json.dumps(original)), data, data.sessions[0]
+    )
+    padded = json.loads(json.dumps(original))
+    padded["rule_assessment"]["counterevidence_refs"].update(padding)
+    snapshot = json.loads(json.dumps(padded))
+    if mode == "python":
+        parsed = schema.model_validate(padded)
+    elif mode == "json":
+        parsed = schema.model_validate_json(json.dumps(padded))
+    else:
+        client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
+        parsed = client._maybe_parse_structured_output(json.dumps(padded), schema, True)
+    resolved, audit = resolve_diagnostic(parsed, data, data.sessions[0])
+    assert resolved == diagnostic == expected[0]
+    assert audit == expected[1]
+    assert audit["counterevidence_refs"] == (
+        [{"session_id": "s", "turn": 3}] if existing_refs else []
+    )
+    assert padded == snapshot  # Normalization must not mutate retained raw evidence.
+    counter_schema = schema.model_json_schema()["$defs"]["CounterTurns"]
+    assert set(counter_schema["properties"]) == {"r1", "r2", "r3", "r4"}
+    assert counter_schema["additionalProperties"] is False
+
+
+@pytest.mark.parametrize("mode", ["python", "json", "native_parser"])
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"r5": 3},
+        {"r6": 8},
+        {"r5": False},
+        {"r6": "3"},
+        {"r5": None, "r6": 3},
+        {"r7": None},
+        {"unrecognized": None},
+    ],
+)
+def test_counter_reference_padding_does_not_admit_new_evidence_or_unknown_fields(
+    data, diagnostic, mode, extra
+):
+    from reflexio.server.llm._litellm_types import StructuredOutputParseError
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+    schema = judge_schema(data, data.sessions[0])
+    body = wire_diagnostic(diagnostic)
+    body["rule_assessment"]["counterevidence_refs"] = {"r1": 3, **extra}
+    if mode == "native_parser":
+        client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
+        with pytest.raises(StructuredOutputParseError):
+            client._maybe_parse_structured_output(json.dumps(body), schema, True)
+    else:
+        with pytest.raises(ValidationError):
+            if mode == "python":
+                schema.model_validate(body)
+            else:
+                schema.model_validate_json(json.dumps(body))
