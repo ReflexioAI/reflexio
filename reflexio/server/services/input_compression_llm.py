@@ -34,12 +34,24 @@ from reflexio.server.services.input_compression import (
 )
 
 logger = logging.getLogger(__name__)
+_REFERENCE_CONTRACT = "evidence-refs-only-v3"
 
 
 class _ReferenceGroup(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     evidence_refs: list[str] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def project_references(cls, value: Any) -> Any:
+        # The wire schema remains closed. Surplus generated fields carry no
+        # authority: retain the exact ref list, then let strict typing and the
+        # caller's visible-source/capacity validator check it. Never infer IDs
+        # from other fields or turn generated text into labels or quotations.
+        if isinstance(value, dict) and "evidence_refs" in value:
+            return {"evidence_refs": value["evidence_refs"]}
+        return value
 
 
 class _ReferenceSelection(BaseModel):
@@ -64,6 +76,29 @@ class _ReferenceSelection(BaseModel):
                 for point in self.points
             ]
         )
+
+
+def _recoverable_selection(
+    error: StructuredOutputRepairError, model: str
+) -> tuple[_ReferenceSelection, bool]:
+    # Recover only an actually complete, schema-valid selection. A malformed
+    # final repair must not erase a prior complete one; never salvage malformed
+    # groups or infer either finish reason.
+    if error.model != model:
+        raise error
+    if error.failure_kind == "semantic" and isinstance(error.raw_content, str):
+        try:
+            return _ReferenceSelection.model_validate_json(error.raw_content), False
+        except ValidationError:
+            raise error from None
+    if (
+        error.failure_kind == "parse"
+        and error.finish_reason == "stop"
+        and error.parsed_output_finish_reason == "stop"
+        and isinstance(error.parsed_output, _ReferenceSelection)
+    ):
+        return error.parsed_output, True
+    raise error
 
 
 class CompressionUsageCapture(RunTokenCapture):
@@ -202,7 +237,12 @@ def plan_with_client(
         policy=policy,
         budget=budget,
         model_contract=json.dumps(
-            {"dispatch": contract, "direct_answer": direct_answer}, sort_keys=True
+            {
+                "dispatch": contract,
+                "direct_answer": direct_answer,
+                "reference_contract": _REFERENCE_CONTRACT,
+            },
+            sort_keys=True,
         ),
         measure_output=measure_output,
         output_contract=output_contract,
@@ -313,21 +353,7 @@ def plan_with_client(
                     structured_output_validator=validate,
                 )
             except StructuredOutputRepairError as error:
-                # Recovery is only for COMPLETE schema-valid selections after the
-                # client's bounded repair. Never salvage truncated JSON, guess a
-                # reference, sever one group's qualifiers, or mask integrity errors.
-                if (
-                    error.failure_kind != "semantic"
-                    or error.model != model
-                    or not isinstance(error.raw_content, str)
-                ):
-                    raise
-                try:
-                    candidate = _ReferenceSelection.model_validate_json(
-                        error.raw_content
-                    )
-                except ValidationError:
-                    raise error from None
+                candidate, recovered_prior = _recoverable_selection(error, model)
                 visible = set(call.visible_refs)
                 retained = [
                     point
@@ -348,6 +374,11 @@ def plan_with_client(
                         "Host: Selection still exceeds capacity after bounded repair; whole points may be omitted."
                     ]
                 )
+                if recovered_prior:
+                    choice.omissions.insert(
+                        0,
+                        "Host used the earlier complete schema-valid selection after the final repair failed parsing; source selection is incomplete.",
+                    )
                 choice.omission_counts = OmissionCounts(
                     unseen_reference_groups=discarded
                 )

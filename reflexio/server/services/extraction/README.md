@@ -319,6 +319,15 @@ The guarded LLM seam requests only evidence-reference groups,
 never generated factual descriptions, summaries, unresolved-status claims or
 omission claims. The host supplies fixed navigation text and measured omission
 metadata and labels. Preserved conversation fields have their own host-created group.
+The provider schema stays closed, but host parsing projects each reference group
+onto its exact `evidence_refs` list before strict validation. Surplus generated
+fields are discarded; none become evidence, labels or omission claims. Missing,
+empty or wrongly typed lists still fail, and unseen references retain the same
+bounded repair and whole-group rejection policy. The top-level envelope remains
+strict. Truncated JSON is not recovered. Projection semantics are versioned in
+the plan contract: old journal roots fail closed on changed witnesses rather
+than resetting their spent attempts. This is shared by extraction and offline
+tuning; it does not change budgets or provider routes.
 Every cached selection is revalidated against the current visible source and
 the caller's actual output renderer. Cache identities bind scope, source,
 policy/schema, effective model route/generation settings and rendering contract.
@@ -360,8 +369,12 @@ point. Exact-source and downstream quality qualification remain required.
 After the existing bounded semantic repair, the guarded seam can discard entire
 groups containing unseen references from a complete schema-valid response.
 Every retained group is revalidated. No individual reference is guessed or
-removed from a retained group, and parse, refusal, model-route, provider-budget and
-integrity failures are not converted to accepted results. Host omission notices
+removed from a retained group. If the final repair fails parsing, the seam may
+use the latest earlier schema-valid selection only when both observed finish
+reasons are explicitly `stop`, under the same pinned single-model ladder. The
+malformed final content is never salvaged. Missing finish metadata, truncation,
+refusal, model-route, provider-budget and integrity failures remain errors.
+Host omission notices
 and `provider_reference_recoveries` make this partial selection visible. That
 counter describes new provider work in this operation; cache hits may carry
 earlier omission notices without a new recovery.
@@ -678,3 +691,12 @@ A non-neutral file cannot be used to authorize an allowlisted org after
 retirement; it requires the explicit adoption above. Missing configs and absent
 storage remain closed. Do not replace the deleted resolver with a helper that
 returns true, or reuse auth/tenant checks as a rollout gate.
+
+### Playbook evidence stage budgets
+
+Rule-evidence tuning preflights the fixed proposal and every session diagnosis at
+60,000 portable proxy tokens before dispatch. Generated diagnoses/audits may add
+up to 60,000 tokens above the fixed proposal, with native complete-request context
+and output-reservation checks still enforced. Original evidence is never silently
+truncated to accommodate generated findings. The input-budget policy participates
+in enterprise method identity; it is a ceiling, not a guarantee of semantic quality.

@@ -186,9 +186,11 @@ class StructuredOutputRepairError(LiteLLMClientError):
     """Raised when an opted-in structured-output repair ladder is exhausted.
 
     Field pairing caveat: ``raw_content``/``validation_errors`` describe the
-    LAST attempt, while ``parsed_output`` falls back to the most recent attempt
-    that parsed at all. ``first_parsed_provenance`` is the first parse across the
-    whole multi-rung walk (not merely the final rung), so salvage callers can
+    LAST attempt (as does ``finish_reason``), while ``parsed_output`` falls back
+    to the most recent attempt that parsed at all.
+    ``parsed_output_finish_reason`` belongs to that parsed
+    output, not necessarily the final response. Missing metadata remains None.
+    ``first_parsed_provenance`` is the first parse across the whole multi-rung walk (not merely the final rung), so salvage callers can
     pair it with the first accepted parsed content from a shared validator
     closure.
     """
@@ -201,6 +203,8 @@ class StructuredOutputRepairError(LiteLLMClientError):
         model: str,
         raw_content: str | None = None,
         parsed_output: BaseModel | None = None,
+        finish_reason: str | None = None,
+        parsed_output_finish_reason: str | None = None,
         validation_errors: tuple[str, ...] = (),
         first_parsed_provenance: ModelProvenance | None = None,
     ) -> None:
@@ -209,6 +213,8 @@ class StructuredOutputRepairError(LiteLLMClientError):
         self.model = model
         self.raw_content = raw_content
         self.parsed_output = parsed_output
+        self.finish_reason = finish_reason
+        self.parsed_output_finish_reason = parsed_output_finish_reason
         self.validation_errors = validation_errors
 
 
