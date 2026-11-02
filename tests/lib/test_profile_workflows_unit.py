@@ -96,8 +96,7 @@ def reflexio_with_config(temp_storage, ensure_mock_env, monkeypatch):
 
     with local._lock:
         scheduler = local._schedulers.pop(temp_storage, None)
-        local._live.pop(temp_storage, None)
-        local._contexts.pop((org_id, temp_storage), None)
+        local._contexts.discard_directory(temp_storage)
     if scheduler is not None:
         scheduler.stop()
         assert not scheduler.is_running()

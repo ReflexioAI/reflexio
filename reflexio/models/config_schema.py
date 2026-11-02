@@ -22,7 +22,7 @@ from reflexio.config_env import (
 )
 from reflexio.housekeeping_policy import strip_legacy_housekeeping_fields
 from reflexio.pending_tool_policy import (
-    strip_legacy_pending_tool_timing,
+    RETIRED_PENDING_TOOL_TIMING_FIELDS,
     strip_retired_pending_followup_warning,
 )
 
@@ -863,7 +863,7 @@ class PendingToolCallConfig(BaseModel):
     @classmethod
     def discard_retired_execution_policy(cls, data: Any) -> Any:
         return strip_retired_pending_followup_warning(
-            strip_legacy_pending_tool_timing(data)
+            _reject_obsolete_fields(data, RETIRED_PENDING_TOOL_TIMING_FIELDS)
         )
 
     def for_tool(self, tool_name: str) -> EffectivePendingToolCallConfig:

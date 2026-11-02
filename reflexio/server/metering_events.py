@@ -256,8 +256,6 @@ def record_learnings_generated_records_strict(
     *,
     org_id: str,
     learning_ids: list[str],
-    platform_llm: bool | None,
-    platform_storage: bool | None,
     pipeline: str | None = None,
     user_id: str | None = None,
     request_id: str | None = None,
@@ -269,13 +267,15 @@ def record_learnings_generated_records_strict(
     metadata: Mapping[str, Any] | None = None,
     created_at: float | None = None,
 ) -> None:
-    """Strict per-record emission for receipt-backed finalization only."""
+    """Deliver learning counts from durable facts, independent of model ownership.
+
+    Platform ownership classifies extraction tokens, not generated-learning
+    counts. Do not attach mutable model/storage configuration to receipt replay.
+    """
     _record_learnings_generated_records(
         record_event=record_usage_event_strict,
         org_id=org_id,
         learning_ids=learning_ids,
-        platform_llm=platform_llm,
-        platform_storage=platform_storage,
         pipeline=pipeline,
         user_id=user_id,
         request_id=request_id,
@@ -294,8 +294,8 @@ def _record_learnings_generated_records(
     record_event: Any,
     org_id: str,
     learning_ids: list[str],
-    platform_llm: bool | None,
-    platform_storage: bool | None,
+    platform_llm: bool | None = None,
+    platform_storage: bool | None = None,
     pipeline: str | None,
     user_id: str | None,
     request_id: str | None,
@@ -475,7 +475,6 @@ def emit_learnings_generated_records(
 def emit_learnings_generated_records_strict(
     *,
     org_id: str,
-    configurator: Any,
     learning_ids: list[str],
     source: str,
     pipeline: str | None = None,
@@ -490,15 +489,10 @@ def emit_learnings_generated_records_strict(
     """Strict receipt-backed counterpart to the ordinary fail-open emitter."""
     if not learning_ids:
         return
-    from reflexio.server.metering_signals import platform_llm_from_config
-
     try:
-        config = configurator.get_config()
         record_learnings_generated_records_strict(
             org_id=org_id,
             learning_ids=learning_ids,
-            platform_llm=platform_llm_from_config(config),
-            platform_storage=None,
             pipeline=pipeline,
             user_id=user_id,
             request_id=request_id,
@@ -592,4 +586,47 @@ def record_search_request(
         event_key=f"search:{uuid.uuid4()}",
         count_value=1,
         caller_type=caller_type,
+    )
+
+
+def record_window_extraction_finances(
+    *,
+    org_id: str,
+    window_id: str,
+    pipeline: str,
+    billing: Mapping[str, Any],
+    user_id: str | None = None,
+    request_id: str | None = None,
+) -> None:
+    """Emit one window's immutable learning/token facts, live or after erasure.
+
+    Correlation metadata is optional; canonical keys, metric quantities and the
+    original event clock remain identical when governance removes that metadata.
+    """
+    record_learnings_generated_records_strict(
+        org_id=org_id,
+        learning_ids=billing["ids"],
+        pipeline=pipeline,
+        user_id=user_id,
+        request_id=request_id,
+        entity_type="profile" if pipeline == "profile" else "user_playbook",
+        created_at=billing["created_at"],
+    )
+    record_extraction_tokens(
+        org_id=org_id,
+        billing_input_tokens=billing["input_tokens"],
+        prompt_tokens=billing["prompt_tokens"],
+        completion_tokens=billing["completion_tokens"],
+        # Tolerant reads: an effects blob written before the cache fields
+        # existed is still billable, and a KeyError here would strand a
+        # window whose learnings are already committed.
+        cache_read_input_tokens=billing.get("cache_read_input_tokens", 0),
+        cache_write_input_tokens=billing.get("cache_write_input_tokens", 0),
+        platform_llm=billing["platform_llm"],
+        platform_storage=None,
+        pipeline=pipeline,
+        request_id=request_id,
+        event_key=f"tok:{window_id}",
+        strict=True,
+        created_at=billing["created_at"],
     )

@@ -38,6 +38,10 @@ from reflexio.server.llm.call_deadline import (
     model_call_deadline,
     remaining_call_time,
 )
+from reflexio.server.llm.compute_admission import (
+    ComputeAdmissionError,
+    admit_external_compute,
+)
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
@@ -391,6 +395,7 @@ class EmbeddingMixin:
 
             search_scope = search_runtime.current()
             with provider_slot(params["model"]):
+                admit_external_compute()
                 response = litellm.embedding(
                     **params,
                     # LiteLLM's overload says int; its implementation forwards
@@ -412,7 +417,11 @@ class EmbeddingMixin:
             remaining_call_time()
             search_runtime.checkpoint()
             return vectors
-        except (search_runtime.SearchDeadlineError, CallDeadlineExceededError):
+        except (
+            ComputeAdmissionError,
+            search_runtime.SearchDeadlineError,
+            CallDeadlineExceededError,
+        ):
             raise
         except Exception as e:
             raise _embedding_error(

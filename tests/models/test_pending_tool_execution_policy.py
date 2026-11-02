@@ -1,98 +1,126 @@
-"""Retired pending-tool execution tuning must never silently change a saved claim policy."""
+"""Historical timing conversion never restores a second execution policy."""
 
 import json
+import os
+import subprocess
+import sys
+import threading
 from copy import deepcopy
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from reflexio.cli.bootstrap_config import load_storage_from_config
-from reflexio.config_migration import strip_retired_config_fields
+from reflexio.config_file import LocalConfigFile
+from reflexio.config_migration import (
+    ConfigurationMigrationError,
+    strip_retired_config_fields,
+)
 from reflexio.models.config_schema import PendingToolCallConfig
+from reflexio.pending_tool_policy import warn_retired_resume_timing
 from reflexio.server.services.configurator.local_file_config_storage import (
     LocalFileConfigStorage,
 )
 
-LEGACY_DEFAULTS = {
-    "resume_poll_interval_seconds": 5.0,
-    "resume_claim_ttl_seconds": 600,
-}
+FIELDS = ("resume_poll_interval_seconds", "resume_claim_ttl_seconds")
+ENV = ("REFLEXIO_RESUME_POLL_INTERVAL_SECONDS", "REFLEXIO_RESUME_CLAIM_TTL_SECONDS")
 
 
-@pytest.mark.parametrize("strings", [False, True])
-def test_defaults_canonicalize_without_mutating_input(strings):
-    legacy = {k: str(v) if strings else v for k, v in LEGACY_DEFAULTS.items()}
-    payload = {"pending_tool_call_config": {**legacy, "enabled": False}}
-    original = deepcopy(payload)
-    normalized = strip_retired_config_fields(payload)
-    assert normalized == {"pending_tool_call_config": {"enabled": False}}
-    policy = PendingToolCallConfig.model_validate(payload["pending_tool_call_config"])
-    for key in LEGACY_DEFAULTS:
-        assert key not in policy.model_dump()
-        assert key not in policy.model_json_schema()["properties"]
-    assert payload == original
+@pytest.mark.parametrize("poll,ttl", [(5.0, 600), (0.25, 1800), ("3", "1")])
+def test_explicit_conversion_retires_valid_custom_policy_without_mutation(poll, ttl):
+    pending = {
+        "enabled": False,
+        FIELDS[0]: poll,
+        FIELDS[1]: ttl,
+        "hmac_secrets": ["synthetic-signing-secret"],
+        "opaque": {"retain": "unchanged"},
+        "max_resume_attempts": 7,
+    }
+    original = deepcopy(pending)
+    converted = strip_retired_config_fields({"pending_tool_call_config": pending})
+    assert converted == {
+        "pending_tool_call_config": {
+            k: v for k, v in pending.items() if k not in FIELDS
+        }
+    }
+    assert pending == original
+    for name in FIELDS:
+        assert name not in PendingToolCallConfig.model_json_schema()["properties"]
 
 
-@pytest.mark.parametrize("key", LEGACY_DEFAULTS)
-@pytest.mark.parametrize("value", [0, 3, None, "invalid", -1, 1.5])
-def test_custom_or_invalid_policy_is_rejected_even_when_disabled(key, value):
-    legacy = {"enabled": False, key: value}
+@pytest.mark.parametrize("key", FIELDS)
+@pytest.mark.parametrize("value", [5, 600, None, "invalid"])
+def test_current_model_rejects_even_historical_defaults(key, value):
     with pytest.raises(ValueError, match=key):
-        PendingToolCallConfig.model_validate(legacy)
-    with pytest.raises(ValueError, match=key):
-        strip_retired_config_fields({"pending_tool_call_config": legacy})
+        PendingToolCallConfig.model_validate({"enabled": False, key: value})
 
 
-def test_local_saved_default_policy_is_canonicalized(tmp_path):
-    storage = LocalFileConfigStorage("pending-defaults", base_dir=str(tmp_path))
-    path = Path(storage.config_file)
-    path.parent.mkdir(parents=True)
-    path.write_text(
-        json.dumps(
-            {
-                "storage_config": {"type": "sqlite"},
-                "pending_tool_call_config": LEGACY_DEFAULTS,
-            }
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        (FIELDS[0], value)
+        for value in (
+            0,
+            -1,
+            None,
+            "PRIVATE_INVALID",
+            "nan",
+            "inf",
+            threading.TIMEOUT_MAX * 2,
         )
-    )
-    original = path.read_bytes()
-    for _ in range(2):
-        assert not storage.load_config().pending_tool_call_config.enabled
-    assert path.read_bytes() == original
-    from reflexio.cli.config_upgrade import convert_config_file
+    ]
+    + [
+        (FIELDS[1], value)
+        for value in (0, -1, None, "PRIVATE_INVALID", 1.5, ((1 << 31) - 1) // 6 + 1)
+    ],
+)
+def test_conversion_rejects_malformed_history_even_when_disabled(key, value):
+    source = {"pending_tool_call_config": {"enabled": False, key: value}}
+    before = deepcopy(source)
+    with pytest.raises(ConfigurationMigrationError, match=key) as failure:
+        strip_retired_config_fields(source)
+    assert "PRIVATE_INVALID" not in str(failure.value)
+    assert source == before
 
-    canonical = tmp_path / "canonical.json"
-    convert_config_file(path, canonical)
-    assert path.read_bytes() == original
-    saved = json.loads(canonical.read_text())["pending_tool_call_config"]
-    assert not set(LEGACY_DEFAULTS).intersection(saved)
 
-
-def test_custom_saved_policy_is_not_rewritten(tmp_path):
-    storage = LocalFileConfigStorage("pending-custom", base_dir=str(tmp_path))
+@pytest.mark.parametrize("ttl", [600, 60])
+def test_local_policy_requires_preparation_and_preserves_exact_original(tmp_path, ttl):
+    storage = LocalFileConfigStorage("pending-history", base_dir=str(tmp_path))
     path = Path(storage.config_file)
     path.parent.mkdir(parents=True)
     original = json.dumps(
         {
-            "storage_config": {"type": "sqlite"},
-            "pending_tool_call_config": {"resume_claim_ttl_seconds": 60},
+            "storage_config": {
+                "type": "sqlite",
+                "db_path": str(tmp_path / "owned.sqlite"),
+            },
+            "pending_tool_call_config": {
+                "enabled": False,
+                "resume_claim_ttl_seconds": ttl,
+            },
         }
     )
     path.write_text(original)
-    with pytest.raises(ValueError, match="pending_tool_call_config"):
-        storage.load_config()
-    assert path.read_text() == original
-
-    with pytest.raises(ValueError, match="pending_tool_call_config"):
-        load_storage_from_config(org_id="pending-custom", base_dir=str(tmp_path))
-    assert path.read_text() == original
+    for load in (
+        storage.load_config,
+        lambda: load_storage_from_config(
+            org_id="pending-history", base_dir=str(tmp_path)
+        ),
+    ):
+        with pytest.raises(ValueError, match="pending_tool_call_config"):
+            load()
+        assert path.read_text() == original
+    assert LocalConfigFile(path).prepare()
+    assert not storage.load_config().pending_tool_call_config.enabled
+    assert (
+        "resume_claim_ttl_seconds"
+        not in json.loads(path.read_text())["pending_tool_call_config"]
+    )
+    assert not LocalConfigFile(path).prepare()
 
 
 def test_file_and_cli_propagate_new_migration_error_families(tmp_path):
-    from unittest.mock import patch
-
-    from reflexio.config_migration import ConfigurationMigrationError
-
     storage = LocalFileConfigStorage("future-policy", base_dir=str(tmp_path))
     path = Path(storage.config_file)
     path.parent.mkdir(parents=True)
@@ -112,88 +140,56 @@ def test_file_and_cli_propagate_new_migration_error_families(tmp_path):
 
 
 @pytest.mark.parametrize("blank", ["", "  "])
-def test_resume_timing_supplied_mapping_defaults_ignore_ambient(monkeypatch, blank):
-    from reflexio.pending_tool_policy import resolve_resume_timing
-
-    monkeypatch.setenv("REFLEXIO_RESUME_POLL_INTERVAL_SECONDS", "invalid-private-poll")
-    monkeypatch.setenv("REFLEXIO_RESUME_CLAIM_TTL_SECONDS", "invalid-private-ttl")
-    for values in (
-        {},
-        {
-            "REFLEXIO_RESUME_POLL_INTERVAL_SECONDS": blank,
-            "REFLEXIO_RESUME_CLAIM_TTL_SECONDS": blank,
-        },
-    ):
-        policy = resolve_resume_timing(values)
-        assert policy.poll_seconds == 5.0
-        assert policy.claim_ttl_seconds == 600
+def test_obsolete_diagnostic_uses_only_supplied_mapping_and_blank_is_unset(
+    monkeypatch, caplog, blank
+):
+    for name in ENV:
+        monkeypatch.setenv(name, "PRIVATE_AMBIENT")
+    warn_retired_resume_timing({})
+    warn_retired_resume_timing(dict.fromkeys(ENV, blank))
+    assert not caplog.records
 
 
-@pytest.mark.parametrize("ttl", [1, 1800, ((1 << 31) - 1) // 6])
-def test_resume_timing_preserves_independent_custom_policy(ttl):
-    from reflexio.pending_tool_policy import resolve_resume_timing
+@pytest.mark.parametrize("value", ["0.25", "1800", "PRIVATE_INVALID", "nan", "1e100"])
+def test_obsolete_assignment_is_value_free_diagnostic_not_policy(value: str, caplog):
+    from reflexio import durable_learning_policy
 
-    policy = resolve_resume_timing(
-        {
-            "REFLEXIO_RESUME_POLL_INTERVAL_SECONDS": "0.25",
-            "REFLEXIO_RESUME_CLAIM_TTL_SECONDS": str(ttl),
-        }
-    )
-    assert policy.poll_seconds == 0.25
-    assert policy.claim_ttl_seconds == ttl
-
-
-@pytest.mark.parametrize(
-    "name,value",
-    [
-        ("REFLEXIO_RESUME_POLL_INTERVAL_SECONDS", value)
-        for value in ["0", "-1", "nan", "inf", "private-invalid", "1e100"]
-    ]
-    + [
-        ("REFLEXIO_RESUME_CLAIM_TTL_SECONDS", value)
-        for value in [
-            "0",
-            "-1",
-            "1.5",
-            "inf",
-            "private-invalid",
-            str(((1 << 31) - 1) // 6 + 1),
-        ]
-    ],
-)
-def test_resume_timing_rejects_invalid_policy_without_values(name, value):
-    from reflexio.pending_tool_policy import resolve_resume_timing
-
-    with pytest.raises(ValueError, match=name) as error:
-        resolve_resume_timing({name: value})
-    assert "private-invalid" not in str(error.value)
+    before = durable_learning_policy.resolve_discovery_timing({})
+    mapping: dict[str, str] = dict.fromkeys(ENV, value)
+    assert warn_retired_resume_timing(mapping) is None
+    assert durable_learning_policy.resolve_discovery_timing(mapping) == before
+    assert len(caplog.records) == 1
+    assert all(name in caplog.text for name in ENV)
+    assert "release_blocking=false" in caplog.text
+    assert "PRIVATE_INVALID" not in caplog.text
 
 
-@pytest.mark.parametrize(
-    "name",
-    ["REFLEXIO_RESUME_POLL_INTERVAL_SECONDS", "REFLEXIO_RESUME_CLAIM_TTL_SECONDS"],
-)
-def test_oss_startup_refuses_invalid_resume_timing_before_serving(tmp_path, name):
-    import os
-    import subprocess
-    import sys
-
+@pytest.mark.parametrize("name", ENV)
+def test_oss_startup_ignores_obsolete_value_with_diagnostic(tmp_path, name):
     empty = tmp_path / "empty-env"
-    empty.write_text("")
-    result = subprocess.run(  # noqa: S603 - fixed interpreter/script, isolated env.
-        [sys.executable, "-c", "import reflexio.server"],
+    empty.touch()
+    home = tmp_path / "home"
+    home.mkdir()
+    result = subprocess.run(  # noqa: S603 -- Fixed interpreter/script, isolated HOME/env.
+        [sys.executable, "-c", "import reflexio.server; print('startup-ready')"],
         env={
             "PATH": os.environ["PATH"],
+            "HOME": str(home),
             "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
             "REFLEXIO_ENV_FILE": str(empty),
+            "PYTHON_DOTENV_DISABLED": "1",
             "REFLEXIO_LOG_DIR": str(tmp_path / "logs"),
-            name: "invalid-private-timing",
+            "OPENAI_API_KEY": "sk-test-not-real",
+            "REFLEXIO_NATIVE_COMPUTE_THREADS": "1",
+            name: "PRIVATE_OBSOLETE",
         },
         capture_output=True,
         text=True,
         timeout=20,
         check=False,
     )
-    assert result.returncode != 0
-    assert name in result.stderr
-    assert "invalid-private-timing" not in result.stderr
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "startup-ready" in output and name in output
+    assert "obsolete_resume_timing" in output
+    assert "PRIVATE_OBSOLETE" not in output

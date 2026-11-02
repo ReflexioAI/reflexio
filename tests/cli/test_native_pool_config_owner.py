@@ -26,11 +26,32 @@ POLICY = {
 
 @pytest.fixture(autouse=True)
 def native_environment(monkeypatch):
+    from reflexio.server.services.configurator.configurator import (
+        DefaultConfigurator,
+        get_configurator_class,
+        set_configurator_class,
+    )
+
+    class PolicyOnlyConfigurator(DefaultConfigurator):
+        """These policy tests use fictitious native endpoints, not a live adapter."""
+
+        @classmethod
+        def validate_storage_upgrade(cls, document, *, org_id, base_dir):
+            raw = document.get("storage_config")
+            if isinstance(raw, dict) and raw.get("type") == "postgres":
+                assert raw["db_url"].startswith("postgresql://")
+                return
+            super().validate_storage_upgrade(document, org_id=org_id, base_dir=base_dir)
+
+    previous = get_configurator_class()
+    set_configurator_class(PolicyOnlyConfigurator)
     for name in POOL_ENV:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("REFLEXIO_POSTGRES_READ_DB_URL", raising=False)
     monkeypatch.delenv("REFLEXIO_POSTGRES_SCHEMA", raising=False)
     monkeypatch.setenv("DATA_DB_URL", "postgresql://selected.invalid/new")
+    yield
+    set_configurator_class(previous)
 
 
 def stored(tmp_path, *, current=True, backend="postgres", policy=None):
@@ -43,7 +64,7 @@ def stored(tmp_path, *, current=True, backend="postgres", policy=None):
             **(POLICY if policy is None else policy),
         }
         if backend == "postgres"
-        else {"type": "sqlite", "db_path": "former.sqlite"}
+        else {"type": "sqlite", "db_path": str(tmp_path / "former.sqlite")}
     )
     path.write_text(
         json.dumps(
@@ -51,9 +72,7 @@ def stored(tmp_path, *, current=True, backend="postgres", policy=None):
                 "storage_config": storage,
                 "opaque": {"keep": True},
                 "_reflexio_config_file": {
-                    "version": FILE_FORMAT_VERSION
-                    if current
-                    else FILE_FORMAT_VERSION - 1
+                    "version": FILE_FORMAT_VERSION if current else 9
                 },
             }
         )

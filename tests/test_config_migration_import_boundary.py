@@ -8,7 +8,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
-def test_resume_policy_bootstrap_does_not_require_model_schemas():
+def test_historical_pending_conversion_and_diagnostic_do_not_require_models():
     code = """
 import sys
 class RejectModelSchemas:
@@ -16,9 +16,13 @@ class RejectModelSchemas:
         if fullname == 'reflexio.models' or fullname.startswith('reflexio.models.'):
             raise AssertionError('Bootstrap attempted model-schema import: ' + fullname)
 sys.meta_path.insert(0, RejectModelSchemas())
-from reflexio.pending_tool_policy import resolve_resume_timing
-policy = resolve_resume_timing({})
-assert policy.claim_ttl_seconds > 0
+from reflexio import pending_tool_policy
+assert not hasattr(pending_tool_policy, 'resolve_resume_timing')
+assert pending_tool_policy.strip_legacy_pending_tool_timing({
+    'enabled': False, 'resume_poll_interval_seconds': 0.25,
+    'resume_claim_ttl_seconds': 1800,
+}) == {'enabled': False}
+pending_tool_policy.warn_retired_resume_timing({})
 assert not any(name.startswith('reflexio.models') for name in sys.modules)
 """
     result = subprocess.run(  # noqa: S603 - fixed owned Python program

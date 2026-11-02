@@ -929,3 +929,55 @@ def test_consumer_drift_refuses_before_cache_or_provider(
     load.assert_not_called()
     before.assert_not_called()
     wire.assert_not_called()
+
+
+@pytest.mark.parametrize("poll,ttl", [(5.0, 600), (0.25, 1800), ("3", "1")])
+def test_frozen_pending_policy_retires_timing_without_rewriting_witness(poll, ttl):
+    from reflexio.server.services.extraction.profile_package_preparation import (
+        pending_tool_policy_snapshot,
+    )
+
+    config = PendingToolCallConfig(
+        enabled=False, hmac_secrets=["synthetic-secret"], max_resume_attempts=7
+    )
+    current = pending_tool_policy_snapshot(config)
+    frozen = {
+        **copy.deepcopy(current),
+        "resume_poll_interval_seconds": poll,
+        "resume_claim_ttl_seconds": ttl,
+        "max_pending_followups_per_scope": 4,
+    }
+    before = copy.deepcopy(frozen)
+    witness = pending_tool_policy_snapshot(config, frozen)
+    assert witness == before and witness is not frozen
+    assert frozen == before
+    assert witness["hmac_secrets_digest"] == current["hmac_secrets_digest"]
+    assert "synthetic-secret" not in json.dumps(witness)
+
+
+@pytest.mark.parametrize(
+    "mutation", ["unknown", "secret", "policy", "creation_enabled", "invalid_timing"]
+)
+def test_frozen_pending_policy_cannot_hide_non_timing_or_invalid_changes(mutation):
+    from reflexio.server.services.extraction.profile_package_preparation import (
+        pending_tool_policy_snapshot,
+    )
+
+    config = PendingToolCallConfig(enabled=False, hmac_secrets=["synthetic-secret"])
+    frozen = pending_tool_policy_snapshot(config)
+    frozen["resume_claim_ttl_seconds"] = 1800
+    if mutation == "unknown":
+        frozen["unknown_extension"] = {"must_not_be_dropped": True}
+    elif mutation == "secret":
+        frozen["hmac_secrets_digest"] = "changed"
+    elif mutation == "policy":
+        frozen["max_resume_attempts"] += 1
+    elif mutation == "creation_enabled":
+        frozen["enabled"] = True
+    else:
+        frozen["resume_claim_ttl_seconds"] = "PRIVATE_INVALID_TIMING"
+    before = copy.deepcopy(frozen)
+    with pytest.raises(InputBudgetConfigurationError) as failure:
+        pending_tool_policy_snapshot(config, frozen)
+    assert "PRIVATE_INVALID_TIMING" not in str(failure.value)
+    assert frozen == before

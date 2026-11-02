@@ -21,6 +21,10 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.services.durable_learning.user_lease import (
+    adopt_agent_run_for_execution,
+    owned_user_work_context,
+)
 from reflexio.server.services.extraction.agent_run_records import (
     source_interaction_digest,
 )
@@ -604,127 +608,131 @@ def test_overflow_uses_verified_quotations_not_full_large_interaction(
     consolidator, durable_pipeline, monkeypatch
 ):
     storage, window, lease = _overflow_coordinator(durable_pipeline)
-    consolidator.request_context.storage = storage
-    quote = "Check authorization before submitting."
-    large = "noise " * 20000 + quote + " trailing noise" * 10000
-    storage.add_request(
-        Request(
-            request_id="evidence",
-            user_id=window.user_id,
-            session_id="session",
-            agent_version="v1",
-            source="agent",
-        )
-    )
-    storage.add_user_interaction(
-        window.user_id,
-        Interaction(user_id=window.user_id, request_id="evidence", content=large),
-    )
-    interaction_id = storage.get_interactions_by_request_ids(["evidence"])[
-        0
-    ].interaction_id
-    start = large.index(quote)
-    span = SourceSpan(
-        interaction_id=interaction_id,
-        request_id="evidence",
-        role="User",
-        field="content",
-        start=start,
-        end=start + len(quote),
-        text=quote,
-        source_order=1,
-    )
-    parent = storage.get_agent_run(f"window:{window.window_id}")
-    coordinator = OverflowCoordinator(
-        storage,
-        window,
-        lease,
-        parent.generation_request_snapshot["overflow"],
-        source_digest="captured-source",
-        context_limits={},
-    )
-    coordinator.prepared = PreparedExtractionInput(
-        source_digest="captured-source", chunks=(PreparedChunk(index=0, spans=(span,)),)
-    )
-    checkpoint = coordinator.checkpoint
-    checkpoint.update(
-        stage="extracted",
-        source_coverage=[
-            coordinator.candidate_key(coordinator.prepared.chunks[0].text)
-        ],
-    )
-    coordinator.save_checkpoint(checkpoint)
-    candidate = row(ids=[interaction_id])
-    candidate.user_id = window.user_id
-    coordinator.candidate_records[coordinator.playbook_key(candidate)] = (
-        ProtectedRecord.model_validate(
-            {
-                "evidence": [
-                    {
-                        "kind": "instruction",
-                        "quote": quote,
-                        "evidence_refs": [span.evidence_ref],
-                    }
-                ]
-            }
-        )
-    )
-    coverage = MagicMock(wraps=coordinator.require_full_source_coverage)
-    monkeypatch.setattr(coordinator, "require_full_source_coverage", coverage)
-    ref = {"session_id": "evidence", "turn": interaction_id}
-    answers = iter(
-        [
-            {
-                "decisions": [
-                    {
-                        "kind": "create",
-                        "new_ids": ["NEW-0"],
-                        "reason": "supported",
-                        "outputs": [
-                            {
-                                "content": quote,
-                                "trigger": "before submitting",
-                                "rationale": "See cited evidence.",
-                                "evidence_refs": [ref],
-                            }
-                        ],
-                    }
-                ]
-            },
-            {"findings": []},
-        ]
-    )
-    requests = []
-
-    def complete(params, _timeout):
-        requests.append(params)
-        return response(next(answers))
-
-    token = current_overflow_coordinator.set(coordinator)
-    try:
-        with (
-            coordinator.provider_scope(),
-            patch.object(
-                consolidator.client,
-                "_completion_with_hard_timeout",
-                side_effect=complete,
-            ),
-        ):
-            rows, _archives, _merges = consolidator.deduplicate(
-                [[candidate]],
-                generation_request_id="generation",
+    with owned_user_work_context(storage, window.user_id, lease, 300):
+        consolidator.request_context.storage = storage
+        quote = "Check authorization before submitting."
+        large = "noise " * 20000 + quote + " trailing noise" * 10000
+        storage.add_request(
+            Request(
+                request_id="evidence",
                 user_id=window.user_id,
+                session_id="session",
                 agent_version="v1",
-                existing_playbooks=[],
+                source="agent",
             )
-    finally:
-        current_overflow_coordinator.reset(token)
-    assert rows[0].source_span == quote
-    for request in requests:
-        shown = json.loads(request["messages"][1]["content"])
-        assert shown["sessions"][0]["messages"][0]["content"] == quote
-        assert len(json.dumps(shown)) < 4000
-    coverage.assert_called_once()
+        )
+        storage.add_user_interaction(
+            window.user_id,
+            Interaction(user_id=window.user_id, request_id="evidence", content=large),
+        )
+        interaction_id = storage.get_interactions_by_request_ids(["evidence"])[
+            0
+        ].interaction_id
+        start = large.index(quote)
+        span = SourceSpan(
+            interaction_id=interaction_id,
+            request_id="evidence",
+            role="User",
+            field="content",
+            start=start,
+            end=start + len(quote),
+            text=quote,
+            source_order=1,
+        )
+        parent = storage.get_agent_run(f"window:{window.window_id}")
+        parent = adopt_agent_run_for_execution(storage, parent)
+        coordinator = OverflowCoordinator(
+            storage,
+            window,
+            lease,
+            parent.generation_request_snapshot["overflow"],
+            source_digest="captured-source",
+            context_limits={},
+        )
+        coordinator.saved_run = parent
+        coordinator.prepared = PreparedExtractionInput(
+            source_digest="captured-source",
+            chunks=(PreparedChunk(index=0, spans=(span,)),),
+        )
+        checkpoint = coordinator.checkpoint
+        checkpoint.update(
+            stage="extracted",
+            source_coverage=[
+                coordinator.candidate_key(coordinator.prepared.chunks[0].text)
+            ],
+        )
+        coordinator.save_checkpoint(checkpoint)
+        candidate = row(ids=[interaction_id])
+        candidate.user_id = window.user_id
+        coordinator.candidate_records[coordinator.playbook_key(candidate)] = (
+            ProtectedRecord.model_validate(
+                {
+                    "evidence": [
+                        {
+                            "kind": "instruction",
+                            "quote": quote,
+                            "evidence_refs": [span.evidence_ref],
+                        }
+                    ]
+                }
+            )
+        )
+        coverage = MagicMock(wraps=coordinator.require_full_source_coverage)
+        monkeypatch.setattr(coordinator, "require_full_source_coverage", coverage)
+        ref = {"session_id": "evidence", "turn": interaction_id}
+        answers = iter(
+            [
+                {
+                    "decisions": [
+                        {
+                            "kind": "create",
+                            "new_ids": ["NEW-0"],
+                            "reason": "supported",
+                            "outputs": [
+                                {
+                                    "content": quote,
+                                    "trigger": "before submitting",
+                                    "rationale": "See cited evidence.",
+                                    "evidence_refs": [ref],
+                                }
+                            ],
+                        }
+                    ]
+                },
+                {"findings": []},
+            ]
+        )
+        requests = []
+
+        def complete(params, _timeout):
+            requests.append(params)
+            return response(next(answers))
+
+        token = current_overflow_coordinator.set(coordinator)
+        try:
+            with (
+                coordinator.provider_scope(),
+                patch.object(
+                    consolidator.client,
+                    "_completion_with_hard_timeout",
+                    side_effect=complete,
+                ),
+            ):
+                rows, _archives, _merges = consolidator.deduplicate(
+                    [[candidate]],
+                    generation_request_id="generation",
+                    user_id=window.user_id,
+                    agent_version="v1",
+                    existing_playbooks=[],
+                )
+        finally:
+            current_overflow_coordinator.reset(token)
+        assert rows[0].source_span == quote
+        for request in requests:
+            shown = json.loads(request["messages"][1]["content"])
+            assert shown["sessions"][0]["messages"][0]["content"] == quote
+            assert len(json.dumps(shown)) < 4000
+        coverage.assert_called_once()
 
 
 @pytest.mark.parametrize("tool_and_repair", [False, True])
@@ -734,101 +742,107 @@ def test_uncapped_client_durable_admission_suspends_and_resumes_once_per_call(
     monkeypatch.setenv("OPENAI_API_KEY", "test-key-no-provider")
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     storage, window, token = _overflow_coordinator(durable_pipeline)
-    client = LiteLLMClient(
-        LiteLLMConfig(model="gpt-4o", max_tokens=None, fallback_models=[])
-    )
-    answers = iter(
-        [
-            {"decisions": [reconciliation_replacement()]},
-            {"findings": []},
-        ]
-    )
-    requests = []
-    active = []
-    allowance = 4 if tool_and_repair else 2
+    with owned_user_work_context(storage, window.user_id, token, 300):
+        client = LiteLLMClient(
+            LiteLLMConfig(model="gpt-4o", max_tokens=None, fallback_models=[])
+        )
+        answers = iter(
+            [
+                {"decisions": [reconciliation_replacement()]},
+                {"findings": []},
+            ]
+        )
+        requests = []
+        active = []
+        allowance = 4 if tool_and_repair else 2
 
-    def dispatch(params, _hard_timeout):
-        requests.append(params)
-        assert params.get("max_tokens", params.get("max_completion_tokens", 0)) > 0
-        if tool_and_repair and len(requests) <= 2:
-            # End each worker turn after one successful provider response.
-            active[0]._deadline = 0
-            if len(requests) == 1:
-                answer = response({})
-                answer.choices[0].message.content = None
-                answer.choices[0].message.tool_calls = [
-                    litellm.ChatCompletionMessageToolCall(**call)
-                    for call in [
-                        {
-                            "id": "search-1",
-                            "type": "function",
-                            "function": {
-                                "name": "search_playbooks",
-                                "arguments": '{"query":"authorization"}',
-                            },
-                        }
+        def dispatch(params, _hard_timeout):
+            requests.append(params)
+            assert params.get("max_tokens", params.get("max_completion_tokens", 0)) > 0
+            if tool_and_repair and len(requests) <= 2:
+                # End each worker turn after one successful provider response.
+                active[0]._deadline = 0
+                if len(requests) == 1:
+                    answer = response({})
+                    answer.choices[0].message.content = None
+                    answer.choices[0].message.tool_calls = [
+                        litellm.ChatCompletionMessageToolCall(**call)
+                        for call in [
+                            {
+                                "id": "search-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "search_playbooks",
+                                    "arguments": '{"query":"authorization"}',
+                                },
+                            }
+                        ]
                     ]
-                ]
-                answer.choices[0].finish_reason = "tool_calls"
-                return answer
-            return response({"decisions": []})
-        return response(next(answers))
+                    answer.choices[0].finish_reason = "tool_calls"
+                    return answer
+                return response({"decisions": []})
+            return response(next(answers))
 
-    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
+        monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
 
-    def coordinator(seconds):
+        def coordinator(seconds):
+            parent = storage.get_agent_run(f"window:{window.window_id}")
+            assert parent is not None
+            parent = adopt_agent_run_for_execution(storage, parent)
+            current = OverflowCoordinator(
+                storage,
+                window,
+                token,
+                parent.generation_request_snapshot["overflow"],
+                source_digest="captured-source",
+                context_limits={"gpt-4o": 128000},
+                turn_seconds=seconds,
+            )
+            current.saved_run = parent
+            return current
+
+        first = coordinator(1)
+        with first.provider_scope():
+            engine = Reconciler(client, "gpt-4o", max_calls=allowance)
+            with pytest.raises(OverflowSuspendedError):
+                engine.run(reconciliation_payload(), {("request", 17): object()})
+            assert engine.calls == 0
+        assert requests == []
         parent = storage.get_agent_run(f"window:{window.window_id}")
         assert parent is not None
-        return OverflowCoordinator(
-            storage,
-            window,
-            token,
-            parent.generation_request_snapshot["overflow"],
-            source_digest="captured-source",
-            context_limits={"gpt-4o": 128000},
-            turn_seconds=seconds,
-        )
+        assert parent.generation_request_snapshot["overflow"]["attempts"] == []
 
-    first = coordinator(1)
-    with first.provider_scope():
-        engine = Reconciler(client, "gpt-4o", max_calls=allowance)
-        with pytest.raises(OverflowSuspendedError):
+        if tool_and_repair:
+            for spent in (1, 2):
+                partial = coordinator(300)
+                active[:] = [partial]
+                with partial.provider_scope():
+                    engine = Reconciler(client, "gpt-4o", max_calls=allowance)
+                    with pytest.raises(OverflowSuspendedError):
+                        engine.run(
+                            reconciliation_payload(), {("request", 17): object()}
+                        )
+                    assert engine.calls == spent
+            state = partial.checkpoint["audited_conversation"]
+            assert state["turn"] == 2 and state["repaired"] is True
+            assert any(message["role"] == "tool" for message in state["messages"])
+
+        resumed = coordinator(300)
+        active[:] = [resumed]
+        with resumed.provider_scope():
+            engine = Reconciler(client, "gpt-4o", max_calls=allowance)
             engine.run(reconciliation_payload(), {("request", 17): object()})
-        assert engine.calls == 0
-    assert requests == []
-    parent = storage.get_agent_run(f"window:{window.window_id}")
-    assert parent is not None
-    assert parent.generation_request_snapshot["overflow"]["attempts"] == []
-
-    if tool_and_repair:
-        for spent in (1, 2):
-            partial = coordinator(300)
-            active[:] = [partial]
-            with partial.provider_scope():
-                engine = Reconciler(client, "gpt-4o", max_calls=allowance)
-                with pytest.raises(OverflowSuspendedError):
-                    engine.run(reconciliation_payload(), {("request", 17): object()})
-                assert engine.calls == spent
-        state = partial.checkpoint["audited_conversation"]
-        assert state["turn"] == 2 and state["repaired"] is True
-        assert any(message["role"] == "tool" for message in state["messages"])
-
-    resumed = coordinator(300)
-    active[:] = [resumed]
-    with resumed.provider_scope():
-        engine = Reconciler(client, "gpt-4o", max_calls=allowance)
-        engine.run(reconciliation_payload(), {("request", 17): object()})
-        assert engine.calls == allowance
-    assert len(requests) == allowance
-    parent = storage.get_agent_run(f"window:{window.window_id}")
-    assert parent is not None
-    attempts = parent.generation_request_snapshot["overflow"]["attempts"]
-    assert len(attempts) == allowance
-    assert resumed.checkpoint["audited_consolidation_budget"]["calls"] == allowance
-    if tool_and_repair:
-        assert requests[2].get("tools") is None
-        assert "deterministic validation" in requests[2]["messages"][-1]["content"]
-    assert all(attempt["usage"] is not None for attempt in attempts)
+            assert engine.calls == allowance
+        assert len(requests) == allowance
+        parent = storage.get_agent_run(f"window:{window.window_id}")
+        assert parent is not None
+        attempts = parent.generation_request_snapshot["overflow"]["attempts"]
+        assert len(attempts) == allowance
+        assert resumed.checkpoint["audited_consolidation_budget"]["calls"] == allowance
+        if tool_and_repair:
+            assert requests[2].get("tools") is None
+            assert "deterministic validation" in requests[2]["messages"][-1]["content"]
+        assert all(attempt["usage"] is not None for attempt in attempts)
 
 
 def _publication_case(
@@ -1058,66 +1072,69 @@ def test_method_upgrade_keeps_legacy_receipts_and_original_window_allowance(
     storage, window, token = _overflow_coordinator(
         durable_pipeline, attempts=old_attempts
     )
-    parent = storage.get_agent_run(f"window:{window.window_id}")
-    coordinator = OverflowCoordinator(
-        storage,
-        window,
-        token,
-        parent.generation_request_snapshot["overflow"],
-        source_digest="captured-source",
-        context_limits={"gpt-4o": 128000},
-        turn_seconds=300,
-    )
-    # A historical four-action proposal is an immutable paid receipt, not an
-    # audited decision. The new engine must neither reuse nor relabel it.
-    legacy_key = coordinator.step_key(
-        "consolidation-proposal-v1", {"historical": "exact original binding"}
-    )
-    coordinator.complete_step(
-        legacy_key,
-        {"decisions": [{"kind": "independent", "new_id": "NEW-0"}]},
-        ModelProvenance(),
-    )
-    original_receipt = deepcopy(coordinator.completed_step(legacy_key))
-    client = LiteLLMClient(
-        LiteLLMConfig(model="gpt-4o", max_tokens=8192, fallback_models=[])
-    )
-    answers = iter(
-        [
-            {"decisions": [reconciliation_replacement()]},
-            {"findings": []},
-        ]
-    )
-    dispatched = []
+    with owned_user_work_context(storage, window.user_id, token, 300):
+        parent = storage.get_agent_run(f"window:{window.window_id}")
+        parent = adopt_agent_run_for_execution(storage, parent)
+        coordinator = OverflowCoordinator(
+            storage,
+            window,
+            token,
+            parent.generation_request_snapshot["overflow"],
+            source_digest="captured-source",
+            context_limits={"gpt-4o": 128000},
+            turn_seconds=300,
+        )
+        coordinator.saved_run = parent
+        # A historical four-action proposal is an immutable paid receipt, not an
+        # audited decision. The new engine must neither reuse nor relabel it.
+        legacy_key = coordinator.step_key(
+            "consolidation-proposal-v1", {"historical": "exact original binding"}
+        )
+        coordinator.complete_step(
+            legacy_key,
+            {"decisions": [{"kind": "independent", "new_id": "NEW-0"}]},
+            ModelProvenance(),
+        )
+        original_receipt = deepcopy(coordinator.completed_step(legacy_key))
+        client = LiteLLMClient(
+            LiteLLMConfig(model="gpt-4o", max_tokens=8192, fallback_models=[])
+        )
+        answers = iter(
+            [
+                {"decisions": [reconciliation_replacement()]},
+                {"findings": []},
+            ]
+        )
+        dispatched = []
 
-    def dispatch(params, _timeout):
-        dispatched.append(params)
-        return response(next(answers))
+        def dispatch(params, _timeout):
+            dispatched.append(params)
+            return response(next(answers))
 
-    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
-    with coordinator.provider_scope():
-        engine = Reconciler(client, "gpt-4o")
-        if spent == 126:
-            engine.run(reconciliation_payload(), {("request", 17): object()})
-        else:
-            with pytest.raises(ProviderRequestGuardError) as stopped:
+        monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
+        with coordinator.provider_scope():
+            engine = Reconciler(client, "gpt-4o")
+            if spent == 126:
                 engine.run(reconciliation_payload(), {("request", 17): object()})
-            assert isinstance(
-                stopped.value.__cause__, OverflowAttemptBudgetExceededError
-            )
-    saved = storage.get_agent_run(parent.id)
-    journal = saved.generation_request_snapshot["overflow"]
-    assert journal["attempt_limit"] == 128
-    assert journal["attempts"][:spent] == old_attempts
-    assert len(journal["attempts"]) == 128
-    assert len(dispatched) == 128 - spent
-    assert engine.calls == 128 - spent
-    assert coordinator.completed_step(legacy_key) == original_receipt
-    assert saved.binding == parent.binding
-    assert (
-        saved.generation_request_snapshot["extractor_config"]
-        == parent.generation_request_snapshot["extractor_config"]
-    )
+            else:
+                with pytest.raises(ProviderRequestGuardError) as stopped:
+                    engine.run(reconciliation_payload(), {("request", 17): object()})
+                assert isinstance(
+                    stopped.value.__cause__, OverflowAttemptBudgetExceededError
+                )
+        saved = storage.get_agent_run(parent.id)
+        journal = saved.generation_request_snapshot["overflow"]
+        assert journal["attempt_limit"] == 128
+        assert journal["attempts"][:spent] == old_attempts
+        assert len(journal["attempts"]) == 128
+        assert len(dispatched) == 128 - spent
+        assert engine.calls == 128 - spent
+        assert coordinator.completed_step(legacy_key) == original_receipt
+        assert saved.binding == parent.binding
+        assert (
+            saved.generation_request_snapshot["extractor_config"]
+            == parent.generation_request_snapshot["extractor_config"]
+        )
 
 
 @pytest.mark.parametrize("fallback_enabled", [False, True])

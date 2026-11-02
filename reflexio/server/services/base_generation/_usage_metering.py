@@ -1,24 +1,10 @@
-"""Usage-metric + ② Learning billing helpers for ``BaseGenerationService`` (Tier-1b decomposition).
+"""Generation telemetry and the existing inline token/aggregate billing policy.
 
-``UsageBillingMixin`` holds the money-critical Bucket A: the usage-event helpers
-(``_usage_pipeline``, ``_usage_context``, ``_record_generation_event``) and the
-② Learning billing path (``_extraction_input_text``, ``_record_billing_learning_events``,
-plus the pure ``_count_generated_results`` staticmethod).
-
-These helpers only READ the per-run accumulators (``_last_token_totals``,
-``_last_precheck_sessions``, ``service_config``, ``EMITS_LEARNING_BILLING``) — they
-never write them, so moving them introduces no ordering/race change. The billing
-emit-ordering (``record_learnings_generated`` BEFORE ``record_extraction_tokens``,
-success-path only) lives in ``_run_generation`` on the base and is unchanged.
-
-SINK-3 (money-critical): the ``metering_events`` / ``metering_signals`` imports inside
-``_record_billing_learning_events`` stay FUNCTION-LOCAL — the Phase-A drain test
-patches the terminal emitters at their source module (``reflexio.server.metering_events``),
-and hoisting the imports to module top would both break that patch seam and risk a
-circular import that the ``:392`` exception-swallow would hide silently. Both
-exception swallows (``_record_billing_learning_events`` and ``_extraction_input_text``)
-are moved VERBATIM. Method bodies are otherwise moved unchanged from the former
-monolithic ``base_generation_service.py``.
+Non-agent inline generation retains aggregate learning followed by token emission.
+Initial agent learning is delivered by its output receipt; its existing token
+helper emits only after the first publication winner. Durable windows retain
+both facets in their own effects. The terminal emitter imports remain local so
+instrumentation and existing recorder patch seams observe actual deliveries.
 """
 
 import logging
@@ -188,6 +174,17 @@ class UsageBillingMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
     def _record_billing_learning_events(
         self, *, prepared: "PreparedGenerationRun[Any]", generated_count: int
     ) -> None:
+        self._record_inline_billing(prepared=prepared, generated_count=generated_count)
+
+    def _record_billing_extraction_tokens(
+        self, *, prepared: "PreparedGenerationRun[Any]"
+    ) -> None:
+        """Initial agent learning has its own receipt; preserve inline token policy."""
+        self._record_inline_billing(prepared=prepared, generated_count=None)
+
+    def _record_inline_billing(
+        self, *, prepared: "PreparedGenerationRun[Any]", generated_count: int | None
+    ) -> None:
         """Emit the ② Learning billing events. Called ONLY when extraction fired.
 
         Emits ``learnings_generated`` (value facet) and ``extraction_tokens``
@@ -201,7 +198,8 @@ class UsageBillingMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
 
         Args:
             prepared: The prepared generation run (used for input-text computation).
-            generated_count: Number of retained write-plan learnings eligible for billing.
+            generated_count: Aggregate retained learning count for non-agent generation;
+                None when an initial agent receipt already owns learning delivery.
         """
         if getattr(self, "_window_id", None):
             return  # The durable window outbox owns retry-safe billing.
@@ -230,17 +228,18 @@ class UsageBillingMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
             # events therefore meter without session attribution by design.
 
             # ② Learning — value: learnings generated (helper no-ops on count <= 0).
-            record_learnings_generated(
-                org_id=ctx["org_id"],
-                count=generated_count,
-                platform_llm=platform_llm,
-                platform_storage=None,
-                pipeline=ctx.get("pipeline"),
-                user_id=ctx.get("user_id"),
-                request_id=ctx.get("request_id"),
-                source=ctx.get("source"),
-                agent_version=ctx.get("agent_version"),
-            )
+            if generated_count is not None:
+                record_learnings_generated(
+                    org_id=ctx["org_id"],
+                    count=generated_count,
+                    platform_llm=platform_llm,
+                    platform_storage=None,
+                    pipeline=ctx.get("pipeline"),
+                    user_id=ctx.get("user_id"),
+                    request_id=ctx.get("request_id"),
+                    source=ctx.get("source"),
+                    agent_version=ctx.get("agent_version"),
+                )
 
             # ② Learning — cost: input-anchored extraction tokens + real provider tokens.
             totals = self._last_token_totals or RunTokenTotals()

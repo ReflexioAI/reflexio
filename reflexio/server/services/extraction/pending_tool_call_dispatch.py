@@ -23,6 +23,7 @@ from reflexio.server.services.extraction.pending_tool_admission import (
     require_pending_tool_admission,
 )
 from reflexio.server.services.storage.storage_base import (
+    AgentRunRecord,
     BaseStorage,
     PendingToolCallRecord,
     PendingToolCallStatus,
@@ -79,10 +80,46 @@ class PendingToolCallToolContext:
     org_id: str
     extractor_kind: str
     user_id: str | None = None
+    execution_run: AgentRunRecord | None = field(default=None, repr=False)
     config: PendingToolCallConfig = field(default_factory=PendingToolCallConfig)
     dispatcher: PendingToolCallDispatcher = field(
         default_factory=NoopPendingToolCallDispatcher
     )
+
+
+def bind_pending_tool_execution(
+    ctx: Any, *, storage: BaseStorage, run: AgentRunRecord
+) -> Any:
+    """Bind the actual admitted model invocation, never a run looked up by ID."""
+    if not isinstance(ctx, PendingToolCallToolContext):
+        return ctx
+    if (
+        ctx.storage is not storage
+        or ctx.run_id != run.id
+        or ctx.org_id != run.binding.org_id
+        or ctx.extractor_kind != run.binding.extractor_kind
+        or ctx.user_id != run.binding.user_id
+    ):
+        raise ValueError("Pending tool context differs from actual execution")
+    from dataclasses import replace
+
+    return replace(ctx, execution_run=run)
+
+
+def _execution_run(ctx: PendingToolCallToolContext) -> AgentRunRecord:
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        LeaseLostError,
+    )
+
+    run = ctx.execution_run
+    if run is None or (
+        run.id != ctx.run_id
+        or run.binding.org_id != ctx.org_id
+        or run.binding.extractor_kind != ctx.extractor_kind
+        or run.binding.user_id != ctx.user_id
+    ):
+        raise LeaseLostError("Pending tool mutation requires its actual execution")
+    return run
 
 
 def _build_async_request_spec(
@@ -140,6 +177,7 @@ def handle_ask_human(
     if not ctx.run_id:
         raise ValueError("ask_human requires a durable agent run_id")
     require_pending_tool_admission(ctx.config, ctx.storage)
+    execution_run = _execution_run(ctx)
 
     current = datetime.now(UTC)
     spec = _build_async_request_spec(args=args, ctx=ctx)
@@ -161,14 +199,22 @@ def handle_ask_human(
         expires_at=current + timedelta(seconds=tool_config.pending_ttl_seconds),
         cache_until=current + timedelta(seconds=spec.cache_until_seconds),
     )
-    upsert = ctx.storage.create_or_attach_pending_tool_call(
-        record=record,
-        dependency=RunToolDependencyRecord(
-            run_id=ctx.run_id,
-            pending_tool_call_id=record.id,
-        ),
-        now=current,
+    from reflexio.server.services.durable_learning.user_lease import (
+        owned_agent_run_write,
     )
+
+    with owned_agent_run_write(ctx.storage, execution_run):
+        ctx.storage._lock_pending_tool_execution_inputs(
+            record, run_id=ctx.run_id, deduplicate=True
+        )
+        upsert = ctx.storage.create_or_attach_pending_tool_call(
+            record=record,
+            dependency=RunToolDependencyRecord(
+                run_id=ctx.run_id,
+                pending_tool_call_id=record.id,
+            ),
+            now=current,
+        )
     record_usage_event(
         org_id=ctx.org_id,
         event_name="extraction_agent_async_info_requested",
@@ -217,10 +263,10 @@ def handle_ask_human(
         and upsert.pending_tool_call.status == PendingToolCallStatus.RESOLVED
     ):
         from reflexio.server.services.extraction.overflow_answers import (
-            pin_overflow_answer,
+            pin_extraction_answer,
         )
 
-        pin_overflow_answer(upsert.pending_tool_call)
+        pin_extraction_answer(upsert.pending_tool_call)
         return Completed(
             result={
                 "status": "already_resolved",
@@ -249,10 +295,37 @@ def handle_attach_pending_info_request(
     if not ctx.run_id:
         raise ValueError("attach_pending_info_request requires a durable agent run_id")
     require_pending_tool_admission(ctx.config, ctx.storage)
+    execution_run = _execution_run(ctx)
 
-    record = ctx.storage.get_pending_tool_call(args.pending_tool_call_id)
-    expected_scope = human_feedback_scope(ctx.org_id)
-    current = datetime.now(UTC)
+    from reflexio.server.services.durable_learning.user_lease import (
+        owned_agent_run_write,
+    )
+
+    with owned_agent_run_write(ctx.storage, execution_run):
+        record = ctx.storage.get_pending_tool_call(args.pending_tool_call_id)
+        if record is not None:
+            ctx.storage._lock_pending_tool_execution_inputs(
+                record, run_id=ctx.run_id, deduplicate=False
+            )
+            record = ctx.storage.get_pending_tool_call(args.pending_tool_call_id)
+        expected_scope = human_feedback_scope(ctx.org_id)
+        current = datetime.now(UTC)
+        if (
+            record is not None
+            and record.org_id == ctx.org_id
+            and record.tool_name == "ask_human"
+            and record.scope_hash == build_scope_hash(expected_scope)
+            and record.status == PendingToolCallStatus.PENDING
+            and (record.expires_at is None or record.expires_at > current)
+        ):
+            ctx.storage.attach_run_tool_dependency(
+                RunToolDependencyRecord(
+                    run_id=ctx.run_id, pending_tool_call_id=record.id
+                )
+            )
+    # A resolved answer is captured outside the writer: protected extraction
+    # takes its Python coordinator mutex before opening its own fenced writer.
+    # Publication validates the captured answer revision again before effects.
     if (
         record is None
         or record.org_id != ctx.org_id
@@ -277,10 +350,10 @@ def handle_attach_pending_info_request(
                 ),
             }
         from reflexio.server.services.extraction.overflow_answers import (
-            pin_overflow_answer,
+            pin_extraction_answer,
         )
 
-        pin_overflow_answer(record)
+        pin_extraction_answer(record)
         return {
             "status": "already_resolved",
             "pending_tool_call_id": record.id,
@@ -302,12 +375,6 @@ def handle_attach_pending_info_request(
             ),
         }
 
-    ctx.storage.attach_run_tool_dependency(
-        RunToolDependencyRecord(
-            run_id=ctx.run_id,
-            pending_tool_call_id=record.id,
-        )
-    )
     logger.info(
         "event=extraction_agent_followup_attached org_id=%s user_id=%s "
         "extractor_kind=%s run_id=%s pending_tool_call_id=%s "

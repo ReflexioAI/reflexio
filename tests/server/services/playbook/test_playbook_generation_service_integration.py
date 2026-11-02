@@ -2,7 +2,6 @@
 
 import contextlib
 import json
-from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
@@ -61,6 +60,7 @@ def create_request_interaction_data_model(
         source="test",
         agent_version=agent_version,
         session_id="session_1",
+        created_at=1000,
     )
     return RequestInteractionDataModel(
         session_id="session_1",
@@ -70,40 +70,40 @@ def create_request_interaction_data_model(
 
 
 @pytest.fixture
-def mock_request_context():
+def mock_request_context(tmp_path, monkeypatch):
     """Create a mock request context with necessary components."""
     from reflexio.server.prompt.prompt_manager import PromptManager
 
     context = MagicMock(spec=RequestContext)
     context.org_id = "test_org_123"
-    context.storage = MagicMock()
-    context.storage.get_agent_run_finalization_receipt.return_value = None
-    agent_runs = {}
+    from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
-    def create_agent_run(record):
-        agent_runs[record.id] = record
-        return record
-
-    def update_agent_run_status(run_id, status, **updates):
-        record = agent_runs[run_id]
-        expected_statuses = updates.pop("expected_statuses", None)
-        if expected_statuses and record.status not in expected_statuses:
-            return record
-        if updates.pop("increment_resume_attempts", False):
-            updates["resume_attempts"] = record.resume_attempts + 1
-        if updates.pop("increment_finalization_attempts", False):
-            updates["finalization_attempts"] = record.finalization_attempts + 1
-        updates = {key: value for key, value in updates.items() if value is not None}
-        updated = replace(record, status=status, **updates)
-        agent_runs[run_id] = updated
-        return updated
-
-    context.storage.create_agent_run.side_effect = create_agent_run
-    context.storage.get_agent_run.side_effect = agent_runs.get
+    monkeypatch.setattr(SQLiteStorage, "_get_embedding", lambda *_a, **_k: [0.0] * 512)
+    real_storage = SQLiteStorage(
+        org_id=context.org_id, db_path=str(tmp_path / "runs.db")
+    )
+    # One actual storage identity owns every lease and writer. Spy on individual
+    # domain methods; wrapping the whole storage creates a different target when
+    # shared SQL methods call their actual self internally.
+    context.storage = real_storage
+    for name in (
+        "get_operation_state",
+        "claim_due_playbook_aggregation",
+        "try_acquire_in_progress_lock",
+        "get_user_playbooks",
+        "search_user_playbooks",
+        "governance_subject_ref_for_user",
+        "get_last_k_interactions_grouped",
+        "get_interactions_by_ids",
+        "get_request",
+        "save_user_playbooks",
+    ):
+        monkeypatch.setattr(
+            real_storage, name, MagicMock(wraps=getattr(real_storage, name))
+        )
     # Mock get_operation_state to return None by default (no in-progress state)
     context.storage.get_operation_state.return_value = None
     context.storage.claim_due_playbook_aggregation.return_value = None
-    context.storage.update_agent_run_status.side_effect = update_agent_run_status
     # Mock try_acquire_in_progress_lock to return success
     context.storage.try_acquire_in_progress_lock.return_value = {"acquired": True}
     # Mock get_user_playbooks to return empty list (for existing playbooks check)
@@ -113,6 +113,7 @@ def mock_request_context():
     # Mock get_last_k_interactions_grouped to return empty by default
     context.storage.get_last_k_interactions_grouped.return_value = ([], [])
     context.configurator = MagicMock()
+    context.configurator.get_agent_context.return_value = "Synthetic agent context"
     context.configurator.get_config.return_value.user_playbook_extractor_config = (
         PlaybookConfig(
             extraction_definition_prompt="Test playbook definition",
@@ -129,7 +130,22 @@ def mock_request_context():
         PendingToolCallConfig()
     )
     context.prompt_manager = PromptManager()
-    return context
+    try:
+        yield context
+    finally:
+        from reflexio.server.services.playbook import aggregation_scheduler
+
+        # The session autouse cleanup runs after fixture teardown. This fixture
+        # owns the DB, so join its scheduler before the driver can be closed.
+        with aggregation_scheduler._LOCAL_SCHEDULERS_LOCK:
+            scheduler = aggregation_scheduler._LOCAL_SCHEDULERS.pop(
+                context.org_id, None
+            )
+        if scheduler is not None:
+            scheduler.stop()
+            assert not scheduler.is_running(), "test-owned scheduler did not stop"
+        with real_storage._lock:
+            real_storage.conn.close()
 
 
 @pytest.fixture
@@ -143,9 +159,9 @@ def playbook_generation_service(mock_request_context):
 
 
 @pytest.fixture
-def test_interactions():
+def test_interactions(mock_request_context):
     """Create test interactions for playbook generation."""
-    return [
+    interactions = [
         Interaction(
             interaction_id=1,
             user_id="test_user_123",
@@ -169,6 +185,14 @@ def test_interactions():
             interacted_image_url="https://example.com/thank-you",
         ),
     ]
+
+    source = create_request_interaction_data_model(
+        "test_user_123", "test_request_1", interactions
+    )
+    mock_request_context.storage.add_request(source.request)
+    for row in interactions:
+        mock_request_context.storage._insert_interaction(row)
+    return interactions
 
 
 def _setup_mock_chat_completion(

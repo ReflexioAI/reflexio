@@ -47,7 +47,11 @@ from reflexio.server.services.extraction.protected_record import (
     ProtectedRecord,
     ProtectedRecordUpdate,
 )
-from reflexio.server.services.storage.storage_base import AgentRunRecord, BaseStorage
+from reflexio.server.services.storage.storage_base import (
+    AgentRunRecord,
+    BaseStorage,
+    LeaseLostError,
+)
 from reflexio.server.services.storage.storage_base._extraction_stream import (
     OverflowAttemptBudgetExceededError,
     OverflowCheckpointConflictError,
@@ -414,9 +418,38 @@ class OverflowCoordinator:
             raise InputBudgetConfigurationError("Extraction is not package protocol")
         return copy.deepcopy(self._manifest["input_protocol"])
 
+    @contextmanager
+    def _parent_write(self) -> Iterator[None]:
+        """Require this adopted revision for journal mutations and validation.
+
+        Usage observations also change truncation/retry state. A losing owner
+        leaves its already-reserved physical attempt consumed with usage unknown;
+        it cannot alter the replacement execution's journal or refund work.
+        """
+        from reflexio.server.services.durable_learning.user_lease import (
+            _require_user_work_owner,
+            owned_agent_run_write,
+        )
+
+        run = self.saved_run
+        if run is None:
+            raise LeaseLostError("Coordinator has no adopted execution revision")
+        owner = _require_user_work_owner(self.storage)
+        if (
+            run.id != f"window:{self.window.window_id}"
+            or run.binding.user_id != self.window.user_id
+            or run.binding.extractor_kind != self.window.kind
+            or (run.project_id or "") != self.window.project_id
+            or owner.user_id != self.window.user_id
+            or owner.token != self.token
+        ):
+            raise LeaseLostError("Coordinator execution does not own this window")
+        with owned_agent_run_write(self.storage, run):
+            yield
+
     def validate_current_parent(self) -> None:
         """Fence cache-only results using the same authority checks as dispatch."""
-        with self._lock:
+        with self._lock, self._parent_write():
             self.storage.validate_extraction_overflow(
                 self.window,
                 self.token,
@@ -452,7 +485,7 @@ class OverflowCoordinator:
                 )
 
     def _advance(self, **change: Any) -> None:
-        with self._lock:
+        with self._lock, self._parent_write():
             if self._manifest["version"] == 2:
                 change["expected_input_protocol"] = self._manifest["input_protocol"]
             self._manifest = self.storage.checkpoint_extraction_overflow(

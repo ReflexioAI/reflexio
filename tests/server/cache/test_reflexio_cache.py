@@ -705,9 +705,7 @@ class TestGetCachedRequestContext:
 
             with local._lock:
                 scheduler = local._schedulers.pop(storage_base_dir, None)
-                local._live.pop(storage_base_dir, None)
-                for org_id in org_ids:
-                    local._contexts.pop((org_id, storage_base_dir), None)
+                local._contexts.discard_directory(storage_base_dir)
             if scheduler is not None:
                 scheduler.stop()
                 assert not scheduler.is_running()

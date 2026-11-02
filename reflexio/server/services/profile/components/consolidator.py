@@ -617,6 +617,11 @@ class ProfileConsolidator(BaseDeduplicator):
         # Retrieve existing profiles via hybrid search
         existing_profiles = self._retrieve_existing_profiles(new_profiles, user_id)
 
+        from reflexio.server.services.extraction.history_inputs import (
+            record_historical_profiles,
+        )
+
+        record_historical_profiles(self.request_context.storage, existing_profiles)
         prompt = self._render_dedup_prompt(new_profiles, existing_profiles)
 
         output_schema_class = self._get_output_schema_class()

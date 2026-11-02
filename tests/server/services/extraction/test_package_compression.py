@@ -3,6 +3,7 @@
 import copy
 import hashlib
 import json
+from contextlib import contextmanager
 from dataclasses import replace
 from unittest.mock import Mock
 
@@ -118,16 +119,28 @@ def prepared_package(package_pipeline, monkeypatch, *, passthrough=False):
     return client, plan, storage, window, token, manifest
 
 
+@contextmanager
 def coordinator(storage, window, token, manifest):
-    return OverflowCoordinator(
-        storage,
-        window,
-        token,
-        manifest,
-        source_digest=manifest["source_digest"],
-        context_limits={"minimax/MiniMax-M3": 512000},
-        turn_seconds=600,
+    from reflexio.server.services.durable_learning.user_lease import (
+        adopt_agent_run_for_execution,
+        owned_user_work_context,
     )
+
+    with owned_user_work_context(storage, window.user_id, token, 600):
+        parent = storage.get_agent_run(f"window:{window.window_id}")
+        assert parent is not None
+        adopted = adopt_agent_run_for_execution(storage, parent)
+        current = OverflowCoordinator(
+            storage,
+            window,
+            token,
+            manifest,
+            source_digest=manifest["source_digest"],
+            context_limits={"minimax/MiniMax-M3": 512000},
+            turn_seconds=600,
+        )
+        current.saved_run = adopted
+        yield current
 
 
 def rebuild_plan(storage, window, client):
@@ -178,7 +191,8 @@ def test_native_selections_replay_from_real_durable_parent_without_new_dispatch(
         package_pipeline, monkeypatch
     )
     dispatched = install_transport(client, monkeypatch)
-    first = compress_source_package(plan, coordinator(storage, window, token, manifest))
+    with coordinator(storage, window, token, manifest) as owned:
+        first = compress_source_package(plan, owned)
     saved = storage.get_agent_run(
         f"window:{window.window_id}"
     ).generation_request_snapshot["overflow"]
@@ -197,9 +211,8 @@ def test_native_selections_replay_from_real_durable_parent_without_new_dispatch(
     monkeypatch.setattr(client, "_completion_with_hard_timeout", forbidden)
     fresh_plan = rebuild_plan(storage, window, client)
     assert fresh_plan.witness == plan.witness
-    replay = compress_source_package(
-        fresh_plan, coordinator(storage, window, token, saved)
-    )
+    with coordinator(storage, window, token, saved) as owned:
+        replay = compress_source_package(fresh_plan, owned)
     assert replay.result.provider_attempts == 0
     assert replay.result.packet == first.result.packet
     assert replay.presentation == first.presentation
@@ -224,7 +237,8 @@ def test_saved_node_witness_tamper_refuses_before_another_native_call(
         package_pipeline, monkeypatch
     )
     install_transport(client, monkeypatch)
-    compress_source_package(plan, coordinator(storage, window, token, manifest))
+    with coordinator(storage, window, token, manifest) as owned:
+        compress_source_package(plan, owned)
     parent = storage.get_agent_run(f"window:{window.window_id}")
     snapshot = copy.deepcopy(parent.generation_request_snapshot)
     saved = snapshot["overflow"]
@@ -236,10 +250,13 @@ def test_saved_node_witness_tamper_refuses_before_another_native_call(
         )
     forbidden = Mock(side_effect=AssertionError("Tampered proof must not dispatch"))
     monkeypatch.setattr(client, "_completion_with_hard_timeout", forbidden)
-    with pytest.raises(
-        InputBudgetConfigurationError, match="Saved compression node changed"
+    with (
+        pytest.raises(
+            InputBudgetConfigurationError, match="Saved compression node changed"
+        ),
+        coordinator(storage, window, token, saved) as owned,
     ):
-        compress_source_package(plan, coordinator(storage, window, token, saved))
+        compress_source_package(plan, owned)
     forbidden.assert_not_called()
     assert storage.get_agent_run(parent.id).generation_request_snapshot == snapshot
     assert extraction_provider_guard.get() is None
@@ -252,17 +269,19 @@ def test_partial_node_save_survives_restart_without_repaying_first_selection(
         package_pipeline, monkeypatch
     )
     dispatched = install_transport(client, monkeypatch)
-    persist = storage.checkpoint_extraction_overflow
+    persist = OverflowCoordinator._advance
 
-    def crash_after_receipt(*args, **kwargs):
-        saved = persist(*args, **kwargs)
+    def crash_after_receipt(current, **kwargs):
+        persist(current, **kwargs)
         if kwargs.get("checkpoint", {}).get("completed_steps"):
             raise RuntimeError("Simulated exit after durable selection commit")
-        return saved
 
-    monkeypatch.setattr(storage, "checkpoint_extraction_overflow", crash_after_receipt)
-    with pytest.raises(RuntimeError, match="Simulated exit"):
-        compress_source_package(plan, coordinator(storage, window, token, manifest))
+    monkeypatch.setattr(OverflowCoordinator, "_advance", crash_after_receipt)
+    with (
+        coordinator(storage, window, token, manifest) as owned,
+        pytest.raises(RuntimeError, match="Simulated exit"),
+    ):
+        compress_source_package(plan, owned)
     saved = storage.get_agent_run(
         f"window:{window.window_id}"
     ).generation_request_snapshot["overflow"]
@@ -272,12 +291,11 @@ def test_partial_node_save_survives_restart_without_repaying_first_selection(
         == len(dispatched)
         == 1
     )
-    monkeypatch.setattr(storage, "checkpoint_extraction_overflow", persist)
+    monkeypatch.setattr(OverflowCoordinator, "_advance", persist)
     fresh_plan = rebuild_plan(storage, window, client)
     assert fresh_plan.witness == plan.witness
-    replay = compress_source_package(
-        fresh_plan, coordinator(storage, window, token, saved)
-    )
+    with coordinator(storage, window, token, saved) as owned:
+        replay = compress_source_package(fresh_plan, owned)
     assert replay.result.cache_hits >= 1
     final = storage.get_agent_run(
         f"window:{window.window_id}"
@@ -311,8 +329,11 @@ def test_replaced_original_source_refuses_before_native_dispatch(
         )
     forbidden = Mock(side_effect=AssertionError("Changed original must not dispatch"))
     monkeypatch.setattr(client, "_completion_with_hard_timeout", forbidden)
-    with pytest.raises(WindowInputsDeletedError, match="content was replaced"):
-        compress_source_package(plan, coordinator(storage, window, token, manifest))
+    with (
+        coordinator(storage, window, token, manifest) as owned,
+        pytest.raises(WindowInputsDeletedError, match="content was replaced"),
+    ):
+        compress_source_package(plan, owned)
     forbidden.assert_not_called()
     assert (
         storage.get_agent_run(f"window:{window.window_id}").generation_request_snapshot[
@@ -348,48 +369,60 @@ def test_cache_and_passthrough_revalidate_current_parent_authority(
         package_pipeline, monkeypatch, passthrough=passthrough
     )
     install_transport(client, monkeypatch)
-    first = compress_source_package(plan, coordinator(storage, window, token, manifest))
+    with coordinator(storage, window, token, manifest) as owned:
+        first = compress_source_package(plan, owned)
     assert first.result.passthrough is passthrough
     parent = storage.get_agent_run(f"window:{window.window_id}")
     saved = copy.deepcopy(parent.generation_request_snapshot["overflow"])
-    current = coordinator(storage, window, token, saved)
-    snapshot = copy.deepcopy(parent.generation_request_snapshot)
-    if change in {"cancelled", "expired", "finalized"}:
-        with storage._stream_sql() as db:
-            db.query("UPDATE _agent_runs SET status=? WHERE id=?", (change, parent.id))
-    elif change in {"descriptor", "revision"}:
-        if change == "descriptor":
-            snapshot["overflow"]["input_protocol"]["contract_digest"] = "f" * 64
-        else:
-            snapshot["overflow"]["revision"] += 1
-        with storage._stream_sql() as db:
-            db.query(
-                "UPDATE _agent_runs SET generation_request_snapshot=? WHERE id=?",
-                (json.dumps(snapshot), parent.id),
-            )
-    elif change == "project":
-        monkeypatch.setattr(
-            "reflexio.server.services.storage.storage_base._extraction_stream.current_project_id",
-            lambda: "other-project",
-        )
-    else:
-        with storage._stream_sql() as db:
-            if change == "completed_window":
+    with coordinator(storage, window, token, saved) as current:
+        snapshot = copy.deepcopy(parent.generation_request_snapshot)
+        if change in {"cancelled", "expired", "finalized"}:
+            with storage._stream_sql() as db:
                 db.query(
-                    "UPDATE extraction_windows SET completed=1 WHERE window_id=?",
-                    (window.window_id,),
+                    "UPDATE _agent_runs SET status=? WHERE id=?", (change, parent.id)
                 )
+        elif change in {"descriptor", "revision"}:
+            if change == "descriptor":
+                snapshot["overflow"]["input_protocol"]["contract_digest"] = "f" * 64
             else:
+                snapshot["overflow"]["revision"] += 1
+            with storage._stream_sql() as db:
                 db.query(
-                    "UPDATE extraction_windows SET invalidated=1 WHERE window_id=?",
-                    (window.window_id,),
+                    "UPDATE _agent_runs SET generation_request_snapshot=? WHERE id=?",
+                    (json.dumps(snapshot), parent.id),
                 )
-    forbidden = Mock(
-        side_effect=AssertionError("Invalid durable parent must not dispatch")
-    )
-    monkeypatch.setattr(client, "_completion_with_hard_timeout", forbidden)
-    with pytest.raises((OverflowCheckpointConflictError, WindowInputsDeletedError)):
-        compress_source_package(plan, current)
-    forbidden.assert_not_called()
-    assert storage.get_agent_run(parent.id).generation_request_snapshot == snapshot
-    assert extraction_provider_guard.get() is None
+        elif change == "project":
+            monkeypatch.setattr(
+                "reflexio.server.services.storage.storage_base._extraction_stream.current_project_id",
+                lambda: "other-project",
+            )
+        else:
+            with storage._stream_sql() as db:
+                if change == "completed_window":
+                    db.query(
+                        "UPDATE extraction_windows SET completed=1 WHERE window_id=?",
+                        (window.window_id,),
+                    )
+                else:
+                    db.query(
+                        "UPDATE extraction_windows SET invalidated=1 WHERE window_id=?",
+                        (window.window_id,),
+                    )
+        forbidden = Mock(
+            side_effect=AssertionError("Invalid durable parent must not dispatch")
+        )
+        monkeypatch.setattr(client, "_completion_with_hard_timeout", forbidden)
+        from reflexio.server.services.storage.storage_base import LeaseLostError
+
+        expected = (
+            LeaseLostError
+            if change in {"cancelled", "expired", "finalized", "project"}
+            else WindowInputsDeletedError
+            if change in {"completed_window", "invalidated_window"}
+            else OverflowCheckpointConflictError
+        )
+        with pytest.raises(expected):
+            compress_source_package(plan, current)
+        forbidden.assert_not_called()
+        assert storage.get_agent_run(parent.id).generation_request_snapshot == snapshot
+        assert extraction_provider_guard.get() is None

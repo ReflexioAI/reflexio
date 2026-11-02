@@ -127,8 +127,9 @@ def test_two_handles_on_one_key_both_keep_the_scheduler_alive(
     second = _context(shared, "same-org")
     assert second is not first, "precondition: the handles are distinct objects"
     local.ensure_local_extraction(second)
-    # The first must still be represented -- the whole point of the set.
-    assert first in local._live[first.storage_base_dir]
+    # Both identities remain weakly registered; the newest one is current.
+    assert len(local._contexts) == 2
+    assert local._contexts.current(first.org_id, first.storage_base_dir) is second
 
     del second
     gc.collect()
@@ -138,7 +139,7 @@ def test_two_handles_on_one_key_both_keep_the_scheduler_alive(
     local.ensure_local_extraction(_context(tmp_path / "elsewhere", "other-org"))
     gc.collect()
 
-    assert first in local._live[first.storage_base_dir]
+    assert first in local._contexts.snapshot(first.storage_base_dir)
     assert local._schedulers.get(first.storage_base_dir) is scheduler
     assert scheduler.is_running()
 
@@ -291,3 +292,106 @@ def test_library_reopen_resumes_idle_deadline_without_another_publish(
     )
     judge.assert_called_once()
     assert reopened.get_storage().count_all_profiles() == 0
+
+
+def test_newest_collected_handle_cannot_hide_resume_work_of_an_older_live_handle(
+    tmp_path, isolated_registry, monkeypatch
+):
+    from tests.server.services.storage.test_resume_candidate_selection import _run
+
+    # This qualifies lifecycle discovery with real persisted resume-only work.
+    # Model execution is covered separately; don't let a worker consume the
+    # evidence before the discovery assertion below.
+    monkeypatch.setattr(local.DurableLearningScheduler, "_run_once", lambda _: 0.01)
+    directory = tmp_path / "same-key-resume"
+    first = _context(directory, "same-key-resume-org")
+    local.ensure_local_extraction(first)
+    scheduler = local._schedulers[first.storage_base_dir]
+    second = _context(directory, first.org_id)
+    local.ensure_local_extraction(second)
+    del second
+    gc.collect()
+    store = first.storage
+    assert isinstance(store, SQLiteStorage)
+    saved = _run(store, "only-older-live-handle")
+    assert store.list_extraction_orgs() == []
+    assert list(scheduler._org_ids_provider()) == [first.org_id]
+    assert store.get_agent_run(saved.id) == saved
+    assert scheduler.is_running()
+
+
+def test_ordered_weak_catalog_bounds_registration_and_reveals_surviving_identity(
+    tmp_path,
+):
+    import weakref
+
+    from reflexio.server.services.durable_learning._context_registry import (
+        WeakContextRegistry,
+    )
+
+    catalog = WeakContextRegistry()
+    first = _context(tmp_path / "catalog", "catalog-org")
+    first_ref = weakref.ref(first)
+    for _ in range(1000):
+        catalog.register(first)
+    assert len(catalog) == 1
+    second = _context(tmp_path / "catalog", first.org_id)
+    catalog.register(second)
+    assert len(catalog) == 2
+    assert catalog.current(first.org_id, first.storage_base_dir) is second
+    del second
+    gc.collect()
+    assert len(catalog) == 1
+    assert catalog.current(first.org_id, first.storage_base_dir) is first
+    assert catalog.directories() == {first.storage_base_dir}
+    del first
+    gc.collect()
+    assert first_ref() is None
+    assert len(catalog) == 0 and catalog.directories() == set()
+
+
+def test_directory_cleanup_tolerates_gc_and_preserves_other_directories():
+    import weakref
+
+    from reflexio.server.services.durable_learning._context_registry import (
+        WeakContextRegistry,
+    )
+
+    thresholds = gc.get_threshold()
+    was_enabled = gc.isenabled()
+    gc.collect()
+    gc.disable()
+    try:
+        catalog = WeakContextRegistry()
+        kept = []
+        for index in range(200):
+            context = RequestContext.__new__(RequestContext)
+            context.org_id = f"kept-{index}"
+            context.storage_base_dir = "kept"
+            catalog.register(context)
+            kept.append(context)
+        context = RequestContext.__new__(RequestContext)
+        context.org_id = "collected"
+        context.storage_base_dir = "discarded"
+        catalog.register(context)
+        reference = weakref.ref(context)
+        # Leave real cyclic garbage for allocation-triggered collection during
+        # cleanup. Copying items allocates one tracked tuple per registration;
+        # its callback can remove a copied identity before cleanup reaches it.
+        cycle: list[object] = [context]
+        cycle.append(cycle)
+        del cycle, context
+        gc.set_threshold(gc.get_count()[0] + 5, 1_000_000, 1_000_000)
+        gc.enable()
+        catalog.discard_directory("discarded")
+        gc.collect()
+        assert reference() is None
+        assert len(catalog) == len(kept)
+        assert catalog.directories() == {"kept"}
+        assert all(catalog.current(ctx.org_id, "kept") is ctx for ctx in kept)
+    finally:
+        gc.set_threshold(*thresholds)
+        if was_enabled:
+            gc.enable()
+        else:
+            gc.disable()

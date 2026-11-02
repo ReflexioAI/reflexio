@@ -82,11 +82,32 @@ def _tool_context(
     )
 
 
+def _handle(tool, args, ctx):
+    # Direct-handler positives represent a real admitted invocation, rather than
+    # granting execution authority from the publicly supplied run ID.
+    from reflexio.server.services.durable_learning.user_lease import (
+        adopt_agent_run_for_execution,
+        agent_run_user_work,
+    )
+    from reflexio.server.services.extraction.pending_tool_call_dispatch import (
+        bind_pending_tool_execution,
+    )
+
+    run = ctx.storage.get_agent_run(ctx.run_id)
+    assert run is not None
+    with agent_run_user_work(ctx.storage, run):
+        run = adopt_agent_run_for_execution(ctx.storage, run)
+        return tool.handler(
+            args, bind_pending_tool_execution(ctx, storage=ctx.storage, run=run)
+        )
+
+
 def test_ask_human_creates_org_scoped_pending_call_and_dependency(storage):
     storage.create_agent_run(_agent_run("run_1"))
     tool = create_ask_human_tool()
 
-    outcome = tool.handler(
+    outcome = _handle(
+        tool,
         AskHumanArgs(
             question="What deployment target should this agent optimize for?",
             answer_format="short text",
@@ -115,7 +136,8 @@ def test_ask_human_accepts_comma_separated_tags(storage):
     storage.create_agent_run(_agent_run("run_1"))
     tool = create_ask_human_tool()
 
-    outcome = tool.handler(
+    outcome = _handle(
+        tool,
         AskHumanArgs(
             question="What deployment target should this agent optimize for?",
             answer_format="short text",
@@ -136,11 +158,13 @@ def test_same_human_question_attaches_across_users_with_org_scope(storage):
     tool = create_ask_human_tool()
     question = "What deployment target should this agent optimize for?"
 
-    first = tool.handler(
+    first = _handle(
+        tool,
         AskHumanArgs(question=question),
         _tool_context(storage, run_id="run_1", user_id="user_1"),
     )
-    second = tool.handler(
+    second = _handle(
+        tool,
         AskHumanArgs(question=question),
         _tool_context(storage, run_id="run_2", user_id="user_2"),
     )
@@ -173,15 +197,18 @@ def test_admission_does_not_depend_on_observational_backlog_read(storage, monkey
     monkeypatch.setattr(
         storage, "count_unresolved_followup_dependencies", count, raising=False
     )
-    first = tool.handler(
+    first = _handle(
+        tool,
         AskHumanArgs(question="What deployment target should this agent optimize for?"),
         _tool_context(storage, run_id="run_1", config=config),
     )
-    outcome = tool.handler(
+    outcome = _handle(
+        tool,
         AskHumanArgs(question="Which compliance framework applies?"),
         _tool_context(storage, run_id="run_2", config=config),
     )
-    attached = tool.handler(
+    attached = _handle(
+        tool,
         AskHumanArgs(question="What deployment target should this agent optimize for?"),
         _tool_context(storage, run_id="run_3", config=config),
     )
@@ -220,7 +247,8 @@ def test_attach_pending_info_request_links_existing_org_scoped_request(storage):
     )
     tool = create_attach_pending_info_request_tool()
 
-    result = tool.handler(
+    result = _handle(
+        tool,
         AttachPendingInfoRequestArgs(
             pending_tool_call_id=pending.id,
             why_relevant="The current window mentions compliance.",
@@ -263,7 +291,8 @@ def test_attach_pending_info_request_returns_resolved_result_without_dependency(
     )
     tool = create_attach_pending_info_request_tool()
 
-    result = tool.handler(
+    result = _handle(
+        tool,
         AttachPendingInfoRequestArgs(pending_tool_call_id=resolved.id),
         _tool_context(storage, run_id="run_1"),
     )
@@ -360,3 +389,28 @@ def test_dedup_respects_request_lifetime_before_expiry_sweep(
     ] == [expected]
     original = storage.get_pending_tool_call(old.id)
     assert original is not None and original.status == PendingToolCallStatus.PENDING
+
+
+@pytest.mark.parametrize("tool_name", ["ask_human", "attach_pending_info_request"])
+def test_run_id_alone_cannot_authorize_tool_mutation(storage, tool_name):
+    from unittest.mock import MagicMock
+
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        LeaseLostError,
+    )
+
+    ctx = _tool_context(storage, run_id="run_1")
+    ctx.storage = MagicMock()
+    ctx.dispatcher = MagicMock()
+    tool, args = (
+        (create_ask_human_tool(), AskHumanArgs(question="Must not create a question"))
+        if tool_name == "ask_human"
+        else (
+            create_attach_pending_info_request_tool(),
+            AttachPendingInfoRequestArgs(pending_tool_call_id="not-to-be-read"),
+        )
+    )
+    with pytest.raises(LeaseLostError, match="actual execution"):
+        tool.handler(args, ctx)
+    assert ctx.storage.mock_calls == []
+    ctx.dispatcher.dispatch.assert_not_called()

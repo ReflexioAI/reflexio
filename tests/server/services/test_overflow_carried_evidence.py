@@ -11,6 +11,10 @@ from reflexio.server.llm._litellm_types import (
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.tools import ToolLoopTrace
+from reflexio.server.services.durable_learning.user_lease import (
+    create_owned_agent_run,
+    owned_user_work_context,
+)
 from reflexio.server.services.extraction.input_preparation import (
     PreparedChunk,
     PreparedExtractionInput,
@@ -39,6 +43,12 @@ from reflexio.server.services.playbook.playbook_service_utils import (
 )
 from reflexio.server.services.profile.profile_generation_service_utils import (
     StructuredProfilesOutput,
+)
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.storage_base import (
+    AgentBinding,
+    AgentRunRecord,
+    AgentRunStatus,
 )
 
 
@@ -155,7 +165,8 @@ def test_protected_proof_grants_only_the_rendered_physical_quote():
     )
 
 
-def coordinator_fixture():
+@pytest.fixture
+def coordinator_fixture(tmp_path, monkeypatch):
     first_text = "seen quotation. hidden qualification."
     second_text = "second visible passage"
     prepared = PreparedExtractionInput(
@@ -181,7 +192,17 @@ def coordinator_fixture():
     )
     coordinator = MagicMock(spec=OverflowCoordinator)
     coordinator.source_digest = "source"
-    coordinator.storage = MagicMock()
+    storage = SQLiteStorage(
+        org_id="carried-evidence", db_path=str(tmp_path / "proof.db")
+    )
+    coordinator.storage = storage
+    # Source capture is the unit boundary here; ownership and writer CAS are real.
+    monkeypatch.setattr(storage, "validate_extraction_source_digest", MagicMock())
+    monkeypatch.setattr(
+        storage,
+        "update_agent_run_status",
+        MagicMock(wraps=storage.update_agent_run_status),
+    )
     coordinator.saved_run = None
     coordinator.record = ProtectedRecord()
     coordinator.window = SimpleNamespace(
@@ -249,15 +270,41 @@ def coordinator_fixture():
             "structured_output",
         )
 
-    return coordinator, build, execute
+    token = storage.claim_user_extraction("user", "carried-evidence-test", 300)
+    assert token is not None
+    coordinator.token = token
+    try:
+        with owned_user_work_context(storage, "user", token, 300):
+            coordinator.saved_run = create_owned_agent_run(
+                storage,
+                AgentRunRecord(
+                    id="window:window",
+                    binding=AgentBinding(
+                        org_id=storage.org_id,
+                        extractor_kind="profile",
+                        user_id="user",
+                        request_id="request",
+                        agent_version="v1",
+                        source="test",
+                    ),
+                    status=AgentRunStatus.RUNNING,
+                    generation_request_snapshot={},
+                ),
+            )
+            yield coordinator, build, execute
+    finally:
+        storage.release_user_extraction("user", token)
+        storage.conn.close()
 
 
-def test_reconciliation_uses_actual_bounded_repair_for_unshown_evidence(monkeypatch):
+def test_reconciliation_uses_actual_bounded_repair_for_unshown_evidence(
+    monkeypatch, coordinator_fixture
+):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key-no-provider")
     client = LiteLLMClient(
         LiteLLMConfig(model="gpt-4o", max_tokens=1024, fallback_models=[])
     )
-    coordinator, build, execute = coordinator_fixture()
+    coordinator, build, execute = coordinator_fixture
     calls = []
 
     def respond(params, hard_timeout):
@@ -305,8 +352,9 @@ def test_reconciliation_uses_actual_bounded_repair_for_unshown_evidence(monkeypa
 @pytest.mark.parametrize("parent_recovery", [False, True])
 def test_cached_reconciliation_and_parent_output_cannot_introduce_unshown_proof(
     parent_recovery,
+    coordinator_fixture,
 ):
-    coordinator, build, execute = coordinator_fixture()
+    coordinator, build, execute = coordinator_fixture
     if parent_recovery:
         client = MagicMock()
         client.generate_chat_response_with_provenance.return_value = SimpleNamespace(

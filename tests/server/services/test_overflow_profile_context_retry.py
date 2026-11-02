@@ -13,6 +13,9 @@ from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.extraction import overflow_pipeline
 from tests.server.services.test_durable_window_pipeline import payload
 from tests.server.services.test_durable_window_pipeline import pipeline as pipeline
+from tests.server.services.test_overflow_carried_evidence import (
+    coordinator_fixture as coordinator_fixture,
+)
 from tests.server.services.test_overflow_policy_revalidation import (
     _make_due,
     _respond,
@@ -173,10 +176,11 @@ def test_unchanged_legacy_context_acquires_instruction_witness(pipeline, monkeyp
     assert checkpoint["extraction_instruction_contract"]
 
 
-def test_template_identity_change_cannot_hide_behind_equal_rendering():
-    from tests.server.services.test_overflow_carried_evidence import coordinator_fixture
+def test_template_identity_change_cannot_hide_behind_equal_rendering(
+    coordinator_fixture,
+):
 
-    coordinator, build, execute = coordinator_fixture()
+    coordinator, build, execute = coordinator_fixture
     saved = []
 
     def build_call():

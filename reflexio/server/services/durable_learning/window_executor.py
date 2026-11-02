@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import nullcontext
 from dataclasses import replace
 from typing import Any
 
@@ -255,6 +256,11 @@ class WindowExecutor:
         request: Any,
         config: Any,
     ) -> OverflowCoordinator | None:
+        from reflexio.server.services.durable_learning.user_lease import (
+            adopt_agent_run_for_execution,
+            create_owned_agent_run,
+        )
+
         known = self.storage.get_agent_run(f"window:{window.window_id}")
         manifest = self._overflow_manifest(known)
         groups = service.service_config.window_interactions
@@ -361,7 +367,14 @@ class WindowExecutor:
                 )
                 run = replace(expected_run, id=f"window:{window.window_id}")
                 run.generation_request_snapshot["overflow"] = manifest
-                known = self.storage.create_agent_run(run)
+                known = create_owned_agent_run(self.storage, run)
+        elif known is not None:
+            with self.storage.commit_scope():
+                self.storage.fence_user_extraction(window.user_id, token)
+                self.storage.validate_extraction_source_digest(
+                    window, prepared.source_digest
+                )
+                known = adopt_agent_run_for_execution(self.storage, known)
         if known is None:
             raise RuntimeError("Extraction coordinator parent is unavailable")
         turn_seconds = max(240, self.client.config.timeout + 60)
@@ -447,15 +460,18 @@ class WindowExecutor:
                 ),
             )
 
-    def _restore_saved_output_parent(self, window: Window) -> None:
+    def _restore_saved_output_parent(
+        self,
+        window: Window,
+        run: AgentRunRecord | None,
+    ) -> AgentRunRecord | None:
         """Join the publication transaction; never rewind human-resume progress."""
-        run = self.storage.get_agent_run(f"window:{window.window_id}")
         if (
             run is None
             or run.committed_output is None
             or run.status not in (AgentRunStatus.RUNNING, AgentRunStatus.FAILED)
         ):
-            return
+            return run
         if (
             run.binding.org_id != self.storage.org_id
             or run.binding.user_id != window.user_id
@@ -464,22 +480,28 @@ class WindowExecutor:
             raise OverflowCheckpointConflictError(
                 "Saved extraction parent scope changed"
             )
-        # Recheck the saved quota before a recovered plan can write or bill.
-        self._overflow_manifest(run)
-        restored = self.storage.update_agent_run_status(
-            run.id,
-            AgentRunStatus.AGENT_COMPLETED,
-            expected_statuses=(run.status,),
+        from reflexio.server.services.durable_learning.user_lease import (
+            owned_agent_run_write,
         )
-        # Some backends return the current row after a status CAS miss.
-        if (
-            restored is None
-            or restored.status != AgentRunStatus.AGENT_COMPLETED
-            or restored.committed_output != run.committed_output
-        ):
-            raise OverflowCheckpointConflictError(
-                "Saved extraction parent completion lost ownership"
+
+        with owned_agent_run_write(self.storage, run):
+            # Recheck the saved quota before a recovered plan can write or bill.
+            self._overflow_manifest(run)
+            restored = self.storage.update_agent_run_status(
+                run.id,
+                AgentRunStatus.AGENT_COMPLETED,
+                expected_statuses=(run.status,),
             )
+            # Some backends return the current row after a status CAS miss.
+            if (
+                restored is None
+                or restored.status != AgentRunStatus.AGENT_COMPLETED
+                or restored.committed_output != run.committed_output
+            ):
+                raise OverflowCheckpointConflictError(
+                    "Saved extraction parent completion lost ownership"
+                )
+        return restored
 
     def _preserve_ordinary_plan_notes(
         self, window: Window, coordinator: OverflowCoordinator | None, plan: Any
@@ -498,6 +520,26 @@ class WindowExecutor:
             row.notes = ordinary_playbook_notes(row.notes)
 
     def execute(self, window: Window, token: str) -> None:
+        from reflexio import durable_learning_policy
+        from reflexio.server.services.durable_learning.user_lease import (
+            owned_user_work_context,
+        )
+
+        # The caller retains admission/release. A scheduled turn reuses its
+        # exact heartbeat; a direct claimed-window call binds that same lease.
+        with owned_user_work_context(
+            self.storage,
+            window.user_id,
+            token,
+            durable_learning_policy.resolve_user_lease_seconds(),
+        ):
+            self._execute_owned_window(window, token)
+
+    def _execute_owned_window(self, window: Window, token: str) -> None:
+        from reflexio.server.services.durable_learning.user_lease import (
+            owned_agent_run_write,
+        )
+
         service, request, config = self.service(window)
         coordinator = self._coordinator(window, token, service, request, config)
         if window.outcome is None:
@@ -530,70 +572,167 @@ class WindowExecutor:
                         "Cached source projection plan is malformed"
                     ) from exc
                 raise
+        if plan is not None and window.outcome is not None and coordinator is None:
+            plan.execution_run = self._adopt_cached_window_execution(
+                window, token, service, request, config, plan.extraction_run_ids
+            )
+            service._last_extraction_run = plan.execution_run
+        if plan is not None and coordinator is not None:
+            if coordinator.saved_run is None or plan.extraction_run_ids != [
+                coordinator.saved_run.id
+            ]:
+                raise OverflowCheckpointConflictError(
+                    "Window plan changed its adopted parent"
+                )
+            plan.execution_run = coordinator.saved_run
+            service._last_extraction_run = coordinator.saved_run
         self._preserve_ordinary_plan_notes(window, coordinator, plan)
         with self.storage.commit_scope():
-            # Explicit deletion wins over a cached compute as well as live compute.
-            self.storage.fence_user_extraction(window.user_id, token)
-            self.storage.validate_extraction_inputs(window)
-            if coordinator is not None:
-                coordinator.require_full_source_coverage()
-                if is_source_quoted_window(coordinator):
-                    validate_source_quoted_plan(coordinator, service, plan)
-                    # Projection has one logical run and no model-authored
-                    # output. Cached operational metadata is not authority.
-                    service._last_extractor_run_stats = {
-                        "total": 1,
-                        "failed": 0,
-                        "timed_out": 0,
-                    }
-                    service._last_model_provenance = None
-                    if plan is not None and plan.write_plan is not None:
-                        # Cached timestamps are not authority for the creation
-                        # clock. Assign it at the fenced persistence boundary.
-                        created_at = int(time.time())
-                        for row in plan.write_plan.new_playbooks:
-                            row.created_at = created_at
-                self.storage.validate_extraction_source_digest(
-                    window, coordinator.source_digest
+            if coordinator is not None and coordinator.saved_run is None:
+                raise OverflowCheckpointConflictError(
+                    "Extraction parent execution unavailable"
                 )
-                self.storage.validate_extraction_answers(
-                    coordinator.checkpoint.get("answer_witnesses", {})
-                )
-                self.storage.validate_extraction_answer_dependencies(
-                    window, coordinator.checkpoint.get("answer_dependencies", {})
-                )
-                self.storage.validate_extraction_historical_playbooks(
-                    window, coordinator.checkpoint.get("historical_playbooks", {})
-                )
-                self._validate_overflow_plan(coordinator, service, plan)
-                if plan is not None:
-                    plan.token_totals = coordinator.token_totals
-                    service._last_token_totals = plan.token_totals
-            if plan is not None:
-                self._restore_saved_output_parent(window)
-                service.persist_generation(plan)
-            elif (
-                coordinator is not None
-                and coordinator.checkpoint.get("stage") == "gated_false"
+            with (
+                owned_agent_run_write(self.storage, coordinator.saved_run)
+                if coordinator is not None and coordinator.saved_run is not None
+                else nullcontext()
             ):
-                # The precheck created a parent before it voted. An all-false
-                # completed scan must not leave an orphan running agent behind.
-                finalized = self.storage.update_agent_run_status(
-                    f"window:{window.window_id}",
-                    AgentRunStatus.FINALIZED,
-                    expected_statuses=(AgentRunStatus.RUNNING, AgentRunStatus.FAILED),
+                # Explicit deletion wins over a cached compute as well as live compute.
+                self.storage.fence_user_extraction(window.user_id, token)
+                self.storage.validate_extraction_inputs(window)
+                if coordinator is not None:
+                    coordinator.require_full_source_coverage()
+                    if is_source_quoted_window(coordinator):
+                        validate_source_quoted_plan(coordinator, service, plan)
+                        # Projection has one logical run and no model-authored
+                        # output. Cached operational metadata is not authority.
+                        service._last_extractor_run_stats = {
+                            "total": 1,
+                            "failed": 0,
+                            "timed_out": 0,
+                        }
+                        service._last_model_provenance = None
+                        if plan is not None and plan.write_plan is not None:
+                            # Cached timestamps are not authority for the creation
+                            # clock. Assign it at the fenced persistence boundary.
+                            created_at = int(time.time())
+                            for row in plan.write_plan.new_playbooks:
+                                row.created_at = created_at
+                    self.storage.validate_extraction_source_digest(
+                        window, coordinator.source_digest
+                    )
+                    self.storage.validate_extraction_answers(
+                        coordinator.checkpoint.get("answer_witnesses", {})
+                    )
+                    self.storage.validate_extraction_answer_dependencies(
+                        window, coordinator.checkpoint.get("answer_dependencies", {})
+                    )
+                    self.storage.validate_extraction_historical_playbooks(
+                        window, coordinator.checkpoint.get("historical_playbooks", {})
+                    )
+                    self._validate_overflow_plan(coordinator, service, plan)
+                    if plan is not None:
+                        plan.token_totals = coordinator.token_totals
+                        service._last_token_totals = plan.token_totals
+                if plan is not None:
+                    plan.execution_run = self._restore_saved_output_parent(
+                        window, plan.execution_run
+                    )
+                    service.persist_generation(plan)
+                elif (
+                    coordinator is not None
+                    and coordinator.checkpoint.get("stage") == "gated_false"
+                ):
+                    # The precheck created a parent before it voted. An all-false
+                    # completed scan must not leave an orphan running agent behind.
+                    finalized = self.storage.update_agent_run_status(
+                        f"window:{window.window_id}",
+                        AgentRunStatus.FINALIZED,
+                        expected_statuses=(
+                            AgentRunStatus.RUNNING,
+                            AgentRunStatus.FAILED,
+                        ),
+                    )
+                    if finalized is None:
+                        raise RuntimeError("Extraction gate parent lost ownership")
+                effects = encode_plan(plan, service)
+                effects["billing"] = self._billing_snapshot(
+                    window, service, plan, coordinator
                 )
-                if finalized is None:
-                    raise RuntimeError("Extraction gate parent lost ownership")
-            effects = encode_plan(plan, service)
-            effects["billing"] = self._billing_snapshot(
-                window, service, plan, coordinator
-            )
+            # The parent guard has verified the final write. Completion clears
+            # the token under this same outer transaction and its existing fence.
             self.storage.complete_extraction(window, token, effects)
         record_health("worker.commits")
         logging.getLogger("reflexio.ops").info(
             "event=extraction_window_committed window_id=%s", window.window_id
         )
+
+    def _adopt_cached_window_execution(
+        self,
+        window: Window,
+        token: str,
+        service: Any,
+        request: Any,
+        config: Any,
+        run_ids: list[str],
+    ) -> AgentRunRecord | None:
+        """Re-establish authority from frozen DB evidence, never cached claims."""
+        if not run_ids:
+            return None  # Mock/non-agent payloads confer no run-write authority.
+        if run_ids != [f"window:{window.window_id}"]:
+            raise OverflowCheckpointConflictError(
+                "Cached window changed its extraction run"
+            )
+        from reflexio.server.services.durable_learning.user_lease import (
+            adopt_agent_run_for_execution,
+        )
+
+        with self.storage.commit_scope():
+            self.storage.fence_user_extraction(window.user_id, token)
+            self.storage.validate_extraction_inputs(window)
+            known = self.storage.get_agent_run(run_ids[0])
+            if (
+                known is None
+                or known.committed_output is None
+                or known.status
+                not in (
+                    AgentRunStatus.RUNNING,
+                    AgentRunStatus.FAILED,
+                    AgentRunStatus.AGENT_COMPLETED,
+                    AgentRunStatus.FINALIZING,
+                    AgentRunStatus.FINALIZED,
+                    AgentRunStatus.FINALIZED_PENDING_TOOL,
+                )
+            ):
+                raise OverflowCheckpointConflictError(
+                    "Cached window has no eligible saved execution"
+                )
+            expected = build_extractor_agent_run_record(
+                org_id=self.storage.org_id,
+                extractor_kind=window.kind,
+                user_id=window.user_id,
+                generation_request_id=request.request_id,
+                agent_version=getattr(request, "agent_version", None),
+                source=request.source,
+                request_interaction_data_models=service.service_config.window_interactions,
+                extractor_config=config,
+                service_config=service.service_config,
+                agent_context=known.agent_context_snapshot or "",
+            )
+            if (
+                not matches_frozen_window_binding(
+                    known,
+                    expected,
+                    window.policy["extractor"],
+                    project_id=window.project_id,
+                )
+                or known.generation_request_snapshot.get("source_interaction_digests")
+                != expected.generation_request_snapshot["source_interaction_digests"]
+            ):
+                raise OverflowCheckpointConflictError(
+                    "Cached window frozen execution changed"
+                )
+            return adopt_agent_run_for_execution(self.storage, known)
 
     def _validate_overflow_plan(
         self, coordinator: OverflowCoordinator, service: Any, plan: Any
@@ -622,6 +761,59 @@ class WindowExecutor:
                 current = current.__cause__ or current.__context__
             raise
 
+    def _finalize_completed_window_execution(
+        self,
+        window: Window,
+        effects: dict[str, Any],
+        token: str,
+    ) -> None:
+        """Drain an old image's published parent under today's actual owner.
+
+        Completion plus the immutable receipt proves publication. This never
+        replays learning writes, fabricates a receipt or needs saved raw output.
+        """
+        run_ids = effects.get("extraction_run_ids", [])
+        if not run_ids:
+            return
+        if run_ids != [f"window:{window.window_id}"]:
+            raise OverflowCheckpointConflictError("Completed window changed its parent")
+        from reflexio.server.services.durable_learning.user_lease import (
+            adopt_agent_run_for_execution,
+        )
+
+        with self.storage.commit_scope():
+            self.storage.fence_user_extraction(window.user_id, token)
+            run = self.storage.get_agent_run(run_ids[0])
+            if run is None:
+                raise OverflowCheckpointConflictError(
+                    "Completed window parent unavailable"
+                )
+            if run.status not in (
+                AgentRunStatus.AGENT_COMPLETED,
+                AgentRunStatus.FINALIZING,
+            ):
+                return  # Published terminals and independent human progress stay intact.
+            self.storage._validate_completed_window_execution(window, token, run)
+            if (
+                not run.pending_tool_call_ids
+                and self.storage.get_agent_run_finalization_receipt(
+                    run_id=run.id,
+                    entity_type="profile"
+                    if window.kind == "profile"
+                    else "user_playbook",
+                )
+                is None
+            ):
+                raise OverflowCheckpointConflictError(
+                    "Completed window finalization receipt unavailable"
+                )
+            run = adopt_agent_run_for_execution(self.storage, run)
+            from reflexio.server.services.extraction.publication import (
+                finalize_window_execution,
+            )
+
+            finalize_window_execution(self.storage, run)
+
     def deliver(
         self,
         window: Window,
@@ -634,6 +826,7 @@ class WindowExecutor:
         billing = effects.get("billing")
         if billing is not None:
             self._bill(window, billing)
+        self._finalize_completed_window_execution(window, effects, token)
         if service is None:
             try:
                 service, _, config = self.service(window)
@@ -644,8 +837,6 @@ class WindowExecutor:
                 )
                 return
             plan = decode_plan(effects, window.kind, config, window.user_id, service)
-        if plan is not None:
-            service._finalize_extraction_runs()
         if self.storage.claim_extraction_derived(window, token):
             # These schedulers were and remain best-effort. Claim the handoff
             # before calling them, so an outbox ack failure never repeats it.
@@ -736,37 +927,13 @@ class WindowExecutor:
         }
 
     def _bill(self, window: Window, billing: dict[str, Any]) -> None:
-        from reflexio.server.metering_events import (
-            record_extraction_tokens,
-            record_learnings_generated_records_strict,
-        )
+        from reflexio.server.metering_events import record_window_extraction_finances
 
-        record_learnings_generated_records_strict(
+        record_window_extraction_finances(
             org_id=self.context.org_id,
-            learning_ids=billing["ids"],
-            platform_llm=billing["platform_llm"],
-            platform_storage=None,
+            window_id=window.window_id,
             pipeline=window.kind,
+            billing=billing,
             user_id=window.user_id,
             request_id=window.manifest[-1]["request_id"],
-            entity_type="profile" if window.kind == "profile" else "user_playbook",
-            created_at=billing["created_at"],
-        )
-        record_extraction_tokens(
-            org_id=self.context.org_id,
-            billing_input_tokens=billing["input_tokens"],
-            prompt_tokens=billing["prompt_tokens"],
-            completion_tokens=billing["completion_tokens"],
-            # Tolerant reads: an effects blob written before the cache fields
-            # existed is still billable, and a KeyError here would strand a
-            # window whose learnings are already committed.
-            cache_read_input_tokens=billing.get("cache_read_input_tokens", 0),
-            cache_write_input_tokens=billing.get("cache_write_input_tokens", 0),
-            platform_llm=billing["platform_llm"],
-            platform_storage=None,
-            pipeline=window.kind,
-            request_id=window.manifest[-1]["request_id"],
-            event_key=f"tok:{window.window_id}",
-            strict=True,
-            created_at=billing["created_at"],
         )

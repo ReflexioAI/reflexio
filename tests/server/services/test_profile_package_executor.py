@@ -15,6 +15,7 @@ from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.durable_learning.profile_package_executor import (
     ProfilePackageWindowExecutor,
 )
+from reflexio.server.services.durable_learning.user_lease import owned_user_work_context
 from reflexio.server.services.profile.service import ProfileGenerationService
 from tests.server.services import test_durable_window_pipeline as durable
 
@@ -103,7 +104,14 @@ def test_actual_package_parent_publishes_once(
     rows = storage.get_user_profile("u")
     assert len(rows) == expected
     parent = storage.get_agent_run(f"window:{window.window_id}")
-    assert parent.status.value == ("agent_completed" if gate else "finalized")
+    assert parent.claimed_by and parent.claimed_at is not None
+    assert (
+        storage.conn.execute(
+            "SELECT user_work_token FROM _agent_runs WHERE id=?", (parent.id,)
+        ).fetchone()[0]
+        == token
+    )
+    assert parent.status.value == "finalized"
     journal = parent.generation_request_snapshot["overflow"]
     assert journal["version"] == 2
     assert (
@@ -585,7 +593,8 @@ def test_shared_sql_cannot_replace_or_remove_frozen_profile_decisions(
     with pytest.raises(RuntimeError, match="before publication"):
         executor.execute(window, token)
     service, request, config = executor.service(window)
-    current = executor._coordinator(window, token, service, request, config)
+    with owned_user_work_context(storage, window.user_id, token, 600):
+        current = executor._coordinator(window, token, service, request, config)
     original = current.checkpoint
     revision = storage.get_agent_run(
         f"window:{window.window_id}"
@@ -604,7 +613,10 @@ def test_shared_sql_cannot_replace_or_remove_frozen_profile_decisions(
                 altered.pop(field)
             else:
                 altered[field] = {"forged": True}
-            with pytest.raises(OverflowCheckpointConflictError, match="immutable"):
+            with (
+                owned_user_work_context(storage, window.user_id, token, 600),
+                pytest.raises(OverflowCheckpointConflictError, match="immutable"),
+            ):
                 current.save_checkpoint(altered)
     actual = storage.get_agent_run(
         f"window:{window.window_id}"
@@ -613,3 +625,286 @@ def test_shared_sql_cannot_replace_or_remove_frozen_profile_decisions(
     assert actual["checkpoint"] == original
     assert len(calls) == len(actual["attempts"]) == 3
     assert storage.get_user_profile("u") == []
+
+
+@pytest.mark.parametrize(
+    "boundary,gate",
+    [("parent_completion", True), ("publication", True), ("publication", False)],
+)
+def test_superseded_package_parent_cannot_complete_or_publish(
+    pipeline, monkeypatch, boundary, gate
+):
+    from reflexio.server.services.storage.storage_base import LeaseLostError
+
+    engine, storage, window, token, client, calls = setup(
+        pipeline, monkeypatch, gate=gate
+    )
+    executor = ProfilePackageWindowExecutor(engine.request_context, client)
+    target = executor if boundary == "parent_completion" else storage
+    name = (
+        "_complete_parent"
+        if boundary == "parent_completion"
+        else "save_extraction_outcome"
+    )
+    original = getattr(target, name)
+    observed = []
+
+    def replace_claim():
+        parent = storage.get_agent_run(f"window:{window.window_id}")
+        assert parent.claimed_by
+        observed.append((parent.status, len(calls)))
+        storage._execute(
+            "UPDATE _agent_runs SET claimed_by=? WHERE id=?",
+            ("superseding-execution", parent.id),
+        )
+
+    def interrupted(*args, **kwargs):
+        if boundary == "publication":
+            result = original(*args, **kwargs)
+            replace_claim()
+            return result
+        replace_claim()
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, name, interrupted)
+    with pytest.raises(LeaseLostError):
+        executor.execute(window, token)
+    assert len(observed) == 1
+    parent = storage.get_agent_run(f"window:{window.window_id}")
+    assert parent.claimed_by == "superseding-execution"
+    assert parent.status == observed[0][0]
+    assert len(calls) == observed[0][1]
+    assert storage.get_user_profile("u") == []
+    assert storage.pending_extraction_effects() == []
+    store_token = storage.conn.execute(
+        "SELECT lease_token FROM learning_work WHERE org_id=? AND user_id=?",
+        (storage.org_id, window.user_id),
+    ).fetchone()[0]
+    assert store_token == token
+
+
+def test_compatibility_window_cannot_publish_with_replacement_claim(
+    pipeline, monkeypatch
+):
+    from reflexio.server.services.durable_learning.window_executor import WindowExecutor
+    from reflexio.server.services.storage.storage_base import LeaseLostError
+
+    engine, storage, window, token, client, calls = setup(pipeline, monkeypatch)
+    # Exercise the established non-coordinator execution used by compatibility
+    # cohorts; extraction, conversion, persistence and the database remain real.
+    monkeypatch.setattr(WindowExecutor, "_coordinator", lambda *_args: None)
+    original = storage.save_extraction_outcome
+    observed = []
+
+    def replaced_after_compute(current_window, current_token, outcome):
+        original(current_window, current_token, outcome)
+        assert len(outcome["extraction_run_ids"]) == 1
+        run_id = outcome["extraction_run_ids"][0]
+        parent = storage.get_agent_run(run_id)
+        assert parent.claimed_by
+        observed.append((run_id, parent.status, len(calls)))
+        storage._execute(
+            "UPDATE _agent_runs SET claimed_by=? WHERE id=?",
+            ("newer-logical-owner", run_id),
+        )
+
+    monkeypatch.setattr(storage, "save_extraction_outcome", replaced_after_compute)
+    with pytest.raises(LeaseLostError):
+        WindowExecutor(engine.request_context, client).execute(window, token)
+    assert len(observed) == 1
+    run_id, status, paid_calls = observed[0]
+    parent = storage.get_agent_run(run_id)
+    assert parent.claimed_by == "newer-logical-owner" and parent.status == status
+    assert len(calls) == paid_calls
+    assert storage.get_user_profile("u") == []
+    assert (
+        storage.get_agent_run_finalization_receipt(run_id=run_id, entity_type="profile")
+        is None
+    )
+    assert storage.pending_extraction_effects() == []
+
+
+def test_package_terminal_status_joins_owned_learning_publication(
+    pipeline, monkeypatch
+):
+    from reflexio.server.services.storage.storage_base import AgentRunStatus
+
+    engine, storage, window, token, client, _calls = setup(pipeline, monkeypatch)
+    original = storage.complete_extraction
+    observed = []
+
+    def before_clear(current_window, current_token, effects):
+        parent = storage.get_agent_run(f"window:{window.window_id}")
+        observed.append(parent.status)
+        assert parent.status == AgentRunStatus.FINALIZED
+        assert storage.get_user_profile("u")
+        assert (
+            storage.get_agent_run_finalization_receipt(
+                run_id=parent.id, entity_type="profile"
+            )
+            is None
+        )
+        assert effects["billing"]["ids"] == [
+            row.profile_id for row in storage.get_user_profile("u")
+        ]
+        storage.fence_user_extraction(window.user_id, token)
+        return original(current_window, current_token, effects)
+
+    monkeypatch.setattr(storage, "complete_extraction", before_clear)
+    ProfilePackageWindowExecutor(engine.request_context, client).execute(window, token)
+    assert observed == [AgentRunStatus.FINALIZED]
+
+
+@pytest.mark.parametrize(
+    "change", ["none", "restore", "source", "run_id", "human_resume"]
+)
+def test_compatibility_cached_window_reestablishes_owned_execution(
+    pipeline, monkeypatch, change
+):
+    from reflexio.server.services.durable_learning.window_executor import WindowExecutor
+    from reflexio.server.services.storage.storage_base import AgentRunStatus
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        OverflowCheckpointConflictError,
+    )
+
+    engine, storage, window, token, client, calls = setup(pipeline, monkeypatch)
+    monkeypatch.setattr(WindowExecutor, "_coordinator", lambda *_args: None)
+    original = storage.complete_extraction
+    monkeypatch.setattr(
+        storage, "complete_extraction", Mock(side_effect=RuntimeError("commit paused"))
+    )
+    executor = WindowExecutor(engine.request_context, client)
+    with pytest.raises(RuntimeError, match="commit paused"):
+        executor.execute(window, token)
+    run_id = f"window:{window.window_id}"
+    assert storage.get_agent_run(run_id).status == AgentRunStatus.AGENT_COMPLETED
+    assert storage.get_user_profile("u") == []
+    assert (
+        storage.get_agent_run_finalization_receipt(run_id=run_id, entity_type="profile")
+        is None
+    )
+    resumed = storage.prepare_extraction(window.user_id, token)
+    assert resumed.outcome is not None
+    assert "execution_run" not in resumed.outcome
+    previous_calls = len(calls)
+    if change == "restore":
+        storage.update_agent_run_status(run_id, AgentRunStatus.FAILED)
+    elif change == "source":
+        storage._execute(
+            "UPDATE interactions SET content='withdrawn source' WHERE interaction_id=?",
+            (window.manifest[0]["interaction_id"],),
+        )
+    elif change == "run_id":
+        resumed.outcome["extraction_run_ids"] = ["foreign-execution"]
+    elif change == "human_resume":
+        storage.update_agent_run_status(run_id, AgentRunStatus.RESUMING)
+    monkeypatch.setattr(storage, "complete_extraction", original)
+    if change in {"source", "run_id", "human_resume"}:
+        with pytest.raises(OverflowCheckpointConflictError):
+            executor.execute(resumed, token)
+        assert storage.get_user_profile("u") == []
+        assert storage.pending_extraction_effects() == []
+    else:
+        executor.execute(resumed, token)
+        assert len(storage.get_user_profile("u")) == 1
+        assert storage.get_agent_run(run_id).status == AgentRunStatus.FINALIZED
+        assert len(storage.pending_extraction_effects()) == 1
+    assert len(calls) == previous_calls
+
+
+@pytest.mark.parametrize("raw_output", [True, False])
+def test_legacy_completed_window_finalizes_under_delivery_owner(
+    pipeline, monkeypatch, raw_output
+):
+    from reflexio.server.services.durable_learning.user_lease import (
+        owned_user_work_context,
+    )
+    from reflexio.server.services.storage.storage_base import AgentRunStatus
+
+    engine, storage, window, token, client, calls = setup(pipeline, monkeypatch)
+    executor = ProfilePackageWindowExecutor(engine.request_context, client)
+    executor.execute(window, token)
+    run_id = f"window:{window.window_id}"
+    completed_window, effects = storage.pending_extraction_effects()[0]
+    receipt = effects["billing"]["ids"]
+    assert receipt
+    assert (
+        storage.get_agent_run_finalization_receipt(run_id=run_id, entity_type="profile")
+        is None
+    )
+    # Explicit predecessor-image fixture, not current publication behavior:
+    # old history exists, with no modern ordinary output-publication frame.
+    historical_output = copy.deepcopy(storage.get_agent_run(run_id).committed_output)
+    if isinstance(historical_output, dict):
+        historical_output.pop("publication", None)
+    assert storage.save_agent_run_finalization_receipt(
+        run_id=run_id, entity_type="profile", learning_ids=receipt
+    )
+    storage._execute(
+        "UPDATE _agent_runs SET status='agent_completed',user_work_token=NULL,committed_output=? WHERE id=?",
+        (
+            json.dumps(historical_output)
+            if raw_output and historical_output is not None
+            else None,
+            run_id,
+        ),
+    )
+    delivered = storage.claim_user_extraction(window.user_id, "old-image-delivery", 600)
+    assert delivered is not None
+    paid_calls = len(calls)
+    with owned_user_work_context(storage, window.user_id, delivered, 600):
+        executor.deliver(completed_window, effects, token=delivered)
+        storage.fence_user_extraction(window.user_id, delivered)
+    parent = storage.get_agent_run(run_id)
+    assert parent.status == AgentRunStatus.FINALIZED
+    assert (
+        storage.conn.execute(
+            "SELECT user_work_token FROM _agent_runs WHERE id=?", (run_id,)
+        ).fetchone()[0]
+        == delivered
+    )
+    assert len(storage.get_user_profile("u")) == 1
+    assert (
+        storage.get_agent_run_finalization_receipt(run_id=run_id, entity_type="profile")
+        == receipt
+    )
+    assert len(calls) == paid_calls
+    assert storage.pending_extraction_effects() == []
+
+
+def test_legacy_completed_window_without_receipt_is_not_acknowledged(
+    pipeline, monkeypatch
+):
+    from reflexio.server.services.durable_learning.user_lease import (
+        owned_user_work_context,
+    )
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        OverflowCheckpointConflictError,
+    )
+
+    engine, storage, window, token, client, calls = setup(pipeline, monkeypatch)
+    executor = ProfilePackageWindowExecutor(engine.request_context, client)
+    executor.execute(window, token)
+    run_id = f"window:{window.window_id}"
+    storage._execute(
+        "UPDATE _agent_runs SET status='agent_completed',user_work_token=NULL WHERE id=?",
+        (run_id,),
+    )
+    storage._execute(
+        "DELETE FROM _agent_run_finalization_receipts WHERE run_id=?", (run_id,)
+    )
+    completed_window, effects = storage.pending_extraction_effects()[0]
+    delivered = storage.claim_user_extraction(
+        window.user_id, "unknown-old-receipt", 600
+    )
+    assert delivered is not None
+    paid_calls = len(calls)
+    with (
+        owned_user_work_context(storage, window.user_id, delivered, 600),
+        pytest.raises(OverflowCheckpointConflictError, match="receipt"),
+    ):
+        executor.deliver(completed_window, effects, token=delivered)
+    assert storage.get_agent_run(run_id).status.value == "agent_completed"
+    assert len(storage.pending_extraction_effects()) == 1
+    assert len(calls) == paid_calls
+    assert len(storage.get_user_profile("u")) == 1

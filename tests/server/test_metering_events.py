@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -8,6 +8,7 @@ from reflexio.server.metering_events import (
     record_applied_learnings,
     record_extraction_tokens,
     record_learnings_generated,
+    record_learnings_generated_records_strict,
 )
 from reflexio.server.usage_metrics import (
     UsageEventDeliveryError,
@@ -172,9 +173,6 @@ def test_record_applied_learnings_noop_for_empty_result():
     [UsageEventDeliveryStatus.FAILED, UsageEventDeliveryStatus.REJECTED],
 )
 def test_strict_receipt_billing_preserves_delivery_status(status):
-    configurator = MagicMock()
-    configurator.get_config.return_value = None
-
     with (
         patch(
             "reflexio.server.metering_events.record_usage_event_strict",
@@ -184,10 +182,32 @@ def test_strict_receipt_billing_preserves_delivery_status(status):
     ):
         emit_learnings_generated_records_strict(
             org_id="org1",
-            configurator=configurator,
             learning_ids=["profile-1"],
             source="resumable_extraction",
             entity_type="profile",
         )
 
     assert exc_info.value.status is status
+
+
+def test_strict_learning_receipt_needs_only_durable_learning_facts():
+    with patch("reflexio.server.metering_events.record_usage_event_strict") as hook:
+        record_learnings_generated_records_strict(
+            org_id="org1",
+            learning_ids=["profile-1", "profile-2"],
+            pipeline="profile",
+            source="resumable_extraction",
+            entity_type="profile",
+            created_at=1234567890.0,
+        )
+    assert hook.call_count == 2
+    for call, learning_id in zip(
+        hook.call_args_list, ["profile-1", "profile-2"], strict=True
+    ):
+        facts = call.kwargs
+        assert facts["event_key"] == f"learn:profile:{learning_id}"
+        assert facts["created_at"] == 1234567890.0
+        assert facts["pipeline"] == "profile"
+        assert facts["count_value"] == 1
+        assert facts.get("platform_llm") is None
+        assert facts.get("platform_storage") is None

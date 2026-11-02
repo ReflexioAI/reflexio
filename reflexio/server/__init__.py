@@ -20,7 +20,7 @@ from reflexio.durable_learning_policy import (
     validate_aggregation_timing_env,
     validate_discovery_timing_env,
 )
-from reflexio.pending_tool_policy import resolve_resume_timing
+from reflexio.pending_tool_policy import warn_retired_resume_timing
 from reflexio.removed_env import reject_removed_env
 from reflexio.server.env_utils import env_str, env_truthy
 from reflexio.server.ops_log import OPS_LOGGER_NAME
@@ -29,7 +29,7 @@ from reflexio.server.ops_log import OPS_LOGGER_NAME
 load_existing_reflexio_env()
 validate_discovery_timing_env(os.environ)
 validate_aggregation_timing_env(os.environ)
-resolve_resume_timing(os.environ)
+warn_retired_resume_timing(os.environ)
 
 # Default user data directory: ~/.reflexio/data/ (or REFLEXIO_LOG_DIR/.reflexio/data/).
 _DEFAULT_DATA_DIR = str(reflexio_home() / "data")

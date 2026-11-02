@@ -17,7 +17,9 @@ from reflexio.models.config_schema import (
 from reflexio.server.llm.input_budget import InputBudgetConfigurationError
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.durable_learning import window_executor
+from reflexio.server.services.durable_learning.user_lease import owned_user_work_context
 from reflexio.server.services.extraction import resumable_agent
+from reflexio.server.services.extraction.history_inputs import HistoricalInputs
 from reflexio.server.services.extraction.overflow_presentation import (
     OverflowPresentation,
     present_extraction_chunk,
@@ -65,9 +67,17 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
     )
     executor = window_executor.WindowExecutor(engine.request_context, client)
     service, request, config = executor.service(window)
-    coordinator = executor._coordinator(window, token, service, request, config)
+    with owned_user_work_context(storage, window.user_id, token, 600):
+        coordinator = executor._coordinator(window, token, service, request, config)
     assert coordinator is not None
     parent = storage.get_agent_run(f"window:{window.window_id}")
+    assert parent.claimed_by and parent.claimed_at is not None
+    assert (
+        storage.conn.execute(
+            "SELECT user_work_token FROM _agent_runs WHERE id=?", (parent.id,)
+        ).fetchone()[0]
+        == token
+    )
     snapshot = copy.deepcopy(parent.generation_request_snapshot)
     snapshot["extractor_config"]["extractor_name"] = "historical-playbook-label"
     snapshot["extractor_config"]["context_prompt"] = retired_context
@@ -104,10 +114,14 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
         "matches_frozen_window_binding",
         lambda prior, expected, _, **_kwargs: prior.binding == expected.binding,
     )
-    with pytest.raises(InputBudgetConfigurationError, match="parent binding changed"):
+    with (
+        pytest.raises(InputBudgetConfigurationError, match="parent binding changed"),
+        owned_user_work_context(storage, window.user_id, token, 600),
+    ):
         executor._coordinator(resumed, token, service, request, config)
     monkeypatch.setattr(window_executor, "matches_frozen_window_binding", compatible)
-    admitted = executor._coordinator(resumed, token, service, request, config)
+    with owned_user_work_context(storage, window.user_id, token, 600):
+        admitted = executor._coordinator(resumed, token, service, request, config)
     assert admitted is not None
     assert admitted.saved_run is not None
     assert admitted.saved_run.id == parent.id
@@ -150,6 +164,7 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
 
     def run_child(extractor_config=config):
         with (
+            owned_user_work_context(storage, window.user_id, token, 600),
             admitted.provider_scope(),
             present_extraction_chunk(prepared, chunk, ProtectedRecord()),
         ):
@@ -166,6 +181,7 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
                 service_config=service.service_config,
                 agent_context=admitted.agent_context,
                 messages=messages,
+                history_inputs=HistoricalInputs(),
                 output_schema=StructuredPlaybookList,
                 log_label="historical-playbook-child",
             )

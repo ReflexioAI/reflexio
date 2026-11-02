@@ -504,7 +504,7 @@ def test_non_learning_service_emits_no_learning_billing_events():
     )
 
 
-def test_base_finalization_requires_receipt_aware_override_for_run_id():
+def test_base_direct_mutation_does_not_accept_run_publication_identity():
     """A receipt-less service cannot finalize a resumable extraction run."""
     service = _StubService(
         llm_client=LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini")),
@@ -515,9 +515,10 @@ def test_base_finalization_requires_receipt_aware_override_for_run_id():
         assert service._finalize_extracted_items(["legacy-item"]) is None
         process_results.assert_called_once_with([["legacy-item"]])
 
-        with pytest.raises(NotImplementedError, match=r"(?i)receipt-aware"):
+        with pytest.raises(TypeError, match="finalization_run_id"):
             service._finalize_extracted_items(
-                ["resumable-item"], finalization_run_id="run-1"
+                ["resumable-item"],
+                finalization_run_id="run-1",  # type: ignore[reportCallIssue] -- Deliberately rejected argument.
             )
 
         process_results.assert_called_once()

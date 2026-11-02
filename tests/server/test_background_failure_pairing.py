@@ -60,7 +60,8 @@ import reflexio.server
 _SERVER_ROOT = Path(reflexio.server.__file__).parent
 _FAILURE = "report_background_failure"
 _SUCCESS = "report_background_success"
-_CANONICAL = (_FAILURE, _SUCCESS)
+_INTERVAL = "report_failure_at_interval"
+_CANONICAL = (_FAILURE, _SUCCESS, _INTERVAL)
 
 # ("c", text) is constant text; ("p", source) is a placeholder expression.
 Shape = tuple[tuple[str, str], ...]
@@ -89,12 +90,14 @@ class _Module:
 
 def _aliases(tree: ast.Module) -> dict[str, str]:
     """Local name -> canonical function name, from ``from ... import``."""
-    names = {name: name for name in _CANONICAL}
+    names = {name: _FAILURE if name == _INTERVAL else name for name in _CANONICAL}
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             for alias in node.names:
                 if alias.name in _CANONICAL:
-                    names[alias.asname or alias.name] = alias.name
+                    names[alias.asname or alias.name] = (
+                        _FAILURE if alias.name == _INTERVAL else alias.name
+                    )
     return names
 
 
@@ -102,7 +105,7 @@ def _canonical(expr: ast.expr, aliases: dict[str, str]) -> str | None:
     if isinstance(expr, ast.Name):
         return aliases.get(expr.id)
     if isinstance(expr, ast.Attribute) and expr.attr in _CANONICAL:
-        return expr.attr
+        return _FAILURE if expr.attr == _INTERVAL else expr.attr
     return None
 
 
@@ -755,3 +758,15 @@ def test_a_type_parameter_rebinding_a_scope_is_unresolvable() -> None:
         "    report_background_success(scope)\n"
     )
     assert any("no resolvable shape" in p for p in _violations(source))
+
+
+def test_interval_failure_uses_the_same_scope_pairing_rules():
+    missing = "def tick():\n    report_failure_at_interval(logger, 'failed', exc, scope='interval-job', interval_seconds=None)\n"
+    assert any("streak would never reset" in item for item in _violations(missing))
+    paired = missing + "    report_background_success('interval-job')\n"
+    assert _violations(paired) == []
+    shared = (
+        paired
+        + "    report_background_failure(logger, 'another', exc, scope='interval-job')\n"
+    )
+    assert any("share the scope prefix" in item for item in _violations(shared))

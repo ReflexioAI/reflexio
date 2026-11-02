@@ -237,6 +237,11 @@ class PlaybookConsolidator(BaseDeduplicator):
         )
 
         remember_historical_playbooks(existing_playbooks)
+        from reflexio.server.services.extraction.history_inputs import (
+            record_historical_playbooks,
+        )
+
+        record_historical_playbooks(self.request_context.storage, existing_playbooks)
         from reflexio.server.services.playbook.components.reconciliation import (
             reconcile_playbooks,
         )

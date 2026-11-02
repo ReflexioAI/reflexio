@@ -66,10 +66,6 @@ _IMPORT_CONTRACTS = {
         "ResumableExtractionAgent",
         "run_resumable_extraction_agent",
     ),
-    "reflexio.server.services.extraction.resume_scheduler": (
-        "ExtractionResumeScheduler",
-        "maybe_start_resume_scheduler",
-    ),
     "reflexio.server.services.extraction.resume_worker": (
         "ExtractionResumeWorker",
         "ResumeWorkerError",
@@ -149,6 +145,13 @@ def test_canonical_service_symbols_are_importable(module_name, public_names):
     assert missing == []
 
 
+def test_separate_resume_scheduler_is_not_a_runtime_compatibility_alias():
+    name = "reflexio.server.services.extraction.resume_scheduler"
+    with pytest.raises(ModuleNotFoundError) as error:
+        importlib.import_module(name)
+    assert error.value.name == name
+
+
 _LAYOUT_CONTRACTS = {
     "agent_success_evaluation": (
         {"__init__.py", "service.py", "runner.py", "scheduler.py"},
@@ -183,11 +186,10 @@ _LAYOUT_CONTRACTS = {
             "pending_tool_call_dispatch.py",
             "prior_answer_search.py",
             "resumable_agent.py",
-            "resume_scheduler.py",
             "resume_worker.py",
             "README.md",
         },
-        {"tools.py", "plan.py", "invariants.py"},
+        {"tools.py", "plan.py", "invariants.py", "resume_scheduler.py"},
     ),
     "playbook": (
         {

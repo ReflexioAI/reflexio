@@ -3,6 +3,7 @@
 import copy
 import json
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock
 
 import pytest
@@ -12,11 +13,13 @@ from reflexio.models.config_schema import (
     UserPlaybookExtractorConfig,
 )
 from reflexio.server.llm.tools import ToolLoopResult, ToolLoopTrace
+from reflexio.server.services.durable_learning.user_lease import owned_user_work_context
 from reflexio.server.services.durable_learning.window_executor import WindowExecutor
 from reflexio.server.services.extraction import resumable_agent
 from reflexio.server.services.extraction.agent_run_records import (
     build_extractor_agent_run_record,
 )
+from reflexio.server.services.extraction.history_inputs import HistoricalInputs
 from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookList,
 )
@@ -25,7 +28,11 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
 )
 from reflexio.server.services.storage.storage_base import (
     AgentRunStatus,
+    PendingToolCallRecord,
+    PendingToolCallStatus,
+    RunToolDependencyRecord,
     build_scope_hash,
+    human_feedback_scope,
 )
 from tests.server.services import test_durable_window_pipeline as durable
 
@@ -112,6 +119,30 @@ def setup_ordinary(pipeline, monkeypatch, kind, state):
         ),
     )
     storage.create_agent_run(run)
+    if state == "agent_completed":
+        now = datetime.now(UTC)
+        scope = human_feedback_scope(storage.org_id)
+        question = storage.create_pending_tool_call(
+            PendingToolCallRecord(
+                id="saved-pending-answer",
+                org_id=storage.org_id,
+                user_id=user,
+                scope=scope,
+                scope_hash=build_scope_hash(scope),
+                tool_name="ask_human",
+                dedup_key="saved-pending-answer",
+                status=PendingToolCallStatus.PENDING,
+                question_text="Synthetic retained upgrade question",
+                expires_at=now + timedelta(hours=1),
+                cache_until=now + timedelta(hours=1),
+            )
+        )
+        storage.attach_run_tool_dependency(
+            RunToolDependencyRecord(
+                run_id=run.id,
+                pending_tool_call_id=question.id,
+            )
+        )
     loop = Mock(
         return_value=ToolLoopResult(
             ctx=None,
@@ -125,7 +156,7 @@ def setup_ordinary(pipeline, monkeypatch, kind, state):
     monkeypatch.setattr(resumable_agent, "run_tool_loop", loop)
     monkeypatch.setattr(resumable_agent, "pending_tool_calls_enabled", lambda _: False)
 
-    def execute():
+    def _execute():
         return resumable_agent.run_resumable_extraction_agent(
             request_context=engine.request_context,
             client=Mock(),
@@ -139,9 +170,16 @@ def setup_ordinary(pipeline, monkeypatch, kind, state):
             service_config=service.service_config,
             agent_context="original context",
             messages=[{"role": "user", "content": "source"}],
+            history_inputs=HistoricalInputs(),
             output_schema=schema,
             log_label="ordinary-upgrade",
         )
+
+    def execute():
+        # This fixture already owns the actual scheduler lease. Join it instead
+        # of attempting a second admission against our own live lease.
+        with owned_user_work_context(storage, user, token, 600):
+            return _execute()
 
     return storage, window, run, service, execute, loop, output, token
 

@@ -15,18 +15,14 @@ from pydantic import BaseModel
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import Interaction, Request
 from reflexio.models.config_schema import PlaybookConfig, ProfileExtractorConfig
-from reflexio.pending_tool_policy import resolve_resume_timing
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
-from reflexio.server.metering_events import (
-    ReceiptDeliveryError,
-    emit_learnings_generated_records_strict,
-)
-from reflexio.server.services.deferred_learning_plan import FinalizationResult
 from reflexio.server.services.extraction.agent_run_records import build_scope_hash
+from reflexio.server.services.extraction.answer_inputs import answer_input_scope
+from reflexio.server.services.extraction.history_inputs import HistoricalInputs
 from reflexio.server.services.extraction.pending_tool_admission import (
     pending_tool_calls_enabled,
 )
@@ -36,12 +32,16 @@ from reflexio.server.services.extraction.pending_tool_call_dispatch import (
 from reflexio.server.services.extraction.prior_answer_search import (
     append_prior_knowledge_context,
 )
+from reflexio.server.services.extraction.publication import (
+    PreparedPublication,
+    publish_resumed_output,
+)
 from reflexio.server.services.extraction.resumable_agent import (
-    AgentRunResult,
     ResumableExtractionAgent,
     create_pending_info_tools_for_extractor_kind,
     decode_committed_output,
 )
+from reflexio.server.services.extraction.source_inputs import capture_source_inputs
 from reflexio.server.services.playbook.components.extractor import PlaybookExtractor
 from reflexio.server.services.playbook.playbook_evidence import (
     build_playbook_extraction_contract,
@@ -69,7 +69,7 @@ from reflexio.server.services.profile.components.extractor import (
 )
 from reflexio.server.services.profile.profile_generation_service_utils import (
     StructuredProfilesOutput,
-    construct_profile_extraction_messages_from_sessions,
+    prepare_profile_extraction_prompt,
 )
 from reflexio.server.services.profile.service import (
     ProfileGenerationService,
@@ -78,11 +78,15 @@ from reflexio.server.services.profile.service import (
 from reflexio.server.services.service_utils import (
     extract_interactions_from_request_interaction_data_models,
 )
-from reflexio.server.services.storage.error import ReadinessUnavailableError
+from reflexio.server.services.storage.error import (
+    ReadinessUnavailableError,
+    execution_input_is_busy,
+)
 from reflexio.server.services.storage.storage_base import (
     AgentRunRecord,
     AgentRunStatus,
     BaseStorage,
+    LeaseLostError,
     PendingToolCallRecord,
     PendingToolCallStatus,
 )
@@ -91,7 +95,6 @@ from reflexio.server.services.storage.storage_base.agent_run._agent_run_store im
 )
 from reflexio.server.services.tagging.tagging_scheduler import schedule_tagging
 from reflexio.server.site_var.site_var_manager import SiteVarManager
-from reflexio.server.usage_metrics import UsageEventDeliveryStatus
 from reflexio.server.work_scope import WorkScope, bind_work_scope
 
 logger = logging.getLogger(__name__)
@@ -111,30 +114,6 @@ class ResumeWorkerError(RuntimeError):
 def _next_retry_at(attempt_count: int) -> datetime:
     delay_seconds = min(300, max(1, 2 ** max(0, attempt_count - 1)))
     return datetime.now(UTC) + timedelta(seconds=delay_seconds)
-
-
-def _finalization_failure_status(
-    exc: Exception,
-    *,
-    next_attempt_count: int,
-    max_finalization_attempts: int,
-) -> AgentRunStatus:
-    """Classify finalization failures under the receipt-delivery contract.
-
-    Transient receipt delivery failures remain retryable beyond the ordinary
-    finalization-attempt ceiling because their committed receipt obligation must
-    eventually be delivered. Permanent receipt rejection is terminal, as are
-    ordinary finalization failures at or above the configured ceiling.
-    """
-    if isinstance(exc, ReadinessUnavailableError):
-        return AgentRunStatus.FINALIZATION_FAILED
-    if isinstance(exc, ReceiptDeliveryError):
-        if exc.status is UsageEventDeliveryStatus.REJECTED:
-            return AgentRunStatus.FAILED
-        return AgentRunStatus.FINALIZATION_FAILED
-    if next_attempt_count >= max_finalization_attempts:
-        return AgentRunStatus.FAILED
-    return AgentRunStatus.FINALIZATION_FAILED
 
 
 def _create_llm_client(request_context: RequestContext) -> LiteLLMClient:
@@ -186,8 +165,12 @@ def _request_interaction_models_from_ids(
 
     models: list[RequestInteractionDataModel] = []
     for request_id, request_interactions in by_request.items():
-        ordered = sorted(request_interactions, key=lambda item: item.created_at)
+        ordered = sorted(
+            request_interactions,
+            key=lambda item: (item.created_at, item.interaction_id),
+        )
         request = storage.get_request(request_id)
+        fallback_request = request is None
         if request is None:
             first = ordered[0]
             request = Request(
@@ -198,13 +181,13 @@ def _request_interaction_models_from_ids(
                 agent_version=fallback_agent_version or "",
                 session_id=request_id,
             )
-        models.append(
-            RequestInteractionDataModel(
-                session_id=request.session_id,
-                request=request,
-                interactions=ordered,
-            )
+        model = RequestInteractionDataModel(
+            session_id=request.session_id,
+            request=request,
+            interactions=ordered,
         )
+        model._fallback_request = fallback_request
+        models.append(model)
     return sorted(
         models,
         key=lambda model: min(
@@ -289,7 +272,7 @@ def _run_uses_strict_playbook_evidence(
 
 
 class ExtractionResumeWorker:
-    """Claim and resume finalized extraction runs with resolved tool results."""
+    """Execute deferred extraction under admitted user-work ownership."""
 
     def __init__(
         self,
@@ -298,21 +281,11 @@ class ExtractionResumeWorker:
         llm_client: LiteLLMClient | None = None,
         worker_id: str | None = None,
     ) -> None:
-        self.timing = resolve_resume_timing()
         self.request_context = request_context
         self.storage = _storage(request_context)
         self.client = llm_client or _create_llm_client(request_context)
         self.worker_id = worker_id or f"resume_worker_{uuid.uuid4().hex}"
         self._active_claim: AgentRunRecord | None = None
-
-    def drain(self, *, max_runs: int = 10) -> int:
-        """Inspect up to ``max_runs`` claims, including users currently busy."""
-        inspected = 0
-        for _ in range(max_runs):
-            if self.run_once() is None:
-                break
-            inspected += 1
-        return inspected
 
     def _with_resolved_playbook_user_id(self, run: AgentRunRecord) -> AgentRunRecord:
         """Return a playbook run with a proven owner for legacy nullable rows."""
@@ -327,61 +300,14 @@ class ExtractionResumeWorker:
         )
         return replace(run, binding=replace(run.binding, user_id=user_id))
 
-    def _scope_for(self, run: AgentRunRecord) -> WorkScope:
-        """The tenant scope this run's writes must be attributed to.
-
-        Taken from the RUN ROW, not from ambient context: the scheduler resumes
-        work long after the request that created it returned, so there is no
-        request-scoped project to inherit. ``_agent_runs.project_id`` is stamped
-        at insert time by the storage chokepoint, which makes the row itself the
-        carrier -- the same reasoning ``work_scope`` records for job payloads.
-
-        A run whose ``project_id`` is NULL predates the project write path. The
-        provider REFUSES that rather than defaulting to the org's default
-        project, and the run is escalated and skipped. Such rows are fixed as
-        DATA, by the existing corpus-derived backfill (enterprise's
-        ``backfill_project_id_tenant_rows``, which already covers ``_agent_runs``
-        and its children) -- not by guessing a project at run time.
-
-        Args:
-            run (AgentRunRecord): The claimed run.
-
-        Returns:
-            WorkScope: Scope to bind for the duration of this run's processing.
-        """
-        return WorkScope(org_id=self.request_context.org_id, project_id=run.project_id)
-
-    def run_once(self) -> AgentRunRecord | None:
-        """Claim one run and process it under the project that owns it.
-
-        The two claims are deliberately OUTSIDE the scope. They are org-keyed
-        RPCs (``claim_ready_agent_run`` / ``claim_finalization_failed_agent_run``
-        select on ``org_id`` alone) and run as SECURITY DEFINER, so they neither
-        consult nor need a bound project. Everything downstream of a claim
-        writes project-scoped tenant tables and does.
-        """
-        # Validate saved policies before claiming work; migration errors must
-        # never leave a run claimed under an unaccepted policy.
-        self.request_context.configurator.get_config()
-        finalization_retry = self.storage.claim_finalization_failed_agent_run(
-            org_id=self.request_context.org_id,
-            worker_id=self.worker_id,
-            claim_ttl_seconds=self.timing.claim_ttl_seconds,
-        )
-
-        run = finalization_retry or self.storage.claim_ready_agent_run(
-            org_id=self.request_context.org_id,
-            worker_id=self.worker_id,
-            claim_ttl_seconds=self.timing.claim_ttl_seconds,
-        )
-        if run is None:
-            return None
-        return self._execute_claimed_run(
-            run, finalization_retry=finalization_retry is not None
-        )
-
     def recover_selected(self, selection: Any, *, operation_id: str) -> AgentRunRecord:
         """Recover one previewed run without opening the scheduler's resume gate."""
+        from reflexio.server.services.durable_learning.user_lease import (
+            UserLeaseBusyError,
+            adopt_agent_run_for_execution,
+            fence_explicit_extraction,
+            user_extraction_lease,
+        )
         from reflexio.server.services.extraction.recovery import (
             RecoveryRefusedError,
             validate_selection,
@@ -394,218 +320,327 @@ class ExtractionResumeWorker:
             if run is None:
                 raise RecoveryRefusedError("run_not_found")
             validate_selection(self.request_context, run, selection)
-            claimed = self.storage.claim_agent_run_for_recovery(
-                run_id=run.id,
-                org_id=selection.org_id,
-                worker_id=self.worker_id,
-                expected_updated_at=selection.updated_at,
-                operation_id=operation_id,
-                claim_ttl_seconds=self.timing.claim_ttl_seconds,
-            )
-            if claimed is None:
-                raise RecoveryRefusedError("claim_conflict")
-            logger.info(
-                "event=extraction_recovery_claimed run_id=%s operation_id=%s",
-                run.id,
-                operation_id,
-            )
+            user_id = self._with_resolved_playbook_user_id(run).binding.user_id
+            if not user_id:
+                raise RecoveryRefusedError("owner_unverifiable")
             try:
-                result = self._execute_claimed_run(
-                    claimed, finalization_retry=True, selection=selection
-                )
-            except Exception as exc:
-                # Status-only CAS: never overwrite a newer owner or an already
-                # finalized result when a downstream diagnostic fails.
-                self.storage.update_agent_run_status(
-                    claimed.id,
-                    # A safety refusal must never re-enter ordinary retries,
-                    # which do not carry the operator's selected-run witness.
-                    AgentRunStatus.FAILED
-                    if isinstance(exc, RecoveryRefusedError)
-                    else AgentRunStatus.FINALIZATION_FAILED,
-                    last_error="selected_recovery_refused"
-                    if isinstance(exc, RecoveryRefusedError)
-                    else "selected_recovery_interrupted",
-                    expected_statuses=(AgentRunStatus.FINALIZING,),
-                    expected_claimed_by=claimed.claimed_by,
-                    expected_claimed_at=claimed.claimed_at,
-                )
-                raise
-            facts = self.storage.get_agent_run_recovery_facts(run.id)
-            if (
-                result.status != AgentRunStatus.FINALIZED
-                or not facts.get("receipt_exists")
-                or facts.get("receipt_missing_results") != 0
-            ):
-                raise RecoveryRefusedError("recovery_not_verified")
-            logger.info(
-                "event=extraction_recovery_verified run_id=%s operation_id=%s",
-                run.id,
-                operation_id,
-            )
-            return result
+                # Explicit selected work declines busy admission without changing
+                # the previewed run. No logical claim ages while waiting here.
+                with user_extraction_lease(
+                    self.storage, user_id, max_wait_seconds=0
+                ) as owner:
+                    pending_config = self.request_context.configurator.get_config().pending_tool_call_config
+                    with self.storage.commit_scope():
+                        fence_explicit_extraction(self.storage)
+                        current = self.storage.get_agent_run(run.id)
+                        if current is None:
+                            raise RecoveryRefusedError("run_not_found")
+                        validate_selection(
+                            self.request_context, current, selection, owner=owner
+                        )
+                        claimed = self.storage.claim_agent_run_for_recovery(
+                            expected=current,
+                            worker_id=self.worker_id,
+                            operation_id=operation_id,
+                        )
+                        if claimed is None:
+                            raise RecoveryRefusedError("claim_conflict")
+                        claimed = adopt_agent_run_for_execution(self.storage, claimed)
+                    logger.info(
+                        "event=extraction_recovery_claimed run_id=%s operation_id=%s",
+                        run.id,
+                        operation_id,
+                    )
+                    self._active_claim = claimed
+                    try:
+                        # Already admitted and adopted: do not reacquire capacity
+                        # or a second user lease through another dispatcher.
+                        result = self._execute_owned_claim(
+                            claimed,
+                            finalization_retry=True,
+                            pending_config=pending_config,
+                            selection=selection,
+                        )
+                    except Exception as exc:
+                        self._mark_selected_recovery_interrupted(run.id, exc)
+                        raise
+                    facts = self.storage.get_agent_run_recovery_facts(run.id)
+                    if (
+                        result.status != AgentRunStatus.FINALIZED
+                        or not facts.get("receipt_exists")
+                        or facts.get("receipt_missing_results") != 0
+                    ):
+                        raise RecoveryRefusedError("recovery_not_verified")
+                    logger.info(
+                        "event=extraction_recovery_verified run_id=%s operation_id=%s",
+                        run.id,
+                        operation_id,
+                    )
+                    return result
+            except UserLeaseBusyError as exc:
+                raise RecoveryRefusedError("execution_busy") from exc
 
-    def _execute_claimed_run(
+    def _execute_owned_claim(
         self,
         run: AgentRunRecord,
         *,
         finalization_retry: bool,
-        selection: Any = None,
+        pending_config: Any,
+        selection: Any,
     ) -> AgentRunRecord:
-        _refuse_overflow_protocol_run(run)
+        """Process while the caller retains actual lease and capacity ownership."""
         from reflexio.server.services.durable_learning.user_lease import (
-            UserLeaseBusyError,
-            user_extraction_lease,
+            adopt_agent_run_for_execution,
         )
 
-        pending_config = (
-            self.request_context.configurator.get_config().pending_tool_call_config
-        )
         expected_status = (
             AgentRunStatus.FINALIZING if finalization_retry else AgentRunStatus.RESUMING
         )
-        with bind_work_scope(self._scope_for(run)):
-            run = self._with_resolved_playbook_user_id(run)
-            try:
-                with user_extraction_lease(
-                    self.storage,
-                    run.binding.user_id or "",
-                    max_wait_seconds=min(5.0, self.timing.claim_ttl_seconds / 2),
-                ):
-                    latest = self.storage.get_agent_run(run.id)
-                    if (
-                        latest is None
-                        or latest.status != expected_status
-                        or latest.claimed_by != run.claimed_by
-                        or latest.claimed_at != run.claimed_at
-                    ):
-                        return latest or run
-                    _refuse_overflow_protocol_run(latest)
-                    self._active_claim = latest
-                    receipt = (
-                        self.storage.get_agent_run_finalization_receipt(
-                            run_id=latest.id,
-                            entity_type="profile"
-                            if latest.binding.extractor_kind == "profile"
-                            else "user_playbook",
-                        )
-                        if finalization_retry
-                        else None
-                    )
-                    if selection is not None and receipt is None:
-                        from reflexio.server.services.extraction.recovery import (
-                            validate_selection,
-                        )
+        latest = self.storage.get_agent_run(run.id)
+        if (
+            latest is None
+            or latest.status != expected_status
+            or latest.claimed_by != run.claimed_by
+            or latest.claimed_at != run.claimed_at
+        ):
+            return latest or run
+        _refuse_overflow_protocol_run(latest)
+        latest = adopt_agent_run_for_execution(self.storage, latest)
+        self._active_claim = latest
+        receipt = (
+            self.storage.get_agent_run_finalization_receipt(
+                run_id=latest.id,
+                entity_type="profile"
+                if latest.binding.extractor_kind == "profile"
+                else "user_playbook",
+            )
+            if finalization_retry
+            else None
+        )
+        if selection is not None and receipt is None:
+            from reflexio.server.services.extraction.recovery import (
+                validate_selection,
+            )
 
-                        validate_selection(
-                            self.request_context, latest, selection, owned_claim=True
-                        )
-                    elif finalization_retry and latest.recovery_operation_id:
-                        # Interrupted selected work can reach the ordinary
-                        # retry queue; retain its stronger safety contract.
-                        from reflexio.server.services.extraction.recovery import (
-                            inspect_run,
-                        )
+            validate_selection(
+                self.request_context, latest, selection, owned_claim=True
+            )
+        elif finalization_retry and latest.recovery_operation_id:
+            # Interrupted selected work can reach the ordinary
+            # retry queue; retain its stronger safety contract.
+            from reflexio.server.services.extraction.recovery import (
+                inspect_run,
+            )
 
-                        # Receipt replay must deliver already-committed receipts,
-                        # even if sources/config or retry limits changed later.
-                        if (
-                            receipt is None
-                            and not inspect_run(
-                                self.request_context, latest, owned_claim=True
-                            )["eligible"]
-                        ):
-                            return (
-                                self._update_claimed_status(
-                                    latest.id,
-                                    AgentRunStatus.FAILED,
-                                    last_error="selected_recovery_refused",
-                                )
-                                or latest
-                            )
-                    source_ids = set(latest.binding.source_interaction_ids)
-                    if (
-                        receipt is None
-                        and source_ids
-                        and source_ids
-                        != {
-                            interaction.interaction_id
-                            for interaction in self.storage.get_interactions_by_ids(
-                                list(source_ids)
-                            )
-                        }
-                    ):
-                        # Never revive saved output whose source was explicitly erased.
-                        return (
-                            self._update_claimed_status(
-                                latest.id,
-                                AgentRunStatus.CANCELLED,
-                                last_error="source_interactions_erased",
-                            )
-                            or latest
-                        )
-                    if finalization_retry:
-                        return self._retry_finalization(latest) or latest
-                    from reflexio.server.services.durable_learning.user_lease import (
-                        fence_explicit_extraction,
-                    )
+            # Receipt replay must deliver already-committed receipts,
+            # even if sources/config or retry limits changed later.
+            if (
+                receipt is None
+                and not inspect_run(self.request_context, latest, owned_claim=True)[
+                    "eligible"
+                ]
+            ):
+                return self._update_claimed_status(
+                    latest.id,
+                    AgentRunStatus.FAILED,
+                    last_error="selected_recovery_refused",
+                )
+        source_ids = set(latest.binding.source_interaction_ids)
+        if (
+            receipt is None
+            and source_ids
+            and source_ids
+            != {
+                interaction.interaction_id
+                for interaction in self.storage.get_interactions_by_ids(
+                    list(source_ids)
+                )
+            }
+        ):
+            # Never revive saved output whose source was explicitly erased.
+            return self._update_claimed_status(
+                latest.id,
+                AgentRunStatus.CANCELLED,
+                last_error="source_interactions_erased",
+            )
+        if finalization_retry:
+            return self._retry_finalization(latest) or latest
+        if latest.max_steps_remaining is not None and latest.max_steps_remaining <= 0:
+            # Refusal consumes no model attempt; the adopted witness still
+            # fences the terminal transition under the actual user owner.
+            return self._update_claimed_status(
+                latest.id,
+                AgentRunStatus.FAILED,
+                last_error="Resumable extraction max-step budget exhausted",
+            )
+        return self._process_claimed_run(latest, pending_config) or latest
 
-                    if latest.claimed_by is None or latest.claimed_at is None:
-                        raise ResumeWorkerError("Resume claim has no owner identity")
-                    with self.storage.commit_scope():
-                        fence_explicit_extraction(self.storage)
-                        attempts = self.storage.begin_extraction_resume(
-                            latest.id, latest.claimed_by, latest.claimed_at.isoformat()
-                        )
-                    if attempts is None:
-                        return latest
-                    return (
-                        self._process_claimed_run(
-                            replace(latest, resume_attempts=attempts), pending_config
-                        )
-                        or latest
-                    )
-            except UserLeaseBusyError:
-                # The run remains durably claimed and can be reclaimed at expiry.
-                # Never reset a claim that another worker may now own. Return
-                # the inspected row so drain can move on to another user.
-                return run
+    def _begin_model_attempt(self, run: AgentRunRecord) -> AgentRunRecord:
+        """Charge only prepared model work, retaining its exact owned witness."""
+        from reflexio.server.services.durable_learning.user_lease import (
+            owned_agent_run_write,
+        )
+
+        if (
+            self._active_claim != run
+            or run.claimed_by is None
+            or run.claimed_at is None
+        ):
+            raise LeaseLostError("Resume charge has no retained execution claim")
+        with owned_agent_run_write(self.storage, run):
+            attempts = self.storage.begin_extraction_resume(
+                run.id, run.claimed_by, run.claimed_at.isoformat()
+            )
+        if attempts is None:
+            raise LeaseLostError("Resume charge lost its execution claim")
+        charged = replace(run, resume_attempts=attempts)
+        self._active_claim = charged
+        return charged
+
+    def _mark_selected_recovery_interrupted(
+        self, run_id: str, error: Exception
+    ) -> None:
+        """A selected refusal cannot enter ordinary retries or outlive its owner."""
+        from reflexio.server.services.extraction.recovery import RecoveryRefusedError
+        from reflexio.server.services.storage.storage_base import LeaseLostError
+
+        active = self._active_claim
+        if (
+            active is None
+            or active.id != run_id
+            or active.status != AgentRunStatus.FINALIZING
+        ):
+            return
+        try:
+            refused = isinstance(error, RecoveryRefusedError)
+            self._update_claimed_status(
+                run_id,
+                AgentRunStatus.FAILED
+                if refused
+                else AgentRunStatus.FINALIZATION_FAILED,
+                last_error="selected_recovery_refused"
+                if refused
+                else "selected_recovery_interrupted",
+            )
+        except LeaseLostError:
+            logger.info("event=selected_recovery_cleanup_lost_owner run_id=%s", run_id)
 
     def _update_claimed_status(
         self, run_id: str, status: AgentRunStatus, **kwargs: Any
-    ) -> AgentRunRecord | None:
+    ) -> AgentRunRecord:
         from reflexio.server.services.durable_learning.user_lease import (
-            fence_explicit_extraction,
+            owned_agent_run_write,
         )
 
-        with self.storage.commit_scope():
-            fence_explicit_extraction(self.storage)
+        active = self._active_claim
+        if (
+            active is None
+            or active.id != run_id
+            or active.status
+            not in (
+                AgentRunStatus.RESUMING,
+                AgentRunStatus.AGENT_COMPLETED,
+                AgentRunStatus.FINALIZING,
+                AgentRunStatus.FAILED,
+            )
+        ):
+            raise LeaseLostError("Resume transition has no retained execution claim")
+        with owned_agent_run_write(self.storage, active):
             updated = self.storage.update_agent_run_status(
                 run_id,
                 status,
-                expected_statuses=(
-                    AgentRunStatus.RESUMING,
-                    AgentRunStatus.AGENT_COMPLETED,
-                    AgentRunStatus.FINALIZING,
-                ),
-                expected_claimed_by=self._active_claim.claimed_by
-                if self._active_claim
-                else None,
-                expected_claimed_at=self._active_claim.claimed_at
-                if self._active_claim
-                else None,
+                expected_statuses=(active.status,),
+                expected_claimed_by=active.claimed_by,
+                expected_claimed_at=active.claimed_at,
                 **kwargs,
             )
-        if updated is not None:
-            logger.info(
-                "event=extraction_run_transition run_id=%s org_id=%s project_id=%s status=%s operation_id=%s",
-                updated.id,
-                updated.binding.org_id,
-                updated.project_id,
-                updated.status,
-                updated.recovery_operation_id,
-            )
+            if updated is None:
+                raise LeaseLostError("Resume transition lost its execution claim")
+        self._active_claim = updated
+        logger.info(
+            "event=extraction_run_transition run_id=%s org_id=%s project_id=%s status=%s operation_id=%s",
+            updated.id,
+            updated.binding.org_id,
+            updated.project_id,
+            updated.status,
+            updated.recovery_operation_id,
+        )
         return updated
+
+    def _settle_finalization_failure(
+        self,
+        run: AgentRunRecord,
+        error: Exception,
+        *,
+        last_error: str,
+        max_finalization_attempts: int,
+    ) -> AgentRunRecord:
+        from reflexio.server.services.extraction.publication import (
+            settle_finalization_failure,
+        )
+
+        active = self._active_claim
+        if active is None or active.id != run.id:
+            raise LeaseLostError("Finalization failure has no retained execution")
+        updated = settle_finalization_failure(
+            self.storage,
+            active,
+            error,
+            max_attempts=max_finalization_attempts,
+            last_error=last_error,
+        )
+        self._active_claim = updated
+        logger.info(
+            "event=extraction_run_transition run_id=%s org_id=%s project_id=%s status=%s operation_id=%s",
+            updated.id,
+            updated.binding.org_id,
+            updated.project_id,
+            updated.status,
+            updated.recovery_operation_id,
+        )
+        return updated
+
+    def _settle_interrupted_preparation(self, run: AgentRunRecord) -> AgentRunRecord:
+        from reflexio.server.services.durable_learning.user_lease import (
+            owned_agent_run_write,
+        )
+        from reflexio.server.services.extraction.publication_preparation import (
+            preparation_claim_digest,
+        )
+        from reflexio.server.services.extraction.publication_receipts import (
+            require_output_id,
+        )
+
+        limit = self.request_context.configurator.get_config().pending_tool_call_config.max_finalization_attempts
+        with owned_agent_run_write(self.storage, run), self.storage._stream_sql() as db:
+            output = run.committed_output
+            if not isinstance(output, dict):
+                raise ResumeWorkerError("Finalization requires retained output")
+            publication = output.get("publication")
+            output_id = require_output_id(
+                publication.get("id") if isinstance(publication, dict) else None
+            )
+            if (
+                self.storage._get_output_publication_receipt(db, run.id, output_id)
+                is not None
+            ):
+                return run
+            entry = self.storage.pending_agent_preparation_attempt(run)
+            if entry is None:
+                return run
+            if entry.claim_digest == preparation_claim_digest(run):
+                raise LeaseLostError(
+                    "This execution already has secondary compute in progress"
+                )
+            count = run.finalization_attempts + 1
+            updated = self._update_claimed_status(
+                run.id,
+                AgentRunStatus.FAILED if count >= limit else AgentRunStatus.FINALIZING,
+                increment_finalization_attempts=True,
+                last_error="interrupted_finalization_compute",
+            )
+            self.storage.settle_agent_preparation_failure(updated, entry.identity)
+            return updated
 
     def _process_claimed_run(
         self, run: AgentRunRecord, pending_config: Any
@@ -617,13 +652,6 @@ class ExtractionResumeWorker:
         the four ``update_agent_run_status`` exit paths.
         """
         _refuse_overflow_protocol_run(run)
-        if run.max_steps_remaining is not None and run.max_steps_remaining <= 0:
-            return self._update_claimed_status(
-                run.id,
-                AgentRunStatus.FAILED,
-                last_error="Resumable extraction max-step budget exhausted",
-            )
-
         try:
             run = self._with_resolved_playbook_user_id(run)
             resolved_calls = self._load_resolved_tool_calls(run)
@@ -631,47 +659,94 @@ class ExtractionResumeWorker:
                 raise ResumeWorkerError(
                     f"Run {run.id} has no resolved, unconsumed tool calls"
                 )
-            items, pending_tool_call_ids, model_provenance = self._resume_run(
-                run, resolved_calls
-            )
+            completed = self._resume_run(run, resolved_calls)
+            if (
+                not isinstance(completed, AgentRunRecord)
+                or completed.id != run.id
+                or completed.status != AgentRunStatus.AGENT_COMPLETED
+                or self._active_claim != completed
+            ):
+                raise LeaseLostError("Resume output has no committed execution witness")
         except ReadinessUnavailableError:
             from reflexio.server.services.durable_learning.user_lease import (
-                fence_explicit_extraction,
+                owned_agent_run_write,
             )
 
-            if run.claimed_by is None or run.claimed_at is None:
-                raise ResumeWorkerError("Resume claim has no owner identity") from None
-            with self.storage.commit_scope():
-                fence_explicit_extraction(self.storage)
-                latest = self.storage.get_agent_run(run.id)
-                if (
-                    latest is not None
-                    and latest.status == AgentRunStatus.AGENT_COMPLETED
-                    and latest.committed_output is not None
-                    and latest.claimed_by == run.claimed_by
-                    and latest.claimed_at == run.claimed_at
-                ):
-                    # The agent has already committed its output. Conversion
-                    # readiness must retry that output rather than rerun the agent
-                    # or refund an execution that actually completed.
-                    return self.storage.update_agent_run_status(
-                        run.id,
-                        AgentRunStatus.FINALIZATION_FAILED,
-                        expected_statuses=(AgentRunStatus.AGENT_COMPLETED,),
-                        expected_claimed_by=run.claimed_by,
-                        expected_claimed_at=run.claimed_at,
-                        next_resume_at=datetime.now(UTC) + timedelta(seconds=30),
-                        last_error="ReadinessUnavailableError",
-                    )
+            active = self._active_claim
+            if active is None or active.id != run.id:
+                raise LeaseLostError(
+                    "Readiness deferral has no retained execution"
+                ) from None
+            if (
+                active.status == AgentRunStatus.AGENT_COMPLETED
+                and active.committed_output is not None
+            ):
+                # The returned witness proves output committed. Retry conversion,
+                # without rereading a newer owner's output or refunding its call.
+                return self._update_claimed_status(
+                    run.id,
+                    AgentRunStatus.FINALIZATION_FAILED,
+                    next_resume_at=datetime.now(UTC) + timedelta(seconds=30),
+                    last_error="ReadinessUnavailableError",
+                )
+            if (
+                active.status != AgentRunStatus.RESUMING
+                or active.claimed_by is None
+                or active.claimed_at is None
+            ):
+                raise LeaseLostError(
+                    "Readiness deferral lost its execution claim"
+                ) from None
+            if active.resume_attempts == run.resume_attempts:
+                # Preparation never charged this execution. Do not refund a
+                # previous model call when readiness fails before entry.
+                return self._update_claimed_status(
+                    run.id,
+                    AgentRunStatus.RESUME_READY,
+                    next_resume_at=datetime.now(UTC) + timedelta(seconds=30),
+                    last_error="ReadinessUnavailableError",
+                )
+            with owned_agent_run_write(self.storage, active):
                 deferred = self.storage.defer_extraction_resume(
                     run.id,
-                    run.claimed_by,
-                    run.claimed_at.isoformat(),
-                    run.resume_attempts,
+                    active.claimed_by,
+                    active.claimed_at.isoformat(),
+                    active.resume_attempts,
                     (datetime.now(UTC) + timedelta(seconds=30)).isoformat(),
                 )
-            return self.storage.get_agent_run(run.id) if deferred else None
+                # This read returns our own CAS result under the held writer
+                # locks; it cannot confer a replacement execution's authority.
+                updated = self.storage.get_agent_run(run.id) if deferred else None
+                if deferred and (
+                    updated is None or updated.status != AgentRunStatus.RESUME_READY
+                ):
+                    raise LeaseLostError(
+                        "Readiness deferral result is unavailable"
+                    ) from None
+            if updated is not None:
+                self._active_claim = updated
+            return updated
+        except LeaseLostError:
+            raise
         except Exception as exc:
+            active = self._active_claim
+            if active is None or active.id != run.id:
+                raise LeaseLostError(
+                    "Resume failure has no retained execution claim"
+                ) from exc
+            if execution_input_is_busy(exc):
+                # The model already entered, so retain its charged attempt.
+                # No failure increment, backoff clock, finalization or new model
+                # turn: the next admitted turn may retry the still-current run.
+                return self._update_claimed_status(
+                    run.id,
+                    AgentRunStatus.FINALIZATION_FAILED
+                    if active.status == AgentRunStatus.AGENT_COMPLETED
+                    and active.committed_output is not None
+                    else AgentRunStatus.RESUME_READY,
+                    next_resume_at=datetime.now(UTC),
+                    last_error="ExecutionInputBusyError",
+                )
             with error_tags(
                 subsystem="extraction",
                 op="resume_run",
@@ -685,40 +760,29 @@ class ExtractionResumeWorker:
                 )
             failed_status = (
                 AgentRunStatus.FAILED
-                if run.resume_attempts >= pending_config.max_resume_attempts
+                if active.resume_attempts >= pending_config.max_resume_attempts
                 else AgentRunStatus.RESUME_READY
             )
             return self._update_claimed_status(
                 run.id,
                 failed_status,
-                next_resume_at=_next_retry_at(run.resume_attempts),
+                next_resume_at=_next_retry_at(active.resume_attempts),
                 last_error=str(exc),
             )
 
         try:
-            if self._update_claimed_status(run.id, AgentRunStatus.FINALIZING) is None:
-                return None
-            result = self._finalize_items(run, items, model_provenance=model_provenance)
-            if result.won_receipt:
-                self._schedule_finalized_tagging(run)
-            self.storage.consume_run_tool_dependencies(run.id)
-            finalized_status = (
-                AgentRunStatus.FINALIZED_PENDING_TOOL
-                if pending_tool_call_ids
-                else AgentRunStatus.FINALIZED
-            )
-            return self._update_claimed_status(
-                run.id,
-                finalized_status,
-                pending_tool_call_ids=pending_tool_call_ids,
-            )
-        except ReadinessUnavailableError:
-            return self._update_claimed_status(
-                run.id,
-                AgentRunStatus.FINALIZATION_FAILED,
-                next_resume_at=datetime.now(UTC) + timedelta(seconds=30),
+            run = self._update_claimed_status(completed.id, AgentRunStatus.FINALIZING)
+            run = self._with_resolved_playbook_user_id(run)
+            return self._publish_retained_output(run)
+        except ReadinessUnavailableError as error:
+            return self._settle_finalization_failure(
+                run,
+                error,
                 last_error="ReadinessUnavailableError",
+                max_finalization_attempts=pending_config.max_finalization_attempts,
             )
+        except LeaseLostError:
+            raise
         except Exception as exc:
             with error_tags(
                 subsystem="extraction",
@@ -731,67 +795,30 @@ class ExtractionResumeWorker:
                     "event=resumable_extraction_finalization_failed run_id=%s",
                     run.id,
                 )
-            next_attempt_count = run.finalization_attempts + 1
-            failed_status = _finalization_failure_status(
+            return self._settle_finalization_failure(
+                run,
                 exc,
-                next_attempt_count=next_attempt_count,
-                max_finalization_attempts=pending_config.max_finalization_attempts,
-            )
-            return self._update_claimed_status(
-                run.id,
-                failed_status,
-                next_resume_at=_next_retry_at(next_attempt_count),
                 last_error=str(exc),
-                increment_finalization_attempts=True,
+                max_finalization_attempts=pending_config.max_finalization_attempts,
             )
 
     def _retry_finalization(self, run: AgentRunRecord) -> AgentRunRecord | None:
         _refuse_overflow_protocol_run(run)
-        config = self.request_context.configurator.get_config()
-        pending_config = config.pending_tool_call_config
+        pending_config = (
+            self.request_context.configurator.get_config().pending_tool_call_config
+        )
         try:
             run = self._with_resolved_playbook_user_id(run)
-            entity_type = (
-                "profile"
-                if run.binding.extractor_kind == "profile"
-                else "user_playbook"
-            )
-            receipt = self.storage.get_agent_run_finalization_receipt(
-                run_id=run.id, entity_type=entity_type
-            )
-            if receipt is not None:
-                # Replay committed receipts from durable IDs without rereading
-                # erased sources, parsing old output, or rebuilding a write plan.
-                self._record_finalized_learnings(run, receipt, entity_type=entity_type)
-                result = FinalizationResult(receipt, won_receipt=False)
-                pending_tool_call_ids = run.pending_tool_call_ids
-            else:
-                items, pending_tool_call_ids, model_provenance = (
-                    self._items_from_committed_output(run)
-                )
-                result = self._finalize_items(
-                    run, items, model_provenance=model_provenance
-                )
-            if result.won_receipt:
-                self._schedule_finalized_tagging(run)
-            self.storage.consume_run_tool_dependencies(run.id)
-            finalized_status = (
-                AgentRunStatus.FINALIZED_PENDING_TOOL
-                if pending_tool_call_ids
-                else AgentRunStatus.FINALIZED
-            )
-            return self._update_claimed_status(
-                run.id,
-                finalized_status,
-                pending_tool_call_ids=pending_tool_call_ids,
-            )
-        except ReadinessUnavailableError:
-            return self._update_claimed_status(
-                run.id,
-                AgentRunStatus.FINALIZATION_FAILED,
-                next_resume_at=datetime.now(UTC) + timedelta(seconds=30),
+            return self._publish_retained_output(run)
+        except ReadinessUnavailableError as error:
+            return self._settle_finalization_failure(
+                run,
+                error,
                 last_error="ReadinessUnavailableError",
+                max_finalization_attempts=pending_config.max_finalization_attempts,
             )
+        except LeaseLostError:
+            raise
         except Exception as exc:
             with error_tags(
                 subsystem="extraction",
@@ -805,18 +832,11 @@ class ExtractionResumeWorker:
                     run.id,
                     type(exc).__name__,
                 )
-            next_attempt_count = run.finalization_attempts + 1
-            failed_status = _finalization_failure_status(
+            return self._settle_finalization_failure(
+                run,
                 exc,
-                next_attempt_count=next_attempt_count,
-                max_finalization_attempts=pending_config.max_finalization_attempts,
-            )
-            return self._update_claimed_status(
-                run.id,
-                failed_status,
-                next_resume_at=_next_retry_at(next_attempt_count),
                 last_error=type(exc).__name__,
-                increment_finalization_attempts=True,
+                max_finalization_attempts=pending_config.max_finalization_attempts,
             )
 
     def _load_resolved_tool_calls(
@@ -858,7 +878,7 @@ class ExtractionResumeWorker:
         self,
         run: AgentRunRecord,
         resolved_calls: list[PendingToolCallRecord],
-    ) -> tuple[list[Any], list[str], ModelProvenance | None]:
+    ) -> AgentRunRecord:
         _refuse_overflow_protocol_run(run)
         request_interaction_data_models = _request_interaction_models_from_ids(
             self.storage,
@@ -868,23 +888,24 @@ class ExtractionResumeWorker:
         )
         extractor_config = _select_current_extractor_config(self.request_context, run)
         _log_config_hash_drift(run, extractor_config)
-        if run.binding.extractor_kind == "profile":
-            return self._resume_profile(
-                run,
-                extractor_config,
-                request_interaction_data_models,
-                resolved_calls,
+        with answer_input_scope(self.storage, run.id):
+            if run.binding.extractor_kind == "profile":
+                return self._resume_profile(
+                    run,
+                    extractor_config,
+                    request_interaction_data_models,
+                    resolved_calls,
+                )
+            if run.binding.extractor_kind == "playbook":
+                return self._resume_playbook(
+                    run,
+                    extractor_config,
+                    request_interaction_data_models,
+                    resolved_calls,
+                )
+            raise ResumeWorkerError(
+                f"Unsupported extractor kind {run.binding.extractor_kind!r}"
             )
-        if run.binding.extractor_kind == "playbook":
-            return self._resume_playbook(
-                run,
-                extractor_config,
-                request_interaction_data_models,
-                resolved_calls,
-            )
-        raise ResumeWorkerError(
-            f"Unsupported extractor kind {run.binding.extractor_kind!r}"
-        )
 
     def _resume_profile(
         self,
@@ -892,7 +913,7 @@ class ExtractionResumeWorker:
         extractor_config: ProfileExtractorConfig | PlaybookConfig,
         request_interaction_data_models: list[RequestInteractionDataModel],
         resolved_calls: list[PendingToolCallRecord],
-    ) -> tuple[list[Any], list[str], ModelProvenance | None]:
+    ) -> AgentRunRecord:
         if not isinstance(extractor_config, ProfileExtractorConfig):
             raise ResumeWorkerError("Expected profile extractor config")
         if run.binding.user_id is None:
@@ -905,22 +926,7 @@ class ExtractionResumeWorker:
             reverse=True,
         )[:MAX_EXISTING_PROFILES_FOR_CONTEXT]
         agent_context = self.request_context.configurator.get_agent_context()
-        service_config = ProfileGenerationServiceConfig(
-            user_id=run.binding.user_id,
-            request_id=run.binding.request_id,
-            source=run.binding.source,
-            existing_data=existing_profiles,
-            auto_run=False,
-            force_extraction=True,
-        )
-        extractor = ProfileExtractor(
-            request_context=self.request_context,
-            llm_client=self.client,
-            extractor_config=extractor_config,
-            service_config=service_config,
-            agent_context=agent_context,
-        )
-        messages = construct_profile_extraction_messages_from_sessions(
+        prepared_prompt = prepare_profile_extraction_prompt(
             prompt_manager=self.request_context.prompt_manager,
             request_interaction_data_models=request_interaction_data_models,
             agent_context_prompt=agent_context,
@@ -931,41 +937,23 @@ class ExtractionResumeWorker:
             ),
             extraction_definition_prompt=extractor_config.extraction_definition_prompt.strip(),
             existing_profiles=context_profiles,
+            user_id=run.binding.user_id,
         )
-        result = self._resume_agent(
+        return self._resume_agent(
             run=run,
             messages=self._messages_with_prior_knowledge(
                 run=run,
-                messages=messages,
+                messages=prepared_prompt.messages,
                 extractor_config=extractor_config,
                 resolved_calls=resolved_calls,
             ),
             output_schema=StructuredProfilesOutput,
+            history_inputs=prepared_prompt.history_inputs,
+            source_inputs=capture_source_inputs(
+                self.storage, run, request_interaction_data_models
+            ),
             resolved_calls=resolved_calls,
             log_label="Profile extraction resume",
-        )
-        if not isinstance(result.output, StructuredProfilesOutput):
-            raise ResumeWorkerError(
-                f"Profile resume did not finish: {result.failure_label}"
-            )
-        raw_profiles = [
-            profile.model_dump() for profile in result.output.profiles or []
-        ]
-        source_interaction_ids = [
-            interaction.interaction_id
-            for request_model in request_interaction_data_models
-            for interaction in request_model.interactions
-            if interaction.interaction_id
-        ]
-        return (
-            extractor._convert_raw_to_user_profiles(
-                raw_profiles=raw_profiles,
-                user_id=run.binding.user_id,
-                request_id=run.binding.request_id,
-                source_interaction_ids=source_interaction_ids,
-            ),
-            result.pending_tool_call_ids,
-            result.model_provenance,
         )
 
     def _resume_playbook(
@@ -974,7 +962,7 @@ class ExtractionResumeWorker:
         extractor_config: ProfileExtractorConfig | PlaybookConfig,
         request_interaction_data_models: list[RequestInteractionDataModel],
         resolved_calls: list[PendingToolCallRecord],
-    ) -> tuple[list[Any], list[str], ModelProvenance | None]:
+    ) -> AgentRunRecord:
         if not isinstance(extractor_config, PlaybookConfig):
             raise ResumeWorkerError("Expected playbook extractor config")
         user_id = run.binding.user_id
@@ -982,21 +970,6 @@ class ExtractionResumeWorker:
             raise ResumeWorkerError("Playbook resume requires user_id")
 
         agent_context = self.request_context.configurator.get_agent_context()
-        service_config = PlaybookGenerationServiceConfig(
-            request_id=run.binding.request_id,
-            agent_version=run.binding.agent_version or "",
-            user_id=user_id,
-            source=run.binding.source,
-            auto_run=False,
-            force_extraction=True,
-        )
-        extractor = PlaybookExtractor(
-            request_context=self.request_context,
-            llm_client=self.client,
-            extractor_config=extractor_config,
-            service_config=service_config,
-            agent_context=agent_context,
-        )
         playbook_definition = (
             extractor_config.extraction_definition_prompt.strip()
             if extractor_config.extraction_definition_prompt
@@ -1053,7 +1026,7 @@ class ExtractionResumeWorker:
                 prompt_context=prompt_context,
                 citation_instruction=contract.citation_instruction(),
             )
-        result = self._resume_agent(
+        return self._resume_agent(
             run=run,
             messages=self._messages_with_prior_knowledge(
                 run=run,
@@ -1062,33 +1035,16 @@ class ExtractionResumeWorker:
                 resolved_calls=resolved_calls,
             ),
             output_schema=contract.schema,
+            history_inputs=HistoricalInputs(),
+            source_inputs=capture_source_inputs(
+                self.storage, run, request_interaction_data_models
+            ),
             resolved_calls=resolved_calls,
             log_label="Playbook extraction resume",
             # Same bounded corrective turn a fresh run gets, so a resumed run
             # cannot yield a batch a fresh run would have rejected.
             structured_output_validator=contract.validator,
         )
-        if not isinstance(
-            result.output,
-            StructuredPlaybookList
-            | StructuredReferencedExtractedPlaybookList
-            | StructuredExtractedPlaybookList,
-        ):
-            raise ResumeWorkerError(
-                f"Playbook resume did not finish: {result.failure_label}"
-            )
-        if contract.strict:
-            items = extractor._process_structured_response_list(
-                result.output,
-                evidence_sources=prompt_context.evidence_sources,
-                evidence_units=prompt_context.evidence_units,
-            )
-        else:
-            items = extractor._process_structured_response_list(
-                result.output,
-                source_interaction_ids=list(run.binding.source_interaction_ids),
-            )
-        return items, result.pending_tool_call_ids, result.model_provenance
 
     def _messages_with_prior_knowledge(
         self,
@@ -1124,14 +1080,16 @@ class ExtractionResumeWorker:
         run: AgentRunRecord,
         messages: list[dict[str, Any]],
         output_schema: type[BaseModel],
+        source_inputs: dict[str, Any],
+        history_inputs: HistoricalInputs,
         resolved_calls: list[PendingToolCallRecord],
         log_label: str,
         structured_output_validator: (
             Callable[[BaseModel], Sequence[str]] | None
         ) = None,
-    ) -> AgentRunResult:
+    ) -> AgentRunRecord:
         extra_tools, extra_context = self._extra_tools_for_run(run)
-        return ResumableExtractionAgent(
+        result = ResumableExtractionAgent(
             client=self.client,
             storage=self.storage,
         ).resume(
@@ -1139,11 +1097,38 @@ class ExtractionResumeWorker:
             messages=messages,
             output_schema=output_schema,
             resolved_tool_calls=resolved_calls,
+            source_inputs=source_inputs,
+            history_inputs=history_inputs,
+            before_model=self._begin_model_attempt,
             extra_tools=extra_tools,
             extra_tool_context=extra_context,
             log_label=log_label,
             structured_output_validator=structured_output_validator,
         )
+
+        witness = result.execution_run
+        if (
+            witness is None
+            or result.run_id != run.id
+            or witness.id != run.id
+            or witness.claimed_by != run.claimed_by
+            or witness.claimed_at != run.claimed_at
+            or witness.status
+            not in (AgentRunStatus.AGENT_COMPLETED, AgentRunStatus.FAILED)
+        ):
+            raise LeaseLostError("Resume result did not retain its execution claim")
+        from reflexio.server.services.durable_learning.user_lease import (
+            owned_agent_run_write,
+        )
+
+        with owned_agent_run_write(self.storage, witness):
+            pass
+        self._active_claim = witness
+        if witness.status != AgentRunStatus.AGENT_COMPLETED:
+            raise ResumeWorkerError(
+                f"{run.binding.extractor_kind.capitalize()} resume did not finish: {result.failure_label}"
+            )
+        return witness
 
     def _items_from_committed_output(
         self,
@@ -1191,25 +1176,9 @@ class ExtractionResumeWorker:
         if run.binding.user_id is None:
             raise ResumeWorkerError("Profile finalization retry requires user_id")
         output = StructuredProfilesOutput.model_validate(committed_output)
-        agent_context = self.request_context.configurator.get_agent_context()
-        service_config = ProfileGenerationServiceConfig(
-            user_id=run.binding.user_id,
-            request_id=run.binding.request_id,
-            source=run.binding.source,
-            existing_data=self.storage.get_user_profile(run.binding.user_id),
-            auto_run=False,
-            force_extraction=True,
-        )
-        extractor = ProfileExtractor(
-            request_context=self.request_context,
-            llm_client=self.client,
-            extractor_config=extractor_config,
-            service_config=service_config,
-            agent_context=agent_context,
-        )
         raw_profiles = [profile.model_dump() for profile in output.profiles or []]
         return (
-            extractor._convert_raw_to_user_profiles(
+            ProfileExtractor._convert_raw_to_user_profiles(
                 raw_profiles=raw_profiles,
                 user_id=run.binding.user_id,
                 request_id=run.binding.request_id,
@@ -1293,98 +1262,75 @@ class ExtractionResumeWorker:
             )
         return items, run.pending_tool_call_ids
 
-    def _finalize_items(
-        self,
-        run: AgentRunRecord,
-        items: list[Any],
-        *,
-        model_provenance: ModelProvenance | None = None,
-    ) -> FinalizationResult:
+    def _publish_retained_output(self, run: AgentRunRecord) -> AgentRunRecord:
         _refuse_overflow_protocol_run(run)
-        if run.binding.extractor_kind == "profile":
-            service = ProfileGenerationService(
-                llm_client=self.client,
-                request_context=self.request_context,
-            )
-            service.service_config = ProfileGenerationServiceConfig(
-                user_id=run.binding.user_id or "",
-                request_id=run.binding.request_id,
-                source=run.binding.source,
-                auto_run=False,
-                force_extraction=True,
-            )
-            result = service._finalize_extracted_items_with_outcome(
-                items,
-                model_provenance=model_provenance,
-                finalization_run_id=run.id,
-            )
-            self._record_finalized_learnings(
-                run, result.learning_ids, entity_type="profile"
-            )
-            return result
-        if run.binding.extractor_kind == "playbook":
+        run = self._settle_interrupted_preparation(run)
+        if run.status == AgentRunStatus.FAILED:
+            return run
+        from reflexio.server.services.extraction.publication_preparation import (
+            SavedPublicationPreparation,
+            bookmark_from_output,
+        )
+
+        def prepare(
+            run: AgentRunRecord, saved: SavedPublicationPreparation | None
+        ) -> PreparedPublication:
             user_id = run.binding.user_id
             if not user_id:
-                raise ResumeWorkerError("Playbook finalization requires user_id")
-            service = PlaybookGenerationService(
-                llm_client=self.client,
-                request_context=self.request_context,
+                raise ResumeWorkerError("Output publication requires its admitted user")
+            if run.binding.extractor_kind == "profile":
+                service = ProfileGenerationService(
+                    llm_client=self.client, request_context=self.request_context
+                )
+                service.service_config = ProfileGenerationServiceConfig(
+                    user_id=user_id,
+                    request_id=run.binding.request_id,
+                    source=run.binding.source,
+                    auto_run=False,
+                    force_extraction=True,
+                )
+            elif run.binding.extractor_kind == "playbook":
+                service = PlaybookGenerationService(
+                    llm_client=self.client, request_context=self.request_context
+                )
+                service.service_config = PlaybookGenerationServiceConfig(
+                    request_id=run.binding.request_id,
+                    agent_version=run.binding.agent_version or "",
+                    user_id=user_id,
+                    source=run.binding.source,
+                    auto_run=False,
+                    force_extraction=True,
+                )
+                service._review_run = run
+            else:
+                raise ResumeWorkerError("Unsupported publication extractor")
+            if saved is not None:
+                return PreparedPublication(service, saved.write_plan, saved.bookmark)
+            items, _, provenance = self._items_from_committed_output(run)
+            if provenance is not None:
+                service._last_model_provenance = provenance
+            from reflexio.server.services.extraction.publication_receipts import (
+                output_publication_origin,
             )
-            service.service_config = PlaybookGenerationServiceConfig(
-                request_id=run.binding.request_id,
-                agent_version=run.binding.agent_version or "",
-                user_id=user_id,
-                source=run.binding.source,
-                auto_run=False,
-                force_extraction=True,
-            )
-            result = service._finalize_extracted_items_with_outcome(
-                items,
-                model_provenance=model_provenance,
-                extraction_run=run,
-                finalization_run_id=run.id,
-            )
-            self._record_finalized_learnings(
-                run, result.learning_ids, entity_type="user_playbook"
-            )
-            return result
-        raise ResumeWorkerError(
-            f"Unsupported extractor kind {run.binding.extractor_kind!r}"
-        )
 
-    def _record_finalized_learnings(
-        self, run: AgentRunRecord, learning_ids: list[str], *, entity_type: str
-    ) -> None:
-        """Emit ``learnings_generated`` for a finalized resumable-extraction batch.
-
-        Emits one event per durable learning id returned by finalization.
-        Per-record keys make finalization retries idempotent downstream.
-        """
-        if not learning_ids:
-            return
-        receipt_timestamp = run.created_at or run.agent_completed_at
-        if receipt_timestamp is None:
-            raise ReceiptDeliveryError(
-                UsageEventDeliveryStatus.UNKNOWN,
-                "receipt-backed learning timestamp is not durable",
+            bookmark = (
+                bookmark_from_output(run)
+                if items
+                and output_publication_origin(run.committed_output) == "initial_inline"
+                else None
             )
-        metadata = {
-            "run_id": run.id,
-            "extractor_kind": run.binding.extractor_kind,
-        }
-        emit_learnings_generated_records_strict(
-            org_id=self.request_context.org_id,
-            configurator=self.request_context.configurator,
-            learning_ids=learning_ids,
-            source="resumable_extraction",
-            pipeline=run.binding.extractor_kind,
-            user_id=run.binding.user_id,
-            request_id=run.binding.request_id,
-            agent_version=run.binding.agent_version,
-            entity_type=entity_type,
-            metadata=metadata,
-            created_at=receipt_timestamp.timestamp(),
+            return PreparedPublication(
+                service, service._resolve_write_plan([items]), bookmark
+            )
+
+        updated = publish_resumed_output(
+            self.storage,
+            run,
+            prepare=prepare,
+            on_published=self._schedule_finalized_tagging,
         )
+        self._active_claim = updated
+        return updated
 
     def _schedule_finalized_tagging(self, run: AgentRunRecord) -> None:
         user_id = run.binding.user_id

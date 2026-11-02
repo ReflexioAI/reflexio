@@ -8,6 +8,7 @@ import pytest
 
 from reflexio.server.llm.input_budget import InputBudgetConfigurationError
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.services.extraction.history_inputs import HistoricalInputs
 from reflexio.server.services.extraction.resumable_agent import ResumableExtractionAgent
 from reflexio.server.services.playbook.components.reviewer import (
     PlaybookCandidateReviewer,
@@ -273,9 +274,11 @@ def test_custom_extractor_saved_output_retry_restores_finalization(
             ).start(
                 run=run,
                 messages=[],
+                history_inputs=HistoricalInputs(),
                 output_schema=StructuredProfilesOutput,
             )
             self._last_resumable_run_id = result.run_id
+            self._last_resumable_run = result.execution_run
             self._last_model_provenance = result.model_provenance
             assert isinstance(result.output, StructuredProfilesOutput)
             return result.output.model_dump(mode="json")["profiles"]

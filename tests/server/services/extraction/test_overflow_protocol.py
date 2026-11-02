@@ -16,6 +16,10 @@ from reflexio.server.llm._litellm_types import LiteLLMConfig, ProviderRequestGua
 from reflexio.server.llm.input_budget import InputBudgetConfigurationError
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.durable_learning import window_executor
+from reflexio.server.services.durable_learning.user_lease import (
+    adopt_agent_run_for_execution,
+    owned_user_work_context,
+)
 from reflexio.server.services.extraction.overflow_coordinator import OverflowCoordinator
 from reflexio.server.services.extraction.overflow_protocol import package_stage_caps
 from reflexio.server.services.profile.profile_generation_service_utils import (
@@ -239,7 +243,10 @@ def seed(package_pipeline, *, attempts=()):
 
 
 def coordinator(storage, window, token, manifest):
-    return OverflowCoordinator(
+    parent = storage.get_agent_run(f"window:{window.window_id}")
+    assert parent is not None
+    parent = adopt_agent_run_for_execution(storage, parent)
+    current = OverflowCoordinator(
         storage,
         window,
         token,
@@ -247,42 +254,45 @@ def coordinator(storage, window, token, manifest):
         source_digest=manifest["source_digest"],
         context_limits={"gpt-4o": 128000},
     )
+    current.saved_run = parent
+    return current
 
 
 @pytest.mark.integration
 def test_stage_caps_and_remaining_work_survive_restart_and_stale_cas(package_pipeline):
     storage, window, token, manifest = seed(package_pipeline)
-    first = coordinator(storage, window, token, manifest)
-    stale = coordinator(storage, window, token, manifest)
-    first._advance(
-        reserve_attempt_id="gate-paid-before-crash", reserve_attempt_stage="gate"
-    )
-    saved = storage.get_agent_run(
-        f"window:{window.window_id}"
-    ).generation_request_snapshot["overflow"]
-    assert saved["attempts"] == [attempt("gate-paid-before-crash", "gate")]
-    with pytest.raises(OverflowCheckpointConflictError):
-        stale._advance(
-            reserve_attempt_id="stale", reserve_attempt_stage="profile_agent"
+    with owned_user_work_context(storage, window.user_id, token, 300):
+        first = coordinator(storage, window, token, manifest)
+        stale = coordinator(storage, window, token, manifest)
+        first._advance(
+            reserve_attempt_id="gate-paid-before-crash", reserve_attempt_stage="gate"
         )
-    restarted = coordinator(storage, window, token, saved)
-    with pytest.raises(OverflowAttemptBudgetExceededError):
-        restarted._advance(
-            reserve_attempt_id="gate-retry", reserve_attempt_stage="gate"
+        saved = storage.get_agent_run(
+            f"window:{window.window_id}"
+        ).generation_request_snapshot["overflow"]
+        assert saved["attempts"] == [attempt("gate-paid-before-crash", "gate")]
+        with pytest.raises(OverflowCheckpointConflictError):
+            stale._advance(
+                reserve_attempt_id="stale", reserve_attempt_stage="profile_agent"
+            )
+        restarted = coordinator(storage, window, token, saved)
+        with pytest.raises(OverflowAttemptBudgetExceededError):
+            restarted._advance(
+                reserve_attempt_id="gate-retry", reserve_attempt_stage="gate"
+            )
+        with pytest.raises(OverflowAttemptBudgetExceededError):
+            restarted._advance(
+                reserve_attempt_id="spends-future-work",
+                reserve_attempt_stage="compress",
+                minimum_remaining_attempts=109,
+            )
+        assert (
+            storage.get_agent_run(
+                f"window:{window.window_id}"
+            ).generation_request_snapshot["overflow"]
+            == saved
         )
-    with pytest.raises(OverflowAttemptBudgetExceededError):
-        restarted._advance(
-            reserve_attempt_id="spends-future-work",
-            reserve_attempt_stage="compress",
-            minimum_remaining_attempts=109,
-        )
-    assert (
-        storage.get_agent_run(f"window:{window.window_id}").generation_request_snapshot[
-            "overflow"
-        ]
-        == saved
-    )
-    assert storage.count_all_profiles() == 0
+        assert storage.count_all_profiles() == 0
 
 
 @pytest.mark.integration
@@ -294,26 +304,27 @@ def test_locked_parent_scope_refuses_descriptor_drift_without_reserving(
     package_pipeline, field
 ):
     storage, window, token, manifest = seed(package_pipeline)
-    manifest["input_protocol"]["scope"][field] = "other"
-    parent = storage.get_agent_run(f"window:{window.window_id}")
-    snapshot = parent.generation_request_snapshot
-    snapshot["overflow"] = manifest
-    with storage._stream_sql() as db:
-        db.query(
-            "UPDATE _agent_runs SET generation_request_snapshot=? WHERE id=?",
-            (json.dumps(snapshot), parent.id),
-        )
-    with pytest.raises(OverflowCheckpointConflictError):
-        storage.checkpoint_extraction_overflow(
-            window,
-            token,
-            expected_revision=0,
-            source_digest=manifest["source_digest"],
-            expected_input_protocol=manifest["input_protocol"],
-            reserve_attempt_id="must-not-reserve",
-            reserve_attempt_stage="compress",
-        )
-    assert storage.get_agent_run(parent.id).generation_request_snapshot == snapshot
+    with owned_user_work_context(storage, window.user_id, token, 300):
+        manifest["input_protocol"]["scope"][field] = "other"
+        parent = storage.get_agent_run(f"window:{window.window_id}")
+        snapshot = parent.generation_request_snapshot
+        snapshot["overflow"] = manifest
+        with storage._stream_sql() as db:
+            db.query(
+                "UPDATE _agent_runs SET generation_request_snapshot=? WHERE id=?",
+                (json.dumps(snapshot), parent.id),
+            )
+        with pytest.raises(OverflowCheckpointConflictError):
+            storage.checkpoint_extraction_overflow(
+                window,
+                token,
+                expected_revision=0,
+                source_digest=manifest["source_digest"],
+                expected_input_protocol=manifest["input_protocol"],
+                reserve_attempt_id="must-not-reserve",
+                reserve_attempt_stage="compress",
+            )
+        assert storage.get_agent_run(parent.id).generation_request_snapshot == snapshot
 
 
 @pytest.mark.integration
@@ -325,45 +336,46 @@ def test_selection_reload_preserves_native_choice_and_immutable_usage_and_receip
     storage, window, token, manifest = seed(
         package_pipeline, attempts=[attempt("paid")]
     )
-    current = coordinator(storage, window, token, manifest)
-    receipt = selection(manifest)
-    current.complete_selection_step(NODE, receipt)
-    saved = storage.get_agent_run(
-        f"window:{window.window_id}"
-    ).generation_request_snapshot["overflow"]
-    reloaded = coordinator(storage, window, token, saved)
-    completed = reloaded.completed_step(NODE)
-    assert completed is not None
-    choice = CompressionChoice.model_validate(completed["output"])
-    assert choice.model_dump(mode="json") == receipt["output"]
-    assert choice.omission_counts.capacity_points == 3
-    assert choice.omission_counts.unseen_reference_groups == 2
-    changed = copy.deepcopy(receipt)
-    changed["output"]["omissions"] = []
-    with pytest.raises(OverflowCheckpointConflictError):
-        reloaded.complete_selection_step(NODE, changed)
-    with pytest.raises(OverflowCheckpointConflictError):
-        reloaded.save_checkpoint({"stage": "prepare", "completed_steps": {}})
-    with pytest.raises(OverflowCheckpointConflictError):
-        reloaded._advance(
-            observed_attempt={
-                "id": "paid",
-                "stage": "gate",
-                "usage": {
-                    "prompt_tokens": 1,
-                    "completion_tokens": 0,
-                    "cache_read_input_tokens": 0,
-                    "cache_write_input_tokens": 0,
-                },
-                "model_provenance": {},
-            }
+    with owned_user_work_context(storage, window.user_id, token, 300):
+        current = coordinator(storage, window, token, manifest)
+        receipt = selection(manifest)
+        current.complete_selection_step(NODE, receipt)
+        saved = storage.get_agent_run(
+            f"window:{window.window_id}"
+        ).generation_request_snapshot["overflow"]
+        reloaded = coordinator(storage, window, token, saved)
+        completed = reloaded.completed_step(NODE)
+        assert completed is not None
+        choice = CompressionChoice.model_validate(completed["output"])
+        assert choice.model_dump(mode="json") == receipt["output"]
+        assert choice.omission_counts.capacity_points == 3
+        assert choice.omission_counts.unseen_reference_groups == 2
+        changed = copy.deepcopy(receipt)
+        changed["output"]["omissions"] = []
+        with pytest.raises(OverflowCheckpointConflictError):
+            reloaded.complete_selection_step(NODE, changed)
+        with pytest.raises(OverflowCheckpointConflictError):
+            reloaded.save_checkpoint({"stage": "prepare", "completed_steps": {}})
+        with pytest.raises(OverflowCheckpointConflictError):
+            reloaded._advance(
+                observed_attempt={
+                    "id": "paid",
+                    "stage": "gate",
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 0,
+                        "cache_read_input_tokens": 0,
+                        "cache_write_input_tokens": 0,
+                    },
+                    "model_provenance": {},
+                }
+            )
+        assert (
+            storage.get_agent_run(
+                f"window:{window.window_id}"
+            ).generation_request_snapshot["overflow"]
+            == saved
         )
-    assert (
-        storage.get_agent_run(f"window:{window.window_id}").generation_request_snapshot[
-            "overflow"
-        ]
-        == saved
-    )
 
 
 @pytest.mark.integration
@@ -372,75 +384,78 @@ def test_adoption_never_rebinds_or_downgrades_package(package_pipeline, change):
     storage, window, token, manifest = seed(
         package_pipeline, attempts=[attempt("charged")]
     )
-    parent = storage.get_agent_run(f"window:{window.window_id}")
-    proposed = copy.deepcopy(manifest)
-    if change == "descriptor":
-        proposed["input_protocol"]["contract_digest"] = "c" * 64
-    else:
-        proposed = OverflowCoordinator.initial_manifest(manifest["source_digest"])
-    with pytest.raises(OverflowCheckpointConflictError):
-        storage.adopt_extraction_overflow(
-            window,
-            token,
-            source_digest=manifest["source_digest"],
-            source_digests=parent.generation_request_snapshot[
-                "source_interaction_digests"
-            ],
-            manifest=proposed,
+    with owned_user_work_context(storage, window.user_id, token, 300):
+        parent = storage.get_agent_run(f"window:{window.window_id}")
+        proposed = copy.deepcopy(manifest)
+        if change == "descriptor":
+            proposed["input_protocol"]["contract_digest"] = "c" * 64
+        else:
+            proposed = OverflowCoordinator.initial_manifest(manifest["source_digest"])
+        with pytest.raises(OverflowCheckpointConflictError):
+            storage.adopt_extraction_overflow(
+                window,
+                token,
+                source_digest=manifest["source_digest"],
+                source_digests=parent.generation_request_snapshot[
+                    "source_interaction_digests"
+                ],
+                manifest=proposed,
+            )
+        assert (
+            storage.get_agent_run(parent.id).generation_request_snapshot
+            == parent.generation_request_snapshot
         )
-    assert (
-        storage.get_agent_run(parent.id).generation_request_snapshot
-        == parent.generation_request_snapshot
-    )
 
 
 @pytest.mark.integration
 def test_marker_free_legacy_output_cannot_be_adopted_as_package(package_pipeline):
     storage, window, token, manifest = seed(package_pipeline)
-    parent = storage.get_agent_run(f"window:{window.window_id}")
-    snapshot = parent.generation_request_snapshot
-    del snapshot["overflow"]
-    with storage._stream_sql() as db:
-        db.query(
-            "UPDATE _agent_runs SET generation_request_snapshot=?,status='agent_completed',committed_output=? WHERE id=?",
-            (json.dumps(snapshot), '{"profiles":[]}', parent.id),
-        )
-    with pytest.raises(OverflowCheckpointConflictError):
-        storage.adopt_extraction_overflow(
-            window,
-            token,
-            source_digest=manifest["source_digest"],
-            source_digests=snapshot["source_interaction_digests"],
-            manifest=manifest,
-        )
-    assert storage.get_agent_run(parent.id).generation_request_snapshot == snapshot
+    with owned_user_work_context(storage, window.user_id, token, 300):
+        parent = storage.get_agent_run(f"window:{window.window_id}")
+        snapshot = parent.generation_request_snapshot
+        del snapshot["overflow"]
+        with storage._stream_sql() as db:
+            db.query(
+                "UPDATE _agent_runs SET generation_request_snapshot=?,status='agent_completed',committed_output=? WHERE id=?",
+                (json.dumps(snapshot), '{"profiles":[]}', parent.id),
+            )
+        with pytest.raises(OverflowCheckpointConflictError):
+            storage.adopt_extraction_overflow(
+                window,
+                token,
+                source_digest=manifest["source_digest"],
+                source_digests=snapshot["source_interaction_digests"],
+                manifest=manifest,
+            )
+        assert storage.get_agent_run(parent.id).generation_request_snapshot == snapshot
 
 
 @pytest.mark.integration
 def test_one_128_ledger_enforces_every_frozen_stage(package_pipeline):
     storage, window, token, manifest = seed(package_pipeline)
-    current = coordinator(storage, window, token, manifest)
-    for stage, limit in manifest["input_protocol"]["stage_caps"].items():
-        for index in range(limit):
-            current._advance(
-                reserve_attempt_id=f"{stage}-{index}", reserve_attempt_stage=stage
-            )
-    saved = storage.get_agent_run(
-        f"window:{window.window_id}"
-    ).generation_request_snapshot["overflow"]
-    assert len(saved["attempts"]) == 128
-    assert all(item["usage"] is None for item in saved["attempts"])
-    for stage in manifest["input_protocol"]["stage_caps"]:
-        with pytest.raises(OverflowAttemptBudgetExceededError):
-            current._advance(
-                reserve_attempt_id=f"extra-{stage}", reserve_attempt_stage=stage
-            )
-    assert (
-        storage.get_agent_run(f"window:{window.window_id}").generation_request_snapshot[
-            "overflow"
-        ]
-        == saved
-    )
+    with owned_user_work_context(storage, window.user_id, token, 300):
+        current = coordinator(storage, window, token, manifest)
+        for stage, limit in manifest["input_protocol"]["stage_caps"].items():
+            for index in range(limit):
+                current._advance(
+                    reserve_attempt_id=f"{stage}-{index}", reserve_attempt_stage=stage
+                )
+        saved = storage.get_agent_run(
+            f"window:{window.window_id}"
+        ).generation_request_snapshot["overflow"]
+        assert len(saved["attempts"]) == 128
+        assert all(item["usage"] is None for item in saved["attempts"])
+        for stage in manifest["input_protocol"]["stage_caps"]:
+            with pytest.raises(OverflowAttemptBudgetExceededError):
+                current._advance(
+                    reserve_attempt_id=f"extra-{stage}", reserve_attempt_stage=stage
+                )
+        assert (
+            storage.get_agent_run(
+                f"window:{window.window_id}"
+            ).generation_request_snapshot["overflow"]
+            == saved
+        )
 
 
 @pytest.mark.integration
@@ -451,78 +466,82 @@ def test_actual_native_dispatch_requires_stage_and_full_consumer_contract(
     monkeypatch.setenv("OPENAI_API_KEY", "fixture-no-provider")
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     storage, window, token, manifest = seed(package_pipeline)
-    client = LiteLLMClient(
-        LiteLLMConfig(model="gpt-4o", max_tokens=1024, fallback_models=[])
-    )
-    response = SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                message=SimpleNamespace(
-                    content='{"profiles":[]}', tool_calls=None, refusal=None
-                ),
-                finish_reason="stop",
-            )
-        ],
-        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=2, total_tokens=12),
-        model="gpt-4o",
-        _hidden_params={"custom_llm_provider": "openai"},
-    )
-    wire = Mock(return_value=response)
-    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
-    current = coordinator(storage, window, token, manifest)
-
-    def call():
-        return client.generate_chat_response_with_provenance(
-            messages=[{"role": "user", "content": "Original source"}],
-            response_format=StructuredProfilesOutput,
+    with owned_user_work_context(storage, window.user_id, token, 300):
+        client = LiteLLMClient(
+            LiteLLMConfig(model="gpt-4o", max_tokens=1024, fallback_models=[])
         )
-
-    with current.provider_scope():
-        with pytest.raises(ProviderRequestGuardError):
-            call()
-        wire.assert_not_called()
-        if descriptor_drift:
-            parent = storage.get_agent_run(f"window:{window.window_id}")
-            snapshot = parent.generation_request_snapshot
-            snapshot["overflow"]["input_protocol"]["contract_digest"] = "c" * 64
-            with storage._stream_sql() as db:
-                db.query(
-                    "UPDATE _agent_runs SET generation_request_snapshot=? WHERE id=?",
-                    (json.dumps(snapshot), parent.id),
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content='{"profiles":[]}', tool_calls=None, refusal=None
+                    ),
+                    finish_reason="stop",
                 )
-            with (
-                current.attempt_stage("gate"),
-                pytest.raises(ProviderRequestGuardError),
-            ):
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=10, completion_tokens=2, total_tokens=12
+            ),
+            model="gpt-4o",
+            _hidden_params={"custom_llm_provider": "openai"},
+        )
+        wire = Mock(return_value=response)
+        monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
+        current = coordinator(storage, window, token, manifest)
+
+        def call():
+            return client.generate_chat_response_with_provenance(
+                messages=[{"role": "user", "content": "Original source"}],
+                response_format=StructuredProfilesOutput,
+            )
+
+        with current.provider_scope():
+            with pytest.raises(ProviderRequestGuardError):
                 call()
             wire.assert_not_called()
-            assert (
-                storage.get_agent_run(parent.id).generation_request_snapshot == snapshot
-            )
-            return
+            if descriptor_drift:
+                parent = storage.get_agent_run(f"window:{window.window_id}")
+                snapshot = parent.generation_request_snapshot
+                snapshot["overflow"]["input_protocol"]["contract_digest"] = "c" * 64
+                with storage._stream_sql() as db:
+                    db.query(
+                        "UPDATE _agent_runs SET generation_request_snapshot=? WHERE id=?",
+                        (json.dumps(snapshot), parent.id),
+                    )
+                with (
+                    current.attempt_stage("gate"),
+                    pytest.raises(ProviderRequestGuardError),
+                ):
+                    call()
+                wire.assert_not_called()
+                assert (
+                    storage.get_agent_run(parent.id).generation_request_snapshot
+                    == snapshot
+                )
+                return
+            with (
+                current.attempt_stage("gate"),
+                pytest.raises(InputBudgetConfigurationError, match="request contract"),
+            ):
+                call()
+        saved = storage.get_agent_run(
+            f"window:{window.window_id}"
+        ).generation_request_snapshot["overflow"]
+        assert saved["attempts"] == []
+        restarted = coordinator(storage, window, token, saved)
         with (
-            current.attempt_stage("gate"),
-            pytest.raises(InputBudgetConfigurationError, match="request contract"),
+            restarted.provider_scope(),
+            restarted.attempt_stage("gate"),
+            pytest.raises(ProviderRequestGuardError),
         ):
             call()
-    saved = storage.get_agent_run(
-        f"window:{window.window_id}"
-    ).generation_request_snapshot["overflow"]
-    assert saved["attempts"] == []
-    restarted = coordinator(storage, window, token, saved)
-    with (
-        restarted.provider_scope(),
-        restarted.attempt_stage("gate"),
-        pytest.raises(ProviderRequestGuardError),
-    ):
-        call()
-    wire.assert_not_called()
-    assert (
-        storage.get_agent_run(f"window:{window.window_id}").generation_request_snapshot[
-            "overflow"
-        ]
-        == saved
-    )
+        wire.assert_not_called()
+        assert (
+            storage.get_agent_run(
+                f"window:{window.window_id}"
+            ).generation_request_snapshot["overflow"]
+            == saved
+        )
 
 
 def old_snapshot():
@@ -568,15 +587,16 @@ def test_frozen_old_reader_failure_preserves_new_journal_and_cached_output(
     storage, window, token, manifest = seed(
         package_pipeline, attempts=[attempt("already-paid")]
     )
-    current = coordinator(storage, window, token, manifest)
-    current.complete_selection_step(NODE, selection(manifest, ids=["already-paid"]))
-    if waiting:
-        checkpoint = current.checkpoint
-        checkpoint["waiting_child"] = {
-            "key": "saved-child",
-            "messages": [{"role": "user", "content": "Owned fixture source"}],
-        }
-        current.save_checkpoint(checkpoint)
+    with owned_user_work_context(storage, window.user_id, token, 300):
+        current = coordinator(storage, window, token, manifest)
+        current.complete_selection_step(NODE, selection(manifest, ids=["already-paid"]))
+        if waiting:
+            checkpoint = current.checkpoint
+            checkpoint["waiting_child"] = {
+                "key": "saved-child",
+                "messages": [{"role": "user", "content": "Owned fixture source"}],
+            }
+            current.save_checkpoint(checkpoint)
     storage.save_extraction_outcome(window, token, {"version": 1, "skipped": True})
     window = storage.prepare_extraction(window.user_id, token)
     before = storage.get_agent_run(f"window:{window.window_id}")
@@ -630,20 +650,21 @@ def test_frozen_old_reader_failure_preserves_new_journal_and_cached_output(
     assert claimed is not None
     user, token = claimed
     window = storage.prepare_extraction(user, token)
-    restarted = coordinator(
-        storage, window, token, after.generation_request_snapshot["overflow"]
-    )
-    restarted._advance(
-        reserve_attempt_id="new-stage", reserve_attempt_stage="profile_agent"
-    )
-    final = storage.get_agent_run(before.id).generation_request_snapshot["overflow"]
-    assert final["attempts"] == [
-        attempt("already-paid"),
-        attempt("new-stage", "profile_agent"),
-    ]
-    assert final["checkpoint"] == snapshot["overflow"]["checkpoint"]
-    assert storage.count_all_profiles() == 0
-    wire.assert_not_called()
+    with owned_user_work_context(storage, window.user_id, token, 300):
+        restarted = coordinator(
+            storage, window, token, after.generation_request_snapshot["overflow"]
+        )
+        restarted._advance(
+            reserve_attempt_id="new-stage", reserve_attempt_stage="profile_agent"
+        )
+        final = storage.get_agent_run(before.id).generation_request_snapshot["overflow"]
+        assert final["attempts"] == [
+            attempt("already-paid"),
+            attempt("new-stage", "profile_agent"),
+        ]
+        assert final["checkpoint"] == snapshot["overflow"]["checkpoint"]
+        assert storage.count_all_profiles() == 0
+        wire.assert_not_called()
 
 
 @pytest.mark.integration
@@ -658,54 +679,60 @@ def test_frozen_old_reader_failure_preserves_new_journal_and_cached_output(
 )
 def test_consumer_ladder_mismatch_never_reserves(package_pipeline, stage, ladder):
     storage, window, token, manifest = seed(package_pipeline)
-    current = coordinator(storage, window, token, manifest)
-    before = copy.deepcopy(
-        storage.get_agent_run(f"window:{window.window_id}").generation_request_snapshot
-    )
-    with (
-        current.attempt_stage(stage),
-        pytest.raises(InputBudgetConfigurationError, match="model ladder changed"),
-    ):
-        current._guard(
-            {
-                "model": "gpt-4o",
-                "messages": [{"role": "user", "content": "Original source"}],
-                "max_tokens": 1024,
-            },
-            1,
-            ladder,
-            False,
+    with owned_user_work_context(storage, window.user_id, token, 300):
+        current = coordinator(storage, window, token, manifest)
+        before = copy.deepcopy(
+            storage.get_agent_run(
+                f"window:{window.window_id}"
+            ).generation_request_snapshot
         )
-    assert (
-        storage.get_agent_run(f"window:{window.window_id}").generation_request_snapshot
-        == before
-    )
+        with (
+            current.attempt_stage(stage),
+            pytest.raises(InputBudgetConfigurationError, match="model ladder changed"),
+        ):
+            current._guard(
+                {
+                    "model": "gpt-4o",
+                    "messages": [{"role": "user", "content": "Original source"}],
+                    "max_tokens": 1024,
+                },
+                1,
+                ladder,
+                False,
+            )
+        assert (
+            storage.get_agent_run(
+                f"window:{window.window_id}"
+            ).generation_request_snapshot
+            == before
+        )
 
 
 @pytest.mark.integration
 def test_consumer_ladder_order_is_frozen(package_pipeline):
     storage, window, token, manifest = seed(package_pipeline)
-    descriptor = manifest["input_protocol"]
-    descriptor["consumer"]["ladders"]["gate"] = ["gpt-4o", "gpt-4o-mini"]
-    descriptor["stage_caps"] = package_stage_caps(descriptor["consumer"])
-    current = coordinator(storage, window, token, manifest)
-    with (
-        current.attempt_stage("gate"),
-        pytest.raises(InputBudgetConfigurationError, match="model ladder changed"),
-    ):
-        current._guard(
-            {
-                "model": "gpt-4o-mini",
-                "messages": [{"role": "user", "content": "Original source"}],
-                "max_tokens": 1024,
-            },
-            1,
-            ("gpt-4o-mini", "gpt-4o"),
-            False,
+    with owned_user_work_context(storage, window.user_id, token, 300):
+        descriptor = manifest["input_protocol"]
+        descriptor["consumer"]["ladders"]["gate"] = ["gpt-4o", "gpt-4o-mini"]
+        descriptor["stage_caps"] = package_stage_caps(descriptor["consumer"])
+        current = coordinator(storage, window, token, manifest)
+        with (
+            current.attempt_stage("gate"),
+            pytest.raises(InputBudgetConfigurationError, match="model ladder changed"),
+        ):
+            current._guard(
+                {
+                    "model": "gpt-4o-mini",
+                    "messages": [{"role": "user", "content": "Original source"}],
+                    "max_tokens": 1024,
+                },
+                1,
+                ("gpt-4o-mini", "gpt-4o"),
+                False,
+            )
+        assert (
+            storage.get_agent_run(
+                f"window:{window.window_id}"
+            ).generation_request_snapshot["overflow"]["attempts"]
+            == []
         )
-    assert (
-        storage.get_agent_run(f"window:{window.window_id}").generation_request_snapshot[
-            "overflow"
-        ]["attempts"]
-        == []
-    )

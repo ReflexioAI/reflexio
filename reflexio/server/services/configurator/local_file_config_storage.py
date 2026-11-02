@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ class LocalFileConfigStorage(ConfigStorage):
 
     def __init__(self, org_id: str, base_dir: str | None = None):
         super().__init__(org_id=org_id)
+        self._storage_base_dir = str(Path(base_dir).resolve()) if base_dir else None
         if base_dir:
             # Ensure base_dir is absolute
             base_path = Path(base_dir)
@@ -58,6 +60,30 @@ class LocalFileConfigStorage(ConfigStorage):
             user_playbook_extractor_config=PlaybookConfig(
                 extraction_definition_prompt="Extract playbook rules about agent performance, including areas where the agent was helpful, areas for improvement, and any issues encountered during the interaction.",
             ),
+        )
+
+    def _admit_storage_upgrade(self, document: dict[str, Any]) -> None:
+        from reflexio.server.services.configurator.configurator import (
+            get_configurator_class,
+        )
+
+        get_configurator_class().validate_storage_upgrade(
+            document,
+            org_id=self.org_id,
+            base_dir=self._storage_base_dir,
+        )
+
+    def prepare_for_startup(
+        self,
+        *,
+        edit: Callable[[dict[str, Any], int], None] | None = None,
+        initial_document: dict[str, Any] | None = None,
+    ) -> bool:
+        """Admit the old and selected data target before the atomic file upgrade."""
+        return LocalConfigFile(self.config_file).prepare(
+            edit=edit,
+            initial_document=initial_document,
+            admit=self._admit_storage_upgrade,
         )
 
     def load_config(self) -> Config:
@@ -128,5 +154,5 @@ class LocalFileConfigStorage(ConfigStorage):
         if not (self.base_dir and self.config_file):
             raise ValueError("base_dir and config_file must be set")
         return LocalConfigFile(self.config_file).publish_document(
-            document, create_only=create_only
+            document, create_only=create_only, admit=self._admit_storage_upgrade
         )

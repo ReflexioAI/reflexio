@@ -29,6 +29,7 @@ from reflexio.server.services.extraction.agent_run_records import (
     build_extractor_agent_run_record,
     service_config_snapshot,
 )
+from reflexio.server.services.extraction.history_inputs import HistoricalInputs
 from reflexio.server.services.playbook.service import PlaybookGenerationServiceConfig
 from reflexio.server.services.profile.profile_generation_service_utils import (
     StructuredProfilesOutput,
@@ -190,6 +191,7 @@ def test_classic_run_row_persists_trimmed_snapshot(monkeypatch, window_id):
                 service_config=config,
                 agent_context="",
                 messages=[{"role": "user", "content": "source"}],
+                history_inputs=HistoricalInputs(),
                 output_schema=StructuredProfilesOutput,
                 log_label="classic",
             )

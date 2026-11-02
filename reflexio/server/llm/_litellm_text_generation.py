@@ -1830,6 +1830,11 @@ class TextGenerationMixin:
                             turn_parse_structured_output,
                         )
                     check_turn_deadline()
+                    from reflexio.server.llm.compute_admission import (
+                        admit_external_compute,
+                    )
+
+                    admit_external_compute()
                     response = self._completion_with_hard_timeout(
                         turn_params, turn_deadline - time.monotonic()
                     )

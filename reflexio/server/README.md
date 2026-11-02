@@ -22,6 +22,10 @@ tenant identity, or alter embedded Python cleanup behavior. A deployment's
 database infrastructure decides how to apply the admission class.
 
 It also owns the failure-reporting policy for background work.
+`report_failure_at_interval(..., interval_seconds=...)` uses the same policy
+when a retry interval is known and short enough to accumulate a streak; a slow
+interval or `None` (no promised retry interval) reports ERROR directly. This
+policy is shared with deployment extensions rather than duplicated there.
 `report_background_failure(logger, event, exc, *, scope, detail=None)` logs a
 bug at ERROR with its traceback, and a transient infrastructure failure (as
 judged by the classifier a deployment registers with
@@ -633,9 +637,17 @@ Key files:
 
 - `admission.py`: Atomic publish admission and eligibility snapshots.
 - `scheduler.py` / `worker.py`: Always-on discovery, bounded worker turns and renewable user leases.
+- `discovery.py`: Fixed `WorkDiscovery` turn/expiry facts. Iteration retains the execution-org provider contract; the shared scheduler consumes expiry separately. Partial reads retain both known sets and their original cause without declaring idle.
+- `expiry.py`: Bounded housekeeping on the shared scheduler thread, outside user/model admission. Original-project APP expiry revalidates one metadata descriptor and advances a finite private sweep even on opt-out/refusal; failure in one org does not stop another.
+- `storage/storage_base/_pending_tool_expiry.py`: Canonical metadata-only question selection and narrow, atomic APP question/dependency expiry. It never sweeps unrelated runs or changes executing run phases, attempts, ownership or output.
+- `resume_selection.py`: Admitted user/class opportunities with route-bound fleet inspection and persisted per-user cursors. Successful APP adoption and private progress commit together under the actual user lease; owned resume execution reuses the same process permit. The unshipped consolidation still requires telemetry, strict generation and upgrade cutover qualification.
+- `storage/storage_base/_resume_selection.py`: Canonical bounded resume predicates and fixed deferred-work SQL projection reused by per-org and enterprise batched source discovery. Metadata facts never grant execution authority. Selected recovery shares writer-backed owner observations and one exact-revision, fenced APP transition across SQLite and native storage; logical claim age is not authority.
 - `window_executor.py` / `window_codec.py`: Model execution, saved outcomes and frozen window policies.
+- `llm/compute_admission.py`: Independent admission callback at external text/vector dispatch; ordinary preparation binds its actual execution without changing protected provider modes.
+- `services/write_plan_codec.py`: Shared business-plan JSON for window outcomes and output-bound publication preparation; execution authority remains outside the payload.
 - `user_lease.py`: Shared ownership for automatic, manual and resumed extraction.
-- `waiting.py` / `local.py`: Bounded HTTP coverage waits, standalone-library recovery and post-admission scheduler wake-ups.
+- `waiting.py` / `local.py`: Bounded HTTP coverage waits, standalone-library recovery and post-admission scheduler wake-ups. Pending-tool resolve/answer/N/A callbacks wake the existing server or matching local-directory owner after commit; they no longer create request background resume workers. Missing/stopped owners leave persisted work for restart discovery.
+- `_context_registry.py`: One ordered weak catalog for local context identity and directory liveness. Discovery uses the newest surviving handle per org/directory; collecting a newer handle reveals its live predecessor without retaining clients or growing on repeated registration.
 - `server/scheduling.py`: Shared interruptible polling, with wake signals retained during a tick and bounded stop joins.
 - `services/storage/storage_base/_extraction_stream.py`: Shared admission/cursor/window state machine; SQLite and enterprise PostgreSQL supply backend adapters.
 
@@ -663,7 +675,8 @@ normal turns.
 Key files:
 
 - `extraction/resumable_agent.py`: Resumable extraction agent runtime
-- `extraction/resume_scheduler.py` and `extraction/resume_worker.py`: Background scheduling/worker loop for paused extraction runs
+- `extraction/answer_inputs.py`: Run-scoped digests for freshly supplied human answers; separate from dependency consumption and execution authority
+- `extraction/resume_worker.py`: Executes admitted deferred runs and selected recovery; the shared durable owner handles discovery, scheduling and renewal.
 - `extraction/pending_tool_call_dispatch.py` and `extraction/prior_answer_search.py`: Tool surface and prior-answer context for async extraction agents
 - `extraction/agent_run_records.py`: Persistence helpers for extraction-agent run state
 
@@ -995,17 +1008,18 @@ optimizer scheduling and pending-tool timing retain specific subclasses.
 Local-file loading, CLI bootstrap and enterprise adapters propagate this base
 rather than resetting unrelated settings to defaults.
 
-`reflexio/pending_tool_policy.py::resolve_resume_timing` validates the process-owned
-`REFLEXIO_RESUME_POLL_INTERVAL_SECONDS` and `REFLEXIO_RESUME_CLAIM_TTL_SECONDS`
-policy (defaults 5/600). Workers, selected recovery, recovery inspection and
-enterprise discovery use the same lifetime. Run claims remain distinct from the
-renewable per-user extraction lease; `claimed_at` stays an immutable fence. Default-valued legacy timing fields are stripped before
-validation or raw upgrade pruning; customized fields require explicit adoption.
-Do not reintroduce a bootstrap org's timing as fleet scheduler policy.
-`ExtractionResumeScheduler` waits the poll interval after a sweep that found work
-(or failed) and doubles the wait across consecutive idle sweeps up to the fixed
-`IDLE_BACKOFF_CAP_SECONDS` (60s, or the poll if larger). Every sweep is still a
-complete scan; `wake_resume_schedulers()` cuts a backed-off wait short.
+Fresh and deferred execution share the durable owner's admission, renewable
+user lease and wake path. Logical run timestamps are immutable CAS witnesses,
+not liveness estimates. The separate `ExtractionResumeScheduler`, its weak wake
+registry, idle backoff, and the worker's age-based `run_once`/`drain` dispatchers
+are removed. Metadata discovery cannot authorize execution or reset budgets.
+
+In this unshipped cutover, `pending_tool_policy.py::resolve_resume_timing` and
+the two `REFLEXIO_RESUME_*` timing inputs still remain in bootstrap validation
+while historical configuration conversion and generation admission are completed.
+They no longer select the execution loop. Customized historical policy must not
+be silently defaulted or copied into the renewable lease. No timing-knob
+retirement or mixed-writer upgrade qualification is claimed from deletion alone.
 
 Pending information request admission uses the durable create-or-attach store
 operation directly. The warning-only `max_pending_followups_per_scope` base and

@@ -1948,7 +1948,9 @@ class TestSequentialExecution:
         class OutcomeService(ConcreteGenerationService):
             def _create_extractor(self, extractor_config, service_config):
                 return MockExtractor(
-                    result=ExtractionOutcome.completed([{"name": "x"}], run_id="run_1")
+                    result=TestSequentialExecution._owned_inline_outcome(
+                        self.storage, [{"name": "x"}], run_id="run_1"
+                    )
                 )
 
         service = OutcomeService(
@@ -1956,20 +1958,43 @@ class TestSequentialExecution:
             request_context,
             extractor_configs=[MockExtractorConfig(extractor_name="ext1")],
         )
-        service.storage = MagicMock()
-        service.storage.get_agent_run.return_value = SimpleNamespace(
-            pending_tool_call_ids=[],
-            committed_output={"items": []},
-            finalization_attempts=0,
+        self._seed_inline_agent_run(
+            request_context,
+            run_id="run_1",
+            request_id="test_request",
+            extractor_kind="profile",
+        )
+        service.storage = MagicMock(wraps=request_context.storage)
+        service.storage.org_id = request_context.org_id
+
+        from reflexio.server.services.durable_learning.user_lease import (
+            user_extraction_lease,
         )
 
-        service.run(MockServiceConfig(user_id="test_user", request_id="test_request"))
+        with user_extraction_lease(service.storage, "test_user"):
+            service.run(
+                MockServiceConfig(user_id="test_user", request_id="test_request")
+            )
 
-        service.storage.update_agent_run_status.assert_called_with(
-            "run_1",
-            AgentRunStatus.FINALIZED,
-            pending_tool_call_ids=[],
+        call = service.storage.update_agent_run_status.call_args
+        assert call.args[:2] == ("run_1", AgentRunStatus.FINALIZED)
+        terminal = request_context.storage.get_agent_run("run_1")
+        assert terminal is not None and terminal.status == AgentRunStatus.FINALIZED
+        assert call.kwargs["pending_tool_call_ids"] == []
+        assert call.kwargs["expected_statuses"] == (AgentRunStatus.AGENT_COMPLETED,)
+        assert call.kwargs["expected_claimed_by"] == terminal.claimed_by
+        assert call.kwargs["expected_claimed_at"] == terminal.claimed_at
+
+    @staticmethod
+    def _owned_inline_outcome(storage, items, *, run_id):
+        from reflexio.server.services.durable_learning.user_lease import (
+            adopt_agent_run_for_execution,
         )
+
+        run = storage.get_agent_run(run_id)
+        assert run is not None
+        adopted = adopt_agent_run_for_execution(storage, run)
+        return ExtractionOutcome.completed(items, run_id=run_id, execution_run=adopted)
 
     @staticmethod
     def _seed_inline_agent_run(
@@ -2114,293 +2139,17 @@ class TestSequentialExecution:
 
         assert self._stored_inline_learning_count(request_context, entity_kind) == 0
 
-    def test_inline_profile_outcome_persists_receipt_before_terminal_status(
-        self, llm_client, request_context
-    ):
-        """A no-tool inline profile run retains an immutable receipt."""
-        from reflexio.models.api_schema.domain.entities import LineageContext
-        from reflexio.models.api_schema.service_schemas import UserProfile
-        from reflexio.server.services.deferred_learning_plan import ProfileWritePlan
-        from reflexio.server.services.profile.profile_generation_service_utils import (
-            ProfileGenerationRequest,
-        )
-        from reflexio.server.services.profile.service import ProfileGenerationService
-
-        run_id = "run_inline_profile"
-        request_id = "request_inline_profile"
-        profile = UserProfile(
-            profile_id="profile-inline",
-            user_id="test_user",
-            content="The user deploys services to AWS ECS.",
-            last_modified_timestamp=1_000,
-            generated_from_request_id=request_id,
-        )
-        self._seed_inline_agent_run(
-            request_context,
-            run_id=run_id,
-            request_id=request_id,
-            extractor_kind="profile",
-        )
-
-        class InlineProfileService(ProfileGenerationService):
-            def _load_extractor_config(self):
-                return MockExtractorConfig(extractor_name="profile")
-
-            def _should_run_before_extraction(self, extractor_config):
-                return True
-
-            def _create_extractor(self, extractor_config, service_config):
-                return MockExtractor(
-                    result=ExtractionOutcome.completed([profile], run_id=run_id)
-                )
-
-            def _resolve_write_plan(self, results):
-                return ProfileWritePlan(
-                    user_id="test_user",
-                    request_id=request_id,
-                    new_profiles=[profile],
-                    superseded_ids=[],
-                    lineage_contexts=[LineageContext(op_kind="create")],
-                )
-
-        service = InlineProfileService(llm_client, request_context)
-        service.run(
-            ProfileGenerationRequest(
-                user_id="test_user",
-                request_id=request_id,
-                source="api",
-                auto_run=False,
-            )
-        )
-
-        stored = request_context.storage.get_user_profile("test_user")
-        run = request_context.storage.get_agent_run(run_id)
-        receipt = request_context.storage.get_agent_run_finalization_receipt(
-            run_id=run_id,
-            entity_type="profile",
-        )
-        assert [item.profile_id for item in stored] == ["profile-inline"]
-        assert run is not None and run.status == AgentRunStatus.FINALIZED
-        assert receipt == ["profile-inline"]
-
-    def test_inline_playbook_outcome_persists_receipt_before_terminal_status(
-        self, llm_client, request_context
-    ):
-        """A no-tool inline playbook run retains its database-assigned ids."""
-        from reflexio.models.api_schema.domain.entities import LineageContext
-        from reflexio.models.api_schema.service_schemas import UserPlaybook
-        from reflexio.server.services.deferred_learning_plan import PlaybookWritePlan
-        from reflexio.server.services.playbook.playbook_service_utils import (
-            PlaybookGenerationRequest,
-        )
-        from reflexio.server.services.playbook.service import PlaybookGenerationService
-
-        run_id = "run_inline_playbook"
-        request_id = "request_inline_playbook"
-        playbook = UserPlaybook(
-            user_id="test_user",
-            agent_version="v1",
-            request_id=request_id,
-            content="Prefer AWS ECS for production deployments.",
-            trigger="when selecting a deployment target",
-        )
-        self._seed_inline_agent_run(
-            request_context,
-            run_id=run_id,
-            request_id=request_id,
-            extractor_kind="playbook",
-        )
-
-        class InlinePlaybookService(PlaybookGenerationService):
-            def _load_extractor_config(self):
-                return MockExtractorConfig(extractor_name="playbook")
-
-            def _should_run_before_extraction(self, extractor_config):
-                return True
-
-            def _create_extractor(self, extractor_config, service_config):
-                return MockExtractor(
-                    result=ExtractionOutcome.completed([playbook], run_id=run_id)
-                )
-
-            def _resolve_write_plan(self, results):
-                return PlaybookWritePlan(
-                    request_id=request_id,
-                    output_pending_status=False,
-                    skip_aggregation=True,
-                    new_playbooks=[playbook],
-                    superseded_ids=[],
-                    merge_groups=[],
-                    lineage_contexts=[LineageContext(op_kind="create")],
-                )
-
-            def _dispatch_playbook_schedulers(self, plan):
-                return None
-
-        service = InlinePlaybookService(
-            llm_client,
-            request_context,
-            skip_aggregation=True,
-        )
-        service.run(
-            PlaybookGenerationRequest(
-                request_id=request_id,
-                agent_version="v1",
-                user_id="test_user",
-                source="api",
-                auto_run=False,
-            )
-        )
-
-        stored = request_context.storage.get_user_playbooks(
-            user_id="test_user",
-            agent_version="v1",
-        )
-        run = request_context.storage.get_agent_run(run_id)
-        receipt = request_context.storage.get_agent_run_finalization_receipt(
-            run_id=run_id,
-            entity_type="user_playbook",
-        )
-        assert len(stored) == 1
-        assert run is not None and run.status == AgentRunStatus.FINALIZED
-        assert receipt == [str(stored[0].user_playbook_id)]
-
-    def test_inline_pending_tool_outcome_does_not_create_finalization_receipt(
-        self, llm_client, request_context
-    ):
-        """A pending-tool run remains available for resume finalization."""
-        from reflexio.server.services.profile.profile_generation_service_utils import (
-            ProfileGenerationRequest,
-        )
-        from reflexio.server.services.profile.service import ProfileGenerationService
-
-        run_id = "run_inline_pending_tool"
-        request_id = "request_inline_pending_tool"
-        self._seed_inline_agent_run(
-            request_context,
-            run_id=run_id,
-            request_id=request_id,
-            extractor_kind="profile",
-            pending_tool_call_ids=["pending-tool-call"],
-        )
-
-        class InlinePendingToolService(ProfileGenerationService):
-            def _load_extractor_config(self):
-                return MockExtractorConfig(extractor_name="profile")
-
-            def _should_run_before_extraction(self, extractor_config):
-                return True
-
-            def _create_extractor(self, extractor_config, service_config):
-                return MockExtractor(
-                    result=ExtractionOutcome.completed([], run_id=run_id)
-                )
-
-        service = InlinePendingToolService(llm_client, request_context)
-        service.run(
-            ProfileGenerationRequest(
-                user_id="test_user",
-                request_id=request_id,
-                source="api",
-                auto_run=False,
-            )
-        )
-
-        run = request_context.storage.get_agent_run(run_id)
-        assert run is not None
-        assert run.status == AgentRunStatus.FINALIZED_PENDING_TOOL
-        assert (
-            request_context.storage.get_agent_run_finalization_receipt(
-                run_id=run_id,
-                entity_type="profile",
-            )
-            is None
-        )
-
-    def test_inline_profile_persistence_failure_leaves_run_retryable(
-        self, llm_client, request_context
-    ):
-        """A failed inline receipt transaction never exposes terminal state."""
-        from reflexio.models.api_schema.domain.entities import LineageContext
-        from reflexio.models.api_schema.service_schemas import UserProfile
-        from reflexio.server.services.deferred_learning_plan import ProfileWritePlan
-        from reflexio.server.services.profile.profile_generation_service_utils import (
-            ProfileGenerationRequest,
-        )
-        from reflexio.server.services.profile.service import ProfileGenerationService
-
-        run_id = "run_inline_profile_failure"
-        request_id = "request_inline_profile_failure"
-        profile = UserProfile(
-            profile_id="profile-inline-failure",
-            user_id="test_user",
-            content="This profile must roll back.",
-            last_modified_timestamp=1_000,
-            generated_from_request_id=request_id,
-        )
-        self._seed_inline_agent_run(
-            request_context,
-            run_id=run_id,
-            request_id=request_id,
-            extractor_kind="profile",
-        )
-
-        class FailingInlineProfileService(ProfileGenerationService):
-            def _load_extractor_config(self):
-                return MockExtractorConfig(extractor_name="profile")
-
-            def _should_run_before_extraction(self, extractor_config):
-                return True
-
-            def _create_extractor(self, extractor_config, service_config):
-                return MockExtractor(
-                    result=ExtractionOutcome.completed([profile], run_id=run_id)
-                )
-
-            def _resolve_write_plan(self, results):
-                return ProfileWritePlan(
-                    user_id="test_user",
-                    request_id=request_id,
-                    new_profiles=[profile],
-                    superseded_ids=[],
-                    lineage_contexts=[LineageContext(op_kind="create")],
-                )
-
-            def _persist_write_plan(self, plan):
-                super()._persist_write_plan(plan)
-                raise RuntimeError("receipt persistence failed")
-
-        service = FailingInlineProfileService(llm_client, request_context)
-        service.run(
-            ProfileGenerationRequest(
-                user_id="test_user",
-                request_id=request_id,
-                source="api",
-                auto_run=False,
-            )
-        )
-
-        run = request_context.storage.get_agent_run(run_id)
-        assert request_context.storage.get_user_profile("test_user") == []
-        assert (
-            request_context.storage.get_agent_run_finalization_receipt(
-                run_id=run_id,
-                entity_type="profile",
-            )
-            is None
-        )
-        assert run is not None and run.status == AgentRunStatus.FINALIZATION_FAILED
-        assert run.finalization_attempts == 1
-
     def test_extraction_outcome_finalization_failure_marks_run_retryable(
-        self, llm_client, request_context
+        self, llm_client, request_context, monkeypatch
     ):
         """Finalization failure is tracked on the agent run for later retry."""
 
         class FailingFinalizeService(ConcreteGenerationService):
             def _create_extractor(self, extractor_config, service_config):
                 return MockExtractor(
-                    result=ExtractionOutcome.completed([{"name": "x"}], run_id="run_1")
+                    result=TestSequentialExecution._owned_inline_outcome(
+                        self.storage, [{"name": "x"}], run_id="run_1"
+                    )
                 )
 
             def _process_results(self, results):
@@ -2411,14 +2160,28 @@ class TestSequentialExecution:
             request_context,
             extractor_configs=[MockExtractorConfig(extractor_name="ext1")],
         )
-        service.storage = MagicMock()
-        service.storage.get_agent_run.return_value = SimpleNamespace(
-            pending_tool_call_ids=[],
-            committed_output={"items": []},
-            finalization_attempts=0,
+        self._seed_inline_agent_run(
+            request_context,
+            run_id="run_1",
+            request_id="test_request",
+            extractor_kind="profile",
+        )
+        # Spy on the actual writer method. A whole-storage wrapper is another
+        # target and cannot share the real storage's user-work authority.
+        monkeypatch.setattr(
+            service.storage,
+            "update_agent_run_status",
+            MagicMock(wraps=service.storage.update_agent_run_status),
         )
 
-        service.run(MockServiceConfig(user_id="test_user", request_id="test_request"))
+        from reflexio.server.services.durable_learning.user_lease import (
+            user_extraction_lease,
+        )
+
+        with user_extraction_lease(service.storage, "test_user"):
+            service.run(
+                MockServiceConfig(user_id="test_user", request_id="test_request")
+            )
 
         _, status = service.storage.update_agent_run_status.call_args.args[:2]
         kwargs = service.storage.update_agent_run_status.call_args.kwargs
@@ -2426,15 +2189,23 @@ class TestSequentialExecution:
         assert kwargs["last_error"] == "persist failed"
         assert kwargs["increment_finalization_attempts"] is True
 
+        stored = request_context.storage.get_agent_run("run_1")
+        assert (
+            stored is not None and stored.status == AgentRunStatus.FINALIZATION_FAILED
+        )
+        assert stored.finalization_attempts == 1
+
     def test_extraction_outcome_terminal_status_failure_marks_run_retryable(
-        self, llm_client, request_context
+        self, llm_client, request_context, monkeypatch
     ):
         """A failed terminal status write remains eligible for finalization retry."""
 
         class FailingTerminalStatusService(ConcreteGenerationService):
             def _create_extractor(self, extractor_config, service_config):
                 return MockExtractor(
-                    result=ExtractionOutcome.completed([{"name": "x"}], run_id="run_1")
+                    result=TestSequentialExecution._owned_inline_outcome(
+                        self.storage, [{"name": "x"}], run_id="run_1"
+                    )
                 )
 
         service = FailingTerminalStatusService(
@@ -2442,24 +2213,45 @@ class TestSequentialExecution:
             request_context,
             extractor_configs=[MockExtractorConfig(extractor_name="ext1")],
         )
-        service.storage = MagicMock()
-        service.storage.get_agent_run.return_value = SimpleNamespace(
-            pending_tool_call_ids=[],
-            committed_output={"items": []},
-            finalization_attempts=0,
+        self._seed_inline_agent_run(
+            request_context,
+            run_id="run_1",
+            request_id="test_request",
+            extractor_kind="profile",
         )
-        service.storage.update_agent_run_status.side_effect = [
-            RuntimeError("terminal status failed"),
-            None,
-        ]
+        original_update = request_context.storage.update_agent_run_status
 
-        service.run(MockServiceConfig(user_id="test_user", request_id="test_request"))
+        def fail_terminal(run_id, status, **kwargs):
+            if status == AgentRunStatus.FINALIZED:
+                raise RuntimeError("terminal status failed")
+            return original_update(run_id, status, **kwargs)
+
+        monkeypatch.setattr(
+            service.storage,
+            "update_agent_run_status",
+            MagicMock(side_effect=fail_terminal),
+        )
+
+        from reflexio.server.services.durable_learning.user_lease import (
+            user_extraction_lease,
+        )
+
+        with user_extraction_lease(service.storage, "test_user"):
+            service.run(
+                MockServiceConfig(user_id="test_user", request_id="test_request")
+            )
 
         _, status = service.storage.update_agent_run_status.call_args.args[:2]
         kwargs = service.storage.update_agent_run_status.call_args.kwargs
         assert status == AgentRunStatus.FINALIZATION_FAILED
         assert kwargs["last_error"] == "terminal status failed"
         assert kwargs["increment_finalization_attempts"] is True
+
+        stored = request_context.storage.get_agent_run("run_1")
+        assert (
+            stored is not None and stored.status == AgentRunStatus.FINALIZATION_FAILED
+        )
+        assert stored.finalization_attempts == 1
 
     def test_configured_extractor_timeout_fails_generation(
         self, llm_client, request_context, monkeypatch

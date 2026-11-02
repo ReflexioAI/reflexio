@@ -690,6 +690,9 @@ def _post_embedding_batch(
         try:
             checkpoint()
             payload["timeout_ms"] = max(1, min(600_000, int(remaining(timeout) * 1000)))
+            from reflexio.server.llm.compute_admission import admit_external_compute
+
+            admit_external_compute()
             response = _http_client().post(
                 url, json=payload, timeout=remaining(timeout)
             )

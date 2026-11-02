@@ -17,7 +17,11 @@ from typing import Any
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import UserProfile
 from reflexio.models.config_schema import PendingToolCallConfig, ProfileExtractorConfig
-from reflexio.pending_tool_policy import strip_retired_pending_followup_warning
+from reflexio.pending_tool_policy import (
+    PendingToolTimingMigrationError,
+    strip_legacy_pending_tool_timing,
+    strip_retired_pending_followup_warning,
+)
 from reflexio.server.llm._litellm_text_generation import (
     _is_structured_output_validation_repair_turn,
 )
@@ -217,8 +221,8 @@ def pending_tool_policy_snapshot(
 ) -> dict[str, Any]:
     """Validate live policy while retaining an admitted contract's original snapshot.
 
-    Only the retired observational warning may differ. Secret rotation, real
-    policy changes and unknown fields remain strict; no model round-trip may
+    Only validated retired timing and the observational warning may differ.
+    Secret rotation, real policy changes and unknown fields remain strict; no model round-trip may
     discard witness data. The caller verifies the parent/preparation contract.
     """
     current = {
@@ -227,9 +231,18 @@ def pending_tool_policy_snapshot(
     }
     if frozen is None:
         return current
-    if strip_retired_pending_followup_warning(
-        current
-    ) != strip_retired_pending_followup_warning(frozen):
+    try:
+        actual = strip_legacy_pending_tool_timing(
+            strip_retired_pending_followup_warning(current)
+        )
+        expected = strip_legacy_pending_tool_timing(
+            strip_retired_pending_followup_warning(frozen)
+        )
+    except PendingToolTimingMigrationError:
+        raise InputBudgetConfigurationError(
+            "Frozen profile pending tool timing is invalid"
+        ) from None
+    if actual != expected:
         raise InputBudgetConfigurationError(
             "Profile pending tool configuration changed"
         )

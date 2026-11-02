@@ -62,10 +62,9 @@ def prepare_local_config(
     never call this method, and enterprise auth rows use their migration owner.
     """
     from reflexio.cli.bootstrap_config import default_org_id
-    from reflexio.config_file import LocalConfigFile
     from reflexio.server.services.configurator.local_file_config_storage import (
         LocalFileConfigStorage,
     )
 
     storage = LocalFileConfigStorage(org_id or default_org_id(), base_dir=base_dir)
-    return LocalConfigFile(storage.config_file).prepare()
+    return storage.prepare_for_startup()

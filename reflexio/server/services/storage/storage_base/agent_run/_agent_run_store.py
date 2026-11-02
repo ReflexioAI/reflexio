@@ -91,38 +91,12 @@ class AgentRunStoreABC:
     ) -> int:
         raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
 
-    def claim_ready_agent_run(
-        self,
-        *,
-        org_id: str,
-        worker_id: str,
-        now: datetime | None = None,
-        claim_ttl_seconds: int = 600,
-    ) -> AgentRunRecord | None:
-        """Claim legacy work only; overflow-marked runs belong to window workers."""
-        raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
-
-    def claim_finalization_failed_agent_run(
-        self,
-        *,
-        org_id: str,
-        worker_id: str,
-        now: datetime | None = None,
-        claim_ttl_seconds: int = 600,
-    ) -> AgentRunRecord | None:
-        """Claim legacy finalization only, excluding any durable overflow marker."""
-        raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
-
     def claim_agent_run_for_recovery(
         self,
         *,
-        run_id: str,
-        org_id: str,
+        expected: AgentRunRecord,
         worker_id: str,
-        expected_updated_at: datetime,
         operation_id: str,
-        now: datetime | None = None,
-        claim_ttl_seconds: int = 600,
     ) -> AgentRunRecord | None:
         """Atomically claim exactly one reviewed finalization run, or nothing.
 
@@ -134,18 +108,3 @@ class AgentRunStoreABC:
     def get_agent_run_recovery_facts(self, run_id: str) -> dict[str, Any]:
         """Read-only, scoped evidence; no content or locking receipt lookup."""
         raise NotImplementedError("Run diagnostics require the recovery migration")
-
-    def list_resumable_work_org_ids(
-        self,
-        *,
-        now: datetime | None = None,
-        limit: int = 1000,
-    ) -> list[str]:
-        """Return distinct org_ids that have actionable resumable-extraction work.
-
-        Cross-org maintenance query (intentionally NOT scoped to ``self.org_id``):
-        the resume scheduler uses it to discover every org that has a run ready
-        to resume, a run awaiting finalization retry, or a pending tool call that
-        can be expired, so per-org workers can be driven for all of them.
-        """
-        raise NotImplementedError(f"{type(self).__name__} does not support agent runs")

@@ -18,6 +18,22 @@ class PostCommitStorageError(StorageError):
     """Primary rows committed, but a deferred index operation failed."""
 
 
+class ExecutionInputBusyError(StorageError):
+    """An execution input is locked elsewhere; the whole writer must roll back."""
+
+
+def execution_input_is_busy(error: BaseException) -> bool:
+    """Recognize explicit wrappers, never an unrelated handling-context failure."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ExecutionInputBusyError):
+            return True
+        current = current.__cause__
+    return False
+
+
 class ReadinessUnavailableError(StorageError):
     """Required infrastructure is not yet qualified for this operation."""
 

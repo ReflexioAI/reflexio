@@ -348,7 +348,15 @@ def compute_source_quoted_plan(
     checkpoint["stage"] = "extracted"
     coordinator.save_checkpoint(checkpoint)
     run_id = f"window:{coordinator.window.window_id}"
-    with coordinator.storage.commit_scope():
+    from reflexio.server.services.durable_learning.user_lease import (
+        owned_agent_run_write,
+    )
+
+    if coordinator.saved_run is None:
+        raise InputBudgetConfigurationError(
+            "Source projection parent execution unavailable"
+        )
+    with owned_agent_run_write(coordinator.storage, coordinator.saved_run):
         coordinator.storage.fence_user_extraction(
             coordinator.window.user_id, coordinator.token
         )
@@ -368,10 +376,12 @@ def compute_source_quoted_plan(
                 raise InputBudgetConfigurationError(
                     "Source projection parent lost ownership"
                 )
+            run = updated
         elif run.status != AgentRunStatus.AGENT_COMPLETED:
             raise InputBudgetConfigurationError(
                 "Source projection parent cannot publish"
             )
+    coordinator.saved_run = run
     service._last_extraction_run_ids = [run_id]
     service._last_model_provenance = None  # Selection did not author the copied text.
     service._last_token_totals = coordinator.token_totals

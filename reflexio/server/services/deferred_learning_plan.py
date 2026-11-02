@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from reflexio.server.services.base_generation_service import (
         PreparedGenerationRun,
     )
+    from reflexio.server.services.storage.storage_base import AgentRunRecord
 
 
 @dataclass(frozen=True)
@@ -39,10 +40,6 @@ class FinalizationResult:
 
     learning_ids: list[str]
     won_receipt: bool
-
-
-class _FinalizationReceiptAlreadyExistsError(Exception):
-    """Rollback signal for a finalization transaction that lost receipt ownership."""
 
 
 @dataclass(frozen=True)
@@ -62,6 +59,34 @@ class ExtractorBookmarkAdvance:
     # user_id=None (PlaybookGenerationServiceConfig.user_id is Optional), which
     # maps to an unscoped bookmark key. update_extractor_bookmark accepts None.
     user_id: str | None
+
+
+@dataclass(frozen=True)
+class ExtractorBookmarkPosition:
+    """The existing bookmark's minimal value; no duplicate interaction bodies."""
+
+    extractor_name: str
+    interaction_ids: list[int]
+    last_processed_timestamp: int | None
+    user_id: str | None
+
+    @classmethod
+    def from_advance(
+        cls, advance: ExtractorBookmarkAdvance
+    ) -> ExtractorBookmarkPosition:
+        return cls(
+            advance.extractor_name,
+            [row.interaction_id for row in advance.processed_interactions],
+            max(
+                (
+                    row.created_at
+                    for row in advance.processed_interactions
+                    if row.created_at is not None
+                ),
+                default=None,
+            ),
+            advance.user_id,
+        )
 
 
 @dataclass
@@ -152,8 +177,8 @@ class GenerationComputePlan:
     resolution (``_resolve_write_plan``), issuing **no** learning DB write and
     leaving receipt-aware ``agent_run`` rows non-terminal. ``persist_generation``
     applies ``write_plan`` + the extractor bookmark advance + immutable receipt
-    inside the fence; ``emit_generation_side_effects`` terminalizes the run and
-    fires post-commit telemetry + billing.
+    and terminal run status inside the fence; ``emit_generation_side_effects``
+    fires postcommit telemetry + billing without changing run ownership.
 
     The billing inputs (``extraction_run_ids`` / ``token_totals`` /
     ``billable_count`` / ``prepared``) and telemetry's ``generated_count`` are
@@ -179,6 +204,9 @@ class GenerationComputePlan:
         generation_start: ``perf_counter`` captured at compute start; emit reads
             it for the ``generation_succeeded`` ``duration_ms`` (parity).
         extraction_run_ids: Snapshot of the run's ``agent_run`` ids.
+        execution_run: Exact adopted live logical claim, carried only in memory.
+            The window codec persists business IDs, never execution authority.
+            Cache replay validates frozen inputs and explicitly re-adopts.
         token_totals: Snapshot of the run's LLM token totals (billing cost
             facet), or ``None`` when the extractor reported none.
         finalization_result: Receipt ownership recorded by persistence. ``None``
@@ -194,3 +222,6 @@ class GenerationComputePlan:
     extraction_run_ids: list[str]
     token_totals: RunTokenTotals | None
     finalization_result: FinalizationResult | None = None
+    # In-memory authority supplied by computation or explicit owned replay.
+    # encode_plan deliberately persists business IDs and never this witness.
+    execution_run: AgentRunRecord | None = field(default=None, repr=False)

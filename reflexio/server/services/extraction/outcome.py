@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from reflexio.server.services.deferred_learning_plan import (
         ExtractorBookmarkAdvance,
     )
+    from reflexio.server.services.storage.storage_base import AgentRunRecord
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,8 @@ class ExtractionOutcome[T]:
     # applied downstream in persist (durable) or ``.run()``'s persist half.
     bookmark_advance: ExtractorBookmarkAdvance | None = None
     model_provenance: ModelProvenance | None = None
+    # Live logical claim only. Persisted business run IDs cannot recreate it.
+    execution_run: AgentRunRecord | None = field(default=None, repr=False)
 
     @classmethod
     def completed(
@@ -35,6 +38,7 @@ class ExtractionOutcome[T]:
         token_totals: RunTokenTotals | None = None,
         bookmark_advance: ExtractorBookmarkAdvance | None = None,
         model_provenance: ModelProvenance | None = None,
+        execution_run: AgentRunRecord | None = None,
     ) -> ExtractionOutcome[T]:
         return cls(
             status="completed",
@@ -43,8 +47,11 @@ class ExtractionOutcome[T]:
             token_totals=token_totals,
             bookmark_advance=bookmark_advance,
             model_provenance=model_provenance,
+            execution_run=execution_run,
         )
 
     @classmethod
-    def empty(cls, *, run_id: str | None = None) -> ExtractionOutcome[T]:
-        return cls(status="empty", items=[], run_id=run_id)
+    def empty(
+        cls, *, run_id: str | None = None, execution_run: AgentRunRecord | None = None
+    ) -> ExtractionOutcome[T]:
+        return cls(status="empty", items=[], run_id=run_id, execution_run=execution_run)

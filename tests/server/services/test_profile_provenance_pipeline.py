@@ -25,6 +25,10 @@ def test_http_profile_provenance_survives_mixed_merge_and_storage_reopen(
     provenance_pipeline, monkeypatch
 ):
     engine, worker, client = provenance_pipeline
+    # This provider-specific synthetic contract must not depend on ambient keys.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-no-provider")
     storage = engine.get_storage()
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     monkeypatch.setenv(

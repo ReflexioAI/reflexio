@@ -159,6 +159,19 @@ class BaseConfigurator(ABC):
         """Return the currently configured storage config."""
         return self.get_config().storage_config
 
+    @classmethod
+    def validate_storage_upgrade(
+        cls,
+        document: dict[str, Any],
+        *,
+        org_id: str,
+        base_dir: str | None,
+    ) -> None:
+        """Require the selected storage adapter's pre-publication admission."""
+        raise NotImplementedError(
+            "Storage upgrade admission is unavailable for this configurator"
+        )
+
     def create_storage(self, storage_config: StorageConfig) -> BaseStorage | None:
         """Create a storage from the ``_STORAGE_FACTORIES`` registry.
 

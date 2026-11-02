@@ -6,10 +6,14 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, Literal
 
+from reflexio.models.api_schema.service_schemas import Interaction, Request
 from reflexio.server.services.storage.storage_base._extraction_stream import (
     Kind,
     StreamSQL,
     source_request_row,
+)
+from reflexio.server.services.storage.storage_base.agent_run._models import (
+    PendingToolCallRecord,
 )
 
 SCHEMA = """
@@ -27,7 +31,7 @@ CREATE TABLE IF NOT EXISTS extraction_cursors (
  last_error TEXT, last_turn REAL NOT NULL DEFAULT 0, PRIMARY KEY(user_id,kind,project_id)
 );
 CREATE TABLE IF NOT EXISTS extraction_windows (
- window_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, kind TEXT NOT NULL,
+ window_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, kind TEXT NOT NULL, org_id TEXT,
  project_id TEXT NOT NULL DEFAULT '', predecessor INTEGER NOT NULL, end_seq INTEGER NOT NULL, manifest TEXT NOT NULL,
  policy TEXT NOT NULL, force INTEGER NOT NULL DEFAULT 0,
  skip_aggregation INTEGER NOT NULL DEFAULT 0, outcome TEXT,
@@ -87,6 +91,35 @@ def migrate_extraction_stream(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS extraction_completion_boundary ON requests(user_id,json_extract(learning_admission,'$.max_seq')) WHERE json_extract(learning_admission,'$.session_finished')=1"
     )
     conn.commit()
+    _migrate_user_work_ownership(conn)
+
+
+def _migrate_user_work_ownership(conn: sqlite3.Connection) -> None:
+    """Add private owner/position state together without resetting live work.
+
+    The legacy stream migration above has finished its executescript/commit
+    boundaries. A completed schema needs no write lock. An upgrade rechecks the
+    columns under the database write lock before any ALTER, so separate
+    upgrading processes cannot race or observe a partially committed upgrade.
+    """
+    needed = (
+        ("_agent_runs", "user_work_token"),
+        ("learning_work", "position_json"),
+        ("extraction_windows", "org_id"),
+    )
+    if all(
+        column in {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for table, column in needed
+    ):
+        return
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for table, column in needed:
+            columns = {
+                row["name"] for row in conn.execute(f"PRAGMA table_info({table})")
+            }
+            if column not in columns:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
 
 
 class SQLiteStreamSQL:
@@ -105,6 +138,9 @@ class SQLiteStreamSQL:
             "requests",
             "interactions",
             "_agent_runs",
+            "_agent_run_finalization_receipts",
+            "_agent_output_receipts",
+            "_agent_output_preparations",
             "_pending_tool_calls",
             "_run_tool_dependencies",
             "user_playbooks",
@@ -113,6 +149,15 @@ class SQLiteStreamSQL:
             raise ValueError("Unknown extraction table")
         return name
 
+    def publication_order(self) -> str:
+        return "rowid"
+
+    def resume_json_predicates(self) -> tuple[str, str]:
+        return (
+            "json_type(r.generation_request_snapshot, '$.overflow') IS NULL",
+            "COALESCE(json_type(p.result, '$.not_applicable'), '') != 'true'",
+        )
+
     def now(self) -> float:
         return float(
             self.conn.execute("SELECT (julianday('now')-2440587.5)*86400").fetchone()[0]
@@ -120,6 +165,13 @@ class SQLiteStreamSQL:
 
     def lock(self, *, skip_locked: bool = False) -> str:  # noqa: ARG002
         return ""  # commit_scope owns BEGIN IMMEDIATE
+
+    def validation_lock(self, *, alias: Literal["d"] | None = None) -> str:  # noqa: ARG002
+        # The enclosing BEGIN IMMEDIATE already excludes competing writers.
+        return ""
+
+    def try_pending_tool_group(self, record: PendingToolCallRecord) -> bool:  # noqa: ARG002
+        return True  # enclosing BEGIN IMMEDIATE serializes all question writers
 
     def admission_value(self, field: str) -> str:
         if field not in {
@@ -133,21 +185,46 @@ class SQLiteStreamSQL:
             raise ValueError("Unknown admission field")
         return f"json_extract(r.learning_admission, '$.{field}')"
 
+    def expiry_question_columns(self) -> str:
+        return "q.id,q.org_id,'' AS project_id"
+
+    def erasure_run_columns(self) -> str:
+        return "r.id,r.org_id,'' AS project_id,r.extractor_kind"
+
+    def publication_binding_columns(self) -> str:
+        return (
+            "json_type(r.committed_output,'$.publication') IS NOT NULL AS has_publication,"
+            "json_extract(r.committed_output,'$.publication.id') AS output_id"
+        )
+
     def input_lock(self) -> str:
         return ""
 
-    def source_witness_bytes(self, row: dict[str, Any]) -> bytes:
+    def interaction_input_lock(self) -> str:
+        return ""  # BEGIN IMMEDIATE already serializes source writers
+
+    def source_interaction(self, row: dict[str, Any]) -> Interaction:
+        from ._base import _row_to_interaction
+
+        return _row_to_interaction(row)
+
+    def source_witness_bytes(
+        self, row: dict[str, Any], *, request_override: Request | None = None
+    ) -> bytes:
         from reflexio.server.services.extraction.input_preparation import (
             source_witness_bytes,
         )
 
-        from ._base import _row_to_interaction, _row_to_request
+        from ._base import _row_to_request
 
-        return source_witness_bytes(
-            _row_to_request(source_request_row(row)), _row_to_interaction(row)
+        request = (
+            request_override
+            if request_override is not None
+            else _row_to_request(source_request_row(row))
         )
+        return source_witness_bytes(request, self.source_interaction(row))
 
-    def project_filter(self, alias: Literal["r", "i"] = "r") -> str:  # noqa: ARG002 -- SQLite has no projects.
+    def project_filter(self, alias: Literal["r", "i", "q"] = "r") -> str:  # noqa: ARG002 -- SQLite has no projects.
         return "? = ''"
 
     def eligible(self, kind: Kind) -> str:
@@ -155,9 +232,39 @@ class SQLiteStreamSQL:
 
 
 class SQLiteExtractionStreamMixin:
+    db_path: str
     conn: sqlite3.Connection
     _lock: Any
     commit_scope: Any
+    in_commit_scope: bool
+
+    def _durable_work_route(self) -> object:
+        # Existing file clients share a logical queue. In-memory clients do not.
+        from pathlib import Path
+
+        return self.conn if self.db_path == ":memory:" else Path(self.db_path).resolve()
+
+    def _require_independent_writer(self) -> None:
+        with self._lock:
+            if self.in_commit_scope or self.conn.in_transaction:
+                raise ValueError(
+                    "Metadata and financial operations require an independent writer"
+                )
+
+    @contextmanager
+    def _independent_writer_metadata_sql(self) -> Iterator[StreamSQL]:
+        with self._stream_sql(read_only=True) as db:
+            self._require_independent_writer()
+            yield db
+
+    @contextmanager
+    def _publication_receipt_sql(
+        self, *, read_only: bool = True
+    ) -> Iterator[StreamSQL]:
+        with self._lock:
+            self._require_independent_writer()
+            with self._stream_sql(read_only=read_only) as db:
+                yield db
 
     @contextmanager
     def _stream_sql(

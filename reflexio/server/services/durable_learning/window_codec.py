@@ -27,19 +27,16 @@ from typing import Any
 
 from pydantic_core import to_jsonable_python
 
-from reflexio.models.api_schema.domain.entities import (
-    LineageContext,
-    UserPlaybook,
-    UserProfile,
-)
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.token_accounting import RunTokenTotals
 from reflexio.server.services.base_generation_service import PreparedGenerationRun
 from reflexio.server.services.deferred_learning_plan import (
     FinalizationResult,
     GenerationComputePlan,
-    PlaybookWritePlan,
-    ProfileWritePlan,
+)
+from reflexio.server.services.write_plan_codec import (
+    decode_write_plan,
+    encode_write_plan,
 )
 
 #: The ``RunTokenTotals`` fields ``encode_plan`` is allowed to persist. See the
@@ -74,7 +71,7 @@ def encode_plan(plan: GenerationComputePlan | None, service: Any) -> dict[str, A
         {
             "version": 1,
             "skipped": False,
-            "write_plan": plan.write_plan,
+            "write_plan": encode_write_plan(plan.write_plan),
             "generated_count": plan.generated_count,
             "billable_count": plan.billable_count,
             "extraction_run_ids": plan.extraction_run_ids,
@@ -93,27 +90,7 @@ def decode_plan(
         raise ValueError("Unsupported extraction outcome version")
     if data["skipped"]:
         return None
-    raw = data["write_plan"]
-    write_plan = None
-    if raw is not None:
-        raw = dict(raw)
-        raw["lineage_contexts"] = [
-            LineageContext.model_validate(x) for x in raw["lineage_contexts"]
-        ]
-        if kind == "profile":
-            raw["new_profiles"] = [
-                UserProfile.model_validate(x) for x in raw["new_profiles"]
-            ]
-            write_plan = ProfileWritePlan(**raw)
-        else:
-            raw["new_playbooks"] = [
-                UserPlaybook.model_validate(x) for x in raw["new_playbooks"]
-            ]
-            if raw.get("consolidation_provenance"):
-                raw["consolidation_provenance"] = ModelProvenance(
-                    **raw["consolidation_provenance"]
-                )
-            write_plan = PlaybookWritePlan(**raw)
+    write_plan = decode_write_plan(data["write_plan"], kind)
     totals = _decode_token_totals(data["token_totals"])
     service._last_extraction_run_ids = data["extraction_run_ids"]
     service._last_token_totals = totals

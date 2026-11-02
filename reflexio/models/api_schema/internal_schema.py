@@ -4,13 +4,16 @@
 # ==============================
 from typing import NamedTuple
 
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 
 from .domain import CitationKind
 from .service_schemas import Interaction, Request
 
 
 class RequestInteractionDataModel(BaseModel):
+    # Runtime provenance from the missing-request loader; never a serialized
+    # schema/config option or permission to replace a captured real request.
+    _fallback_request: bool = PrivateAttr(default=False)
     arrival_order: bool = False
     session_id: str
     request: Request

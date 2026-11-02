@@ -14,6 +14,7 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
     ToolUseConfig,
 )
+from reflexio.server.services.extraction.history_inputs import HistoricalInputs
 from reflexio.server.services.extraction.resumable_agent import (
     run_resumable_extraction_agent,
 )
@@ -184,6 +185,7 @@ def make_ask_human_prediction_provider(
             ),
             agent_context=case.agent_context_prompt,
             messages=messages,
+            history_inputs=HistoricalInputs(),
             output_schema=StructuredPlaybookList,
             log_label="Playbook ask_human eval",
         )

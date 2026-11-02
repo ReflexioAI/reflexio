@@ -46,6 +46,7 @@ from reflexio.models.config_schema import (
     SearchMode,
 )
 from reflexio.server import publish_timing, search_runtime
+from reflexio.server.background_work import is_background_work
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import (
     ModelRole,
@@ -57,6 +58,7 @@ from reflexio.server.llm.providers.embedding_service_provider import (
 )
 from reflexio.server.services.embedding_text import embedding_input
 from reflexio.server.services.storage.error import (
+    ExecutionInputBusyError,
     PostCommitStorageError,
     StorageError,
     require_non_empty_session_id,
@@ -994,6 +996,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
     _delete_in_chunks: Any
     _delete_source_windows_for_user_playbook_ids: Any
     _subject_ref_for_user_id: Callable[[str], str]
+    # Raw-answer erasure belongs to SQLitePendingToolCallStoreMixin.
+    _erase_pending_tool_calls_for_user_unlocked: Callable[[str], int]
 
     # FTS/vec index helpers provided by SQLiteFtsVecMixin via the composed
     # SQLiteStorage MRO; declared here for _migrate_vec_tables's benefit.
@@ -1012,6 +1016,12 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 # wrapping it would hide it from callers that degrade on it.
                 if isinstance(e, (StorageError, search_runtime.SearchDeadlineError)):
                     raise
+                # Deferred source conversion can include stored customer data
+                # in exception values. Preserve the cause for classification and
+                # the worker's bounded locator, without logging that payload.
+                if is_background_work():
+                    logger.error("Error in %s: %s", func.__name__, type(e).__name__)
+                    raise StorageError(message=type(e).__name__) from e
                 import traceback
 
                 stack_trace = traceback.format_exc()
@@ -1141,6 +1151,12 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 except Exception:
                     logger.warning("Rollback after failed write failed", exc_info=True)
 
+    @property
+    def in_commit_scope(self) -> bool:
+        # A different thread waits for this instance's short writer to finish.
+        with self._lock:
+            return self._scope_depth > 0
+
     @contextlib.contextmanager
     def commit_scope(self) -> Generator[None, None, None]:
         """Group writes into one atomic commit; defer FTS/vec index ops.
@@ -1163,7 +1179,16 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 finally:
                     self._scope_depth -= 1
                 return
-            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError as error:
+                # Only failed admission is safe to retry: no business statement
+                # or commit has run. Never reclassify errors from inside the TX.
+                if getattr(error, "sqlite_errorcode", 0) & 255 == sqlite3.SQLITE_BUSY:
+                    raise ExecutionInputBusyError(
+                        "SQLite writer admission is busy"
+                    ) from error
+                raise
             self._scope_depth = 1
             self._scope_rollback_only = False
             try:
@@ -1315,6 +1340,12 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             self._migrate_vec_tables()
             self._migrate_playbook_aggregation_agent_centroids()
         # Run after DDL so tables exist on fresh databases
+        from ._publication_receipts import migrate_publication_receipts
+
+        migrate_publication_receipts(self.conn, org_id=self.org_id)
+        from ._publication_preparations import migrate_publication_preparations
+
+        migrate_publication_preparations(self.conn)
         self._migrate_agent_runs_schema()
         self._migrate_pending_tool_calls_schema()
         self._migrate_expanded_terms()
@@ -1344,6 +1375,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         from ._extraction_stream import migrate_extraction_stream
 
         migrate_extraction_stream(self.conn)
+        # Fresh databases gain windows after the run/receipt schema. Install
+        # their guards now; current schemas perform only metadata reads.
+        migrate_publication_receipts(self.conn, org_id=self.org_id)
         return True
 
     def _migrate_playbook_diagnosis(self) -> None:
@@ -2088,6 +2122,11 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 WHERE id=NEW.id; END""")
         self.conn.execute("""CREATE TRIGGER IF NOT EXISTS agent_run_receipt_progress
           AFTER INSERT ON _agent_run_finalization_receipts BEGIN
+          UPDATE _agent_runs SET progress_stage='results_committed',
+            last_progress_at=strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
+          WHERE id=NEW.run_id; END""")
+        self.conn.execute("""CREATE TRIGGER IF NOT EXISTS agent_output_receipt_progress
+          AFTER INSERT ON _agent_output_receipts BEGIN
           UPDATE _agent_runs SET progress_stage='results_committed',
             last_progress_at=strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
           WHERE id=NEW.run_id; END""")
@@ -3377,8 +3416,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         """Per-``user_id`` row deletion across all user-scoped tables.
 
         Overrides the BaseStorage default with an optimized SQL implementation.
-        Removes interactions, user playbooks, profiles, and requests scoped to
-        the user. Intentionally does NOT touch ``agent_playbooks`` — they are
+        Removes interactions, user playbooks, profiles, requests, raw extraction
+        runs and originated pending questions/answers scoped to the user.
+        Shared dependent runs retain independent answers and lose stale claims.
+        Intentionally does NOT touch ``agent_playbooks`` — they are
         the cross-project rollup of skills and have no ``user_id`` column.
 
         Also cleans up FTS and vector sidecars for the user's rows so
@@ -3397,6 +3438,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         Supabase/Postgres backends.
 
         **Commit ordering (atomicity invariant):**
+        Pending output/window finances transfer in the same owned writer as
+        the raw-run, answer, window and user-row deletes. Borrowed writers are
+        refused before effects. Deleting runs cascades private preparations and
+        historical/accepted receipts; pending receipts retain only financial facts.
         The hard-deletes for interactions, requests, and the delete-sets of
         profiles/user_playbooks are committed in one transaction first. Then
         ``purge_content`` is called for each purge-eligible row — each call
@@ -3416,112 +3461,122 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 purged rows are counted separately.
         """
         with self._lock:
-            # ------------------------------------------------------------------
-            # Phase 1: snapshot all user-scoped ids before any mutations.
-            # ------------------------------------------------------------------
-            interaction_ids = [
-                r["interaction_id"]
-                for r in self.conn.execute(
-                    "SELECT interaction_id FROM interactions WHERE user_id = ?",
+            if self.in_commit_scope:
+                raise StorageError("User clear requires its own transaction")
+            with self.commit_scope():
+                with self._stream_sql() as db:
+                    self._handoff_erased_output_finances(db, user_id)
+                    self._handoff_erased_window_finances(db, user_id)
+                    db.query(
+                        "DELETE FROM _agent_runs WHERE org_id=? AND user_id=?",
+                        (self.org_id, user_id),
+                    )
+                self._erase_pending_tool_calls_for_user_unlocked(user_id)
+                # ------------------------------------------------------------------
+                # Phase 1: snapshot learning/source ids before touching their rows.
+                # ------------------------------------------------------------------
+                interaction_ids = [
+                    r["interaction_id"]
+                    for r in self.conn.execute(
+                        "SELECT interaction_id FROM interactions WHERE user_id = ?",
+                        (user_id,),
+                    ).fetchall()
+                ]
+                raw_upb_ids = [
+                    r["user_playbook_id"]
+                    for r in self.conn.execute(
+                        "SELECT user_playbook_id FROM user_playbooks WHERE user_id = ?",
+                        (user_id,),
+                    ).fetchall()
+                ]
+                profile_rows = self.conn.execute(
+                    "SELECT rowid, profile_id FROM profiles WHERE user_id = ?",
                     (user_id,),
                 ).fetchall()
-            ]
-            raw_upb_ids = [
-                r["user_playbook_id"]
-                for r in self.conn.execute(
-                    "SELECT user_playbook_id FROM user_playbooks WHERE user_id = ?",
-                    (user_id,),
-                ).fetchall()
-            ]
-            profile_rows = self.conn.execute(
-                "SELECT rowid, profile_id FROM profiles WHERE user_id = ?",
-                (user_id,),
-            ).fetchall()
 
-            # Build a rowid lookup for FTS/vec cleanup (SQLite-specific need).
-            profile_rowid_by_id: dict[str, int] = {
-                r["profile_id"]: r["rowid"] for r in profile_rows
-            }
-            all_profile_ids = list(profile_rowid_by_id.keys())
+                # Build a rowid lookup for FTS/vec cleanup (SQLite-specific need).
+                profile_rowid_by_id: dict[str, int] = {
+                    r["profile_id"]: r["rowid"] for r in profile_rows
+                }
+                all_profile_ids = list(profile_rowid_by_id.keys())
 
-            # ------------------------------------------------------------------
-            # Phase 2: partition profiles and user_playbooks into purge vs delete.
-            # Delegates to the shared BaseStorage helper so the decision logic
-            # is defined once and reused by all backends.
-            # ------------------------------------------------------------------
-            purge_profile_ids, delete_profile_ids = self._partition_purge_vs_delete(
-                "profile", all_profile_ids
-            )
-            purge_upb_str_ids, delete_upb_str_ids = self._partition_purge_vs_delete(
-                "user_playbook", [str(uid) for uid in raw_upb_ids]
-            )
-            purge_upb_ids = [int(s) for s in purge_upb_str_ids]
-            delete_upb_ids = [int(s) for s in delete_upb_str_ids]
-
-            # Rowids for the delete-set only (purge_content handles its own cleanup).
-            delete_profile_rowids = [
-                profile_rowid_by_id[pid]
-                for pid in delete_profile_ids
-                if pid in profile_rowid_by_id
-            ]
-
-            # ------------------------------------------------------------------
-            # Phase 3: FTS and vector cleanup — only for the delete-sets
-            # (purge_content handles its own index cleanup for purged rows).
-            # Use _delete_in_chunks to stay under SQLite's SQLITE_MAX_VARIABLE_NUMBER
-            # limit for large user datasets.
-            # ------------------------------------------------------------------
-            self._delete_in_chunks("interactions_fts", "rowid", interaction_ids)
-            self._delete_in_chunks("user_playbooks_fts", "rowid", delete_upb_ids)
-            self._delete_in_chunks("profiles_fts", "profile_id", delete_profile_ids)
-
-            if self._has_sqlite_vec:
-                self._delete_in_chunks("interactions_vec", "rowid", interaction_ids)
-                self._delete_in_chunks("user_playbooks_vec", "rowid", delete_upb_ids)
-                self._delete_in_chunks("profiles_vec", "rowid", delete_profile_rowids)
-
-            # ------------------------------------------------------------------
-            # Phase 4: hard-delete the delete-sets and all interactions/requests.
-            # ------------------------------------------------------------------
-            self.conn.execute(
-                "DELETE FROM extraction_windows WHERE user_id=?", (user_id,)
-            )
-            self.conn.execute(
-                "DELETE FROM extraction_cursors WHERE user_id=?", (user_id,)
-            )
-            self.conn.execute(
-                "DELETE FROM learning_work WHERE org_id=? AND user_id=?",
-                (self.org_id, user_id),
-            )
-            interactions_cur = self.conn.execute(
-                "DELETE FROM interactions WHERE user_id = ?", (user_id,)
-            )
-            session_outcomes_cur = self.conn.execute(
-                "DELETE FROM session_outcomes WHERE user_id = ?",
-                (user_id,),
-            )
-            requests_cur = self.conn.execute(
-                "DELETE FROM requests WHERE user_id = ?", (user_id,)
-            )
-            upb_deleted_count = 0
-            if delete_upb_ids:
-                # Clean up source-window join rows before deleting the parent rows.
-                self._delete_source_windows_for_user_playbook_ids(delete_upb_ids)
-                self._delete_in_chunks(
-                    "user_playbooks", "user_playbook_id", delete_upb_ids
+                # ------------------------------------------------------------------
+                # Phase 2: partition profiles and user_playbooks into purge vs delete.
+                # Delegates to the shared BaseStorage helper so the decision logic
+                # is defined once and reused by all backends.
+                # ------------------------------------------------------------------
+                purge_profile_ids, delete_profile_ids = self._partition_purge_vs_delete(
+                    "profile", all_profile_ids
                 )
-                # rowcount not available from _delete_in_chunks; derive from list length
-                # (all ids came from a pre-snapshot so they exist at delete time).
-                upb_deleted_count = len(delete_upb_ids)
-            profile_deleted_count = 0
-            if delete_profile_ids:
-                self._delete_in_chunks("profiles", "profile_id", delete_profile_ids)
-                profile_deleted_count = len(delete_profile_ids)
+                purge_upb_str_ids, delete_upb_str_ids = self._partition_purge_vs_delete(
+                    "user_playbook", [str(uid) for uid in raw_upb_ids]
+                )
+                purge_upb_ids = [int(s) for s in purge_upb_str_ids]
+                delete_upb_ids = [int(s) for s in delete_upb_str_ids]
 
-            # Commit the hard-deletes before calling purge_content, because
-            # purge_content issues its own conn.commit() and nesting it here
-            # would prematurely flush the still-pending deletes.
-            self.conn.commit()
+                # Rowids for the delete-set only (purge_content handles its own cleanup).
+                delete_profile_rowids = [
+                    profile_rowid_by_id[pid]
+                    for pid in delete_profile_ids
+                    if pid in profile_rowid_by_id
+                ]
+
+                # ------------------------------------------------------------------
+                # Phase 3: FTS and vector cleanup — only for the delete-sets
+                # (purge_content handles its own index cleanup for purged rows).
+                # Use _delete_in_chunks to stay under SQLite's SQLITE_MAX_VARIABLE_NUMBER
+                # limit for large user datasets.
+                # ------------------------------------------------------------------
+                self._delete_in_chunks("interactions_fts", "rowid", interaction_ids)
+                self._delete_in_chunks("user_playbooks_fts", "rowid", delete_upb_ids)
+                self._delete_in_chunks("profiles_fts", "profile_id", delete_profile_ids)
+
+                if self._has_sqlite_vec:
+                    self._delete_in_chunks("interactions_vec", "rowid", interaction_ids)
+                    self._delete_in_chunks(
+                        "user_playbooks_vec", "rowid", delete_upb_ids
+                    )
+                    self._delete_in_chunks(
+                        "profiles_vec", "rowid", delete_profile_rowids
+                    )
+
+                # ------------------------------------------------------------------
+                # Phase 4: hard-delete the delete-sets and all interactions/requests.
+                # ------------------------------------------------------------------
+                self.conn.execute(
+                    "DELETE FROM extraction_windows WHERE user_id=?", (user_id,)
+                )
+                self.conn.execute(
+                    "DELETE FROM extraction_cursors WHERE user_id=?", (user_id,)
+                )
+                self.conn.execute(
+                    "DELETE FROM learning_work WHERE org_id=? AND user_id=?",
+                    (self.org_id, user_id),
+                )
+                interactions_cur = self.conn.execute(
+                    "DELETE FROM interactions WHERE user_id = ?", (user_id,)
+                )
+                session_outcomes_cur = self.conn.execute(
+                    "DELETE FROM session_outcomes WHERE user_id = ?",
+                    (user_id,),
+                )
+                requests_cur = self.conn.execute(
+                    "DELETE FROM requests WHERE user_id = ?", (user_id,)
+                )
+                upb_deleted_count = 0
+                if delete_upb_ids:
+                    # Clean up source-window join rows before deleting the parent rows.
+                    self._delete_source_windows_for_user_playbook_ids(delete_upb_ids)
+                    self._delete_in_chunks(
+                        "user_playbooks", "user_playbook_id", delete_upb_ids
+                    )
+                    # rowcount not available from _delete_in_chunks; derive from list length
+                    # (all ids came from a pre-snapshot so they exist at delete time).
+                    upb_deleted_count = len(delete_upb_ids)
+                profile_deleted_count = 0
+                if delete_profile_ids:
+                    self._delete_in_chunks("profiles", "profile_id", delete_profile_ids)
+                    profile_deleted_count = len(delete_profile_ids)
 
             # Phase 5: content-purge the purge-sets WITHOUT releasing the lock,
             # so erase-eligible rows are never observable by another thread with

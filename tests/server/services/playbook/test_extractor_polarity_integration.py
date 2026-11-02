@@ -37,6 +37,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
 from reflexio.server.services.playbook.service import (
     PlaybookGenerationServiceConfig,
 )
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
 
@@ -58,14 +59,15 @@ def temp_storage_dir():
 
 
 @pytest.fixture
-def request_context(temp_storage_dir, worker_id):
-    """Create a request context with a mocked storage and per-worker org isolation."""
+def request_context(temp_storage_dir, worker_id, monkeypatch):
+    """Keep ownership real while isolating prompt/window and model responses."""
     org_id = f"polarity_int_{worker_id}"
     context = RequestContext(org_id=org_id, storage_base_dir=temp_storage_dir)
-    context.storage = MagicMock()
-    context.storage.update_agent_run_status.side_effect = (
-        lambda _run_id, status, **_kwargs: MagicMock(status=status)
+    monkeypatch.setattr(SQLiteStorage, "_get_embedding", lambda *_a, **_k: [0.0] * 512)
+    context.storage = SQLiteStorage(
+        org_id=org_id, db_path=os.path.join(temp_storage_dir, "runs.db")
     )
+    monkeypatch.setattr(context.storage, "get_last_k_interactions_grouped", MagicMock())
     # Mock prompt manager so the extractor can render the extraction prompt
     # without depending on the on-disk prompt registry.
     context.prompt_manager = MagicMock()
@@ -73,7 +75,10 @@ def request_context(temp_storage_dir, worker_id):
     context.prompt_manager.get_active_version.side_effect = lambda prompt_id: (
         "4.6.0" if prompt_id == "playbook_extraction_context" else "1.2.0"
     )
-    return context
+    try:
+        yield context
+    finally:
+        context.storage.conn.close()
 
 
 @pytest.fixture
