@@ -137,6 +137,8 @@ def test_nullable_legacy_owner_without_complete_sources_is_refused(store):
     assert store.get_agent_run(run.id) == run
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("legacy_user", [None, " "])
 @pytest.mark.parametrize(
     "interaction_user,request_user,request_exists,accepted",
     [
@@ -147,7 +149,7 @@ def test_nullable_legacy_owner_without_complete_sources_is_refused(store):
     ],
 )
 def test_legacy_adoption_requires_every_interaction_and_request_owner(
-    store, interaction_user, request_user, request_exists, accepted
+    store, legacy_user, interaction_user, request_user, request_exists, accepted
 ):
     store.conn.execute(
         "INSERT INTO requests(request_id,user_id,created_at,session_id) VALUES('first','one','2026-01-01','session')"
@@ -165,10 +167,15 @@ def test_legacy_adoption_requires_every_interaction_and_request_owner(
         (interaction_user,),
     )
     store.conn.commit()
-    run = _run(store, user_id=None, kind="playbook", source_ids=[2, 1, 2])
+    run = _run(store, user_id=legacy_user, kind="playbook", source_ids=[2, 1, 2])
     token = store.claim_user_extraction("one", "owner", 300)
     assert token is not None
     assert (_adopt(store, run, "one", token) is not None) is accepted
+    retained = store.get_agent_run(run.id)
+    assert retained is not None
+    assert retained.binding.user_id == ("one" if accepted else legacy_user)
+    if not accepted:
+        assert retained == run
 
 
 def test_offsetless_historical_revision_is_compared_as_utc(store):
