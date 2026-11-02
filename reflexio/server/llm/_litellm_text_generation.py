@@ -1864,6 +1864,7 @@ class TextGenerationMixin:
                     raise StructuredOutputRepairError(
                         "Structured output repair stopped on provider refusal",
                         failure_kind="refusal",
+                        finish_reason=finish_reason,
                         model=str(turn_params.get("model")),
                         raw_content=content if isinstance(content, str) else None,
                     )
@@ -2053,6 +2054,7 @@ class TextGenerationMixin:
             errors: Sequence[str],
             model: str,
             first_parsed_provenance: ModelProvenance | None = None,
+            parsed_output_finish_reason: str | None = None,
         ) -> StructuredOutputRepairError:
             return StructuredOutputRepairError(
                 "Structured output repair exhausted",
@@ -2066,6 +2068,8 @@ class TextGenerationMixin:
                 model=model,
                 raw_content=attempt.raw_content if attempt else None,
                 parsed_output=attempt.parsed_output if attempt else None,
+                finish_reason=attempt.finish_reason if attempt else None,
+                parsed_output_finish_reason=parsed_output_finish_reason,
                 validation_errors=tuple(errors),
                 first_parsed_provenance=first_parsed_provenance,
             )
@@ -2267,6 +2271,7 @@ class TextGenerationMixin:
                 raw_content = exc.raw_content
                 finish_reason = exc.finish_reason
                 latest_parsed_output = None
+                latest_parsed_finish_reason = None
             else:
                 parse_diagnostics = ""
                 valid, errors, failure_kind = _validate_attempt(first_attempt)
@@ -2275,6 +2280,11 @@ class TextGenerationMixin:
                 raw_content = first_attempt.raw_content
                 finish_reason = first_attempt.finish_reason
                 latest_parsed_output = first_attempt.parsed_output
+                latest_parsed_finish_reason = (
+                    first_attempt.finish_reason
+                    if latest_parsed_output is not None
+                    else None
+                )
                 if first_attempt.parsed_output is not None:
                     first_parsed_provenance = first_attempt.provenance
 
@@ -2371,6 +2381,11 @@ class TextGenerationMixin:
 
             # Within-rung roll-forward: keep the most recent output that parsed
             # (e.g. a semantic-fail before a final parse-fail) on the typed error.
+            parsed_output_finish_reason = (
+                repair_attempt.finish_reason
+                if repair_attempt.parsed_output is not None
+                else latest_parsed_finish_reason
+            )
             repair_attempt.parsed_output = (
                 repair_attempt.parsed_output or latest_parsed_output
             )
@@ -2384,6 +2399,7 @@ class TextGenerationMixin:
             raise _repair_error(
                 failure_kind=failure_kind,
                 attempt=repair_attempt,
+                parsed_output_finish_reason=parsed_output_finish_reason,
                 errors=errors,
                 model=repair_attempt.model,
                 first_parsed_provenance=first_parsed_provenance,

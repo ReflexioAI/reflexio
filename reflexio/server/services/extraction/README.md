@@ -350,8 +350,12 @@ point. Exact-source and downstream quality qualification remain required.
 After the existing bounded semantic repair, the guarded seam can discard entire
 groups containing unseen references from a complete schema-valid response.
 Every retained group is revalidated. No individual reference is guessed or
-removed from a retained group, and parse, refusal, model-route, provider-budget and
-integrity failures are not converted to accepted results. Host omission notices
+removed from a retained group. If the final repair fails parsing, the seam may
+use the latest earlier schema-valid selection only when both observed finish
+reasons are explicitly `stop`, under the same pinned single-model ladder. The
+malformed final content is never salvaged. Missing finish metadata, truncation,
+refusal, model-route, provider-budget and integrity failures remain errors.
+Host omission notices
 and `provider_reference_recoveries` make this partial selection visible. That
 counter describes new provider work in this operation; cache hits may carry
 earlier omission notices without a new recovery.
