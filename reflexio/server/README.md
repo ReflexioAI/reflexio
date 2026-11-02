@@ -637,6 +637,7 @@ Key files:
 
 - `admission.py`: Atomic publish admission and eligibility snapshots.
 - `scheduler.py` / `worker.py`: Always-on discovery, bounded worker turns and renewable user leases.
+- `user_lease.py`: The execution owner's shared context and live fencing. Native adapters use `current_user_work_token(storage)` to bind transaction-local ownership for the exact storage instance; absent or unrelated contexts return `None`, while a cancelled matching owner raises. The token does not replace the live database fence and must never be logged or retained beyond the transaction.
 - `discovery.py`: Fixed `WorkDiscovery` turn/expiry facts. Iteration retains the execution-org provider contract; the shared scheduler consumes expiry separately. Partial reads retain both known sets and their original cause without declaring idle.
 - `expiry.py`: Bounded housekeeping on the shared scheduler thread, outside user/model admission. Original-project APP expiry revalidates one metadata descriptor and advances a finite private sweep even on opt-out/refusal; failure in one org does not stop another.
 - `storage/storage_base/_pending_tool_expiry.py`: Canonical metadata-only question selection and narrow, atomic APP question/dependency expiry. It never sweeps unrelated runs or changes executing run phases, attempts, ownership or output.

@@ -23,6 +23,31 @@ def store(tmp_path):
         storage.conn.close()
 
 
+def test_native_transaction_token_is_context_bound_and_lost_owner_is_not_unbound(
+    store, tmp_path
+):
+    from reflexio.server.services.durable_learning.user_lease import (
+        current_user_work_token,
+        owned_user_work_context,
+    )
+
+    other = SQLiteStorage(org_id="other_owner", db_path=str(tmp_path / "other.db"))
+    token = store.claim_user_extraction("one", "native", 300)
+    assert token is not None
+    try:
+        assert current_user_work_token(store) is None
+        with owned_user_work_context(store, "one", token, 300) as owner:
+            assert current_user_work_token(store) == token
+            assert current_user_work_token(other) is None
+            owner.lost.set()
+            with pytest.raises(LeaseLostError, match="cancelled or lost"):
+                current_user_work_token(store)
+        assert current_user_work_token(store) is None
+    finally:
+        store.release_user_extraction("one", token)
+        other.conn.close()
+
+
 def _run(store, *, user_id: str | None = "one", kind="profile", source_ids=None):
     return store.create_agent_run(
         AgentRunRecord(
