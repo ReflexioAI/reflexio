@@ -8,15 +8,12 @@ glue only (it hits a paid LLM via the gated real-run smoke); the mocked-seam uni
 test exercises the same RIDM + config + extractor construction and call path
 without a real API call so default CI catches provider bugs.
 
-Call path (no storage seeding required, but storage IS required):
-    Unlike the consolidation decision seam (which needs no storage), the
-    classic extractors route through
-    ``run_resumable_extraction_agent`` -> ``ResumableExtractionAgent``, which
-    *requires* ``request_context.storage`` (it writes an ``_agent_runs`` row).
-    ``RequestContext(org_id=..., storage_base_dir=tmp)`` auto-wires a real
-    temp SQLite store, so we satisfy that with zero seeding -- the window
-    interactions are passed directly as a ``RequestInteractionDataModel``
-    (we never call the storage-reading ``_get_interactions`` / ``run``).
+Call path (owned storage and source seeding required):
+    The extractors retain resumable output and validate its exact source rows
+    before saving it. Each synthetic case is therefore persisted through the
+    normal request/interaction store APIs before dispatch, without embeddings.
+    RequestContext supplies the isolated SQLite store. No production source is
+    read or changed by this provider.
 
     - playbooks = ``PlaybookExtractor.extract_playbook_entries([ridm])``
     - profiles  = ``ProfileExtractor._convert_raw_to_user_profiles(
@@ -49,6 +46,7 @@ from reflexio.server.services.profile.components.extractor import ProfileExtract
 from reflexio.server.services.profile.service import (
     ProfileGenerationServiceConfig,
 )
+from tests.server.services.extraction.source_fixtures import persist_source_models
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -152,7 +150,7 @@ def make_extraction_provider(
     Returns a closure that, for each case, wraps ``case["sessions"]`` into a
     single ``RequestInteractionDataModel``, constructs a real
     ``PlaybookExtractor`` + ``ProfileExtractor`` (with minimal configs), runs
-    both directly over the passed interactions (no storage seeding), and
+    both over exact synthetic sources persisted in the owned test storage, and
     returns the produced ``(profiles, playbooks)`` pair.
 
     Args:
@@ -166,8 +164,13 @@ def make_extraction_provider(
         ``(profiles, playbooks)``.
     """
 
+    storage = request_context.storage
+    if storage is None:
+        raise ValueError("Extraction evaluation requires owned storage")
+
     def provider(case: ExtractionCase) -> tuple[list[Any], list[Any]]:
         ridm = _sessions_to_ridm(case.get("sessions", []))
+        persist_source_models(storage, [ridm])
 
         playbook_extractor = PlaybookExtractor(
             request_context=request_context,

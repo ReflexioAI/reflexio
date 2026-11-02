@@ -16,6 +16,12 @@ from pydantic import BaseModel
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.server.llm._litellm_types import ModelProvenance
+from reflexio.server.llm.compute_admission import (
+    compute_attempt_scope,
+    record_compute_result,
+    reserve_compute_attempt,
+    retain_compute_result,
+)
 from reflexio.server.llm.input_budget import (
     InputBudgetConfigurationError,
     InputBudgetExceededError,
@@ -1008,6 +1014,7 @@ class ResumableExtractionAgent:
                 structured_output_validator=structured_output_validator,
             )
 
+    @compute_attempt_scope()
     def _run(
         self,
         *,
@@ -1035,6 +1042,7 @@ class ResumableExtractionAgent:
             self.storage.validate_agent_history_inputs(
                 run, captured_history.profiles, captured_history.playbooks
             )
+        reserve_compute_attempt()
         if before_model is not None:
             run = before_model(run)
         max_steps = self.max_steps
@@ -1070,6 +1078,7 @@ class ResumableExtractionAgent:
             tool_choice="auto",
             log_label=log_label,
         )
+        record_compute_result()
 
         output = result.structured_output
         committed_output = (
@@ -1114,11 +1123,16 @@ class ResumableExtractionAgent:
                 "history_inputs": asdict(captured_history),
             }
             try:
-                with owned_agent_run_write(self.storage, run):
+                with self.storage.agent_completion_input_scope(
+                    run,
+                    committed_output,
+                    captured_history.profiles,
+                    captured_history.playbooks,
+                ) as admitted_output:
                     stored_run = self.storage.update_agent_run_status(
                         run.id,
                         AgentRunStatus.AGENT_COMPLETED,
-                        committed_output=committed_output,
+                        committed_output=admitted_output,
                         pending_tool_call_ids=result.pending_tool_call_ids,
                         max_steps_remaining=result.max_steps_remaining,
                         expected_statuses=active_statuses,
@@ -1150,6 +1164,7 @@ class ResumableExtractionAgent:
                     finished_reason="late_output_discarded",
                     model_provenance=None,
                 )
+            retain_compute_result()
             logger.info(
                 "event=extraction_agent_finished org_id=%s user_id=%s "
                 "extractor_kind=%s run_id=%s request_id=%s "

@@ -240,3 +240,170 @@ def test_paid_compatibility_tool_contention_reaches_existing_window_ceiling(
     assert cursor["attempts"] == MAX_EXTRACTION_WINDOW_ATTEMPTS
     assert cursor["retry_at"] == float("inf")
     assert storage.count_all_profiles() == 0
+
+
+@pytest.mark.parametrize("held_refusals", [1, 2])
+@pytest.mark.parametrize("save_boundary", ["model_result", "window_outcome"])
+def test_image_compatibility_completed_compute_save_contention_is_bounded(
+    pipeline, monkeypatch, save_boundary, held_refusals
+):
+    import json
+    import sqlite3
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import contextmanager
+    from threading import Event
+    from types import SimpleNamespace
+
+    import litellm
+
+    from reflexio.server.llm.litellm_client import (
+        LiteLLMClient,
+        LiteLLMConfig,
+    )
+    from tests.server.services.test_window_retry_ceiling_integration import _drain_once
+
+    engine, worker, http = pipeline
+    storage = engine.get_storage()
+    config = engine.request_context.configurator.get_config()
+    config.pending_tool_call_config.enabled = True
+    engine.request_context.configurator.set_config(config)
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "cloud")
+    monkeypatch.setattr(storage, "embedding_model_name", "text-embedding-3-small")
+    monkeypatch.setattr(storage, "_should_expand_documents", lambda: False)
+    monkeypatch.setattr(
+        storage, "llm_client", LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
+    )
+    monkeypatch.setattr(
+        litellm,
+        "embedding",
+        lambda **_kw: SimpleNamespace(
+            data=[{"index": 0, "embedding": [0.0] * storage.embedding_dimensions}]
+        ),
+    )
+    monkeypatch.setattr(
+        ProfileGenerationService,
+        "_should_run_before_extraction",
+        lambda *_a, **_kw: True,
+    )
+    storage.conn.execute("PRAGMA busy_timeout=50")
+    busy, held = Event(), Event()
+    refusals, models, computes, holders = [], [], [], []
+    scope = storage.commit_scope
+    compute = ProfileGenerationService.compute_generation
+
+    @contextmanager
+    def observed_writer():
+        try:
+            with scope():
+                yield
+        except Exception as error:
+            cause = error
+            while cause is not None:
+                if (
+                    isinstance(cause, sqlite3.OperationalError)
+                    and getattr(cause, "sqlite_errorcode", 0) & 255
+                    == sqlite3.SQLITE_BUSY
+                ):
+                    refusals.append(1)
+                    if len(refusals) % held_refusals == 0:
+                        busy.set()
+                    break
+                cause = cause.__cause__
+            raise
+
+    def hold_writer():
+        with sqlite3.connect(storage.db_path) as other:
+            other.execute("BEGIN IMMEDIATE")
+            other.execute("UPDATE interactions SET created_at=created_at")
+            held.set()
+            assert busy.wait(5), "Must observe an actual SQLite admission timeout"
+            other.rollback()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+
+        def block_next_save():
+            busy.clear()
+            held.clear()
+            holders.append(pool.submit(hold_writer))
+            assert held.wait(5)
+
+        def completion(_client, params, _timeout):
+            if "ProfileDeduplication" in str(params.get("response_format")):
+                output = {
+                    "duplicate_groups": [],
+                    "unique_ids": ["NEW-0"],
+                    "deletions": [],
+                }
+            else:
+                models.append(1)
+                output = {
+                    "profiles": [
+                        {
+                            "content": "Prefer concise answers.",
+                            "time_to_live": "infinity",
+                        }
+                    ]
+                }
+                if save_boundary == "model_result":
+                    block_next_save()
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps(output), tool_calls=None, refusal=None
+                        ),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=SimpleNamespace(
+                    prompt_tokens=10,
+                    completion_tokens=5,
+                    total_tokens=15,
+                    cache_read_input_tokens=0,
+                    cache_creation_input_tokens=0,
+                ),
+                model="gpt-4o-mini",
+                _hidden_params={"custom_llm_provider": "openai"},
+            )
+
+        def compute_then_save(service, request):
+            plan = compute(service, request)
+            computes.append(1)
+            if save_boundary == "window_outcome":
+                block_next_save()
+            return plan
+
+        monkeypatch.setattr(storage, "commit_scope", observed_writer)
+        monkeypatch.setattr(
+            ProfileGenerationService, "compute_generation", compute_then_save
+        )
+        monkeypatch.setattr(
+            LiteLLMClient,
+            "get_completion_model_ladder",
+            lambda *_a, **_kw: ["gpt-4o-mini"],
+        )
+        monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", completion)
+        request = payload("completed-save-busy", force=True)
+        # Actual image evidence selects compatibility execution, without a
+        # mocked adapter decision or any image/network/provider service.
+        request["interaction_data_list"][0]["interacted_image_url"] = (
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+kRasAAAAASUVORK5CYII="
+        )
+        assert http.post("/api/publish_interaction", json=request).json()["success"]
+        for _ in range(MAX_EXTRACTION_WINDOW_ATTEMPTS * 3 + 3):
+            _drain_once(worker, storage)
+        for holder in holders:
+            holder.result(timeout=5)
+    cursor, windows, _ = _state(storage)
+    assert models and refusals
+    if save_boundary == "model_result":
+        assert len(models) * held_refusals == len(refusals)
+        assert len(models) <= MAX_EXTRACTION_WINDOW_ATTEMPTS
+    else:
+        assert computes and len(computes) * held_refusals == len(refusals)
+        assert len(computes) <= MAX_EXTRACTION_WINDOW_ATTEMPTS
+    assert cursor["attempts"] == MAX_EXTRACTION_WINDOW_ATTEMPTS
+    assert cursor["retry_at"] == float("inf")
+    assert windows[0]["outcome"] is None and not windows[0]["completed"]
+    assert storage.count_all_profiles() == 0

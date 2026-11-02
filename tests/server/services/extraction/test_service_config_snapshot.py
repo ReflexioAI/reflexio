@@ -45,6 +45,9 @@ EXCLUDED = {"window_interactions", "existing_data", "frozen_extractor_config"}
 PRIVATE = "PRIVATE-USER-CONTENT"
 
 
+from tests.server.services.extraction.source_fixtures import persist_source_models
+
+
 def _groups() -> list[RequestInteractionDataModel]:
     return [
         RequestInteractionDataModel(
@@ -175,6 +178,8 @@ def test_classic_run_row_persists_trimmed_snapshot(monkeypatch, window_id):
             patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512),
         ):
             storage = SQLiteStorage(org_id="org", db_path=f"{temp_dir}/r.db")
+            groups = _groups()
+            persist_source_models(storage, groups)
             context = MagicMock(org_id="org", storage=storage)
             result = resumable_agent.run_resumable_extraction_agent(
                 request_context=context,
@@ -184,7 +189,7 @@ def test_classic_run_row_persists_trimmed_snapshot(monkeypatch, window_id):
                 request_id="r",
                 agent_version=None,
                 source="api",
-                request_interaction_data_models=_groups(),
+                request_interaction_data_models=groups,
                 extractor_config=ProfileExtractorConfig(
                     extraction_definition_prompt="x"
                 ),

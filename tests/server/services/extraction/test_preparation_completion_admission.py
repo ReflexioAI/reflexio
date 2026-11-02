@@ -177,3 +177,135 @@ def test_expiry_after_cache_write_rolls_back_completion(
         "Expired raw completion must roll back with its compute-entry clear"
     )
     assert not [e for e in events if e.event_name == "learnings_generated"]
+
+
+@pytest.mark.parametrize("refusal", ["input", "readiness"])
+def test_completed_resume_preparation_is_bounded_before_primary_model_entry(
+    shared_worker, publication, monkeypatch, actual_embedding_dispatch, refusal
+):
+    import litellm
+
+    from reflexio.server.services.extraction.resume_worker import ExtractionResumeWorker
+    from reflexio.server.services.storage.error import (
+        ExecutionInputBusyError,
+        ReadinessUnavailableError,
+    )
+
+    storage, worker, kind, _, _ = publication
+    worker.request_context.configurator.get_config().pending_tool_call_config.max_resume_attempts = 1
+    api = litellm.embedding
+    responses = []
+
+    def embedding(**kwargs):
+        value = api(**kwargs)
+        responses.append(1)
+        return value
+
+    def prepare_then_refuse(_self, **_kwargs):
+        assert storage._get_embedding("Synthetic prior context")
+        if refusal == "input":
+            raise ExecutionInputBusyError("Input refused after preparation")
+        raise ReadinessUnavailableError("Readiness refused after preparation")
+
+    monkeypatch.setattr(litellm, "embedding", embedding)
+    monkeypatch.setattr(
+        ExtractionResumeWorker, "_messages_with_prior_knowledge", prepare_then_refuse
+    )
+    for _ in range(6):
+        storage._execute(
+            "UPDATE _agent_runs SET next_resume_at=NULL WHERE id='run_1'", ()
+        )
+        shared_worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300)
+    run = storage.get_agent_run("run_1")
+    assert responses == [1]
+    assert run is not None and run.status == AgentRunStatus.FAILED
+    assert run.resume_attempts == 1 and run.committed_output is None
+
+
+@pytest.mark.parametrize("blocked", [False, True])
+def test_writer_blocks_both_result_and_charge_without_refunding_preparation(
+    shared_worker, publication, monkeypatch, actual_embedding_dispatch, blocked
+):
+    import litellm
+
+    from reflexio.server.services.extraction.resume_worker import ExtractionResumeWorker
+
+    storage, worker, kind, _, _ = publication
+    worker.request_context.configurator.get_config().pending_tool_call_config.max_resume_attempts = 1
+    storage.conn.execute("PRAGMA busy_timeout=50")
+    busy, held = Event(), Event()
+    responses, refusals, holders = [], [], []
+    scope = storage.commit_scope
+    api = litellm.embedding
+
+    def embedding(**kwargs):
+        response = api(**kwargs)
+        responses.append(1)
+        return response
+
+    @contextmanager
+    def observed_writer():
+        try:
+            with scope():
+                yield
+        except Exception as error:
+            cause = error
+            while cause is not None:
+                if (
+                    isinstance(cause, sqlite3.OperationalError)
+                    and getattr(cause, "sqlite_errorcode", 0) & 255
+                    == sqlite3.SQLITE_BUSY
+                ):
+                    refusals.append(1)
+                    if len(refusals) % 2 == 0:
+                        busy.set()
+                    break
+                cause = cause.__cause__
+            raise
+
+    def hold_writer():
+        with sqlite3.connect(storage.db_path) as other:
+            other.execute("BEGIN IMMEDIATE")
+            other.execute("UPDATE interactions SET created_at=created_at")
+            held.set()
+            assert busy.wait(5), (
+                "Hold through both refused writers, not only the raw-save refusal"
+            )
+            other.rollback()
+
+    monkeypatch.setattr(storage, "commit_scope", observed_writer)
+    monkeypatch.setattr(litellm, "embedding", embedding)
+    monkeypatch.setattr(
+        "reflexio.server.services.extraction.resumable_agent.run_tool_loop",
+        lambda **kwargs: base._loop_result(kwargs, kind, storage, nonempty=False),
+    )
+    with ThreadPoolExecutor(max_workers=1) as pool:
+
+        def prepare(_self, *, messages, **_kwargs):
+            assert storage._get_embedding("Synthetic prior context")
+            if blocked:
+                busy.clear()
+                held.clear()
+                holders.append(pool.submit(hold_writer))
+                assert held.wait(5)
+            return messages
+
+        monkeypatch.setattr(
+            ExtractionResumeWorker, "_messages_with_prior_knowledge", prepare
+        )
+        for _ in range(6):
+            storage._execute(
+                "UPDATE _agent_runs SET next_resume_at=NULL WHERE id='run_1'", ()
+            )
+            shared_worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300)
+        for holder in holders:
+            holder.result(timeout=5)
+    run = storage.get_agent_run("run_1")
+    assert responses == [1], "One admitted resume cannot repeat paid preparation"
+    assert run is not None and run.resume_attempts == 1
+    if blocked:
+        assert len(refusals) == 2 and run.status == AgentRunStatus.FAILED
+        assert run.committed_output is None
+    else:
+        assert not refusals and run.status == AgentRunStatus.FINALIZED
+        assert run.committed_output is not None

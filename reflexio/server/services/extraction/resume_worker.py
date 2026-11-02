@@ -18,6 +18,10 @@ from reflexio.models.config_schema import PlaybookConfig, ProfileExtractorConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm._litellm_types import ModelProvenance
+from reflexio.server.llm.compute_admission import (
+    compute_attempt_scope,
+    retain_compute_result,
+)
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.extraction.agent_run_records import build_scope_hash
@@ -482,7 +486,7 @@ class ExtractionResumeWorker:
         return self._process_claimed_run(latest, pending_config) or latest
 
     def _begin_model_attempt(self, run: AgentRunRecord) -> AgentRunRecord:
-        """Charge only prepared model work, retaining its exact owned witness."""
+        """Reserve resumed computation before dispatch under its exact owner."""
         from reflexio.server.services.durable_learning.user_lease import (
             owned_agent_run_write,
         )
@@ -658,21 +662,32 @@ class ExtractionResumeWorker:
         the four ``update_agent_run_status`` exit paths.
         """
         _refuse_overflow_protocol_run(run)
+
+        def reserve() -> None:
+            active = self._active_claim
+            if active is None or active.id != run.id:
+                raise LeaseLostError("Resume admission has no retained execution")
+            self._begin_model_attempt(active)
+
         try:
-            run = self._with_resolved_playbook_user_id(run)
-            resolved_calls = self._load_resolved_tool_calls(run)
-            if not resolved_calls:
-                raise ResumeWorkerError(
-                    f"Run {run.id} has no resolved, unconsumed tool calls"
-                )
-            completed = self._resume_run(run, resolved_calls)
-            if (
-                not isinstance(completed, AgentRunRecord)
-                or completed.id != run.id
-                or completed.status != AgentRunStatus.AGENT_COMPLETED
-                or self._active_claim != completed
-            ):
-                raise LeaseLostError("Resume output has no committed execution witness")
+            with compute_attempt_scope(reserve=reserve):
+                run = self._with_resolved_playbook_user_id(run)
+                resolved_calls = self._load_resolved_tool_calls(run)
+                if not resolved_calls:
+                    raise ResumeWorkerError(
+                        f"Run {run.id} has no resolved, unconsumed tool calls"
+                    )
+                completed = self._resume_run(run, resolved_calls)
+                if (
+                    not isinstance(completed, AgentRunRecord)
+                    or completed.id != run.id
+                    or completed.status != AgentRunStatus.AGENT_COMPLETED
+                    or self._active_claim != completed
+                ):
+                    raise LeaseLostError(
+                        "Resume output has no committed execution witness"
+                    )
+                retain_compute_result()
         except ReadinessUnavailableError:
             from reflexio.server.services.durable_learning.user_lease import (
                 owned_agent_run_write,
@@ -1097,6 +1112,17 @@ class ExtractionResumeWorker:
         ) = None,
     ) -> AgentRunRecord:
         extra_tools, extra_context = self._extra_tools_for_run(run)
+
+        def admitted_witness(retained: AgentRunRecord) -> AgentRunRecord:
+            active = self._active_claim
+            if (
+                active is None
+                or active.resume_attempts != retained.resume_attempts + 1
+                or replace(active, resume_attempts=retained.resume_attempts) != retained
+            ):
+                raise LeaseLostError("Model entry has no admitted resume witness")
+            return active
+
         result = ResumableExtractionAgent(
             client=self.client,
             storage=self.storage,
@@ -1107,7 +1133,7 @@ class ExtractionResumeWorker:
             resolved_tool_calls=resolved_calls,
             source_inputs=source_inputs,
             history_inputs=history_inputs,
-            before_model=self._begin_model_attempt,
+            before_model=admitted_witness,
             extra_tools=extra_tools,
             extra_tool_context=extra_context,
             log_label=log_label,

@@ -10,8 +10,8 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from collections.abc import Sequence
-from contextlib import AbstractContextManager
+from collections.abc import Iterator, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, fields, replace
 from datetime import UTC, datetime
@@ -45,6 +45,8 @@ MAX_EXTRACTION_WINDOW_ATTEMPTS = 12
 # ``<ExceptionClass>@<locator>`` of the failure that parked it. Messages are
 # never stored. The prefix is what operator re-arm and status reads key on.
 RETRY_EXHAUSTED_PREFIX = "retry_exhausted:"
+# A write-ahead debit, not a separate retry counter or configuration choice.
+_WINDOW_COMPUTE_ADMITTED = "interrupted_compute"
 # A policy mismatch parks as a configuration error, held directly or by the
 # retry ceiling; ``reset_legacy_extraction_policy`` applies to no other hold.
 LEGACY_POLICY_HOLDS = frozenset(
@@ -166,11 +168,10 @@ class Window:
     skip_aggregation: bool
     outcome: dict[str, Any] | None = None
     invalidated: bool = False
-    # Failed attempts already recorded on this window's cursor when it was
-    # handed out (``extraction_cursors.attempts``; ``retry_extraction`` bumps
-    # it). Read-only context for logging severity -- it is not persisted on
-    # the window row, so ``from_row`` leaves it 0 and ``prepare_extraction``
-    # stamps it from the cursor.
+    # Logical attempts recorded on the cursor at selection. Compatibility
+    # compute is debited before dispatch; failures without such admission are
+    # counted at settlement. The snapshot also prevents double charging that
+    # turn. It is not stored on the window row: prepare_extraction stamps it.
     attempts: int = 0
 
     @classmethod
@@ -1040,6 +1041,55 @@ class ExtractionStreamStore:
                 (window.user_id, db.now(), self.org_id, window.user_id),
             )
 
+    def begin_extraction_attempt(self, window: Window, token: str) -> None:
+        """Debit compatibility computation before dispatch, under its real owner.
+
+        The final admission pre-arms the ordinary exhausted hold. A crash or
+        failed later writer therefore cannot make another allowance available.
+        An explicit operator re-arm still permits one additional admission.
+        """
+        if window.project_id != (current_project_id() or ""):
+            raise LeaseLostError("Extraction admission project changed")
+        with self._stream_sql() as db:
+            self._fence(db, window.user_id, token)
+            rows = db.query(
+                f"SELECT attempts,retry_at FROM {db.table('extraction_cursors')} "
+                "WHERE user_id=? AND kind=? AND project_id=? AND window_id=?",
+                (window.user_id, window.kind, window.project_id, window.window_id),
+            )
+            if (
+                not rows
+                or int(rows[0]["attempts"]) != window.attempts
+                or rows[0]["retry_at"] > db.now()
+            ):
+                raise LeaseLostError("Extraction admission lost its cursor witness")
+            attempts = window.attempts + 1
+            exhausted = attempts >= MAX_EXTRACTION_WINDOW_ATTEMPTS
+            db.query(
+                f"UPDATE {db.table('extraction_cursors')} SET attempts=?,retry_at=?,last_error=? "
+                "WHERE user_id=? AND kind=? AND project_id=? AND window_id=?",
+                (
+                    attempts,
+                    float("inf") if exhausted else rows[0]["retry_at"],
+                    (RETRY_EXHAUSTED_PREFIX if exhausted else "")
+                    + _WINDOW_COMPUTE_ADMITTED,
+                    window.user_id,
+                    window.kind,
+                    window.project_id,
+                    window.window_id,
+                ),
+            )
+
+    @staticmethod
+    def _failed_window_attempts(window: Window, row: dict[str, Any]) -> int:
+        attempts = int(row["attempts"])
+        if attempts > window.attempts and row["last_error"] in {
+            _WINDOW_COMPUTE_ADMITTED,
+            RETRY_EXHAUSTED_PREFIX + _WINDOW_COMPUTE_ADMITTED,
+        }:
+            return attempts
+        return attempts + 1
+
     def retry_extraction(self, window: Window, token: str, error: str) -> bool:
         """Record one failed attempt and schedule the next, or park the cursor.
 
@@ -1061,10 +1111,10 @@ class ExtractionStreamStore:
         with self._stream_sql() as db:
             self._fence(db, window.user_id, token)
             row = db.query(
-                f"SELECT attempts FROM {db.table('extraction_cursors')} WHERE user_id=? AND kind=? AND project_id=?",
+                f"SELECT attempts,last_error FROM {db.table('extraction_cursors')} WHERE user_id=? AND kind=? AND project_id=?",
                 (window.user_id, window.kind, window.project_id),
             )[0]
-            attempts = int(row["attempts"]) + 1
+            attempts = self._failed_window_attempts(window, row)
             parked = attempts >= MAX_EXTRACTION_WINDOW_ATTEMPTS
             if parked:
                 due = float("inf")
@@ -1114,27 +1164,28 @@ class ExtractionStreamStore:
             self._fence(db, window.user_id, token)
             retry_at = float("inf")
             cursor_error = reason
-            if reason == "input_budget_configuration_error" and not park:
-                rows = db.query(
-                    f"SELECT attempts FROM {db.table('extraction_cursors')} "
-                    "WHERE user_id=? AND kind=? AND project_id=? AND window_id=? LIMIT 1",
-                    (window.user_id, window.kind, window.project_id, window.window_id),
+            rows = db.query(
+                f"SELECT attempts,last_error FROM {db.table('extraction_cursors')} "
+                "WHERE user_id=? AND kind=? AND project_id=? AND window_id=? LIMIT 1",
+                (window.user_id, window.kind, window.project_id, window.window_id),
+            )
+            if not rows:
+                raise LeaseLostError(
+                    "Extraction configuration retry lost its active cursor"
                 )
-                if not rows:
-                    raise LeaseLostError(
-                        "Extraction configuration retry lost its active cursor"
-                    )
-                attempts = int(rows[0]["attempts"]) + 1
+            attempts = self._failed_window_attempts(window, rows[0])
+            if reason == "input_budget_configuration_error" and not park:
                 if attempts < MAX_EXTRACTION_WINDOW_ATTEMPTS:
                     retry_at = db.now() + min(300, 2 ** min(attempts - 1, 9))
                 else:
                     cursor_error = RETRY_EXHAUSTED_PREFIX + reason
             updated = db.query(
-                f"UPDATE {db.table('extraction_cursors')} SET attempts=attempts+1,retry_at=?,last_error=?,last_turn=? "
+                f"UPDATE {db.table('extraction_cursors')} SET attempts=?,retry_at=?,last_error=?,last_turn=? "
                 "WHERE user_id=? AND kind=? AND project_id=? AND window_id=? AND EXISTS ("
                 f"SELECT 1 FROM {db.table('extraction_windows')} w WHERE w.window_id=? AND w.completed=0 AND w.invalidated=0) "
                 "RETURNING window_id",
                 (
+                    attempts,
                     retry_at,
                     cursor_error,
                     db.now(),
@@ -2957,24 +3008,30 @@ class ExtractionStreamStore:
             raise LeaseLostError("Retained agent output binding or clock changed")
 
     def validate_agent_output_sources(self, run: AgentRunRecord) -> None:
-        """Validate exact before-provider inputs, joining the caller's owned writer.
-
-        No later read manufactures input evidence. Missing-request origins keep
-        their frozen reconstruction even if a real request has since appeared.
-        Both real and fallback paths try-lock source rows, never block behind a
-        source mutation while holding the retained run.
-        """
-        from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+        """Validate retained sources under the actual output and user-work fence."""
         from reflexio.server.services.durable_learning.user_lease import (
             owned_agent_run_write,
-        )
-        from reflexio.server.services.extraction.source_inputs import (
-            fallback_source_request,
-            require_source_inputs,
         )
         from reflexio.server.services.storage.storage_base import BaseStorage
 
         output = deepcopy(run.committed_output)
+        with (
+            owned_agent_run_write(cast(BaseStorage, self), run),
+            self._stream_sql() as db,
+        ):
+            self._require_current_agent_output(db, run, output)
+            self._lock_agent_source_inputs(db, run, output)
+
+    def _lock_agent_source_inputs(
+        self, db: StreamSQL, run: AgentRunRecord, output: dict[str, Any] | None
+    ) -> None:
+        """Lock and compare source evidence; caller owns the actual run writer."""
+        from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+        from reflexio.server.services.extraction.source_inputs import (
+            fallback_source_request,
+            require_source_inputs,
+        )
+
         if not isinstance(output, dict):
             raise InputBudgetConfigurationError(
                 "Committed output source proof unavailable"
@@ -2999,77 +3056,78 @@ class ExtractionStreamStore:
             "r.retrieval_experiment_id AS request_retrieval_experiment_id,"
             "r.retrieval_experiment_arm AS request_retrieval_experiment_arm"
         )
-        with (
-            owned_agent_run_write(cast(BaseStorage, self), run),
-            self._stream_sql() as db,
-        ):
-            self._require_current_agent_output(db, run, output)
-            for origin in ("request", "fallback"):
-                identifiers = sorted(
-                    int(key)
-                    for key, value in sources.items()
-                    if value["origin"] == origin
-                )
-                for offset in range(0, len(identifiers), _OWNER_PROOF_PAGE_SIZE):
-                    page = identifiers[offset : offset + _OWNER_PROOF_PAGE_SIZE]
-                    placeholders = ",".join("?" for _ in page)
-                    if origin == "request":
-                        rows = db.query(
-                            f"SELECT {fields},{request_fields} FROM {db.table('interactions')} i "
-                            f"JOIN {db.table('requests')} r ON i.request_id=r.request_id AND i.user_id=r.user_id "
-                            f"WHERE i.user_id=? AND {db.project_filter('i')} AND {db.project_filter('r')} "
-                            f"AND i.interaction_id IN ({placeholders}) ORDER BY i.interaction_id"
-                            + db.input_lock(),
-                            (
-                                run.binding.user_id,
-                                current_project_id() or "",
-                                current_project_id() or "",
-                                *page,
-                            ),
-                        )
-                        observed.update(
-                            {
-                                str(row["interaction_id"]): hashlib.sha256(
-                                    db.source_witness_bytes(row)
-                                ).hexdigest()
-                                for row in rows
-                            }
-                        )
-                    else:
-                        rows = db.query(
-                            f"SELECT {fields} FROM {db.table('interactions')} i "
-                            f"WHERE i.user_id=? AND {db.project_filter('i')} "
-                            f"AND i.interaction_id IN ({placeholders}) ORDER BY i.interaction_id"
-                            + db.interaction_input_lock(),
-                            (run.binding.user_id, current_project_id() or "", *page),
-                        )
-                        fallback_rows.update(
-                            {row["interaction_id"]: row for row in rows}
-                        )
-            for identifier, row in fallback_rows.items():
-                anchor = sources[str(identifier)]["fallback_first_interaction_id"]
-                first = fallback_rows.get(anchor)
-                if first is None or first["request_id"] != row["request_id"]:
-                    raise InputBudgetConfigurationError(
-                        "Extraction fallback source changed"
+        for origin in ("request", "fallback"):
+            identifiers = sorted(
+                int(key) for key, value in sources.items() if value["origin"] == origin
+            )
+            for offset in range(0, len(identifiers), _OWNER_PROOF_PAGE_SIZE):
+                page = identifiers[offset : offset + _OWNER_PROOF_PAGE_SIZE]
+                placeholders = ",".join("?" for _ in page)
+                if origin == "request":
+                    rows = db.query(
+                        f"SELECT {fields},{request_fields} FROM {db.table('interactions')} i "
+                        f"JOIN {db.table('requests')} r ON i.request_id=r.request_id AND i.user_id=r.user_id "
+                        f"WHERE i.user_id=? AND {db.project_filter('i')} AND {db.project_filter('r')} "
+                        f"AND i.interaction_id IN ({placeholders}) ORDER BY i.interaction_id"
+                        + db.input_lock(),
+                        (
+                            run.binding.user_id,
+                            current_project_id() or "",
+                            current_project_id() or "",
+                            *page,
+                        ),
                     )
-                request = fallback_source_request(run, db.source_interaction(first))
-                observed[str(identifier)] = hashlib.sha256(
-                    db.source_witness_bytes(row, request_override=request)
-                ).hexdigest()
-            if observed != {key: value["digest"] for key, value in sources.items()}:
-                raise InputBudgetConfigurationError("Extraction source content changed")
+                    observed.update(
+                        {
+                            str(row["interaction_id"]): hashlib.sha256(
+                                db.source_witness_bytes(row)
+                            ).hexdigest()
+                            for row in rows
+                        }
+                    )
+                else:
+                    rows = db.query(
+                        f"SELECT {fields} FROM {db.table('interactions')} i "
+                        f"WHERE i.user_id=? AND {db.project_filter('i')} "
+                        f"AND i.interaction_id IN ({placeholders}) ORDER BY i.interaction_id"
+                        + db.interaction_input_lock(),
+                        (run.binding.user_id, current_project_id() or "", *page),
+                    )
+                    fallback_rows.update({row["interaction_id"]: row for row in rows})
+        for identifier, row in fallback_rows.items():
+            anchor = sources[str(identifier)]["fallback_first_interaction_id"]
+            first = fallback_rows.get(anchor)
+            if first is None or first["request_id"] != row["request_id"]:
+                raise InputBudgetConfigurationError(
+                    "Extraction fallback source changed"
+                )
+            request = fallback_source_request(run, db.source_interaction(first))
+            observed[str(identifier)] = hashlib.sha256(
+                db.source_witness_bytes(row, request_override=request)
+            ).hexdigest()
+        if observed != {key: value["digest"] for key, value in sources.items()}:
+            raise InputBudgetConfigurationError("Extraction source content changed")
 
-    def validate_agent_preparation_inputs(
-        self, run: AgentRunRecord, profiles: dict[str, str], playbooks: dict[str, str]
-    ) -> float | None:
-        """Lock exact completion inputs and return their earliest expiry instant."""
+    @contextmanager
+    def agent_completion_input_scope(
+        self,
+        run: AgentRunRecord,
+        output: dict[str, Any] | None,
+        profiles: dict[str, str],
+        playbooks: dict[str, str],
+    ) -> Iterator[dict[str, Any]]:
+        """Guard primary and prepared completion until their writer finishes."""
         from reflexio.server.llm.input_budget import InputBudgetConfigurationError
         from reflexio.server.services.durable_learning.user_lease import (
             owned_agent_run_write,
         )
         from reflexio.server.services.extraction.answer_inputs import (
             require_publication_answer_inputs,
+        )
+        from reflexio.server.services.extraction.history_inputs import (
+            HistoricalInputs,
+            history_from_output,
+            merge_historical_inputs,
         )
         from reflexio.server.services.extraction.overflow_answers import (
             require_current_answer,
@@ -3085,9 +3143,16 @@ class ExtractionStreamStore:
             )
         storage = cast(BaseStorage, self)
         with owned_agent_run_write(storage, run), self._stream_sql() as db:
+            self._require_current_agent_output(db, run, run.committed_output)
+            candidate = deepcopy(output)
+            if not isinstance(candidate, dict):
+                raise InputBudgetConfigurationError("Completion output is unavailable")
+            history = merge_historical_inputs(
+                history_from_output(candidate), HistoricalInputs(profiles, playbooks)
+            )
             storage.lock_extraction_stream(run.binding.user_id)
-            self.validate_agent_output_sources(run)
-            _, inputs = require_publication_answer_inputs(run.committed_output)
+            self._lock_agent_source_inputs(db, run, candidate)
+            _, inputs = require_publication_answer_inputs(candidate)
             observed = self._lock_extraction_answers(db, sorted(inputs))
             if {
                 key: build_scope_hash(value) for key, value in observed.items()
@@ -3100,8 +3165,8 @@ class ExtractionStreamStore:
                 db,
                 user_id=run.binding.user_id,
                 project_id=current_project_id() or "",
-                profiles=profiles,
-                playbooks=playbooks,
+                profiles=history.profiles,
+                playbooks=history.playbooks,
             )
             deadlines = [
                 datetime.fromisoformat(witness["valid_until"]).timestamp()
@@ -3112,7 +3177,12 @@ class ExtractionStreamStore:
                 # Profiles remain valid throughout their integer expiry second;
                 # answers instead expire at their exact captured instant.
                 deadlines.append(float(history_deadline + 1))
-            return min(deadlines) if deadlines else None
+            deadline = min(deadlines) if deadlines else None
+            yield candidate
+            if deadline is not None and db.now() >= deadline:
+                raise InputBudgetConfigurationError(
+                    "Completion input expired before durable retention"
+                )
 
     def _wait_preparation_row(
         self,

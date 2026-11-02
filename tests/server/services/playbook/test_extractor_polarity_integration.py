@@ -38,6 +38,7 @@ from reflexio.server.services.playbook.service import (
     PlaybookGenerationServiceConfig,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from tests.server.services.extraction.source_fixtures import persist_source_models
 
 pytestmark = pytest.mark.integration
 
@@ -126,7 +127,7 @@ def service_config():
 
 
 @pytest.fixture
-def neutral_request_interaction_models():
+def neutral_request_interaction_models(request_context):
     """A neutral window — user is satisfied, no pushback / failure evidence."""
     request = Request(
         request_id="req_neutral",
@@ -161,17 +162,19 @@ def neutral_request_interaction_models():
             role="user",
         ),
     ]
-    return [
+    models = [
         RequestInteractionDataModel(
             session_id="req_neutral",
             request=request,
             interactions=interactions,
         )
     ]
+    persist_source_models(request_context.storage, models)
+    return models
 
 
 @pytest.fixture
-def failure_request_interaction_models():
+def failure_request_interaction_models(request_context):
     """A failure-evidence window — user pushes back on the agent's response."""
     request = Request(
         request_id="req_failure",
@@ -206,13 +209,15 @@ def failure_request_interaction_models():
             role="user",
         ),
     ]
-    return [
+    models = [
         RequestInteractionDataModel(
             session_id="req_failure",
             request=request,
             interactions=interactions,
         )
     ]
+    persist_source_models(request_context.storage, models)
+    return models
 
 
 # ===============================

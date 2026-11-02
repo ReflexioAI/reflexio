@@ -136,22 +136,16 @@ class PublicationPreparationStore:
             # The store owns raw completion admission under strict input locks,
             # then commits completion and clearing its compute entry together.
             # A refusal rolls back the writer; the live owner retains its result.
-            deadline = storage.validate_agent_preparation_inputs(
+            with storage.agent_completion_input_scope(
                 retained,
+                retained.committed_output,
                 completed.history_inputs.profiles,
                 completed.history_inputs.playbooks,
-            )
-            self._write_preparation_row(storage, retained, db, rows, requested, None)
-            result = deepcopy(requested)
-            if deadline is not None and db.now() >= deadline:
-                from reflexio.server.llm.input_budget import (
-                    InputBudgetConfigurationError,
+            ):
+                self._write_preparation_row(
+                    storage, retained, db, rows, requested, None
                 )
-
-                raise InputBudgetConfigurationError(
-                    "Preparation input expired during completion"
-                )
-            return result
+                return deepcopy(requested)
 
     def begin_agent_preparation_attempt(
         self, run: AgentRunRecord

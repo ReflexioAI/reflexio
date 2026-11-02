@@ -48,6 +48,20 @@ information, and resumes outside the request path.
 
 Extraction records durable agent state and pending human calls; the scheduler discovers resumable work and the worker reconstructs context, resumes the agent, and commits finalization with an immutable receipt. Domain services retain prompts and learning semantics.
 
+The shared `llm/compute_admission.py` scope asks the current owner to reserve its
+existing logical allowance before external preparation or model dispatch.
+Nested and parallel calls share that admission. Resumes carry the exact charged
+run witness into the model; compatibility windows debit their existing cursor.
+Later writer contention cannot refund the debit, and failure settlement does
+not charge it twice. Coordinated windows retain their per-call durable journal.
+Saved-result replay adds no new admission. No provider runs inside the short
+reservation writer.
+
+Raw completion and preparation-cache saves share the storage candidate-input
+scope: validate the actual run owner and exact source, answer and mandatory
+history witnesses before writing the payload, then check expiry again before
+commit. Changed or erased inputs refuse raw retention as well as learning.
+
 ## Requirements / Problems to Avoid
 
 

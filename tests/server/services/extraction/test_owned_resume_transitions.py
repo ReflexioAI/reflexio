@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from reflexio.models.config_schema import PendingToolCallConfig
 from reflexio.server.llm.tools import ToolLoopTrace
 from reflexio.server.services.durable_learning.user_lease import (
     create_owned_agent_run,
@@ -213,7 +214,10 @@ def test_resume_attempt_charge_rolls_back_if_owner_expires_during_write(
     monkeypatch.setattr(worker, "_process_claimed_run", enter_model)
     with pytest.raises(LeaseLostError):
         worker._execute_owned_claim(
-            run, finalization_retry=False, pending_config=MagicMock(), selection=None
+            run,
+            finalization_retry=False,
+            pending_config=PendingToolCallConfig(),
+            selection=None,
         )
     model.assert_not_called()
     assert storage.get_agent_run(run.id) == run

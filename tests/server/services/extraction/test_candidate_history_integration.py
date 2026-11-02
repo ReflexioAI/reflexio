@@ -24,6 +24,7 @@ def test_candidate_history_is_checked_even_when_no_consolidation_is_needed(
     shared_worker: DurableLearningWorker, publication, monkeypatch, change
 ):
     storage, worker, kind, dispatches, events = publication
+    attempts = base._capture_output_inputs(storage, monkeypatch)
     original = history._seed_history(storage, kind)
     from reflexio.server.services.extraction.profile_package_state import (
         profile_witness,
@@ -63,30 +64,32 @@ def test_candidate_history_is_checked_even_when_no_consolidation_is_needed(
     )
     assert shared_worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 1
     result = storage.get_agent_run("run_1")
-    assert calls == [1] and result is not None and result.committed_output is not None
-    assert result.committed_output["publication"]["history_inputs"] == {
+    assert calls == [1] and result is not None
+    assert len(attempts) == 1 and attempts[0][0] == result.id
+    candidate = attempts[0][1]
+    assert candidate["history_inputs"] == {
         "profiles": expected,
         "playbooks": {},
     }
     assert not [event for event in events if event.event_name == "learnings_generated"]
     if change is None:
         assert result.status == AgentRunStatus.FINALIZED
+        assert result.committed_output is not None
         assert dispatches == ["tagging"]
         assert all(
             d.consumed_at is not None
             for d in storage.list_run_tool_dependencies(result.id)
         )
     else:
-        assert result.status == AgentRunStatus.FINALIZATION_FAILED
+        assert result.status == AgentRunStatus.RESUME_READY
+        assert result.committed_output is None
         assert not dispatches
         assert all(
             d.consumed_at is None for d in storage.list_run_tool_dependencies(result.id)
         )
         with storage._stream_sql(read_only=True) as db:
             assert (
-                storage._get_output_publication_receipt(
-                    db, result.id, result.committed_output["publication"]["id"]
-                )
+                storage._get_output_publication_receipt(db, result.id, candidate["id"])
                 is None
             )
 
@@ -106,6 +109,7 @@ def test_fresh_extractor_retains_original_prompt_history(
     from reflexio.server.services.profile.service import ProfileGenerationServiceConfig
 
     storage, worker, kind, _, _ = publication
+    attempts = base._capture_output_inputs(storage, monkeypatch)
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     original = history._seed_history(storage, kind)
     expected = {original.profile_id: profile_witness(original)}
@@ -140,21 +144,30 @@ def test_fresh_extractor_retains_original_prompt_history(
     monkeypatch.setattr(
         "reflexio.server.services.extraction.resumable_agent.run_tool_loop", model
     )
-    assert (
-        extractor._generate_raw_updates_from_sessions(
-            _request_interaction_models_from_ids(
-                storage, [1, 2, 3], fallback_source="api", fallback_agent_version="v1"
-            ),
-            [original],
-        )
-        == []
+    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+
+    groups = _request_interaction_models_from_ids(
+        storage, [1, 2, 3], fallback_source="api", fallback_agent_version="v1"
     )
-    saved = extractor._last_resumable_run
-    assert saved is not None and saved.committed_output is not None
-    assert saved.committed_output["publication"]["history_inputs"] == {
-        "profiles": expected,
-        "playbooks": {},
-    }
+    if change:
+        with pytest.raises(
+            InputBudgetConfigurationError, match="Historical profile changed"
+        ):
+            extractor._generate_raw_updates_from_sessions(groups, [original])
+    else:
+        assert extractor._generate_raw_updates_from_sessions(groups, [original]) == []
+    assert len(attempts) == 1
+    assert attempts[0][1]["history_inputs"] == {"profiles": expected, "playbooks": {}}
+    saved = storage.get_agent_run(attempts[0][0])
+    assert saved is not None
+    if change:
+        assert saved.committed_output is None
+    else:
+        assert saved.committed_output is not None
+        assert (
+            saved.committed_output["publication"]["history_inputs"]
+            == attempts[0][1]["history_inputs"]
+        )
 
 
 @pytest.mark.parametrize("publication", ["profile"], indirect=True)

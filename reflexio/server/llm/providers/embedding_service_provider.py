@@ -690,7 +690,10 @@ def _post_embedding_batch(
         try:
             checkpoint()
             payload["timeout_ms"] = max(1, min(600_000, int(remaining(timeout) * 1000)))
-            from reflexio.server.llm.compute_admission import admit_external_compute
+            from reflexio.server.llm.compute_admission import (
+                admit_external_compute,
+                record_compute_result,
+            )
 
             admit_external_compute()
             response = _http_client().post(
@@ -698,6 +701,7 @@ def _post_embedding_batch(
             )
             checkpoint()
             response.raise_for_status()
+            record_compute_result()
             body = response.json()
             vectors = _ordered_embeddings_from_response(body.get("data"), len(texts))
             if purpose == "query" and query_embedding_service_url():

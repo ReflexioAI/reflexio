@@ -434,6 +434,8 @@ def test_fresh_overflow_capacity_reaches_repair_before_output_is_accepted(monkey
     )
 
 
+from tests.server.services.extraction.source_fixtures import persist_source_models
+
 # ===============================
 # Fixtures
 # ===============================
@@ -1052,6 +1054,7 @@ class TestResumableAgentPath:
             patch("litellm.completion", side_effect=[response]),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
+            persist_source_models(sqlite_storage, sample_request_interaction_models)
             playbooks = extractor.extract_playbook_entries(
                 sample_request_interaction_models[:1]
             )
@@ -1154,6 +1157,7 @@ class TestStructuredPlaybookExtraction:
             patch("litellm.completion", side_effect=[response]),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
+            persist_source_models(sqlite_storage, sample_request_interaction_models)
             result = extractor.extract_playbook_entries(
                 sample_request_interaction_models
             )
@@ -1199,6 +1203,7 @@ class TestStructuredPlaybookExtraction:
             patch("litellm.completion", side_effect=[response]),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
+            persist_source_models(sqlite_storage, sample_request_interaction_models)
             result = extractor.extract_playbook_entries(
                 sample_request_interaction_models
             )
@@ -1231,6 +1236,7 @@ class TestStructuredPlaybookExtraction:
             patch("litellm.completion", side_effect=[response]),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
+            persist_source_models(sqlite_storage, sample_request_interaction_models)
             result = extractor.extract_playbook_entries(
                 sample_request_interaction_models
             )
@@ -1267,6 +1273,7 @@ class TestStructuredPlaybookExtraction:
                 match="Playbook extraction failed without structured output",
             ),
         ):
+            persist_source_models(sqlite_storage, sample_request_interaction_models)
             extractor.extract_playbook_entries(sample_request_interaction_models)
 
     @pytest.mark.parametrize(
@@ -1311,6 +1318,7 @@ class TestStructuredPlaybookExtraction:
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
             pytest.raises(RuntimeError) as raised,
         ):
+            persist_source_models(sqlite_storage, sample_request_interaction_models)
             extractor.extract_playbook_entries(sample_request_interaction_models)
 
         assert str(raised.value) == (
@@ -2227,6 +2235,7 @@ class TestRationaleRoundTrip:
             patch("litellm.completion", side_effect=[response]),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
+            persist_source_models(sqlite_storage, sample_request_interaction_models)
             result = extractor.extract_playbook_entries(
                 sample_request_interaction_models
             )
@@ -2402,6 +2411,7 @@ class TestPlaybookContentExtraction:
             patch("litellm.completion", side_effect=[response]),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
+            persist_source_models(sqlite_storage, sample_request_interaction_models)
             result = extractor.extract_playbook_entries(
                 sample_request_interaction_models
             )

@@ -482,6 +482,10 @@ def test_initial_input_contention_preserves_output_preparation_and_allowance(
         return plan
 
     def input_lock(run):
+        # This regression injects publication/preparation contention after the
+        # independent primary-output admission has succeeded.
+        if service._last_extraction_run is None:
+            return validate(run)
         prepared = storage.agent_output_preparation(run)
         completion_busy = (
             stage == "between_compute_and_save"
@@ -539,3 +543,65 @@ def test_initial_input_contention_preserves_output_preparation_and_allowance(
     assert completed.finalization_attempts == 0 and completed.resume_attempts == 0
     assert calls == [1] and resolutions == [1]
     assert len(base._learnings(storage, kind)) == 1
+
+
+@pytest.mark.parametrize("publication", ["profile"], indirect=True)
+def test_primary_raw_output_cannot_retain_erased_cached_foreign_answer(
+    publication, monkeypatch
+):
+    from reflexio.server.services.extraction.answer_inputs import record_answer_input
+
+    storage, _, kind, _, _ = publication
+    _, prior = base._seed_prior_answer(storage)
+    private = prior.result["answer"]
+    monkeypatch.setattr(storage, "_get_embedding", lambda *_a, **_kw: [1.0] * 512)
+    observed = []
+    attempted_raw_writes = []
+    update = storage.update_agent_run_status
+
+    def write(run_id, status, **kwargs):
+        if status == AgentRunStatus.AGENT_COMPLETED:
+            attempted_raw_writes.append(1)
+        return update(run_id, status, **kwargs)
+
+    monkeypatch.setattr(storage, "update_agent_run_status", write)
+
+    def model(kwargs):
+        assert private in str(kwargs["messages"]), (
+            "The real context producer must supply the input"
+        )
+        record_answer_input(prior)
+        observed.append(prior.id)
+        storage.clear_user_data(prior.user_id)
+        assert storage.get_pending_tool_call(prior.id) is None
+        result = base._loop_result(kwargs, kind, storage, nonempty=True)
+        output = result.structured_output
+        assert output is not None
+        payload = output.model_dump()
+        payload["profiles"][0]["content"] = private
+        result.structured_output = type(output).model_validate(payload)
+        validator = kwargs.get("structured_output_validator")
+        if validator is not None:
+            assert not validator(result.structured_output)
+        return result
+
+    service, request, calls = _initial(publication, monkeypatch, response=model)
+    _run_initial(service, request)
+    assert calls == [1] and observed == [prior.id]
+    assert attempted_raw_writes == [], (
+        "Withdrawn inputs must refuse before sending raw payload to storage"
+    )
+    assert all(
+        d.pending_tool_call_id != prior.id
+        for d in storage.list_run_tool_dependencies("run_1")
+    )
+    rows = storage.conn.execute(
+        "SELECT id,committed_output FROM _agent_runs LIMIT 3"
+    ).fetchall()
+    assert len(rows) >= 2, (
+        "Exercise the actual new primary run, not only the fixture run"
+    )
+    assert all(private not in (row["committed_output"] or "") for row in rows), (
+        "Raw primary output must not newly retain an erased model input"
+    )
+    assert not base._learnings(storage, kind)

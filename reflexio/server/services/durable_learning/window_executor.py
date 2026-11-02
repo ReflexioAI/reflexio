@@ -15,6 +15,7 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.env_utils import env_bool, env_str
+from reflexio.server.llm.compute_admission import compute_attempt_scope
 from reflexio.server.llm.input_budget import (
     InputBudgetConfigurationError,
     ProviderInputOverflowError,
@@ -544,23 +545,35 @@ class WindowExecutor:
         coordinator = self._coordinator(window, token, service, request, config)
         if window.outcome is None:
             known_run = self.storage.get_agent_run(f"window:{window.window_id}")
-            if known_run is not None and known_run.committed_output is not None:
-                # The gate already admitted this durable result. A new vote on
-                # retry must not discard successful output before persistence.
-                service._window_skip_should_run = True
-            if coordinator is None:
-                plan = service.compute_generation(request)
-            else:
-                plan = self._compute_overflow_window(
-                    coordinator, service, request, config
+            # The gate already admitted a durable result. Preserve a prior
+            # frozen skip decision too; neither needs another vote on replay.
+            service._window_skip_should_run = service._window_skip_should_run or (
+                known_run is not None and known_run.committed_output is not None
+            )
+            with (
+                compute_attempt_scope(
+                    reserve=lambda: self.storage.begin_extraction_attempt(window, token)
                 )
-                coordinator.require_full_source_coverage()
-                service._last_token_totals = coordinator.token_totals
-                if plan is not None:
-                    plan.token_totals = coordinator.token_totals
-                    service._last_token_totals = plan.token_totals
-            outcome = encode_plan(plan, service)
-            self.storage.save_extraction_outcome(window, token, outcome)
+                if coordinator is None
+                else nullcontext()
+            ) as progress:
+                if coordinator is None:
+                    plan = service.compute_generation(request)
+                else:
+                    plan = self._compute_overflow_window(
+                        coordinator, service, request, config
+                    )
+                    coordinator.require_full_source_coverage()
+                    service._last_token_totals = coordinator.token_totals
+                    if plan is not None:
+                        plan.token_totals = coordinator.token_totals
+                        service._last_token_totals = plan.token_totals
+                outcome = encode_plan(plan, service)
+                if progress is not None:
+                    progress.record_result()
+                self.storage.save_extraction_outcome(window, token, outcome)
+                if progress is not None:
+                    progress.retain()
         else:
             try:
                 plan = decode_plan(

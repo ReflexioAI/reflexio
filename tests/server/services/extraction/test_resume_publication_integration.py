@@ -8,6 +8,7 @@ output envelopes, learning writes, receipts and dependency resolution are real.
 
 import json
 from collections.abc import Iterator
+from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -230,6 +231,20 @@ def _learnings(storage, kind):
     )
 
 
+def _capture_output_inputs(storage, monkeypatch):
+    """Observe original candidates while preserving the actual admission guard."""
+    validate = storage.agent_completion_input_scope
+    attempts = []
+
+    def guard(run, output, profiles, playbooks):
+        if run.status in (AgentRunStatus.RUNNING, AgentRunStatus.RESUMING):
+            attempts.append((run.id, deepcopy(output["publication"])))
+        return validate(run, output, profiles, playbooks)
+
+    monkeypatch.setattr(storage, "agent_completion_input_scope", guard)
+    return attempts
+
+
 def _seed_prior_answer(storage):
     dependency = storage.get_pending_tool_call("ptc_1")
     assert dependency is not None
@@ -251,6 +266,7 @@ def test_answer_input_is_captured_when_supplied_to_model(
     shared_worker: DurableLearningWorker, publication, monkeypatch, injection
 ):
     storage, worker, kind, _, _ = publication
+    attempts = _capture_output_inputs(storage, monkeypatch)
     dependency, prior = _seed_prior_answer(storage)
     expected = {
         record.id: build_scope_hash(answer_witness(asdict(record)))
@@ -289,8 +305,9 @@ def test_answer_input_is_captured_when_supplied_to_model(
     )
     assert shared_worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 1
     result = storage.get_agent_run("run_1")
-    assert result is not None and result.committed_output is not None
-    publication = result.committed_output["publication"]
+    assert result is not None and result.committed_output is None
+    assert len(attempts) == 1 and attempts[0][0] == result.id
+    publication = attempts[0][1]
     assert set(publication["dependency_inputs"]) == {"ptc_1"}
     assert publication["answer_inputs"] == expected
     changed = storage.get_pending_tool_call("prior-answer")
@@ -305,8 +322,9 @@ def test_answer_input_is_captured_when_supplied_to_model(
     ] == ["ptc_1"]
 
 
+@pytest.mark.parametrize("change_source", [False, True])
 def test_initial_agent_context_and_writer_share_answer_capture(
-    publication, monkeypatch
+    publication, monkeypatch, change_source
 ):
     import hashlib
 
@@ -315,6 +333,7 @@ def test_initial_agent_context_and_writer_share_answer_capture(
     )
 
     storage, worker, kind, _, _ = publication
+    attempts = _capture_output_inputs(storage, monkeypatch)
     source_request = storage.get_request("request_1")
     assert source_request is not None
     expected_sources = {
@@ -353,9 +372,10 @@ def test_initial_agent_context_and_writer_share_answer_capture(
         model_calls.append(1)
         assert "Release approval from finance is required." in str(kwargs["messages"])
         assert "Use AWS ECS." in str(kwargs["messages"])
-        storage._execute(
-            "UPDATE requests SET session_id='changed-in-initial-model' WHERE request_id='request_1'"
-        )
+        if change_source:
+            storage._execute(
+                "UPDATE requests SET session_id='changed-in-initial-model' WHERE request_id='request_1'"
+            )
         return _loop_result(kwargs, kind, storage, nonempty=False)
 
     monkeypatch.setattr(
@@ -407,12 +427,27 @@ def test_initial_agent_context_and_writer_share_answer_capture(
             log_label="synthetic_answer_capture",
         )
 
-    result = start()
-    saved = storage.get_agent_run(result.run_id)
-    assert saved is not None and saved.committed_output is not None
-    assert saved.committed_output["publication"]["answer_inputs"] == expected
-    assert saved.committed_output["publication"]["dependency_inputs"] == {}
-    assert saved.committed_output["publication"]["source_inputs"] == expected_sources
+    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+
+    result = None
+    if change_source:
+        with pytest.raises(
+            InputBudgetConfigurationError, match="source content changed"
+        ):
+            start()
+    else:
+        result = start()
+    assert len(attempts) == 1
+    saved = storage.get_agent_run(attempts[0][0])
+    assert saved is not None
+    assert attempts[0][1]["answer_inputs"] == expected
+    assert attempts[0][1]["dependency_inputs"] == {}
+    assert attempts[0][1]["source_inputs"] == expected_sources
+    if change_source:
+        assert saved.committed_output is None and model_calls == [1]
+        return
+    assert result is not None and saved.committed_output is not None
+    assert saved.committed_output["publication"] == attempts[0][1]
 
     def no_lookup(**_kwargs):
         raise AssertionError(
@@ -940,6 +975,7 @@ def test_new_output_freezes_full_source_inputs_before_model(
     )
 
     storage, worker, kind, _, _ = publication
+    attempts = _capture_output_inputs(storage, monkeypatch)
     getter = storage.get_request
     if fallback:
         monkeypatch.setattr(storage, "get_request", lambda _identifier: None)
@@ -978,8 +1014,13 @@ def test_new_output_freezes_full_source_inputs_before_model(
     shared_worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300)
     assert entered == [1]
     saved = storage.get_agent_run("run_1")
-    assert saved is not None and saved.committed_output is not None
-    assert saved.committed_output["publication"].get("source_inputs") == expected
+    assert saved is not None and len(attempts) == 1
+    assert attempts[0][1]["source_inputs"] == expected
+    if fallback:
+        assert saved.committed_output is not None
+        assert saved.committed_output["publication"]["source_inputs"] == expected
+    else:
+        assert saved.committed_output is None
 
 
 def test_publication_refuses_borrowed_writer_before_preparation_or_external_effects(

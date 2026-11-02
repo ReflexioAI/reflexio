@@ -1832,12 +1832,14 @@ class TextGenerationMixin:
                     check_turn_deadline()
                     from reflexio.server.llm.compute_admission import (
                         admit_external_compute,
+                        record_compute_result,
                     )
 
                     admit_external_compute()
                     response = self._completion_with_hard_timeout(
                         turn_params, turn_deadline - time.monotonic()
                     )
+                    record_compute_result()
                 # BEFORE any read of the response body. This call is what
                 # accumulates the run-scoped provider total, and everything
                 # below it can raise: `response.choices[0]` on an empty or

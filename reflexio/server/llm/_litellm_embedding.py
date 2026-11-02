@@ -41,6 +41,7 @@ from reflexio.server.llm.call_deadline import (
 from reflexio.server.llm.compute_admission import (
     ComputeAdmissionError,
     admit_external_compute,
+    record_compute_result,
 )
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.llm.providers.embedding_service_provider import (
@@ -411,6 +412,7 @@ class EmbeddingMixin:
                     or (search_scope is not None and search_scope.deadline is not None)
                     else self.config.max_retries,
                 )
+                record_compute_result()
             # Response data may not be in order, sort by index to ensure correct ordering
             sorted_data = sorted(response.data, key=lambda x: x["index"])
             vectors = [item["embedding"] for item in sorted_data]

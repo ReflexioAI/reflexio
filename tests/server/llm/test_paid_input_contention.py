@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from reflexio.server.llm import tools
 from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
+from reflexio.server.llm.compute_admission import ComputeInterruptedError
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.services.storage.error import (
@@ -98,7 +99,7 @@ def test_paid_response_classification_covers_all_tool_protocols(
     expected = (
         ExecutionInputBusyError
         if stage == "first_admission"
-        else tools.ModelTurnInputBusyError
+        else ComputeInterruptedError
     )
     with pytest.raises(expected) as raised:
         tools.run_tool_loop(
