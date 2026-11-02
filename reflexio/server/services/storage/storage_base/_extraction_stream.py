@@ -605,9 +605,10 @@ class ExtractionStreamStore:
         claimed_by = f"{worker_id}:{uuid.uuid4().hex}"
         claimed_at = datetime.fromtimestamp(now, UTC)
         db.query(
-            f"UPDATE {runs} SET user_work_token=?,claimed_by=?,claimed_at=?,updated_at=? "
+            f"UPDATE {runs} SET user_id=?,user_work_token=?,claimed_by=?,claimed_at=?,updated_at=? "
             "WHERE org_id=? AND id=?",
             (
+                user_id,
                 token,
                 claimed_by,
                 claimed_at.isoformat(),

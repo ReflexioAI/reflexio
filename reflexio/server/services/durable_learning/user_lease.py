@@ -98,6 +98,19 @@ def _require_user_work_owner(storage: BaseStorage) -> _UserWorkOwner:
     return owner
 
 
+def current_user_work_token(storage: BaseStorage) -> str | None:
+    """Return this context's token only for its exact storage instance.
+
+    Native adapters bind this token transaction-locally; it is not a substitute
+    for the writer's live database fence. An absent/unrelated owner is unbound;
+    a cancelled or inconsistent owner for this storage remains an error.
+    """
+    owner = _active_lease.get()
+    if owner is None or owner.storage is not storage:
+        return None
+    return _require_user_work_owner(storage).token
+
+
 def adopt_agent_run_for_execution(
     storage: BaseStorage, run: AgentRunRecord
 ) -> AgentRunRecord:
