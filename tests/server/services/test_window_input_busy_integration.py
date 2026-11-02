@@ -407,3 +407,96 @@ def test_image_compatibility_completed_compute_save_contention_is_bounded(
     assert cursor["retry_at"] == float("inf")
     assert windows[0]["outcome"] is None and not windows[0]["completed"]
     assert storage.count_all_profiles() == 0
+
+
+@pytest.mark.parametrize("last_attempt", [False, True])
+@pytest.mark.parametrize(
+    ("save_refused", "ordinary_failure"), [(False, False), (True, False), (False, True)]
+)
+def test_cached_final_attempt_remains_publishable(
+    pipeline, monkeypatch, last_attempt, save_refused, ordinary_failure
+):
+    import json
+
+    from reflexio.server.services.durable_learning.window_codec import encode_plan
+
+    engine, _, http = pipeline
+    assert http.post(
+        "/api/publish_interaction", json=payload("cached-last-admission", force=True)
+    ).json()["success"]
+    storage = engine.get_storage()
+    user, token = storage.claim_extraction("first", 300)
+    assert user is not None and token is not None
+    before = MAX_EXTRACTION_WINDOW_ATTEMPTS - (1 if last_attempt else 2)
+    with storage._stream_sql() as db:
+        db.query(
+            "UPDATE extraction_cursors SET attempts=? WHERE user_id=? AND kind='profile'",
+            (before, user),
+        )
+    window = storage.prepare_extraction(user, token)
+    assert window is not None and window.attempts == before
+    storage.begin_extraction_attempt(window, token)
+    outcome = encode_plan(None, None)
+    if save_refused:
+        query = SQLiteStreamSQL.query
+
+        def write_then_refuse(db, sql, params=()):
+            rows = query(db, sql, params)
+            if "SET retry_at=?,last_error=? " in sql:
+                raise ExecutionInputBusyError("Cache handoff cannot commit")
+            return rows
+
+        with monkeypatch.context() as fault:
+            fault.setattr(SQLiteStreamSQL, "query", write_then_refuse)
+            with pytest.raises(ExecutionInputBusyError):
+                storage.save_extraction_outcome(window, token, outcome)
+    else:
+        storage.save_extraction_outcome(window, token, outcome)
+    cursor, windows, _ = _state(storage)
+    assert cursor["attempts"] == before + 1
+    persisted = windows[0]["outcome"]
+    assert (json.loads(persisted) if persisted is not None else None) == (
+        None if save_refused else outcome
+    )
+    assert (cursor["retry_at"] == float("inf")) == (save_refused and last_attempt)
+    if ordinary_failure:
+        result = DurableLearningWorker._handle_window_failure(
+            storage, window, token, RuntimeError("Synthetic publication failure")
+        )
+        assert result == ("parked" if last_attempt else "failure")
+        cursor, windows, _ = _state(storage)
+        assert cursor["attempts"] == before + 1, "One admitted turn is charged once"
+        assert (cursor["retry_at"] == float("inf")) == last_attempt
+        assert json.loads(windows[0]["outcome"]) == outcome
+        return
+    assert (
+        DurableLearningWorker._handle_window_failure(
+            storage,
+            window,
+            token,
+            ExecutionInputBusyError("Publish writer busy after retention attempt"),
+        )
+        == "input_busy"
+    )
+    retry_token = storage.claim_user_extraction(user, "replay", 300)
+    assert retry_token is not None
+    try:
+        cached = storage.prepare_extraction(user, retry_token)
+        if save_refused and last_attempt:
+            assert cached is None, (
+                "Unretained work cannot bypass the exhausted allowance"
+            )
+        else:
+            assert cached is not None, (
+                "A durable result cannot be hidden by the compute ceiling"
+            )
+            assert cached.window_id == window.window_id
+            assert cached.outcome == (None if save_refused else outcome)
+            assert cached.attempts == before + 1, (
+                "Cached replay cannot debit computation"
+            )
+            if not save_refused:
+                with pytest.raises(LeaseLostError):
+                    storage.begin_extraction_attempt(cached, retry_token)
+    finally:
+        storage.release_user_extraction(user, retry_token)

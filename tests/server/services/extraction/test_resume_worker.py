@@ -24,6 +24,7 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm.compute_admission import reserve_compute_attempt
 from reflexio.server.services.extraction.history_inputs import HistoricalInputs
 from reflexio.server.services.extraction.publication import _deliver
 from reflexio.server.services.extraction.resume_worker import (
@@ -1316,7 +1317,11 @@ def _commit_resumed_output(
             answer.id: build_scope_hash(answer_witness(asdict(answer)))
             for answer in answers
         }
-        run = (before_model or worker._begin_model_attempt)(run)
+
+        def admitted_witness(_original):
+            assert worker._active_claim is not None
+            return worker._active_claim
+
         with patch(
             "reflexio.server.services.extraction.resumable_agent.run_tool_loop",
             return_value=ToolLoopResult(
@@ -1332,6 +1337,7 @@ def _commit_resumed_output(
                 client=worker.client, storage=worker.storage
             )._run(
                 run=run,
+                before_model=before_model or admitted_witness,
                 publication_origin="resume",
                 messages=[],
                 history_inputs=HistoricalInputs(),
@@ -1681,7 +1687,7 @@ def test_busy_resume_claims_do_not_spend_execution_attempts(
 
     def provider_failure(active_worker, run, _calls):
         executed.append(run.id)
-        active_worker._begin_model_attempt(run)
+        reserve_compute_attempt()
         raise RuntimeError("transient provider error")
 
     monkeypatch.setattr(ExtractionResumeWorker, "_resume_run", provider_failure)
@@ -1944,7 +1950,9 @@ def test_readiness_resume_deferral_refunds_attempt_and_recovers(
 
     def unavailable(active_worker, current, _calls):
         if phase == "model":
-            charged = active_worker._begin_model_attempt(current)
+            reserve_compute_attempt()
+            charged = active_worker._active_claim
+            assert charged is not None
             assert charged.resume_attempts == current.resume_attempts + 1
         raise ReadinessUnavailableError("inference pending")
 

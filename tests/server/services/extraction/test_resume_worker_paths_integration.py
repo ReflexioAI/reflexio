@@ -27,6 +27,7 @@ from reflexio.models.config_schema import (
     ToolUseConfig,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm.compute_admission import reserve_compute_attempt
 from reflexio.server.llm.tools import ToolLoopTrace
 from reflexio.server.services.durable_learning.worker import DurableLearningWorker
 from reflexio.server.services.extraction.recovery import RecoveryRefusedError
@@ -263,6 +264,11 @@ def _binding(
     )
 
 
+def _admitted_run(kwargs):
+    reserve_compute_attempt()
+    return kwargs["before_model"](kwargs["run"])
+
+
 def _unfinished(storage, run, reason: str) -> AgentRunResult:
     from reflexio.server.services.durable_learning.user_lease import (
         owned_agent_run_write,
@@ -412,7 +418,7 @@ def test_playbook_resume_that_does_not_finish_returns_run_to_retry_queue(
             "reflexio.server.services.extraction.resume_worker."
             "ResumableExtractionAgent.resume",
             side_effect=lambda **kwargs: _unfinished(
-                storage, kwargs["before_model"](kwargs["run"]), "max_steps"
+                storage, _admitted_run(kwargs), "max_steps"
             ),
         ),
         patch.object(ExtractionResumeWorker, "_publish_retained_output") as finalize,
@@ -439,7 +445,7 @@ def test_profile_resume_that_does_not_finish_fails_at_attempt_ceiling(storage, o
         "reflexio.server.services.extraction.resume_worker."
         "ResumableExtractionAgent.resume",
         side_effect=lambda **kwargs: _unfinished(
-            storage, kwargs["before_model"](kwargs["run"]), "refused"
+            storage, _admitted_run(kwargs), "refused"
         ),
     ):
         assert worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 1

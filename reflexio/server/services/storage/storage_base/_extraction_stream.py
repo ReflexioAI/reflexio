@@ -991,6 +991,25 @@ class ExtractionStreamStore:
             )
             if not rows:
                 raise WindowInputsDeletedError("Computed window is no longer valid")
+            # This complete durable outcome needs publication, not another
+            # compute admission. Release only this turn's admitted hold in the
+            # same transaction as retention; the spent count is never refunded.
+            db.query(
+                f"UPDATE {db.table('extraction_cursors')} SET retry_at=?,last_error=? "
+                "WHERE user_id=? AND kind=? AND project_id=? AND window_id=? "
+                "AND attempts=? AND last_error IN (?,?)",
+                (
+                    db.now(),
+                    _WINDOW_COMPUTE_ADMITTED,
+                    window.user_id,
+                    window.kind,
+                    window.project_id,
+                    window.window_id,
+                    window.attempts + 1,
+                    _WINDOW_COMPUTE_ADMITTED,
+                    RETRY_EXHAUSTED_PREFIX + _WINDOW_COMPUTE_ADMITTED,
+                ),
+            )
 
     def complete_extraction(
         self, window: Window, token: str, effects: dict[str, Any]
@@ -1053,8 +1072,12 @@ class ExtractionStreamStore:
         with self._stream_sql() as db:
             self._fence(db, window.user_id, token)
             rows = db.query(
-                f"SELECT attempts,retry_at FROM {db.table('extraction_cursors')} "
-                "WHERE user_id=? AND kind=? AND project_id=? AND window_id=?",
+                f"SELECT c.attempts,c.retry_at FROM {db.table('extraction_cursors')} c "
+                "WHERE c.user_id=? AND c.kind=? AND c.project_id=? AND c.window_id=? "
+                f"AND EXISTS (SELECT 1 FROM {db.table('extraction_windows')} w "
+                "WHERE w.window_id=c.window_id AND w.user_id=c.user_id AND w.kind=c.kind "
+                "AND w.project_id=c.project_id AND w.outcome IS NULL "
+                "AND w.completed=0 AND w.invalidated=0)",
                 (window.user_id, window.kind, window.project_id, window.window_id),
             )
             if (
