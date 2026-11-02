@@ -11,7 +11,6 @@ if TYPE_CHECKING:
     from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.llm.litellm_client import LiteLLMClient
     from reflexio.server.services.deferred_learning_plan import (
-        ExtractorBookmarkAdvance,
         GenerationComputePlan,
     )
     from reflexio.server.services.storage.storage_base import (
@@ -40,9 +39,7 @@ from reflexio.server.services.base_generation_service import (
     StatusChangeOperation,
 )
 from reflexio.server.services.deferred_learning_plan import (
-    FinalizationResult,
     PlaybookWritePlan,
-    _FinalizationReceiptAlreadyExistsError,
 )
 from reflexio.server.services.extraction.overflow_presentation import (
     current_overflow_presentation,
@@ -673,7 +670,8 @@ class PlaybookGenerationService(
         NO LLM / embedding / dedup. The off-thread optimization/aggregation
         schedulers are NOT here — they fire post-commit in
         ``emit_generation_side_effects`` (durable / ``.run()``) or right after
-        persist in ``_finalize_extracted_items`` (resume/manual).
+        persist in ``_finalize_extracted_items`` (direct mutations). Ordinary
+        agent publication invokes ``emit_generation_side_effects`` after commit.
         """
         from reflexio.server.services.playbook.source_quoted_overflow import (
             is_source_quoted_playbook,
@@ -723,7 +721,7 @@ class PlaybookGenerationService(
         Phantom-billing gate: on the durable / ``.run()`` path this is invoked
         from ``emit_generation_side_effects`` (post-commit), so a fence-lost
         (superseded) job never enqueues optimization or triggers aggregation. On
-        the synchronous resume/manual path ``_finalize_extracted_items`` invokes
+        the synchronous direct-mutation path ``_finalize_extracted_items`` invokes
         it after persistence. Dispatch is best-effort and at most once per
         committed finalization attempt; derived scheduler work has no durable
         replay idempotency.
@@ -768,143 +766,30 @@ class PlaybookGenerationService(
         all_playbooks: list[UserPlaybook],
         *,
         model_provenance: ModelProvenance | None = None,
-        extraction_run: AgentRunRecord | None = None,
-        finalization_run_id: str | None = None,
     ) -> list[str]:
-        """Finalize extracted playbooks for synchronous resume/manual callers.
+        """Direct mutation adapter; agent output uses the owned publication module."""
+        from reflexio.server.services.durable_learning.user_lease import (
+            fence_explicit_extraction,
+        )
 
-        Compatibility surface for synchronous callers that expect ordered
-        learning ids. Routes them through the same ``_resolve_write_plan``
-        (compute) + ``_persist_write_plan`` (persist) split the durable worker
-        uses. Derived schedulers dispatch best-effort after the finalization
-        transaction commits. When an existing finalization receipt is found,
-        the method returns its learning ids without replaying those schedulers.
-        """
-        return self._finalize_extracted_items_with_outcome(
-            all_playbooks,
-            model_provenance=model_provenance,
-            extraction_run=extraction_run,
-            finalization_run_id=finalization_run_id,
-        ).learning_ids
-
-    def _finalize_extracted_items_with_outcome(
-        self,
-        all_playbooks: list[UserPlaybook],
-        *,
-        model_provenance: ModelProvenance | None = None,
-        extraction_run: AgentRunRecord | None = None,
-        finalization_run_id: str | None = None,
-    ) -> FinalizationResult:
-        """Finalize playbooks and expose the atomic receipt winner internally."""
-        if finalization_run_id is not None:
-            receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
-                run_id=finalization_run_id,
-                entity_type="user_playbook",
-            )
-            if receipt is not None:
-                # Receipts make persistence/billing idempotent. Derived schedulers
-                # are best-effort at-most-once and lack durable replay idempotency.
-                return FinalizationResult(receipt, won_receipt=False)
         if model_provenance is not None:
             self._last_model_provenance = model_provenance
-        previous_review_run = self._review_run
         previous_review_window = self._review_window_cache
-        if extraction_run is not None:
-            self._review_run = extraction_run
-            self._review_window_cache = None
         try:
             plan = self._resolve_write_plan([all_playbooks])
         finally:
-            self._review_run = previous_review_run
             self._review_window_cache = previous_review_window
-        if finalization_run_id is None:
-            if plan is not None:
-                with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
-                    from reflexio.server.services.durable_learning.user_lease import (
-                        fence_explicit_extraction,
-                    )
-
-                    fence_explicit_extraction(self.storage)  # type: ignore[reportArgumentType]
-                    self._persist_write_plan(plan)
-                self._dispatch_playbook_schedulers(plan)
-            return FinalizationResult(
-                learning_ids=(
-                    [
-                        str(playbook.user_playbook_id)
-                        for playbook in plan.new_playbooks
-                        if playbook.user_playbook_id
-                    ]
-                    if plan is not None
-                    else []
-                ),
-                won_receipt=False,
-            )
-
-        result = self._finalize_write_plan_with_outcome(
-            plan,
-            finalization_run_id=finalization_run_id,
-            bookmark_advance=None,
-        )
-        if plan is not None and result.won_receipt:
-            self._dispatch_playbook_schedulers(plan)
-        return result
-
-    def _finalize_write_plan_with_outcome(
-        self,
-        write_plan: PlaybookWritePlan | None,
-        *,
-        finalization_run_id: str,
-        bookmark_advance: ExtractorBookmarkAdvance | None,
-    ) -> FinalizationResult:
-        """Commit a resolved playbook plan, bookmark, and receipt atomically."""
-        entity_type = "user_playbook"
-        receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
-            run_id=finalization_run_id,
-            entity_type=entity_type,
-        )
-        if receipt is not None:
-            return FinalizationResult(receipt, won_receipt=False)
-        learning_ids: list[str] = []
-
-        try:
-            with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
-                from reflexio.server.services.durable_learning.user_lease import (
-                    fence_explicit_extraction,
-                )
-
-                fence_explicit_extraction(self.storage)  # type: ignore[reportArgumentType]
-                receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
-                    run_id=finalization_run_id,
-                    entity_type=entity_type,
-                )
-                if receipt is not None:
-                    return FinalizationResult(receipt, won_receipt=False)
-                if write_plan is not None:
-                    self._persist_write_plan(write_plan)
-                    learning_ids = [
-                        str(playbook.user_playbook_id)
-                        for playbook in write_plan.new_playbooks
-                        if playbook.user_playbook_id
-                    ]
-                self._apply_bookmark_advance(bookmark_advance)
-                inserted = self.storage.save_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
-                    run_id=finalization_run_id,
-                    entity_type=entity_type,
-                    learning_ids=learning_ids,
-                )
-                if not inserted:
-                    raise _FinalizationReceiptAlreadyExistsError
-        except _FinalizationReceiptAlreadyExistsError:
-            receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
-                run_id=finalization_run_id,
-                entity_type=entity_type,
-            )
-            if receipt is None:
-                raise RuntimeError(
-                    "finalization receipt disappeared after insert conflict"
-                ) from None
-            return FinalizationResult(receipt, won_receipt=False)
-        return FinalizationResult(learning_ids, won_receipt=True)
+        if plan is None:
+            return []
+        with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
+            fence_explicit_extraction(self.storage)  # type: ignore[reportArgumentType]
+            self._persist_write_plan(plan)
+        self._dispatch_playbook_schedulers(plan)
+        return [
+            str(row.user_playbook_id)
+            for row in plan.new_playbooks
+            if row.user_playbook_id
+        ]
 
     def _apply_consolidation_lineage(
         self,

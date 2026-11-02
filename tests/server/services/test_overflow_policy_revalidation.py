@@ -18,6 +18,9 @@ from reflexio.server.services.extraction.input_recovery import (
 from reflexio.server.services.profile.components import extractor as profile_extractor
 from tests.server.services.test_durable_window_pipeline import payload
 from tests.server.services.test_durable_window_pipeline import pipeline as pipeline
+from tests.server.services.test_overflow_carried_evidence import (
+    coordinator_fixture as coordinator_fixture,
+)
 
 _PROFILE = {
     "content": "The user prefers concise answers.",
@@ -317,11 +320,10 @@ def test_incomplete_policy_mismatch_stops_retrying_without_resetting_evidence(
         assert storage.count_all_profiles() == 1
 
 
-def test_policy_change_between_chunks_preserves_completed_child():
+def test_policy_change_between_chunks_preserves_completed_child(coordinator_fixture):
     from reflexio.server.llm.input_budget import InputBudgetConfigurationError
-    from tests.server.services.test_overflow_carried_evidence import coordinator_fixture
 
-    coordinator, build, execute = coordinator_fixture()
+    coordinator, build, execute = coordinator_fixture
     saved = []
 
     def build_changed():

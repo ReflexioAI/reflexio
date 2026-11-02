@@ -865,6 +865,11 @@ class PlaybookCandidateReviewer:
             "1.19.0",
             "1.20.0",
         }
+        from reflexio.server.services.extraction.history_inputs import (
+            record_historical_playbooks,
+        )
+
+        record_historical_playbooks(self.request_context.storage, existing_playbooks)
         variables = {
             "agent_context_prompt": agent_context,
             "playbook_definition": playbook_definition,

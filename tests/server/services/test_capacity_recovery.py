@@ -295,6 +295,10 @@ def test_twenty_k_initial_geometry_runs_complete_http_window_under_original_quot
     from reflexio.server.llm.litellm_client import LiteLLMClient
 
     engine, worker, http = pipeline
+    # This provider-specific synthetic contract must not depend on ambient keys.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-no-provider")
     configurator = engine.request_context.configurator
     configurator.set_config(
         configurator.get_config().model_copy(

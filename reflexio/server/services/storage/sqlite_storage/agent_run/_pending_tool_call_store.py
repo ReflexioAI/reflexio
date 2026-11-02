@@ -16,6 +16,13 @@ duplicated. All public mutations use the existing ``commit_scope`` owner:
 standalone calls commit atomically, while nested calls join their caller's
 transaction without an intermediate commit or a second BEGIN.
 
+The private user-erasure entry point additionally joins the clear operation's
+existing writer after the subject's runs are removed. It deletes raw originated
+questions/results, removes their surviving dependency hints, and reconciles only
+affected runs. Resolved surviving answers take priority over pending-only work;
+normal input admission still validates them before any model call. No erasure
+transaction is opened or committed by this bucket.
+
 The residual ``_agent_run.py`` module (helpers-only, no mixin class)
 permanently holds the shared row/datetime helpers (``_dt_str``,
 ``_row_to_pending_tool_call``, ``_record_to_prior_answer_match`` …), which are
@@ -63,6 +70,97 @@ class SQLitePendingToolCallStoreMixin:
     _finalize_runs_without_pending_dependencies_unlocked: Callable[..., None]
     _mark_runs_ready_with_actionable_dependencies_unlocked: Callable[..., None]
     _finalize_runs_without_actionable_dependencies_unlocked: Callable[..., None]
+
+    def _erase_pending_tool_calls_for_user_unlocked(self, user_id: str) -> int:
+        """Join user clear's writer; remove raw answers and settle only dependents.
+
+        The caller has deleted the subject's runs. Shared surviving runs keep
+        independent answers, but an executing stale answer turn must be fenced
+        by changing its phase before the erase transaction becomes visible.
+        """
+        parameters = (self.org_id, user_id)
+        if (
+            self.conn.execute(
+                "SELECT 1 FROM _pending_tool_calls WHERE org_id=? AND user_id=? LIMIT 1",
+                parameters,
+            ).fetchone()
+            is None
+        ):
+            return 0
+        affected = {
+            row["run_id"]
+            for row in self.conn.execute(
+                "SELECT DISTINCT d.run_id FROM _run_tool_dependencies d "
+                "JOIN _pending_tool_calls p ON p.id=d.pending_tool_call_id "
+                "WHERE p.org_id=? AND p.user_id=?",
+                parameters,
+            )
+        }
+        now_s = self._current_timestamp()
+        # Retain order and independent IDs, including legacy hints without a
+        # dependency row. Read origin rows before deleting their raw contents.
+        affected.update(
+            row["id"]
+            for row in self.conn.execute(
+                """
+                UPDATE _agent_runs AS r
+                SET pending_tool_call_ids=(
+                    SELECT json_group_array(kept.value) FROM (
+                        SELECT e.value FROM json_each(r.pending_tool_call_ids) e
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM _pending_tool_calls p
+                            WHERE p.id=e.value AND p.org_id=? AND p.user_id=?
+                        ) ORDER BY CAST(e.key AS INTEGER)
+                    ) kept
+                ), updated_at=?
+                WHERE json_type(r.pending_tool_call_ids)='array' AND EXISTS (
+                    SELECT 1 FROM json_each(r.pending_tool_call_ids) e
+                    JOIN _pending_tool_calls p ON p.id=e.value
+                    WHERE p.org_id=? AND p.user_id=?
+                ) RETURNING id
+                """,
+                (*parameters, now_s, *parameters),
+            )
+        )
+        deleted = self.conn.execute(
+            "DELETE FROM _pending_tool_calls WHERE org_id=? AND user_id=?", parameters
+        ).rowcount
+        for run_id in sorted(affected):
+            row = self.conn.execute(
+                """
+                SELECT r.status,
+                    EXISTS(SELECT 1 FROM _run_tool_dependencies d
+                           JOIN _pending_tool_calls p ON p.id=d.pending_tool_call_id
+                           WHERE d.run_id=r.id AND d.resolved_at IS NULL
+                             AND d.consumed_at IS NULL AND p.status='pending') AS has_pending,
+                    EXISTS(SELECT 1 FROM _run_tool_dependencies d
+                           JOIN _pending_tool_calls p ON p.id=d.pending_tool_call_id
+                           WHERE d.run_id=r.id AND d.resolved_at IS NOT NULL
+                             AND d.consumed_at IS NULL AND p.status='resolved'
+                             AND COALESCE(json_type(p.result,'$.not_applicable'),'')<>'true') AS has_resolved
+                FROM _agent_runs r WHERE r.id=?
+                  AND r.status IN ('finalized_pending_tool','resume_ready','resuming')
+                """,
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                continue
+            target = (
+                AgentRunStatus.RESUME_READY
+                if row["has_resolved"]
+                else AgentRunStatus.FINALIZED_PENDING_TOOL
+                if row["has_pending"]
+                else AgentRunStatus.FINALIZED
+            )
+            if row["status"] == target.value:
+                continue
+            self.conn.execute(
+                "UPDATE _agent_runs SET status=?,updated_at=?,"
+                "finalized_at=CASE WHEN ?='finalized' THEN COALESCE(finalized_at,?) "
+                "ELSE finalized_at END WHERE id=?",
+                (target.value, now_s, target.value, now_s, run_id),
+            )
+        return deleted
 
     @SQLiteStorageBase.handle_exceptions
     def create_pending_tool_call(

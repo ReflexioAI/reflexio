@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from reflexio.server.services.profile.service import (
         ProfileGenerationServiceConfig,
     )
+    from reflexio.server.services.storage.storage_base import AgentRunRecord
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.profile.profile_generation_service_utils import (
     PROFILE_SOURCE_EVIDENCE_INSTRUCTION,
@@ -52,6 +53,7 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
     StructuredProfilesOutput,
     calculate_expiration_timestamp,
     construct_profile_extraction_messages_from_sessions,
+    prepare_profile_extraction_prompt,
 )
 from reflexio.server.services.service_utils import (
     extract_interactions_from_request_interaction_data_models,
@@ -156,6 +158,7 @@ class ProfileExtractor:
         self.service_config: ProfileGenerationServiceConfig = service_config
         self.agent_context = agent_context
         self._last_resumable_run_id: str | None = None
+        self._last_resumable_run: AgentRunRecord | None = None
         self._last_resumable_token_totals: RunTokenTotals | None = None
         self._last_model_provenance = None
 
@@ -339,13 +342,14 @@ class ProfileExtractor:
         return ExtractionOutcome.completed(
             user_profiles,
             run_id=self._last_resumable_run_id,
+            execution_run=self._last_resumable_run,
             token_totals=self._last_resumable_token_totals,
             bookmark_advance=bookmark_advance,
             model_provenance=self._last_model_provenance,
         )
 
+    @staticmethod
     def _convert_raw_to_user_profiles(
-        self,
         raw_profiles: list[dict],
         user_id: str,
         request_id: str,
@@ -439,7 +443,7 @@ class ProfileExtractor:
                 request_interaction_data_models=request_interaction_data_models,
             )
 
-        messages = construct_profile_extraction_messages_from_sessions(
+        prepared_prompt = prepare_profile_extraction_prompt(
             prompt_manager=self.request_context.prompt_manager,
             request_interaction_data_models=request_interaction_data_models,
             agent_context_prompt=self.agent_context,
@@ -448,9 +452,10 @@ class ProfileExtractor:
             ),
             extraction_definition_prompt=self.config.extraction_definition_prompt.strip(),
             existing_profiles=existing_profiles,
+            user_id=self.service_config.user_id,
         )
 
-        messages_dict = messages
+        messages_dict = prepared_prompt.messages
         session_count = len(request_interaction_data_models)
         interaction_count = sum(
             len(data_model.interactions)
@@ -579,12 +584,16 @@ class ProfileExtractor:
             service_config=self.service_config,
             agent_context=self.agent_context,
             messages=messages_dict,
+            history_inputs=prepared_prompt.history_inputs
+            if coordinator is None
+            else None,
             output_schema=StructuredProfilesOutput,
             log_label="Profile extraction",
             overflow_call_factory=overflow_call if coordinator else None,
             overflow_final_validator=validate_final if coordinator else None,
         )
         self._last_resumable_run_id = result.run_id
+        self._last_resumable_run = result.execution_run
         self._last_resumable_token_totals = sum_trace_tokens(result.trace)
         self._last_model_provenance = result.model_provenance
         if not isinstance(result.output, StructuredProfilesOutput):

@@ -29,6 +29,7 @@ from reflexio.server.services.extraction.agent_run_records import (
     build_extractor_agent_run_record,
     service_config_snapshot,
 )
+from reflexio.server.services.extraction.history_inputs import HistoricalInputs
 from reflexio.server.services.playbook.service import PlaybookGenerationServiceConfig
 from reflexio.server.services.profile.profile_generation_service_utils import (
     StructuredProfilesOutput,
@@ -42,6 +43,9 @@ from reflexio.server.usage_metrics import (
 
 EXCLUDED = {"window_interactions", "existing_data", "frozen_extractor_config"}
 PRIVATE = "PRIVATE-USER-CONTENT"
+
+
+from tests.server.services.extraction.source_fixtures import persist_source_models
 
 
 def _groups() -> list[RequestInteractionDataModel]:
@@ -174,6 +178,8 @@ def test_classic_run_row_persists_trimmed_snapshot(monkeypatch, window_id):
             patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512),
         ):
             storage = SQLiteStorage(org_id="org", db_path=f"{temp_dir}/r.db")
+            groups = _groups()
+            persist_source_models(storage, groups)
             context = MagicMock(org_id="org", storage=storage)
             result = resumable_agent.run_resumable_extraction_agent(
                 request_context=context,
@@ -183,13 +189,14 @@ def test_classic_run_row_persists_trimmed_snapshot(monkeypatch, window_id):
                 request_id="r",
                 agent_version=None,
                 source="api",
-                request_interaction_data_models=_groups(),
+                request_interaction_data_models=groups,
                 extractor_config=ProfileExtractorConfig(
                     extraction_definition_prompt="x"
                 ),
                 service_config=config,
                 agent_context="",
                 messages=[{"role": "user", "content": "source"}],
+                history_inputs=HistoricalInputs(),
                 output_schema=StructuredProfilesOutput,
                 log_label="classic",
             )

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import tempfile
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -50,6 +51,7 @@ def client_with_server(storage):
     fake_ctx = RequestContext.__new__(RequestContext)
     fake_ctx.org_id = ORG_ID
     fake_ctx.storage = storage
+    fake_ctx.storage_base_dir = str(Path(storage.db_path).parent)
     fake_ctx.configurator = MagicMock()
     fake_ctx.configurator.get_config.return_value = Config(
         storage_config=StorageConfigSQLite()

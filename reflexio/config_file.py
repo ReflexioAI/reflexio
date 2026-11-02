@@ -21,7 +21,8 @@ from reflexio.config_document import decode_config_document, encode_config_docum
 from reflexio.config_env import StoredConfigurationError
 
 NATIVE_POOL_AUTHORITY_VERSION = 10
-FILE_FORMAT_VERSION = NATIVE_POOL_AUTHORITY_VERSION
+SINGLE_OWNER_EXECUTION_VERSION = 11
+FILE_FORMAT_VERSION = SINGLE_OWNER_EXECUTION_VERSION
 _METADATA_KEY = "_reflexio_config_file"
 
 
@@ -217,7 +218,36 @@ def _prepare_document(data: dict[str, Any], version: int) -> dict[str, Any]:
                 canonical["user_playbook_extractor_config"]
             )
         )
+    if (
+        version < SINGLE_OWNER_EXECUTION_VERSION
+        and "pending_tool_call_config" in canonical
+    ):
+        from reflexio.pending_tool_policy import strip_legacy_pending_tool_timing
+
+        canonical["pending_tool_call_config"] = strip_legacy_pending_tool_timing(
+            canonical["pending_tool_call_config"]
+        )
     return canonical
+
+
+def _admit_storage_transition(
+    admit: Callable[[dict[str, Any]], None] | None,
+    source: dict[str, Any] | None,
+    candidate: dict[str, Any],
+    *,
+    incompatible: bool,
+) -> None:
+    """One admission rule for generation upgrades, first publication and retargeting."""
+    if admit is None:
+        return
+    if source is not None:
+        if not incompatible and source.get("storage_config") == candidate.get(
+            "storage_config"
+        ):
+            return
+        admit(deepcopy(source))
+    if source is None or source != candidate:
+        admit(deepcopy(candidate))
 
 
 class LocalConfigFile:
@@ -263,7 +293,13 @@ class LocalConfigFile:
         document, _metadata = self._read_snapshot()
         return document
 
-    def publish_document(self, document: str, *, create_only: bool = False) -> bool:
+    def publish_document(
+        self,
+        document: str,
+        *,
+        create_only: bool = False,
+        admit: Callable[[dict[str, Any]], None] | None = None,
+    ) -> bool:
         """Publish an explicit full replacement; this is not a read/merge patch."""
         data, _supplied_metadata = _decode(document.encode("utf-8"))
         self._validate(data)
@@ -272,17 +308,33 @@ class LocalConfigFile:
         with FileLock(f"{target}.lock", timeout=30, mode=0o600):
             if create_only and target.exists():
                 return False
+            original = target.read_bytes() if target.exists() else None
             metadata: dict[str, Any] = {"version": FILE_FORMAT_VERSION}
-            if target.exists():
+            previous = None
+            source_version = 0
+            if original is not None:
                 if not target.is_file():
                     raise StoredConfigurationError(
                         "Saved configuration must be a regular file"
                     )
-                _previous, metadata = _decode(target.read_bytes())
+                previous, metadata = _decode(original)
+                source_version = metadata.get("version", 0)
                 metadata = {**metadata, "version": FILE_FORMAT_VERSION}
-            if self._target() != target:
+            if admit is not None:
+                _admit_storage_transition(
+                    admit,
+                    _prepare_document(previous, source_version)
+                    if previous is not None
+                    else None,
+                    data,
+                    incompatible=source_version < SINGLE_OWNER_EXECUTION_VERSION,
+                )
+            if (
+                self._target() != target
+                or (target.read_bytes() if target.exists() else None) != original
+            ):
                 raise StoredConfigurationError(
-                    "Saved configuration link changed; retry the write"
+                    "Saved configuration changed during publication; retry the write"
                 )
             encoded = encode_local_config_document(data, metadata)
             return _publish_bytes(target, encoded.encode(), create_only=create_only)
@@ -318,13 +370,16 @@ class LocalConfigFile:
         *,
         edit: Callable[[dict[str, Any], int], None] | None = None,
         initial_document: dict[str, Any] | None = None,
+        admit: Callable[[dict[str, Any]], None] | None = None,
     ) -> bool:
         """Upgrade an older generation before serving, retaining its original bytes.
 
         The launcher must stop old serving writers first. A pure edit callback
         can select storage from the observed source generation under this same
         lock, before the upgraded file is published. An initial logical document
-        is used only for a missing file. Callbacks must perform no external I/O.
+        is used only for a missing file. Edit callbacks must perform no external I/O.
+        The separate admission check may read storage, never write it. It runs
+        under this file lock before backups or incompatible metadata publication.
         The lock serializes current product writers; observed source/link edits
         still refuse publication, including an otherwise unchanged callback.
         """
@@ -354,9 +409,16 @@ class LocalConfigFile:
             if version == FILE_FORMAT_VERSION:
                 self._validate(data)
             canonical = _prepare_document(data, version)
+            source = deepcopy(canonical)
             if edit is not None:
                 edit(canonical, version)
             self._validate(canonical)
+            _admit_storage_transition(
+                admit,
+                source if original is not None else None,
+                canonical,
+                incompatible=version < SINGLE_OWNER_EXECUTION_VERSION,
+            )
             if version == FILE_FORMAT_VERSION or original is None:
                 if (
                     self._target() != target

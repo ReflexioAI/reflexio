@@ -77,6 +77,7 @@ if TYPE_CHECKING:
     from reflexio.server.services.playbook.service import (
         PlaybookGenerationServiceConfig,
     )
+    from reflexio.server.services.storage.storage_base import AgentRunRecord
 
 logger = logging.getLogger(__name__)
 
@@ -311,6 +312,7 @@ class PlaybookExtractor:
         self.service_config: PlaybookGenerationServiceConfig = service_config
         self.agent_context: str = agent_context
         self._last_resumable_run_id: str | None = None
+        self._last_resumable_run: AgentRunRecord | None = None
         self._last_resumable_token_totals: RunTokenTotals | None = None
         self._last_model_provenance = None
 
@@ -456,6 +458,7 @@ class PlaybookExtractor:
         return ExtractionOutcome.completed(
             user_playbooks,
             run_id=self._last_resumable_run_id,
+            execution_run=self._last_resumable_run,
             token_totals=self._last_resumable_token_totals,
             bookmark_advance=bookmark_advance,
             model_provenance=self._last_model_provenance,
@@ -675,6 +678,8 @@ class PlaybookExtractor:
                 lambda output: validate_all(output, visible),
             )
 
+        from reflexio.server.services.extraction.history_inputs import HistoricalInputs
+
         result = run_resumable_extraction_agent(
             request_context=self.request_context,
             client=self.client,
@@ -688,6 +693,7 @@ class PlaybookExtractor:
             service_config=self.service_config,
             agent_context=self.agent_context,
             messages=messages,
+            history_inputs=HistoricalInputs() if coordinator is None else None,
             output_schema=stored_schema or contract.schema,
             log_label="Playbook extraction",
             # Opt strict normal extraction into the client's one bounded
@@ -703,6 +709,7 @@ class PlaybookExtractor:
             else None,
         )
         self._last_resumable_run_id = result.run_id
+        self._last_resumable_run = result.execution_run
         self._last_resumable_token_totals = sum_trace_tokens(result.trace)
         self._last_model_provenance = result.model_provenance
         if not isinstance(

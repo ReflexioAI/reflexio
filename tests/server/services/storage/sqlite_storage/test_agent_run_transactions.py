@@ -35,6 +35,7 @@ def _snapshot(connection):
         "calls": "SELECT * FROM _pending_tool_calls ORDER BY rowid",
         "dependencies": "SELECT * FROM _run_tool_dependencies ORDER BY rowid",
         "receipts": "SELECT * FROM _agent_run_finalization_receipts ORDER BY rowid",
+        "owners": "SELECT * FROM learning_work ORDER BY org_id,user_id",
     }
     return {
         table: [tuple(row) for row in connection.execute(query).fetchall()]
@@ -77,7 +78,43 @@ def writes(storage):
     storage.attach_run_tool_dependency(
         RunToolDependencyRecord(run_id="running", pending_tool_call_id="pending")
     )
-    return {
+
+    from reflexio.server.services.durable_learning.user_lease import (
+        owned_user_work_context,
+    )
+    from reflexio.server.services.storage.storage_base._user_work_position import (
+        ResumeCursor,
+        UserWorkPosition,
+    )
+
+    # Acquire the real parent before any caller-owned writer transaction.
+    token = storage.claim_user_extraction("user_1", "transaction-owner", 300)
+    assert token is not None
+    ready = storage.get_agent_run("ready")
+    assert ready is not None
+
+    def adopt(expected):
+        with storage.commit_scope(), storage._stream_sql() as db:
+            adopted = storage._adopt_owned_user_work_run(
+                db, expected=expected, user_id="user_1", token=token, worker_id="test"
+            )
+        assert adopted is not None
+        current = storage.get_agent_run(expected.id)
+        assert current is not None and current.status == expected.status
+        assert current.claimed_by == adopted[0] and current.claimed_at == adopted[1]
+        return current
+
+    def advance_position():
+        assert storage._commit_owned_work_selection(
+            user_id="user_1",
+            token=token,
+            expected_position=UserWorkPosition(),
+            work_class="finalization",
+            cursor=ResumeCursor(),
+            worker_id="test",
+        ) == (True, None)
+
+    operations = {
         "create_run": lambda: storage.create_agent_run(
             _agent_run("new", AgentRunStatus.RUNNING)
         ),
@@ -94,19 +131,11 @@ def writes(storage):
             request_id="request_1",
             last_error="test",
         ),
-        "claim_ready": lambda: storage.claim_ready_agent_run(
-            org_id="org_1", worker_id="test", now=now
-        ),
-        "claim_finalizing": lambda: storage.claim_finalization_failed_agent_run(
-            org_id="org_1", worker_id="test", now=now
-        ),
+        "adopt_continuation": lambda: adopt(ready),
+        "adopt_finalization": lambda: adopt(finalizing),
+        "advance_position": advance_position,
         "claim_recovery": lambda: storage.claim_agent_run_for_recovery(
-            run_id="finalizing",
-            org_id="org_1",
-            worker_id="test",
-            expected_updated_at=finalizing.updated_at,
-            operation_id="test",
-            now=now,
+            expected=finalizing, worker_id="test", operation_id="test"
         ),
         "attach": lambda: storage.attach_run_tool_dependency(
             RunToolDependencyRecord(run_id="finalizing", pending_tool_call_id="pending")
@@ -158,14 +187,21 @@ def writes(storage):
         ),
     }
 
+    try:
+        with owned_user_work_context(storage, "user_1", token, 300):
+            yield operations
+    finally:
+        storage.release_user_extraction("user_1", token)
+
 
 OPERATIONS = (
     "create_run",
     "status",
     "receipt",
     "fail_running",
-    "claim_ready",
-    "claim_finalizing",
+    "adopt_continuation",
+    "adopt_finalization",
+    "advance_position",
     "claim_recovery",
     "attach",
     "consume",
@@ -248,10 +284,10 @@ def test_recovery_claim_uses_precise_observed_revision(
     run = storage.get_agent_run("finalizing")
     original = run.updated_at
     claimed = storage.claim_agent_run_for_recovery(
-        run_id=run.id,
-        org_id="org_1",
+        expected=replace(
+            run, updated_at=original + timedelta(microseconds=revision_offset)
+        ),
         worker_id="recovery",
-        expected_updated_at=original + timedelta(microseconds=revision_offset),
         operation_id="recover",
     )
     if revision_offset == 0:

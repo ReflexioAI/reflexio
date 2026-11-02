@@ -73,7 +73,10 @@ def require_current_answer(witness: dict[str, Any], org_id: str, now: datetime) 
         raise InputBudgetConfigurationError("Extraction human answer is unavailable")
 
 
-def pin_overflow_answer(record: PendingToolCallRecord) -> None:
+def pin_extraction_answer(record: PendingToolCallRecord) -> None:
+    from reflexio.server.services.extraction.answer_inputs import record_answer_input
+
+    record_answer_input(record)
     from reflexio.server.services.extraction.overflow_coordinator import (
         current_overflow_coordinator,
     )
@@ -162,7 +165,7 @@ def resume_waiting_child(coordinator: OverflowCoordinator, key: str) -> None:
             coordinator.window, coordinator.source_digest
         )
         for record in records:
-            pin_overflow_answer(record)
+            pin_extraction_answer(record)
         checkpoint = coordinator.checkpoint
         witnesses = checkpoint["answer_witnesses"]
         coordinator.storage.validate_extraction_answers(witnesses)

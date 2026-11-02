@@ -1,4 +1,9 @@
-"""One org-owned admission decision for fresh and resumed pending-info tools."""
+"""Org policy for creating pending-info calls, including calls during resume.
+
+Existing accepted work is selected from durable source facts independently.
+This module controls creation capability; execution retains its own input and
+frozen-policy validation.
+"""
 
 from __future__ import annotations
 
@@ -62,6 +67,7 @@ def pending_tool_calls_disabled_reason(context: RequestContext) -> str | None:
 
 
 def pending_tool_calls_enabled(context: RequestContext) -> bool:
+    """Whether this execution may create a new pending-info call."""
     return pending_tool_calls_disabled_reason(context) is None
 
 

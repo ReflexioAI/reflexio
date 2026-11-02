@@ -69,6 +69,34 @@ def _window(window_id: str = "w1") -> Window:
     )
 
 
+@pytest.fixture(autouse=True)
+def window_handler_selection(monkeypatch):
+    """Keep these minimal fakes at the window-handler boundary under test.
+
+    Real storage/admission/fairness and financial acceptance are exercised by
+    the joined integration suites. A missing fake selector must not create an
+    unrelated global-discovery error before a diagnostic handler is reached.
+    """
+    from reflexio.server.services.durable_learning.financial_delivery import (
+        FinancialDeliverySweep,
+    )
+    from reflexio.server.services.durable_learning.resume_selection import (
+        ResumeSelection,
+    )
+
+    monkeypatch.setattr(FinancialDeliverySweep, "deliver_one", lambda *_a: False)
+    monkeypatch.setattr(
+        ResumeSelection,
+        "claim_user",
+        lambda _self, context, *, worker_id, lease_seconds: (
+            context.storage.claim_extraction(worker_id, lease_seconds)
+        ),
+    )
+    monkeypatch.setattr(
+        ResumeSelection, "select_owned", lambda *_a, **_kw: ("learning", None)
+    )
+
+
 class _Storage:
     """Just enough surface for ``_turn`` to reach each handler in turn."""
 
@@ -111,6 +139,7 @@ class _Storage:
 
 class _Context:
     def __init__(self, storage: _Storage) -> None:
+        self.org_id = storage.org_id
         self.storage = storage
 
 
@@ -556,15 +585,16 @@ def test_transient_turn_failure_is_a_warning_and_releases_the_slot(
     assert background_work._streaks["durable-learning-claim:org1"][0] == 2
     # No storage: nothing was attempted, so nothing is reported either way.
     worker._factory = lambda _org_id: cast(
-        RequestContext, SimpleNamespace(storage=None)
+        RequestContext, SimpleNamespace(org_id="org1", storage=None)
     )
     worker.drain_org("org1", batch_size=1, lease_seconds=30)
     assert background_work._streaks["durable-learning-claim:org1"][0] == 2
     # The claim query runs and finds no user: the claim unit succeeded.
     idle = MagicMock()
+    idle.org_id = "org1"
     idle.claim_extraction.return_value = None
     worker._factory = lambda _org_id: cast(
-        RequestContext, SimpleNamespace(storage=idle)
+        RequestContext, SimpleNamespace(org_id="org1", storage=idle)
     )
     worker.drain_org("org1", batch_size=1, lease_seconds=30)
     assert background_work._streaks == {}
@@ -594,10 +624,13 @@ def test_a_stuck_users_turn_streak_survives_idle_polls_and_other_users(
     )
     healthy = _claimed_storage("user-b", release_fails=None)
     idle = MagicMock()
+    idle.org_id = "org1"
     idle.claim_extraction.return_value = None
     storages = iter([stuck, idle, healthy, stuck])
     worker = DurableLearningWorker(
-        lambda _org_id: cast(RequestContext, SimpleNamespace(storage=next(storages)))
+        lambda _org_id: cast(
+            RequestContext, SimpleNamespace(org_id="org1", storage=next(storages))
+        )
     )
     stuck_scope = f"durable-learning-turn:org1:{_user_ref('user-a')}"
 
@@ -609,14 +642,17 @@ def test_a_stuck_users_turn_streak_survives_idle_polls_and_other_users(
     # The same user returns but has nothing to prepare: it did not complete.
     worker._factory = lambda _org_id: cast(
         RequestContext,
-        SimpleNamespace(storage=_claimed_storage("user-a", release_fails=None)),
+        SimpleNamespace(
+            org_id="org1", storage=_claimed_storage("user-a", release_fails=None)
+        ),
     )
     worker.drain_org("org1", batch_size=1, lease_seconds=30)
     assert background_work._streaks[stuck_scope][0] == 2
 
     # The same user's extraction completes: only now does its streak end.
     worker._factory = lambda _org_id: cast(
-        RequestContext, SimpleNamespace(storage=_delivering_storage("user-a"))
+        RequestContext,
+        SimpleNamespace(org_id="org1", storage=_delivering_storage("user-a")),
     )
     with _executor_stubbed():
         worker.drain_org("org1", batch_size=1, lease_seconds=30)
@@ -655,7 +691,9 @@ def test_readiness_and_escaping_failure_share_the_claimed_users_streak(
         "u1", release_fails=transient_failure_classifier("SSL EOF")
     )
     worker = DurableLearningWorker(
-        lambda _org: cast(RequestContext, SimpleNamespace(storage=failed))
+        lambda _org: cast(
+            RequestContext, SimpleNamespace(org_id="org1", storage=failed)
+        )
     )
     assert worker.drain_org("org1", batch_size=1, lease_seconds=30) == 0
     assert background_work._streaks[scope][0] == 2
@@ -664,7 +702,7 @@ def test_readiness_and_escaping_failure_share_the_claimed_users_streak(
         for user_id in ("other-user", "u1"):
             worker._factory = lambda _org, user_id=user_id: cast(
                 RequestContext,
-                SimpleNamespace(storage=_delivering_storage(user_id)),
+                SimpleNamespace(org_id="org1", storage=_delivering_storage(user_id)),
             )
             assert worker.drain_org("org1", batch_size=1, lease_seconds=30) == 1
             assert (scope in background_work._streaks) == (user_id != "u1")
@@ -709,7 +747,9 @@ def test_a_turn_that_swallows_its_setup_failure_does_not_end_the_streak(
 
     storage.defer_extraction_setup.side_effect = defer
     worker = DurableLearningWorker(
-        lambda _org_id: cast(RequestContext, SimpleNamespace(storage=storage))
+        lambda _org_id: cast(
+            RequestContext, SimpleNamespace(org_id="org1", storage=storage)
+        )
     )
     levels: list[int] = []
     handler = logging.Handler()
@@ -741,7 +781,9 @@ def test_heartbeat_failure_is_scoped_to_the_leased_user(
     storage.renew_extraction.side_effect = transient_failure_classifier("SSL EOF")
     storage.prepare_extraction.side_effect = lambda *_args: _time.sleep(0.6)
     worker = DurableLearningWorker(
-        lambda _org_id: cast(RequestContext, SimpleNamespace(storage=storage))
+        lambda _org_id: cast(
+            RequestContext, SimpleNamespace(org_id="org1", storage=storage)
+        )
     )
 
     worker.drain_org("org1", batch_size=1, lease_seconds=1)
@@ -800,3 +842,22 @@ def test_a_severed_or_implicit_chain_keeps_the_outer_site() -> None:
     except RuntimeError as severed:
         severed_line = _line('raise RuntimeError("severed") from None')
         assert exception_locator(severed).startswith(f"{_HERE}:{severed_line}")
+
+
+def test_factory_failure_is_also_value_free(caplog):
+    private_error = ValueError(SENTINEL)
+
+    def private_factory(_org):
+        raise private_error
+
+    worker = DurableLearningWorker(private_factory)
+    assert worker.drain_org("org1", batch_size=1, lease_seconds=30) == 0
+    failures = [
+        record
+        for record in caplog.records
+        if "extraction_turn_failed" in record.getMessage()
+    ]
+    assert len(failures) == 1
+    assert SENTINEL not in caplog.text
+    assert failures[0].exc_info is None
+    assert "ValueError" in failures[0].getMessage()

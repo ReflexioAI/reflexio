@@ -213,7 +213,7 @@ def save_storage_to_config(
     if replacement is None:
         return
 
-    from reflexio.config_file import NATIVE_POOL_AUTHORITY_VERSION, LocalConfigFile
+    from reflexio.config_file import NATIVE_POOL_AUTHORITY_VERSION
 
     storage_obj = LocalFileConfigStorage(org_id, base_dir=base_dir)
 
@@ -259,9 +259,7 @@ def save_storage_to_config(
         if not Path(storage_obj.config_file).exists()
         else None
     )
-    LocalConfigFile(storage_obj.config_file).prepare(
-        edit=update_storage, initial_document=initial
-    )
+    storage_obj.prepare_for_startup(edit=update_storage, initial_document=initial)
 
 
 def resolve_storage(cli_flag: str | None) -> str:

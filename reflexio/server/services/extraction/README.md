@@ -5,7 +5,7 @@ Description: Shared async extraction runtime for profile and playbook pipelines.
 
 
 This package is intentionally domain-neutral. Profile and playbook modules own
-their prompts, schemas, extractor semantics, and storage decisions; this package
+their prompts, schemas, extractor semantics, and resolved business write plans; this package
 owns the reusable runtime needed when extraction pauses, waits for more
 information, and resumes outside the request path.
 
@@ -18,10 +18,12 @@ information, and resumes outside the request path.
 | `pending_tool_admission.py` | Owns org/storage admission at fresh/resume construction and direct tool effects; rejects unadopted rollout vetoes. |
 | `pending_tool_call_dispatch.py` | Implements the `ask_human` and pending-info tool dispatch flow. |
 | `prior_answer_search.py` | Finds and formats previous human answers; captures immutable complete prior context before package planning, without admission or journal writes. |
+| `history_inputs.py` | Captures actual historical profile/playbook inputs during ordinary preparation, seals detached digests, and rejects conflicting or late copied-context writes. It adds no execution authority or persisted compute cache. |
+| `answer_inputs.py` | Captures the actual supplied answer digests and validates one shared retained-output answer/dependency structure for inspection, pre-preparation checks and atomic consumption. These data are never owner authority. |
 | `agent_run_records.py` | Builds durable extraction-agent run records and source interaction identity. |
-| `resume_scheduler.py` | Discovers and schedules due paused/finalization work in a background singleton. |
 | `recovery.py` | Content-free inspection and strict preview manifests for explicitly selected saved-output recovery. Never opens the scheduler gate. |
-| `resume_worker.py` | Resumes paused runs, rebuilds request context, and records retry state. Finalization uses an immutable run-keyed receipt so learning writes and retry billing reuse the same persisted IDs. |
+| `resume_worker.py` | Executes already-admitted paused/finalization work under actual user ownership; selected recovery uses the same output publisher. Discovery and scheduling belong to durable learning. |
+| `publication.py` | Prepares business plans outside the writer; atomically publishes learning, per-output receipt, captured dependency consumption and remaining-work status. Derived dispatch and strict financial delivery/ACK follow commit. Initial/window adoption and durable preparation/recovery discovery remain qualification gates. |
 | `outcome.py` | Provides the generic extraction outcome wrapper used by callers. |
 | `overflow_protocol.py` | Pure validation of the inactive outer-v2 source-package descriptor, frozen stage budgets and typed source-selection receipts. |
 | `input_preparation.py` | Ownership-checked field collection and bounded, lossless legacy chunks with original field/character spans. The new collector does not impose legacy chunk geometry. |
@@ -46,14 +48,31 @@ information, and resumes outside the request path.
 
 Extraction records durable agent state and pending human calls; the scheduler discovers resumable work and the worker reconstructs context, resumes the agent, and commits finalization with an immutable receipt. Domain services retain prompts and learning semantics.
 
+The shared `llm/compute_admission.py` scope asks the current owner to reserve its
+existing logical allowance before external preparation or model dispatch.
+Nested and parallel calls share that admission. Resumes carry the exact charged
+run witness into the model; compatibility windows debit their existing cursor.
+Later writer contention cannot refund the debit, and failure settlement does
+not charge it twice. Coordinated windows retain their per-call durable journal.
+Saved-result replay adds no new admission. No provider runs inside the short
+reservation writer.
+
+Raw completion and preparation-cache saves share the storage candidate-input
+scope: validate the actual run owner and exact source, answer and mandatory
+history witnesses before writing the payload, then check expiry again before
+commit. Changed or erased inputs refuse raw retention as well as learning.
+
 ## Requirements / Problems to Avoid
 
 
 - Keep profile-specific and playbook-specific extraction behavior in their own
   modules; call this package only for shared async runtime concerns.
-- Commit resumable learning writes, lineage changes, and the agent-run
-  finalization receipt in one storage transaction. Retries must return the
-  receipt's persisted IDs instead of repeating finalization.
+- For ordinary resumed outputs, commit learning writes, lineage changes, the
+  per-output publication receipt, exact captured dependency consumption and
+  remaining-work status in one owned storage transaction. Receipt replay reuses
+  persisted IDs without preparation. Historical run-only receipts remain evidence
+  and do not identify a new output. Persisted preparation/history and legacy
+  generation admission are required before this owner refactor can ship.
 - Add a new file here when the behavior is shared by more than one extraction
   caller or is part of the resumable runtime itself.
 - Split into subpackages only when a responsibility grows large enough that a

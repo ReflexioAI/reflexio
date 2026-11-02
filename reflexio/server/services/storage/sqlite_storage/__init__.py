@@ -7,7 +7,7 @@ from ._base import (
     _vector_rank_rows,
     parse_status,
 )
-from ._extraction_stream import SQLiteExtractionStreamMixin
+from ._extraction_stream import SQLiteExtractionStreamMixin, SQLiteStreamSQL
 from ._extras import ExtrasMixin
 from ._lineage import SQLiteLineageMixin
 from ._operations import OperationMixin

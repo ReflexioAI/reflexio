@@ -59,10 +59,11 @@ def storage(tmp_path, org_id):
 
 
 @pytest.fixture
-def ctx(storage, org_id) -> RequestContext:
+def ctx(storage, org_id, tmp_path) -> RequestContext:
     context = RequestContext.__new__(RequestContext)
     context.org_id = org_id
     context.storage = storage
+    context.storage_base_dir = str(tmp_path)
     context.configurator = MagicMock()
     context.configurator.get_config.return_value = Config(
         storage_config=StorageConfigSQLite()
@@ -448,7 +449,7 @@ def test_resolve_rejects_an_unexpected_write_result(
         MagicMock(return_value=replace(_call("ptc_1", org_id), **returned)),
     )
     with patch(
-        "reflexio.server.services.extraction.resume_scheduler.wake_resume_schedulers"
+        "reflexio.server.api_endpoints.pending_tool_call_api.wake_extraction"
     ) as wake:
         response = client.post(
             "/api/pending_tool_calls/ptc_1/resolve",

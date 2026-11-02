@@ -24,8 +24,7 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-from reflexio.server.services.extraction.resume_worker import ExtractionResumeWorker
+from reflexio.server.services.durable_learning.worker import DurableLearningWorker
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import (
     AgentBinding,
@@ -127,7 +126,7 @@ def _seed_followup_ready_run(storage: SQLiteStorage) -> None:
             max_steps_remaining=7,
         )
     )
-    now = datetime(2026, 5, 28, tzinfo=UTC)
+    now = datetime.now(UTC)
     question = "What deployment target should be treated as canonical?"
     scope = human_feedback_scope("e2e_resumable_org")
     storage.create_pending_tool_call(
@@ -386,10 +385,8 @@ def test_resumable_extraction_resumes_after_human_answer(
         )
         _seed_interactions(storage)
         _seed_followup_ready_run(storage)
-        worker = ExtractionResumeWorker(
-            request_context=_request_context(storage),
-            llm_client=LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6")),
-        )
+        context = _request_context(storage)
+        worker = DurableLearningWorker(lambda _org: context)
         make_tc, _ = tool_call_completion
         response = make_structured_finish(
             {
@@ -411,7 +408,7 @@ def test_resumable_extraction_resumes_after_human_answer(
             mock_consolidator_cls.return_value.deduplicate.side_effect = (
                 lambda profiles, _user_id, _request_id: (profiles, [], [])
             )
-            resumed = worker.drain(max_runs=1)
+            resumed = worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300)
 
         run = storage.get_agent_run("run_1")
         assert resumed == 1

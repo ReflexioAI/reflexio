@@ -7,6 +7,7 @@ import re
 import time
 import uuid
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
@@ -31,13 +32,14 @@ from reflexio.server.services.base_generation import (
 )
 from reflexio.server.services.deferred_learning_plan import (
     ExtractorBookmarkAdvance,
-    FinalizationResult,
+    ExtractorBookmarkPosition,
     GenerationComputePlan,
 )
 from reflexio.server.services.extractor_config_utils import (
     get_extractor_name,
 )
 from reflexio.server.services.operation_state_utils import OperationStateManager
+from reflexio.server.services.storage.storage_base import AgentRunRecord, LeaseLostError
 
 
 class ExtractorExecutionError(RuntimeError):
@@ -221,6 +223,7 @@ class BaseGenerationService(
             "timed_out": 0,
         }
         self._last_extraction_run_ids: list[str] = []
+        self._last_extraction_run: AgentRunRecord | None = None
         self._last_token_totals: RunTokenTotals | None = None
         # Stride-bookmark advance deferred off the extractor (F1); captured in
         # ``_execute_extractor`` and applied in the persist half of the run.
@@ -311,14 +314,8 @@ class BaseGenerationService(
     def _finalize_extracted_items(
         self,
         items: list,
-        *,
-        finalization_run_id: str | None = None,
     ) -> list[str] | None:
-        """Persist already-flattened extracted items through the service path."""
-        if finalization_run_id is not None:
-            raise NotImplementedError(
-                "Receipt-aware finalization must be implemented by resumable services"
-            )
+        """Apply direct non-agent results; run publication belongs to its publisher."""
         if items:
             self._process_results([items])
         return None
@@ -629,8 +626,8 @@ class BaseGenerationService(
 
         Runs the prepare gate, the extractor (thread-pool LLM tool-loop), and
         dedup + embedding resolution (``_resolve_write_plan``). Agent runs stay
-        non-terminal until receipt-aware persistence commits and
-        ``emit_generation_side_effects`` finalizes them. Snapshots the billing
+        non-terminal until receipt-aware persistence commits their terminal
+        status with the learning writes. Snapshots the billing
         inputs onto the returned plan so emit does not depend on the reused
         instance's mutable ``_last_*``.
 
@@ -675,13 +672,32 @@ class BaseGenerationService(
             },
         )
         self._last_extraction_run_ids = []
+        self._last_extraction_run = None
         self._last_token_totals = None
         self._last_bookmark_advance = None
         self._last_model_provenance = None
         result = self._execute_extractor(prepared.extractor_config, prepared.identifier)
 
         try:
-            write_plan = self._resolve_write_plan([result]) if result else None
+            if (
+                self.EMITS_LEARNING_BILLING
+                and self.storage is not None
+                and self._last_extraction_run is not None
+                and not getattr(self, "_window_id", None)
+            ):
+                from reflexio.server.services.extraction.publication import (
+                    prepare_initial_publication,
+                )
+
+                write_plan = prepare_initial_publication(
+                    self.storage,
+                    self._last_extraction_run,
+                    self,
+                    result,
+                    self._last_bookmark_advance,
+                ).write_plan
+            else:
+                write_plan = self._resolve_write_plan([result]) if result else None
         except Exception as exc:
             self._mark_extraction_runs_finalization_failed(exc)
             raise
@@ -724,19 +740,64 @@ class BaseGenerationService(
             ),
             generation_start=generation_start,
             extraction_run_ids=list(self._last_extraction_run_ids),
+            execution_run=self._last_extraction_run,
             token_totals=self._last_token_totals,
         )
 
     def persist_generation(self, plan: GenerationComputePlan) -> None:
+        """Publish learning, receipt and terminal status under the live claim.
+
+        The caller retains its actual user-work owner through this short unit.
+        Cached business IDs require explicit validated adoption before entering.
+        """
         from reflexio.server.services.durable_learning.user_lease import (
             fence_explicit_extraction,
+            owned_agent_run_write,
         )
 
         if self.storage is None:
             raise RuntimeError("Generation requires storage")
+        run = plan.execution_run
+        if (run is None and plan.extraction_run_ids) or (
+            run is not None and plan.extraction_run_ids != [run.id]
+        ):
+            raise LeaseLostError("Generation did not retain its live execution claim")
+        if (
+            self.EMITS_LEARNING_BILLING
+            and run is not None
+            and not getattr(self, "_window_id", None)
+        ):
+            from reflexio.server.services.extraction.publication import (
+                publish_initial_output,
+            )
+
+            finalized, outcome, published = publish_initial_output(
+                self.storage, run, self
+            )
+            plan.execution_run = finalized
+            plan.finalization_result = outcome
+            plan.write_plan = published.write_plan if published is not None else None
+            self._last_extraction_run = finalized
+            self._last_extraction_run_ids = list(plan.extraction_run_ids)
+            return
         with self.storage.commit_scope():
             fence_explicit_extraction(self.storage)
-            self._persist_generation(plan)
+            with (
+                owned_agent_run_write(self.storage, run)
+                if run is not None
+                else nullcontext()
+            ):
+                self._persist_generation(plan)
+                self._last_extraction_run = run
+                self._last_extraction_run_ids = list(plan.extraction_run_ids)
+                finalized = self._finalize_extraction_runs()
+                if run is not None and finalized is None:
+                    raise LeaseLostError(
+                        "Generation terminal execution revision unavailable"
+                    )
+        if run is not None:
+            plan.execution_run = finalized
+            self._last_extraction_run = finalized
 
     def _persist_generation(self, plan: GenerationComputePlan) -> None:
         """Persist half — apply the write-plan + the extractor bookmark advance.
@@ -752,31 +813,9 @@ class BaseGenerationService(
         atomically with the row writes it corresponds to (F1) — and it is
         applied in exactly one place, so it is never double-applied.
         """
-        if self.EMITS_LEARNING_BILLING and plan.extraction_run_ids:
-            if len(plan.extraction_run_ids) != 1:
-                raise RuntimeError(
-                    "Receipt-aware generation requires exactly one extraction run"
-                )
-            finalization_run_id = plan.extraction_run_ids[0]
-            extraction_run = (
-                self.storage.get_agent_run(finalization_run_id)
-                if self.storage is not None
-                else None
-            )
-            if extraction_run is None:
-                raise RuntimeError(
-                    "Receipt-aware generation extraction run could not be resolved"
-                )
-            # A pending-tool run has not produced its final learning set yet.
-            # Its resume worker must remain free to persist that set and create
-            # the immutable receipt after the tool dependency resolves.
-            if not extraction_run.pending_tool_call_ids:
-                plan.finalization_result = self._finalize_write_plan_with_outcome(
-                    plan.write_plan,
-                    finalization_run_id=finalization_run_id,
-                    bookmark_advance=plan.bookmark_advance,
-                )
-                return
+        # Initial inline agent publication took the owned output adapter above.
+        # Here the actual window caller owns atomic completion and immutable
+        # effects; a run-wide receipt would create a redundant publication owner.
         if plan.write_plan is not None:
             self._persist_write_plan(plan.write_plan)
         self._apply_bookmark_advance(plan.bookmark_advance)
@@ -804,11 +843,6 @@ class BaseGenerationService(
         is exactly as compute left it when emit runs. The plan still snapshots the
         billing inputs so a future durable reuse can re-plumb locally.
         """
-        try:
-            self._finalize_extraction_runs()
-        except Exception as exc:
-            self._mark_extraction_runs_finalization_failed(exc)
-            raise
         if (
             plan.finalization_result is not None
             and not plan.finalization_result.won_receipt
@@ -828,21 +862,16 @@ class BaseGenerationService(
                 ),
             },
         )
-        self._record_billing_learning_events(
-            prepared=plan.prepared, generated_count=plan.billable_count
-        )
-
-    def _finalize_write_plan_with_outcome(
-        self,
-        write_plan: Any,
-        *,
-        finalization_run_id: str,
-        bookmark_advance: ExtractorBookmarkAdvance | None,
-    ) -> FinalizationResult:
-        """Persist one precomputed inline plan through a receipt-aware finalizer."""
-        raise NotImplementedError(
-            "Receipt-aware plan finalization must be implemented by learning services"
-        )
+        if (
+            self.EMITS_LEARNING_BILLING
+            and plan.execution_run is not None
+            and not getattr(self, "_window_id", None)
+        ):
+            self._record_billing_extraction_tokens(prepared=plan.prepared)
+        else:
+            self._record_billing_learning_events(
+                prepared=plan.prepared, generated_count=plan.billable_count
+            )
 
     @abstractmethod
     def _resolve_write_plan(self, results: list) -> Any | None:
@@ -876,7 +905,9 @@ class BaseGenerationService(
         returns ``None`` so ``persist_generation`` never invokes this.
         """
 
-    def _apply_bookmark_advance(self, advance: ExtractorBookmarkAdvance | None) -> None:
+    def _apply_bookmark_advance(
+        self, advance: ExtractorBookmarkAdvance | ExtractorBookmarkPosition | None
+    ) -> None:
         """Apply the deferred extractor stride-bookmark advance (F1).
 
         The extractor emits its bookmark advance on the ``ExtractionOutcome``
@@ -896,6 +927,9 @@ class BaseGenerationService(
         if service_name is None:
             return
         manager = OperationStateManager(self.storage, self.org_id, service_name)
+        if isinstance(advance, ExtractorBookmarkPosition):
+            manager.update_extractor_bookmark_position(advance)
+            return
         manager.update_extractor_bookmark(
             extractor_name=advance.extractor_name,
             processed_interactions=advance.processed_interactions,

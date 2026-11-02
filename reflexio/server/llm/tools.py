@@ -19,11 +19,16 @@ from reflexio.server.llm._litellm_types import (
     completion_metadata,
 )
 from reflexio.server.llm._model_compat import ensure_model_capabilities
+from reflexio.server.llm.compute_admission import (
+    compute_attempt_scope,
+    record_compute_result,
+)
 from reflexio.server.llm.llm_utils import (
     assert_provider_safe_schema,
     make_strict_json_schema,
 )
 from reflexio.server.llm.model_defaults import ModelRole
+from reflexio.server.services.storage.error import execution_input_is_busy
 
 if TYPE_CHECKING:
     from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -145,7 +150,11 @@ class ToolRegistry:
             return _coerce_tool_outcome(tool.handler(args, ctx))
         except ProviderRequestGuardError:
             raise
-        except Exception as e:  # handler errors are recoverable tool-turn errors
+        except (
+            Exception
+        ) as e:  # ordinary handler errors are recoverable tool-turn errors
+            if execution_input_is_busy(e):
+                raise  # contention is scheduler control flow, never model evidence
             logger.exception("tool handler %s failed", name)
             return Completed(result={"error": f"handler error: {type(e).__name__}"})
 
@@ -494,6 +503,7 @@ def _run_multi_stage_fallback(
             response_format=multi_stage_schema,
             model_role=model_role,
         )
+        record_compute_result()
         parsed = completion.value
         latest_provenance = completion.provenance
         if log_label:
@@ -605,6 +615,7 @@ def _log_tool_loop_error(error: Exception) -> None:
         logger.exception("Tool loop raised an unexpected exception")
 
 
+@compute_attempt_scope()
 def run_tool_loop(
     client: LiteLLMClient,
     messages: list[dict[str, Any]],
@@ -728,6 +739,7 @@ def run_tool_loop(
             response_format=fallback_schema,
             model_role=model_role,
         )
+        record_compute_result()
         parsed = completion.value
         provenance = completion.provenance
         if log_label:
@@ -792,6 +804,7 @@ def run_tool_loop(
                 response_format=response_format,
                 structured_output_validator=structured_output_validator,
             )
+            record_compute_result()
             resp = completion.value
             provenance = completion.provenance
             if log_label:
@@ -921,6 +934,8 @@ def run_tool_loop(
                     provenance=provenance,
                 )
     except Exception as error:
+        if execution_input_is_busy(error):
+            raise  # preserve the original cause for the admitted worker's safe yield
         _log_tool_loop_error(error)
         trace.finished = False
         error_type, error_detail = describe_tool_loop_error(error)

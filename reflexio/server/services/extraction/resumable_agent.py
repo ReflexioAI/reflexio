@@ -3,16 +3,25 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass, replace
+from copy import deepcopy
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.server.llm._litellm_types import ModelProvenance
+from reflexio.server.llm.compute_admission import (
+    compute_attempt_scope,
+    record_compute_result,
+    reserve_compute_attempt,
+    retain_compute_result,
+)
 from reflexio.server.llm.input_budget import (
     InputBudgetConfigurationError,
     InputBudgetExceededError,
@@ -26,11 +35,24 @@ from reflexio.server.llm.tools import (
     format_failure_label,
     run_tool_loop,
 )
+from reflexio.server.services.deferred_learning_plan import ExtractorBookmarkPosition
 from reflexio.server.services.extraction.agent_run_records import (
     build_extractor_agent_run_record,
     frozen_extractor_config_identity,
     matches_frozen_extractor_binding,
     matches_frozen_window_binding,
+)
+from reflexio.server.services.extraction.answer_inputs import (
+    answer_input_scope,
+    snapshot_answer_inputs,
+)
+from reflexio.server.services.extraction.history_inputs import (
+    HistoricalInputs,
+    require_historical_inputs,
+)
+from reflexio.server.services.extraction.overflow_answers import (
+    answer_witness,
+    pin_extraction_answer,
 )
 from reflexio.server.services.extraction.pending_tool_admission import (
     pending_tool_calls_disabled_reason as pending_tool_calls_disabled_reason,
@@ -40,17 +62,24 @@ from reflexio.server.services.extraction.pending_tool_admission import (
 )
 from reflexio.server.services.extraction.pending_tool_call_dispatch import (
     PendingToolCallToolContext,
+    bind_pending_tool_execution,
     create_ask_human_tool,
     create_attach_pending_info_request_tool,
 )
 from reflexio.server.services.extraction.prior_answer_search import (
     append_prior_knowledge_context,
 )
+from reflexio.server.services.extraction.publication_receipts import PublicationOrigin
+from reflexio.server.services.extraction.source_inputs import (
+    capture_source_inputs,
+    require_source_inputs,
+)
 from reflexio.server.services.storage.storage_base import (
     AgentRunRecord,
     AgentRunStatus,
     BaseStorage,
     PendingToolCallRecord,
+    build_scope_hash,
 )
 from reflexio.server.usage_metrics import record_usage_event
 
@@ -126,6 +155,7 @@ class AgentRunResult:
     # names the cause instead of a bare "error".
     error_type: str | None = None
     error_detail: str | None = None
+    execution_run: AgentRunRecord | None = field(default=None, repr=False)
 
     @property
     def failure_label(self) -> str:
@@ -256,6 +286,7 @@ def run_resumable_extraction_agent(
     service_config: Any,
     agent_context: str,
     messages: list[dict[str, Any]],
+    history_inputs: HistoricalInputs | None,
     output_schema: type[BaseModel],
     log_label: str,
     structured_output_validator: (Callable[[BaseModel], Sequence[str]] | None) = None,
@@ -294,6 +325,7 @@ def run_resumable_extraction_agent(
                 service_config=service_config,
                 agent_context=agent_context,
                 messages=call.messages,
+                history_inputs=None,  # Actual protected parent owns its historical checkpoint.
                 output_schema=call.schema,
                 log_label=log_label,
                 structured_output_validator=call.validator,
@@ -331,6 +363,7 @@ def run_resumable_extraction_agent(
     window_id = getattr(service_config, "extraction_window_id", None)
     if window_id is not None:
         run = replace(run, id=f"window:{window_id}")
+    prepare_messages: Callable[[], list[dict[str, Any]]] | None = None
     extra_tools: list[Tool] = []
     extra_tool_context = None
     if pending_tools_active and pending_config is not None:
@@ -341,7 +374,8 @@ def run_resumable_extraction_agent(
             # including when a stable snapshot layout makes the hashes equal.
             frozen = parent.generation_request_snapshot["extractor_config"]
             config_identity = frozen_extractor_config_identity(extractor_config, frozen)
-        messages = append_prior_knowledge_context(
+        prepare_messages = partial(
+            append_prior_knowledge_context,
             messages=messages,
             storage=storage,
             org_id=request_context.org_id,
@@ -368,10 +402,40 @@ def run_resumable_extraction_agent(
 
     return ResumableExtractionAgent(client=client, storage=storage).start(
         run=run,
+        publication_origin="initial_window"
+        if window_id is not None
+        else "initial_inline",
+        bookmark_position=ExtractorBookmarkPosition(
+            extractor_kind,
+            [
+                item.interaction_id
+                for group in request_interaction_data_models
+                for item in group.interactions
+            ],
+            max(
+                (
+                    item.created_at
+                    for group in request_interaction_data_models
+                    for item in group.interactions
+                    if item.created_at is not None
+                ),
+                default=None,
+            ),
+            user_id,
+        )
+        if window_id is None
+        else None,
+        source_inputs=(
+            capture_source_inputs(storage, run, request_interaction_data_models)
+            if coordinator is None
+            else None
+        ),
         frozen_extractor_config=getattr(
             service_config, "frozen_extractor_config", None
         ),
         messages=messages,
+        history_inputs=history_inputs,
+        prepare_messages=prepare_messages,
         output_schema=output_schema,
         extra_tools=extra_tools,
         extra_tool_context=extra_tool_context,
@@ -448,12 +512,17 @@ class ResumableExtractionAgent:
         self,
         *,
         run: AgentRunRecord,
+        publication_origin: PublicationOrigin = "initial_inline",
+        bookmark_position: ExtractorBookmarkPosition | None = None,
         frozen_extractor_config: dict[str, Any] | None = None,
         messages: list[dict[str, Any]],
+        history_inputs: HistoricalInputs | None,
         output_schema: type[BaseModel],
+        source_inputs: dict[str, Any] | None = None,
         extra_tools: list[Tool] | None = None,
         extra_tool_context: Any | None = None,
         log_label: str | None = None,
+        prepare_messages: Callable[[], list[dict[str, Any]]] | None = None,
         structured_output_validator: (
             Callable[[BaseModel], Sequence[str]] | None
         ) = None,
@@ -468,6 +537,8 @@ class ResumableExtractionAgent:
 
         coordinator = current_overflow_coordinator.get()
         if coordinator is not None and current_overflow_presentation.get() is not None:
+            if prepare_messages is not None:
+                messages = prepare_messages()
             return self._start_overflow_step(
                 run=run,
                 messages=messages,
@@ -477,93 +548,135 @@ class ResumableExtractionAgent:
                 log_label=log_label,
                 structured_output_validator=structured_output_validator,
             )
-        run = replace(
-            run,
-            max_steps_remaining=(
-                self.max_steps
-                if run.max_steps_remaining is None
-                else min(run.max_steps_remaining, self.max_steps)
-            ),
+        from reflexio.server.services.durable_learning.user_lease import (
+            adopt_agent_run_for_execution,
+            agent_run_user_work,
+            create_owned_agent_run,
+            owned_agent_run_write,
         )
-        existing = (
-            self.storage.get_agent_run(run.id) if run.id.startswith("window:") else None
-        )
-        if existing is not None:
-            if existing.binding != run.binding:
-                if (
-                    frozen_extractor_config is None
-                    or not matches_frozen_extractor_binding(
-                        existing, run, frozen_extractor_config
-                    )
-                ):
-                    prior_fields = asdict(existing.binding)
-                    current_fields = asdict(run.binding)
-                    logging.getLogger("reflexio.ops").warning(
-                        "event=extraction_binding_rejected run_id=%s changed_fields=%s",
-                        existing.id,
-                        ",".join(
-                            name
-                            for name in prior_fields
-                            if prior_fields[name] != current_fields[name]
-                        ),
-                    )
-                    raise RuntimeError("Extraction window agent binding changed")
-                logging.getLogger("reflexio.ops").info(
-                    "event=extraction_binding_schema_compatible run_id=%s", existing.id
-                )
-            # Keep the admitted hash, snapshots and pending dependencies for
-            # both cache replay and failed/running continuation.
-            fresh_budget = run.max_steps_remaining
-            run = existing
-            if existing.committed_output is not None:
-                payload, provenance = decode_committed_output(existing.committed_output)
-                return AgentRunResult(
-                    run_id=existing.id,
-                    output=output_schema.model_validate(payload),
-                    pending_tool_call_ids=existing.pending_tool_call_ids,
-                    messages=[],
-                    trace=ToolLoopTrace.model_validate(
-                        existing.committed_output.get("trace", {"finished": True})
-                    ),
-                    finished_reason="structured_output",
-                    model_provenance=provenance,
-                )
-            if existing.status not in (AgentRunStatus.RUNNING, AgentRunStatus.FAILED):
-                raise RuntimeError("Extraction window agent awaits resolution")
-            # No durable output exists: a crash may require repeating a remote
-            # call. Reuse its stable run identity; the first saved output wins.
-            # The step budget is NOT continuation state here: this path keeps no
-            # conversation, so the attempt restarts from the seed prompt. A
-            # failed (or crashed) attempt stores 0 remaining, and reusing it
-            # would run zero model turns and fail with max_steps on every retry.
-            run = replace(run, max_steps_remaining=fresh_budget)
-            self.storage.update_agent_run_status(
-                run.id,
-                AgentRunStatus.RUNNING,
-                max_steps_remaining=fresh_budget,
-                expected_statuses=(AgentRunStatus.RUNNING, AgentRunStatus.FAILED),
+        from reflexio.server.services.storage.storage_base import LeaseLostError
+
+        with (
+            answer_input_scope(self.storage, run.id),
+            agent_run_user_work(self.storage, run),
+        ):
+            run = replace(
+                run,
+                max_steps_remaining=(
+                    self.max_steps
+                    if run.max_steps_remaining is None
+                    else min(run.max_steps_remaining, self.max_steps)
+                ),
             )
-        else:
-            self.storage.create_agent_run(run)
-        logger.info(
-            "event=extraction_agent_started org_id=%s user_id=%s extractor_kind=%s "
-            "run_id=%s request_id=%s",
-            run.binding.org_id,
-            run.binding.user_id,
-            run.binding.extractor_kind,
-            run.id,
-            run.binding.request_id,
-        )
-        _record_agent_usage_event(run=run, event_name="extraction_agent_started")
-        return self._run(
-            run=run,
-            messages=messages,
-            output_schema=output_schema,
-            extra_tools=extra_tools,
-            extra_tool_context=extra_tool_context,
-            log_label=log_label,
-            structured_output_validator=structured_output_validator,
-        )
+            existing = (
+                self.storage.get_agent_run(run.id)
+                if run.id.startswith("window:")
+                else None
+            )
+            fresh_budget = run.max_steps_remaining
+            if existing is not None:
+                if existing.binding != run.binding:
+                    if (
+                        frozen_extractor_config is None
+                        or not matches_frozen_extractor_binding(
+                            existing, run, frozen_extractor_config
+                        )
+                    ):
+                        prior_fields = asdict(existing.binding)
+                        current_fields = asdict(run.binding)
+                        logging.getLogger("reflexio.ops").warning(
+                            "event=extraction_binding_rejected run_id=%s changed_fields=%s",
+                            existing.id,
+                            ",".join(
+                                name
+                                for name in prior_fields
+                                if prior_fields[name] != current_fields[name]
+                            ),
+                        )
+                        raise RuntimeError("Extraction window agent binding changed")
+                    logging.getLogger("reflexio.ops").info(
+                        "event=extraction_binding_schema_compatible run_id=%s",
+                        existing.id,
+                    )
+                # Keep the admitted hash, snapshots and pending dependencies for
+                # both cache replay and failed/running continuation.
+                existing = adopt_agent_run_for_execution(self.storage, existing)
+                run = existing
+                if existing.committed_output is not None:
+                    payload, provenance = decode_committed_output(
+                        existing.committed_output
+                    )
+                    return AgentRunResult(
+                        run_id=existing.id,
+                        output=output_schema.model_validate(payload),
+                        pending_tool_call_ids=existing.pending_tool_call_ids,
+                        messages=[],
+                        trace=ToolLoopTrace.model_validate(
+                            existing.committed_output.get("trace", {"finished": True})
+                        ),
+                        finished_reason="structured_output",
+                        model_provenance=provenance,
+                        execution_run=existing,
+                    )
+                if existing.status not in (
+                    AgentRunStatus.RUNNING,
+                    AgentRunStatus.FAILED,
+                ):
+                    raise RuntimeError("Extraction window agent awaits resolution")
+            require_source_inputs(source_inputs, run)
+            if prepare_messages is not None:
+                messages = prepare_messages()
+            if existing is not None:
+                # No durable output exists: a crash may require repeating a remote
+                # call. Reuse its stable run identity; the first saved output wins.
+                # The step budget is NOT continuation state here: this path keeps no
+                # conversation, so the attempt restarts from the seed prompt. A
+                # failed (or crashed) attempt stores 0 remaining, and reusing it
+                # would run zero model turns and fail with max_steps on every retry.
+                run = replace(run, max_steps_remaining=fresh_budget)
+                with owned_agent_run_write(self.storage, run):
+                    updated = self.storage.update_agent_run_status(
+                        run.id,
+                        AgentRunStatus.RUNNING,
+                        max_steps_remaining=fresh_budget,
+                        expected_statuses=(
+                            AgentRunStatus.RUNNING,
+                            AgentRunStatus.FAILED,
+                        ),
+                        expected_claimed_by=run.claimed_by,
+                        expected_claimed_at=run.claimed_at,
+                    )
+                    if updated is None:
+                        raise LeaseLostError(
+                            "Extraction restart lost its adopted revision"
+                        )
+                    run = updated
+            else:
+                run = create_owned_agent_run(self.storage, run)
+            logger.info(
+                "event=extraction_agent_started org_id=%s user_id=%s extractor_kind=%s "
+                "run_id=%s request_id=%s",
+                run.binding.org_id,
+                run.binding.user_id,
+                run.binding.extractor_kind,
+                run.id,
+                run.binding.request_id,
+            )
+            _record_agent_usage_event(run=run, event_name="extraction_agent_started")
+            return self._run(
+                run=run,
+                publication_origin=publication_origin,
+                bookmark_position=bookmark_position,
+                source_inputs=source_inputs,
+                messages=messages,
+                history_inputs=history_inputs,
+                output_schema=output_schema,
+                dependency_inputs={},
+                extra_tools=extra_tools,
+                extra_tool_context=extra_tool_context,
+                log_label=log_label,
+                structured_output_validator=structured_output_validator,
+            )
 
     def _start_overflow_step(
         self,
@@ -671,6 +784,7 @@ class ResumableExtractionAgent:
                 trace=ToolLoopTrace.model_validate(payload["trace"]),
                 finished_reason="structured_output",
                 model_provenance=ModelProvenance(**saved["model_provenance"]),
+                execution_run=coordinator.saved_run,
             )
         if cache_only:
             raise InputBudgetConfigurationError("Profile package child is unfinished")
@@ -741,13 +855,22 @@ class ResumableExtractionAgent:
                 if preparation is not None
                 else nullcontext()
             ) as attempts:
+                execution_run = coordinator.saved_run
+                if execution_run is None:
+                    raise InputBudgetConfigurationError(
+                        "Pending tools require the admitted overflow parent"
+                    )
                 result = run_tool_loop(
                     client=self.client,
                     messages=current_messages,
                     registry=registry,
                     model_role=self.model_role,
                     max_steps=1,
-                    ctx=extra_tool_context,
+                    ctx=bind_pending_tool_execution(
+                        extra_tool_context,
+                        storage=self.storage,
+                        run=execution_run,
+                    ),
                     response_format=output_schema,
                     structured_output_validator=structured_output_validator,
                     tool_choice="auto",
@@ -814,6 +937,7 @@ class ResumableExtractionAgent:
             trace=trace,
             finished_reason=result.finished_reason,
             model_provenance=result.provenance,
+            execution_run=coordinator.saved_run,
         )
 
     def resume(
@@ -821,8 +945,11 @@ class ResumableExtractionAgent:
         *,
         run: AgentRunRecord,
         messages: list[dict[str, Any]],
+        history_inputs: HistoricalInputs | None,
         output_schema: type[BaseModel],
+        source_inputs: dict[str, Any] | None = None,
         resolved_tool_calls: list[PendingToolCallRecord],
+        before_model: Callable[[AgentRunRecord], AgentRunRecord] | None = None,
         extra_tools: list[Tool] | None = None,
         extra_tool_context: Any | None = None,
         log_label: str | None = None,
@@ -831,42 +958,75 @@ class ResumableExtractionAgent:
         ) = None,
     ) -> AgentRunResult:
         """Resume a claimed run with resolved async tool results in context."""
-        logger.info(
-            "event=extraction_agent_resumed org_id=%s user_id=%s extractor_kind=%s "
-            "run_id=%s request_id=%s resolved_tool_calls=%d",
-            run.binding.org_id,
-            run.binding.user_id,
-            run.binding.extractor_kind,
-            run.id,
-            run.binding.request_id,
-            len(resolved_tool_calls),
-        )
-        _record_agent_usage_event(
-            run=run,
-            event_name="extraction_agent_resumed",
-            count_value=len(resolved_tool_calls),
-            metadata={"resolved_tool_calls": len(resolved_tool_calls)},
-        )
-        resumed_messages = append_resolved_tool_result_context(
-            messages,
-            resolved_tool_calls,
-        )
-        return self._run(
-            run=run,
-            messages=resumed_messages,
-            output_schema=output_schema,
-            extra_tools=extra_tools,
-            extra_tool_context=extra_tool_context,
-            log_label=log_label,
-            structured_output_validator=structured_output_validator,
+        from reflexio.server.services.durable_learning.user_lease import (
+            adopt_agent_run_for_execution,
+            agent_run_user_work,
         )
 
+        with (
+            answer_input_scope(self.storage, run.id),
+            agent_run_user_work(self.storage, run),
+        ):
+            run = adopt_agent_run_for_execution(self.storage, run)
+            # Refuse missing/incomplete source proof before charging an attempt.
+            require_source_inputs(source_inputs, run)
+            logger.info(
+                "event=extraction_agent_resumed org_id=%s user_id=%s extractor_kind=%s "
+                "run_id=%s request_id=%s resolved_tool_calls=%d",
+                run.binding.org_id,
+                run.binding.user_id,
+                run.binding.extractor_kind,
+                run.id,
+                run.binding.request_id,
+                len(resolved_tool_calls),
+            )
+            _record_agent_usage_event(
+                run=run,
+                event_name="extraction_agent_resumed",
+                count_value=len(resolved_tool_calls),
+                metadata={"resolved_tool_calls": len(resolved_tool_calls)},
+            )
+            # Snapshot supplied inputs before provider work, rather than the
+            # answers that happen to be resolved when that work completes.
+            # Normalize full answer qualifiers without copying its text again.
+            for record in resolved_tool_calls:
+                pin_extraction_answer(record)
+            dependency_inputs = {
+                record.id: build_scope_hash(answer_witness(asdict(record)))
+                for record in resolved_tool_calls
+            }
+            resumed_messages = append_resolved_tool_result_context(
+                messages,
+                resolved_tool_calls,
+            )
+            return self._run(
+                run=run,
+                publication_origin="resume",
+                source_inputs=source_inputs,
+                messages=resumed_messages,
+                history_inputs=history_inputs,
+                before_model=before_model,
+                output_schema=output_schema,
+                dependency_inputs=dependency_inputs,
+                extra_tools=extra_tools,
+                extra_tool_context=extra_tool_context,
+                log_label=log_label,
+                structured_output_validator=structured_output_validator,
+            )
+
+    @compute_attempt_scope()
     def _run(
         self,
         *,
         run: AgentRunRecord,
+        publication_origin: PublicationOrigin = "initial_inline",
+        bookmark_position: ExtractorBookmarkPosition | None = None,
         messages: list[dict[str, Any]],
+        history_inputs: HistoricalInputs | None,
         output_schema: type[BaseModel],
+        source_inputs: dict[str, Any] | None = None,
+        dependency_inputs: dict[str, str],
+        before_model: Callable[[AgentRunRecord], AgentRunRecord] | None = None,
         extra_tools: list[Tool] | None = None,
         extra_tool_context: Any | None = None,
         log_label: str | None = None,
@@ -874,6 +1034,17 @@ class ResumableExtractionAgent:
             Callable[[BaseModel], Sequence[str]] | None
         ) = None,
     ) -> AgentRunResult:
+        captured_bookmark = deepcopy(bookmark_position)
+        captured_sources = deepcopy(source_inputs)
+        require_source_inputs(captured_sources, run)
+        captured_history = require_historical_inputs(history_inputs)
+        if captured_history.profiles or captured_history.playbooks:
+            self.storage.validate_agent_history_inputs(
+                run, captured_history.profiles, captured_history.playbooks
+            )
+        reserve_compute_attempt()
+        if before_model is not None:
+            run = before_model(run)
         max_steps = self.max_steps
         if run.max_steps_remaining is not None:
             max_steps = min(max_steps, max(0, run.max_steps_remaining))
@@ -892,6 +1063,9 @@ class ResumableExtractionAgent:
         # async-info tool handlers read ctx via getattr(ctx, "extra_tool_context",
         # ctx), so the bare context object can be passed directly.
         registry = ToolRegistry(list(extra_tools or []))
+        extra_tool_context = bind_pending_tool_execution(
+            extra_tool_context, storage=self.storage, run=run
+        )
         result = run_tool_loop(
             client=self.client,
             messages=messages,
@@ -904,6 +1078,7 @@ class ResumableExtractionAgent:
             tool_choice="auto",
             log_label=log_label,
         )
+        record_compute_result()
 
         output = result.structured_output
         committed_output = (
@@ -920,27 +1095,51 @@ class ResumableExtractionAgent:
         # loaded) a NEW claim puts it back in RESUMING, and a status-only write
         # would let this stale worker overwrite it. A fenced write that matches
         # nothing returns None, which the late-output branch below discards.
-        claim_fence: dict[str, Any] = (
-            {
-                "expected_claimed_by": run.claimed_by,
-                "expected_claimed_at": run.claimed_at,
-            }
-            if run.status == AgentRunStatus.RESUMING and run.claimed_by is not None
-            else {}
+        from reflexio.server.services.durable_learning.user_lease import (
+            owned_agent_run_write,
         )
+        from reflexio.server.services.storage.storage_base import LeaseLostError
+
+        claim_fence: dict[str, Any] = {
+            "expected_claimed_by": run.claimed_by,
+            "expected_claimed_at": run.claimed_at,
+        }
         if (
             result.finished_reason == "structured_output"
             and committed_output is not None
         ):
-            stored_run = self.storage.update_agent_run_status(
-                run.id,
-                AgentRunStatus.AGENT_COMPLETED,
-                committed_output=committed_output,
-                pending_tool_call_ids=result.pending_tool_call_ids,
-                max_steps_remaining=result.max_steps_remaining,
-                expected_statuses=active_statuses,
-                **claim_fence,
-            )
+            # Identity belongs to this output, not its conversation or owner.
+            # Saved-output adoption/replay returns without minting an ID.
+            # These input digests are evidence, never execution authority.
+            committed_output["publication"] = {
+                "id": uuid.uuid4().hex,
+                "origin": publication_origin,
+                "bookmark": asdict(captured_bookmark)
+                if captured_bookmark is not None
+                else None,
+                "dependency_inputs": dict(dependency_inputs),
+                "answer_inputs": snapshot_answer_inputs(self.storage, run.id),
+                "source_inputs": captured_sources,
+                "history_inputs": asdict(captured_history),
+            }
+            try:
+                with self.storage.agent_completion_input_scope(
+                    run,
+                    committed_output,
+                    captured_history.profiles,
+                    captured_history.playbooks,
+                ) as admitted_output:
+                    stored_run = self.storage.update_agent_run_status(
+                        run.id,
+                        AgentRunStatus.AGENT_COMPLETED,
+                        committed_output=admitted_output,
+                        pending_tool_call_ids=result.pending_tool_call_ids,
+                        max_steps_remaining=result.max_steps_remaining,
+                        expected_statuses=active_statuses,
+                        **claim_fence,
+                    )
+            except LeaseLostError:
+                stored_run = None
             if (
                 stored_run is None
                 or stored_run.status != AgentRunStatus.AGENT_COMPLETED
@@ -965,6 +1164,7 @@ class ResumableExtractionAgent:
                     finished_reason="late_output_discarded",
                     model_provenance=None,
                 )
+            retain_compute_result()
             logger.info(
                 "event=extraction_agent_finished org_id=%s user_id=%s "
                 "extractor_kind=%s run_id=%s request_id=%s "
@@ -987,14 +1187,18 @@ class ResumableExtractionAgent:
             )
         else:
             last_error = f"Extraction agent did not finish: {result.failure_label}"
-            stored_run = self.storage.update_agent_run_status(
-                run.id,
-                AgentRunStatus.FAILED,
-                max_steps_remaining=result.max_steps_remaining,
-                last_error=last_error,
-                expected_statuses=active_statuses,
-                **claim_fence,
-            )
+            try:
+                with owned_agent_run_write(self.storage, run):
+                    stored_run = self.storage.update_agent_run_status(
+                        run.id,
+                        AgentRunStatus.FAILED,
+                        max_steps_remaining=result.max_steps_remaining,
+                        last_error=last_error,
+                        expected_statuses=active_statuses,
+                        **claim_fence,
+                    )
+            except LeaseLostError:
+                stored_run = None
             # A losing claim cannot establish a terminal failure of the run
             # now owned by another worker. Keep its discarded attempt diagnostic.
             logger.warning(
@@ -1036,4 +1240,5 @@ class ResumableExtractionAgent:
             model_provenance=result.provenance,
             error_type=result.error_type,
             error_detail=result.error_detail,
+            execution_run=stored_run,
         )

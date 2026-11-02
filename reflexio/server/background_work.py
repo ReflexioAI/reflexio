@@ -275,3 +275,62 @@ def report_background_failure(
         context,
         stacklevel=2,
     )
+
+
+# Half the idle reset: a retry lands after the interval PLUS the tick's own
+# run time, so the margin keeps a just-within-bound interval escalating.
+SLOW_RETRY_SECONDS = _STREAK_IDLE_RESET_SECONDS / 2
+
+
+def report_failure_at_interval(
+    logger: logging.Logger,
+    event: str,
+    exc: BaseException,
+    *,
+    scope: str,
+    interval_seconds: float | None,
+    detail: Callable[[BaseException], str] | None = None,
+    **fields: object,
+) -> bool:
+    """Report a caught background failure, given how soon it is retried.
+
+    Args:
+        logger (logging.Logger): The worker's own logger.
+        event (str): The worker's event name.
+        exc (BaseException): The caught failure.
+        scope (str): The policy scope, as for ``report_background_failure``.
+        interval_seconds (float | None): The effective interval before the failed
+            work is retried, or None when no future retry is promised.
+        detail (Callable[[BaseException], str] | None): Value-free renderer,
+            as for ``report_background_failure``.
+        **fields (object): Extra ``key=value`` context for the log line.
+
+    Returns:
+        bool: True when no retry is promised or the interval exceeds
+            :data:`SLOW_RETRY_SECONDS`. The failure is logged directly at ERROR
+            with ``retry_promised=false`` or ``slow_retry=true`` respectively;
+            callers choosing a capture level should treat it as an error.
+    """
+    if interval_seconds is not None and interval_seconds <= SLOW_RETRY_SECONDS:
+        report_background_failure(
+            logger, event, exc, scope=scope, detail=detail, **fields
+        )
+        return False
+    context = "".join(f" {key}={value}" for key, value in fields.items())
+    rendered = f" {detail(exc)}" if detail is not None else ""
+    retry_context = (
+        "retry_promised=false"
+        if interval_seconds is None
+        else f"slow_retry=true interval_seconds={int(interval_seconds)}"
+    )
+    logger.error(
+        "event=%s %s scope=%s%s%s",
+        event,
+        retry_context,
+        scope,
+        rendered,
+        context,
+        exc_info=None if detail is not None else exc,
+        stacklevel=2,
+    )
+    return True

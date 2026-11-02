@@ -12,7 +12,6 @@ from typing import Any
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     Header,
     HTTPException,
@@ -31,10 +30,7 @@ from reflexio.server.api_endpoints.request_context import (
     RequestContext,
     get_request_context,
 )
-from reflexio.server.services.extraction.resumable_agent import (
-    pending_tool_calls_enabled,
-)
-from reflexio.server.services.extraction.resume_worker import ExtractionResumeWorker
+from reflexio.server.services.durable_learning.local import wake_extraction
 from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.storage_base import (
     BaseStorage,
@@ -100,13 +96,6 @@ def _reload_resolved_record_after_write_conflict(
         status_code=409,
         detail=f"Pending tool call is {latest.status.value}",
     )
-
-
-def _drain_resumable_followups(ctx: RequestContext) -> None:
-    if not pending_tool_calls_enabled(ctx):
-        return
-    worker = ExtractionResumeWorker(request_context=ctx)
-    worker.drain()
 
 
 def _is_missing_pending_tool_call_storage_error(exc: StorageError) -> bool:
@@ -238,7 +227,6 @@ async def resolve_pending_tool_call(
     pending_tool_call_id: str,
     request: Request,
     payload: ResolvePendingToolCallRequest,
-    background_tasks: BackgroundTasks,
     x_reflexio_signature: str | None = Header(default=None),
     x_reflexio_timestamp: str | None = Header(default=None),
     ctx: RequestContext = Depends(get_request_context),
@@ -316,11 +304,6 @@ async def resolve_pending_tool_call(
             status_code=409,
             detail="Pending tool call already resolved with a different result",
         )
-    from reflexio.server.services.extraction.resume_scheduler import (
-        wake_resume_schedulers,
-    )
-
-    wake_resume_schedulers()
     logger.info(
         "event=pending_tool_call_resolved org_id=%s user_id=%s "
         "pending_tool_call_id=%s tool_name=%s",
@@ -340,7 +323,7 @@ async def resolve_pending_tool_call(
             "tool_name": record.tool_name,
         },
     )
-    background_tasks.add_task(_drain_resumable_followups, ctx)
+    wake_extraction(ctx)
     return PendingToolCallResponse.from_record(resolved)
 
 
@@ -349,7 +332,6 @@ async def update_pending_tool_call_answer(
     pending_tool_call_id: str,
     request: Request,
     payload: UpdatePendingToolCallAnswerRequest,
-    background_tasks: BackgroundTasks,
     x_reflexio_signature: str | None = Header(default=None),
     x_reflexio_timestamp: str | None = Header(default=None),
     ctx: RequestContext = Depends(get_request_context),
@@ -437,7 +419,7 @@ async def update_pending_tool_call_answer(
             "tool_name": record.tool_name,
         },
     )
-    background_tasks.add_task(_drain_resumable_followups, ctx)
+    wake_extraction(ctx)
     return PendingToolCallResponse.from_record(updated)
 
 
@@ -449,7 +431,6 @@ async def mark_pending_tool_call_not_applicable(
     pending_tool_call_id: str,
     request: Request,
     payload: MarkPendingToolCallNotApplicableRequest,
-    background_tasks: BackgroundTasks,
     x_reflexio_signature: str | None = Header(default=None),
     x_reflexio_timestamp: str | None = Header(default=None),
     ctx: RequestContext = Depends(get_request_context),
@@ -528,7 +509,7 @@ async def mark_pending_tool_call_not_applicable(
             "tool_name": record.tool_name,
         },
     )
-    background_tasks.add_task(_drain_resumable_followups, ctx)
+    wake_extraction(ctx)
     return PendingToolCallResponse.from_record(updated)
 
 

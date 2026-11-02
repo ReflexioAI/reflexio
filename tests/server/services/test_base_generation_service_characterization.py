@@ -111,7 +111,6 @@ _CONTRACT_NAMES = (
     "EMITS_LEARNING_BILLING",
     # extraction-run lifecycle
     "_execute_extractor",
-    "_fail_active_extraction_runs",
     "_finalize_extraction_runs",
     "_mark_extraction_runs_finalization_failed",
     # should-run precheck

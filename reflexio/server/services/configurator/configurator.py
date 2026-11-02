@@ -68,6 +68,34 @@ class DefaultConfigurator(BaseConfigurator):
         StorageConfigSQLite: lambda _: True,  # db_path defaults via env var if None
     }
 
+    @classmethod
+    def validate_storage_upgrade(
+        cls,
+        document: dict[str, Any],
+        *,
+        org_id: str,
+        base_dir: str | None,
+    ) -> None:
+        """Check the real local storage target before incompatible file writes."""
+        raw = document.get("storage_config")
+        if raw is None:
+            return
+        if not isinstance(raw, dict) or raw.get("type", "sqlite") != "sqlite":
+            raise ValueError(
+                "Native storage admission requires its deployment's configurator; original local configuration was not upgraded"
+            )
+        try:
+            config = StorageConfigSQLite.model_validate(raw)
+        except ValueError:
+            raise ValueError(
+                "SQLite storage target is invalid; original local configuration was not upgraded"
+            ) from None
+        from reflexio.server.services.storage.sqlite_storage._publication_receipts import (
+            validate_publication_cutover,
+        )
+
+        validate_publication_cutover(org_id, db_path=config.db_path, base_dir=base_dir)
+
     def _select_config_storage(
         self, org_id: str, base_dir: str | None
     ) -> ConfigStorage:

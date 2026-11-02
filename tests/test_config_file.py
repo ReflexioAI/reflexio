@@ -942,3 +942,102 @@ def test_current_preparation_edit_retains_noop_bytes_and_accepts_nested_edits(tm
     assert owner.prepare(edit=change) is True
     assert owner.read_document()["storage_config"]["db_path"] == "selected.sqlite"
     assert not (tmp_path / ".config-migrations").exists()
+
+
+@pytest.mark.parametrize("version", [0, 10])
+@pytest.mark.parametrize("ttl", [60, 1800])
+def test_single_owner_preparation_retires_only_timing_and_preserves_original(
+    tmp_path, version, ttl
+):
+    path = tmp_path / "config.json"
+    payload = {
+        "storage_config": None,
+        "pending_tool_call_config": {
+            "enabled": False,
+            "resume_poll_interval_seconds": 0.25,
+            "resume_claim_ttl_seconds": ttl,
+            "max_resume_attempts": 7,
+            "hmac_secrets": ["synthetic-signing-secret"],
+            "opaque_extension": {"unchanged": [False, 17]},
+        },
+        "opaque_root": {"unchanged": "retained"},
+    }
+    if version:
+        payload["_reflexio_config_file"] = {"version": version}
+    original = json.dumps(payload).encode()
+    path.write_bytes(original)
+    owner = LocalConfigFile(path)
+    assert owner.prepare()
+    expected = {
+        key: value for key, value in payload.items() if key != "_reflexio_config_file"
+    }
+    expected["pending_tool_call_config"] = {
+        key: value
+        for key, value in payload["pending_tool_call_config"].items()
+        if key not in {"resume_poll_interval_seconds", "resume_claim_ttl_seconds"}
+    }
+    assert owner.read_document() == expected
+    assert json.loads(path.read_text())["_reflexio_config_file"]["version"] == 11
+    digest = hashlib.sha256(original).hexdigest()
+    assert (
+        tmp_path / ".config-migrations/config.json" / f"{digest}.json"
+    ).read_bytes() == original
+    published = path.read_bytes()
+    assert not owner.prepare()
+    assert path.read_bytes() == published
+
+
+@pytest.mark.parametrize("value", [None, 0, "PRIVATE_INVALID"])
+def test_invalid_historical_timing_never_stamps_or_rewrites_file(tmp_path, value):
+    path = tmp_path / "config.json"
+    original = json.dumps(
+        {
+            "_reflexio_config_file": {"version": 10},
+            "storage_config": None,
+            "pending_tool_call_config": {
+                "enabled": False,
+                "resume_claim_ttl_seconds": value,
+            },
+        }
+    ).encode()
+    path.write_bytes(original)
+    with pytest.raises(ValueError, match="resume_claim_ttl_seconds") as failure:
+        LocalConfigFile(path).prepare()
+    assert "PRIVATE_INVALID" not in str(failure.value)
+    assert path.read_bytes() == original
+    assert not (tmp_path / ".config-migrations").exists()
+
+
+def test_generation_11_is_strict_and_generation_10_reader_cannot_rejoin(tmp_path):
+    import re
+    import runpy
+
+    decoder = runpy.run_path(
+        str(Path(__file__).parent / "fixtures/config_file_v10_reader.txt"),
+        init_globals={
+            "FILE_FORMAT_VERSION": 10,
+            "_METADATA_KEY": "_reflexio_config_file",
+            "decode_config_document": decode_config_document,
+            "StoredConfigurationError": StoredConfigurationError,
+            "re": re,
+        },
+    )["_decode"]
+    path = tmp_path / "config.json"
+    original = b'{"_reflexio_config_file":{"version":10},"storage_config":null,"pending_tool_call_config":{"enabled":false,"resume_claim_ttl_seconds":1800}}'
+    assert decoder(original)[1]["version"] == 10
+    path.write_bytes(original)
+    assert LocalConfigFile(path).prepare()
+    current = path.read_bytes()
+    with pytest.raises(
+        StoredConfigurationError,
+        match="Unrecognized local configuration file generation",
+    ):
+        decoder(current)
+    assert path.read_bytes() == current
+    invalid_current = json.loads(current)
+    invalid_current["pending_tool_call_config"]["resume_claim_ttl_seconds"] = 600
+    path.write_text(json.dumps(invalid_current))
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="pending_tool_call_config"):
+        LocalConfigFile(path).prepare()
+    assert path.read_bytes() == before

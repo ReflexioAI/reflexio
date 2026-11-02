@@ -5,6 +5,9 @@ There is NO storage contract suite that touches agent_run, so these are the
 primary safety net for the zero-coverage methods and the Style-B transaction
 atomicity invariant.
 
+The owner-adoption regression follows the current shared owner; the retired
+queue claim-age selector is not recreated as a test facade.
+
 Each test is written to be NON-VACUOUS: the module docstring on each test names
 the specific guard/commit/rollback/cascade whose removal makes the test fail.
 """
@@ -521,23 +524,21 @@ def test_list_pending_tool_calls_filters_clamps_and_orders(storage):
 
 
 # ---------------------------------------------------------------------------
-# 8. claim_ready_agent_run compare-and-set (RESUMING status guard, isolated)
+# 8. Actual-parent liveness and exact run-revision compare-and-set
 # ---------------------------------------------------------------------------
 
 
-def test_claim_ready_agent_run_resuming_status_guard_is_compare_and_set(storage):
-    """Two sequential claims on one ready run: the first flips RESUME_READY ->
-    RESUMING; the second returns None SOLELY because of the RESUMING status
-    guard (we never consume the dependency, so the actionable-dependency EXISTS
-    clause still holds — this isolates the status CAS from the consume guard).
-    A RESUMING run older than the claim TTL is re-claimable.
+@pytest.mark.parametrize("logical_age_seconds", [0, 86400])
+def test_owned_run_revision_cas_and_parent_liveness_replace_claim_age(
+    storage, logical_age_seconds
+):
+    """Even tied revision times retain the logical claim identity guard.
 
-    Non-vacuous: if the `status = RESUMING AND claimed_at < stale` staleness
-    predicate were widened to always re-admit RESUMING, the second (fresh) claim
-    would succeed instead of returning None.
+    An old logical timestamp cannot steal a live real owner. Once that owner
+    releases, recovery is eligible immediately, without an extra grace period.
     """
-    now = datetime(2026, 5, 28, tzinfo=UTC)
-    storage.create_agent_run(_run("run_1", AgentRunStatus.RESUME_READY))
+    now = datetime.now(UTC)
+    original = storage.create_agent_run(_run("run_1", AgentRunStatus.RESUME_READY))
     storage.create_pending_tool_call(_pending("ptc_1", now=now))
     storage.attach_run_tool_dependency(
         RunToolDependencyRecord(run_id="run_1", pending_tool_call_id="ptc_1")
@@ -545,24 +546,65 @@ def test_claim_ready_agent_run_resuming_status_guard_is_compare_and_set(storage)
     storage.resolve_pending_tool_call(
         "ptc_1", result={"answer": "AWS ECS"}, resolved_at=now, valid_for_seconds=3600
     )
-
-    first = storage.claim_ready_agent_run(org_id="org_1", worker_id="worker_1", now=now)
-    # Second claim WITHOUT consuming: the only thing blocking it is the status.
-    second = storage.claim_ready_agent_run(
-        org_id="org_1", worker_id="worker_2", now=now
-    )
-    # Once the RESUMING claim is stale (past the TTL) it is re-claimable.
-    stale_now = now + timedelta(seconds=700)
-    third = storage.claim_ready_agent_run(
-        org_id="org_1", worker_id="worker_3", now=stale_now, claim_ttl_seconds=600
-    )
-
-    assert first is not None
-    assert first.status == AgentRunStatus.RESUMING
-    assert first.claimed_by == "worker_1"
-    assert first.resume_attempts == 0
-    assert second is None
-    assert third is not None
-    assert third.status == AgentRunStatus.RESUMING
-    assert third.claimed_by == "worker_3"
-    assert third.resume_attempts == 0
+    original = storage.get_agent_run(original.id)
+    assert original is not None
+    token = storage.claim_user_extraction("user_1", "worker_1", 300)
+    assert token is not None
+    try:
+        with storage.commit_scope(), storage._stream_sql() as db:
+            first = storage._adopt_owned_user_work_run(
+                db,
+                expected=original,
+                user_id="user_1",
+                token=token,
+                worker_id="worker_1",
+            )
+            assert first is not None
+        # Tie updated_at to the old preview, while preserving the new logical
+        # claim identity. Metadata age never changes the actual W lease.
+        with storage.commit_scope():
+            storage.conn.execute(
+                "UPDATE _agent_runs SET updated_at=?,claimed_at=? WHERE id=?",
+                (
+                    original.updated_at.isoformat(),
+                    (first[1] - timedelta(seconds=logical_age_seconds)).isoformat(),
+                    original.id,
+                ),
+            )
+        before = storage.get_agent_run(original.id)
+        assert before is not None
+        with storage.commit_scope(), storage._stream_sql() as db:
+            assert (
+                storage._adopt_owned_user_work_run(
+                    db,
+                    expected=original,
+                    user_id="user_1",
+                    token=token,
+                    worker_id="stale-preview",
+                )
+                is None
+            )
+        assert storage.get_agent_run(original.id) == before
+        assert storage._resume_candidate_page("continuation")[1] is None
+        assert storage.claim_user_extraction("user_1", "worker_2", 300) is None
+    finally:
+        storage.release_user_extraction("user_1", token)
+    _, descriptor = storage._resume_candidate_page("continuation")
+    assert descriptor is not None and descriptor["id"] == original.id
+    replacement = storage.claim_user_extraction("user_1", "worker_3", 300)
+    assert replacement is not None and replacement != token
+    try:
+        with storage.commit_scope(), storage._stream_sql() as db:
+            third = storage._adopt_owned_user_work_run(
+                db,
+                expected=before,
+                user_id="user_1",
+                token=replacement,
+                worker_id="worker_3",
+            )
+            assert third is not None and third[0] != first[0]
+        current = storage.get_agent_run(original.id)
+        assert current is not None and current.status == AgentRunStatus.RESUME_READY
+        assert current.claimed_by == third[0] and current.resume_attempts == 0
+    finally:
+        storage.release_user_extraction("user_1", replacement)

@@ -3,6 +3,7 @@
 import pytest
 
 from reflexio.models.api_schema.domain.entities import Interaction, Request
+from reflexio.server.services.extraction.history_inputs import HistoricalInputs
 from reflexio.server.services.storage.storage_base import LeaseLostError
 
 pytestmark = pytest.mark.integration
@@ -494,6 +495,7 @@ def test_known_agent_output_reused_without_another_model_call(storage, monkeypat
     recovered = agent.start(
         run=replace(run, status=AgentRunStatus.RUNNING, committed_output=None),
         messages=[],
+        history_inputs=HistoricalInputs(),
         output_schema=Output,
     )
     assert recovered.output == Output(text="known")

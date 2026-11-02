@@ -67,16 +67,12 @@ def test_public_corrected_consumed_answer_keeps_protocol_parent_out_of_legacy_wo
             }
         )
     )
+    # Drive consumer probes explicitly: the public callback now signals the
+    # shared owner, rather than draining an independent request worker.
     monkeypatch.setattr(
-        "reflexio.server.services.extraction.resume_scheduler.wake_resume_schedulers",
-        lambda: None,
+        "reflexio.server.api_endpoints.pending_tool_call_api.wake_extraction",
+        lambda _: None,
     )
-    if not protocol:
-        # The baseline case proves claim eligibility without executing its LLM.
-        monkeypatch.setattr(
-            "reflexio.server.api_endpoints.pending_tool_call_api._drain_resumable_followups",
-            lambda _: None,
-        )
     now = datetime.now(UTC)
     scope = human_feedback_scope(storage.org_id)
     storage.create_pending_tool_call(
@@ -167,15 +163,8 @@ def test_public_corrected_consumed_answer_keeps_protocol_parent_out_of_legacy_wo
         "answer": "Corrected draft approval"
     }
     if protocol:
-        assert (
-            ExtractionResumeWorker(request_context=engine.request_context).run_once()
-            is None
-        )
-        assert (
-            storage.claim_ready_agent_run(org_id=storage.org_id, worker_id="legacy")
-            is None
-        )
-        assert storage.org_id not in storage.list_resumable_work_org_ids()
+        assert storage._resume_candidate_page("continuation")[1] is None
+        assert not storage._deferred_work_presence().resume
         assert (
             "overflow_protocol_recovery_unsupported"
             in inspect_run(engine.request_context, corrected)["blockers"]
@@ -194,10 +183,8 @@ def test_public_corrected_consumed_answer_keeps_protocol_parent_out_of_legacy_wo
             )
         assert storage.pending_extraction_effects() == effects_before
     else:
-        assert (
-            storage.claim_ready_agent_run(org_id=storage.org_id, worker_id="legacy").id
-            == run.id
-        )
+        descriptor = storage._resume_candidate_page("continuation")[1]
+        assert descriptor is not None and descriptor["id"] == run.id
     dispatch.assert_not_called()
 
 
@@ -229,24 +216,20 @@ def test_all_protocol_markers_block_legacy_finalization_and_selected_claims(
             ),
         )
     run = store.get_agent_run(run.id)
-    assert (
-        store.claim_finalization_failed_agent_run(
-            org_id=context.org_id, worker_id="legacy"
-        )
-        is None
+    assert store._resume_candidate_page("finalization")[1] is None
+    from reflexio.server.services.durable_learning.user_lease import (
+        user_extraction_lease,
     )
-    assert (
-        store.claim_agent_run_for_recovery(
-            run_id=run.id,
-            org_id=context.org_id,
-            worker_id="selected",
-            expected_updated_at=run.updated_at,
-            operation_id="operation",
+
+    with user_extraction_lease(store, run.binding.user_id, max_wait_seconds=0):
+        assert (
+            store.claim_agent_run_for_recovery(
+                expected=run, worker_id="selected", operation_id="operation"
+            )
+            is None
         )
-        is None
-    )
     assert store.get_agent_run(run.id).status == status
-    assert context.org_id not in store.list_resumable_work_org_ids()
+    assert not store._deferred_work_presence().resume
 
 
 @pytest.mark.parametrize("finalization", [False, True])
@@ -261,20 +244,38 @@ def test_stale_claimed_protocol_parent_is_refused_before_any_legacy_effect(
             "overflow": None,
         },
     )
+    # Persist the exact claimed state the owned executor receives. A changed
+    # DTO alone no longer bypasses the executor's writer-backed revision read.
+    with context.storage._stream_sql() as db:
+        db.query(
+            "UPDATE _agent_runs SET generation_request_snapshot=?,status=? WHERE id=?",
+            (
+                json.dumps(protocol.generation_request_snapshot),
+                "finalizing" if finalization else "resuming",
+                run.id,
+            ),
+        )
+    protocol = context.storage.get_agent_run(run.id)
+    assert protocol is not None
     client = MagicMock()
     worker = ExtractionResumeWorker(request_context=context, llm_client=client)
     with pytest.raises(
         RecoveryRefusedError, match="overflow_protocol_recovery_unsupported"
     ):
-        worker._execute_claimed_run(protocol, finalization_retry=finalization)
+        worker._execute_owned_claim(
+            protocol,
+            finalization_retry=finalization,
+            pending_config=context.configurator.get_config().pending_tool_call_config,
+            selection=None,
+        )
     with pytest.raises(RecoveryRefusedError):
         worker._resume_run(protocol, [])
     with pytest.raises(RecoveryRefusedError):
         worker._retry_finalization(protocol)
     with pytest.raises(RecoveryRefusedError):
-        worker._finalize_items(protocol, [])
+        worker._publish_retained_output(protocol)
     client.generate_chat_response_with_provenance.assert_not_called()
-    assert context.storage.get_agent_run(run.id).status == run.status
+    assert context.storage.get_agent_run(run.id) == protocol
 
 
 def test_forced_selected_preview_cannot_recover_a_protocol_parent(context):

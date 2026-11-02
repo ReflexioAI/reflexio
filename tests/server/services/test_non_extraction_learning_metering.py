@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from reflexio.models.api_schema.service_schemas import AgentPlaybook, UserPlaybook
 from reflexio.models.config_schema import PlaybookAggregatorConfig, PlaybookConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.services.deferred_learning_plan import FinalizationResult
-from reflexio.server.services.extraction.resume_worker import ExtractionResumeWorker
+from reflexio.server.services.extraction.publication import _deliver
 from reflexio.server.services.playbook.components.aggregator import PlaybookAggregator
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregatorRequest,
@@ -23,6 +22,9 @@ from reflexio.server.usage_metrics import (
     UsageEvent,
     UsageEventDeliveryStatus,
     configure_usage_event_recorder,
+)
+from tests.server.services.extraction._publication_fixtures import (
+    observed_financial_receipt,
 )
 
 
@@ -67,44 +69,18 @@ def _agent_run(*, extractor_kind: str) -> AgentRunRecord:
     )
 
 
-def test_resumable_profile_bills_only_ids_returned_by_finalization() -> None:
-    """A preassigned candidate ID is not billed when finalization drops it."""
-    events: list[UsageEvent] = []
-    _capture_events(events)
-    worker = ExtractionResumeWorker(
-        request_context=_request_context(),
-        llm_client=MagicMock(),
-    )
-    run = _agent_run(extractor_kind="profile")
-
-    dropped_candidate = MagicMock(profile_id="dropped-before-persist")
-    with patch(
-        "reflexio.server.services.extraction.resume_worker.ProfileGenerationService"
-    ) as service_class:
-        finalizer = service_class.return_value._finalize_extracted_items_with_outcome
-        finalizer.return_value = FinalizationResult([], won_receipt=True)
-        worker._finalize_items(run, [dropped_candidate])
-
-    finalizer.assert_called_once_with(
-        [dropped_candidate], model_provenance=None, finalization_run_id=run.id
-    )
-    assert events == []
-
-
 def test_resumable_finalization_emits_one_event_per_profile_id() -> None:
     """Finalization survivor IDs emit one entity-backed event per profile."""
     events: list[UsageEvent] = []
     _capture_events(events)
-    worker = ExtractionResumeWorker(
-        request_context=_request_context(),
-        llm_client=MagicMock(),
-    )
+    context = _request_context()
+    assert isinstance(context.storage, MagicMock)
+    context.storage._ack_publication_receipt.return_value = True
     run = _agent_run(extractor_kind="profile")
 
-    worker._record_finalized_learnings(
-        run,
-        ["prof-1", "prof-2"],
-        entity_type="profile",
+    _deliver(
+        context.storage,
+        observed_financial_receipt(run, ["prof-1", "prof-2"], entity_type="profile"),
     )
 
     assert len(events) == 2
@@ -126,16 +102,16 @@ def test_resumable_finalization_emits_one_event_per_playbook_id() -> None:
     """Finalization survivor IDs emit one entity-backed event per playbook."""
     events: list[UsageEvent] = []
     _capture_events(events)
-    worker = ExtractionResumeWorker(
-        request_context=_request_context(),
-        llm_client=MagicMock(),
-    )
+    context = _request_context()
+    assert isinstance(context.storage, MagicMock)
+    context.storage._ack_publication_receipt.return_value = True
     run = _agent_run(extractor_kind="playbook")
 
-    worker._record_finalized_learnings(
-        run,
-        ["11", "12", "13"],
-        entity_type="user_playbook",
+    _deliver(
+        context.storage,
+        observed_financial_receipt(
+            run, ["11", "12", "13"], entity_type="user_playbook"
+        ),
     )
 
     assert len(events) == 3
@@ -149,36 +125,6 @@ def test_resumable_finalization_emits_one_event_per_playbook_id() -> None:
     for event in events:
         # tie key<->entity together so a swapped association can't pass on sets alone
         assert event.event_key == f"learn:{event.entity_type}:{event.entity_id}"
-
-
-def test_resumable_playbook_bills_consolidation_replacement_id() -> None:
-    """Billing follows the persisted replacement, not its input candidate."""
-    events: list[UsageEvent] = []
-    _capture_events(events)
-    worker = ExtractionResumeWorker(
-        request_context=_request_context(),
-        llm_client=MagicMock(),
-    )
-    run = _agent_run(extractor_kind="playbook")
-
-    original_candidate = MagicMock(user_playbook_id=21)
-    with patch(
-        "reflexio.server.services.extraction.resume_worker.PlaybookGenerationService"
-    ) as service_class:
-        finalizer = service_class.return_value._finalize_extracted_items_with_outcome
-        finalizer.return_value = FinalizationResult(["88"], won_receipt=True)
-        worker._finalize_items(run, [original_candidate])
-
-    finalizer.assert_called_once_with(
-        [original_candidate],
-        model_provenance=None,
-        extraction_run=run,
-        finalization_run_id=run.id,
-    )
-    assert len(events) == 1
-    assert events[0].count_value == 1
-    assert events[0].event_key == "learn:user_playbook:88"
-    assert events[0].entity_id == "88"
 
 
 def test_aggregation_emits_no_learnings_generated(

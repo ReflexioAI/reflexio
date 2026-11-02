@@ -375,8 +375,6 @@ def create_app(  # noqa: C901
     app_context_factory: "Callable[[], AppContext] | None" = None,
     profile: "DeploymentProfile | None" = None,
     durable_org_ids_provider: Callable[[], Iterable[str]] | None = None,
-    resume_org_ids_provider: Callable[[], list[str]] | None = None,
-    resume_start_gate: Callable[[], bool] | None = None,
 ) -> FastAPI:
     """Factory to create a FastAPI app.
 
@@ -419,29 +417,13 @@ def create_app(  # noqa: C901
             data-plane lifespan gating (the legacy knobs still populate the derived
             profile, so callers may pass either — they express the same thing).
         durable_org_ids_provider: Optional zero-arg callable returning the org_ids
-            with actionable durable-learning work, threaded straight through to
+            with actionable window/recovery/financial work, threaded straight through to
             ``maybe_start_durable_learning(org_ids_provider=...)``. When None
-            (default) the single-ref bootstrap default is used, so behaviour is
-            byte-identical to before this parameter existed. It is a plain
+            (default) the single-ref bootstrap default is used. It is a plain
             injectable seam so a deployment (e.g. enterprise cross-ref fan-out) can
             supply its own discovery WITHOUT this factory importing deployment
-            logic. It is only consulted when ``REFLEXIO_DURABLE_LEARNING_QUEUE`` is
-            on — when the flag is off ``maybe_start_durable_learning`` returns None
-            without ever calling the provider.
-        resume_org_ids_provider: Optional zero-arg callable consulted before the
-            bootstrap context on every scheduler tick. Its actionable org list is
-            authoritative, allowing a multi-tenant deployment to recover when the
-            prior bootstrap org disappears and to discover work across data refs.
-            The OSS default remains unchanged when no provider is supplied.
-            A provider that reports its own failures raises
-            ``ResumeDiscoveryIncomplete`` (``resume_scheduler``) rather than
-            returning ``[]``, so an outage is never mistaken for an idle fleet.
-        resume_start_gate: Optional zero-arg callable that holds the resume
-            scheduler's FIRST tick until it returns True (later ticks never
-            consult it). A multi-process deployment uses it to stop a newly
-            started process from repeating the fleet-wide resume sweep while
-            another process is still running it. When None (default) the
-            scheduler ticks immediately, exactly as before.
+            logic. One durable owner handles fresh and deferred extraction;
+            there is no separate resume scheduler or startup gate.
 
     Returns:
         Configured FastAPI application.
@@ -480,9 +462,6 @@ def create_app(  # noqa: C901
     from reflexio.server.services.durable_learning import (
         maybe_start_durable_learning,
     )
-    from reflexio.server.services.extraction.resume_scheduler import (
-        maybe_start_resume_scheduler,
-    )
     from reflexio.server.services.lineage.gc_scheduler import (
         maybe_start_lineage_gc,
     )
@@ -492,7 +471,6 @@ def create_app(  # noqa: C901
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
-        scheduler = None
         gc_scheduler = None
         durable_learning_scheduler = None
         aggregation_scheduler = None
@@ -508,17 +486,9 @@ def create_app(  # noqa: C901
             if mounts_data_plane:
                 log_publish_hardware_capacity()
                 validate_llm_availability()
-                # The scheduler discovers every org with resumable work each tick and
-                # drives a per-org worker with org-scoped claims, so it is not limited
-                # to the bootstrap org. The bootstrap org is only used to read config
-                # and to seed cross-org discovery.
+                # Window execution and deferred recovery share the durable owner
+                # below. Bootstrap seeds only the default single-ref discovery.
                 bootstrap_org_id = _resolve_lifespan_org_id(get_org_id)
-                scheduler = maybe_start_resume_scheduler(
-                    lambda org_id: RequestContext(org_id=org_id),
-                    bootstrap_org_id=bootstrap_org_id,
-                    org_id_provider=resume_org_ids_provider,
-                    start_gate=resume_start_gate,
-                )
                 # Register bounded missing-vector repair BEFORE starting the GC
                 # scheduler so its per-org hook participates in start conditions.
                 # A zero REFLEXIO_MISSING_VECTOR_BACKFILL_CAP skips registration.
@@ -601,7 +571,6 @@ def create_app(  # noqa: C901
                         exc_info=True,
                     )
             for sched in (
-                scheduler,
                 gc_scheduler,
                 durable_learning_scheduler,
                 aggregation_scheduler,

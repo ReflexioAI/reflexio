@@ -9,23 +9,28 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from reflexio.pending_tool_policy import resolve_resume_timing
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm.input_budget import InputBudgetConfigurationError
 from reflexio.server.services.extraction.agent_run_records import (
     matches_frozen_extractor_config,
     source_interaction_digest,
 )
+from reflexio.server.services.extraction.answer_inputs import (
+    require_publication_answer_inputs,
+)
+from reflexio.server.services.extraction.history_inputs import history_from_output
 from reflexio.server.services.extraction.pending_tool_admission import (
     pending_tool_calls_disabled_reason,
 )
 from reflexio.server.services.extraction.resumable_agent import (
     decode_committed_output,
 )
+from reflexio.server.services.extraction.source_inputs import require_source_inputs
 from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredExtractedPlaybookList,
     StructuredPlaybookList,
@@ -42,6 +47,9 @@ from reflexio.server.services.storage.storage_base import (
 from reflexio.server.services.storage.storage_base.agent_run._agent_run_store import (
     is_overflow_protocol_run,
 )
+
+if TYPE_CHECKING:
+    from reflexio.server.services.durable_learning.user_lease import _UserWorkOwner
 
 
 class RecoveryRefusedError(RuntimeError):
@@ -161,6 +169,17 @@ def _saved_output_blockers(run: AgentRunRecord) -> list[str]:
             blockers.append("invalid_saved_output")
     if run.committed_output is None:
         blockers.append("saved_output_missing")
+    else:
+        try:
+            require_publication_answer_inputs(run.committed_output)
+            history_from_output(run.committed_output)
+            require_source_inputs(
+                run.committed_output["publication"].get("source_inputs"), run
+            )
+        except (InputBudgetConfigurationError, ValueError, TypeError):
+            # Never claim old/ambiguous outputs, invent their original inputs,
+            # or interpret a historical run-only receipt as this output's debt.
+            blockers.append("publication_input_proof_unavailable")
     return blockers
 
 
@@ -170,14 +189,30 @@ def inspect_run(
     *,
     now: datetime | None = None,
     owned_claim: bool = False,
+    owner: _UserWorkOwner | None = None,
 ) -> dict[str, Any]:
     """Report explicit reasons without exposing content or raw exceptions."""
-    if run.binding.org_id != context.org_id or context.storage is None:
+    if (
+        run.binding.org_id != context.org_id
+        or context.storage is None
+        or context.storage.org_id != context.org_id
+    ):
         raise RecoveryRefusedError("organization_mismatch")
     current = now or datetime.now(UTC)
     config = context.configurator.get_config()
-    ttl = resolve_resume_timing().claim_ttl_seconds
-    stale = current - timedelta(seconds=ttl)
+    if owned_claim:
+        from reflexio.server.services.durable_learning.user_lease import (
+            _require_user_work_owner,
+        )
+
+        owner = _require_user_work_owner(context.storage)
+    if owner is not None:
+        owner.fence(context.storage)
+        if run.binding.user_id and run.binding.user_id != owner.user_id:
+            raise RecoveryRefusedError("execution_owner_mismatch")
+    presence = context.storage._run_owner_presence(
+        run, executing_token=owner.token if owner is not None else None
+    )
     facts = context.storage.get_agent_run_recovery_facts(run.id)
     if not facts:
         raise RecoveryRefusedError("diagnostic_evidence_unavailable")
@@ -194,17 +229,10 @@ def inspect_run(
         blockers.append("not_finalization_candidate")
     if run.updated_at is None:
         blockers.append("missing_version")
-    if not owned_claim:
-        if run.claimed_by and (run.claimed_at is None or run.claimed_at >= stale):
-            blockers.append("live_or_unknown_claim")
-        if run.status == AgentRunStatus.AGENT_COMPLETED and (
-            run.updated_at is None or run.updated_at >= stale
-        ):
-            blockers.append("publish_finalization_may_be_active")
-        if run.status == AgentRunStatus.FINALIZING and (
-            run.claimed_at is None or run.claimed_at >= stale
-        ):
-            blockers.append("finalization_may_be_active")
+    if not presence.matches_revision:
+        blockers.append("run_revision_changed")
+    if presence.live:
+        blockers.append("live_user_work_owner")
     if run.next_resume_at and run.next_resume_at > current:
         blockers.append("retry_not_due")
     if (
@@ -256,8 +284,10 @@ def inspect_run(
         if run.last_progress_at
         else None,
         "claim_present": run.claimed_by is not None,
-        "claim_expires_at": (run.claimed_at + timedelta(seconds=ttl)).isoformat()
-        if run.claimed_at
+        "claim_expires_at": datetime.fromtimestamp(
+            presence.lease_until, UTC
+        ).isoformat()
+        if presence.lease_until is not None
         else None,
         "finalization_attempts": run.finalization_attempts,
         "resume_disabled_reason": pending_tool_calls_disabled_reason(context),
@@ -291,10 +321,11 @@ def validate_selection(
     selection: RecoverySelection,
     *,
     owned_claim: bool = False,
+    owner: _UserWorkOwner | None = None,
 ) -> None:
     if is_overflow_protocol_run(run):
         raise RecoveryRefusedError("overflow_protocol_recovery_unsupported")
-    report = inspect_run(context, run, owned_claim=owned_claim)
+    report = inspect_run(context, run, owned_claim=owned_claim, owner=owner)
     if (
         run.id != selection.run_id
         or run.binding.org_id != selection.org_id

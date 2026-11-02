@@ -126,6 +126,11 @@ class ProfilePackageWindowExecutor(WindowExecutor):
     def _coordinator(
         self, window: Window, token: str, service: Any, request: Any, config: Any
     ) -> _ProfilePackageCoordinator:
+        from reflexio.server.services.durable_learning.user_lease import (
+            adopt_agent_run_for_execution,
+            create_owned_agent_run,
+        )
+
         known = self.storage.get_agent_run(f"window:{window.window_id}")
         manifest = self._overflow_manifest(known)
         if known is not None and (manifest is None or manifest["version"] != 2):
@@ -312,7 +317,7 @@ class ProfilePackageWindowExecutor(WindowExecutor):
                     profile_package_preparation=preparation.snapshot,
                     profile_dedup_template=template,
                 )
-                known = self.storage.create_agent_run(expected)
+                known = create_owned_agent_run(self.storage, expected)
                 if (
                     known.generation_request_snapshot
                     != expected.generation_request_snapshot
@@ -320,6 +325,8 @@ class ProfilePackageWindowExecutor(WindowExecutor):
                     raise InputBudgetConfigurationError(
                         "Profile parent admission lost ownership"
                     )
+            else:
+                known = adopt_agent_run_for_execution(self.storage, known)
         if manifest is None:
             raise InputBudgetConfigurationError("Profile manifest unavailable")
         coordinator = _ProfilePackageCoordinator(
@@ -497,11 +504,18 @@ class ProfilePackageWindowExecutor(WindowExecutor):
             )
 
     def _complete_parent(self, coordinator: Any, result: Any) -> None:
+        from reflexio.server.services.durable_learning.user_lease import (
+            owned_agent_run_write,
+        )
+
         if not result.gate_decision:
             return
         if result.agent is None or result.agent.output is None:
             raise InputBudgetConfigurationError("Completed profile child unavailable")
-        with self.storage.commit_scope():
+        run = coordinator.saved_run
+        if run is None:
+            raise InputBudgetConfigurationError("Profile parent execution unavailable")
+        with owned_agent_run_write(self.storage, run):
             coordinator.require_full_source_coverage()
             self.storage.validate_extraction_historical_profiles(
                 coordinator.window,
@@ -523,6 +537,7 @@ class ProfilePackageWindowExecutor(WindowExecutor):
                 raise InputBudgetConfigurationError(
                     "Profile package completion lost ownership"
                 )
+        coordinator.saved_run = completed
 
     def _validate_overflow_plan(
         self, coordinator: Any, service: Any, plan: Any

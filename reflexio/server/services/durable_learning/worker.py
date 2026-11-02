@@ -28,8 +28,11 @@ from reflexio.server.services.durable_learning.window_executor import (
 from reflexio.server.services.extraction.overflow_coordinator import (
     OverflowSuspendedError,
 )
-from reflexio.server.services.storage.error import ReadinessUnavailableError
-from reflexio.server.services.storage.storage_base import BaseStorage
+from reflexio.server.services.storage.error import (
+    ReadinessUnavailableError,
+    execution_input_is_busy,
+)
+from reflexio.server.services.storage.storage_base import AgentRunRecord, BaseStorage
 from reflexio.server.services.storage.storage_base._extraction_stream import (
     MAX_EXTRACTION_WINDOW_ATTEMPTS,
     LeaseLostError,
@@ -162,6 +165,11 @@ def _single_locator(exc: BaseException) -> str:
     return raised
 
 
+def exception_detail(exc: BaseException) -> str:
+    """The same bounded, value-free diagnostic at every worker boundary."""
+    return f"error={type(exc).__name__} at={exception_locator(exc)}"
+
+
 def _user_ref(user_id: str) -> str:
     """Stable, value-free handle for a user in a failure scope.
 
@@ -186,11 +194,7 @@ def _report_turn_failure(
         else "extraction_turn_failed",
         exc,
         scope=f"durable-learning-turn:{org_id}:{_user_ref(user_id)}",
-        detail=(
-            (lambda error: f"{type(error).__name__}@{exception_locator(error)}")
-            if readiness_deferred
-            else None
-        ),
+        detail=exception_detail,
         org_id=org_id,
         stage="readiness" if readiness_deferred else "claimed",
     )
@@ -209,6 +213,9 @@ class _TurnRecord:
 
     user_id: str | None = None
     completed: bool = False
+    phase: str = "prepare"
+    outcome: str = "setup_failure"
+    project_id: str | None = None
 
 
 def worker_count() -> int:
@@ -301,6 +308,16 @@ class DurableLearningWorker:
     ):
         self._factory = request_context_factory
         self._instance_id = instance_id or uuid.uuid4().hex
+        from reflexio.server.services.durable_learning.financial_delivery import (
+            FinancialDeliverySweep,
+        )
+
+        self._financial_delivery = FinancialDeliverySweep()
+        from reflexio.server.services.durable_learning.resume_selection import (
+            ResumeSelection,
+        )
+
+        self._resume_selection = ResumeSelection()
 
     def start_org(self, org_id: str, lease_seconds: int) -> bool:
         """Reserve capacity BEFORE a thread may claim one user."""
@@ -346,6 +363,7 @@ class DurableLearningWorker:
                     "extraction_turn_failed",
                     exc,
                     scope=f"durable-learning-claim:{org_id}",
+                    detail=exception_detail,
                     org_id=org_id,
                     stage="claim",
                 )
@@ -356,14 +374,23 @@ class DurableLearningWorker:
         # swallowed a failure (setup deferred, window retried, effect retried)
         # returns normally too.
         if record.user_id is not None and record.completed:
-            user_ref = _user_ref(record.user_id)
-            report_background_success(f"durable-learning-turn:{org_id}:{user_ref}")
+            user_id = record.user_id
+            report_background_success(
+                f"durable-learning-turn:{org_id}:{_user_ref(user_id)}"
+            )
         return completed
 
     @staticmethod
     def _handle_window_failure(
         storage: BaseStorage, window: Window, token: str, exc: Exception
     ) -> str:
+        if execution_input_is_busy(exc):
+            # Preserve the cached computation/journal and all window budgets.
+            # Existing class/turn scheduling owns the next attempt, not a new
+            # timer or a readiness delay borrowed for unrelated contention.
+            storage.yield_extraction_turn(window.user_id, token)
+            record_health("worker.retries", phase="input_busy")
+            return "input_busy"
         if isinstance(exc, ReadinessUnavailableError):
             # Dependency admission has not failed the logical extraction.
             # Keep its window/output and ordinary retry budget intact. This
@@ -452,6 +479,131 @@ class DurableLearningWorker:
         record_health("worker.retries", phase="window")
         return "failure"
 
+    @staticmethod
+    def _run_owned_resume(
+        context: RequestContext, adopted: AgentRunRecord, *, finalization: bool
+    ) -> bool:
+        from reflexio.server.services.extraction.resume_worker import (
+            ExtractionResumeWorker,
+        )
+        from reflexio.server.services.storage.storage_base import AgentRunStatus
+
+        with bind_work_scope(WorkScope(context.org_id, adopted.project_id)):
+            resumed = ExtractionResumeWorker(
+                request_context=context
+            )._execute_owned_claim(
+                adopted,
+                finalization_retry=finalization,
+                pending_config=context.configurator.get_config().pending_tool_call_config,
+                selection=None,
+            )
+        return (
+            resumed.status
+            in (
+                AgentRunStatus.FINALIZED,
+                AgentRunStatus.FINALIZED_PENDING_TOOL,
+                AgentRunStatus.CANCELLED,
+            )
+            and resumed.claimed_by == adopted.claimed_by
+        )
+
+    def _execute_owned_opportunity(
+        self,
+        context: RequestContext,
+        storage: BaseStorage,
+        user_id: str,
+        token: str,
+        record: _TurnRecord,
+    ) -> int:
+        """The same admitted execution path for window and resume-only users."""
+        from reflexio.lib._base import create_generation_litellm_client
+
+        org_id = context.org_id
+        record.phase = "selection"
+        work_class, adopted = self._resume_selection.select_owned(
+            context, user_id=user_id, token=token, worker_id=self._instance_id
+        )
+        if work_class is None:
+            record.outcome = "selection_changed"
+            return 0
+        if work_class != "learning":
+            record.phase = f"resume_{work_class}"
+            record.project_id = adopted.project_id if adopted is not None else None
+            record.outcome = "selection_refused"
+            if adopted is None:
+                return 0
+            record.outcome = "failure"
+            record.completed = self._run_owned_resume(
+                context, adopted, finalization=work_class == "finalization"
+            )
+            record.outcome = "success" if record.completed else "deferred"
+            return 1
+        record.phase = "prepare"
+        for effect_window, effects in storage.pending_extraction_effects(
+            user_id=user_id, token=token
+        ):
+            record.phase = "effects"
+            record.outcome = "failure"
+            with bind_work_scope(
+                WorkScope(org_id=org_id, project_id=effect_window.project_id or None)
+            ):
+                try:
+                    WindowExecutor(
+                        context, create_generation_litellm_client(context)
+                    ).deliver(effect_window, effects, token=token)
+                    record.outcome = "success"
+                except WindowEffectsDeletedError:
+                    record.outcome = "cancelled"
+                    return 0
+                except Exception as exc:
+                    record.outcome = (
+                        "lease_lost" if isinstance(exc, LeaseLostError) else "failure"
+                    )
+                    storage.retry_extraction_effects(effect_window)
+                    record_health("worker.retries", phase=record.phase)
+                    # Log-only, unlike the window handler below: the effects
+                    # retry has no error column to widen -
+                    # ``retry_extraction_effects`` stores only a due time.
+                    logger.warning(
+                        "Extraction effects will retry org_id=%s error=%s at=%s",
+                        org_id,
+                        type(exc).__name__,
+                        exception_locator(exc),
+                    )
+            # One effect window per turn; it completed only if delivered.
+            record.completed = record.outcome == "success"
+            return 1
+        window = storage.prepare_extraction(user_id, token)
+        if window is None:
+            record.outcome = "idle"
+            return 0
+        record.phase = "window"
+        record.outcome = "failure"
+        record.project_id = window.project_id
+        with bind_work_scope(
+            WorkScope(org_id=org_id, project_id=window.project_id or None)
+        ):
+            executor = WindowExecutor(
+                context, create_generation_litellm_client(context)
+            )
+            try:
+                executor.execute(window, token)
+                record.outcome = "success"
+            except WindowInputsDeletedError:
+                storage.invalidate_extraction(window, token)
+                record.outcome = "invalidated"
+            except LeaseLostError:
+                record.outcome = "lease_lost"
+                return 0
+            except Exception as exc:
+                record.outcome = self._handle_window_failure(
+                    storage, window, token, exc
+                )
+                return 0
+        # Reached only when the window executed or was invalidated.
+        record.completed = True
+        return 1
+
     def _turn(
         self, org_id: str, lease_seconds: int, record: _TurnRecord | None = None
     ) -> int:
@@ -468,17 +620,20 @@ class DurableLearningWorker:
         Returns:
             int: 1 when a window or its effects were delivered, else 0.
         """
-        from reflexio.lib._base import create_generation_litellm_client
-
         context = self._factory(org_id)
         storage = context.storage
         if storage is None:
             return 0
-        claim = storage.claim_extraction(self._instance_id, lease_seconds)
+        if context.org_id != org_id or storage.org_id != org_id:
+            raise ValueError("Durable work target does not match the requested org")
+        financial_delivered = self._financial_delivery.deliver_one(storage, org_id)
+        claim = self._resume_selection.claim_user(
+            context, worker_id=self._instance_id, lease_seconds=lease_seconds
+        )
         # The claim query itself succeeded, whether or not it found a user.
         report_background_success(f"durable-learning-claim:{org_id}")
         if claim is None:
-            return 0
+            return int(financial_delivered)
         user_id, token = claim
         if record is None:
             record = _TurnRecord()
@@ -488,81 +643,14 @@ class DurableLearningWorker:
         )
 
         started = time.monotonic()
-        outcome = "setup_failure"
-        phase = "prepare"
-        window: Window | None = None
         try:
             with owned_user_work_context(storage, user_id, token, lease_seconds):
-                for effect_window, effects in storage.pending_extraction_effects(
-                    user_id=user_id, token=token
-                ):
-                    phase = "effects"
-                    outcome = "failure"
-                    with bind_work_scope(
-                        WorkScope(
-                            org_id=org_id, project_id=effect_window.project_id or None
-                        )
-                    ):
-                        try:
-                            WindowExecutor(
-                                context, create_generation_litellm_client(context)
-                            ).deliver(effect_window, effects, token=token)
-                            outcome = "success"
-                        except WindowEffectsDeletedError:
-                            outcome = "cancelled"
-                            return 0
-                        except Exception as exc:
-                            outcome = (
-                                "lease_lost"
-                                if isinstance(exc, LeaseLostError)
-                                else "failure"
-                            )
-                            storage.retry_extraction_effects(effect_window)
-                            record_health("worker.retries", phase=phase)
-                            # Log-only, unlike the window handler below: the effects
-                            # retry has no error column to widen -
-                            # ``retry_extraction_effects`` stores only a due time.
-                            logger.warning(
-                                "Extraction effects will retry org_id=%s error=%s at=%s",
-                                org_id,
-                                type(exc).__name__,
-                                exception_locator(exc),
-                            )
-                    # One effect window per turn; it completed only if delivered.
-                    record.completed = outcome == "success"
-                    return 1
-                window = storage.prepare_extraction(user_id, token)
-                if window is None:
-                    outcome = "idle"
-                    return 0
-                phase = "window"
-                outcome = "failure"
-                with bind_work_scope(
-                    WorkScope(org_id=org_id, project_id=window.project_id or None)
-                ):
-                    executor = WindowExecutor(
-                        context, create_generation_litellm_client(context)
-                    )
-                    try:
-                        executor.execute(window, token)
-                        outcome = "success"
-                    except WindowInputsDeletedError:
-                        storage.invalidate_extraction(window, token)
-                        outcome = "invalidated"
-                    except LeaseLostError:
-                        outcome = "lease_lost"
-                        return 0
-                    except Exception as exc:
-                        outcome = self._handle_window_failure(
-                            storage, window, token, exc
-                        )
-                        return 0
-                # Reached only when the window executed or was invalidated.
-                record.completed = True
-                return 1
+                return self._execute_owned_opportunity(
+                    context, storage, user_id, token, record
+                )
         except LeaseLostError:
             # A stale claim cannot schedule setup work; its new owner proceeds.
-            outcome = "lease_lost"
+            record.outcome = "lease_lost"
             return 0
         except WorkScopeError:
             from reflexio.server.error_reporting import capture_anomaly
@@ -571,31 +659,44 @@ class DurableLearningWorker:
                 "durable_learning.work_scope_failed",
                 level="error",
                 org_id=org_id,
-                project_id=window.project_id if window else None,
+                project_id=record.project_id,
                 user_id=user_id,
             )
-            storage.defer_extraction_setup(user_id, token)
-            record_health("worker.retries", phase="prepare")
+            if record.phase != "selection":
+                storage.defer_extraction_setup(user_id, token)
+            record_health(
+                "worker.retries",
+                phase="selection" if record.phase == "selection" else "prepare",
+            )
             return 0
         except Exception as exc:
+            if record.phase.startswith("resume_"):
+                _report_turn_failure(org_id, user_id, exc)
+                return 0
             logger.warning(
                 "Extraction setup will retry org_id=%s error=%s at=%s",
                 org_id,
                 type(exc).__name__,
                 exception_locator(exc),
             )
-            storage.defer_extraction_setup(user_id, token)
-            record_health("worker.retries", phase="prepare")
+            if record.phase != "selection":
+                storage.defer_extraction_setup(user_id, token)
+            record_health(
+                "worker.retries",
+                phase="selection" if record.phase == "selection" else "prepare",
+            )
             return 0
         finally:
-            if outcome != "idle":
-                record_health("worker.attempts", phase=phase, outcome=outcome)
+            if record.outcome != "idle":
+                record_health(
+                    "worker.attempts", phase=record.phase, outcome=record.outcome
+                )
                 record_health(
                     "worker.duration",
                     time.monotonic() - started,
                     kind="distribution",
                     unit="second",
-                    phase=phase,
-                    outcome=outcome,
+                    phase=record.phase,
+                    outcome=record.outcome,
                 )
             storage.release_user_extraction(user_id, token)

@@ -16,6 +16,10 @@ from typing import Any
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import Interaction, OperationStatus
+from reflexio.server.services.deferred_learning_plan import (
+    ExtractorBookmarkAdvance,
+    ExtractorBookmarkPosition,
+)
 from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.storage_base import BaseStorage
 
@@ -999,29 +1003,30 @@ class OperationStateManager:
             processed_interactions: Interactions that were processed
             user_id: Optional user ID for user-level extractors
         """
-        if not processed_interactions:
-            return
-
-        state_key = self._bookmark_key(extractor_name, scope_id=user_id)
-
-        last_processed_ids = [
-            interaction.interaction_id for interaction in processed_interactions
-        ]
-        last_processed_timestamp = max(
-            (
-                interaction.created_at
-                for interaction in processed_interactions
-                if interaction.created_at is not None
-            ),
-            default=None,
+        self.update_extractor_bookmark_position(
+            ExtractorBookmarkPosition.from_advance(
+                ExtractorBookmarkAdvance(
+                    extractor_name, processed_interactions, user_id
+                )
+            )
         )
 
+    def update_extractor_bookmark_position(
+        self, position: ExtractorBookmarkPosition
+    ) -> None:
+        """Apply the same bookmark representation from an owned prepared output."""
+        if not position.interaction_ids:
+            return
+        state_key = self._bookmark_key(
+            position.extractor_name, scope_id=position.user_id
+        )
         state_payload: dict[str, Any] = {
-            "last_processed_interaction_ids": last_processed_ids,
+            "last_processed_interaction_ids": list(position.interaction_ids),
         }
-        if last_processed_timestamp is not None:
-            state_payload["last_processed_timestamp"] = last_processed_timestamp
-
+        if position.last_processed_timestamp is not None:
+            state_payload["last_processed_timestamp"] = (
+                position.last_processed_timestamp
+            )
         self.storage.upsert_operation_state(state_key, state_payload)
 
     # ── Use Case 4: Aggregator Bookmark ──

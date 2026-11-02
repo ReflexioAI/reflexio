@@ -27,17 +27,17 @@ from reflexio.models.config_schema import (
     ToolUseConfig,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm.compute_admission import reserve_compute_attempt
 from reflexio.server.llm.tools import ToolLoopTrace
-from reflexio.server.metering_events import ReceiptDeliveryError
-from reflexio.server.services.deferred_learning_plan import FinalizationResult
+from reflexio.server.services.durable_learning.worker import DurableLearningWorker
 from reflexio.server.services.extraction.recovery import RecoveryRefusedError
 from reflexio.server.services.extraction.resumable_agent import AgentRunResult
 from reflexio.server.services.extraction.resume_worker import (
     ExtractionResumeWorker,
-    _finalization_failure_status,
     _run_playbook_contract_selection,
 )
-from reflexio.server.services.storage.error import ReadinessUnavailableError
+from reflexio.server.services.playbook.service import PlaybookGenerationService
+from reflexio.server.services.profile.service import ProfileGenerationService
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import (
     AgentBinding,
@@ -51,21 +51,11 @@ from reflexio.server.services.storage.storage_base import (
     human_feedback_scope,
 )
 from reflexio.server.usage_metrics import (
-    UsageEventDeliveryStatus,
     configure_usage_event_recorder,
     exempt_usage_event_recorder,
 )
 
 pytestmark = pytest.mark.integration
-
-PLAYBOOK_FINALIZE = (
-    "reflexio.server.services.playbook.service."
-    "PlaybookGenerationService._finalize_extracted_items_with_outcome"
-)
-PROFILE_FINALIZE = (
-    "reflexio.server.services.profile.service."
-    "ProfileGenerationService._finalize_extracted_items_with_outcome"
-)
 
 
 @pytest.fixture(autouse=True)
@@ -274,14 +264,34 @@ def _binding(
     )
 
 
-def _unfinished(reason: str) -> AgentRunResult:
+def _admitted_run(kwargs):
+    reserve_compute_attempt()
+    return kwargs["before_model"](kwargs["run"])
+
+
+def _unfinished(storage, run, reason: str) -> AgentRunResult:
+    from reflexio.server.services.durable_learning.user_lease import (
+        owned_agent_run_write,
+    )
+
+    with owned_agent_run_write(storage, run):
+        stored = storage.update_agent_run_status(
+            run.id,
+            AgentRunStatus.FAILED,
+            expected_statuses=(run.status,),
+            expected_claimed_by=run.claimed_by,
+            expected_claimed_at=run.claimed_at,
+        )
+    assert stored is not None
+
     return AgentRunResult(
-        run_id="unused",
+        run_id=run.id,
         output=None,
         pending_tool_call_ids=[],
         messages=[],
         trace=ToolLoopTrace(),
         finished_reason=reason,
+        execution_run=stored,
     )
 
 
@@ -318,26 +328,27 @@ def test_playbook_resume_finalizes_extracted_rule_and_consumes_dependency(
         ],
     )
     _, make_stop = tool_call_completion
-    worker = ExtractionResumeWorker(request_context=ctx)
+    worker = DurableLearningWorker(lambda _org: ctx)
 
     with (
         patch("litellm.completion", side_effect=[_playbook_answer(make_stop)]) as llm,
         patch(
-            PLAYBOOK_FINALIZE,
-            return_value=FinalizationResult(["pb-1"], won_receipt=True),
+            "reflexio.server.services.playbook.service.PlaybookGenerationService._resolve_write_plan",
+            autospec=True,
+            side_effect=PlaybookGenerationService._resolve_write_plan,
         ) as finalize,
     ):
-        assert worker.drain(max_runs=5) == 1
+        assert worker.drain_org(storage.org_id, batch_size=5, lease_seconds=300) == 1
 
     prompt = json.dumps(llm.call_args.kwargs["messages"])
     if expert:
         assert "playbook_extraction_context_expert" in prompt
     else:
         assert "deploy: Ships a release" in prompt
-    items = finalize.call_args.args[0]
+    items = finalize.call_args.args[1][0]
     assert [item.content for item in items] == ["Deploy to AWS ECS."]
     assert items[0].trigger == "When choosing a deployment target"
-    assert finalize.call_args.kwargs["finalization_run_id"] == run_id
+    assert storage.get_user_playbooks(user_id="user_1", agent_version="v1")
     run = storage.get_agent_run(run_id)
     assert run is not None and run.status == AgentRunStatus.FINALIZED
     assert storage.list_run_tool_dependencies(run_id)[0].consumed_at is not None
@@ -370,18 +381,20 @@ def test_strict_playbook_resume_keeps_cited_source_turns(
             }
         )
     )
-    worker = ExtractionResumeWorker(request_context=_context(storage, org_id))
+    worker = DurableLearningWorker(lambda _org: _context(storage, org_id))
 
     with (
         patch("litellm.completion", side_effect=[answer]) as llm,
         patch(
-            PLAYBOOK_FINALIZE, return_value=FinalizationResult([], won_receipt=False)
+            "reflexio.server.services.playbook.service.PlaybookGenerationService._resolve_write_plan",
+            autospec=True,
+            side_effect=PlaybookGenerationService._resolve_write_plan,
         ) as finalize,
     ):
-        assert worker.drain(max_runs=1) == 1
+        assert worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 1
 
     assert "[T1]" in json.dumps(llm.call_args.kwargs["messages"])
-    (item,) = finalize.call_args.args[0]
+    (item,) = finalize.call_args.args[1][0]
     assert item.content == "Ask for the deployment standard first."
     assert item.source_interaction_ids == [1]
     run = storage.get_agent_run(run_id)
@@ -398,18 +411,19 @@ def test_playbook_resume_that_does_not_finish_returns_run_to_retry_queue(
         kind="playbook",
         snapshot={"output_schema_name": "StructuredPlaybookList"},
     )
-    worker = ExtractionResumeWorker(request_context=_context(storage, org_id))
-    unfinished = _unfinished("max_steps")
+    worker = DurableLearningWorker(lambda _org: _context(storage, org_id))
 
     with (
         patch(
             "reflexio.server.services.extraction.resume_worker."
             "ResumableExtractionAgent.resume",
-            return_value=unfinished,
+            side_effect=lambda **kwargs: _unfinished(
+                storage, _admitted_run(kwargs), "max_steps"
+            ),
         ),
-        patch(PLAYBOOK_FINALIZE) as finalize,
+        patch.object(ExtractionResumeWorker, "_publish_retained_output") as finalize,
     ):
-        assert worker.drain(max_runs=1) == 1
+        assert worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 1
 
     finalize.assert_not_called()
     run = storage.get_agent_run(run_id)
@@ -423,17 +437,18 @@ def test_playbook_resume_that_does_not_finish_returns_run_to_retry_queue(
 def test_profile_resume_that_does_not_finish_fails_at_attempt_ceiling(storage, org_id):
     _seed_interactions(storage)
     run_id = _seed_ready_run(storage, org_id, kind="profile")
-    worker = ExtractionResumeWorker(
-        request_context=_context(storage, org_id, max_resume_attempts=1)
+    worker = DurableLearningWorker(
+        lambda _org: _context(storage, org_id, max_resume_attempts=1)
     )
-    unfinished = _unfinished("refused")
 
     with patch(
         "reflexio.server.services.extraction.resume_worker."
         "ResumableExtractionAgent.resume",
-        return_value=unfinished,
+        side_effect=lambda **kwargs: _unfinished(
+            storage, _admitted_run(kwargs), "refused"
+        ),
     ):
-        assert worker.drain(max_runs=1) == 1
+        assert worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 1
 
     run = storage.get_agent_run(run_id)
     assert run is not None
@@ -458,14 +473,14 @@ def test_resume_without_config_or_sources_is_retried_without_llm(
 ):
     _seed_interactions(storage)
     run_id = _seed_ready_run(storage, org_id, kind="profile", source_ids=source_ids)
-    worker = ExtractionResumeWorker(
-        request_context=_context(storage, org_id, profile=profile_configured)
+    worker = DurableLearningWorker(
+        lambda _org: _context(storage, org_id, profile=profile_configured)
     )
 
     with patch(
         "litellm.completion", side_effect=AssertionError("must not call the LLM")
     ):
-        assert worker.drain(max_runs=1) == 1
+        assert worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 1
 
     run = storage.get_agent_run(run_id)
     assert run is not None
@@ -476,12 +491,12 @@ def test_resume_without_config_or_sources_is_retried_without_llm(
 def test_resume_of_unsupported_extractor_kind_is_retried_without_llm(storage, org_id):
     _seed_interactions(storage)
     run_id = _seed_ready_run(storage, org_id, kind="custom")
-    worker = ExtractionResumeWorker(request_context=_context(storage, org_id))
+    worker = DurableLearningWorker(lambda _org: _context(storage, org_id))
 
     with patch(
         "litellm.completion", side_effect=AssertionError("must not call the LLM")
     ):
-        assert worker.drain(max_runs=1) == 1
+        assert worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 1
 
     run = storage.get_agent_run(run_id)
     assert run is not None
@@ -518,17 +533,34 @@ def test_resume_feeds_only_resolved_answers_and_ignores_open_questions(
     storage.attach_run_tool_dependency(
         RunToolDependencyRecord(run_id=run_id, pending_tool_call_id="ptc_open")
     )
-    worker = ExtractionResumeWorker(request_context=_context(storage, org_id))
-    with patch.object(
-        worker,
-        "_resume_run",
-        return_value=([], [], None),
-    ) as resume:
-        assert worker.drain(max_runs=1) == 1
+    worker = DurableLearningWorker(lambda _org: _context(storage, org_id))
+    _, make_stop = tool_call_completion
+    with (
+        patch("litellm.completion", side_effect=[make_stop('{"profiles": []}')]),
+        patch.object(
+            ExtractionResumeWorker,
+            "_resume_run",
+            autospec=True,
+            side_effect=ExtractionResumeWorker._resume_run,
+        ) as resume,
+    ):
+        assert worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 1
 
-    resolved_calls = resume.call_args.args[1]
+    resolved_calls = resume.call_args.args[2]
     assert [call.id for call in resolved_calls] == ["ptc_profile"]
+
     assert resolved_calls[0].result == {"answer": "Use AWS ECS."}
+
+    finished = storage.get_agent_run(run_id)
+    assert (
+        finished is not None
+        and finished.status == AgentRunStatus.FINALIZED_PENDING_TOOL
+    )
+    dependencies = {
+        d.pending_tool_call_id: d for d in storage.list_run_tool_dependencies(run_id)
+    }
+    assert dependencies["ptc_profile"].consumed_at is not None
+    assert dependencies["ptc_open"].consumed_at is None
 
 
 def test_resume_reconstructs_request_when_request_row_is_missing(
@@ -542,22 +574,24 @@ def test_resume_reconstructs_request_when_request_row_is_missing(
             {"profiles": [{"content": "Deploys to ECS.", "time_to_live": "infinity"}]}
         )
     )
-    worker = ExtractionResumeWorker(request_context=_context(storage, org_id))
+    worker = DurableLearningWorker(lambda _org: _context(storage, org_id))
 
     with (
         patch("litellm.completion", side_effect=[answer]) as llm,
         patch(
-            PROFILE_FINALIZE, return_value=FinalizationResult([], won_receipt=False)
+            "reflexio.server.services.profile.service.ProfileGenerationService._resolve_write_plan",
+            autospec=True,
+            side_effect=ProfileGenerationService._resolve_write_plan,
         ) as finalize,
     ):
-        assert worker.drain(max_runs=1) == 1
+        assert worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 1
 
     # The fallback request carries the run's source and the request id as the
     # session, so both interactions still reach the prompt.
     prompt = json.dumps(llm.call_args.kwargs["messages"])
     assert "Which deployment target should we use?" in prompt
     assert "I need the deployment standard." in prompt
-    assert [p.content for p in finalize.call_args.args[0]] == ["Deploys to ECS."]
+    assert [p.content for p in finalize.call_args.args[1][0]] == ["Deploys to ECS."]
     run = storage.get_agent_run(run_id)
     assert run is not None and run.status == AgentRunStatus.FINALIZED
 
@@ -565,7 +599,7 @@ def test_resume_reconstructs_request_when_request_row_is_missing(
 def test_resume_start_lost_to_another_owner_leaves_run_untouched(storage, org_id):
     _seed_interactions(storage)
     run_id = _seed_ready_run(storage, org_id, kind="profile")
-    worker = ExtractionResumeWorker(request_context=_context(storage, org_id))
+    worker = DurableLearningWorker(lambda _org: _context(storage, org_id))
 
     with (
         patch.object(storage, "begin_extraction_resume", return_value=None),
@@ -573,7 +607,8 @@ def test_resume_start_lost_to_another_owner_leaves_run_untouched(storage, org_id
             "litellm.completion", side_effect=AssertionError("must not call the LLM")
         ),
     ):
-        returned = worker.run_once()
+        assert worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 0
+        returned = storage.get_agent_run(run_id)
 
     assert returned is not None and returned.id == run_id
     run = storage.get_agent_run(run_id)
@@ -583,52 +618,48 @@ def test_resume_start_lost_to_another_owner_leaves_run_untouched(storage, org_id
     assert storage.list_run_tool_dependencies(run_id)[0].consumed_at is None
 
 
-def test_claim_lost_before_finalizing_skips_finalization(storage, org_id):
+def test_claim_lost_before_finalizing_skips_finalization(
+    storage, org_id, tool_call_completion
+):
     _seed_interactions(storage)
     run_id = _seed_ready_run(storage, org_id, kind="profile")
-    worker = ExtractionResumeWorker(request_context=_context(storage, org_id))
+    worker = DurableLearningWorker(lambda _org: _context(storage, org_id))
+    resume = ExtractionResumeWorker._resume_run
 
-    def resume_then_lose_claim(run, _calls):
-        # Another worker reclaims the run while this one is still resuming.
-        with storage._lock:
-            storage.conn.execute(
-                "UPDATE _agent_runs SET claimed_by = 'other-worker' WHERE id = ?",
-                (run.id,),
-            )
-            storage.conn.commit()
-        return [], [], None
+    def resume_then_lose_claim(active_worker, run, calls):
+        # Preserve a real committed output, then supersede its logical owner
+        # before finalization. The former witness cannot publish that output.
+        completed = resume(active_worker, run, calls)
+        storage._execute(
+            "UPDATE _agent_runs SET claimed_by='other-worker' WHERE id=?", (run.id,)
+        )
+        return completed
 
+    _, make_stop = tool_call_completion
     with (
-        patch.object(worker, "_resume_run", side_effect=resume_then_lose_claim),
-        patch(PROFILE_FINALIZE) as finalize,
+        patch("litellm.completion", side_effect=[make_stop('{"profiles": []}')]),
+        patch.object(ExtractionResumeWorker, "_resume_run", resume_then_lose_claim),
+        patch.object(ExtractionResumeWorker, "_publish_retained_output") as finalize,
     ):
-        assert worker.run_once() is not None
+        assert worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 0
 
     finalize.assert_not_called()
     run = storage.get_agent_run(run_id)
-    assert run is not None
-    assert run.status == AgentRunStatus.RESUMING
+    assert run is not None and run.status == AgentRunStatus.AGENT_COMPLETED
+    assert run.committed_output is not None
     assert run.claimed_by == "other-worker"
+    assert storage.get_user_profile("user_1") == []
     assert storage.list_run_tool_dependencies(run_id)[0].consumed_at is None
 
 
 def test_drain_stops_when_no_run_is_ready(storage, org_id):
-    worker = ExtractionResumeWorker(request_context=_context(storage, org_id))
-    assert worker.drain(max_runs=3) == 0
+    worker = DurableLearningWorker(lambda _org: _context(storage, org_id))
+    assert worker.drain_org(storage.org_id, batch_size=3, lease_seconds=300) == 0
 
 
 # ---------------------------------------------------------------------------
 # Finalization retries
 # ---------------------------------------------------------------------------
-
-
-def test_finalization_failure_status_treats_readiness_as_retryable():
-    status = _finalization_failure_status(
-        ReadinessUnavailableError("conversion pending"),
-        next_attempt_count=99,
-        max_finalization_attempts=3,
-    )
-    assert status == AgentRunStatus.FINALIZATION_FAILED
 
 
 # ---------------------------------------------------------------------------
@@ -676,25 +707,66 @@ def test_recovery_refuses_unknown_run(storage, org_id):
 
 
 def test_recovery_refuses_when_the_previewed_row_changed(storage, org_id):
+    from reflexio.server.services.extraction.agent_run_records import (
+        source_interaction_digest,
+    )
+    from reflexio.server.services.extraction.recovery import (
+        inspect_run,
+        selection_from_report,
+    )
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        StructuredProfilesOutput,
+    )
+    from tests.server.services.extraction._publication_fixtures import (
+        write_completed_output,
+    )
+
     _seed_interactions(storage)
-    run_id = _seed_recoverable_run(storage, org_id).id
-    worker = ExtractionResumeWorker(request_context=_context(storage, org_id))
-    stale = datetime(2000, 1, 1, tzinfo=UTC)
-
-    with (
-        patch(
-            "reflexio.server.services.extraction.recovery.validate_selection",
-            return_value=None,
+    context = _context(storage, org_id)
+    config = context.configurator.get_config().profile_extractor_config
+    assert config is not None
+    # Establish creation-time evidence from real inputs before the writer runs.
+    source_versions = {
+        str(row.interaction_id): source_interaction_digest(row)
+        for row in storage.get_interactions_by_ids([1, 2])
+    }
+    run = write_completed_output(
+        storage,
+        AgentRunRecord(
+            id="previewed",
+            binding=_binding(
+                org_id,
+                "profile",
+                "user_1",
+                source_interaction_ids=[1, 2],
+                extractor_config_hash=build_scope_hash(config.model_dump(mode="json")),
+            ),
+            status=AgentRunStatus.RUNNING,
+            generation_request_snapshot={
+                "request_id": "request_1",
+                "output_schema_name": "StructuredProfilesOutput",
+                "source_interaction_digests": source_versions,
+            },
         ),
-        pytest.raises(RecoveryRefusedError, match="claim_conflict"),
+        StructuredProfilesOutput(profiles=[]),
+    )
+    report = inspect_run(context, run)
+    assert report["eligible"], report["blockers"]
+    selection = selection_from_report(report)
+    storage.update_agent_run_status(run.id, AgentRunStatus.FINALIZATION_FAILED)
+    changed = storage.get_agent_run(run.id)
+    worker = ExtractionResumeWorker(request_context=context)
+    with (
+        patch.object(
+            storage, "claim_user_extraction", wraps=storage.claim_user_extraction
+        ) as claim,
+        pytest.raises(RecoveryRefusedError, match="preview_changed"),
     ):
-        worker.recover_selected(_selection(org_id, run_id, stale), operation_id="op")
-
-    run = storage.get_agent_run(run_id)
-    assert run is not None
-    assert run.recovery_operation_id is None
-    assert run.status == AgentRunStatus.FINALIZATION_FAILED
-    assert run.claimed_by is None
+        worker.recover_selected(selection, operation_id="op")
+    claim.assert_not_called()
+    assert changed is not None and changed.status == AgentRunStatus.FINALIZATION_FAILED
+    assert changed.recovery_operation_id is None
+    assert storage.get_agent_run(run.id) == changed
 
 
 def test_recovery_that_does_not_reach_finalized_is_not_verified(storage, org_id):
@@ -704,6 +776,14 @@ def test_recovery_that_does_not_reach_finalized_is_not_verified(storage, org_id)
     worker = ExtractionResumeWorker(request_context=_context(storage, org_id))
 
     def unverified(claimed, **_kwargs):
+        from reflexio.server.services.durable_learning.user_lease import (
+            _require_user_work_owner,
+        )
+
+        owner = _require_user_work_owner(storage)
+        owner.fence(storage)
+        assert not storage.conn.in_transaction
+        assert claimed.claimed_by is not None
         return replace(claimed, status=AgentRunStatus.FINALIZATION_FAILED)
 
     with (
@@ -711,13 +791,16 @@ def test_recovery_that_does_not_reach_finalized_is_not_verified(storage, org_id)
             "reflexio.server.services.extraction.recovery.validate_selection",
             return_value=None,
         ),
-        patch.object(worker, "_execute_claimed_run", side_effect=unverified),
+        patch.object(
+            worker, "_execute_owned_claim", side_effect=unverified
+        ) as execution,
         pytest.raises(RecoveryRefusedError, match="recovery_not_verified"),
     ):
         worker.recover_selected(
             _selection(org_id, run_id, current.updated_at), operation_id="op-1"
         )
 
+    execution.assert_called_once()
     run = storage.get_agent_run(run_id)
     assert run is not None
     assert run.recovery_operation_id == "op-1"
@@ -760,23 +843,23 @@ def test_legacy_run_without_schema_snapshot_uses_active_prompt_version(
 
 
 def test_learning_receipt_without_durable_timestamp_is_not_delivered(storage, org_id):
-    worker = ExtractionResumeWorker(request_context=_context(storage, org_id))
+    from reflexio.server.services.extraction.publication import _deliver
+    from tests.server.services.extraction._publication_fixtures import (
+        observed_financial_receipt,
+    )
+
     run = AgentRunRecord(
         id="no_timestamp",
         binding=_binding(org_id, "profile", "u"),
         status=AgentRunStatus.FINALIZING,
         generation_request_snapshot={},
     )
-
     with patch(
-        "reflexio.server.services.extraction.resume_worker."
-        "emit_learnings_generated_records_strict"
+        "reflexio.server.services.extraction.publication.emit_learnings_generated_records_strict"
     ) as emit:
-        with pytest.raises(ReceiptDeliveryError) as raised:
-            worker._record_finalized_learnings(run, ["p-1"], entity_type="profile")
-        worker._record_finalized_learnings(run, [], entity_type="profile")
-
-    assert raised.value.status is UsageEventDeliveryStatus.UNKNOWN
+        with pytest.raises(ValueError, match="receipt.*invalid"):
+            observed_financial_receipt(run, ["p-1"], entity_type="profile")
+        _deliver(storage, observed_financial_receipt(run, [], entity_type="profile"))
     emit.assert_not_called()
 
 

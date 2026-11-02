@@ -87,7 +87,8 @@ def _resolved_prior_record(
 
     record = storage.get_pending_tool_call(match.pending_tool_call_id)
     if record is None or (
-        record.question_text != match.question_text
+        record.id != match.pending_tool_call_id
+        or record.question_text != match.question_text
         or record.result != match.result
         or record.resolved_at != match.resolved_at
         or record.valid_until != match.valid_until
@@ -142,12 +143,6 @@ def capture_prior_knowledge_context(
             record = _resolved_prior_record(storage, match)
             witness = answer_witness(asdict(record))
             require_current_answer(witness, org_id, datetime.now(UTC))
-            if record.id != match.pending_tool_call_id:
-                from reflexio.server.llm.input_budget import (
-                    InputBudgetConfigurationError,
-                )
-
-                raise InputBudgetConfigurationError("Prior answer identity changed")
             answers[record.id] = witness
     context = format_prior_knowledge_context(matches, truncate_results=False)
     return CapturedPriorKnowledge(
@@ -340,7 +335,9 @@ def append_prior_knowledge_context(
     similarity_threshold: float = 0.0,
     exclude_pending_tool_call_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    from reflexio.server.services.extraction.overflow_answers import pin_overflow_answer
+    from reflexio.server.services.extraction.overflow_answers import (
+        pin_extraction_answer,
+    )
     from reflexio.server.services.extraction.overflow_coordinator import (
         current_overflow_coordinator,
     )
@@ -384,11 +381,15 @@ def append_prior_knowledge_context(
         similarity_threshold=similarity_threshold,
         exclude_pending_tool_call_ids=exclude_pending_tool_call_ids,
     )
-    if coordinator is not None:
+    from reflexio.server.services.extraction.answer_inputs import (
+        has_answer_input_capture,
+    )
+
+    if coordinator is not None or has_answer_input_capture(storage):
         for match in matches:
             if match.status == PendingToolCallStatus.RESOLVED:
                 record = _resolved_prior_record(storage, match)
-                pin_overflow_answer(record)
+                pin_extraction_answer(record)
     context = format_prior_knowledge_context(
         matches, truncate_results=coordinator is None
     )

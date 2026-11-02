@@ -1,73 +1,48 @@
-"""Shared resume timing for claims, discovery, recovery and scheduling.
+"""Historical pending-tool conversion and obsolete-input diagnostics.
 
-Independent of server imports so saved policies can be validated at bootstrap.
+The current execution engine uses the renewable user-work owner. There is no
+separate resume pickup timer or non-renewable logical-claim lifetime.
 """
 
-import math
-import os
+import logging
 import threading
 from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import Field, TypeAdapter, ValidationError
 
 from reflexio.config_migration import ConfigurationMigrationError
 
-DEFAULT_RESUME_POLL_SECONDS = 5.0
-DEFAULT_RESUME_CLAIM_TTL_SECONDS = 600
-# Native get_agent_run_health and resume discovery calculate 6 * TTL using
-# PostgreSQL int32 arithmetic before constructing their stale-work interval.
-MAX_RESUME_CLAIM_TTL_SECONDS = ((1 << 31) - 1) // 6
-
-
-@dataclass(frozen=True)
-class ResumeTiming:
-    poll_seconds: float
-    claim_ttl_seconds: int
-
-
-def resolve_resume_timing(env: Mapping[str, str] | None = None) -> ResumeTiming:
-    """Resolve process-owned pickup and non-renewable claim-expiry policy.
-
-    An explicitly supplied mapping is authoritative, including an empty one.
-    Defaults preserve existing behavior; blank input is equivalent to unset.
-    """
-    environment = os.environ if env is None else env
-    poll_raw = environment.get("REFLEXIO_RESUME_POLL_INTERVAL_SECONDS", "").strip()
-    ttl_raw = environment.get("REFLEXIO_RESUME_CLAIM_TTL_SECONDS", "").strip()
-    try:
-        poll = float(poll_raw) if poll_raw else DEFAULT_RESUME_POLL_SECONDS
-    except ValueError:
-        poll = 0.0
-    if not math.isfinite(poll) or not 0 < poll <= threading.TIMEOUT_MAX:
-        raise ValueError(
-            "REFLEXIO_RESUME_POLL_INTERVAL_SECONDS must be finite, positive "
-            "and no greater than threading.TIMEOUT_MAX."
-        )
-    try:
-        ttl = int(ttl_raw) if ttl_raw else DEFAULT_RESUME_CLAIM_TTL_SECONDS
-    except ValueError:
-        ttl = 0
-    if not 1 <= ttl <= MAX_RESUME_CLAIM_TTL_SECONDS:
-        raise ValueError(
-            "REFLEXIO_RESUME_CLAIM_TTL_SECONDS must be a positive integer no "
-            "greater than 357913941 (the native health/discovery arithmetic limit)."
-        )
-    return ResumeTiming(poll_seconds=poll, claim_ttl_seconds=ttl)
-
-
-# Frozen retired defaults, not references to potentially recalibrated policy.
-_LEGACY_DEFAULTS = {
-    "resume_poll_interval_seconds": 5.0,
-    "resume_claim_ttl_seconds": 600,
-}
-_LEGACY_FLOAT = TypeAdapter(float)
-_LEGACY_INT = TypeAdapter(int)
+logger = logging.getLogger(__name__)
+RETIRED_PENDING_TOOL_TIMING_FIELDS = (
+    "resume_poll_interval_seconds",
+    "resume_claim_ttl_seconds",
+)
+_RETIRED_RESUME_ENV = (
+    "REFLEXIO_RESUME_POLL_INTERVAL_SECONDS",
+    "REFLEXIO_RESUME_CLAIM_TTL_SECONDS",
+)
+# Historical validation bounds only. These never select an execution deadline
+# and are never copied into the current renewable user lease.
+_LEGACY_POLL = TypeAdapter(
+    Annotated[float, Field(gt=0, le=threading.TIMEOUT_MAX, allow_inf_nan=False)]
+)
+_LEGACY_CLAIM = TypeAdapter(Annotated[int, Field(gt=0, le=((1 << 31) - 1) // 6)])
 
 
 class PendingToolTimingMigrationError(ConfigurationMigrationError):
-    """Custom pending-tool execution timing requires explicit adoption."""
+    """Malformed saved timing cannot be discarded by an upgrade."""
+
+
+def warn_retired_resume_timing(environment: Mapping[str, str]) -> None:
+    """Warn by name only; old assignments cannot select or block work policy."""
+    names = [name for name in _RETIRED_RESUME_ENV if environment.get(name, "").strip()]
+    if names:
+        logger.warning(
+            "event=obsolete_resume_timing release_blocking=false settings=%s "
+            "retired by single-owner execution; remove the obsolete assignments",
+            ",".join(names),
+        )
 
 
 def strip_retired_pending_followup_warning(data: Any) -> Any:
@@ -96,27 +71,28 @@ def strip_retired_pending_followup_warning(data: Any) -> Any:
 
 
 def strip_legacy_pending_tool_timing(data: Any) -> Any:
-    """Copy and discard old defaults; reject customized or malformed timing."""
+    """Validate historical values and retire their mechanism during conversion.
+
+    The deliberate engine upgrade follows actual ownership, not old claim age.
+    Keep every unknown/non-timing field, explicit opt-out and secret untouched.
+    Runtime models reject these fields; this is not a reader alias.
+    """
     if not isinstance(data, dict):
         return data
-    cleaned = dict(data)
-    for key, old_default in _LEGACY_DEFAULTS.items():
-        if key not in data:
-            continue
-        adapter = (
-            _LEGACY_FLOAT if key == "resume_poll_interval_seconds" else _LEGACY_INT
-        )
-        try:
-            matches = adapter.validate_python(data[key]) == old_default
-        except ValidationError:
-            matches = False
-        if not matches:
-            raise PendingToolTimingMigrationError(
-                f"Retired setting pending_tool_call_config.{key} requires explicit "
-                "migration to process-owned REFLEXIO_RESUME_POLL_INTERVAL_SECONDS "
-                "and REFLEXIO_RESUME_CLAIM_TTL_SECONDS. Choose the deployment "
-                "policy explicitly before removing legacy organization fields; "
-                "different org values cannot be combined automatically."
-            )
-        cleaned.pop(key)
-    return cleaned
+    for key, adapter in zip(
+        RETIRED_PENDING_TOOL_TIMING_FIELDS, (_LEGACY_POLL, _LEGACY_CLAIM), strict=True
+    ):
+        if key in data:
+            try:
+                adapter.validate_python(data[key])
+            except ValidationError:
+                raise PendingToolTimingMigrationError(
+                    f"Invalid historical pending_tool_call_config.{key}; correct the saved "
+                    "value before retrying the single-owner upgrade. No current timing "
+                    "or user lease has been changed."
+                ) from None
+    return {
+        key: value
+        for key, value in data.items()
+        if key not in RETIRED_PENDING_TOOL_TIMING_FIELDS
+    }

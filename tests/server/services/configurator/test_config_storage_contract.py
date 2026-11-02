@@ -299,7 +299,11 @@ def test_retired_custom_policy_propagates_without_resetting_file(
         lambda: load_storage_from_config("test-org", base_dir=str(tmp_path)),
         lambda: save_storage_to_config("sqlite", "test-org", base_dir=str(tmp_path)),
     ):
-        with pytest.raises(StoredConfigurationError, match=section) as error:
+        # Strict readers report the containing scope; explicit historical
+        # preparation may report its precise retired field. Both are value-free.
+        with pytest.raises(
+            StoredConfigurationError, match=f"{section}|{field}"
+        ) as error:
             load()
         assert "private-custom-policy" not in str(error.value)
         assert path.read_bytes() == before
@@ -322,7 +326,12 @@ def test_invalid_recognized_policy_preserves_file_and_blocks_cli_fallback(
     from reflexio.config_migration import StoredConfigurationError
 
     storage = _make_local_file_storage(str(tmp_path))
+    # This checks current policy validation; unmarked canonical-field ambiguity
+    # has its own generation/adoption tests in test_config_file.py.
+    from reflexio.config_file import FILE_FORMAT_VERSION
+
     payload = {
+        "_reflexio_config_file": {"version": FILE_FORMAT_VERSION},
         "storage_config": {"type": "sqlite"},
         "lineage_gc": {"enabled": False},
         "agent_context_prompt": "private-customer-prompt",

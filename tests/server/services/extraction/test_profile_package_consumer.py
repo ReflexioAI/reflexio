@@ -2,7 +2,7 @@
 
 import copy
 import json
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -178,19 +178,28 @@ def prepare_consumer(
     return client, preparation, storage, window, token
 
 
+@contextmanager
 def coordinator(preparation, storage, window, token):
-    parent = storage.get_agent_run(f"window:{window.window_id}")
-    current = OverflowCoordinator(
-        storage,
-        window,
-        token,
-        parent.generation_request_snapshot["overflow"],
-        source_digest=preparation.compression.source_digest,
-        context_limits={"gpt-4o-mini": 128000},
-        turn_seconds=600,
+    from reflexio.server.services.durable_learning.user_lease import (
+        adopt_agent_run_for_execution,
+        owned_user_work_context,
     )
-    current.saved_run = parent
-    return current
+
+    with owned_user_work_context(storage, window.user_id, token, 600):
+        parent = storage.get_agent_run(f"window:{window.window_id}")
+        assert parent is not None
+        parent = adopt_agent_run_for_execution(storage, parent)
+        current = OverflowCoordinator(
+            storage,
+            window,
+            token,
+            parent.generation_request_snapshot["overflow"],
+            source_digest=preparation.compression.source_digest,
+            context_limits={"gpt-4o-mini": 128000},
+            turn_seconds=600,
+        )
+        current.saved_run = parent
+        yield current
 
 
 def install_transport(
@@ -250,11 +259,12 @@ def test_actual_native_consumer_replays_without_dispatch_or_parent_completion(
         package_pipeline, monkeypatch, gate_enabled=gate_enabled
     )
     calls = install_transport(client, monkeypatch, gate=gate, profiles=profiles)
-    first = consume_profile_package(
-        preparation=preparation,
-        coordinator=coordinator(preparation, storage, window, token),
-        client=client,
-    )
+    with coordinator(preparation, storage, window, token) as owned:
+        first = consume_profile_package(
+            preparation=preparation,
+            coordinator=owned,
+            client=client,
+        )
     assert first.gate_decision == gate
     assert first.package.result.passthrough
     assert first.package.node_keys == ()
@@ -274,12 +284,13 @@ def test_actual_native_consumer_replays_without_dispatch_or_parent_completion(
     )
     refuse = Mock(side_effect=AssertionError("replay must not dispatch"))
     monkeypatch.setattr(client, "_completion_with_hard_timeout", refuse)
-    replay = consume_profile_package(
-        preparation=preparation,
-        coordinator=coordinator(preparation, storage, window, token),
-        client=client,
-        cache_only=True,
-    )
+    with coordinator(preparation, storage, window, token) as owned:
+        replay = consume_profile_package(
+            preparation=preparation,
+            coordinator=owned,
+            client=client,
+            cache_only=True,
+        )
     assert replay.package.presentation == first.package.presentation
     assert replay.gate_decision == first.gate_decision
     assert storage.get_agent_run(parent.id).generation_request_snapshot == frozen
@@ -299,29 +310,34 @@ def test_actual_native_consumer_stage_cap_survives_restart(
         package_pipeline, monkeypatch
     )
     calls = install_transport(client, monkeypatch)
-    first = consume_profile_package(
-        preparation=preparation,
-        coordinator=coordinator(preparation, storage, window, token),
-        client=client,
-    )
+    with coordinator(preparation, storage, window, token) as owned:
+        first = consume_profile_package(
+            preparation=preparation,
+            coordinator=owned,
+            client=client,
+        )
     parent = storage.get_agent_run(f"window:{window.window_id}")
     frozen = copy.deepcopy(parent.generation_request_snapshot)
-    current = coordinator(preparation, storage, window, token)
-    messages = preparation.gate_messages(first.package.presentation.text)
-    gate_key = next(
-        key
-        for key, receipt in frozen["overflow"]["checkpoint"]["completed_steps"].items()
-        if isinstance(receipt["output"], dict) and "decision" in receipt["output"]
-    )
-    with (
-        current.profile_request(preparation, "gate", messages, receipt_key=gate_key),
-        pytest.raises(ProviderRequestGuardError, match="reservation failed"),
-    ):
-        client.generate_chat_response_with_provenance(
-            messages=messages, model="gpt-4o-mini"
+    with coordinator(preparation, storage, window, token) as current:
+        messages = preparation.gate_messages(first.package.presentation.text)
+        gate_key = next(
+            key
+            for key, receipt in frozen["overflow"]["checkpoint"][
+                "completed_steps"
+            ].items()
+            if isinstance(receipt["output"], dict) and "decision" in receipt["output"]
         )
-    assert storage.get_agent_run(parent.id).generation_request_snapshot == frozen
-    assert len(calls) == 2
+        with (
+            current.profile_request(
+                preparation, "gate", messages, receipt_key=gate_key
+            ),
+            pytest.raises(ProviderRequestGuardError, match="reservation failed"),
+        ):
+            client.generate_chat_response_with_provenance(
+                messages=messages, model="gpt-4o-mini"
+            )
+        assert storage.get_agent_run(parent.id).generation_request_snapshot == frozen
+        assert len(calls) == 2
 
 
 def test_consumer_requires_exact_frozen_preparation_before_any_dispatch(
@@ -341,10 +357,13 @@ def test_consumer_requires_exact_frozen_preparation_before_any_dispatch(
         )
     wire = Mock(side_effect=AssertionError("no dispatch"))
     monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
-    with pytest.raises(InputBudgetConfigurationError, match="binding changed"):
+    with (
+        coordinator(preparation, storage, window, token) as owned,
+        pytest.raises(InputBudgetConfigurationError, match="binding changed"),
+    ):
         consume_profile_package(
             preparation=preparation,
-            coordinator=coordinator(preparation, storage, window, token),
+            coordinator=owned,
             client=client,
         )
     wire.assert_not_called()
@@ -366,10 +385,13 @@ def test_missing_cache_only_processing_receipt_cannot_start_paid_work(
     monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
     parent = storage.get_agent_run(f"window:{window.window_id}")
     frozen = copy.deepcopy(parent.generation_request_snapshot)
-    with pytest.raises(InputBudgetConfigurationError, match="processing receipt"):
+    with (
+        coordinator(preparation, storage, window, token) as owned,
+        pytest.raises(InputBudgetConfigurationError, match="processing receipt"),
+    ):
         consume_profile_package(
             preparation=preparation,
-            coordinator=coordinator(preparation, storage, window, token),
+            coordinator=owned,
             client=client,
             cache_only=True,
         )
@@ -488,12 +510,13 @@ def test_actual_pending_tool_wait_resumes_full_answer_and_remaining_turns(
     monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
 
     def consume():
-        return consume_profile_package(
-            preparation=preparation,
-            coordinator=coordinator(preparation, storage, window, token),
-            client=client,
-            pending_tool_config=tools_config,
-        )
+        with coordinator(preparation, storage, window, token) as owned:
+            return consume_profile_package(
+                preparation=preparation,
+                coordinator=owned,
+                client=client,
+                pending_tool_config=tools_config,
+            )
 
     with pytest.raises(OverflowSuspendedError):
         consume()
@@ -558,7 +581,6 @@ def test_warning_retirement_keeps_real_frozen_pending_policy_strict(
             config, future_policy=change == "unknown_policy"
         ),
     )
-    saved = copy.deepcopy(storage.get_agent_run(f"window:{window.window_id}"))
     if change == "secrets":
         config.hmac_secrets = ["different-signing-secret"]
     elif change == "ttl":
@@ -566,17 +588,21 @@ def test_warning_retirement_keeps_real_frozen_pending_policy_strict(
     elif change == "tool_override":
         config.tool_overrides["ask_human"].pending_ttl_seconds = 91
     calls = install_transport(client, monkeypatch)
-    with pytest.raises(
-        InputBudgetConfigurationError, match="pending tool configuration"
-    ):
-        consume_profile_package(
-            preparation=preparation,
-            coordinator=coordinator(preparation, storage, window, token),
-            client=client,
-            pending_tool_config=config,
-        )
-    assert calls == []
-    assert storage.get_agent_run(saved.id) == saved
+    with coordinator(preparation, storage, window, token) as owned:
+        # Admission legitimately establishes a claim. The rejected consumer
+        # must leave that complete admitted row unchanged, not merely its JSON.
+        saved = copy.deepcopy(storage.get_agent_run(f"window:{window.window_id}"))
+        with pytest.raises(
+            InputBudgetConfigurationError, match="pending tool configuration"
+        ):
+            consume_profile_package(
+                preparation=preparation,
+                coordinator=owned,
+                client=client,
+                pending_tool_config=config,
+            )
+        assert calls == []
+        assert storage.get_agent_run(saved.id) == saved
 
 
 def test_compressed_package_consumption_reuses_all_actual_selection_receipts(
@@ -586,11 +612,12 @@ def test_compressed_package_consumption_reuses_all_actual_selection_receipts(
         package_pipeline, monkeypatch, gate_enabled=False, long_tools=True
     )
     calls = install_transport(client, monkeypatch, profiles=False)
-    first = consume_profile_package(
-        preparation=preparation,
-        coordinator=coordinator(preparation, storage, window, token),
-        client=client,
-    )
+    with coordinator(preparation, storage, window, token) as owned:
+        first = consume_profile_package(
+            preparation=preparation,
+            coordinator=owned,
+            client=client,
+        )
     assert not first.package.result.passthrough
     assert first.package.node_keys
     parent = storage.get_agent_run(f"window:{window.window_id}")
@@ -609,12 +636,13 @@ def test_compressed_package_consumption_reuses_all_actual_selection_receipts(
         assert receipt["kind"] == "source_selection" and receipt["attempt_ids"]
     refuse = Mock(side_effect=AssertionError("cached package must not dispatch"))
     monkeypatch.setattr(client, "_completion_with_hard_timeout", refuse)
-    replay = consume_profile_package(
-        preparation=preparation,
-        coordinator=coordinator(preparation, storage, window, token),
-        client=client,
-        cache_only=True,
-    )
+    with coordinator(preparation, storage, window, token) as owned:
+        replay = consume_profile_package(
+            preparation=preparation,
+            coordinator=owned,
+            client=client,
+            cache_only=True,
+        )
     assert replay.package.presentation == first.package.presentation
     assert storage.get_agent_run(parent.id).generation_request_snapshot == frozen
     refuse.assert_not_called()
@@ -631,11 +659,12 @@ def test_cached_consumer_result_requires_exact_actual_attempts(
         package_pipeline, monkeypatch
     )
     install_transport(client, monkeypatch)
-    consume_profile_package(
-        preparation=preparation,
-        coordinator=coordinator(preparation, storage, window, token),
-        client=client,
-    )
+    with coordinator(preparation, storage, window, token) as owned:
+        consume_profile_package(
+            preparation=preparation,
+            coordinator=owned,
+            client=client,
+        )
     parent = storage.get_agent_run(f"window:{window.window_id}")
     snapshot = parent.generation_request_snapshot
     journal = snapshot["overflow"]
@@ -672,10 +701,13 @@ def test_cached_consumer_result_requires_exact_actual_attempts(
         )
     wire = Mock(side_effect=AssertionError("damaged receipt must not dispatch"))
     monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
-    with pytest.raises(InputBudgetConfigurationError):
+    with (
+        coordinator(preparation, storage, window, token) as owned,
+        pytest.raises(InputBudgetConfigurationError),
+    ):
         consume_profile_package(
             preparation=preparation,
-            coordinator=coordinator(preparation, storage, window, token),
+            coordinator=owned,
             client=client,
             cache_only=True,
         )
@@ -702,10 +734,13 @@ def test_unknown_crash_attempt_stays_paid_without_inventing_success_receipt(
         raise OverflowSuspendedError("Simulated lost response after reservation")
 
     monkeypatch.setattr(client, "_completion_with_hard_timeout", lost_response)
-    with pytest.raises(OverflowSuspendedError):
+    with (
+        coordinator(preparation, storage, window, token) as owned,
+        pytest.raises(OverflowSuspendedError),
+    ):
         consume_profile_package(
             preparation=preparation,
-            coordinator=coordinator(preparation, storage, window, token),
+            coordinator=owned,
             client=client,
         )
     before = storage.get_agent_run(
@@ -713,11 +748,12 @@ def test_unknown_crash_attempt_stays_paid_without_inventing_success_receipt(
     ).generation_request_snapshot["overflow"]
     assert len(before["attempts"]) == 1 and before["attempts"][0]["usage"] is None
     calls = install_transport(client, monkeypatch)
-    consume_profile_package(
-        preparation=preparation,
-        coordinator=coordinator(preparation, storage, window, token),
-        client=client,
-    )
+    with coordinator(preparation, storage, window, token) as owned:
+        consume_profile_package(
+            preparation=preparation,
+            coordinator=owned,
+            client=client,
+        )
     after = storage.get_agent_run(
         f"window:{window.window_id}"
     ).generation_request_snapshot["overflow"]
@@ -740,17 +776,18 @@ def test_paid_attempt_logical_binding_cannot_be_reassigned(
         package_pipeline, monkeypatch
     )
     install_transport(client, monkeypatch)
-    consume_profile_package(
-        preparation=preparation,
-        coordinator=coordinator(preparation, storage, window, token),
-        client=client,
-    )
-    current = coordinator(preparation, storage, window, token)
-    checkpoint = current.checkpoint
-    identity = next(iter(checkpoint["profile_attempt_bindings"]))
-    checkpoint["profile_attempt_bindings"][identity] = "f" * 64
-    parent = storage.get_agent_run(f"window:{window.window_id}")
-    frozen = copy.deepcopy(parent.generation_request_snapshot)
-    with pytest.raises(OverflowCheckpointConflictError, match="immutable"):
-        current.save_checkpoint(checkpoint)
-    assert storage.get_agent_run(parent.id).generation_request_snapshot == frozen
+    with coordinator(preparation, storage, window, token) as owned:
+        consume_profile_package(
+            preparation=preparation,
+            coordinator=owned,
+            client=client,
+        )
+    with coordinator(preparation, storage, window, token) as current:
+        checkpoint = current.checkpoint
+        identity = next(iter(checkpoint["profile_attempt_bindings"]))
+        checkpoint["profile_attempt_bindings"][identity] = "f" * 64
+        parent = storage.get_agent_run(f"window:{window.window_id}")
+        frozen = copy.deepcopy(parent.generation_request_snapshot)
+        with pytest.raises(OverflowCheckpointConflictError, match="immutable"):
+            current.save_checkpoint(checkpoint)
+        assert storage.get_agent_run(parent.id).generation_request_snapshot == frozen

@@ -55,6 +55,7 @@ from reflexio.server.services.storage.storage_base import (
     human_feedback_scope,
 )
 from reflexio.test_support.llm_mock import make_structured_finish
+from tests.server.services.extraction.source_fixtures import persist_source_models
 
 # ===============================
 # Fixtures
@@ -743,6 +744,7 @@ class TestResumableAgentPath:
             patch("litellm.completion", side_effect=[response]),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
+            persist_source_models(sqlite_storage, sample_request_interaction_models)
             raw_profiles = extractor._generate_raw_updates_from_sessions(
                 request_interaction_data_models=sample_request_interaction_models,
                 existing_profiles=[],
@@ -810,6 +812,7 @@ class TestResumableAgentPath:
             patch("litellm.completion", side_effect=[response]),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
+            persist_source_models(sqlite_storage, sample_request_interaction_models)
             raw_profiles = extractor._generate_raw_updates_from_sessions(
                 request_interaction_data_models=sample_request_interaction_models,
                 existing_profiles=[],
@@ -905,6 +908,7 @@ class TestResumableAgentPath:
             patch("litellm.completion", side_effect=[attach_response, finish_response]),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
+            persist_source_models(sqlite_storage, sample_request_interaction_models)
             raw_profiles = extractor._generate_raw_updates_from_sessions(
                 request_interaction_data_models=sample_request_interaction_models,
                 existing_profiles=[],

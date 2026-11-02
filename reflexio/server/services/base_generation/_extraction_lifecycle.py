@@ -1,25 +1,14 @@
-"""Extraction-run lifecycle helpers for ``BaseGenerationService`` (Tier-1b decomposition).
+"""Extraction execution and live-claim lifecycle for generation services.
 
-``ExtractionRunLifecycleMixin`` holds the four concrete methods that run the
-configured extractor and drive the agent-run rows through their terminal states:
-``_execute_extractor`` (thread-pool run + timeout guard), ``_fail_active_extraction_runs``
-(timeout cleanup), ``_finalize_extraction_runs`` (success finalization), and
-``_mark_extraction_runs_finalization_failed`` (failure/backoff).
+The extractor returns its exact adopted run alongside business output. Retain
+that immutable witness across compute/persist: a later lookup by business ID
+cannot confer the replacement execution's authority. Terminalization joins the
+fenced learning/receipt transaction, before window completion clears its owner.
+Failure cleanup likewise uses the retained claim and discards lost ownership.
+Postcommit telemetry and billing do not mutate run lifecycle state.
 
-``_execute_extractor`` writes the per-run billing accumulators — ``_last_extractor_run_stats``,
-``_last_extraction_run_ids`` (appended on an ``ExtractionOutcome`` run id), and
-``_last_token_totals`` (set ONLY under ``isinstance(result, ExtractionOutcome)``). Those
-writes and their guards are moved VERBATIM: the ``isinstance`` write-guard is the double-bill
-idempotency backstop (a non-``ExtractionOutcome`` result must NOT overwrite the accumulator),
-and ``_finalize_extraction_runs`` / ``_mark_extraction_runs_finalization_failed`` are invoked
-from ``_run_generation`` (still on the base) via ``self.`` MRO — the atomicity invariant
-(``_mark_..._failed`` on a ``_process_results`` failure, not finalize) depends on both bodies
-being unchanged.
-
-``ExtractorExecutionError`` and ``EXTRACTOR_TIMEOUT_SECONDS`` live in
-``base_generation_service`` and are imported function-locally to avoid a circular import
-(the base module imports this package at load time). Method bodies are otherwise moved
-verbatim from the former monolithic ``base_generation_service.py``.
+``ExtractorExecutionError`` is imported function-locally from the composing base
+to avoid an import cycle. The base owns per-run accumulator initialization.
 """
 
 import contextvars
@@ -27,7 +16,6 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from reflexio.server.api_endpoints.request_context import RequestContext
@@ -40,8 +28,11 @@ from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.token_accounting import RunTokenTotals
 from reflexio.server.services.deferred_learning_plan import ExtractorBookmarkAdvance
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
-from reflexio.server.services.extractor_config_utils import get_extractor_name
-from reflexio.server.services.storage.storage_base import AgentRunStatus, BaseStorage
+from reflexio.server.services.storage.storage_base import (
+    AgentRunRecord,
+    BaseStorage,
+    LeaseLostError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,12 +101,14 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
     # Annotation-only stubs for base-owned attributes these helpers read/write (init'd
     # in the base ``__init__``). NEVER assign here — a class-level default would be a
     # shared-state footgun on a mixin.
+    EMITS_LEARNING_BILLING: bool
     service_config: TGenerationServiceConfig | None
     storage: BaseStorage | None
     request_context: RequestContext
     client: LiteLLMClient
     _last_extractor_run_stats: dict[str, int]
     _last_extraction_run_ids: list[str]
+    _last_extraction_run: AgentRunRecord | None
     _last_token_totals: RunTokenTotals | None
     _window_extractor_timeout_seconds: int
     _last_bookmark_advance: ExtractorBookmarkAdvance | None
@@ -228,7 +221,15 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
             result = future.result(timeout=timeout_seconds)
             if isinstance(result, ExtractionOutcome):
                 if result.run_id:
+                    if (
+                        result.execution_run is None
+                        or result.execution_run.id != result.run_id
+                    ):
+                        raise LeaseLostError(
+                            "Extractor did not retain its live execution claim"
+                        )
                     self._last_extraction_run_ids.append(result.run_id)
+                    self._last_extraction_run = result.execution_run
                 self._last_token_totals = result.token_totals
                 # Capture the deferred stride-bookmark advance (F1); applied
                 # later in ``persist_generation`` (durable fence) or in
@@ -252,6 +253,12 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
             )
             return None
         except FuturesTimeoutError as exc:
+            if self.storage is not None:
+                from reflexio.server.services.durable_learning.user_lease import (
+                    cancel_extraction_turn,
+                )
+
+                cancel_extraction_turn(self.storage)
             self._last_extractor_run_stats = {"total": 1, "failed": 1, "timed_out": 1}
             error_msg = (
                 f"Extractor timed out after {timeout_seconds} seconds "
@@ -266,12 +273,8 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
                 ),
                 identifier,
             )
-            self._fail_active_extraction_runs(
-                extractor_kind=get_extractor_name(extractor_config),
-                last_error=error_msg,
-            )
             raise ExtractorExecutionError(error_msg) from exc
-        except ProviderRequestGuardError:
+        except (ProviderRequestGuardError, LeaseLostError):
             # The durable coordinator must distinguish suspension/admission from
             # an extractor failure; do not replace its type with a wrapper.
             raise
@@ -296,96 +299,38 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
             if executor is not None:
                 executor.shutdown(wait=False, cancel_futures=True)
 
-    def _fail_active_extraction_runs(
-        self,
-        *,
-        extractor_kind: str,
-        last_error: str,
-    ) -> None:
-        """Mark active agent-run rows failed when the service timeout fires."""
-        if self.storage is None or self.service_config is None:
-            return
-        generation_request_id = getattr(self.service_config, "request_id", None)
-        if not generation_request_id:
-            return
-        user_id = getattr(self.service_config, "user_id", None)
-        try:
-            failed_count = self.storage.fail_running_agent_runs_for_request(
-                org_id=self.request_context.org_id,
-                extractor_kind=extractor_kind,
-                user_id=user_id,
-                request_id=generation_request_id,
-                last_error=last_error,
-            )
-        except NotImplementedError:
-            return
-        except Exception as exc:  # noqa: BLE001 - keep timeout error primary
-            logger.warning(
-                "Failed to mark timed-out %s agent runs failed: %s",
-                extractor_kind,
-                exc,
-            )
-            return
-        if failed_count:
-            logger.warning(
-                "Marked %d timed-out %s agent run(s) failed for generation_request_id=%s",
-                failed_count,
-                extractor_kind,
-                generation_request_id,
-            )
+    def _finalize_extraction_runs(self) -> AgentRunRecord | None:
+        """Terminalize the exact live claim inside learning/receipt publication."""
+        if self.storage is None or not self._last_extraction_run_ids:
+            return None
+        run = self._last_extraction_run
+        if run is None or self._last_extraction_run_ids != [run.id]:
+            raise LeaseLostError("Finalization did not retain its live execution claim")
+        from reflexio.server.services.extraction.publication import (
+            finalize_window_execution,
+        )
 
-    def _finalize_extraction_runs(self) -> None:
-        if self.storage is None:
-            return
-        for run_id in self._last_extraction_run_ids:
-            run = self.storage.get_agent_run(run_id)
-            if run is None:
-                continue
-            if getattr(self, "_window_id", None) and run.status not in (
-                AgentRunStatus.AGENT_COMPLETED,
-                AgentRunStatus.FINALIZING,
-            ):
-                continue  # A replay must not rewind human-resume progress.
-            status = (
-                AgentRunStatus.FINALIZED_PENDING_TOOL
-                if run.pending_tool_call_ids
-                else AgentRunStatus.FINALIZED
-            )
-            self.storage.update_agent_run_status(
-                run_id,
-                status,
-                pending_tool_call_ids=run.pending_tool_call_ids,
-            )
+        return finalize_window_execution(self.storage, run)
 
     def _mark_extraction_runs_finalization_failed(self, exc: Exception) -> None:
-        # Automatic windows own their retry state; do not also enqueue a resume
-        # finalization that could bill or write outside the window transaction.
-        if getattr(self, "_window_id", None):
+        # Automatic windows own their retry state; never enqueue a second owner.
+        if getattr(self, "_window_id", None) or self.storage is None:
             return
-        if self.storage is None:
-            return
-        root_config = self.request_context.configurator.get_config()
-        pending_config = getattr(root_config, "pending_tool_call_config", None)
-        for run_id in self._last_extraction_run_ids:
-            run = self.storage.get_agent_run(run_id)
-            if run is None or run.committed_output is None:
-                continue
-            next_attempt_count = run.finalization_attempts + 1
-            max_attempts = (
-                pending_config.max_finalization_attempts
-                if pending_config is not None
-                else 3
-            )
-            status = (
-                AgentRunStatus.FAILED
-                if next_attempt_count >= max_attempts
-                else AgentRunStatus.FINALIZATION_FAILED
-            )
-            delay_seconds = min(300, max(1, 2 ** max(0, next_attempt_count - 1)))
-            self.storage.update_agent_run_status(
-                run_id,
-                status,
-                next_resume_at=datetime.now(UTC) + timedelta(seconds=delay_seconds),
+        run = self._last_extraction_run
+        if run is None or run.committed_output is None:
+            return  # A business run ID cannot confer failure-write authority.
+        from reflexio.server.services.extraction.publication import (
+            settle_finalization_failure,
+        )
+
+        max_attempts = self.request_context.configurator.get_config().pending_tool_call_config.max_finalization_attempts
+        try:
+            self._last_extraction_run = settle_finalization_failure(
+                self.storage,
+                run,
+                exc,
+                max_attempts=max_attempts,
                 last_error=str(exc),
-                increment_finalization_attempts=True,
             )
+        except LeaseLostError:
+            logger.info("Discarded stale finalization failure for run_id=%s", run.id)

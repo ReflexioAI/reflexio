@@ -114,6 +114,39 @@ class TestResolveStorage:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def native_policy_adapter():
+    from reflexio.server.services.configurator.configurator import (
+        DefaultConfigurator,
+        get_configurator_class,
+        set_configurator_class,
+    )
+
+    admitted = []
+
+    class PolicyOnlyConfigurator(DefaultConfigurator):
+        @classmethod
+        def validate_storage_upgrade(cls, document, *, org_id, base_dir):
+            assert org_id == "test-org" and base_dir is not None
+            raw = document.get("storage_config")
+            assert isinstance(raw, dict)
+            if raw["type"] == "sqlite":
+                super().validate_storage_upgrade(
+                    document, org_id=org_id, base_dir=base_dir
+                )
+                return
+            assert raw["type"] in {"supabase", "postgres"}
+            assert raw["db_url"] == "postgresql://localhost/test"
+            admitted.append(raw["db_url"])
+
+    previous = get_configurator_class()
+    set_configurator_class(PolicyOnlyConfigurator)
+    try:
+        yield admitted
+    finally:
+        set_configurator_class(previous)
+
+
 class TestSaveAndLoadStorage:
     """Tests for config file round-trip persistence."""
 
@@ -123,7 +156,7 @@ class TestSaveAndLoadStorage:
         assert result == "sqlite"
 
     def test_round_trip_supabase_with_creds(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native_policy_adapter
     ) -> None:
         monkeypatch.setenv("DATA_SUPABASE_URL", "https://example.supabase.co")
         monkeypatch.setenv("DATA_SUPABASE_KEY", "test-key-123")
@@ -131,9 +164,10 @@ class TestSaveAndLoadStorage:
         save_storage_to_config("supabase", org_id="test-org", base_dir=str(tmp_path))
         result = load_storage_from_config(org_id="test-org", base_dir=str(tmp_path))
         assert result == "supabase"
+        assert native_policy_adapter == ["postgresql://localhost/test"]
 
     def test_round_trip_supabase_with_canonical_db_url(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native_policy_adapter
     ) -> None:
         monkeypatch.setenv("DATA_SUPABASE_URL", "https://example.supabase.co")
         monkeypatch.setenv("DATA_SUPABASE_KEY", "test-key-123")
@@ -142,6 +176,7 @@ class TestSaveAndLoadStorage:
         save_storage_to_config("supabase", org_id="test-org", base_dir=str(tmp_path))
         result = load_storage_from_config(org_id="test-org", base_dir=str(tmp_path))
         assert result == "supabase"
+        assert native_policy_adapter == ["postgresql://localhost/test"]
 
     def test_supabase_without_creds_preserves_existing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -161,7 +196,7 @@ class TestSaveAndLoadStorage:
         assert result == "sqlite"
 
     def test_preserves_existing_config_fields(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native_policy_adapter
     ) -> None:
         """Updating storage_config must not clobber extractors or other fields."""
         from reflexio.models.config_schema import (
@@ -190,6 +225,7 @@ class TestSaveAndLoadStorage:
         # Now update storage to postgres (via canonical data DB URL)
         monkeypatch.setenv("DATA_DB_URL", "postgresql://localhost/test")
         save_storage_to_config("postgres", org_id="test-org", base_dir=str(tmp_path))
+        assert native_policy_adapter == ["postgresql://localhost/test"]
 
         # Verify extractor and context are preserved
         reloaded = storage_obj.load_config()

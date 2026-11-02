@@ -112,11 +112,7 @@ def test_library_recovers_persisted_backlog_without_new_publish(tmp_path, monkey
     finally:
         with local._lock:
             scheduler = local._schedulers.pop(str(tmp_path), None)
-            # `_contexts` is a WeakSet of live contexts, not a dict keyed by
-            # (org, dir) -- two handles here share that key, which is exactly
-            # why the key was removed. Clear it; this is teardown.
-            local._contexts.clear()
-            local._live.clear()
+            local._contexts.discard_directory(str(tmp_path))
         if scheduler:
             scheduler.stop()
 
@@ -178,3 +174,38 @@ def test_invalid_policy_fails_before_constructing_a_worker(monkeypatch):
         DurableLearningScheduler(
             request_context_factory=_unused_context, org_ids_provider=lambda: []
         )
+
+
+@pytest.mark.parametrize("known", [[], ["proven-org"]])
+def test_partial_discovery_serves_proven_work_without_clearing_failure(
+    monkeypatch, caplog, transient_failure_classifier, known
+):
+    from reflexio.server import background_work
+    from reflexio.server.services.durable_learning.discovery import (
+        IncompleteWorkDiscoveryError,
+    )
+
+    def provider():
+        try:
+            raise transient_failure_classifier("SENTINEL_PRIVATE_DISCOVERY_INPUT")
+        except Exception as exc:
+            raise IncompleteWorkDiscoveryError(known) from exc
+
+    scheduler = DurableLearningScheduler(
+        request_context_factory=_unused_context, org_ids_provider=provider
+    )
+    monkeypatch.setattr(
+        "reflexio.server.services.durable_learning.scheduler.worker_count", lambda: 1
+    )
+    admitted = []
+    monkeypatch.setattr(
+        scheduler._worker, "start_org", lambda org, _lease: admitted.append(org) or True
+    )
+    scheduler._run_once()
+    assert admitted == known
+    assert "durable-learning-discovery" in background_work._streaks
+    assert "SENTINEL_PRIVATE_DISCOVERY_INPUT" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+    scheduler._org_ids_provider = lambda: []
+    scheduler._run_once()
+    assert "durable-learning-discovery" not in background_work._streaks

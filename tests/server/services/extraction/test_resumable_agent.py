@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import logging
 import tempfile
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock, patch
+from uuid import UUID
 
 import pytest
 
@@ -19,9 +20,11 @@ from reflexio.server.llm.litellm_client import (
     StructuredOutputRepairError,
 )
 from reflexio.server.prompt.prompt_manager import PromptManager
+from reflexio.server.services.durable_learning.user_lease import user_extraction_lease
 from reflexio.server.services.extraction import (
     resumable_agent as resumable_agent_module,
 )
+from reflexio.server.services.extraction.history_inputs import HistoricalInputs
 from reflexio.server.services.extraction.pending_tool_call_dispatch import (
     PendingToolCallToolContext,
     create_ask_human_tool,
@@ -57,7 +60,63 @@ def storage():
         tempfile.TemporaryDirectory() as temp_dir,
         patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512),
     ):
-        yield SQLiteStorage(org_id="org_1", db_path=f"{temp_dir}/reflexio.db")
+        database = SQLiteStorage(org_id="org_1", db_path=f"{temp_dir}/reflexio.db")
+        from reflexio.models.api_schema.service_schemas import Interaction, Request
+
+        database.add_request(
+            Request(
+                request_id="source_request",
+                user_id="user_1",
+                session_id="source_session",
+                created_at=1000,
+            )
+        )
+        for identifier in (1, 2):
+            database._insert_interaction(
+                Interaction(
+                    interaction_id=identifier,
+                    user_id="user_1",
+                    request_id="source_request",
+                    content=f"Synthetic source {identifier}",
+                    created_at=1000 + identifier,
+                )
+            )
+        yield database
+
+
+def _adopt_continuation(storage, ready):
+    """Direct-agent setup under an existing actual owner; no queue discovery."""
+    from reflexio.server.services.durable_learning.user_lease import (
+        adopt_agent_run_for_execution,
+        owned_agent_run_write,
+    )
+
+    adopted = adopt_agent_run_for_execution(storage, ready)
+    with owned_agent_run_write(storage, adopted):
+        current = storage.update_agent_run_status(
+            adopted.id,
+            AgentRunStatus.RESUMING,
+            expected_claimed_by=adopted.claimed_by,
+            expected_claimed_at=adopted.claimed_at,
+        )
+    assert current is not None and current.status == AgentRunStatus.RESUMING
+    assert current.resume_attempts == ready.resume_attempts
+    return current
+
+
+def _source_inputs(storage, run):
+    from reflexio.server.services.extraction.resume_worker import (
+        _request_interaction_models_from_ids,
+    )
+    from reflexio.server.services.extraction.source_inputs import capture_source_inputs
+
+    models = _request_interaction_models_from_ids(
+        storage,
+        run.binding.source_interaction_ids,
+        fallback_source=run.binding.source,
+        fallback_agent_version=run.binding.agent_version,
+    )
+    return capture_source_inputs(storage, run, models)
 
 
 def _agent_run(run_id: str, extractor_kind: str = "profile") -> AgentRunRecord:
@@ -150,8 +209,10 @@ def test_resumable_agent_finishes_profile_output(
 
     with patch("litellm.completion", side_effect=[response]):
         result = agent.start(
+            source_inputs=_source_inputs(agent.storage, _agent_run("run_profile")),
             run=_agent_run("run_profile"),
             messages=[{"role": "user", "content": "extract profiles"}],
+            history_inputs=HistoricalInputs(),
             output_schema=StructuredProfilesOutput,
         )
 
@@ -213,8 +274,10 @@ def test_resumable_agent_discards_late_output_after_timeout_failure(
 
     with patch("litellm.completion", side_effect=fail_then_return):
         result = agent.start(
+            source_inputs=_source_inputs(agent.storage, _agent_run("run_late")),
             run=_agent_run("run_late"),
             messages=[{"role": "user", "content": "extract profiles"}],
+            history_inputs=HistoricalInputs(),
             output_schema=StructuredProfilesOutput,
         )
 
@@ -253,8 +316,12 @@ def test_resumable_agent_finishes_playbook_output(
 
     with patch("litellm.completion", side_effect=[response]):
         result = agent.start(
+            source_inputs=_source_inputs(
+                agent.storage, _agent_run("run_playbook", extractor_kind="playbook")
+            ),
             run=_agent_run("run_playbook", extractor_kind="playbook"),
             messages=[{"role": "user", "content": "extract playbooks"}],
+            history_inputs=HistoricalInputs(),
             output_schema=StructuredPlaybookList,
         )
 
@@ -282,8 +349,10 @@ def test_resumable_agent_marks_run_failed_on_loop_error(monkeypatch, storage, ca
     agent = ResumableExtractionAgent(client=client, storage=storage)
 
     result = agent.start(
+        source_inputs=_source_inputs(agent.storage, _agent_run("run_error")),
         run=_agent_run("run_error"),
         messages=[{"role": "user", "content": "extract profiles"}],
+        history_inputs=HistoricalInputs(),
         output_schema=StructuredProfilesOutput,
     )
 
@@ -337,8 +406,12 @@ def test_resumable_agent_failure_names_cause_without_tenant_text(
     agent = ResumableExtractionAgent(client=client, storage=storage)
 
     result = agent.start(
+        source_inputs=_source_inputs(
+            agent.storage, _agent_run("run_cause", extractor_kind="playbook")
+        ),
         run=_agent_run("run_cause", extractor_kind="playbook"),
         messages=[{"role": "user", "content": "extract playbooks"}],
+        history_inputs=HistoricalInputs(),
         output_schema=StructuredPlaybookList,
     )
 
@@ -386,6 +459,7 @@ def test_resumable_agent_uses_auto_tool_choice_with_extra_tools(
         run_id="run_auto",
         org_id="org_1",
         extractor_kind="profile",
+        user_id="user_1",
         config=PendingToolCallConfig(enabled=True),
     )
     responses = (
@@ -395,8 +469,10 @@ def test_resumable_agent_uses_auto_tool_choice_with_extra_tools(
     )
     with patch("litellm.completion", side_effect=responses):
         result = agent.start(
+            source_inputs=_source_inputs(agent.storage, _agent_run("run_auto")),
             run=_agent_run("run_auto"),
             messages=[{"role": "user", "content": "extract profiles"}],
+            history_inputs=HistoricalInputs(),
             output_schema=StructuredProfilesOutput,
             extra_tools=[
                 create_ask_human_tool(),
@@ -423,10 +499,13 @@ def test_resumable_agent_uses_auto_tool_choice_with_extra_tools(
         ]
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize("late_answer", [False, True])
 def test_resumable_agent_resume_injects_resolved_tool_result(
     monkeypatch,
     storage,
     tool_call_completion,
+    late_answer,
 ):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
@@ -468,11 +547,8 @@ def test_resumable_agent_resume_injects_resolved_tool_result(
         valid_for_seconds=3600,
     )
     assert resolved is not None
-    claimed = storage.claim_ready_agent_run(
-        org_id=run.binding.org_id, worker_id="worker_1"
-    )
-    assert claimed is not None
-    assert claimed.status == AgentRunStatus.RESUMING
+    ready = storage.get_agent_run(run.id)
+    assert ready is not None and ready.status == AgentRunStatus.RESUME_READY
 
     _make_tc, make_stop = tool_call_completion
     response = make_stop(
@@ -490,10 +566,36 @@ def test_resumable_agent_resume_injects_resolved_tool_result(
     client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
     agent = ResumableExtractionAgent(client=client, storage=storage)
 
-    with patch("litellm.completion", side_effect=[response]):
+    from reflexio.server.services.extraction.overflow_answers import answer_witness
+
+    expected_inputs = {resolved.id: build_scope_hash(answer_witness(asdict(resolved)))}
+
+    def complete_after_input_capture(*_args, **_kwargs):
+        if late_answer:
+            later = storage.create_pending_tool_call(
+                replace(pending, id="ptc_later", dedup_key="later-question")
+            )
+            storage.attach_run_tool_dependency(
+                RunToolDependencyRecord(run_id=run.id, pending_tool_call_id=later.id)
+            )
+            storage.resolve_pending_tool_call(
+                later.id,
+                result={"answer": "An answer not supplied to this model call."},
+                resolved_at=now,
+                valid_for_seconds=3600,
+            )
+        return response
+
+    with (
+        user_extraction_lease(storage, "user_1", max_wait_seconds=0),
+        patch("litellm.completion", side_effect=complete_after_input_capture),
+    ):
+        claimed = _adopt_continuation(storage, ready)
         result = agent.resume(
+            source_inputs=_source_inputs(agent.storage, claimed),
             run=claimed,
             messages=[{"role": "user", "content": "resume extraction"}],
+            history_inputs=HistoricalInputs(),
             output_schema=StructuredProfilesOutput,
             resolved_tool_calls=[resolved],
         )
@@ -510,6 +612,10 @@ def test_resumable_agent_resume_injects_resolved_tool_result(
     stored = storage.get_agent_run(run.id)
     assert stored is not None
     assert stored.status == AgentRunStatus.AGENT_COMPLETED
+    publication = stored.committed_output["publication"]
+    UUID(publication["id"])
+    assert publication["dependency_inputs"] == expected_inputs
+    assert "An answer not supplied" not in json.dumps(result.messages)
 
 
 def test_resumable_agent_resume_uses_persisted_step_budget(
@@ -558,6 +664,7 @@ def test_resumable_agent_resume_uses_persisted_step_budget(
         run_id=run.id,
         org_id="org_1",
         extractor_kind="profile",
+        user_id="user_1",
         config=PendingToolCallConfig(enabled=True),
     )
     # The model keeps calling an intermediate tool (ask_human) instead of
@@ -573,8 +680,10 @@ def test_resumable_agent_resume_uses_persisted_step_budget(
         ],
     ) as completion:
         result = agent.resume(
+            source_inputs=_source_inputs(agent.storage, run),
             run=run,
             messages=[{"role": "user", "content": "resume extraction"}],
+            history_inputs=HistoricalInputs(),
             output_schema=StructuredProfilesOutput,
             resolved_tool_calls=[resolved],
             extra_tools=[create_ask_human_tool()],
@@ -629,8 +738,12 @@ def _playbook_completion() -> SimpleNamespace:
 
 def _start_window(agent: ResumableExtractionAgent, run_id: str):
     return agent.start(
+        source_inputs=_source_inputs(
+            agent.storage, _agent_run(run_id, extractor_kind="playbook")
+        ),
         run=_agent_run(run_id, extractor_kind="playbook"),
         messages=[{"role": "user", "content": "extract playbooks"}],
+        history_inputs=HistoricalInputs(),
         output_schema=StructuredPlaybookList,
     )
 
@@ -722,6 +835,15 @@ def test_window_retry_preserves_admitted_run_identity_and_snapshots(
     agent = ResumableExtractionAgent(client=client, storage=storage)
 
     result = agent.start(
+        source_inputs=_source_inputs(
+            agent.storage,
+            replace(
+                _agent_run("window:w_keep", extractor_kind="playbook"),
+                generation_request_snapshot={"request_id": "retry"},
+                service_config_snapshot={"retry": "service"},
+                agent_context_snapshot="retry context",
+            ),
+        ),
         run=replace(
             _agent_run("window:w_keep", extractor_kind="playbook"),
             generation_request_snapshot={"request_id": "retry"},
@@ -729,6 +851,7 @@ def test_window_retry_preserves_admitted_run_identity_and_snapshots(
             agent_context_snapshot="retry context",
         ),
         messages=[{"role": "user", "content": "extract playbooks"}],
+        history_inputs=HistoricalInputs(),
         output_schema=StructuredPlaybookList,
     )
 
@@ -743,10 +866,8 @@ def test_window_retry_preserves_admitted_run_identity_and_snapshots(
     assert stored.resume_attempts == original.resume_attempts
 
 
-def _claimed_resume(
-    storage, run_id: str
-) -> tuple[AgentRunRecord, PendingToolCallRecord]:
-    """A run claimed by ``worker_1`` for a resume on one resolved answer."""
+def _ready_resume(storage, run_id: str) -> tuple[AgentRunRecord, PendingToolCallRecord]:
+    """A historical ready run with one actual resolved dependency, unowned."""
     run = storage.create_agent_run(_agent_run(run_id))
     scope = human_feedback_scope("org_1")
     now = datetime.now(UTC)
@@ -779,54 +900,103 @@ def _claimed_resume(
         valid_for_seconds=3600,
     )
     assert resolved is not None
-    claimed = storage.claim_ready_agent_run(
-        org_id=run.binding.org_id, worker_id="worker_1", now=now
-    )
-    assert claimed is not None and claimed.claimed_by == "worker_1"
-    return claimed, resolved
+    ready = storage.get_agent_run(run.id)
+    assert ready is not None and ready.status == AgentRunStatus.RESUME_READY
+    return ready, resolved
 
 
 @pytest.mark.parametrize("outcome", ["agent_completed", "failed"])
+@pytest.mark.parametrize("replace_run_revision", [False, True])
 def test_a_stale_resume_worker_cannot_finish_a_reclaimed_run(
-    monkeypatch, storage, tool_call_completion, caplog, outcome: str
+    monkeypatch,
+    storage,
+    tool_call_completion,
+    caplog,
+    outcome: str,
+    replace_run_revision,
 ):
-    """Terminal writes of a resume are fenced on the CLAIM, not on status alone.
+    """Real parent replacement fences both late output and late failure writes."""
+    from contextvars import Context
 
-    While worker_1's model call is in flight the run is requeued and claimed
-    again by worker_2, so it is back in ``resuming`` -- the status a status-only
-    fence accepts. worker_1 must neither commit its output nor fail the run.
-    """
+    from reflexio.server.services.durable_learning import worker as admission
+    from reflexio.server.services.durable_learning.user_lease import (
+        _require_user_work_owner,
+        owned_user_work_context,
+    )
+
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
-    claimed, resolved = _claimed_resume(storage, f"run_stale_{outcome}")
+    ready, resolved = _ready_resume(storage, f"run_stale_{outcome}")
     _make_tc, make_stop = tool_call_completion
     response = make_stop(json.dumps({"profiles": []}))
 
+    replacement_tokens: list[str] = []
+    replacement_runs: list[AgentRunRecord] = []
+
     def reclaim_then_answer(*args, **kwargs):
-        storage.update_agent_run_status(claimed.id, AgentRunStatus.RESUME_READY)
-        reclaimed = storage.claim_ready_agent_run(
-            org_id="org_1",
-            worker_id="worker_2",
-            now=datetime.now(UTC) + timedelta(seconds=5),
-        )
-        assert reclaimed is not None and reclaimed.claimed_by == "worker_2"
+        old_owner = _require_user_work_owner(storage)
+        storage.release_user_extraction("user_1", old_owner.token)
+        token = storage.claim_user_extraction("user_1", "worker_2", 300)
+        assert token is not None and token != old_owner.token
+        replacement_tokens.append(token)
+
+        def replace_revision():
+            with owned_user_work_context(storage, "user_1", token, 300):
+                current = storage.get_agent_run(ready.id)
+                assert current is not None
+                if not replace_run_revision:
+                    return current
+                reclaimed = _adopt_continuation(storage, current)
+                assert reclaimed.claimed_by != current.claimed_by
+                return reclaimed
+
+        newer = Context().run(replace_revision)
+        replacement_runs.append(newer)
         if outcome == "failed":
             raise RuntimeError("provider failed")
         return response
 
     client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
     agent = ResumableExtractionAgent(client=client, storage=storage)
-    with patch("litellm.completion", side_effect=reclaim_then_answer):
-        result = agent.resume(
-            run=claimed,
-            messages=[{"role": "user", "content": "resume extraction"}],
-            output_schema=StructuredProfilesOutput,
-            resolved_tool_calls=[resolved],
-        )
+    assert admission._reserve()
+    old_token = None
+    try:
+        old_token = storage.claim_user_extraction("user_1", "worker_1", 300)
+        assert old_token is not None
+        with (
+            owned_user_work_context(storage, "user_1", old_token, 300),
+            patch("litellm.completion", side_effect=reclaim_then_answer),
+        ):
+            claimed = _adopt_continuation(storage, ready)
+            result = agent.resume(
+                source_inputs=_source_inputs(agent.storage, claimed),
+                run=claimed,
+                messages=[{"role": "user", "content": "resume extraction"}],
+                history_inputs=HistoricalInputs(),
+                output_schema=StructuredProfilesOutput,
+                resolved_tool_calls=[resolved],
+            )
+    finally:
+        try:
+            if old_token is not None:
+                storage.release_user_extraction("user_1", old_token)
+        finally:
+            admission._release()
+            for replacement_token in replacement_tokens:
+                try:
+                    assert (
+                        storage.claim_user_extraction("user_1", "third-owner", 300)
+                        is None
+                    )
+                finally:
+                    storage.release_user_extraction("user_1", replacement_token)
 
     stored = storage.get_agent_run(claimed.id)
     assert stored is not None
-    assert (stored.status, stored.claimed_by) == (AgentRunStatus.RESUMING, "worker_2")
+    assert len(replacement_tokens) == len(replacement_runs) == 1
+    assert stored == replacement_runs[0]
+    assert (stored.claimed_by != claimed.claimed_by) is replace_run_revision
+    assert stored.status == AgentRunStatus.RESUMING
     assert stored.committed_output is None
     assert stored.last_error is None
     if outcome == "agent_completed":
@@ -879,3 +1049,102 @@ def test_non_neutral_rollout_requires_explicit_org_policy_adoption(
     )
     with pytest.raises(ValueError, match="pending_tool_call_config.enabled"):
         resumable_agent_module.pending_tool_calls_enabled(cast(RequestContext, context))
+
+
+@pytest.mark.integration
+def test_window_output_replay_preserves_publication_identity(monkeypatch, storage):
+    client, call = _window_playbook_client(monkeypatch, [_playbook_completion()])
+    agent = ResumableExtractionAgent(client=client, storage=storage)
+    first = _start_window(agent, "window:w_publication")
+    saved = storage.get_agent_run(first.run_id)
+    assert saved is not None and saved.committed_output is not None
+    publication = saved.committed_output["publication"]
+    UUID(publication["id"])
+    assert publication["dependency_inputs"] == {}
+
+    replay = _start_window(agent, "window:w_publication")
+
+    assert replay.output == first.output
+    assert replay.model_provenance == first.model_provenance
+    assert (
+        storage.get_agent_run(first.run_id).committed_output == saved.committed_output
+    )
+    assert replay.execution_run is not None
+    assert replay.execution_run.committed_output is not None
+    assert replay.execution_run.committed_output["publication"] == publication
+    assert call.call_count == 1
+
+
+@pytest.mark.integration
+def test_successive_outputs_of_same_run_have_distinct_publication_identity(
+    monkeypatch, storage, tool_call_completion
+):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    ready, resolved = _ready_resume(storage, "run_publication")
+    _, make_stop = tool_call_completion
+    agent = ResumableExtractionAgent(
+        client=LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6")), storage=storage
+    )
+    with (
+        user_extraction_lease(storage, "user_1", max_wait_seconds=0),
+        patch("litellm.completion", side_effect=[make_stop('{"profiles": []}')]),
+    ):
+        claimed = _adopt_continuation(storage, ready)
+        first = agent.resume(
+            source_inputs=_source_inputs(agent.storage, claimed),
+            run=claimed,
+            messages=[{"role": "user", "content": "resume extraction"}],
+            history_inputs=HistoricalInputs(),
+            output_schema=StructuredProfilesOutput,
+            resolved_tool_calls=[resolved],
+        )
+    first_saved = storage.get_agent_run(first.run_id)
+    assert first_saved is not None and first_saved.committed_output is not None
+    first_publication = first_saved.committed_output["publication"]
+    # Publish the waiting state as a fixture: this test covers the actual
+    # agent output writer, not the still-unfinished shared publisher.
+    storage.update_agent_run_status(first.run_id, AgentRunStatus.FINALIZED_PENDING_TOOL)
+    later = storage.create_pending_tool_call(
+        replace(
+            resolved,
+            id="ptc_next_output",
+            dedup_key="next-output",
+            result=None,
+            resolved_at=None,
+            status=PendingToolCallStatus.PENDING,
+        )
+    )
+    storage.attach_run_tool_dependency(
+        RunToolDependencyRecord(run_id=first.run_id, pending_tool_call_id=later.id)
+    )
+    answered = storage.resolve_pending_tool_call(
+        later.id,
+        result={"answer": "Second answer"},
+        resolved_at=datetime.now(UTC),
+        valid_for_seconds=3600,
+    )
+    assert answered is not None
+    next_ready = storage.get_agent_run(first.run_id)
+    assert next_ready is not None and next_ready.status == AgentRunStatus.RESUME_READY
+    with (
+        user_extraction_lease(storage, "user_1", max_wait_seconds=0),
+        patch("litellm.completion", side_effect=[make_stop('{"profiles": []}')]),
+    ):
+        next_claim = _adopt_continuation(storage, next_ready)
+        second = agent.resume(
+            source_inputs=_source_inputs(agent.storage, next_claim),
+            run=next_claim,
+            messages=[{"role": "user", "content": "resume extraction again"}],
+            history_inputs=HistoricalInputs(),
+            output_schema=StructuredProfilesOutput,
+            resolved_tool_calls=[answered],
+        )
+    second_saved = storage.get_agent_run(second.run_id)
+    assert second_saved is not None and second_saved.committed_output is not None
+    second_publication = second_saved.committed_output["publication"]
+    assert second.output == first.output
+    assert second_publication["id"] != first_publication["id"]
+    UUID(second_publication["id"])
+    assert set(first_publication["dependency_inputs"]) == {resolved.id}
+    assert set(second_publication["dependency_inputs"]) == {answered.id}

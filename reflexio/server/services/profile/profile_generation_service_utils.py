@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -16,6 +17,7 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.prompt.prompt_manager import PromptManager
+from reflexio.server.services.extraction.history_inputs import HistoricalInputs
 from reflexio.server.services.extraction.overflow_presentation import (
     current_overflow_presentation,
 )
@@ -222,6 +224,50 @@ def check_string_token_overlap(str1: str, str2: str, threshold: float = 0.7) -> 
     overlap_ratio = max(intersection / len(tokens1), intersection / len(tokens2))
 
     return overlap_ratio >= threshold
+
+
+@dataclass(frozen=True)
+class PreparedProfilePrompt:
+    messages: list[dict]
+    history_inputs: HistoricalInputs
+
+
+def prepare_profile_extraction_prompt(
+    *,
+    prompt_manager: PromptManager,
+    request_interaction_data_models: list[RequestInteractionDataModel],
+    existing_profiles: list[UserProfile],
+    user_id: str,
+    agent_context_prompt: str,
+    context_prompt: str,
+    extraction_definition_prompt: str,
+) -> PreparedProfilePrompt:
+    """Pair the exact private historical rows with the prompt they produce."""
+    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+    from reflexio.server.services.extraction.profile_package_state import (
+        profile_witness,
+    )
+
+    profiles = deepcopy(existing_profiles)
+    witnesses: dict[str, str] = {}
+    for profile in profiles:
+        if profile.user_id != user_id or not profile.profile_id:
+            raise InputBudgetConfigurationError(
+                "Candidate historical profile scope changed"
+            )
+        digest = profile_witness(profile)
+        if profile.profile_id in witnesses and witnesses[profile.profile_id] != digest:
+            raise InputBudgetConfigurationError("Candidate historical profile changed")
+        witnesses[profile.profile_id] = digest
+    messages = construct_profile_extraction_messages_from_sessions(
+        prompt_manager=prompt_manager,
+        request_interaction_data_models=request_interaction_data_models,
+        existing_profiles=profiles,
+        agent_context_prompt=agent_context_prompt,
+        context_prompt=context_prompt,
+        extraction_definition_prompt=extraction_definition_prompt,
+    )
+    return PreparedProfilePrompt(messages, HistoricalInputs(profiles=witnesses))
 
 
 def construct_profile_extraction_messages_from_sessions(

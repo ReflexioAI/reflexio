@@ -810,48 +810,56 @@ def test_sqlite_expire_pending_tool_calls_finalizes_unresolved_runs(storage):
     assert deps[0].resolved_at == now
 
 
-def test_sqlite_claim_requires_resolved_unconsumed_dependency(storage):
-    now = datetime(2026, 5, 28, tzinfo=UTC)
+def test_sqlite_owner_inspection_requires_resolved_unconsumed_dependency(storage):
+    now = datetime.now(UTC)
     storage.create_agent_run(_agent_run("run_1", AgentRunStatus.RESUME_READY))
     storage.create_pending_tool_call(_pending_call("ptc_1", now=now))
     storage.attach_run_tool_dependency(
         RunToolDependencyRecord(run_id="run_1", pending_tool_call_id="ptc_1")
     )
-
-    assert (
-        storage.claim_ready_agent_run(org_id="org_1", worker_id="worker_1", now=now)
-        is None
-    )
-
+    before = storage.get_agent_run("run_1")
+    assert storage._resume_candidate_page("continuation")[1] is None
+    assert storage.get_agent_run("run_1") == before
     storage.resolve_pending_tool_call(
-        "ptc_1",
-        result={"answer": "AWS ECS"},
-        resolved_at=now,
-        valid_for_seconds=3600,
+        "ptc_1", result={"answer": "AWS ECS"}, resolved_at=now, valid_for_seconds=3600
     )
-    # A worker for a different org must NOT claim org_1's ready run.
-    assert (
-        storage.claim_ready_agent_run(org_id="other_org", worker_id="worker_x", now=now)
-        is None
-    )
-    claimed = storage.claim_ready_agent_run(
-        org_id="org_1", worker_id="worker_1", now=now
-    )
+    ready = storage.get_agent_run("run_1")
+    assert ready is not None
+    other = SQLiteStorage(org_id="other_org", db_path=storage.db_path)
+    try:
+        assert other._resume_candidate_page("continuation")[1] is None
+    finally:
+        other.conn.close()
+    token = storage.claim_user_extraction("user_1", "worker_1", 300)
+    assert token is not None
+    try:
+        _, descriptor = storage._resume_candidate_page(
+            "continuation", user_id="user_1", token=token
+        )
+        assert descriptor is not None and descriptor["id"] == "run_1"
+        assert storage.get_agent_run("run_1") == ready
+        with storage.commit_scope(), storage._stream_sql() as db:
+            adopted = storage._adopt_owned_user_work_run(
+                db, expected=ready, user_id="user_1", token=token, worker_id="worker_1"
+            )
+            assert adopted is not None
+        current = storage.get_agent_run("run_1")
+        assert current is not None and current.status == ready.status
+        assert current.claimed_by == adopted[0] and current.resume_attempts == 0
+        assert storage.claim_user_extraction("user_1", "worker_2", 300) is None
+        assert storage._resume_candidate_page("continuation")[1] is None
+        assert storage.consume_run_tool_dependencies("run_1") == 1
+        assert (
+            storage._resume_candidate_page(
+                "continuation", user_id="user_1", token=token
+            )[1]
+            is None
+        )
+    finally:
+        storage.release_user_extraction("user_1", token)
 
-    assert claimed is not None
-    assert claimed.id == "run_1"
-    assert claimed.status == AgentRunStatus.RESUMING
-    assert claimed.claimed_by == "worker_1"
-    assert claimed.resume_attempts == 0
 
-    assert storage.consume_run_tool_dependencies("run_1") == 1
-    assert (
-        storage.claim_ready_agent_run(org_id="org_1", worker_id="worker_2", now=now)
-        is None
-    )
-
-
-def test_sqlite_claim_ignores_not_applicable_dependencies(storage):
+def test_sqlite_inspection_ignores_not_applicable_dependencies(storage):
     now = datetime(2026, 5, 28, tzinfo=UTC)
     storage.create_agent_run(_agent_run("run_1", AgentRunStatus.RESUME_READY))
     storage.create_pending_tool_call(
@@ -874,74 +882,89 @@ def test_sqlite_claim_ignores_not_applicable_dependencies(storage):
         )
     )
 
-    assert (
-        storage.claim_ready_agent_run(org_id="org_1", worker_id="worker_1", now=now)
-        is None
-    )
+    before = storage.get_agent_run("run_1")
+    assert storage._resume_candidate_page("continuation")[1] is None
+    assert storage.get_agent_run("run_1") == before
 
 
-def test_sqlite_claim_finalization_failed_requires_committed_output(storage):
-    now = datetime(2026, 5, 28, tzinfo=UTC)
+def test_sqlite_finalization_inspection_requires_output_and_adoption_keeps_status(
+    storage,
+):
     storage.create_agent_run(
         _agent_run("run_without_output", AgentRunStatus.FINALIZATION_FAILED)
     )
-    storage.create_agent_run(
+    saved = storage.create_agent_run(
         replace(
             _agent_run("run_with_output", AgentRunStatus.FINALIZATION_FAILED),
             committed_output={"profiles": []},
         )
     )
-
-    claimed = storage.claim_finalization_failed_agent_run(
-        org_id="org_1",
-        worker_id="worker_1",
-        now=now,
-    )
-
-    assert claimed is not None
-    assert claimed.id == "run_with_output"
-    assert claimed.status == AgentRunStatus.FINALIZING
-    assert claimed.claimed_by == "worker_1"
-    assert (
-        storage.claim_finalization_failed_agent_run(
-            org_id="org_1", worker_id="worker_2", now=now
+    _, descriptor = storage._resume_candidate_page("finalization")
+    assert descriptor is not None and descriptor["id"] == saved.id
+    assert storage.get_agent_run(saved.id) == saved
+    token = storage.claim_user_extraction("user_1", "worker_1", 300)
+    assert token is not None
+    try:
+        with storage.commit_scope(), storage._stream_sql() as db:
+            adopted = storage._adopt_owned_user_work_run(
+                db, expected=saved, user_id="user_1", token=token, worker_id="worker_1"
+            )
+            assert adopted is not None
+        current = storage.get_agent_run(saved.id)
+        assert current is not None and current.status == saved.status
+        assert (
+            current.claimed_by == adopted[0]
+            and current.committed_output == saved.committed_output
         )
-        is None
-    )
+        assert storage.claim_user_extraction("user_1", "worker_2", 300) is None
+        assert storage._resume_candidate_page("finalization")[1] is None
+    finally:
+        storage.release_user_extraction("user_1", token)
 
 
-def test_sqlite_finalization_claim_reclaims_only_stale_agent_completed(storage):
-    """Orphaned AGENT_COMPLETED runs (publish-time finalize crashed) are
-    reclaimed for finalization retry once stale, but never while fresh."""
-    storage.create_agent_run(
+def test_sqlite_completed_output_follows_actual_owner_not_claim_age(storage):
+    saved = storage.create_agent_run(
         replace(
             _agent_run("orphan_run", AgentRunStatus.AGENT_COMPLETED),
             committed_output={"profiles": []},
+            claimed_at=datetime(2000, 1, 1, tzinfo=UTC),
         )
     )
-
-    # A freshly AGENT_COMPLETED run (in the publish path's finalize window) must
-    # NOT be reclaimed — otherwise the worker would race the in-flight publish.
-    fresh = datetime.now(UTC)
-    assert (
-        storage.claim_finalization_failed_agent_run(
-            org_id="org_1", worker_id="worker_1", now=fresh, claim_ttl_seconds=600
+    token = storage.claim_user_extraction("user_1", "live-worker", 300)
+    assert token is not None
+    assert storage._observe_live_user_work_parent(expected=saved, user_id="user_1")
+    before = storage.get_agent_run(saved.id)
+    assert storage._resume_candidate_page("finalization")[1] is None
+    assert storage.get_agent_run(saved.id) == before
+    storage.release_user_extraction("user_1", token)
+    _, descriptor = storage._resume_candidate_page("finalization")
+    assert descriptor is not None and descriptor["id"] == saved.id
+    replacement = storage.claim_user_extraction("user_1", "replacement", 300)
+    assert replacement is not None and replacement != token
+    try:
+        with storage.commit_scope(), storage._stream_sql() as db:
+            assert (
+                storage._adopt_owned_user_work_run(
+                    db,
+                    expected=before,
+                    user_id="user_1",
+                    token=replacement,
+                    worker_id="replacement",
+                )
+                is not None
+            )
+        after = storage.get_agent_run(saved.id)
+        assert after is not None and after.status == AgentRunStatus.AGENT_COMPLETED
+        assert (
+            after.committed_output == saved.committed_output
+            and after.resume_attempts == saved.resume_attempts
         )
-        is None
-    )
-
-    # Once older than the claim TTL, the orphan is reclaimed for finalization.
-    stale = fresh + timedelta(seconds=700)
-    claimed = storage.claim_finalization_failed_agent_run(
-        org_id="org_1", worker_id="worker_1", now=stale, claim_ttl_seconds=600
-    )
-    assert claimed is not None
-    assert claimed.id == "orphan_run"
-    assert claimed.status == AgentRunStatus.FINALIZING
+    finally:
+        storage.release_user_extraction("user_1", replacement)
 
 
-def test_sqlite_list_resumable_work_org_ids_scans_all_orgs(storage):
-    now = datetime(2026, 5, 28, tzinfo=UTC)
+def test_sqlite_route_discovery_keeps_orgs_isolated_and_expiry_separate(storage):
+    now = datetime.now(UTC)
     # org_a: a run ready to resume.
     storage.create_agent_run(
         _agent_run("ready_run", AgentRunStatus.RESUME_READY, org_id="org_a")
@@ -984,10 +1007,30 @@ def test_sqlite_list_resumable_work_org_ids_scans_all_orgs(storage):
         _agent_run("done_run", AgentRunStatus.FINALIZED, org_id="org_d")
     )
 
-    org_ids = storage.list_resumable_work_org_ids(now=now)
+    from reflexio.server.services.durable_learning.discovery import discover_work
 
-    assert set(org_ids) == {"org_a", "org_b", "org_c"}
-    assert "org_d" not in org_ids
+    routes = {
+        org: SQLiteStorage(org_id=org, db_path=storage.db_path)
+        for org in ("org_a", "org_b", "org_c", "org_d")
+    }
+    try:
+        discoveries = {org: discover_work(route) for org, route in routes.items()}
+        assert {org: value.org_ids for org, value in discoveries.items()} == {
+            "org_a": ("org_a",),
+            "org_b": ("org_b",),
+            "org_c": (),
+            "org_d": (),
+        }
+        assert {org: value.expiry_org_ids for org, value in discoveries.items()} == {
+            "org_a": (),
+            "org_b": (),
+            "org_c": ("org_c",),
+            "org_d": (),
+        }
+        assert discover_work(storage).org_ids == ()
+    finally:
+        for route in routes.values():
+            route.conn.close()
 
 
 def test_sqlite_search_prior_tool_calls_filters_by_org_scope_and_validity(storage):
@@ -1132,16 +1175,15 @@ def test_window_followups_wait_for_cursor_commit(storage, finalization):
         db.query(
             "INSERT INTO extraction_windows(window_id,user_id,kind,predecessor,end_seq,manifest,policy) VALUES ('w','user_1','profile',0,10,'[]','{}')"
         )
-    claim = (
-        storage.claim_finalization_failed_agent_run
-        if finalization
-        else storage.claim_ready_agent_run
-    )
-    assert claim(org_id="org_1", worker_id="worker", now=now) is None
+    work_class = "finalization" if finalization else "continuation"
+    before = storage.get_agent_run("window:w")
+    assert storage._resume_candidate_page(work_class)[1] is None
     with storage._stream_sql() as db:
         db.query("UPDATE extraction_windows SET completed=1 WHERE window_id='w'")
-    assert claim(org_id="org_1", worker_id="worker", now=now).id == "window:w"
-    storage.update_agent_run_status("window:w", status)
+    _, descriptor = storage._resume_candidate_page(work_class)
+    assert descriptor is not None and descriptor["id"] == "window:w"
+    assert storage.get_agent_run("window:w") == before
     with storage._stream_sql() as db:
         db.query("UPDATE extraction_windows SET invalidated=1 WHERE window_id='w'")
-    assert claim(org_id="org_1", worker_id="worker", now=now) is None
+    assert storage._resume_candidate_page(work_class)[1] is None
+    assert storage.get_agent_run("window:w") == before

@@ -14,6 +14,10 @@ from reflexio.server.llm._litellm_types import (
 )
 from reflexio.server.llm.input_budget import InputBudgetConfigurationError
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.services.durable_learning.user_lease import (
+    adopt_agent_run_for_execution,
+    owned_user_work_context,
+)
 from reflexio.server.services.durable_learning.window_executor import (
     WindowExecutor,
     load_window_inputs,
@@ -125,75 +129,84 @@ def test_actual_client_guard_rechecks_locked_journal_and_preserves_unknown_usage
     monkeypatch.setenv("OPENAI_API_KEY", "test-key-no-provider")
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     storage, window, token = _overflow_coordinator(journal_pipeline, attempts=[UNKNOWN])
-    parent = storage.get_agent_run(f"window:{window.window_id}")
-    assert parent is not None
-    coordinator = OverflowCoordinator(
-        storage,
-        window,
-        token,
-        parent.generation_request_snapshot["overflow"],
-        source_digest="captured-source",
-        context_limits={"gpt-4o": 128000},
-    )
-    assert coordinator.token_totals.prompt_tokens == 0
-    if corruption is not None:
-        snapshot = parent.generation_request_snapshot
-        if corruption == "journal":
-            snapshot["overflow"]["attempts"] = [{"id": "old"}]
-        else:
-            del snapshot["overflow"]["checkpoint"]
-        with storage._stream_sql() as db:
-            db.query(
-                "UPDATE _agent_runs SET generation_request_snapshot=? WHERE id=?",
-                (json.dumps(snapshot), parent.id),
-            )
-    before = storage.get_agent_run(parent.id)
-    assert before is not None
-    client = LiteLLMClient(
-        LiteLLMConfig(model="gpt-4o", max_tokens=1024, fallback_models=[])
-    )
-    response = SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                message=SimpleNamespace(
-                    content='{"profiles":[]}', tool_calls=None, refusal=None
-                ),
-                finish_reason="stop",
-            )
-        ],
-        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=2, total_tokens=12),
-        model="gpt-4o",
-        _hidden_params={"custom_llm_provider": "openai"},
-    )
-    wire = Mock(return_value=response)
-    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
-    with coordinator.provider_scope():
+    with owned_user_work_context(storage, window.user_id, token, 300):
+        parent = storage.get_agent_run(f"window:{window.window_id}")
+        assert parent is not None
+        parent = adopt_agent_run_for_execution(storage, parent)
+        coordinator = OverflowCoordinator(
+            storage,
+            window,
+            token,
+            parent.generation_request_snapshot["overflow"],
+            source_digest="captured-source",
+            context_limits={"gpt-4o": 128000},
+        )
+        coordinator.saved_run = parent
+        assert coordinator.token_totals.prompt_tokens == 0
         if corruption is not None:
-            with pytest.raises(ProviderRequestGuardError):
-                client.generate_chat_response_with_provenance(
+            snapshot = parent.generation_request_snapshot
+            if corruption == "journal":
+                snapshot["overflow"]["attempts"] = [{"id": "old"}]
+            else:
+                del snapshot["overflow"]["checkpoint"]
+            with storage._stream_sql() as db:
+                db.query(
+                    "UPDATE _agent_runs SET generation_request_snapshot=? WHERE id=?",
+                    (json.dumps(snapshot), parent.id),
+                )
+        before = storage.get_agent_run(parent.id)
+        assert before is not None
+        client = LiteLLMClient(
+            LiteLLMConfig(model="gpt-4o", max_tokens=1024, fallback_models=[])
+        )
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content='{"profiles":[]}', tool_calls=None, refusal=None
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=10, completion_tokens=2, total_tokens=12
+            ),
+            model="gpt-4o",
+            _hidden_params={"custom_llm_provider": "openai"},
+        )
+        wire = Mock(return_value=response)
+        monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
+        with coordinator.provider_scope():
+            if corruption is not None:
+                with pytest.raises(ProviderRequestGuardError):
+                    client.generate_chat_response_with_provenance(
+                        messages=[
+                            {"role": "user", "content": "Verified original source"}
+                        ],
+                        response_format=StructuredProfilesOutput,
+                    )
+            else:
+                result = client.generate_chat_response_with_provenance(
                     messages=[{"role": "user", "content": "Verified original source"}],
                     response_format=StructuredProfilesOutput,
                 )
-        else:
-            result = client.generate_chat_response_with_provenance(
-                messages=[{"role": "user", "content": "Verified original source"}],
-                response_format=StructuredProfilesOutput,
+                assert result.value == StructuredProfilesOutput(profiles=[])
+        after = storage.get_agent_run(parent.id)
+        assert after is not None
+        if corruption is not None:
+            wire.assert_not_called()
+            assert (
+                after.generation_request_snapshot == before.generation_request_snapshot
             )
-            assert result.value == StructuredProfilesOutput(profiles=[])
-    after = storage.get_agent_run(parent.id)
-    assert after is not None
-    if corruption is not None:
-        wire.assert_not_called()
-        assert after.generation_request_snapshot == before.generation_request_snapshot
-    else:
-        wire.assert_called_once()
-        manifest = after.generation_request_snapshot["overflow"]
-        assert manifest["attempts"][0] == UNKNOWN
-        assert len(manifest["attempts"]) == 2
-        assert manifest["attempts"][1]["usage"] == USAGE
-        assert coordinator.token_totals.prompt_tokens == 10
-        assert coordinator.token_totals.completion_tokens == 2
-    assert storage.count_all_profiles() == 0
+        else:
+            wire.assert_called_once()
+            manifest = after.generation_request_snapshot["overflow"]
+            assert manifest["attempts"][0] == UNKNOWN
+            assert len(manifest["attempts"]) == 2
+            assert manifest["attempts"][1]["usage"] == USAGE
+            assert coordinator.token_totals.prompt_tokens == 10
+            assert coordinator.token_totals.completion_tokens == 2
+        assert storage.count_all_profiles() == 0
 
 
 @pytest.mark.parametrize(
@@ -287,32 +300,36 @@ def test_false_and_empty_receipts_remain_completed_after_reload(
     journal_pipeline, output
 ):
     storage, window, token = _overflow_coordinator(journal_pipeline, attempts=[UNKNOWN])
-    parent = storage.get_agent_run(f"window:{window.window_id}")
-    assert parent is not None
-    coordinator = OverflowCoordinator(
-        storage,
-        window,
-        token,
-        parent.generation_request_snapshot["overflow"],
-        source_digest="captured-source",
-        context_limits={},
-    )
-    coordinator.complete_step("saved-step", output, ModelProvenance())
-    saved = storage.get_agent_run(parent.id)
-    assert saved is not None
-    reloaded = OverflowCoordinator(
-        storage,
-        window,
-        token,
-        saved.generation_request_snapshot["overflow"],
-        source_digest="captured-source",
-        context_limits={},
-    )
-    assert reloaded.completed_step("saved-step") == {
-        "output": output,
-        "model_provenance": {"model_name": None, "provider": None},
-    }
-    assert saved.generation_request_snapshot["overflow"]["attempts"] == [UNKNOWN]
+    with owned_user_work_context(storage, window.user_id, token, 300):
+        parent = storage.get_agent_run(f"window:{window.window_id}")
+        assert parent is not None
+        parent = adopt_agent_run_for_execution(storage, parent)
+        coordinator = OverflowCoordinator(
+            storage,
+            window,
+            token,
+            parent.generation_request_snapshot["overflow"],
+            source_digest="captured-source",
+            context_limits={},
+        )
+        coordinator.saved_run = parent
+        coordinator.complete_step("saved-step", output, ModelProvenance())
+        saved = storage.get_agent_run(parent.id)
+        assert saved is not None
+        reloaded = OverflowCoordinator(
+            storage,
+            window,
+            token,
+            saved.generation_request_snapshot["overflow"],
+            source_digest="captured-source",
+            context_limits={},
+        )
+        reloaded.saved_run = parent
+        assert reloaded.completed_step("saved-step") == {
+            "output": output,
+            "model_provenance": {"model_name": None, "provider": None},
+        }
+        assert saved.generation_request_snapshot["overflow"]["attempts"] == [UNKNOWN]
 
 
 def test_gate_cache_miss_cannot_dispatch_after_locked_receipt_becomes_null(
@@ -323,50 +340,53 @@ def test_gate_cache_miss_cannot_dispatch_after_locked_receipt_becomes_null(
     storage, window, token = _overflow_coordinator(
         journal_pipeline, attempts=[UNKNOWN], actual_source=True
     )
-    parent = storage.get_agent_run(f"window:{window.window_id}")
-    assert parent is not None
-    prepared = prepare_extraction_input(
-        load_window_inputs(storage, window), user_id=window.user_id
-    )
-    coordinator = OverflowCoordinator(
-        storage,
-        window,
-        token,
-        parent.generation_request_snapshot["overflow"],
-        source_digest=prepared.source_digest,
-        context_limits={"gpt-4o": 128000},
-        prepared=prepared,
-    )
-    with present_extraction_chunk(prepared, prepared.chunks[0], coordinator.record):
-        prompt = _prepared_presentation_text()
-    key = coordinator.step_key(
-        "gate-v1",
-        {"model": "gpt-4o", "messages": [{"role": "user", "content": prompt}]},
-    )
-    assert coordinator.completed_step(key) is None
-    snapshot = parent.generation_request_snapshot
-    snapshot["overflow"]["checkpoint"]["completed_steps"][key] = None
-    with storage._stream_sql() as db:
-        db.query(
-            "UPDATE _agent_runs SET generation_request_snapshot=? WHERE id=?",
-            (json.dumps(snapshot), parent.id),
+    with owned_user_work_context(storage, window.user_id, token, 300):
+        parent = storage.get_agent_run(f"window:{window.window_id}")
+        assert parent is not None
+        parent = adopt_agent_run_for_execution(storage, parent)
+        prepared = prepare_extraction_input(
+            load_window_inputs(storage, window), user_id=window.user_id
         )
-    client = LiteLLMClient(
-        LiteLLMConfig(model="gpt-4o", max_tokens=1024, fallback_models=[])
-    )
-    wire = Mock(side_effect=AssertionError("Null receipt cannot replay paid work"))
-    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
-    with pytest.raises(ProviderRequestGuardError):
-        judge_extraction_chunks(
-            coordinator=coordinator,
+        coordinator = OverflowCoordinator(
+            storage,
+            window,
+            token,
+            parent.generation_request_snapshot["overflow"],
+            source_digest=prepared.source_digest,
+            context_limits={"gpt-4o": 128000},
             prepared=prepared,
-            record=coordinator.record,
-            client=client,
-            model="gpt-4o",
-            build_prompt=_prepared_presentation_text,
-            minimum_after_positive=1,
         )
-    after = storage.get_agent_run(parent.id)
-    assert after is not None and after.generation_request_snapshot == snapshot
-    assert storage.count_all_profiles() == 0
-    wire.assert_not_called()
+        coordinator.saved_run = parent
+        with present_extraction_chunk(prepared, prepared.chunks[0], coordinator.record):
+            prompt = _prepared_presentation_text()
+        key = coordinator.step_key(
+            "gate-v1",
+            {"model": "gpt-4o", "messages": [{"role": "user", "content": prompt}]},
+        )
+        assert coordinator.completed_step(key) is None
+        snapshot = parent.generation_request_snapshot
+        snapshot["overflow"]["checkpoint"]["completed_steps"][key] = None
+        with storage._stream_sql() as db:
+            db.query(
+                "UPDATE _agent_runs SET generation_request_snapshot=? WHERE id=?",
+                (json.dumps(snapshot), parent.id),
+            )
+        client = LiteLLMClient(
+            LiteLLMConfig(model="gpt-4o", max_tokens=1024, fallback_models=[])
+        )
+        wire = Mock(side_effect=AssertionError("Null receipt cannot replay paid work"))
+        monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
+        with pytest.raises(ProviderRequestGuardError):
+            judge_extraction_chunks(
+                coordinator=coordinator,
+                prepared=prepared,
+                record=coordinator.record,
+                client=client,
+                model="gpt-4o",
+                build_prompt=_prepared_presentation_text,
+                minimum_after_positive=1,
+            )
+        after = storage.get_agent_run(parent.id)
+        assert after is not None and after.generation_request_snapshot == snapshot
+        assert storage.count_all_profiles() == 0
+        wire.assert_not_called()

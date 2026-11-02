@@ -235,7 +235,43 @@ def _mock_completion(*args: Any, **kwargs: Any) -> MagicMock:
     # tool call (ask_human) install explicit responses via ``side_effect`` using
     # ``make_tool_call_response``; they don't rely on this default router.
     parse_structured = kwargs.get("response_format") is not None
-    return _create_mock_completion(prompt_content, parse_structured)
+    response = _create_mock_completion(prompt_content, parse_structured)
+    content = response.choices[0].message.content
+    if parse_structured and isinstance(content, str) and content.startswith("{"):
+        payload = json.loads(content)
+        if isinstance(payload, dict) and isinstance(payload.get("profiles"), list):
+            # A canned profile is not original evidence. Echo only a quotation
+            # actually supplied to this extraction call; keep source validation
+            # live in the real HTTP/window pipeline, including typed text blocks.
+            decoder = json.JSONDecoder()
+            for message in messages:
+                body = message.get("content", "")
+                texts = (
+                    [body]
+                    if isinstance(body, str)
+                    else [
+                        part.get("text", "")
+                        for part in body
+                        if isinstance(part, dict) and part.get("type") == "text"
+                    ]
+                    if isinstance(body, list)
+                    else []
+                )
+                for text in texts:
+                    start = text.find('{"protected_record":')
+                    if start < 0:
+                        continue
+                    original, _ = decoder.raw_decode(text[start:])
+                    evidence = original.get("original_chunk", {}).get("evidence", [])
+                    quote = next(
+                        (row.get("text") for row in evidence if row.get("text")), None
+                    )
+                    if quote is not None:
+                        for profile in payload["profiles"]:
+                            profile["source_span"] = quote
+                        response.choices[0].message.content = json.dumps(payload)
+                        return response
+    return response
 
 
 def _is_e2e_test_run(config: Any) -> bool:

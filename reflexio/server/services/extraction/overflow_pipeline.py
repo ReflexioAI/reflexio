@@ -310,6 +310,7 @@ def _recover_saved_output(
         ),
         finished_reason="structured_output",
         model_provenance=cached_provenance,
+        execution_run=saved_run,
     )
 
 
@@ -547,7 +548,13 @@ def extract_overflow_window(
     coordinator.save_checkpoint(checkpoint)
     run_id = f"window:{coordinator.window.window_id}"
     envelope = encode_committed_output(output, provenance)
-    with coordinator.storage.commit_scope():
+    from reflexio.server.services.durable_learning.user_lease import (
+        owned_agent_run_write,
+    )
+
+    if coordinator.saved_run is None:
+        raise ProviderRequestGuardError("Extraction parent execution unavailable")
+    with owned_agent_run_write(coordinator.storage, coordinator.saved_run):
         coordinator.storage.fence_user_extraction(
             coordinator.window.user_id, coordinator.token
         )
@@ -562,6 +569,7 @@ def extract_overflow_window(
         )
     if stored is None:
         raise ProviderRequestGuardError("Extraction parent completion lost ownership")
+    coordinator.saved_run = stored
     payload, observed = decode_committed_output(envelope)
     return AgentRunResult(
         run_id=run_id,
@@ -571,6 +579,7 @@ def extract_overflow_window(
         trace=ToolLoopTrace(finished=True),
         finished_reason="structured_output",
         model_provenance=observed,
+        execution_run=stored,
     )
 
 

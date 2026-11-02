@@ -23,11 +23,19 @@ from ._agent_run import (
 )
 from ._base import BaseStorageCore, matches_status_filter
 from ._commit_scope import CommitScopeMixin
-from ._extraction_stream import ExtractionStreamStore, LeaseLostError
+from ._extraction_stream import (
+    ExtractionStreamStore,
+    LeaseLostError,
+    StreamSQL,
+    lock_user_work_row,
+)
 from ._extras import ExtrasMixin
 from ._lineage import EntityType, LineageEventMixin
 from ._operations import OperationMixin
+from ._pending_tool_expiry import PendingToolExpiryStore
 from ._playbook import AGGREGATE_REASON_PREFIX
+from ._publication_preparations import PublicationPreparationStore
+from ._publication_receipts import PublicationReceiptStore
 from ._requests import RequestMixin, SessionJudgmentInputs
 from ._session_outcomes import (
     OutcomePrefixPrecondition,
@@ -37,6 +45,7 @@ from ._session_outcomes import (
 )
 from ._shadow_verdicts import ShadowVerdictsMixin
 from ._stall_state import StallStateMixin
+from ._user_work_position import ResumeClass, ResumeCursor, UserWorkPosition
 from .playbook import (
     AgentEvaluationResultStoreMixin,
     AgentPlaybookStoreMixin,
@@ -46,9 +55,14 @@ from .playbook import (
     UserPlaybookStoreMixin,
 )
 from .profiles import InteractionStoreMixin, ProfileSearchMixin, ProfileStoreMixin
+from .resume_selection import ResumeSelectionStore
 
 
 class BaseStorage(
+    PendingToolExpiryStore,
+    ResumeSelectionStore,
+    PublicationPreparationStore,
+    PublicationReceiptStore,
     ExtractionStreamStore,
     CommitScopeMixin,
     AgentRunMixin,
@@ -278,6 +292,11 @@ class BaseStorage(
 
 
 __all__ = [
+    "StreamSQL",
+    "lock_user_work_row",
+    "ResumeClass",
+    "ResumeCursor",
+    "UserWorkPosition",
     "CommitScopeMixin",
     "AgentBinding",
     "AgentRunMixin",

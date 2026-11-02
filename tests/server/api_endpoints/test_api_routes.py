@@ -539,7 +539,7 @@ class TestPublishInteraction:
             )
             waiting._ingesting["detached-org"] = 1
 
-            async def worker() -> None:
+            async def worker() -> PublishUserInteractionResponse:
                 raise error(waiting)
 
             task = asyncio.ensure_future(worker())

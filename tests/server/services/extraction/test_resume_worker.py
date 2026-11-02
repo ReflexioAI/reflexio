@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import tempfile
 import threading
-from collections import Counter
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import replace
@@ -16,7 +15,6 @@ from reflexio.models.api_schema.service_schemas import (
     Interaction,
     Request,
     UserPlaybook,
-    UserProfile,
 )
 from reflexio.models.config_schema import (
     Config,
@@ -26,21 +24,19 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.metering_events import ReceiptDeliveryError
-from reflexio.server.services.deferred_learning_plan import FinalizationResult
+from reflexio.server.llm.compute_admission import reserve_compute_attempt
+from reflexio.server.services.extraction.history_inputs import HistoricalInputs
+from reflexio.server.services.extraction.publication import _deliver
 from reflexio.server.services.extraction.resume_worker import (
     ExtractionResumeWorker,
-    _finalization_failure_status,
     _run_playbook_contract_selection,
     _run_uses_strict_playbook_evidence,
 )
 from reflexio.server.services.playbook.service import (
     PlaybookGenerationService,
-    PlaybookGenerationServiceConfig,
 )
 from reflexio.server.services.profile.service import (
     ProfileGenerationService,
-    ProfileGenerationServiceConfig,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import (
@@ -59,6 +55,9 @@ from reflexio.server.usage_metrics import (
     UsageEventDeliveryStatus,
     configure_usage_event_recorder,
     exempt_usage_event_recorder,
+)
+from tests.server.services.extraction._publication_fixtures import (
+    observed_financial_receipt,
 )
 
 
@@ -164,74 +163,52 @@ def _persist_and_load_run(
     return persisted
 
 
-def _gate_initial_receipt_reads(
-    storages: tuple[SQLiteStorage, SQLiteStorage],
-) -> None:
-    barrier = threading.Barrier(len(storages))
+@pytest.mark.parametrize(
+    "extractor_kind,entity_type",
+    [("profile", "profile"), ("playbook", "user_playbook")],
+)
+@pytest.mark.parametrize(
+    "status",
+    [
+        UsageEventDeliveryStatus.APPENDED,
+        UsageEventDeliveryStatus.DUPLICATE,
+        UsageEventDeliveryStatus.EXEMPT,
+    ],
+)
+def test_receipt_learning_delivery_does_not_reread_model_configuration(
+    storage, request_context, extractor_kind, entity_type, status
+):
+    run = _persist_and_load_run(
+        storage,
+        _finalizing_run(
+            run_id="receipt-facts",
+            extractor_kind=extractor_kind,
+            request_id="request_1",
+        ),
+    )
+    storage._ack_publication_receipt = MagicMock(return_value=True)
+    request_context.configurator.get_config.side_effect = AssertionError(
+        "Mutable model configuration is not a learning receipt input"
+    )
+    events = []
 
-    def install_gate(storage: SQLiteStorage) -> None:
-        original = storage.get_agent_run_finalization_receipt
-        first_read = True
+    def accept(event):
+        events.append(event)
+        return status
 
-        def gated_read(*, run_id: str, entity_type: str) -> list[str] | None:
-            nonlocal first_read
-            receipt = original(run_id=run_id, entity_type=entity_type)
-            if first_read:
-                first_read = False
-                barrier.wait(timeout=5)
-            return receipt
-
-        storage.get_agent_run_finalization_receipt = MagicMock(  # type: ignore[method-assign]
-            side_effect=gated_read
-        )
-
-    for storage in storages:
-        install_gate(storage)
-
-
-def _hide_next_receipt_reads(storage: SQLiteStorage, *, count: int = 2) -> None:
-    original = storage.get_agent_run_finalization_receipt
-    remaining = count
-
-    def stale_read(*, run_id: str, entity_type: str) -> list[str] | None:
-        nonlocal remaining
-        if remaining > 0:
-            remaining -= 1
-            return None
-        return original(run_id=run_id, entity_type=entity_type)
-
-    storage.get_agent_run_finalization_receipt = MagicMock(  # type: ignore[method-assign]
-        side_effect=stale_read
+    configure_usage_event_recorder(accept)
+    _deliver(
+        storage,
+        observed_financial_receipt(run, ["durable-learning"], entity_type=entity_type),
     )
 
-
-def _profile_service(
-    context: RequestContext, *, request_id: str
-) -> ProfileGenerationService:
-    service = ProfileGenerationService(llm_client=MagicMock(), request_context=context)
-    service.service_config = ProfileGenerationServiceConfig(
-        user_id="user_1",
-        request_id=request_id,
-        source="api",
-        auto_run=False,
-        force_extraction=True,
-    )
-    return service
-
-
-def _playbook_service(
-    context: RequestContext, *, request_id: str
-) -> PlaybookGenerationService:
-    service = PlaybookGenerationService(llm_client=MagicMock(), request_context=context)
-    service.service_config = PlaybookGenerationServiceConfig(
-        request_id=request_id,
-        agent_version="v1",
-        user_id="user_1",
-        source="api",
-        auto_run=False,
-        force_extraction=True,
-    )
-    return service
+    assert len(events) == 1
+    assert events[0].event_key == f"learn:{entity_type}:durable-learning"
+    assert run.created_at is not None
+    assert events[0].created_at == run.created_at.timestamp()
+    assert events[0].pipeline == extractor_kind
+    assert events[0].platform_llm is None
+    assert events[0].platform_storage is None
 
 
 def _playbook_candidates(*, request_id: str, prefix: str) -> list[UserPlaybook]:
@@ -521,7 +498,9 @@ def test_resume_worker_resumes_profile_run_and_consumes_dependency(
             }
         )
     )
-    worker = ExtractionResumeWorker(request_context=request_context)
+    from reflexio.server.services.durable_learning.worker import DurableLearningWorker
+
+    worker = DurableLearningWorker(lambda _org: request_context)
 
     with (
         patch("litellm.completion", side_effect=[response]) as completion,
@@ -532,7 +511,7 @@ def test_resume_worker_resumes_profile_run_and_consumes_dependency(
         mock_consolidator_cls.return_value.deduplicate.side_effect = (
             lambda profiles, _user_id, _request_id: (profiles, [], [])
         )
-        resumed = worker.drain(max_runs=1)
+        resumed = worker.drain_org("org_1", batch_size=1, lease_seconds=300)
 
     requested_tools = completion.call_args.kwargs.get("tools") or []
     names = {tool["function"]["name"] for tool in requested_tools}
@@ -572,17 +551,19 @@ def test_resume_worker_retries_finalization_without_rerunning_agent(
             }
         )
     )
-    worker = ExtractionResumeWorker(request_context=request_context)
+    from reflexio.server.services.durable_learning.worker import DurableLearningWorker
+
+    worker = DurableLearningWorker(lambda _org: request_context)
 
     with (
         patch("litellm.completion", side_effect=[response]),
         patch(
             "reflexio.server.services.profile.service."
-            "ProfileGenerationService._finalize_extracted_items_with_outcome",
+            "ProfileGenerationService._persist_write_plan",
             side_effect=RuntimeError("storage write failed"),
         ),
     ):
-        resumed = worker.drain(max_runs=1)
+        resumed = worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300)
 
     assert resumed == 1
     run = storage.get_agent_run("run_1")
@@ -605,11 +586,14 @@ def test_resume_worker_retries_finalization_without_rerunning_agent(
         ),
         patch(
             "reflexio.server.services.profile.service."
-            "ProfileGenerationService._finalize_extracted_items_with_outcome",
-            return_value=FinalizationResult([], won_receipt=False),
+            "ProfileGenerationService._persist_write_plan",
+            autospec=True,
+            side_effect=ProfileGenerationService._persist_write_plan,
         ) as finalize,
     ):
-        resumed = worker.drain(max_runs=1)
+        # The persisted class rotation may visit the empty learning class
+        # before returning to finalization; one bounded rotation must finish.
+        resumed = worker.drain_org(storage.org_id, batch_size=3, lease_seconds=300)
 
     assert resumed == 1
     finalize.assert_called_once()
@@ -617,60 +601,6 @@ def test_resume_worker_retries_finalization_without_rerunning_agent(
     assert retried is not None
     assert retried.status == AgentRunStatus.FINALIZED
     assert storage.list_run_tool_dependencies("run_1")[0].consumed_at is not None
-
-
-@pytest.mark.parametrize(
-    ("extractor_kind", "finalize_path", "entity_type"),
-    [
-        (
-            "profile",
-            "reflexio.server.services.profile.service."
-            "ProfileGenerationService._finalize_extracted_items_with_outcome",
-            "profile",
-        ),
-        (
-            "playbook",
-            "reflexio.server.services.playbook.service."
-            "PlaybookGenerationService._finalize_extracted_items_with_outcome",
-            "user_playbook",
-        ),
-    ],
-)
-def test_resume_bills_only_items_that_survive_finalization(
-    request_context, extractor_kind, finalize_path, entity_type
-):
-    run = AgentRunRecord(
-        id="survivor-run",
-        binding=AgentBinding(
-            org_id="org_1",
-            extractor_kind=extractor_kind,
-            user_id="user_1",
-            request_id="request_1",
-            agent_version="v1",
-            source="api",
-        ),
-        status=AgentRunStatus.FINALIZING,
-        generation_request_snapshot={},
-    )
-    dropped = object()
-    survivor = object()
-    survivor_id = "durable-survivor-id"
-    worker = ExtractionResumeWorker(request_context=request_context)
-
-    with (
-        patch(
-            finalize_path,
-            return_value=FinalizationResult([survivor_id], won_receipt=True),
-        ) as finalize,
-        patch.object(worker, "_record_finalized_learnings") as record,
-    ):
-        worker._finalize_items(run, [dropped, survivor])
-
-    record.assert_called_once_with(run, [survivor_id], entity_type=entity_type)
-    if extractor_kind == "playbook":
-        assert finalize.call_args.kwargs["extraction_run"] is run
-    else:
-        assert "extraction_run" not in finalize.call_args.kwargs
 
 
 def test_resume_worker_tagging_schedule_failure_is_best_effort(
@@ -720,11 +650,13 @@ def test_resumable_finalization_bills_only_durable_ids_idempotently_on_retry(
         created_at=run_created_at,
     )
     learning_ids = ["profile_1"]
-    worker = ExtractionResumeWorker(request_context=request_context)
+    storage = request_context.storage
+    storage._ack_publication_receipt = MagicMock(return_value=True)
+    receipt = observed_financial_receipt(run, learning_ids, entity_type="profile")
 
     with (
         patch.object(
-            worker.storage,
+            storage,
             "get_agent_run",
             side_effect=AssertionError("billing must not re-read the run"),
         ),
@@ -733,8 +665,8 @@ def test_resumable_finalization_bills_only_durable_ids_idempotently_on_retry(
             return_value=UsageEventDeliveryStatus.APPENDED,
         ) as record_event,
     ):
-        worker._record_finalized_learnings(run, learning_ids, entity_type="profile")
-        worker._record_finalized_learnings(run, learning_ids, entity_type="profile")
+        _deliver(storage, receipt)
+        _deliver(storage, receipt)
 
     assert [call.kwargs["event_key"] for call in record_event.call_args_list] == [
         "learn:profile:profile_1",
@@ -764,6 +696,8 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
     extractor_kind,
     entity_type,
 ):
+    from reflexio.server.services.durable_learning.worker import DurableLearningWorker
+
     _seed_interactions(storage)
     request_context.configurator.get_config.return_value = Config(
         storage_config=StorageConfigSQLite(),
@@ -798,8 +732,8 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
         }
     )
     run_created_at = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
-    agent_completed_at = datetime(2026, 8, 31, 23, 59, tzinfo=UTC)
-    storage.create_agent_run(
+    _seed_completed_output(
+        storage,
         AgentRunRecord(
             id=run_id,
             binding=AgentBinding(
@@ -811,26 +745,34 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
                 source="api",
                 source_interaction_ids=[1, 2],
             ),
-            status=AgentRunStatus.FINALIZATION_FAILED,
+            status=AgentRunStatus.RUNNING,
             generation_request_snapshot={
                 "request_id": request_id,
-                "output_schema_name": "StructuredPlaybookList",
+                "output_schema_name": "StructuredProfilesOutput"
+                if extractor_kind == "profile"
+                else "StructuredPlaybookList",
             },
-            committed_output=committed_output,
+            committed_output=None,
             next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
             finalization_attempts=2,
-            agent_completed_at=agent_completed_at,
             created_at=run_created_at,
-        )
+        ),
+        committed_output,
     )
+    # SQLite creation owns its clock rather than accepting created_at from the
+    # input dataclass. Establish this historical fixture explicitly before any
+    # publication and assert the requested cycle actually persisted.
+    storage.conn.execute(
+        "UPDATE _agent_runs SET created_at=? WHERE id=?",
+        (run_created_at.isoformat(), run_id),
+    )
+    storage.conn.commit()
     stored_run = storage.get_agent_run(run_id)
     assert stored_run is not None
     assert stored_run.created_at is not None
     durable_run_created_at = stored_run.created_at
-    worker = ExtractionResumeWorker(
-        request_context=request_context,
-        llm_client=MagicMock(),
-    )
+    assert durable_run_created_at == run_created_at
+    worker = DurableLearningWorker(lambda _org: request_context)
     attempts: list[UsageEvent] = []
     accepted: dict[str, UsageEvent] = {}
     fail_next = True
@@ -850,8 +792,14 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
     configure_usage_event_recorder(recorder)
     try:
         with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "litellm.completion",
+                    side_effect=AssertionError("saved output cannot call model"),
+                )
+            )
             schedule_tagging = stack.enter_context(
-                patch.object(worker, "_schedule_finalized_tagging")
+                patch.object(ExtractionResumeWorker, "_schedule_finalized_tagging")
             )
             if extractor_kind == "profile":
                 stack.enter_context(
@@ -898,10 +846,13 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
                     )
                 )
 
-            failed = worker.run_once()
+            assert (
+                worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 1
+            )
+            failed = storage.get_agent_run(run_id)
             assert failed is not None
-            assert failed.status == AgentRunStatus.FINALIZATION_FAILED
-            assert failed.finalization_attempts == 3
+            assert failed.status == AgentRunStatus.FINALIZED
+            assert failed.finalization_attempts == 2
             receipt_after_failure = storage.get_agent_run_finalization_receipt(
                 run_id=run_id,
                 entity_type=entity_type,
@@ -920,15 +871,46 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
                 ]
             )
 
-            storage.update_agent_run_status(
-                run_id,
-                AgentRunStatus.FINALIZATION_FAILED,
-                next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
+            assert failed.committed_output is not None
+            assert failed.agent_completed_at is not None
+            assert (
+                failed.agent_completed_at.year,
+                failed.agent_completed_at.month,
+            ) != (durable_run_created_at.year, durable_run_created_at.month)
+            with storage._stream_sql() as db:
+                pending_receipt = storage._get_output_publication_receipt(
+                    db, run_id, failed.committed_output["publication"]["id"]
+                )
+            assert (
+                pending_receipt is not None
+                and pending_receipt.delivery_state == "pending"
             )
-            retry = worker.run_once()
+            from reflexio.server.services.extraction.publication import _deliver
+
+            with patch.object(
+                ExtractionResumeWorker,
+                "_items_from_committed_output",
+                side_effect=AssertionError("delivery must not recompute"),
+            ):
+                _deliver(storage, pending_receipt)
+            retry = storage.get_agent_run(run_id)
+            assert retry == failed
+            assert (
+                worker.drain_org(storage.org_id, batch_size=3, lease_seconds=300) == 0
+            )
+            with storage._stream_sql() as db:
+                delivered = storage._get_output_publication_receipt(
+                    db, run_id, failed.committed_output["publication"]["id"]
+                )
+            assert (
+                delivered is not None
+                and delivered.delivery_state == "accepted"
+                and delivered.financial_facts is None
+            )
 
         assert retry is not None
         assert retry.status == AgentRunStatus.FINALIZED
+
         assert (
             storage.get_agent_run_finalization_receipt(
                 run_id=run_id,
@@ -946,50 +928,12 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
             durable_run_created_at.timestamp(),
             durable_run_created_at.timestamp(),
         ]
-        schedule_tagging.assert_not_called()
+        schedule_tagging.assert_called_once()
         if optimize is not None and aggregate is not None:
             optimize.assert_called_once()
             aggregate.assert_called_once()
     finally:
         configure_usage_event_recorder(None)
-
-
-@pytest.mark.parametrize("next_attempt_count", [1, 3, 4])
-@pytest.mark.parametrize(
-    ("delivery_status", "expected_status"),
-    [
-        (UsageEventDeliveryStatus.FAILED, AgentRunStatus.FINALIZATION_FAILED),
-        (UsageEventDeliveryStatus.UNKNOWN, AgentRunStatus.FINALIZATION_FAILED),
-        (UsageEventDeliveryStatus.REJECTED, AgentRunStatus.FAILED),
-    ],
-)
-def test_receipt_delivery_failure_status_distinguishes_transient_and_permanent(
-    delivery_status,
-    next_attempt_count,
-    expected_status,
-):
-    error = ReceiptDeliveryError(delivery_status)
-
-    assert (
-        _finalization_failure_status(
-            error,
-            next_attempt_count=next_attempt_count,
-            max_finalization_attempts=3,
-        )
-        is expected_status
-    )
-
-
-@pytest.mark.parametrize("next_attempt_count", [3, 4])
-def test_ordinary_finalization_failure_stops_at_attempt_ceiling(next_attempt_count):
-    assert (
-        _finalization_failure_status(
-            RuntimeError("ordinary finalization failed"),
-            next_attempt_count=next_attempt_count,
-            max_finalization_attempts=3,
-        )
-        is AgentRunStatus.FAILED
-    )
 
 
 def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
@@ -998,7 +942,8 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
     monkeypatch,
 ):
     """A post-billing retry reuses durable IDs and skips derived schedulers."""
-    monkeypatch.setenv("MOCK_LLM_RESPONSE", "true")
+    from reflexio.server.services.durable_learning.worker import DurableLearningWorker
+
     _seed_interactions(storage)
     request_context.configurator.get_config.return_value = Config(
         storage_config=StorageConfigSQLite(),
@@ -1015,6 +960,8 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
     accepted_keys: set[str] = set()
 
     def deduplicating_recorder(event: UsageEvent) -> UsageEventDeliveryStatus:
+        if event.event_name != "learnings_generated":
+            return UsageEventDeliveryStatus.APPENDED
         delivery_attempts.append(event)
         assert event.event_key is not None
         if event.event_key in accepted_keys:
@@ -1030,37 +977,71 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
         *,
         assert_scheduler_calls: Callable[[], None] | None = None,
     ) -> None:
-        worker = ExtractionResumeWorker(
-            request_context=request_context,
-            llm_client=MagicMock(),
-        )
+        worker = DurableLearningWorker(lambda _org: request_context)
+        from reflexio.server.services.extraction.publication import _deliver
+
         with (
-            patch.object(worker, "_schedule_finalized_tagging"),
             patch.object(
-                storage,
-                "consume_run_tool_dependencies",
-                side_effect=[RuntimeError("failed after billing"), 0],
+                ExtractionResumeWorker, "_schedule_finalized_tagging"
+            ) as tagging,
+            patch(
+                "litellm.completion",
+                side_effect=AssertionError("saved output cannot call model"),
             ),
         ):
-            first_attempt = worker.run_once()
-            if assert_scheduler_calls is not None:
-                assert_scheduler_calls()
-            assert first_attempt is not None
-            assert first_attempt.status == AgentRunStatus.FINALIZATION_FAILED
-            storage.update_agent_run_status(
-                run_id,
-                AgentRunStatus.FINALIZATION_FAILED,
-                next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
+            with patch.object(
+                storage, "_ack_publication_receipt", return_value=False
+            ) as ack:
+                # A prior output may have consumed finalization. Visit at
+                # most one class rotation and stop at this output's commit,
+                # before a subsequent turn can retry financial delivery.
+                processed = 0
+                for _ in range(3):
+                    processed += worker.drain_org(
+                        storage.org_id, batch_size=1, lease_seconds=300
+                    )
+                    first_attempt = storage.get_agent_run(run_id)
+                    assert first_attempt is not None
+                    if first_attempt.status == AgentRunStatus.FINALIZED:
+                        break
+                assert processed == 1
+            assert (
+                first_attempt is not None
+                and first_attempt.status == AgentRunStatus.FINALIZED
             )
-            retry = worker.run_once()
+            assert first_attempt.finalization_attempts == 0
+            ack.assert_called_once()
             if assert_scheduler_calls is not None:
                 assert_scheduler_calls()
-            assert retry is not None
-            assert retry.status == AgentRunStatus.FINALIZED
+            assert first_attempt.committed_output is not None
+            with storage._stream_sql() as db:
+                receipt = storage._get_output_publication_receipt(
+                    db, run_id, first_attempt.committed_output["publication"]["id"]
+                )
+            assert receipt is not None and receipt.delivery_state == "pending"
+            with patch.object(
+                ExtractionResumeWorker,
+                "_items_from_committed_output",
+                side_effect=AssertionError("delivery must not recompute"),
+            ):
+                _deliver(storage, receipt)
+            if assert_scheduler_calls is not None:
+                assert_scheduler_calls()
+            tagging.assert_called_once()
+            assert storage.get_agent_run(run_id) == first_attempt
+            assert (
+                worker.drain_org(storage.org_id, batch_size=3, lease_seconds=300) == 0
+            )
+            with storage._stream_sql() as db:
+                accepted = storage._get_output_publication_receipt(
+                    db, run_id, first_attempt.committed_output["publication"]["id"]
+                )
+            assert accepted is not None and accepted.delivery_state == "accepted"
 
     try:
         profile_request_id = "request_profile_retry"
-        storage.create_agent_run(
+        _seed_completed_output(
+            storage,
             AgentRunRecord(
                 id="run_profile_retry",
                 binding=AgentBinding(
@@ -1072,18 +1053,19 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
                     source="api",
                     source_interaction_ids=[1, 2],
                 ),
-                status=AgentRunStatus.FINALIZATION_FAILED,
+                status=AgentRunStatus.RUNNING,
                 generation_request_snapshot={"request_id": profile_request_id},
-                committed_output={
-                    "profiles": [
-                        {
-                            "content": "User deployment target is AWS ECS.",
-                            "time_to_live": "infinity",
-                        }
-                    ]
-                },
+                committed_output=None,
                 next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
-            )
+            ),
+            {
+                "profiles": [
+                    {
+                        "content": "User deployment target is AWS ECS.",
+                        "time_to_live": "infinity",
+                    }
+                ]
+            },
         )
         with patch(
             "reflexio.server.services.profile.components.consolidator."
@@ -1107,7 +1089,8 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
         )
         storage.save_user_playbooks([seed])
         playbook_request_id = "request_playbook_retry"
-        storage.create_agent_run(
+        _seed_completed_output(
+            storage,
             AgentRunRecord(
                 id="run_playbook_retry",
                 binding=AgentBinding(
@@ -1119,22 +1102,23 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
                     source="api",
                     source_interaction_ids=[1, 2],
                 ),
-                status=AgentRunStatus.FINALIZATION_FAILED,
+                status=AgentRunStatus.RUNNING,
                 generation_request_snapshot={
                     "request_id": playbook_request_id,
                     "output_schema_name": "StructuredPlaybookList",
                 },
-                committed_output={
-                    "playbooks": [
-                        {
-                            "content": "Prefer AWS ECS as the deployment target.",
-                            "trigger": "when selecting a deployment target",
-                            "rationale": "The team standardizes on AWS.",
-                        }
-                    ]
-                },
+                committed_output=None,
                 next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
-            )
+            ),
+            {
+                "playbooks": [
+                    {
+                        "content": "Prefer AWS ECS as the deployment target.",
+                        "trigger": "when selecting a deployment target",
+                        "rationale": "The team standardizes on AWS.",
+                    }
+                ]
+            },
         )
 
         def consolidate_for_receipt_test(consolidator, results, *_args, **_kwargs):
@@ -1253,594 +1237,245 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
     ]
 
 
-@pytest.mark.parametrize("failing_scheduler", ["optimizer", "aggregation"])
-def test_playbook_scheduler_failure_preserves_billing_and_isolated_retry(
-    storage,
-    failing_scheduler,
+def _seed_completed_output(storage, run, payload):
+    from reflexio.server.services.playbook.playbook_service_utils import (
+        StructuredPlaybookList,
+    )
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        StructuredProfilesOutput,
+    )
+    from tests.server.services.extraction._publication_fixtures import (
+        write_completed_output,
+    )
+
+    shape = (
+        StructuredProfilesOutput
+        if run.binding.extractor_kind == "profile"
+        else StructuredPlaybookList
+    )
+    written = write_completed_output(storage, run, shape.model_validate(payload))
+    storage.conn.execute(
+        "UPDATE _agent_runs SET updated_at=?,claimed_by=NULL,claimed_at=NULL WHERE id=?",
+        ((datetime.now(UTC) - timedelta(days=1)).isoformat(), written.id),
+    )
+    storage.conn.commit()
+    return storage.get_agent_run(written.id)
+
+
+def _commit_resumed_output(
+    worker,
+    run,
+    output,
+    *,
+    before_model: Callable[[AgentRunRecord], AgentRunRecord] | None = None,
 ):
-    run = _finalizing_run(
-        run_id=f"run_scheduler_failure_{failing_scheduler}",
-        extractor_kind="playbook",
-        request_id=f"request_scheduler_failure_{failing_scheduler}",
+    """Script output; retain the active caller's attempt and real output writer."""
+    from dataclasses import asdict
+
+    from reflexio.server.llm.tools import ToolLoopResult, ToolLoopTrace
+    from reflexio.server.services.extraction.answer_inputs import answer_input_scope
+    from reflexio.server.services.extraction.overflow_answers import (
+        answer_witness,
+        pin_extraction_answer,
     )
-    run = _persist_and_load_run(storage, run)
-    worker = ExtractionResumeWorker(
-        request_context=_finalization_context(storage),
-        llm_client=MagicMock(),
+    from reflexio.server.services.extraction.resumable_agent import (
+        ResumableExtractionAgent,
+        decode_committed_output,
     )
-    candidates = _playbook_candidates(
-        request_id=run.binding.request_id,
-        prefix=failing_scheduler,
+    from reflexio.server.services.extraction.resume_worker import (
+        _request_interaction_models_from_ids,
     )
-    recorder = _DeduplicatingUsageRecorder()
-    configure_usage_event_recorder(recorder)
-    try:
-        with (
-            patch.object(
-                PlaybookGenerationService,
-                "_configured_playbook_config",
-                return_value=None,
-            ),
-            patch(
-                "reflexio.server.services.playbook.components.consolidator."
-                "PlaybookConsolidator.deduplicate",
-                side_effect=lambda results, *_args, **_kwargs: (
-                    [playbook for result in results for playbook in result],
-                    [],
-                    [],
-                ),
-            ) as deduplicate,
-            patch.object(
-                PlaybookGenerationService,
-                "_enqueue_user_playbook_optimization",
-                side_effect=(
-                    RuntimeError("optimizer unavailable")
-                    if failing_scheduler == "optimizer"
-                    else None
-                ),
-            ) as optimize,
-            patch.object(
-                PlaybookGenerationService,
-                "_trigger_playbook_aggregation",
-                side_effect=(
-                    RuntimeError("aggregation unavailable")
-                    if failing_scheduler == "aggregation"
-                    else None
-                ),
-            ) as aggregate,
-        ):
-            winner = worker._finalize_items(run, candidates)
-            retry = worker._finalize_items(run, candidates)
-    finally:
-        configure_usage_event_recorder(None)
-
-    assert winner.won_receipt is True
-    assert retry == FinalizationResult(winner.learning_ids, won_receipt=False)
-    assert deduplicate.call_count == 1
-    optimize.assert_called_once()
-    aggregate.assert_called_once()
-    billing_ids = [
-        event.entity_id
-        for event in recorder.events
-        if event.event_name == "learnings_generated"
-        and event.entity_type == "user_playbook"
-    ]
-    assert billing_ids == winner.learning_ids
-    assert [event.entity_id for event in recorder.attempts] == [
-        *winner.learning_ids,
-        *winner.learning_ids,
-    ]
-
-
-def test_empty_profile_receipt_wins_once_without_billing_or_recompute(storage):
-    run = _finalizing_run(
-        run_id="run_empty_profile",
-        extractor_kind="profile",
-        request_id="request_empty_profile",
+    from reflexio.server.services.extraction.source_inputs import capture_source_inputs
+    from reflexio.server.services.playbook.playbook_service_utils import (
+        StructuredPlaybookList,
     )
-    run = _persist_and_load_run(storage, run)
-    context = _finalization_context(storage)
-    worker = ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
-    recorder = _DeduplicatingUsageRecorder()
-    configure_usage_event_recorder(recorder)
-    try:
-        with patch.object(
-            ProfileGenerationService,
-            "_resolve_write_plan",
-            return_value=None,
-        ) as resolve:
-            winner = worker._finalize_items(run, [])
-            retry = worker._finalize_items(run, [])
-            wrapper_ids = _profile_service(
-                context, request_id=run.binding.request_id
-            )._finalize_extracted_items([], finalization_run_id=run.id)
-    finally:
-        configure_usage_event_recorder(None)
-
-    assert winner == FinalizationResult([], won_receipt=True)
-    assert retry == FinalizationResult([], won_receipt=False)
-    assert type(wrapper_ids) is list
-    assert wrapper_ids == []
-    resolve.assert_called_once()
-    assert (
-        storage.get_agent_run_finalization_receipt(run_id=run.id, entity_type="profile")
-        == []
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        StructuredProfilesOutput,
     )
-    assert [
-        event for event in recorder.events if event.event_name == "learnings_generated"
-    ] == []
 
-
-def test_empty_playbook_receipt_retries_without_redispatch(storage):
-    run = AgentRunRecord(
-        id="run_empty_playbook",
-        binding=AgentBinding(
-            org_id="org_1",
-            extractor_kind="playbook",
-            user_id="user_1",
-            request_id="request_empty_playbook",
-            agent_version="v1",
-            source="api",
+    payload, provenance = decode_committed_output(output)
+    shape = (
+        StructuredProfilesOutput
+        if run.binding.extractor_kind == "profile"
+        else StructuredPlaybookList
+    )
+    sources = capture_source_inputs(
+        worker.storage,
+        run,
+        _request_interaction_models_from_ids(
+            worker.storage,
+            run.binding.source_interaction_ids,
+            fallback_source=run.binding.source,
+            fallback_agent_version=run.binding.agent_version,
         ),
-        status=AgentRunStatus.RESUME_READY,
-        generation_request_snapshot={"output_schema_name": "StructuredPlaybookList"},
-        committed_output={"playbooks": []},
-        next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
     )
-    run = _persist_and_load_run(storage, run)
-    context = _finalization_context(storage)
-    worker = ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
-    original_finalize = worker._finalize_items
-    outcomes: list[FinalizationResult] = []
+    with answer_input_scope(worker.storage, run.id):
+        answers = worker._load_resolved_tool_calls(run)
+        for answer in answers:
+            pin_extraction_answer(answer)
+        dependencies = {
+            answer.id: build_scope_hash(answer_witness(asdict(answer)))
+            for answer in answers
+        }
 
-    def tracked_finalize(*args, **kwargs) -> FinalizationResult:
-        outcome = original_finalize(*args, **kwargs)
-        outcomes.append(outcome)
-        return outcome
+        def admitted_witness(_original):
+            assert worker._active_claim is not None
+            return worker._active_claim
 
-    def claim(**_):
-        with storage._stream_sql() as db:
-            db.query(
-                "UPDATE _agent_runs SET status='resuming',claimed_by='test',claimed_at=? WHERE id=?",
-                (datetime.now(UTC).isoformat(), run.id),
-            )
-        return storage.get_agent_run(run.id)
-
-    recorder = _DeduplicatingUsageRecorder()
-    configure_usage_event_recorder(recorder)
-    try:
-        with (
-            patch.object(storage, "claim_ready_agent_run", side_effect=claim),
-            patch.object(
-                worker, "_load_resolved_tool_calls", return_value=[MagicMock()]
-            ),
-            patch.object(worker, "_resume_run", return_value=([], [], None)),
-            patch.object(
-                worker, "_items_from_committed_output", return_value=([], [], None)
-            ),
-            patch.object(worker, "_finalize_items", side_effect=tracked_finalize),
-            patch.object(
-                PlaybookGenerationService,
-                "_resolve_write_plan",
-                return_value=None,
-            ) as resolve,
-            patch.object(
-                PlaybookGenerationService,
-                "_enqueue_user_playbook_optimization",
-            ) as optimize,
-            patch.object(
-                PlaybookGenerationService,
-                "_trigger_playbook_aggregation",
-            ) as aggregate,
-            patch(
-                "reflexio.server.services.extraction.resume_worker.schedule_tagging"
-            ) as schedule_tagging,
-            patch.object(
-                storage,
-                "consume_run_tool_dependencies",
-                side_effect=[RuntimeError("failed after finalization"), 0],
+        with patch(
+            "reflexio.server.services.extraction.resumable_agent.run_tool_loop",
+            return_value=ToolLoopResult(
+                ctx=None,
+                trace=ToolLoopTrace(finished=True),
+                finished_reason="structured_output",
+                structured_output=shape.model_validate(payload),
+                provenance=provenance,
+                max_steps_remaining=8,
             ),
         ):
-            failed = worker.run_once()
-            assert failed is not None
-            assert failed.status == AgentRunStatus.FINALIZATION_FAILED
-            schedule_tagging.assert_called_once()
-            storage.update_agent_run_status(
-                run.id,
-                AgentRunStatus.FINALIZATION_FAILED,
-                next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
+            result = ResumableExtractionAgent(
+                client=worker.client, storage=worker.storage
+            )._run(
+                run=run,
+                before_model=before_model or admitted_witness,
+                publication_origin="resume",
+                messages=[],
+                history_inputs=HistoricalInputs(),
+                output_schema=shape,
+                source_inputs=sources,
+                dependency_inputs=dependencies,
             )
-            retried = worker.run_once()
-            schedule_tagging.assert_called_once()
-            wrapper_ids = _playbook_service(
-                context, request_id=run.binding.request_id
-            )._finalize_extracted_items([], finalization_run_id=run.id)
-            schedule_tagging.assert_called_once()
+    stored = result.execution_run
+    assert stored is not None
+    worker._active_claim = stored
+    return stored
 
-        assert retried is not None
-        assert retried.status == AgentRunStatus.FINALIZED
-        # Worker receipt replay no longer reconstructs items or calls finalizers.
-        assert outcomes == [FinalizationResult([], won_receipt=True)]
-        assert type(wrapper_ids) is list
-        assert wrapper_ids == []
+
+@pytest.mark.parametrize("kind", ["profile", "playbook"])
+def test_empty_output_receipt_retries_without_redispatch(storage, kind):
+    from reflexio.server.services.durable_learning.user_lease import (
+        adopt_agent_run_for_execution,
+        user_extraction_lease,
+    )
+    from reflexio.server.services.durable_learning.worker import DurableLearningWorker
+    from reflexio.server.services.extraction.publication import publish_resumed_output
+
+    _seed_interactions(storage)
+    entity_type = "profile" if kind == "profile" else "user_playbook"
+    service_type = (
+        ProfileGenerationService if kind == "profile" else PlaybookGenerationService
+    )
+    run = _seed_completed_output(
+        storage,
+        AgentRunRecord(
+            id="run_empty_playbook",
+            binding=AgentBinding(
+                org_id="org_1",
+                extractor_kind=kind,
+                user_id="user_1",
+                request_id="request_1",
+                agent_version="v1",
+                source="api",
+                source_interaction_ids=[1, 2],
+            ),
+            status=AgentRunStatus.RUNNING,
+            generation_request_snapshot={
+                "output_schema_name": "StructuredProfilesOutput"
+                if kind == "profile"
+                else "StructuredPlaybookList"
+            },
+        ),
+        {"profiles" if kind == "profile" else "playbooks": []},
+    )
+    assert run is not None
+    context = _finalization_context(storage)
+    worker = DurableLearningWorker(lambda _org: context)
+    recorder = _DeduplicatingUsageRecorder()
+    configure_usage_event_recorder(recorder)
+    with (
+        patch(
+            "litellm.completion",
+            side_effect=AssertionError("saved output cannot call model"),
+        ),
+        patch.object(
+            service_type,
+            "_resolve_write_plan",
+            autospec=True,
+            side_effect=service_type._resolve_write_plan,
+        ) as resolve,
+        patch.object(
+            PlaybookGenerationService, "_enqueue_user_playbook_optimization"
+        ) as optimize,
+        patch.object(
+            PlaybookGenerationService, "_trigger_playbook_aggregation"
+        ) as aggregate,
+        patch(
+            "reflexio.server.services.extraction.resume_worker.schedule_tagging"
+        ) as tagging,
+    ):
+        assert worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 1
+        published = storage.get_agent_run(run.id)
+        assert published is not None and published.status == AgentRunStatus.FINALIZED
+        assert published.committed_output is not None
+        assert worker.drain_org(storage.org_id, batch_size=3, lease_seconds=300) == 0
+        tagging.assert_called_once()
+        with storage._stream_sql() as db:
+            receipt = storage._get_output_publication_receipt(
+                db, published.id, published.committed_output["publication"]["id"]
+            )
+        assert receipt is not None and receipt.learning_ids == ()
+        assert receipt.delivery_state == "accepted" and receipt.financial_facts is None
+        no_prepare = MagicMock(
+            side_effect=AssertionError("accepted output cannot recompute")
+        )
+        no_dispatch = MagicMock(
+            side_effect=AssertionError("accepted output cannot redispatch")
+        )
+        with user_extraction_lease(storage, "user_1", max_wait_seconds=0):
+            retained = adopt_agent_run_for_execution(storage, published)
+            replay = publish_resumed_output(
+                storage, retained, prepare=no_prepare, on_published=no_dispatch
+            )
+        assert replay.status == AgentRunStatus.FINALIZED
+        no_prepare.assert_not_called()
+        no_dispatch.assert_not_called()
+        tagging.assert_called_once()
         resolve.assert_called_once()
         optimize.assert_not_called()
         aggregate.assert_not_called()
         assert (
             storage.get_agent_run_finalization_receipt(
-                run_id=run.id, entity_type="user_playbook"
+                run_id=run.id, entity_type=entity_type
             )
             == []
         )
-        assert [
-            event
-            for event in recorder.events
-            if event.event_name == "learnings_generated"
-        ] == []
-    finally:
-        configure_usage_event_recorder(None)
-
-
-def test_identical_profile_ids_use_atomic_receipt_owner(tmp_path):
-    db_path = str(tmp_path / "identical-profile-receipt.db")
-    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
-        storage_a = SQLiteStorage(org_id="org_1", db_path=db_path)
-        storage_b = SQLiteStorage(org_id="org_1", db_path=db_path)
-    run = _finalizing_run(
-        run_id="run_identical_profile",
-        extractor_kind="profile",
-        request_id="request_identical_profile",
-    )
-    run = _persist_and_load_run(storage_a, run)
-    contexts = [_finalization_context(item) for item in (storage_a, storage_b)]
-    workers = [
-        ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
-        for context in contexts
-    ]
-    candidate_batches = [
-        [
-            UserProfile(
-                profile_id="profile-shared",
-                user_id="user_1",
-                content=f"Profile content from attempt {index}.",
-                last_modified_timestamp=1_000 + index,
-                generated_from_request_id=run.binding.request_id,
+        with storage._stream_sql() as db:
+            assert (
+                storage._get_output_publication_receipt(
+                    db, run.id, published.committed_output["publication"]["id"]
+                )
+                == receipt
             )
-        ]
-        for index in range(2)
-    ]
-    recorder = _DeduplicatingUsageRecorder()
-    configure_usage_event_recorder(recorder)
-    try:
-        with patch(
-            "reflexio.server.services.profile.components.consolidator."
-            "ProfileConsolidator.deduplicate",
-            side_effect=lambda profiles, _user_id, _request_id: (profiles, [], []),
-        ):
-            winner = workers[0]._finalize_items(run, candidate_batches[0])
-            _hide_next_receipt_reads(storage_b)
-            loser = workers[1]._finalize_items(run, candidate_batches[1])
-    finally:
-        configure_usage_event_recorder(None)
-
-    assert winner == FinalizationResult(["profile-shared"], won_receipt=True)
-    assert loser == FinalizationResult(["profile-shared"], won_receipt=False)
-    assert [profile.content for profile in storage_a.get_user_profile("user_1")] == [
-        "Profile content from attempt 0."
-    ]
-    assert [
-        event.entity_id
-        for event in recorder.events
-        if event.event_name == "learnings_generated" and event.entity_type == "profile"
-    ] == ["profile-shared"]
-    assert [event.entity_id for event in recorder.attempts] == [
-        "profile-shared",
-        "profile-shared",
-    ]
-
-
-def test_identical_playbook_ids_use_atomic_receipt_owner(tmp_path):
-    db_path = str(tmp_path / "identical-playbook-receipt.db")
-    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
-        storage_a = SQLiteStorage(org_id="org_1", db_path=db_path)
-        storage_b = SQLiteStorage(org_id="org_1", db_path=db_path)
-    storage_a.conn.execute(
-        "CREATE TABLE receipt_race_writes (attempt INTEGER NOT NULL, content TEXT NOT NULL)"
+    # Historical empty evidence remains independently observable; it is not
+    # an execution path and cannot stand in for a current output receipt.
+    legacy = _persist_and_load_run(
+        storage,
+        _finalizing_run(
+            run_id="legacy_empty",
+            extractor_kind=kind,
+            request_id="legacy_empty_request",
+        ),
     )
-    storage_a.conn.commit()
-    run = _finalizing_run(
-        run_id="run_identical_playbook",
-        extractor_kind="playbook",
-        request_id="request_identical_playbook",
+    assert storage.save_agent_run_finalization_receipt(
+        run_id=legacy.id, entity_type=entity_type, learning_ids=[]
     )
-    run = _persist_and_load_run(storage_a, run)
-    contexts = [_finalization_context(item) for item in (storage_a, storage_b)]
-    workers = [
-        ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
-        for context in contexts
-    ]
-    candidate_batches = [
-        _playbook_candidates(
-            request_id=run.binding.request_id, prefix=f"attempt-{index}"
-        )
-        for index in range(2)
-    ]
-    persist_attempts = iter(range(2))
-
-    def persist_fixed_ids(service, plan) -> None:
-        attempt = next(persist_attempts)
-        for index, playbook in enumerate(plan.new_playbooks):
-            playbook.user_playbook_id = 88 + index
-            service.storage.conn.execute(
-                "INSERT INTO receipt_race_writes (attempt, content) VALUES (?, ?)",
-                (attempt, playbook.content),
-            )
-
-    recorder = _DeduplicatingUsageRecorder()
-    configure_usage_event_recorder(recorder)
-    try:
-        with (
-            patch.object(
-                PlaybookGenerationService,
-                "_configured_playbook_config",
-                return_value=None,
-            ),
-            patch(
-                "reflexio.server.services.playbook.components.consolidator."
-                "PlaybookConsolidator.deduplicate",
-                side_effect=lambda results, *_args, **_kwargs: (
-                    [playbook for result in results for playbook in result],
-                    [],
-                    [],
-                ),
-            ),
-            patch.object(
-                PlaybookGenerationService,
-                "_persist_write_plan",
-                autospec=True,
-                side_effect=persist_fixed_ids,
-            ),
-            patch.object(
-                PlaybookGenerationService,
-                "_enqueue_user_playbook_optimization",
-            ) as optimize,
-            patch.object(
-                PlaybookGenerationService,
-                "_trigger_playbook_aggregation",
-            ) as aggregate,
-        ):
-            winner = workers[0]._finalize_items(run, candidate_batches[0])
-            _hide_next_receipt_reads(storage_b)
-            loser = workers[1]._finalize_items(run, candidate_batches[1])
-    finally:
-        configure_usage_event_recorder(None)
-
-    assert winner == FinalizationResult(["88", "89"], won_receipt=True)
-    assert loser == FinalizationResult(["88", "89"], won_receipt=False)
-    persisted_writes = storage_a.conn.execute(
-        "SELECT attempt, content FROM receipt_race_writes ORDER BY content"
-    ).fetchall()
-    assert [(row["attempt"], row["content"]) for row in persisted_writes] == [
-        (0, "Use deployment procedure attempt-0-0."),
-        (0, "Use deployment procedure attempt-0-1."),
-    ]
-    optimize.assert_called_once()
-    aggregate.assert_called_once()
-    assert [
-        event.entity_id
-        for event in recorder.events
-        if event.event_name == "learnings_generated"
-        and event.entity_type == "user_playbook"
-    ] == ["88", "89"]
-    assert [event.entity_id for event in recorder.attempts] == ["88", "89", "88", "89"]
-
-
-def test_two_stale_profile_workers_preserve_order_and_bill_only_winner(tmp_path):
-    db_path = str(tmp_path / "stale-finalizers.db")
-    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
-        storage_a = SQLiteStorage(org_id="org_1", db_path=db_path)
-        storage_b = SQLiteStorage(org_id="org_1", db_path=db_path)
-    run = _finalizing_run(
-        run_id="run_profile_race",
-        extractor_kind="profile",
-        request_id="request_profile_race",
+    historical_ids = storage.get_agent_run_finalization_receipt(
+        run_id=legacy.id, entity_type=entity_type
     )
-    run = _persist_and_load_run(storage_a, run)
-    _gate_initial_receipt_reads((storage_a, storage_b))
-    contexts = [_finalization_context(storage) for storage in (storage_a, storage_b)]
-    resume_workers = [
-        ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
-        for context in contexts
+    assert type(historical_ids) is list and historical_ids == []
+    assert not [
+        event for event in recorder.events if event.event_name == "learnings_generated"
     ]
-    candidate_batches = [
-        [
-            UserProfile(
-                profile_id=f"profile-{worker_index}-{item_index}",
-                user_id="user_1",
-                content=f"Profile candidate {worker_index}-{item_index}.",
-                last_modified_timestamp=1_000 + item_index,
-                generated_from_request_id="request_profile_race",
-            )
-            for item_index in range(2)
-        ]
-        for worker_index in range(2)
-    ]
-    outcomes: list[FinalizationResult] = []
-    errors: list[BaseException] = []
-
-    def finalize(index: int) -> None:
-        try:
-            outcomes.append(
-                resume_workers[index]._finalize_items(run, candidate_batches[index])
-            )
-        except BaseException as exc:  # noqa: BLE001 - intentional thread error capture
-            errors.append(exc)
-
-    recorder = _DeduplicatingUsageRecorder()
-    configure_usage_event_recorder(recorder)
-    try:
-        with patch(
-            "reflexio.server.services.profile.components.consolidator."
-            "ProfileConsolidator.deduplicate",
-            side_effect=lambda profiles, _user_id, _request_id: (profiles, [], []),
-        ):
-            workers = [
-                threading.Thread(target=finalize, args=(index,)) for index in range(2)
-            ]
-            for worker in workers:
-                worker.start()
-            for worker in workers:
-                worker.join(timeout=10)
-    finally:
-        configure_usage_event_recorder(None)
-
-    assert all(not worker.is_alive() for worker in workers)
-    assert errors == []
-    persisted_ids = [
-        profile.profile_id for profile in storage_a.get_user_profile("user_1")
-    ]
-    receipt_ids = storage_a.get_agent_run_finalization_receipt(
-        run_id=run.id, entity_type="profile"
-    )
-    assert len(persisted_ids) == 2
-    assert receipt_ids == persisted_ids
-    assert [outcome.won_receipt for outcome in outcomes].count(True) == 1
-    assert [outcome.won_receipt for outcome in outcomes].count(False) == 1
-    assert all(outcome.learning_ids == receipt_ids for outcome in outcomes)
-    assert receipt_ids in [
-        [profile.profile_id for profile in batch] for batch in candidate_batches
-    ]
-    wrapper_ids = _profile_service(
-        contexts[0], request_id=run.binding.request_id
-    )._finalize_extracted_items(
-        candidate_batches[1],
-        finalization_run_id=run.id,
-    )
-    assert type(wrapper_ids) is list
-    assert wrapper_ids == receipt_ids
-    billing_events = [
-        event
-        for event in recorder.events
-        if event.event_name == "learnings_generated" and event.entity_type == "profile"
-    ]
-    assert [event.entity_id for event in billing_events] == persisted_ids
-    assert Counter(event.entity_id for event in recorder.attempts) == Counter(
-        persisted_ids * 2
-    )
-
-
-def test_two_stale_playbook_workers_preserve_order_and_dispatch_once(tmp_path):
-    db_path = str(tmp_path / "stale-playbook-finalizers.db")
-    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
-        storage_a = SQLiteStorage(org_id="org_1", db_path=db_path)
-        storage_b = SQLiteStorage(org_id="org_1", db_path=db_path)
-    run = _finalizing_run(
-        run_id="run_playbook_race",
-        extractor_kind="playbook",
-        request_id="request_playbook_race",
-    )
-    run = _persist_and_load_run(storage_a, run)
-    _gate_initial_receipt_reads((storage_a, storage_b))
-    contexts = [_finalization_context(storage) for storage in (storage_a, storage_b)]
-    resume_workers = [
-        ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
-        for context in contexts
-    ]
-    candidate_batches = [
-        _playbook_candidates(
-            request_id=run.binding.request_id,
-            prefix=f"worker-{worker_index}",
-        )
-        for worker_index in range(2)
-    ]
-    outcomes: list[FinalizationResult] = []
-    errors: list[BaseException] = []
-
-    def finalize(index: int) -> None:
-        try:
-            outcomes.append(
-                resume_workers[index]._finalize_items(run, candidate_batches[index])
-            )
-        except BaseException as exc:  # noqa: BLE001 - intentional thread error capture
-            errors.append(exc)
-
-    recorder = _DeduplicatingUsageRecorder()
-    configure_usage_event_recorder(recorder)
-    try:
-        with (
-            patch.object(
-                PlaybookGenerationService,
-                "_configured_playbook_config",
-                return_value=None,
-            ),
-            patch(
-                "reflexio.server.services.playbook.components.consolidator."
-                "PlaybookConsolidator.deduplicate",
-                side_effect=lambda results, *_args, **_kwargs: (
-                    [playbook for result in results for playbook in result],
-                    [],
-                    [],
-                ),
-            ),
-            patch.object(
-                PlaybookGenerationService,
-                "_enqueue_user_playbook_optimization",
-            ) as optimize,
-            patch.object(
-                PlaybookGenerationService,
-                "_trigger_playbook_aggregation",
-            ) as aggregate,
-        ):
-            threads = [
-                threading.Thread(target=finalize, args=(index,)) for index in range(2)
-            ]
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join(timeout=10)
-
-            assert all(not thread.is_alive() for thread in threads)
-            assert errors == []
-            receipt_ids = storage_a.get_agent_run_finalization_receipt(
-                run_id=run.id,
-                entity_type="user_playbook",
-            )
-            persisted_ids = [
-                str(row[0])
-                for row in storage_a.conn.execute(
-                    "SELECT user_playbook_id FROM user_playbooks "
-                    "WHERE request_id = ? ORDER BY user_playbook_id ASC",
-                    (run.binding.request_id,),
-                ).fetchall()
-            ]
-            wrapper_ids = _playbook_service(
-                contexts[0], request_id=run.binding.request_id
-            )._finalize_extracted_items(
-                candidate_batches[1],
-                finalization_run_id=run.id,
-            )
-
-            assert len(persisted_ids) == 2
-            assert receipt_ids == persisted_ids
-            assert [outcome.won_receipt for outcome in outcomes].count(True) == 1
-            assert [outcome.won_receipt for outcome in outcomes].count(False) == 1
-            assert all(outcome.learning_ids == receipt_ids for outcome in outcomes)
-            assert type(wrapper_ids) is list
-            assert wrapper_ids == receipt_ids
-            optimize.assert_called_once()
-            aggregate.assert_called_once()
-            billing_ids = [
-                event.entity_id
-                for event in recorder.events
-                if event.event_name == "learnings_generated"
-                and event.entity_type == "user_playbook"
-            ]
-            assert billing_ids == receipt_ids
-            assert Counter(event.entity_id for event in recorder.attempts) == Counter(
-                receipt_ids * 2
-            )
-    finally:
-        configure_usage_event_recorder(None)
 
 
 def test_resume_worker_fails_run_when_step_budget_exhausted(
@@ -1857,53 +1492,66 @@ def test_resume_worker_fails_run_when_step_budget_exhausted(
         AgentRunStatus.RESUME_READY,
         max_steps_remaining=0,
     )
-    worker = ExtractionResumeWorker(request_context=request_context)
+    from reflexio.server.services.durable_learning.worker import DurableLearningWorker
+
+    worker = DurableLearningWorker(lambda _org: request_context)
 
     with patch(
         "litellm.completion",
         side_effect=AssertionError("exhausted budget must not call LLM"),
     ):
-        resumed = worker.drain(max_runs=1)
+        resumed = worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300)
 
     assert resumed == 1
     run = storage.get_agent_run("run_1")
     assert run is not None
     assert run.status == AgentRunStatus.FAILED
     assert run.last_error == "Resumable extraction max-step budget exhausted"
+    assert run.resume_attempts == 0
     assert storage.list_run_tool_dependencies("run_1")[0].consumed_at is None
 
 
-def test_resume_skips_claim_replaced_while_waiting_for_user_lease(
+def test_resume_skips_owner_replaced_before_owned_selection(
     storage, request_context, monkeypatch
 ):
     from contextlib import contextmanager
-    from dataclasses import replace
+
+    from reflexio.server.services.durable_learning import user_lease
+    from reflexio.server.services.durable_learning.worker import DurableLearningWorker
 
     _seed_interactions(storage)
     _seed_ready_run(storage)
-    worker = ExtractionResumeWorker(request_context=request_context)
-    read = storage.get_agent_run
+    before = storage.get_agent_run("run_1")
+    worker = DurableLearningWorker(lambda _org: request_context)
+    replacement = []
+    owned = user_lease.owned_user_work_context
 
     @contextmanager
-    def replaced_claim(*args, **kwargs):
-        monkeypatch.setattr(
-            storage,
-            "get_agent_run",
-            lambda run_id: replace(read(run_id), claimed_by="new-owner"),
-        )
-        yield
+    def replace_owner(store, user, token, seconds):
+        store.release_user_extraction(user, token)
+        new_token = store.claim_user_extraction(user, "new-owner", seconds)
+        assert new_token is not None and new_token != token
+        replacement.append(new_token)
+        with owned(store, user, token, seconds):
+            yield
 
-    monkeypatch.setattr(
-        "reflexio.server.services.durable_learning.user_lease.user_extraction_lease",
-        replaced_claim,
-    )
-    monkeypatch.setattr(
-        worker, "_process_claimed_run", lambda *_: pytest.fail("stale claim executed")
-    )
-    inspected = worker.run_once()
-    assert inspected is not None
-    assert inspected.id == "run_1"
-    assert read("run_1").status == AgentRunStatus.RESUMING
+    monkeypatch.setattr(user_lease, "owned_user_work_context", replace_owner)
+    try:
+        with patch.object(
+            ExtractionResumeWorker,
+            "_process_claimed_run",
+            side_effect=AssertionError("stale owner executed"),
+        ) as process:
+            assert (
+                worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 0
+            )
+        process.assert_not_called()
+        assert len(replacement) == 1
+        assert storage.get_agent_run("run_1") == before
+        assert storage.claim_user_extraction("user_1", "third-owner", 300) is None
+    finally:
+        for token in replacement:
+            storage.release_user_extraction("user_1", token)
 
 
 def test_lost_user_lease_cannot_rewind_finalized_resume(storage, request_context):
@@ -2027,146 +1675,166 @@ def test_explicit_heartbeat_launch_failure_releases_lease_and_capacity(
 def test_busy_resume_claims_do_not_spend_execution_attempts(
     storage, request_context, monkeypatch
 ):
-    from contextlib import contextmanager
-
-    from reflexio.server.services.durable_learning import user_lease as module
+    from reflexio.server.services.durable_learning.worker import DurableLearningWorker
 
     _seed_interactions(storage)
     _seed_ready_run(storage)
-    worker = ExtractionResumeWorker(
-        request_context=request_context, llm_client=MagicMock()
-    )
-    claim = storage.claim_ready_agent_run
-    lease = module.user_extraction_lease
-    ticks = 0
+    worker = DurableLearningWorker(lambda _org: request_context)
+    before = storage.get_agent_run("run_1")
+    parent = storage.claim_user_extraction("user_1", "busy-owner", 300)
+    assert parent is not None
+    executed = []
 
-    def claim_at_next_tick(**kwargs):
-        nonlocal ticks
-        ticks += 1
-        return claim(**kwargs, now=datetime.now(UTC) + timedelta(seconds=700 * ticks))
+    def provider_failure(active_worker, run, _calls):
+        executed.append(run.id)
+        reserve_compute_attempt()
+        raise RuntimeError("transient provider error")
 
-    @contextmanager
-    def busy_first_three(*args, **kwargs):
-        if ticks <= 3:
-            raise module.UserLeaseBusyError("capacity occupied")
-        with lease(*args, **kwargs):
-            yield
-
-    monkeypatch.setattr(storage, "claim_ready_agent_run", claim_at_next_tick)
-    monkeypatch.setattr(module, "user_extraction_lease", busy_first_three)
-    monkeypatch.setattr(
-        worker,
-        "_resume_run",
-        MagicMock(side_effect=RuntimeError("transient provider error")),
-    )
-    for _ in range(3):
-        assert worker.run_once() is not None
-        assert storage.get_agent_run("run_1").resume_attempts == 0
-    worker.run_once()
+    monkeypatch.setattr(ExtractionResumeWorker, "_resume_run", provider_failure)
+    try:
+        for _ in range(3):
+            assert (
+                worker.drain_org(storage.org_id, batch_size=3, lease_seconds=300) == 0
+            )
+            assert storage.get_agent_run("run_1") == before
+        assert executed == []
+    finally:
+        storage.release_user_extraction("user_1", parent)
+    assert worker.drain_org(storage.org_id, batch_size=6, lease_seconds=300) == 1
     result = storage.get_agent_run("run_1")
-    assert result.resume_attempts == 1
+    assert result is not None and result.resume_attempts == 1
     assert result.status == AgentRunStatus.RESUME_READY
+    assert executed == ["run_1"]
 
 
 def test_busy_user_does_not_end_resume_batch(storage, request_context, monkeypatch):
-    from contextlib import contextmanager
-    from dataclasses import replace
-
-    from reflexio.server.services.durable_learning import user_lease as module
+    from reflexio.server.services.durable_learning.worker import DurableLearningWorker
 
     _seed_interactions(storage)
     _seed_ready_run(storage)
     first = storage.get_agent_run("run_1")
-    second = replace(
-        first, id="run_2", binding=replace(first.binding, user_id="user_2")
-    )
-    storage.create_agent_run(second)
-    storage.attach_run_tool_dependency(
-        RunToolDependencyRecord(
-            run_id="run_2", pending_tool_call_id="ptc_1", resolved_at=datetime.now(UTC)
+    assert first is not None
+    storage.add_request(
+        Request(
+            request_id="request_2",
+            user_id="user_2",
+            created_at=1000,
+            source="api",
+            agent_version="v1",
+            session_id="request_2",
         )
     )
-    worker = ExtractionResumeWorker(
-        request_context=request_context, llm_client=MagicMock()
+    for identifier in (3, 4):
+        storage._insert_interaction(
+            Interaction(
+                interaction_id=identifier,
+                user_id="user_2",
+                request_id="request_2",
+                created_at=1000 + identifier,
+                role="user",
+                content="Independent synthetic deployment source",
+            )
+        )
+    second = replace(
+        first,
+        id="run_2",
+        binding=replace(
+            first.binding,
+            user_id="user_2",
+            request_id="request_2",
+            source_interaction_ids=[3, 4],
+            window_start_interaction_id=3,
+            window_end_interaction_id=4,
+        ),
     )
-    lease = module.user_extraction_lease
+    storage.create_agent_run(second)
+    answer = storage.get_pending_tool_call("ptc_1")
+    assert answer is not None
+    second_answer = storage.create_pending_tool_call(
+        replace(
+            answer,
+            id="ptc_2",
+            user_id="user_2",
+            dedup_key="second-user-deployment",
+            question_text="Which deployment does user two need?",
+        )
+    )
+    storage.attach_run_tool_dependency(
+        RunToolDependencyRecord(
+            run_id="run_2",
+            pending_tool_call_id=second_answer.id,
+            resolved_at=second_answer.resolved_at,
+        )
+    )
+    worker = DurableLearningWorker(lambda _org: request_context)
     executed = []
 
-    @contextmanager
-    def first_busy(store, user_id, **kwargs):
-        if user_id == "user_1":
-            raise module.UserLeaseBusyError("user busy")
-        with lease(store, user_id, **kwargs):
-            yield
-
-    def execute(run, _):
+    def execute(active_worker, run, _calls):
         executed.append(run.binding.user_id)
-        return run
+        return _commit_resumed_output(active_worker, run, {"profiles": []})
 
-    monkeypatch.setattr(module, "user_extraction_lease", first_busy)
-    monkeypatch.setattr(worker, "_process_claimed_run", execute)
-    assert worker.drain(max_runs=2) == 2
-    assert executed == ["user_2"]
-    assert storage.get_agent_run("run_1").resume_attempts == 0
-    assert storage.get_agent_run("run_2").resume_attempts == 1
+    parent = storage.claim_user_extraction("user_1", "busy-owner", 300)
+    assert parent is not None
+    monkeypatch.setattr(ExtractionResumeWorker, "_resume_run", execute)
+    try:
+        assert worker.drain_org(storage.org_id, batch_size=2, lease_seconds=300) == 1
+        assert executed == ["user_2"]
+        assert storage.get_agent_run("run_1") == first
+        finished = storage.get_agent_run("run_2")
+        assert finished is not None and finished.resume_attempts == 1
+        assert finished.status == AgentRunStatus.FINALIZED
+        assert storage.list_run_tool_dependencies("run_2")[0].consumed_at is not None
+        assert storage.claim_user_extraction("user_1", "competitor", 300) is None
+    finally:
+        storage.release_user_extraction("user_1", parent)
 
 
 def test_erased_source_cancels_resume_before_execution(request_context, storage):
     _seed_ready_run(storage)
-    worker = ExtractionResumeWorker(
-        request_context=request_context, llm_client=MagicMock()
-    )
+    from reflexio.server.services.durable_learning.worker import DurableLearningWorker
+
+    worker = DurableLearningWorker(lambda _org: request_context)
     with patch.object(
-        worker,
+        ExtractionResumeWorker,
         "_process_claimed_run",
         side_effect=AssertionError("must not revive erased input"),
     ):
-        run = worker.run_once()
+        assert worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 1
+    run = storage.get_agent_run("run_1")
     assert run is not None and run.status == AgentRunStatus.CANCELLED
     assert run.last_error == "source_interactions_erased"
-    assert worker.run_once() is None
+    assert worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 0
 
 
+@pytest.mark.parametrize("failure_kind", ["readiness", "contention"])
 @pytest.mark.parametrize("stage", ["retry", "finalization", "conversion"])
 def test_readiness_defers_committed_finalization_without_spending_budget(
-    storage, request_context, monkeypatch, stage
+    storage, request_context, monkeypatch, stage, failure_kind
 ):
-    from reflexio.server.services.storage.error import ReadinessUnavailableError
+    from reflexio.server.services.durable_learning.worker import DurableLearningWorker
+    from reflexio.server.services.storage.error import (
+        ExecutionInputBusyError,
+        ReadinessUnavailableError,
+    )
+
+    refusal = (
+        ReadinessUnavailableError
+        if failure_kind == "readiness"
+        else ExecutionInputBusyError
+    )
 
     _seed_interactions(storage)
     output = {
         "profiles": [{"content": "Deploy to AWS ECS.", "time_to_live": "infinity"}]
     }
     initial_resume = stage != "retry"
-    if initial_resume:
-        _seed_ready_run(storage)
-    else:
-        storage.create_agent_run(
-            AgentRunRecord(
-                id="run_1",
-                binding=AgentBinding(
-                    org_id="org_1",
-                    extractor_kind="profile",
-                    user_id="user_1",
-                    request_id="request_1",
-                    agent_version="v1",
-                    source="api",
-                    source_interaction_ids=[1, 2],
-                ),
-                status=AgentRunStatus.FINALIZATION_FAILED,
-                committed_output=output,
-                finalization_attempts=2,
-                generation_request_snapshot={"request_id": "request_1"},
-            )
-        )
-    worker = ExtractionResumeWorker(
-        request_context=request_context, llm_client=MagicMock()
-    )
+    _seed_ready_run(storage)
+    worker = DurableLearningWorker(lambda _org: request_context)
     qualified = False
 
     def embedding(*_args, **_kwargs):
         if not qualified:
-            raise ReadinessUnavailableError("audit pending")
+            raise refusal("audit pending")
         return [0.0] * 512
 
     monkeypatch.setattr(storage, "_get_embedding", embedding)
@@ -2175,27 +1843,70 @@ def test_readiness_defers_committed_finalization_without_spending_budget(
         lambda _self, profiles, _user_id, _request_id: (profiles, [], []),
     )
 
-    def resume(run, _calls):
-        storage.update_agent_run_status(
-            run.id, AgentRunStatus.AGENT_COMPLETED, committed_output=output
-        )
+    def resume(active_worker, run, _calls):
+        stored = _commit_resumed_output(active_worker, run, output)
         if stage == "conversion":
-            raise ReadinessUnavailableError("conversion audit pending")
-        return worker._items_from_committed_output(storage.get_agent_run(run.id))
+            raise refusal("conversion audit pending")
+        return stored
 
     resume_call = MagicMock(side_effect=resume)
-    monkeypatch.setattr(worker, "_resume_run", resume_call)
+    monkeypatch.setattr(
+        ExtractionResumeWorker,
+        "_resume_run",
+        lambda active_worker, run, calls: resume_call(active_worker, run, calls),
+    )
     starting_attempts = 0 if initial_resume else 2
+    if not initial_resume:
+        # Obtain a real modern output through the agent writer before testing
+        # retries. Historical raw outputs have a separate qualification gate.
+        completed_turns = worker.drain_org(
+            storage.org_id, batch_size=6, lease_seconds=300
+        )
+        assert (
+            completed_turns == 1
+            if failure_kind == "readiness"
+            else 1 <= completed_turns <= 2
+        )
+        first = storage.get_agent_run("run_1")
+        assert first is not None and first.status == AgentRunStatus.FINALIZATION_FAILED
+        for _ in range(starting_attempts):
+            storage.update_agent_run_status(
+                first.id, first.status, increment_finalization_attempts=True
+            )
+        storage.update_agent_run_status(
+            first.id, first.status, next_resume_at=datetime(2000, 1, 1, tzinfo=UTC)
+        )
+    retained_output = None
     for _ in range(8):
         before = datetime.now(UTC)
-        deferred = worker.run_once()
+        # One candidate can require an empty sweep-reset visit plus the
+        # next visit in its class: at most two complete class rotations.
+        completed_turns = worker.drain_org(
+            storage.org_id, batch_size=6, lease_seconds=300
+        )
+        assert (
+            completed_turns == 1
+            if failure_kind == "readiness"
+            else 1 <= completed_turns <= 2
+        )
+        deferred = storage.get_agent_run("run_1")
         assert deferred is not None
         assert deferred.status == AgentRunStatus.FINALIZATION_FAILED
         assert deferred.finalization_attempts == starting_attempts
-        assert deferred.resume_attempts == int(initial_resume)
-        assert deferred.committed_output == output
+        assert deferred.resume_attempts == 1
+        assert deferred.committed_output is not None
+        assert (
+            deferred.committed_output["output"]["profiles"][0]["content"]
+            == "Deploy to AWS ECS."
+        )
+        if retained_output is None:
+            retained_output = deferred.committed_output
+        assert deferred.committed_output == retained_output
         assert deferred.next_resume_at is not None
-        assert 29 <= (deferred.next_resume_at - before).total_seconds() <= 31
+        if failure_kind == "readiness":
+            assert 29 <= (deferred.next_resume_at - before).total_seconds() <= 31
+        else:
+            assert before <= deferred.next_resume_at <= datetime.now(UTC)
         assert (
             storage.get_agent_run_finalization_receipt(
                 run_id="run_1", entity_type="profile"
@@ -2209,38 +1920,54 @@ def test_readiness_defers_committed_finalization_without_spending_budget(
             next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
         )
     qualified = True
-    finalized = worker.run_once()
+    assert worker.drain_org(storage.org_id, batch_size=6, lease_seconds=300) == 1
+    finalized = storage.get_agent_run("run_1")
     assert finalized is not None
     assert finalized.status == AgentRunStatus.FINALIZED
     assert finalized.finalization_attempts == starting_attempts
     assert len(storage.get_user_profile("user_1")) == 1
-    assert (
-        len(
-            storage.get_agent_run_finalization_receipt(
-                run_id="run_1", entity_type="profile"
-            )
+    assert retained_output is not None
+    with storage._stream_sql() as db:
+        receipt = storage._get_output_publication_receipt(
+            db, "run_1", retained_output["publication"]["id"]
         )
-        == 1
-    )
-    assert resume_call.call_count == int(initial_resume)
-    assert worker.run_once() is None
+    assert receipt is not None and len(receipt.learning_ids) == 1
+    assert receipt.delivery_state == "accepted"
+    assert resume_call.call_count == 1
+    assert worker.drain_org(storage.org_id, batch_size=6, lease_seconds=300) == 0
 
 
+@pytest.mark.parametrize("phase", ["preparation", "model"])
 def test_readiness_resume_deferral_refunds_attempt_and_recovers(
-    storage, request_context, monkeypatch
+    storage, request_context, monkeypatch, phase
 ):
+    from reflexio.server.services.durable_learning.worker import DurableLearningWorker
     from reflexio.server.services.storage.error import ReadinessUnavailableError
 
     _seed_interactions(storage)
     _seed_ready_run(storage)
-    worker = ExtractionResumeWorker(
-        request_context=request_context, llm_client=MagicMock()
+    worker = DurableLearningWorker(lambda _org: request_context)
+
+    def unavailable(active_worker, current, _calls):
+        if phase == "model":
+            reserve_compute_attempt()
+            charged = active_worker._active_claim
+            assert charged is not None
+            assert charged.resume_attempts == current.resume_attempts + 1
+        raise ReadinessUnavailableError("inference pending")
+
+    resume = MagicMock(side_effect=unavailable)
+    monkeypatch.setattr(
+        ExtractionResumeWorker,
+        "_resume_run",
+        lambda active_worker, run, calls: resume(active_worker, run, calls),
     )
-    resume = MagicMock(side_effect=ReadinessUnavailableError("inference pending"))
-    monkeypatch.setattr(worker, "_resume_run", resume)
     for _ in range(8):
         before = datetime.now(UTC)
-        deferred = worker.run_once()
+        # One candidate can require an empty sweep-reset visit plus the
+        # next visit in its class: at most two complete class rotations.
+        assert worker.drain_org(storage.org_id, batch_size=6, lease_seconds=300) == 1
+        deferred = storage.get_agent_run("run_1")
         assert deferred is not None
         assert deferred.status == AgentRunStatus.RESUME_READY
         assert deferred.resume_attempts == 0
@@ -2251,14 +1978,13 @@ def test_readiness_resume_deferral_refunds_attempt_and_recovers(
             AgentRunStatus.RESUME_READY,
             next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
         )
-    resume.side_effect = None
-    resume.return_value = ([], [], None)
-    monkeypatch.setattr(
-        worker,
-        "_finalize_items",
-        lambda *_args, **_kwargs: FinalizationResult([], won_receipt=False),
-    )
-    finalized = worker.run_once()
+
+    def resumed(active_worker, current, _calls):
+        return _commit_resumed_output(active_worker, current, {"profiles": []})
+
+    resume.side_effect = resumed
+    assert worker.drain_org(storage.org_id, batch_size=6, lease_seconds=300) == 1
+    finalized = storage.get_agent_run("run_1")
     assert finalized is not None
     assert finalized.status == AgentRunStatus.FINALIZED
     assert finalized.resume_attempts == 1
@@ -2266,66 +1992,101 @@ def test_readiness_resume_deferral_refunds_attempt_and_recovers(
 
 def test_readiness_resume_refund_cannot_mutate_new_owner_or_refund_twice(storage):
     from reflexio.server.services.durable_learning.user_lease import (
-        fence_explicit_extraction,
+        adopt_agent_run_for_execution,
+        owned_agent_run_write,
         user_extraction_lease,
     )
 
     _seed_interactions(storage)
     _seed_ready_run(storage)
-    claim = storage.claim_ready_agent_run(org_id="org_1", worker_id="worker_1")
-    with user_extraction_lease(storage, "user_1"), storage.commit_scope():
-        fence_explicit_extraction(storage)
-        attempts = storage.begin_extraction_resume(
-            claim.id, claim.claimed_by, claim.claimed_at.isoformat()
-        )
-        retry_at = (datetime.now(UTC) + timedelta(seconds=30)).isoformat()
-        assert not storage.defer_extraction_resume(
-            claim.id,
-            "different_owner",
-            claim.claimed_at.isoformat(),
-            attempts,
-            retry_at,
-        )
-        assert storage.get_agent_run(claim.id).resume_attempts == 1
-        assert storage.defer_extraction_resume(
-            claim.id, claim.claimed_by, claim.claimed_at.isoformat(), attempts, retry_at
-        )
-        assert not storage.defer_extraction_resume(
-            claim.id, claim.claimed_by, claim.claimed_at.isoformat(), attempts, retry_at
-        )
-    replacement = storage.claim_ready_agent_run(
-        org_id="org_1",
-        worker_id="worker_2",
-        now=datetime.now(UTC) + timedelta(seconds=31),
-    )
-    with user_extraction_lease(storage, "user_1"), storage.commit_scope():
-        fence_explicit_extraction(storage)
-        assert (
-            storage.begin_extraction_resume(
-                replacement.id,
-                replacement.claimed_by,
-                replacement.claimed_at.isoformat(),
+    ready = storage.get_agent_run("run_1")
+    assert ready is not None
+    with user_extraction_lease(storage, "user_1"):
+        adopted = adopt_agent_run_for_execution(storage, ready)
+        with owned_agent_run_write(storage, adopted):
+            claim = storage.update_agent_run_status(
+                adopted.id,
+                AgentRunStatus.RESUMING,
+                expected_claimed_by=adopted.claimed_by,
+                expected_claimed_at=adopted.claimed_at,
             )
-            == 1
+        assert (
+            claim is not None
+            and claim.claimed_by is not None
+            and claim.claimed_at is not None
         )
-        assert not storage.defer_extraction_resume(
-            claim.id, claim.claimed_by, claim.claimed_at.isoformat(), attempts, retry_at
-        )
-        assert storage.get_agent_run(claim.id).resume_attempts == 1
-        assert storage.get_agent_run(claim.id).status == AgentRunStatus.RESUMING
-
-
-def test_readiness_finalization_classification_never_exhausts_retry_budget():
-    from reflexio.server.services.storage.error import ReadinessUnavailableError
-
-    assert (
-        _finalization_failure_status(
-            ReadinessUnavailableError("pending"),
-            next_attempt_count=100,
-            max_finalization_attempts=3,
-        )
-        == AgentRunStatus.FINALIZATION_FAILED
+        with owned_agent_run_write(storage, claim):
+            attempts = storage.begin_extraction_resume(
+                claim.id, claim.claimed_by, claim.claimed_at.isoformat()
+            )
+            assert attempts == 1
+            retry_at = (datetime.now(UTC) + timedelta(seconds=30)).isoformat()
+            assert not storage.defer_extraction_resume(
+                claim.id,
+                "different_owner",
+                claim.claimed_at.isoformat(),
+                attempts,
+                retry_at,
+            )
+            assert storage.get_agent_run(claim.id).resume_attempts == 1
+            assert storage.defer_extraction_resume(
+                claim.id,
+                claim.claimed_by,
+                claim.claimed_at.isoformat(),
+                attempts,
+                retry_at,
+            )
+            assert not storage.defer_extraction_resume(
+                claim.id,
+                claim.claimed_by,
+                claim.claimed_at.isoformat(),
+                attempts,
+                retry_at,
+            )
+            assert storage.get_agent_run(claim.id).resume_attempts == 0
+    storage.update_agent_run_status(
+        claim.id,
+        AgentRunStatus.RESUME_READY,
+        next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
     )
+    ready_again = storage.get_agent_run(claim.id)
+    assert ready_again is not None
+    with user_extraction_lease(storage, "user_1"):
+        adopted = adopt_agent_run_for_execution(storage, ready_again)
+        with owned_agent_run_write(storage, adopted):
+            replacement = storage.update_agent_run_status(
+                adopted.id,
+                AgentRunStatus.RESUMING,
+                expected_claimed_by=adopted.claimed_by,
+                expected_claimed_at=adopted.claimed_at,
+            )
+        assert (
+            replacement is not None
+            and replacement.claimed_by is not None
+            and replacement.claimed_at is not None
+        )
+        assert (replacement.claimed_by, replacement.claimed_at) != (
+            claim.claimed_by,
+            claim.claimed_at,
+        )
+        with owned_agent_run_write(storage, replacement):
+            assert (
+                storage.begin_extraction_resume(
+                    replacement.id,
+                    replacement.claimed_by,
+                    replacement.claimed_at.isoformat(),
+                )
+                == 1
+            )
+            assert not storage.defer_extraction_resume(
+                claim.id,
+                claim.claimed_by,
+                claim.claimed_at.isoformat(),
+                attempts,
+                retry_at,
+            )
+            assert storage.get_agent_run(claim.id).resume_attempts == 1
+            assert storage.get_agent_run(claim.id).status == AgentRunStatus.RESUMING
 
 
 @pytest.mark.parametrize(
@@ -2336,81 +2097,183 @@ def test_readiness_finalization_classification_never_exhausts_retry_budget():
         AgentRunStatus.AGENT_COMPLETED,
     ],
 )
-@pytest.mark.parametrize(
-    "ttl,age_seconds,expected_claim",
-    [
-        (600, 590, False),
-        (600, 610, True),
-        (1800, 610, False),
-        (1800, 1810, True),
-        (60, 70, True),
-    ],
-)
-def test_owned_claim_lifetime_preserves_live_work_and_recovers_stale_work(
-    storage, request_context, monkeypatch, status, ttl, age_seconds, expected_claim
+@pytest.mark.parametrize("age_seconds", [1, 86400])
+@pytest.mark.parametrize("parent_state", ["live", "released", "expired"])
+def test_actual_user_parent_controls_adoption_independent_of_logical_age(
+    storage, request_context, status, age_seconds, parent_state
 ):
-    monkeypatch.setenv("REFLEXIO_RESUME_CLAIM_TTL_SECONDS", str(ttl))
+    from uuid import UUID
+
+    from reflexio.server.services.durable_learning.resume_selection import (
+        ResumeSelection,
+    )
+    from reflexio.server.services.durable_learning.user_lease import (
+        adopt_agent_run_for_execution,
+        owned_agent_run_write,
+        owned_user_work_context,
+    )
+    from reflexio.server.services.storage.storage_base import LeaseLostError
+
     if status == AgentRunStatus.RESUMING:
         _seed_ready_run(storage)
     else:
-        run = _finalizing_run(
-            run_id="run_1", extractor_kind="profile", request_id="request_1"
+        storage.create_agent_run(
+            replace(
+                _finalizing_run(
+                    run_id="run_1", extractor_kind="profile", request_id="request_1"
+                ),
+                status=status,
+                committed_output={"profiles": []},
+            )
         )
-        run = replace(run, committed_output={"profiles": []})
-        storage.create_agent_run(run)
-    old = (datetime.now(UTC) - timedelta(seconds=age_seconds)).isoformat()
-    storage.conn.execute(
-        "UPDATE _agent_runs SET status=?,claimed_by='previous',claimed_at=?,updated_at=? WHERE id=?",
-        (status.value, old, old, "run_1"),
+    run = storage.get_agent_run("run_1")
+    assert run is not None
+    previous_token = storage.claim_user_extraction("user_1", "previous-owner", 300)
+    assert previous_token is not None
+    with owned_user_work_context(storage, "user_1", previous_token, 300):
+        adopted = adopt_agent_run_for_execution(storage, run)
+        # Historical row setup is separate from the actual parent's clock.
+        old = (datetime.now(UTC) - timedelta(seconds=age_seconds)).isoformat()
+        storage.conn.execute(
+            "UPDATE _agent_runs SET status=?,claimed_at=?,updated_at=? WHERE id=?",
+            (status.value, old, old, run.id),
+        )
+        storage.conn.commit()
+    if parent_state == "released":
+        storage.release_user_extraction("user_1", previous_token)
+    elif parent_state == "expired":
+        with storage._stream_sql() as db:
+            db.query(
+                "UPDATE learning_work SET lease_until=? WHERE org_id=? AND user_id=? "
+                "AND lease_token=?",
+                (db.now() - 1, storage.org_id, "user_1", previous_token),
+            )
+    before = storage.get_agent_run(run.id)
+    assert before is not None and before.claimed_by == adopted.claimed_by
+    selection = ResumeSelection()
+    claimed = selection.claim_user(
+        request_context, worker_id="new-owner", lease_seconds=300
     )
-    storage.conn.commit()
-    worker = ExtractionResumeWorker(
-        request_context=request_context, worker_id="new-owner"
-    )
-    monkeypatch.setattr(worker, "_execute_claimed_run", lambda run, **_kw: run)
-    result = worker.run_once()
-    assert (result is not None) is expected_claim
-    saved = storage.get_agent_run("run_1")
-    assert saved is not None
-    assert saved.claimed_by == ("new-owner" if expected_claim else "previous")
+    # Fleet inspection and user admission never mutate the logical run.
+    assert storage.get_agent_run(run.id) == before
+    if parent_state == "live":
+        try:
+            assert claimed is None
+            assert storage.claim_user_extraction("user_1", "competitor", 300) is None
+        finally:
+            storage.release_user_extraction("user_1", previous_token)
+        return
+    assert claimed is not None and claimed[0] == "user_1"
+    user, token = claimed
+    try:
+        assert token != previous_token
+        with owned_user_work_context(storage, user, token, 300):
+            kind, current = selection.select_owned(
+                request_context, user_id=user, token=token, worker_id="new-owner"
+            )
+            assert kind == (
+                "continuation" if status == AgentRunStatus.RESUMING else "finalization"
+            )
+            assert current is not None and current.id == before.id
+            assert current.binding == before.binding
+            assert current.claimed_by is not None
+            prefix, _, nonce = current.claimed_by.partition(":")
+            assert prefix == "new-owner" and UUID(hex=nonce).hex == nonce
+            assert current.claimed_by != before.claimed_by
+            assert current.claimed_by != token
+            with owned_agent_run_write(storage, current):
+                pass
+            with pytest.raises(LeaseLostError), owned_agent_run_write(storage, before):
+                pass
+            assert current.status == (
+                AgentRunStatus.RESUMING
+                if status == AgentRunStatus.RESUMING
+                else AgentRunStatus.FINALIZING
+            )
+            assert current.resume_attempts == before.resume_attempts
+            assert current.finalization_attempts == before.finalization_attempts
+            assert current.committed_output == before.committed_output
+            assert storage.claim_user_extraction("user_1", "competitor", 300) is None
+    finally:
+        storage.release_user_extraction(user, token)
 
 
 def test_policy_migration_error_prevents_claiming_work(request_context, storage):
     from reflexio.config_migration import ConfigurationMigrationError
+    from reflexio.server.services.durable_learning.worker import DurableLearningWorker
 
+    _seed_ready_run(storage)
+    before = storage.get_agent_run("run_1")
     request_context.configurator.get_config.side_effect = ConfigurationMigrationError(
         "migration required"
     )
+    worker = DurableLearningWorker(lambda _org: request_context)
     with (
-        patch.object(storage, "claim_ready_agent_run") as ready,
-        patch.object(storage, "claim_finalization_failed_agent_run") as finalize,
-        pytest.raises(ConfigurationMigrationError),
+        patch.object(
+            storage, "claim_user_extraction", wraps=storage.claim_user_extraction
+        ) as claim,
+        patch.object(
+            storage,
+            "_commit_owned_work_selection",
+            wraps=storage._commit_owned_work_selection,
+        ) as adopt,
     ):
-        ExtractionResumeWorker(request_context=request_context).run_once()
-    ready.assert_not_called()
-    finalize.assert_not_called()
+        assert worker.drain_org(storage.org_id, batch_size=3, lease_seconds=300) == 0
+    claim.assert_not_called()
+    adopt.assert_not_called()
+    assert storage.get_agent_run("run_1") == before
 
 
-@pytest.mark.parametrize("ttl,wait", [(1, 0.5), (60, 5.0)])
-def test_resume_admission_wait_respects_configured_claim_lifetime(
-    storage, request_context, monkeypatch, ttl, wait
+@pytest.mark.parametrize("retired_ttl", [1, 60])
+def test_retired_claim_ttl_cannot_change_shared_busy_admission(
+    storage, request_context, monkeypatch, retired_ttl
 ):
-    from reflexio.server.services.durable_learning.user_lease import UserLeaseBusyError
+    from reflexio.server.services.durable_learning import user_lease
+    from reflexio.server.services.durable_learning import worker as worker_module
 
-    monkeypatch.setenv("REFLEXIO_RESUME_CLAIM_TTL_SECONDS", str(ttl))
+    monkeypatch.setenv("REFLEXIO_RESUME_CLAIM_TTL_SECONDS", str(retired_ttl))
+    _seed_interactions(storage)
     _seed_ready_run(storage)
-    worker = ExtractionResumeWorker(request_context=request_context)
-    with patch(
-        "reflexio.server.services.durable_learning.user_lease.user_extraction_lease",
-        side_effect=UserLeaseBusyError("owned test budget busy"),
-    ) as admission:
-        worker.run_once()
-    assert admission.call_args.kwargs["max_wait_seconds"] == wait
+    storage.update_agent_run_status(
+        "run_1", AgentRunStatus.RESUME_READY, max_steps_remaining=0
+    )
+    before = storage.get_agent_run("run_1")
+    parent = storage.claim_user_extraction("user_1", "busy-owner", 300)
+    assert parent is not None
+    worker = worker_module.DurableLearningWorker(lambda _org: request_context)
+    try:
+        with (
+            patch.object(worker_module, "_reserve", return_value=False),
+            patch.object(
+                storage, "claim_user_extraction", wraps=storage.claim_user_extraction
+            ) as claim,
+            patch.object(
+                storage, "claim_extraction", wraps=storage.claim_extraction
+            ) as ordinary_claim,
+        ):
+            assert worker.drain_org(storage.org_id, batch_size=3, lease_seconds=37) == 0
+        claim.assert_not_called()
+        ordinary_claim.assert_not_called()
+        assert storage.get_agent_run("run_1") == before
+        assert worker.drain_org(storage.org_id, batch_size=3, lease_seconds=37) == 0
+        assert storage.get_agent_run("run_1") == before
+    finally:
+        storage.release_user_extraction("user_1", parent)
+    with (
+        patch.object(
+            user_lease,
+            "owned_user_work_context",
+            wraps=user_lease.owned_user_work_context,
+        ) as owned,
+        patch(
+            "litellm.completion",
+            side_effect=AssertionError("exhausted budget cannot call model"),
+        ),
+    ):
+        assert worker.drain_org(storage.org_id, batch_size=6, lease_seconds=37) == 1
+    assert owned.called and all(call.args[3] == 37 for call in owned.call_args_list)
     saved = storage.get_agent_run("run_1")
-    # Busy admission preserves the owned run fence until expiry; it must not
-    # reset a claim or spend execution attempts without the user lease.
-    assert saved is not None and saved.status == AgentRunStatus.RESUMING
-    assert saved.claimed_by == worker.worker_id and saved.claimed_at is not None
+    assert saved is not None and saved.status == AgentRunStatus.FAILED
     assert saved.resume_attempts == 0
 
 
@@ -2489,3 +2352,273 @@ def test_explicit_fence_is_bound_to_storage_identity(storage, tmp_path, monkeypa
             fence.assert_not_called()
     finally:
         other.conn.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("extractor_kind", ["profile", "playbook"])
+@pytest.mark.parametrize("open_followup", [False, True])
+def test_normal_finalization_uses_actual_committed_output_witness(
+    storage, request_context, monkeypatch, extractor_kind, open_followup
+):
+    from dataclasses import asdict, replace
+
+    from reflexio.server.llm._litellm_types import ModelProvenance
+    from reflexio.server.llm.tools import ToolLoopTrace
+    from reflexio.server.services.durable_learning.user_lease import (
+        owned_agent_run_write,
+    )
+    from reflexio.server.services.durable_learning.worker import DurableLearningWorker
+    from reflexio.server.services.extraction.resumable_agent import (
+        AgentRunResult,
+        ResumableExtractionAgent,
+    )
+    from reflexio.server.services.playbook.playbook_service_utils import (
+        StructuredPlaybookList,
+    )
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        StructuredProfilesOutput,
+    )
+
+    _seed_interactions(storage)
+    _seed_ready_run(storage)
+    if extractor_kind == "playbook":
+        storage._execute(
+            "UPDATE _agent_runs SET extractor_kind='playbook' WHERE id='run_1'"
+        )
+    if open_followup:
+        question = "Which additional approval is required?"
+        prior = storage.get_pending_tool_call("ptc_1")
+        assert prior is not None
+        storage.create_pending_tool_call(
+            replace(
+                prior,
+                id="ptc_next",
+                status=PendingToolCallStatus.PENDING,
+                result=None,
+                resolved_at=None,
+                valid_until=None,
+                question_text=question,
+                args={"question": question},
+                dedup_key=build_pending_tool_call_dedup_key(
+                    tool_name="ask_human", question_text=question
+                ),
+            )
+        )
+    worker = ExtractionResumeWorker(
+        request_context=request_context, llm_client=MagicMock()
+    )
+    monkeypatch.setattr(
+        ExtractionResumeWorker,
+        "_messages_with_prior_knowledge",
+        lambda _self, **kw: kw["messages"],
+    )
+    stored_provenance = ModelProvenance(
+        model_name="committed_model", provider="committed_provider"
+    )
+    returned_provenance = ModelProvenance(
+        model_name="parallel_model", provider="parallel_provider"
+    )
+    field = "profiles" if extractor_kind == "profile" else "playbooks"
+    shape = (
+        StructuredProfilesOutput
+        if extractor_kind == "profile"
+        else StructuredPlaybookList
+    )
+    stored_entry = (
+        {"content": "Committed content", "time_to_live": "infinity"}
+        if field == "profiles"
+        else {
+            "content": "Committed content",
+            "trigger": "when deploying",
+            "rationale": "the agreed procedure",
+        }
+    )
+    returned_entry = {**stored_entry, "content": "Parallel uncommitted content"}
+    payload = {
+        "_reflexio_envelope_version": 1,
+        "output": {field: [stored_entry]},
+        "model_provenance": asdict(stored_provenance),
+    }
+
+    def resume(_agent, *, run, before_model, **_kwargs):
+        saved = _commit_resumed_output(worker, run, payload, before_model=before_model)
+        if open_followup:
+            with owned_agent_run_write(storage, saved):
+                storage.attach_run_tool_dependency(
+                    RunToolDependencyRecord(
+                        run_id=run.id, pending_tool_call_id="ptc_next"
+                    )
+                )
+                saved = storage.update_agent_run_status(
+                    saved.id,
+                    saved.status,
+                    pending_tool_call_ids=["ptc_next"],
+                    expected_claimed_by=saved.claimed_by,
+                    expected_claimed_at=saved.claimed_at,
+                )
+            assert saved is not None
+        return AgentRunResult(
+            run_id=run.id,
+            output=shape.model_validate({field: [returned_entry]}),
+            pending_tool_call_ids=["not_in_committed_output"],
+            messages=[],
+            trace=ToolLoopTrace(finished=True),
+            finished_reason="structured_output",
+            model_provenance=returned_provenance,
+            execution_run=saved,
+        )
+
+    monkeypatch.setattr(ResumableExtractionAgent, "resume", resume)
+    observed = {}
+
+    decode = ExtractionResumeWorker._items_from_committed_output
+
+    def inspect_decode(current_worker, run):
+        items, pending, provenance = decode(current_worker, run)
+        observed.update(
+            run=run, contents=[item.content for item in items], provenance=provenance
+        )
+        return items, pending, provenance
+
+    monkeypatch.setattr(
+        ExtractionResumeWorker, "_items_from_committed_output", inspect_decode
+    )
+    service = (
+        ProfileGenerationService
+        if extractor_kind == "profile"
+        else PlaybookGenerationService
+    )
+    monkeypatch.setattr(service, "_resolve_write_plan", lambda *_args: None)
+    shared_worker = DurableLearningWorker(lambda _org: request_context)
+    assert shared_worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 1
+    result = storage.get_agent_run("run_1")
+    assert result is not None
+    assert observed["contents"] == ["Committed content"]
+    assert observed["provenance"] == stored_provenance
+    assert observed["run"].status == AgentRunStatus.FINALIZING
+    assert (
+        observed["run"].committed_output["output"]
+        == shape.model_validate(payload["output"]).model_dump()
+    )
+    assert len(observed["run"].committed_output["publication"]["id"]) == 32
+    assert result.status == (
+        AgentRunStatus.FINALIZED_PENDING_TOOL
+        if open_followup
+        else AgentRunStatus.FINALIZED
+    )
+    assert result.pending_tool_call_ids == (["ptc_next"] if open_followup else [])
+    if open_followup:
+        dependencies = {
+            d.pending_tool_call_id: d
+            for d in storage.list_run_tool_dependencies(result.id)
+        }
+        assert dependencies["ptc_1"].consumed_at is not None
+        assert dependencies["ptc_next"].consumed_at is None
+
+
+@pytest.mark.integration
+def test_conversion_failure_retries_saved_output_without_another_agent_call(
+    storage, request_context, monkeypatch
+):
+    from reflexio.server.llm.tools import ToolLoopTrace
+    from reflexio.server.services.durable_learning.worker import DurableLearningWorker
+    from reflexio.server.services.extraction.resumable_agent import (
+        AgentRunResult,
+        ResumableExtractionAgent,
+    )
+    from reflexio.server.services.profile.components.extractor import ProfileExtractor
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        StructuredProfilesOutput,
+    )
+
+    _seed_interactions(storage)
+    _seed_ready_run(storage)
+    worker = ExtractionResumeWorker(
+        request_context=request_context, llm_client=MagicMock()
+    )
+    monkeypatch.setattr(
+        ExtractionResumeWorker,
+        "_messages_with_prior_knowledge",
+        lambda _self, **kw: kw["messages"],
+    )
+    calls = []
+    payload = {"profiles": [{"content": "Saved content", "time_to_live": "infinity"}]}
+
+    def resume(_agent, *, run, before_model, **_kwargs):
+        calls.append(run.id)
+        saved = _commit_resumed_output(worker, run, payload, before_model=before_model)
+        return AgentRunResult(
+            run_id=run.id,
+            output=StructuredProfilesOutput.model_validate(payload),
+            pending_tool_call_ids=[],
+            messages=[],
+            trace=ToolLoopTrace(finished=True),
+            finished_reason="structured_output",
+            execution_run=saved,
+        )
+
+    monkeypatch.setattr(ResumableExtractionAgent, "resume", resume)
+    monkeypatch.setattr(
+        ProfileExtractor,
+        "_convert_raw_to_user_profiles",
+        MagicMock(side_effect=ValueError("controlled conversion failure")),
+    )
+    shared_worker = DurableLearningWorker(lambda _org: request_context)
+    assert shared_worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 1
+    first = storage.get_agent_run("run_1")
+    assert first is not None
+    assert first.status == AgentRunStatus.FINALIZATION_FAILED
+    assert first.committed_output is not None
+    assert (
+        first.committed_output["output"]
+        == StructuredProfilesOutput.model_validate(payload).model_dump()
+    )
+    assert first.resume_attempts == 1 and first.finalization_attempts == 1
+    storage.update_agent_run_status(
+        first.id, first.status, next_resume_at=datetime(2000, 1, 1, tzinfo=UTC)
+    )
+    assert shared_worker.drain_org(storage.org_id, batch_size=3, lease_seconds=300) == 1
+    second = storage.get_agent_run(first.id)
+    assert second is not None
+    assert second.status == AgentRunStatus.FINALIZATION_FAILED
+    assert second.committed_output == first.committed_output
+    assert second.resume_attempts == 1 and second.finalization_attempts == 2
+    assert calls == [first.id]
+    assert storage.list_run_tool_dependencies(first.id)[0].consumed_at is None
+
+
+@pytest.mark.integration
+def test_profile_output_conversion_does_not_construct_runtime_extractor(
+    storage, request_context, monkeypatch
+):
+    from reflexio.server.services.profile.components.extractor import ProfileExtractor
+
+    _seed_interactions(storage)
+    _seed_ready_run(storage)
+    worker = ExtractionResumeWorker(
+        request_context=request_context, llm_client=MagicMock()
+    )
+    run = storage.get_agent_run("run_1")
+    monkeypatch.setattr(
+        ProfileExtractor,
+        "__init__",
+        lambda *_a, **_k: pytest.fail("pure conversion constructed an extractor"),
+    )
+    monkeypatch.setattr(
+        storage,
+        "get_user_profile",
+        lambda *_a, **_k: pytest.fail("pure conversion read existing profiles"),
+    )
+    request_context.configurator.get_agent_context.side_effect = AssertionError(
+        "pure conversion loaded agent context"
+    )
+    items, pending = worker._profile_items_from_output(
+        run,
+        request_context.configurator.get_config().profile_extractor_config,
+        {"profiles": [{"content": "Saved content", "time_to_live": "infinity"}]},
+    )
+    assert [item.content for item in items] == ["Saved content"]
+    assert items[0].user_id == run.binding.user_id
+    assert items[0].generated_from_request_id == run.binding.request_id
+    assert items[0].source_interaction_ids == run.binding.source_interaction_ids
+    assert pending == run.pending_tool_call_ids
