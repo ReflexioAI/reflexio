@@ -34,12 +34,24 @@ from reflexio.server.services.input_compression import (
 )
 
 logger = logging.getLogger(__name__)
+_REFERENCE_CONTRACT = "evidence-refs-only-v2"
 
 
 class _ReferenceGroup(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     evidence_refs: list[str] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def project_references(cls, value: Any) -> Any:
+        # The wire schema remains closed. Surplus generated fields carry no
+        # authority: retain the exact ref list, then let strict typing and the
+        # caller's visible-source/capacity validator check it. Never infer IDs
+        # from other fields or turn generated text into labels or quotations.
+        if isinstance(value, dict) and "evidence_refs" in value:
+            return {"evidence_refs": value["evidence_refs"]}
+        return value
 
 
 class _ReferenceSelection(BaseModel):
@@ -202,7 +214,12 @@ def plan_with_client(
         policy=policy,
         budget=budget,
         model_contract=json.dumps(
-            {"dispatch": contract, "direct_answer": direct_answer}, sort_keys=True
+            {
+                "dispatch": contract,
+                "direct_answer": direct_answer,
+                "reference_contract": _REFERENCE_CONTRACT,
+            },
+            sort_keys=True,
         ),
         measure_output=measure_output,
         output_contract=output_contract,

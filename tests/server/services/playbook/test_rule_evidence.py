@@ -436,3 +436,124 @@ def test_admission_builders_match_dispatched_consumer_envelopes(data, diagnostic
         assert actual[:2] == rendered[:2]
         assert actual[2].model_json_schema() == rendered[2].model_json_schema()
         assert request_input_tokens(*rendered) > 0
+
+
+def test_complete_proposal_allows_bounded_generated_context_above_source_ceiling(
+    data, diagnostic
+):
+    from reflexio.server.services.playbook.rule_evidence import (
+        proposal_request,
+        request_input_tokens,
+    )
+    from reflexio.server.services.playbook.rule_evidence.wire import diagnostic_request
+
+    value = data.model_dump(mode="json")
+    value["sessions"][0]["messages"][0]["content"] += " trace" * 55_000
+    data = RuleEvidenceInput.model_validate(value)
+    # A valid generated diagnosis adds context to an already large admitted source.
+    diagnostic = diagnostic.model_copy(
+        update={
+            "rule_assessment": diagnostic.rule_assessment.model_copy(
+                update={
+                    "reason": "Literal compliance reports an unconfirmed delivery. "
+                    * 800
+                }
+            )
+        }
+    )
+    fixed_tokens = request_input_tokens(*proposal_request(data, [], []))
+    assert fixed_tokens < 60_000
+    assert request_input_tokens(*diagnostic_request(data, data.sessions[0])) < 60_000
+
+    result, calls = execute(data, diagnostic)
+    complete_tokens = request_input_tokens(*calls[-1])
+    assert 60_000 < complete_tokens < 120_000
+    assert complete_tokens - fixed_tokens < 60_000
+    assert len(calls) == 2
+    assert result.decision == "proposal"
+    assert (
+        result.revised_content
+        == "Send once. Report queued as queued. Keep the recipient."
+    )
+    assert calls[-1][1]["original_source"] == data.model_dump(mode="json")
+    assert result.diagnostics == [diagnostic]
+
+
+def test_combined_fixed_source_over_budget_rejects_before_first_diagnosis(data):
+    from reflexio.server.services.playbook.rule_evidence import (
+        proposal_request,
+        request_input_tokens,
+    )
+    from reflexio.server.services.playbook.rule_evidence.wire import diagnostic_request
+
+    value = data.model_dump(mode="json")
+    first = value["sessions"][0]
+    first["messages"][0]["content"] += " trace" * 31_000
+    second = {**first, "session_id": "second"}
+    value["sessions"] = [first, second]
+    data = RuleEvidenceInput.model_validate(value)
+    assert all(
+        request_input_tokens(*diagnostic_request(data, session)) < 60_000
+        for session in data.sessions
+    )
+    assert request_input_tokens(*proposal_request(data, [], [])) > 60_000
+    invoke = MagicMock(
+        side_effect=AssertionError("must not diagnose inadmissible source")
+    )
+    with pytest.raises(ValueError, match="input budget"):
+        run_rule_evidence(data, invoke)
+    invoke.assert_not_called()
+
+
+def test_generated_context_over_budget_fails_before_tuner(data, diagnostic):
+    from reflexio.server.services.playbook.rule_evidence import (
+        proposal_request,
+        request_input_tokens,
+    )
+    from reflexio.server.services.playbook.rule_evidence.wire import resolve_diagnostic
+
+    body = wire_diagnostic(diagnostic)
+    body["rule_assessment"]["reason"] = "Supported finding. " * 25_000
+    schema = judge_schema(data, data.sessions[0])
+    output = schema.model_validate_json(json.dumps(body))
+    resolved, audit = resolve_diagnostic(output, data, data.sessions[0])
+    fixed_tokens = request_input_tokens(*proposal_request(data, [], []))
+    complete_tokens = request_input_tokens(*proposal_request(data, [resolved], [audit]))
+    assert fixed_tokens < 60_000
+    assert complete_tokens - fixed_tokens > 60_000
+    calls = []
+
+    def invoke(system, payload, response_schema):
+        calls.append((system, payload, response_schema))
+        assert issubclass(response_schema, BoundedTargetDiagnostic), (
+            "must not invoke tuner"
+        )
+        return output
+
+    with pytest.raises(ValueError, match="generated context input budget"):
+        run_rule_evidence(data, invoke)
+    assert len(calls) == 1
+
+
+def test_later_diagnostic_over_budget_rejects_before_any_model_call(data):
+    from reflexio.server.services.playbook.rule_evidence import (
+        proposal_request,
+        request_input_tokens,
+    )
+    from reflexio.server.services.playbook.rule_evidence.wire import diagnostic_request
+
+    value = data.model_dump(mode="json")
+    second = json.loads(json.dumps(value["sessions"][0]))
+    second["session_id"] = "second"
+    second["messages"][0]["content"] += " trace" * 58_000
+    value["sessions"].append(second)
+    data = RuleEvidenceInput.model_validate(value)
+    assert request_input_tokens(*proposal_request(data, [], [])) < 60_000
+    assert request_input_tokens(*diagnostic_request(data, data.sessions[0])) < 60_000
+    assert request_input_tokens(*diagnostic_request(data, data.sessions[1])) > 60_000
+    invoke = MagicMock(
+        side_effect=AssertionError("preflight all sessions before spending")
+    )
+    with pytest.raises(ValueError, match="input budget"):
+        run_rule_evidence(data, invoke)
+    invoke.assert_not_called()

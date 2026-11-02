@@ -109,3 +109,22 @@ consume the same allowance. The request and enforcement use the same constants,
 and resumed conversations retain their consumed rounds and physical-call budget.
 Independent auditing and provider admission remain unchanged. Instruction clarity
 can reduce avoidable retries; it does not guarantee model compliance or a latency SLO.
+
+## Local qualification recording and replay
+
+`reflexio.server.llm.completion_io.completion_io_scope(callback)` installs an
+explicit context-local hook at the admitted physical completion boundary. With
+no scope, generation delegates directly to the existing completion implementation.
+The callback receives `(params, hard_timeout, dispatch)`: return a previously
+saved raw response, or call `dispatch()` to use the original timeout, isolation
+and worker/permit ownership. Request guards and provider admission still precede
+the hook; normal parsing, response validation and usage accounting follow it.
+
+This is a local harness seam, with no environment switch or persistence. The
+harness owns exact request matching, physical-call allowance, failure history,
+and private storage. Provider parameters can contain credentials and private
+source text: never log them or write them to a repository. A callback must not
+change parameters or dispatch through an alternate client. Recorded/replayed
+usage flows through normal logical accounting; reports must distinguish reused
+responses from newly dispatched provider work. Scope exit, including exceptions,
+restores the previous callback. New empty contexts have no hook.

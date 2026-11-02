@@ -75,6 +75,7 @@ from reflexio.server.llm._provider_concurrency import (
     provider_slot,
 )
 from reflexio.server.llm.call_deadline import model_call_deadline, remaining_call_time
+from reflexio.server.llm.completion_io import intercept_completion_io
 from reflexio.server.llm.image_utils import (
     SUPPORTED_IMAGE_MIME_TYPES,
     ImageEncodingError,
@@ -1246,6 +1247,7 @@ class TextGenerationMixin:
         except (TypeError, ValueError):
             return float(self.config.timeout)
 
+    @intercept_completion_io
     def _completion_with_hard_timeout(
         self, params: dict[str, Any], hard_timeout: float
     ) -> Any:
