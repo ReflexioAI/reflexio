@@ -15,6 +15,8 @@ import reflexio.server.services.playbook.rule_evidence as core
 
 from . import models
 
+WIRE_NORMALIZATION_VERSION = "null-surplus-counter-slots-v1"
+
 
 def catalog(content: str) -> list[dict[str, Any]]:
     """Lossless sentence/line chunks; adjacent IDs can select a larger exact span."""
@@ -66,6 +68,19 @@ class SupportTurns(models.EvidenceModel):
 
 
 class CounterTurns(models.EvidenceModel):
+    @model_validator(mode="before")
+    @classmethod
+    def discard_unused_padding(cls, value: Any) -> Any:
+        # Some providers pad all citation objects to the six support slots.
+        # Nulls select no evidence; non-null surplus and unknown keys still fail.
+        if isinstance(value, dict):
+            return {
+                key: item
+                for key, item in value.items()
+                if not (key in {"r5", "r6"} and item is None)
+            }
+        return value
+
     r1: int | None = None
     r2: int | None = None
     r3: int | None = None
@@ -199,7 +214,7 @@ def judge_schema(data: models.RuleEvidenceInput, source: models.Session) -> Any:
     support = create_model("SupportTurns", __base__=models.EvidenceModel, **fields)
     contrary = create_model(
         "CounterTurns",
-        __base__=models.EvidenceModel,
+        __base__=CounterTurns,
         **cast(dict[str, Any], {f"r{i}": (turn_id | None, None) for i in range(1, 5)}),
     )
     observation = create_model(
