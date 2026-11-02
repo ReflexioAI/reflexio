@@ -23,6 +23,7 @@ def store(tmp_path):
         storage.conn.close()
 
 
+@pytest.mark.unit
 def test_native_transaction_token_is_context_bound_and_lost_owner_is_not_unbound(
     store, tmp_path
 ):
