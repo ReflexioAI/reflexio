@@ -34,6 +34,9 @@ Braintrust credentials use the same process credential-encryption implementation
 and `FERNET_KEYS` authority as other stored credentials. Its separate key loader
 and cached keyring are removed. `FERNET_REQUIRED=true` refuses new plaintext writes;
 optional local stores still work without keys. Neither option migrates stored records.
+The required-write policy accepts `true` and `false` only (case-insensitive);
+unset or blank defaults to false. Invalid values refuse before writes, without
+echoing the supplied value. Replace numeric or other boolean spellings explicitly.
 
 Before replacing an image or SDK that reads `REFLEXIO_FERNET_KEYS`, preserve all
 existing keys from both rings in `FERNET_KEYS` and deliberately select the first

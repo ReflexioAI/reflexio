@@ -1,21 +1,11 @@
 """One process keyring protects connector credentials without a fallback alias."""
 
-import importlib
 from unittest.mock import Mock, patch
 
 import pytest
 from cryptography.fernet import Fernet, InvalidToken
 
 from reflexio.server.services.braintrust import _encryption
-
-
-@pytest.fixture(autouse=True)
-def isolated_policy(monkeypatch):
-    for name in ("FERNET_KEYS", "FERNET_REQUIRED", "REFLEXIO_FERNET_KEYS"):
-        monkeypatch.delenv(name, raising=False)
-    importlib.reload(_encryption)
-    yield
-    importlib.reload(_encryption)
 
 
 def test_canonical_ring_encrypts_and_decrypts(monkeypatch):
@@ -52,6 +42,14 @@ def test_required_policy_refuses_plaintext(monkeypatch):
     monkeypatch.setenv("FERNET_REQUIRED", "true")
     with pytest.raises(RuntimeError, match="refusing to store plaintext"):
         _encryption.encrypt("synthetic-credential")
+
+
+@pytest.mark.parametrize("value", ["ture", "private-policy-value"])
+def test_invalid_required_policy_fails_before_plaintext_write(monkeypatch, value):
+    monkeypatch.setenv("FERNET_REQUIRED", value)
+    with pytest.raises(ValueError, match="FERNET_REQUIRED") as error:
+        _encryption.encrypt("synthetic-credential")
+    assert value not in str(error.value)
 
 
 def test_invalid_canonical_key_fails_closed_without_echo(monkeypatch):

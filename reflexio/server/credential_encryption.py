@@ -1,14 +1,26 @@
 """Credential encryption and rotation for explicit process keyrings.
 
-Callers select storage policy; this module never resolves environment values.
+Callers supply key material and policy mappings; there are no ambient env reads.
 """
 
 import logging
+from collections.abc import Mapping
 
 from cryptography import fernet
 from cryptography.fernet import Fernet, MultiFernet
 
+from reflexio.server.env_utils import EnvBoolError, env_bool
+
 logger = logging.getLogger(__name__)
+
+
+def credential_keys_required(env: Mapping[str, str]) -> bool:
+    """Validate required-write policy without echoing unexpected environment data."""
+    try:
+        return env_bool("FERNET_REQUIRED", default=False, env=env)
+    except EnvBoolError:
+        raise EnvBoolError("FERNET_REQUIRED must be 'true' or 'false'") from None
+
 
 # A Fernet token starts with version byte 0x80, which base64url-encodes to this
 # prefix. A stored config row is either such a token or plaintext JSON (starting
