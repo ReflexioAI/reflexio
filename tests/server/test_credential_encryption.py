@@ -7,6 +7,8 @@ from cryptography.fernet import Fernet
 
 from reflexio.server import credential_encryption
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.mark.parametrize("require_keys", [False, True])
 def test_unexpected_constructor_failure_cannot_select_plaintext(require_keys):
