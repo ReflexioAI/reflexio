@@ -1,101 +1,41 @@
-"""Minimal Fernet encryption helper for the Braintrust connector.
+"""Connector policy over the process credential-encryption implementation."""
 
-Reads `REFLEXIO_FERNET_KEYS` (comma-separated) from the environment. When
-the env var is unset, both `encrypt` and `decrypt` return the value
-unchanged — matching the existing `EncryptManager` behavior in
-`reflexio_ext.utils` and keeping OS dev mode workable without rotation
-infrastructure.
-
-In enterprise deployments, the env var IS set and the API key is stored
-ciphertext-only.
-"""
-
-from __future__ import annotations
-
-import logging
 import os
 
-from cryptography import fernet
-from cryptography.fernet import Fernet, MultiFernet
+from cryptography.fernet import InvalidToken
 
-logger = logging.getLogger(__name__)
+from reflexio.removed_env import reject_removed_env
+from reflexio.server.credential_encryption import (
+    EncryptManager,
+    credential_keys_required,
+    looks_like_fernet_token,
+)
+from reflexio.server.env_utils import env_str
 
 
-_ENV_KEY = "REFLEXIO_FERNET_KEYS"
-_MULTI: MultiFernet | None = None
-_LOADED = False
-
-
-def _load() -> MultiFernet | None:
-    """Lazy-load the MultiFernet from env on first use."""
-    global _MULTI, _LOADED
-    if _LOADED:
-        return _MULTI
-    raw = os.environ.get(_ENV_KEY, "").strip()
-    if not raw:
-        logger.info(
-            "%s is unset — Braintrust connector storing API keys in plaintext "
-            "(suitable only for local development).",
-            _ENV_KEY,
-        )
-        _LOADED = True
-        return None
-    fernets = []
-    for k in raw.split(","):
-        k = k.strip()
-        if not k:
-            continue
-        try:
-            fernets.append(Fernet(k.encode("utf-8")))
-        except Exception:  # noqa: BLE001
-            logger.warning("Discarding invalid Fernet key in %s", _ENV_KEY)
-    if not fernets:
-        raise RuntimeError(f"{_ENV_KEY} is set but contains no valid Fernet keys")
-    _MULTI = MultiFernet(fernets)
-    _LOADED = True
-    return _MULTI
+def _manager() -> EncryptManager:
+    reject_removed_env(os.environ, canonical="FERNET_KEYS")
+    keys = env_str("FERNET_KEYS")
+    manager = EncryptManager(keys, require_keys=credential_keys_required(os.environ))
+    if keys and manager.multi_fernet is None:
+        raise RuntimeError("FERNET_KEYS is set but contains no valid Fernet keys")
+    return manager
 
 
 def encrypt(value: str) -> str:
-    """Encrypt `value` if Fernet keys are configured; otherwise return as-is.
-
-    Args:
-        value (str): The plaintext (e.g., a Braintrust API key).
-
-    Returns:
-        str: Ciphertext, or `value` unchanged when no keys are configured.
-    """
-    m = _load()
-    if m is None:
-        return value
-    return m.encrypt(value.encode("utf-8")).decode("utf-8")
+    """Use canonical encryption policy; optional unkeyed local stores stay usable."""
+    encrypted = _manager().encrypt(value)
+    if encrypted is None:
+        raise RuntimeError("Unable to encrypt Braintrust credential")
+    return encrypted
 
 
 def decrypt(value: str) -> str:
-    """Decrypt `value` if Fernet keys are configured; otherwise return as-is.
-
-    Args:
-        value (str): The (possibly ciphertext) value from storage.
-
-    Returns:
-        str: Plaintext.
-
-    Raises:
-        InvalidToken: When the token cannot be decoded by any registered key.
-    """
-    m = _load()
-    if m is None:
-        return value
-    try:
-        return m.decrypt(value.encode("utf-8")).decode("utf-8")
-    except fernet.InvalidToken:
-        # Storage may contain plaintext from a pre-encryption deployment.
-        # Caller decides whether to surface the issue.
-        raise
-
-
-def _reset_for_test() -> None:
-    """Reset the cached MultiFernet — for tests only."""
-    global _MULTI, _LOADED
-    _MULTI = None
-    _LOADED = False
+    """Refuse unreadable ciphertext before it can become an outbound credential."""
+    manager = _manager()
+    if manager.multi_fernet is None and looks_like_fernet_token(value):
+        raise InvalidToken
+    decrypted = manager.decrypt(value)
+    if decrypted is None:
+        raise InvalidToken
+    return decrypted

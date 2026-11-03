@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "REFLEXIO_FERNET_KEYS": "FERNET_KEYS",
     "REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS": "REFLEXIO_EMBED_BATCH_SIZE",
     "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOK_SOURCE_USER_PLAYBOOKS": "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOKS",
     "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_JOBS": "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_HISTORY",
@@ -63,6 +64,13 @@ def reject_removed_env(
             else f"{name} -> {aliases[name]}"
             for name in obsolete
         )
+        if "REFLEXIO_FERNET_KEYS" in obsolete:
+            migration += (
+                "; preserve all existing configuration and connector decryption "
+                "keys in the canonical ring, choosing its first encryption key "
+                "explicitly. Do not overwrite an existing FERNET_KEYS ring "
+                "with only the connector key. Existing ciphertext is not rewritten"
+            )
         if "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOK_SOURCE_USER_PLAYBOOKS" in obsolete:
             migration += (
                 "; source provenance now follows its parent playbooks. Remove "

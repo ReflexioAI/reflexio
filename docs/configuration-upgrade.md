@@ -9,6 +9,7 @@ between old and new names remains.
 
 | Removed name | Canonical name / effective policy |
 | --- | --- |
+| REFLEXIO_FERNET_KEYS | FERNET_KEYS; preserve the combined configuration and connector decryption ring, never overwrite one with the other |
 | PUBLIC_SCHEMA_AUDIT_ENABLED | PUBLIC_SCHEMA_AUDIT_INTERVAL_SECONDS; zero disables periodic audits, positive seconds enable them |
 | REFLEXIO_SEARCH_RECENCY_ENABLED | REFLEXIO_SEARCH_RECENCY_POOL_SIZE; zero disables, positive enables scored recency retrieval and ranking |
 | DATA_SUPABASE_DB_URL, POSTGRES_DB_URL | DATA_DB_URL; preserve the exact database target |
@@ -26,6 +27,33 @@ The shared distribution guard includes enterprise-owned names so generic OSS
 imports cannot discard obsolete blank assignments before enterprise startup.
 This also rejects obsolete enterprise variables inherited by a standalone OSS
 process. Update the shell environment and dotenv files before upgrading.
+
+## Credential keyring consolidation
+
+Braintrust credentials use the same process credential-encryption implementation
+and `FERNET_KEYS` authority as other stored credentials. Its separate key loader
+and cached keyring are removed. `FERNET_REQUIRED=true` refuses new plaintext writes;
+optional local stores still work without keys. Neither option migrates stored records.
+The required-write policy accepts `true` and `false` only (case-insensitive);
+unset or blank defaults to false. Invalid values refuse before writes, without
+echoing the supplied value. Replace numeric or other boolean spellings explicitly.
+
+Before replacing an image or SDK that reads `REFLEXIO_FERNET_KEYS`, preserve all
+existing keys from both rings in `FERNET_KEYS` and deliberately select the first
+key for new encryption. Keep historical keys for decryption. Do not replace an
+existing canonical ring with only the connector key, print key values in commands,
+or discard keys while their ciphertext remains stored. Remove the old assignment
+from both the selected environment file and parent process, including blank values.
+Ordinary loading rejects it even alongside a canonical value; there is no fallback.
+
+Existing Fernet records remain readable when their keys are retained; they are
+not automatically rotated. A missing key fails before creating a Braintrust HTTP
+client, rather than forwarding ciphertext as a credential. Local plaintext records
+remain usable while encryption is unconfigured. To enable encryption for those
+records, configure the ring and reconnect with the same API key and project
+selection; existing configured-key reads remain strict. Back up the local database
+and retain access to the credential before making that transition. This change
+does not add storage backends or claim managed-cloud connector support.
 
 Do not rename a boolean to a numeric setting verbatim. Preserve the former
 effective policy: missing-vector repair defaults to 200; publish diagnostics
