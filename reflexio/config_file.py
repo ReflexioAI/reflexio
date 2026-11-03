@@ -170,6 +170,20 @@ def _validate_sdk_document(data: dict[str, Any]) -> None:
     validate_stored_config(data)
 
 
+def _prepare_pending_creation(data: dict[str, Any], version: int) -> dict[str, Any]:
+    """Resolve unchanged historical lifetime fields before dropping generation."""
+    if version >= PENDING_CREATION_VERSION or "pending_tool_call_config" not in data:
+        return data
+    from reflexio.config_migration import canonicalize_pending_creation_policy
+
+    return {
+        **data,
+        "pending_tool_call_config": canonicalize_pending_creation_policy(
+            data["pending_tool_call_config"], historical=True
+        ),
+    }
+
+
 def _prepare_document(data: dict[str, Any], version: int) -> dict[str, Any]:
     """Transform only generations older than this artifact, without publishing."""
     from reflexio.config_migration import (
@@ -178,7 +192,6 @@ def _prepare_document(data: dict[str, Any], version: int) -> dict[str, Any]:
         canonicalize_custom_endpoint_policy,
         canonicalize_lineage_retention_policy,
         canonicalize_optimizer_work_budget,
-        canonicalize_pending_creation_policy,
         canonicalize_retrieval_floor_policy,
         retire_optimizer_jitter_policy,
         retire_optimizer_replay_policy,
@@ -235,11 +248,7 @@ def _prepare_document(data: dict[str, Any], version: int) -> dict[str, Any]:
         canonical["lineage_gc"] = canonicalize_lineage_retention_policy(
             canonical["lineage_gc"], historical=True
         )
-    if version < PENDING_CREATION_VERSION and "pending_tool_call_config" in canonical:
-        canonical["pending_tool_call_config"] = canonicalize_pending_creation_policy(
-            canonical["pending_tool_call_config"], historical=True
-        )
-    return canonical
+    return _prepare_pending_creation(canonical, version)
 
 
 def _admit_storage_transition(
@@ -300,10 +309,14 @@ class LocalConfigFile:
         """Read historical policy only for an explicitly selected offline conversion.
 
         Future/foreign formats still refuse; unlike runtime loading, conversion
-        may deliberately adopt a formerly ignored canonical spelling.
+        may deliberately adopt a formerly ignored canonical spelling. Unchanged
+        historical lifetime fields resolve before their generation is discarded.
         """
-        document, _metadata = self._read_snapshot()
-        return document
+        document, metadata = self._read_snapshot()
+        # A lifetime existed before consent became lifetime-owned. Preserve
+        # its historical opt-out while physical generation is still available;
+        # the subsequent logical canonicalizer cannot recover that evidence.
+        return _prepare_pending_creation(document, metadata.get("version", 0))
 
     def publish_document(
         self,

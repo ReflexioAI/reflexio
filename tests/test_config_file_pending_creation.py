@@ -12,6 +12,38 @@ from reflexio.models.config_schema import validate_stored_config
 pytestmark = pytest.mark.unit
 
 
+@pytest.mark.parametrize("version", range(14))
+def test_offline_copy_preserves_generation_owned_creation_consent(tmp_path, version):
+    from typer.testing import CliRunner
+
+    from reflexio.cli.app import create_app
+
+    source, destination = tmp_path / "source.json", tmp_path / "current.json"
+    document = {
+        "storage_config": None,
+        "pending_tool_call_config": {"pending_ttl_seconds": 37},
+    }
+    if version:
+        document["_reflexio_config_file"] = {"version": version}
+    original = json.dumps(document).encode()
+    source.write_bytes(original)
+    result = CliRunner().invoke(
+        create_app(),
+        ["config", "upgrade-file", str(source), "--output", str(destination)],
+    )
+    assert result.exit_code == 0, result.output
+    assert source.read_bytes() == original
+    converted = LocalConfigFile(destination).read_document()
+    assert converted["pending_tool_call_config"]["pending_ttl_seconds"] == (
+        37 if version == 13 else 0
+    )
+    assert (
+        json.loads(destination.read_bytes())["_reflexio_config_file"]["version"]
+        == FILE_FORMAT_VERSION
+    )
+    assert LocalConfigFile(destination).prepare() is False
+
+
 @pytest.mark.parametrize("version", range(13))
 @pytest.mark.parametrize("enabled,expected", [(False, 0), (True, 37)])
 def test_historical_creation_prepares_once_and_preserves_original(

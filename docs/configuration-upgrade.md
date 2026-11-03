@@ -9,6 +9,11 @@ not reopen an org opt-out. Accepted calls, callbacks and stored expiry keep
 their existing durable authority. See [developer.md](../developer.md#pending-tool-creation-lifetime)
 for writer closure, recovery and frozen-witness behavior.
 
+The offline converter resolves this policy from the source file generation
+before dropping physical metadata. A positive historical lifetime with no
+enable switch remains off; a generation13 positive lifetime stays enabled.
+It never stamps a historical implicit opt-out as current positive consent.
+
 Legacy configuration spellings are no longer accepted. The first environment
 loader rejects their presence before dotenv loading or blank-value pruning;
 direct policy readers reject their obsolete names too. An error names the old
