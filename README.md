@@ -537,6 +537,9 @@ for either method.
 For agents already logging to Braintrust, use [Connect a data source](skills/connect-data-source/SKILL.md)
 to prepare and validate importing through the setup API. The developer reviews the saved
 configuration and activates in Reflexio; no plugin or additional publish flow is needed.
+Stored connector credentials use the process `FERNET_KEYS` keyring and
+`FERNET_REQUIRED` write policy. See the [keyring upgrade instructions](docs/configuration-upgrade.md#credential-keyring-consolidation)
+before retiring `REFLEXIO_FERNET_KEYS` or enabling encryption for local plaintext records.
 
 ## Community
 

@@ -15,7 +15,6 @@ from reflexio.models.api_schema.braintrust_schema import (
     ImportedScore,
     SelectProjectsRequest,
 )
-from reflexio.server.services.braintrust import _encryption
 from reflexio.server.services.braintrust.client import (
     BraintrustAuthError,
     BraintrustHTTPError,
@@ -147,8 +146,7 @@ def test_connect_returns_failure_on_auth_error_during_org_listing() -> None:
 
 def test_select_projects_persists_encrypted_connection(monkeypatch) -> None:
     """select_projects writes a BraintrustConnection; API key is encrypted."""
-    monkeypatch.delenv("REFLEXIO_FERNET_KEYS", raising=False)
-    _encryption._reset_for_test()
+    monkeypatch.delenv("FERNET_KEYS", raising=False)
 
     storage = _InMemoryStorage()
     svc = BraintrustConnectorService(
@@ -181,8 +179,7 @@ def test_status_reports_disconnected_when_no_row() -> None:
 
 
 def test_status_reflects_persisted_connection(monkeypatch) -> None:
-    monkeypatch.delenv("REFLEXIO_FERNET_KEYS", raising=False)
-    _encryption._reset_for_test()
+    monkeypatch.delenv("FERNET_KEYS", raising=False)
     storage = _InMemoryStorage()
     svc = BraintrustConnectorService(
         storage=storage, org_id="org_t", client_factory=_stub_client_factory()
@@ -202,8 +199,7 @@ def test_status_reflects_persisted_connection(monkeypatch) -> None:
 
 
 def test_disconnect_removes_the_row(monkeypatch) -> None:
-    monkeypatch.delenv("REFLEXIO_FERNET_KEYS", raising=False)
-    _encryption._reset_for_test()
+    monkeypatch.delenv("FERNET_KEYS", raising=False)
     storage = _InMemoryStorage()
     svc = BraintrustConnectorService(
         storage=storage, org_id="org_t", client_factory=_stub_client_factory()
@@ -214,8 +210,7 @@ def test_disconnect_removes_the_row(monkeypatch) -> None:
 
 
 def test_sync_once_writes_imported_scores(monkeypatch) -> None:
-    monkeypatch.delenv("REFLEXIO_FERNET_KEYS", raising=False)
-    _encryption._reset_for_test()
+    monkeypatch.delenv("FERNET_KEYS", raising=False)
     storage = _InMemoryStorage()
     svc = BraintrustConnectorService(
         storage=storage, org_id="org_t", client_factory=_stub_client_factory()
@@ -241,8 +236,7 @@ def test_sync_once_writes_imported_scores(monkeypatch) -> None:
 
 
 def test_sync_once_uses_last_successful_sync_ts(monkeypatch) -> None:
-    monkeypatch.delenv("REFLEXIO_FERNET_KEYS", raising=False)
-    _encryption._reset_for_test()
+    monkeypatch.delenv("FERNET_KEYS", raising=False)
     storage = _InMemoryStorage()
     client = MagicMock()
     client.list_experiments.return_value = []
@@ -267,8 +261,7 @@ def test_sync_once_uses_last_successful_sync_ts(monkeypatch) -> None:
 
 
 def test_sync_failure_does_not_advance_last_sync_ts(monkeypatch) -> None:
-    monkeypatch.delenv("REFLEXIO_FERNET_KEYS", raising=False)
-    _encryption._reset_for_test()
+    monkeypatch.delenv("FERNET_KEYS", raising=False)
     storage = _InMemoryStorage()
     client = MagicMock()
     client.list_experiments.side_effect = BraintrustHTTPError(500, "boom")
