@@ -42,6 +42,7 @@ from reflexio.models.config_schema import (
 from reflexio.models.structured_output import find_schema_keyword
 from reflexio.server import error_reporting
 from reflexio.server.llm._litellm_subprocess import _snapshot_completion_response
+from reflexio.server.llm._litellm_text_generation import MAX_LOGGED_ERROR_LENGTH
 from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.llm._provider_concurrency import ProviderCapSaturatedError
 from reflexio.server.llm.litellm_client import (
@@ -2143,7 +2144,11 @@ class TestStructuredOutputRetry:
 
     def test_parse_exhaustion_logs_request_end_failure(self, caplog):
         """Blind-retry exhaustion (no validator) still emits the request-end
-        failure record — litellm saw a 200, so only this layer can log it."""
+        failure record — litellm saw a 200, so only this layer can log it.
+
+        It is a WARNING, like the validated rung's repair-exhausted line: the
+        raised ``LiteLLMClientError`` reaches the caller, which owns the
+        report, so an ERROR here double-reports one outcome."""
 
         def fake_completion(**kwargs):
             choice = MagicMock()
@@ -2172,8 +2177,9 @@ class TestStructuredOutputRetry:
             )
 
         ends = self._request_end_failure_records(caplog)
-        assert ends, "expected a request-end failure log record"
-        assert all(r.levelno == logging.ERROR for r in ends)
+        assert len(ends) == 1, "expected one request-end failure log record"
+        assert ends[0].levelno == logging.WARNING
+        assert "error_type=StructuredOutputParseError " in ends[0].getMessage()
 
 
 class TestStructuredOutputRepair:
@@ -2607,6 +2613,64 @@ class TestStructuredOutputRepair:
         assert "reasoning_tokens=4090 " in line
         assert "max_tokens=4096 " in line
         assert line.endswith("content_len=3")
+
+    def test_repair_exhausted_on_semantic_failure_names_bounded_errors(self, caplog):
+        """A semantic exhaustion has no per-attempt validation line, so the
+        exhaustion warning must say what the validator rejected -- bounded in
+        count and length, one line per entry, with quoted spans (where
+        validators echo model-chosen tokens) redacted."""
+        hostile_id = 'EVIL-ID\' with "quotes"\nWARNING event=FABRICATED'
+        long_reason = "points[0].evidence_refs[3]: unseen reference " + "x" * 300
+        errors = [
+            f"item_id: '{hostile_id}' is not a valid NEW-<n> id.",
+            # A newline OUTSIDE any quote must still be flattened.
+            "Coverage error:\n\tunknown refs ['ref-from-model'].",
+            long_reason,
+            *(f"profiles[{i}]: missing evidence" for i in range(4)),
+        ]
+        client = _build_client(LiteLLMConfig(model="primary-model"))
+
+        with (
+            patch(
+                "litellm.completion",
+                side_effect=lambda **_kw: self._make_mock_response(
+                    '{"answer": "ok", "score": 1}'
+                ),
+            ),
+            caplog.at_level(logging.WARNING),
+            pytest.raises(StructuredOutputRepairError) as exc_info,
+        ):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                structured_output_validator=lambda _parsed: errors,
+            )
+
+        # The typed error still carries the validator's full, unclamped errors.
+        assert exc_info.value.validation_errors == tuple(errors)
+        exhausted = [
+            r.getMessage()
+            for r in caplog.records
+            if "event=llm_structured_repair_exhausted " in r.getMessage()
+        ]
+        assert len(exhausted) == 1
+        line = exhausted[0]
+        assert "failure_kind=semantic errors=" in line
+        rendered = line.split(" errors=", 1)[1].split(" | ")
+        assert rendered == [
+            # The greedy span reaches the validator's own closing quote even
+            # though the model's id carries quotes and a newline of its own.
+            "item_id: <redacted> is not a valid NEW-<n> id.",
+            "Coverage error: unknown refs [<redacted>].",
+            long_reason[: MAX_LOGGED_ERROR_LENGTH - 3] + "...",
+            "profiles[0]: missing evidence",
+            "profiles[1]: missing evidence",
+            "...(2 more)",
+        ]
+        assert "\n" not in line
+        assert "EVIL-ID" not in line
+        assert "FABRICATED" not in line
+        assert "ref-from-model" not in line
 
     def test_parse_failure_log_lines_never_carry_content(self, caplog):
         secret = "CUSTOMER-SECRET-7f3a"

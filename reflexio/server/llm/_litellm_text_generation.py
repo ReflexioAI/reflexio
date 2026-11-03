@@ -571,6 +571,51 @@ def _log_safe_validation_errors(exc: StructuredOutputParseError, schema: Any) ->
     return ",".join(rendered)
 
 
+# A quoted span in a semantic error: from the first quote to the last one (or
+# to the end when only one exists). Validators wrap any model-chosen token they
+# echo in quotes -- ``'<id>' is not a valid ...``, or a list repr of refs -- and
+# a greedy span still covers that token when it contains quotes of its own.
+_QUOTED_SPAN = re.compile(r"""['"](?:.*['"]|.*)""", re.DOTALL)
+_CONTROL_OR_SPACE_RUN = re.compile(r"[\s\x00-\x1f\x7f]+")
+
+
+def _log_safe_semantic_error(message: str) -> str:
+    """Render one caller-validator error with quoted spans redacted, bounded."""
+    redacted = _QUOTED_SPAN.sub(_REDACTED_VALIDATION_ERROR, message)
+    flattened = _CONTROL_OR_SPACE_RUN.sub(" ", redacted).strip()
+    if len(flattened) > MAX_LOGGED_ERROR_LENGTH:
+        return flattened[: MAX_LOGGED_ERROR_LENGTH - 3] + "..."
+    return flattened
+
+
+def _log_safe_semantic_errors(errors: Sequence[str]) -> str:
+    """Render a validator's semantic errors for a log sink.
+
+    Semantic errors are strings the CALLER's ``structured_output_validator``
+    wrote, so unlike parse errors there is no typed location to rebuild them
+    from. Validators state the failure in fixed text plus indices, but some
+    echo a model-chosen token in quotes (an unknown id, a list of unknown
+    refs); every quoted span is therefore redacted. Each entry is collapsed to
+    one line and truncated to ``MAX_LOGGED_ERROR_LENGTH``, and at most
+    ``MAX_LOGGED_VALIDATION_ERRORS`` entries are rendered, with the same
+    trailing count as ``_log_safe_validation_errors``. Entries are joined with
+    ``" | "`` because validator prose contains commas.
+
+    Args:
+        errors (Sequence[str]): The validator's error messages
+
+    Returns:
+        str: A bounded rendering naming what failed, without quoted content
+    """
+    rendered = [
+        _log_safe_semantic_error(message)
+        for message in errors[:MAX_LOGGED_VALIDATION_ERRORS]
+    ]
+    if len(errors) > len(rendered):
+        rendered.append(f"...({len(errors) - len(rendered)} more)")
+    return " | ".join(rendered)
+
+
 def _nonempty_string(value: Any) -> str | None:
     """Return trustworthy string metadata without coercing mocks or objects."""
     if not isinstance(value, str):
@@ -2396,12 +2441,21 @@ class TextGenerationMixin:
             repair_attempt.parsed_output = (
                 repair_attempt.parsed_output or latest_parsed_output
             )
+            # A semantic failure has no per-attempt validation line, so this is
+            # the only place its reasons can surface: name them, bounded and
+            # with quoted (possibly model-chosen) spans redacted.
+            semantic_errors = (
+                f" errors={_log_safe_semantic_errors(errors)}"
+                if failure_kind == "semantic" and errors
+                else ""
+            )
             self.logger.warning(
-                "event=llm_structured_repair_exhausted model=%s schema=%s failure_kind=%s%s",
+                "event=llm_structured_repair_exhausted model=%s schema=%s failure_kind=%s%s%s",
                 repair_attempt.model,
                 schema_name,
                 failure_kind,
                 repair_diagnostics,
+                semantic_errors,
             )
             raise _repair_error(
                 failure_kind=failure_kind,
@@ -2476,8 +2530,12 @@ class TextGenerationMixin:
                     raise
                 if isinstance(exc, StructuredOutputParseError):
                     # ``errors=`` names the final attempt's failing field paths,
-                    # clamped exactly as on the corrective-retry line.
-                    self.logger.error(
+                    # clamped exactly as on the corrective-retry line. WARNING,
+                    # like the sibling ``llm_structured_repair_exhausted`` line:
+                    # the wrapped ``LiteLLMClientError`` below reaches the
+                    # caller, which owns whether the failure is fatal and
+                    # reports it, and ``llm.failures`` still counts it.
+                    self.logger.warning(
                         "event=llm_request_end model=%s success=False error_type=%s failure_kind=%s %s errors=%s error=%s",
                         rung,
                         type(exc).__name__,
