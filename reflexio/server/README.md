@@ -797,6 +797,18 @@ a durable commit per CREATE statement. A base-schema failure rolls back that
 transaction so startup can retry; legacy upgrade ordering and later migration
 helpers retain their own boundaries. WAL and synchronization settings are unchanged.
 
+Publication cutover in `sqlite_storage/_publication_receipts.py` preserves inert
+ordinary terminal history and recognizes the normal server's original v1 window
+owner. Admission does not finish parents, acknowledge finances, reset journal
+quota or bypass source/policy validation. Pending window delivery remains with
+`durable_learning/window_executor.py`; already acknowledged erased windows retain
+their original history without new financial events. Unknown ownership, ambiguous
+receipts and erased pending summaries without the original run binding still
+refuse. Explicit-only v2 package execution retains its separate owner and normal
+worker refusal. Synthetic predecessor fixtures and provenance live under
+`tests/fixtures/legacy_publication_v1/`; current-owner regressions are in
+`tests/server/services/storage/test_legacy_publication_upgrade_integration.py`.
+
 **Pattern**: **NEVER import storage implementations directly** - Always use `request_context.storage`
 
 **Key Methods**:

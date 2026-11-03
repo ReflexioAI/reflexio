@@ -164,15 +164,69 @@ def _receipt_schema_current(
 
 
 def _refuse_legacy_publication_debt(conn: sqlite3.Connection) -> None:
-    # This relation belongs to the whole file, which may contain more
-    # than one org. A first opener must not admit another org's debt.
-    blocked = conn.execute("""SELECT r.id,r.org_id,r.status FROM _agent_runs r
-      WHERE r.status IS NULL OR r.status NOT IN
-        ('finalized','finalized_pending_tool','resume_ready','failed','expired','cancelled')
-      OR (r.status IN ('failed','expired','cancelled') AND
-        (r.committed_output IS NOT NULL OR EXISTS (
-          SELECT 1 FROM _agent_run_finalization_receipts q WHERE q.run_id=r.id)))
-      ORDER BY r.id LIMIT 1""").fetchone()
+    # Admission recognizes readers, not recovery success. Original window
+    # state, quota, source and finance remain with their existing owners.
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+            "('extraction_windows','extraction_cursors')"
+        )
+    }
+    window = "0"
+    if tables == {"extraction_windows", "extraction_cursors"}:
+        window = """EXISTS (
+          SELECT 1 FROM extraction_windows w
+          WHERE r.id='window:'||w.window_id AND r.user_id=w.user_id
+            AND r.extractor_kind=w.kind
+            AND w.project_id=''
+            AND json_type(r.generation_request_snapshot,'$.overflow')='object'
+            AND json_type(r.generation_request_snapshot,'$.overflow.version')='integer'
+            AND json_extract(r.generation_request_snapshot,'$.overflow.version')=1
+            AND (
+              (w.completed=0 AND w.invalidated=0 AND r.status IN ('running','agent_completed','failed')
+               AND NOT EXISTS (SELECT 1 FROM _agent_run_finalization_receipts q WHERE q.run_id=r.id)
+               AND EXISTS (SELECT 1 FROM extraction_cursors c
+                 WHERE c.window_id=w.window_id AND c.user_id=w.user_id
+                   AND c.kind=w.kind AND c.project_id=w.project_id))
+              OR (w.completed=1
+               AND r.status IN ('agent_completed','finalizing')
+               AND ((w.effects_done=0 AND w.invalidated=0
+                 AND json_type(w.effects,'$.extraction_run_ids')='array'
+                 AND json_array_length(w.effects,'$.extraction_run_ids')=1
+                 AND json_extract(w.effects,'$.extraction_run_ids[0]')=r.id)
+                OR (w.effects_done=1 AND w.outcome IS NULL
+                 AND json(w.manifest)='[]'
+                 AND json_type(w.effects,'$.version')='integer'
+                 AND json_extract(w.effects,'$.version')=1
+                 AND json_type(w.effects,'$.skipped')='true'))
+               AND json_type(w.effects,'$.billing')='object'
+               AND EXISTS (SELECT 1 FROM _agent_run_finalization_receipts q
+                 WHERE q.run_id=r.id AND q.entity_type=CASE w.kind
+                   WHEN 'profile' THEN 'profile' WHEN 'playbook' THEN 'user_playbook' END
+                   AND json(q.learning_ids)=json(json_extract(w.effects,'$.billing.ids'))))
+            ))"""
+    # Very old/partial fixtures need not have current run columns. Such rows
+    # receive no new compatibility classification; retain the previous refusal.
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(_agent_runs)")}
+    ordinary = "0"
+    if "generation_request_snapshot" in columns:
+        ordinary = """(length(r.id)=35 AND substr(r.id,1,3)='ar_'
+          AND substr(r.id,4) NOT GLOB '*[^0-9a-f]*'
+          AND json_type(r.generation_request_snapshot)='object'
+          AND json_type(r.generation_request_snapshot,'$.overflow') IS NULL)"""
+    if not {"user_id", "extractor_kind", "generation_request_snapshot"}.issubset(
+        columns
+    ):
+        window = "0"
+    blocked = conn.execute(f"""SELECT r.id,r.org_id,r.status FROM _agent_runs r
+      WHERE NOT coalesce(
+        r.status IN ('finalized','finalized_pending_tool','resume_ready')
+        OR (r.status IN ('failed','expired','cancelled')
+          AND NOT EXISTS (SELECT 1 FROM _agent_run_finalization_receipts q WHERE q.run_id=r.id)
+          AND (r.committed_output IS NULL OR {ordinary}))
+        OR {window}, 0)
+      ORDER BY r.id LIMIT 1""").fetchone()  # noqa: S608 -- fixed owner-authored predicates only
     if blocked is not None:
         raise ValueError(
             "Legacy publication cutover refused: undrained execution "

@@ -1,0 +1,111 @@
+{
+  "predecessor_application": "6cd2ac46e10cf8ce88e5adb6ef0ff91fb5bf04ff",
+  "predecessor_sdk": "6769bd3e4385a7a322d9ba76da152883c0af668a",
+  "synthetic_only": true,
+  "paid_or_network_inference_calls": 0,
+  "mock_llm_response": false,
+  "capture_procedure": "producer.py.txt; run against an archive of predecessor_sdk, not candidate code",
+  "fixtures": {
+    "running": {
+      "sha256": "73376797d90e95f7ab7a3c5346ac7d46703acc3a0e8fb8d649ec48db8b122771",
+      "gzip_sha256": "8dddcd4288330434da62c17f5cf3ce8a7248441f5ece1ffaa24930a637652c77",
+      "uncompressed_bytes": 3256320,
+      "summary": {
+        "phase": "running",
+        "run_status": "running",
+        "journal_version": 1,
+        "attempt_count": 1,
+        "receipt_count": 0,
+        "completed": false,
+        "effects_pending": true,
+        "scripted_completion_calls": 1,
+        "external_inference_calls": 0,
+        "predecessor_sdk": "6769bd3e4385a7a322d9ba76da152883c0af668a"
+      }
+    },
+    "completed_effects": {
+      "sha256": "90941a63a0e04c4c71ca2570b5a57f1fbb13b165fe67fb79ac6fbdba33f53005",
+      "gzip_sha256": "2daead2a82bc40644fa5e3c3e6cf0733c662e504ef46404561adb4041aac8227",
+      "uncompressed_bytes": 5423104,
+      "summary": {
+        "phase": "completed_effects",
+        "run_status": "agent_completed",
+        "journal_version": 1,
+        "attempt_count": 3,
+        "receipt_count": 1,
+        "completed": true,
+        "effects_pending": true,
+        "scripted_completion_calls": 3,
+        "external_inference_calls": 0,
+        "predecessor_sdk": "6769bd3e4385a7a322d9ba76da152883c0af668a"
+      }
+    },
+    "completed_projection_no_body": {
+      "sha256": "199f74cf05d0731548b8b993ac640eb82816a9094816892ff7b8f54ff444fbda",
+      "gzip_sha256": "a79d996a187e58c58a11beda839f9741bd38aed33dba91cb7b3e4f01dad2409d",
+      "uncompressed_bytes": 6012928,
+      "summary": {
+        "phase": "completed_projection_no_body",
+        "run_status": "agent_completed",
+        "journal_version": 1,
+        "attempt_count": 0,
+        "receipt_count": 1,
+        "completed": true,
+        "effects_pending": true,
+        "committed_output_absent": true,
+        "scripted_semantic_boundary": true,
+        "external_inference_calls": 0,
+        "predecessor_sdk": "6769bd3e4385a7a322d9ba76da152883c0af668a"
+      }
+    },
+    "completed_before_ack": {
+      "sha256": "65d550a32fe25135f8860d8f1b0458b8c848275f23c094b6c1a059fe79416403",
+      "gzip_sha256": "69d968be9bce0c492ab8002255251545838e7145c18141f4e4d6377e8a956e56",
+      "uncompressed_bytes": 5402624,
+      "summary": {
+        "phase": "completed_before_ack",
+        "run_status": "finalized",
+        "journal_version": 1,
+        "attempt_count": 3,
+        "receipt_count": 1,
+        "completed": true,
+        "effects_pending": true,
+        "scripted_completion_calls": 3,
+        "external_inference_calls": 0,
+        "predecessor_sdk": "6769bd3e4385a7a322d9ba76da152883c0af668a"
+      }
+    },
+    "completed_acked": {
+      "sha256": "c9b733db6c2fe294fd687e51c22309f1cc41cda218f66f38362195ca16890f1e",
+      "gzip_sha256": "b5be078e6ab7a1c5ca6d39c233ef2d7a684712594230009bb7ae29f7cad47230",
+      "uncompressed_bytes": 5402624,
+      "summary": {
+        "phase": "completed_acked",
+        "run_status": "finalized",
+        "journal_version": 1,
+        "attempt_count": 3,
+        "receipt_count": 1,
+        "completed": true,
+        "effects_pending": false,
+        "scripted_completion_calls": 3,
+        "external_inference_calls": 0,
+        "predecessor_sdk": "6769bd3e4385a7a322d9ba76da152883c0af668a"
+      }
+    },
+    "completed_erased_acked": {
+      "sha256": "5f5ec2f3af245f339e2bf70448c8393fc2255827034b90325c89f9e6cb219697",
+      "gzip_sha256": "f6a091ed9788d30432c98ce0348449455af6de08741f0e1b6e0950ed99ca4564",
+      "uncompressed_bytes": 5423104,
+      "summary": {
+        "phase": "completed_erased_acked",
+        "run_status": "agent_completed",
+        "completed": true,
+        "invalidated": true,
+        "effects_pending": false,
+        "committed_original_financial_events": 2,
+        "external_inference_calls": 0,
+        "predecessor_sdk": "6769bd3e4385a7a322d9ba76da152883c0af668a"
+      }
+    }
+  }
+}

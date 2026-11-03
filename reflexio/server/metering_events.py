@@ -603,30 +603,40 @@ def record_window_extraction_finances(
     Correlation metadata is optional; canonical keys, metric quantities and the
     original event clock remain identical when governance removes that metadata.
     """
+    from reflexio.server.services.extraction.publication_receipts import (
+        window_handoff_facts,
+    )
+
+    # Both financial events use one validated, detached original descriptor.
+    # A malformed second event must not leave a first event appended.
+    descriptor = dict(billing)
+    if "pipeline" in descriptor and descriptor.pop("pipeline") != pipeline:
+        raise ValueError("Window financial pipeline does not match its owner")
+    ids, facts = window_handoff_facts(pipeline, descriptor)
     record_learnings_generated_records_strict(
         org_id=org_id,
-        learning_ids=billing["ids"],
+        learning_ids=ids,
         pipeline=pipeline,
         user_id=user_id,
         request_id=request_id,
         entity_type="profile" if pipeline == "profile" else "user_playbook",
-        created_at=billing["created_at"],
+        created_at=facts["created_at"],
     )
     record_extraction_tokens(
         org_id=org_id,
-        billing_input_tokens=billing["input_tokens"],
-        prompt_tokens=billing["prompt_tokens"],
-        completion_tokens=billing["completion_tokens"],
+        billing_input_tokens=facts["input_tokens"],
+        prompt_tokens=facts["prompt_tokens"],
+        completion_tokens=facts["completion_tokens"],
         # Tolerant reads: an effects blob written before the cache fields
         # existed is still billable, and a KeyError here would strand a
         # window whose learnings are already committed.
-        cache_read_input_tokens=billing.get("cache_read_input_tokens", 0),
-        cache_write_input_tokens=billing.get("cache_write_input_tokens", 0),
-        platform_llm=billing["platform_llm"],
+        cache_read_input_tokens=facts.get("cache_read_input_tokens", 0),
+        cache_write_input_tokens=facts.get("cache_write_input_tokens", 0),
+        platform_llm=facts["platform_llm"],
         platform_storage=None,
         pipeline=pipeline,
         request_id=request_id,
         event_key=f"tok:{window_id}",
         strict=True,
-        created_at=billing["created_at"],
+        created_at=facts["created_at"],
     )
