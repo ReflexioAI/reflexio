@@ -24,6 +24,8 @@ from reflexio.server.services.retrieval.session_dedup import session_seen_cache
 from reflexio.server.services.storage.error import ReadinessUnavailableError
 from reflexio.server.services.storage.storage_base import BaseStorage
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def native(monkeypatch):
