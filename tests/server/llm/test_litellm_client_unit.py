@@ -42,7 +42,6 @@ from reflexio.models.config_schema import (
 from reflexio.models.structured_output import find_schema_keyword
 from reflexio.server import error_reporting
 from reflexio.server.llm._litellm_subprocess import _snapshot_completion_response
-from reflexio.server.llm._litellm_text_generation import MAX_LOGGED_ERROR_LENGTH
 from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.llm._provider_concurrency import ProviderCapSaturatedError
 from reflexio.server.llm.litellm_client import (
@@ -2614,11 +2613,8 @@ class TestStructuredOutputRepair:
         assert "max_tokens=4096 " in line
         assert line.endswith("content_len=3")
 
-    def test_repair_exhausted_on_semantic_failure_names_bounded_errors(self, caplog):
-        """A semantic exhaustion has no per-attempt validation line, so the
-        exhaustion warning must say what the validator rejected -- bounded in
-        count and length, one line per entry, with quoted spans (where
-        validators echo model-chosen tokens) redacted."""
+    def test_repair_exhausted_on_semantic_failure_logs_only_error_count(self, caplog):
+        """Semantic prose remains available to callers without entering logs."""
         hostile_id = 'EVIL-ID\' with "quotes"\nWARNING event=FABRICATED'
         long_reason = "points[0].evidence_refs[3]: unseen reference " + "x" * 300
         errors = [
@@ -2655,22 +2651,51 @@ class TestStructuredOutputRepair:
         ]
         assert len(exhausted) == 1
         line = exhausted[0]
-        assert "failure_kind=semantic errors=" in line
-        rendered = line.split(" errors=", 1)[1].split(" | ")
-        assert rendered == [
-            # The greedy span reaches the validator's own closing quote even
-            # though the model's id carries quotes and a newline of its own.
-            "item_id: <redacted> is not a valid NEW-<n> id.",
-            "Coverage error: unknown refs [<redacted>].",
-            long_reason[: MAX_LOGGED_ERROR_LENGTH - 3] + "...",
-            "profiles[0]: missing evidence",
-            "profiles[1]: missing evidence",
-            "...(2 more)",
-        ]
+        assert "failure_kind=semantic semantic_error_count=7" in line
+        assert " errors=" not in line
         assert "\n" not in line
-        assert "EVIL-ID" not in line
-        assert "FABRICATED" not in line
-        assert "ref-from-model" not in line
+        for private in ("EVIL-ID", "FABRICATED", "ref-from-model", "unseen reference"):
+            assert private not in caplog.text
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "invalid answer: SYNTHETIC-CUSTOMER-SECRET",
+            "invalid answer: 'SYNTHETIC-CUSTOMER-SECRET'",
+            "SYNTHETIC-CUSTOMER-SECRET\nWARNING event=FABRICATED\x00",
+            "invalid answer: 客户隐私-SYNTHETIC-CUSTOMER-SECRET",
+        ],
+    )
+    def test_semantic_exhaustion_never_logs_arbitrary_validator_text(
+        self, caplog, message
+    ):
+        client = _build_client(LiteLLMConfig(model="primary-model"))
+        with (
+            patch(
+                "litellm.completion",
+                side_effect=lambda **_kw: self._make_mock_response(
+                    '{"answer": "ok", "score": 1}'
+                ),
+            ),
+            caplog.at_level(logging.WARNING),
+            pytest.raises(StructuredOutputRepairError) as exc_info,
+        ):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                structured_output_validator=lambda _parsed: [message],
+            )
+        assert exc_info.value.validation_errors == (message,)
+        assert "SYNTHETIC-CUSTOMER-SECRET" not in caplog.text
+        assert "FABRICATED" not in caplog.text
+        assert "客户隐私" not in caplog.text
+        exhausted = [
+            record.getMessage()
+            for record in caplog.records
+            if "event=llm_structured_repair_exhausted " in record.getMessage()
+        ]
+        assert len(exhausted) == 1
+        assert "failure_kind=semantic semantic_error_count=1" in exhausted[0]
 
     def test_parse_failure_log_lines_never_carry_content(self, caplog):
         secret = "CUSTOMER-SECRET-7f3a"
@@ -4211,7 +4236,7 @@ class TestLitellmIntegration:
         assert client._should_process_isolate_completion(0.5, 0.0)
 
         start = time.perf_counter()
-        payload = client._completion_with_hard_timeout(params, hard_timeout=10.0)
+        payload = client._completion_with_hard_timeout(params, 10.0)
         elapsed = time.perf_counter() - start
 
         assert payload.choices[0].message.content == big
@@ -4278,7 +4303,7 @@ class TestLitellmIntegration:
         }
 
         with pytest.raises(LiteLLMClientError) as exc_info:
-            client._completion_with_hard_timeout(params, hard_timeout=5.0)
+            client._completion_with_hard_timeout(params, 5.0)
 
         assert exc_info.value.upstream_error_type == "APIConnectionError"
 
@@ -5277,9 +5302,7 @@ def test_expired_search_cannot_start_another_completion(monkeypatch):
     token = search_runtime._scope.set(scope)
     try:
         with pytest.raises(search_runtime.SearchDeadlineError):
-            client._completion_with_hard_timeout(
-                {"model": "x", "timeout": 30}, hard_timeout=35
-            )
+            client._completion_with_hard_timeout({"model": "x", "timeout": 30}, 35)
     finally:
         search_runtime._scope.reset(token)
 

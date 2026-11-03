@@ -571,51 +571,6 @@ def _log_safe_validation_errors(exc: StructuredOutputParseError, schema: Any) ->
     return ",".join(rendered)
 
 
-# A quoted span in a semantic error: from the first quote to the last one (or
-# to the end when only one exists). Validators wrap any model-chosen token they
-# echo in quotes -- ``'<id>' is not a valid ...``, or a list repr of refs -- and
-# a greedy span still covers that token when it contains quotes of its own.
-_QUOTED_SPAN = re.compile(r"""['"](?:.*['"]|.*)""", re.DOTALL)
-_CONTROL_OR_SPACE_RUN = re.compile(r"[\s\x00-\x1f\x7f]+")
-
-
-def _log_safe_semantic_error(message: str) -> str:
-    """Render one caller-validator error with quoted spans redacted, bounded."""
-    redacted = _QUOTED_SPAN.sub(_REDACTED_VALIDATION_ERROR, message)
-    flattened = _CONTROL_OR_SPACE_RUN.sub(" ", redacted).strip()
-    if len(flattened) > MAX_LOGGED_ERROR_LENGTH:
-        return flattened[: MAX_LOGGED_ERROR_LENGTH - 3] + "..."
-    return flattened
-
-
-def _log_safe_semantic_errors(errors: Sequence[str]) -> str:
-    """Render a validator's semantic errors for a log sink.
-
-    Semantic errors are strings the CALLER's ``structured_output_validator``
-    wrote, so unlike parse errors there is no typed location to rebuild them
-    from. Validators state the failure in fixed text plus indices, but some
-    echo a model-chosen token in quotes (an unknown id, a list of unknown
-    refs); every quoted span is therefore redacted. Each entry is collapsed to
-    one line and truncated to ``MAX_LOGGED_ERROR_LENGTH``, and at most
-    ``MAX_LOGGED_VALIDATION_ERRORS`` entries are rendered, with the same
-    trailing count as ``_log_safe_validation_errors``. Entries are joined with
-    ``" | "`` because validator prose contains commas.
-
-    Args:
-        errors (Sequence[str]): The validator's error messages
-
-    Returns:
-        str: A bounded rendering naming what failed, without quoted content
-    """
-    rendered = [
-        _log_safe_semantic_error(message)
-        for message in errors[:MAX_LOGGED_VALIDATION_ERRORS]
-    ]
-    if len(errors) > len(rendered):
-        rendered.append(f"...({len(errors) - len(rendered)} more)")
-    return " | ".join(rendered)
-
-
 def _nonempty_string(value: Any) -> str | None:
     """Return trustworthy string metadata without coercing mocks or objects."""
     if not isinstance(value, str):
@@ -2441,11 +2396,10 @@ class TextGenerationMixin:
             repair_attempt.parsed_output = (
                 repair_attempt.parsed_output or latest_parsed_output
             )
-            # A semantic failure has no per-attempt validation line, so this is
-            # the only place its reasons can surface: name them, bounded and
-            # with quoted (possibly model-chosen) spans redacted.
-            semantic_errors = (
-                f" errors={_log_safe_semantic_errors(errors)}"
+            # Caller validators may include unquoted model or customer content.
+            # Keep their full errors for repair/programmatic handling, never logs.
+            semantic_diagnostics = (
+                f" semantic_error_count={len(errors)}"
                 if failure_kind == "semantic" and errors
                 else ""
             )
@@ -2455,7 +2409,7 @@ class TextGenerationMixin:
                 schema_name,
                 failure_kind,
                 repair_diagnostics,
-                semantic_errors,
+                semantic_diagnostics,
             )
             raise _repair_error(
                 failure_kind=failure_kind,
