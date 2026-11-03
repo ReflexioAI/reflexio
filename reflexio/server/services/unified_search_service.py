@@ -47,6 +47,7 @@ from reflexio.server.llm.rerank.common import reranker_enabled
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.embedding_text import resolve_retrieval_threshold
 from reflexio.server.services.pre_retrieval import QueryReformulator
+from reflexio.server.services.retrieval.agent_selection import select_agent_playbooks
 from reflexio.server.services.retrieval.recency import (
     RecencyConfig,
     ScoredItem,
@@ -365,6 +366,24 @@ def run_unified_search(
         degraded=embedding_failed or profiles_degraded,
         search_mode_effective=effective_search_mode.value if embedding_failed else None,
     )
+    # Selection sees the exact vector used by native retrieval, after all native
+    # finalization/source suppression but before served-state callbacks. A
+    # provider refusal propagates; failed selection cannot serve native agents
+    # as a successful substitute or consume their session-dedup identities.
+    search_runtime.checkpoint()
+    with profile_step("search.agent_selection") as selection_span:
+        native_agents = response.agent_playbooks
+        selected_agents = select_agent_playbooks(
+            items=native_agents,
+            query_embedding=embedding,
+            storage=storage,
+            request=request,
+            org_id=org_id,
+            degraded=response.degraded,
+        )
+        response = response.model_copy(update={"agent_playbooks": selected_agents})
+        selection_span.set_data("input_count", len(native_agents))
+        selection_span.set_data("returned_count", len(selected_agents))
     # Post-processing may perform a remote lookup. Expired results were never
     # served and must remain available to a retry in the same session.
     search_runtime.checkpoint()
