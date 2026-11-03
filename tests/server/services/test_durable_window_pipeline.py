@@ -3701,13 +3701,11 @@ def test_transient_failures_retry_beyond_three_attempts(pipeline, monkeypatch):
     assert storage.extraction_status("u", "retry")["status"] == "done"
 
 
-def test_retried_window_extractor_failure_pages_only_at_backoff_cap(
-    pipeline, monkeypatch, caplog
-):
-    """Each failed attempt of a retried window is a WARNING until the attempt
-    whose backoff reaches the 300 s cap; from then on it is an ERROR."""
-    from reflexio.server.services.base_generation._extraction_lifecycle import (
-        WINDOW_FAILURE_ERROR_ATTEMPT,
+def test_retried_window_pages_once_when_it_parks(pipeline, monkeypatch, caplog):
+    """Every failed attempt of a retried window is a WARNING; only the park,
+    where the window's work is actually given up, logs one ERROR."""
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        MAX_EXTRACTION_WINDOW_ATTEMPTS,
     )
 
     engine, worker, client = pipeline
@@ -3728,25 +3726,27 @@ def test_retried_window_extractor_failure_pages_only_at_backoff_cap(
         lambda *_: _FailingExtractor(),
     )
     storage = engine.get_storage()
-    with caplog.at_level(
-        logging.WARNING,
-        logger="reflexio.server.services.base_generation._extraction_lifecycle",
-    ):
-        for _ in range(WINDOW_FAILURE_ERROR_ATTEMPT + 1):
+    with caplog.at_level(logging.WARNING):
+        for _ in range(MAX_EXTRACTION_WINDOW_ATTEMPTS):
             worker.drain_org("stream-test", 1, 300)
             with storage._stream_sql() as db:
                 db.query("UPDATE extraction_cursors SET retry_at=0")
 
-    levels = [
+    extractor = [
         record.levelno
         for record in caplog.records
         if record.getMessage().startswith("Extractor failed for")
     ]
-    assert (
-        levels
-        == [logging.WARNING] * (WINDOW_FAILURE_ERROR_ATTEMPT - 1) + [logging.ERROR] * 2
+    assert extractor == [logging.WARNING] * MAX_EXTRACTION_WINDOW_ATTEMPTS
+    errors = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno >= logging.ERROR
+    ]
+    assert len(errors) == 1
+    assert errors[0].startswith(
+        f"Extraction window parked after {MAX_EXTRACTION_WINDOW_ATTEMPTS} attempts"
     )
-    assert storage.extraction_status("u", "pages")["status"] == "pending"
 
 
 def test_worker_heartbeat_keeps_long_window_exclusive(pipeline, monkeypatch):

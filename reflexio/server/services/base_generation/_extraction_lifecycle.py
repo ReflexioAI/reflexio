@@ -64,12 +64,10 @@ def _failure_template(*parts: str) -> str:
 
 
 # An automatic extraction window that fails is retried by the durable worker
-# (``retry_extraction``) with backoff ``min(300, 2 ** min(attempts - 1, 9))`` s,
-# indefinitely. A single failed attempt is therefore not actionable: it is
-# logged at WARNING, and only the attempt that reaches the 300 s backoff cap --
-# attempt 10, about 8.5 minutes of consecutive failures -- and every one after
-# it is logged at ERROR, so a window that keeps failing still pages.
-WINDOW_FAILURE_ERROR_ATTEMPT = 10
+# (``retry_extraction``) and parked after ``MAX_EXTRACTION_WINDOW_ATTEMPTS``.
+# A failed attempt with a retry pending loses nothing, so it is logged at
+# WARNING; the park is the loss and logs the single ERROR
+# (``durable_learning/worker.py``).
 
 # The extractor's LLM calls are bounded to end this long before the outer
 # extractor timeout fires, leaving time for the tool loop to return, the agent
@@ -147,7 +145,7 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
     def _extractor_failure_log_level(self) -> int:
         """ERROR unless something above this run retries or reports the failure.
 
-        WARNING for an early attempt of a retried extraction window, and for a
+        WARNING for any attempt of a retried extraction window, and for a
         run whose caller declared it owns the single report of an extractor
         failure (``_caller_reports_extractor_failure``: the group-evaluation
         scheduler retries a transient failure and escalates the rest once).
@@ -161,8 +159,6 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
             return logging.ERROR
         prior_attempts = getattr(self, "_window_prior_attempts", None)
         if prior_attempts is None:
-            return logging.ERROR
-        if prior_attempts + 1 >= WINDOW_FAILURE_ERROR_ATTEMPT:
             return logging.ERROR
         return logging.WARNING
 

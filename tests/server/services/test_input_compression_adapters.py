@@ -658,6 +658,8 @@ def test_bounded_repair_discards_only_whole_unverifiable_reference_groups(monkey
     monkeypatch.setattr(
         "reflexio.server.llm.input_budget.litellm.token_counter", Mock(return_value=100)
     )
+    sink = Mock()
+    monkeypatch.setattr("reflexio.server.operational_metrics._sink", sink)
     original = group()
     cache = {}
     result = compress_extraction_window(
@@ -680,6 +682,8 @@ def test_bounded_repair_discards_only_whole_unverifiable_reference_groups(monkey
         "discarded 1 entire groups" in notice for notice in result.packet.omissions
     )
     assert result.provider_input_tokens == 200 and result.provider_output_tokens == 40
+    # A salvaged selection is not a terminal LLM failure, so it must not page.
+    assert not [c for c in sink.record.call_args_list if c.args[0] == "llm.failures"]
     replay = compress_extraction_window(
         [original],
         org_id="org",
@@ -742,6 +746,8 @@ def test_reference_recovery_never_accepts_parse_refusal_route_or_integrity_failu
         return packet_tokens(packet)
 
     fake.generate_chat_response = Mock(side_effect=fail)
+    sink = Mock()
+    monkeypatch.setattr("reflexio.server.operational_metrics._sink", sink)
     parent = run_token_capture.get()
     with pytest.raises(StructuredOutputRepairError):
         compress_with_client(
@@ -764,6 +770,11 @@ def test_reference_recovery_never_accepts_parse_refusal_route_or_integrity_failu
             measure_output=measure,
         )
     assert dispatched and run_token_capture.get() is parent
+    # The client defers repair failures to this caller, which counts the
+    # unrecovered one exactly once.
+    assert fake.generate_chat_response.call_args.kwargs["caller_reports_repair_failure"]
+    failures = [c for c in sink.record.call_args_list if c.args[0] == "llm.failures"]
+    assert len(failures) == 1
 
 
 def test_compression_usage_excludes_sibling_usage_but_parent_bills_both(monkeypatch):
