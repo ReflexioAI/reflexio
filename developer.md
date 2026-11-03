@@ -1594,3 +1594,6 @@ changes resource ownership, not the configured width or maintenance eligibility.
 Restarting the same scheduler instance waits for its old work to retire before
 creating a new owner; call `start()` again after it drains. A normal container
 restart still uses the existing process shutdown/kill lifecycle.
+Admission uses a freed worker even while another organization remains stalled.
+It checks shutdown after capacity wakes; work admitted before shutdown still
+finishes, while new organizations are refused.

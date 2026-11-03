@@ -64,11 +64,18 @@ class OrgFanout:
         self._closed = False
 
     def submit(
-        self, org_id: str, fn: Callable[[str], None], *, timeout: float = 0
+        self,
+        org_id: str,
+        fn: Callable[[str], None],
+        *,
+        timeout: float = 0,
+        stop_event: threading.Event | None = None,
     ) -> _OrgWork | None:
         deadline = time.monotonic() + timeout
         with self._available:
             while True:
+                if stop_event is not None and stop_event.is_set():
+                    return None
                 if self._closed:
                     raise RuntimeError("Maintenance fan-out owner is closed")
                 existing = self._tasks.get(org_id)
@@ -168,36 +175,53 @@ def iterate_orgs_bounded(
     futures: list[tuple[str, _OrgWork]] = []
     waited = 0
 
-    def wait_submitted() -> None:
+    def observe_one(*, initial_wait_seconds: float | None = None) -> None:
         nonlocal waited
-        for org_id, work in futures[waited:]:
-            if _wait_for_org(
-                org_id,
-                work,
-                per_org_timeout_seconds=per_org_timeout_seconds,
-            ):
-                timed_out.append(org_id)
-            work.abandon_if_queued()
-        waited = len(futures)
+        org_id, work = futures[waited]
+        if _wait_for_org(
+            org_id,
+            work,
+            per_org_timeout_seconds=per_org_timeout_seconds,
+            initial_wait_seconds=initial_wait_seconds,
+        ):
+            timed_out.append(org_id)
+        work.abandon_if_queued()
+        waited += 1
 
     try:
         for org_id in org_ids:
             if stop_event is not None and stop_event.is_set():
                 break
             try:
-                work = executor.submit(org_id, fn)
-                if work is None:
-                    wait_submitted()
-                    work = executor.submit(org_id, fn, timeout=per_org_timeout_seconds)
+                work = executor.submit(org_id, fn, stop_event=stop_event)
+                while work is None:
+                    work = executor.submit(
+                        org_id,
+                        fn,
+                        timeout=per_org_timeout_seconds,
+                        stop_event=stop_event,
+                    )
+                    if work is not None or (
+                        stop_event is not None and stop_event.is_set()
+                    ):
+                        break
+                    if waited == len(futures):
+                        break
+                    # Capacity waiting already spent this result's first wait.
+                    # Observe one expired result, then try any available worker.
+                    observe_one(initial_wait_seconds=0)
             except RuntimeError:
                 if stop_event is not None and stop_event.is_set():
                     break
                 raise
             if work is None:
+                if stop_event is not None and stop_event.is_set():
+                    break
                 logger.warning("event=org_sweep_starved org_id=%s", org_id)
                 continue
             futures.append((org_id, work))
-        wait_submitted()
+        while waited < len(futures):
+            observe_one()
     finally:
         # Keep admission until the executor actually dequeues abandoned work.
         # Future.cancel() alone would retain an unbounded queue of tombstones.
@@ -213,6 +237,7 @@ def _wait_for_org(
     work: _OrgWork,
     *,
     per_org_timeout_seconds: float,
+    initial_wait_seconds: float | None = None,
 ) -> bool:
     """Wait for one org's future; return True iff it genuinely timed out.
 
@@ -233,7 +258,11 @@ def _wait_for_org(
         unexpected error.
     """
     try:
-        work.future.result(timeout=per_org_timeout_seconds)
+        work.future.result(
+            timeout=per_org_timeout_seconds
+            if initial_wait_seconds is None
+            else initial_wait_seconds
+        )
         return False
     except FuturesTimeoutError:
         pass

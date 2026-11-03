@@ -10,6 +10,71 @@ from reflexio.server.org_fanout import OrgFanout, iterate_orgs_bounded
 pytestmark = pytest.mark.unit
 
 
+@pytest.mark.parametrize("stop_during_wait", [False, True])
+def test_waiting_admission_observes_free_capacity_and_shutdown(
+    monkeypatch, stop_during_wait
+):
+    owner = OrgFanout(2)
+    stop = threading.Event()
+    release_first = threading.Event()
+    release_second = threading.Event()
+    admission_waiting = threading.Event()
+    third_started = threading.Event()
+    errors = []
+    submit = owner.submit
+
+    def observed_submit(org_id, fn, **kwargs):
+        work = submit(org_id, fn, **kwargs)
+        if org_id == "third" and work is None:
+            admission_waiting.set()
+        return work
+
+    monkeypatch.setattr(owner, "submit", observed_submit)
+
+    def sweep(org_id):
+        if org_id == "first":
+            assert release_first.wait(5)
+        elif org_id == "second":
+            assert release_second.wait(5)
+        else:
+            third_started.set()
+
+    def tick():
+        try:
+            iterate_orgs_bounded(
+                ["first", "second", "third"],
+                sweep,
+                max_workers=2,
+                per_org_timeout_seconds=3,
+                stop_event=stop,
+                owner=owner,
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    runner = threading.Thread(target=tick)
+    runner.start()
+    try:
+        assert admission_waiting.wait(2)
+        if stop_during_wait:
+            stop.set()
+            release_first.set()
+            release_second.set()
+            runner.join(timeout=2)
+            assert not runner.is_alive()
+            assert not third_started.is_set(), "Shutdown admitted a new org"
+        else:
+            release_second.set()
+            assert third_started.wait(1), "Idle capacity waited for the stalled org"
+        assert not errors
+    finally:
+        release_first.set()
+        release_second.set()
+        runner.join(timeout=2)
+        owner.close()
+        assert not runner.is_alive()
+
+
 def test_abandoned_admission_retires_only_when_executor_dequeues_it(monkeypatch):
     owner = OrgFanout(1)
     queued = []
