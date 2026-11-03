@@ -1581,10 +1581,16 @@ when it first admits work; restart it to apply a changed width. SQLite remains
 serialized. A timed-out sweep retains its worker until it really finishes, and
 later ticks join that organization's in-flight work rather than starting a
 duplicate or replacing the occupied pool. Queued sweeps that did not start are
-cancelled at the end of their tick; subsequent ticks rediscover them normally.
+abandoned at the end of their tick; subsequent ticks rediscover them normally.
+Admission also bounds pending executor entries: abandoned work retains capacity
+until the executor actually dequeues it, so stalled workers cannot cause an
+ever-growing queue of cancelled futures.
 
 Under sustained stalls, fewer new organizations can run until occupied workers
 retire. Timeout/repeat signals remain visible. Stopping the scheduler cancels
 queued work without joining running work; Python cannot kill a stuck thread,
 so the orchestrator's existing kill grace still bounds process shutdown. This
 changes resource ownership, not the configured width or maintenance eligibility.
+Restarting the same scheduler instance waits for its old work to retire before
+creating a new owner; call `start()` again after it drains. A normal container
+restart still uses the existing process shutdown/kill lifecycle.

@@ -39,9 +39,15 @@ logger = logging.getLogger(__name__)
 @dataclass
 class _OrgWork:
     future: Future[None] = field(default_factory=Future)
-    starts: dict[str, float] = field(default_factory=dict)
-    ends: dict[str, float] = field(default_factory=dict)
+    started_at: float | None = None
+    finished_at: float | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
+    abandoned: bool = False
+
+    def abandon_if_queued(self) -> None:
+        with self.lock:
+            if self.started_at is None:
+                self.abandoned = True
 
 
 class OrgFanout:
@@ -53,45 +59,64 @@ class OrgFanout:
             max_workers=max_workers, thread_name_prefix="org-fanout"
         )
         self._lock = threading.Lock()
+        self._available = threading.Condition(self._lock)
         self._tasks: dict[str, _OrgWork] = {}
         self._closed = False
 
-    def submit(self, org_id: str, fn: Callable[[str], None]) -> _OrgWork:
-        with self._lock:
-            if self._closed:
-                raise RuntimeError("Maintenance fan-out owner is closed")
-            existing = self._tasks.get(org_id)
-            if existing is not None and not existing.future.done():
-                return existing
+    def submit(
+        self, org_id: str, fn: Callable[[str], None], *, timeout: float = 0
+    ) -> _OrgWork | None:
+        deadline = time.monotonic() + timeout
+        with self._available:
+            while True:
+                if self._closed:
+                    raise RuntimeError("Maintenance fan-out owner is closed")
+                existing = self._tasks.get(org_id)
+                if existing is not None and not existing.future.done():
+                    return existing
+                if len(self._tasks) < self.max_workers:
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._available.wait(remaining)
             work = _OrgWork()
 
             @background_work()
             def tracked() -> None:
                 with work.lock:
-                    work.starts[org_id] = time.monotonic()
+                    if work.abandoned:
+                        return
+                    work.started_at = time.monotonic()
                 try:
                     fn(org_id)
                 finally:
                     with work.lock:
-                        work.ends[org_id] = time.monotonic()
+                        work.finished_at = time.monotonic()
 
             work.future = self._executor.submit(tracked)
             self._tasks[org_id] = work
 
         def retire(_future: Future[None]) -> None:
-            with self._lock:
+            with self._available:
                 if self._tasks.get(org_id) is work:
                     del self._tasks[org_id]
+                    self._available.notify_all()
 
         work.future.add_done_callback(retire)
         return work
+
+    def is_drained(self) -> bool:
+        with self._lock:
+            return all(work.future.done() for work in self._tasks.values())
 
     def close(self) -> None:
         """Cancel queued work; occupied capacity retires with its actual work."""
         # Prevent new submissions before shutdown invokes cancellation callbacks.
         # Never hold our lock while those callbacks retire their task records.
-        with self._lock:
+        with self._available:
             self._closed = True
+            self._available.notify_all()
         self._executor.shutdown(wait=False, cancel_futures=True)
 
 
@@ -141,26 +166,43 @@ def iterate_orgs_bounded(
         raise ValueError("Restart the scheduler to change its fan-out capacity")
     executor = owner or OrgFanout(max_workers)
     futures: list[tuple[str, _OrgWork]] = []
+    waited = 0
+
+    def wait_submitted() -> None:
+        nonlocal waited
+        for org_id, work in futures[waited:]:
+            if _wait_for_org(
+                org_id,
+                work,
+                per_org_timeout_seconds=per_org_timeout_seconds,
+            ):
+                timed_out.append(org_id)
+            work.abandon_if_queued()
+        waited = len(futures)
+
     try:
         for org_id in org_ids:
             if stop_event is not None and stop_event.is_set():
                 break
-            futures.append((org_id, executor.submit(org_id, fn)))
-        for org_id, work in futures:
-            if _wait_for_org(
-                org_id,
-                work.future,
-                per_org_timeout_seconds=per_org_timeout_seconds,
-                starts=work.starts,
-                ends=work.ends,
-                lock=work.lock,
-            ):
-                timed_out.append(org_id)
+            try:
+                work = executor.submit(org_id, fn)
+                if work is None:
+                    wait_submitted()
+                    work = executor.submit(org_id, fn, timeout=per_org_timeout_seconds)
+            except RuntimeError:
+                if stop_event is not None and stop_event.is_set():
+                    break
+                raise
+            if work is None:
+                logger.warning("event=org_sweep_starved org_id=%s", org_id)
+                continue
+            futures.append((org_id, work))
+        wait_submitted()
     finally:
-        # A queued org reported starved must not silently run after this tick.
-        # cancel() cannot release or replace a running worker.
+        # Keep admission until the executor actually dequeues abandoned work.
+        # Future.cancel() alone would retain an unbounded queue of tombstones.
         for _, work in futures:
-            work.future.cancel()
+            work.abandon_if_queued()
         if owner is None:
             executor.close()
     return timed_out
@@ -168,12 +210,9 @@ def iterate_orgs_bounded(
 
 def _wait_for_org(
     org_id: str,
-    future: Future[None],
+    work: _OrgWork,
     *,
     per_org_timeout_seconds: float,
-    starts: dict[str, float],
-    ends: dict[str, float],
-    lock: threading.Lock,
 ) -> bool:
     """Wait for one org's future; return True iff it genuinely timed out.
 
@@ -185,11 +224,8 @@ def _wait_for_org(
 
     Args:
         org_id (str): The org this future belongs to.
-        future (Future[None]): The submitted future for ``org_id``.
+        work (_OrgWork): The submitted future and its actual execution timing.
         per_org_timeout_seconds (float): The run-time budget for this org.
-        starts (dict[str, float]): Monotonic start times, keyed by org id.
-        ends (dict[str, float]): Monotonic end times, keyed by org id.
-        lock (threading.Lock): Guards ``starts``/``ends``.
 
     Returns:
         bool: True if the org genuinely timed out (ran >= the budget without
@@ -197,7 +233,7 @@ def _wait_for_org(
         unexpected error.
     """
     try:
-        future.result(timeout=per_org_timeout_seconds)
+        work.future.result(timeout=per_org_timeout_seconds)
         return False
     except FuturesTimeoutError:
         pass
@@ -209,9 +245,9 @@ def _wait_for_org(
         logger.exception("event=org_fanout_unexpected_error org_id=%s", org_id)
         return False
 
-    with lock:
-        start = starts.get(org_id)
-        finished = org_id in ends
+    with work.lock:
+        start = work.started_at
+        finished = work.finished_at is not None
     if finished:
         # Completed between the timeout firing and this check — not a timeout.
         return False
@@ -223,7 +259,7 @@ def _wait_for_org(
     remaining = per_org_timeout_seconds - elapsed_running
     if remaining > 0:
         try:
-            future.result(timeout=remaining)
+            work.future.result(timeout=remaining)
             return False
         except FuturesTimeoutError:
             pass

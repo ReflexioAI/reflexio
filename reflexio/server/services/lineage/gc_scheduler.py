@@ -328,6 +328,15 @@ class LineageGCScheduler(ThreadedScheduler):
     def _on_started(self) -> None:
         logger.info("event=lineage_gc_scheduler_started")
 
+    def _should_start(self) -> bool:
+        if self._fanout_owner is not None and self._stop_event.is_set():
+            if not self._fanout_owner.is_drained():
+                logger.warning("event=lineage_gc_restart_deferred")
+                return False
+            self._fanout_owner.close()
+            self._fanout_owner = None
+        return True
+
     def _on_stopped(self) -> None:
         if self._fanout_owner is not None:
             self._fanout_owner.close()
@@ -679,15 +688,18 @@ class LineageGCScheduler(ThreadedScheduler):
             finally:
                 del self._worker_generation.value
 
-        if self._fanout_owner is None:
-            self._fanout_owner = OrgFanout(max_workers)
+        owner = self._fanout_owner
+        if owner is not None and owner.max_workers != max_workers:
+            raise ValueError("Restart the scheduler to change its fan-out capacity")
+        if max_workers > 1 and owner is None:
+            owner = self._fanout_owner = OrgFanout(max_workers)
         timed_out = iterate_orgs_bounded(
             org_ids,
             _sweep_in_generation,
             max_workers=max_workers,
             per_org_timeout_seconds=_ORG_SWEEP_TIMEOUT_SECONDS,
             stop_event=self._stop_event,
-            owner=self._fanout_owner,
+            owner=owner,
         )
         # A timeout does NOT fail the tick. The fast retry re-sweeps the WHOLE
         # fleet, and one slow org would otherwise buy every org three extra

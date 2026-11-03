@@ -1,12 +1,101 @@
 import logging
 import threading
 import time
+from concurrent.futures import Future
 
 import pytest
 
 from reflexio.server.org_fanout import OrgFanout, iterate_orgs_bounded
 
 pytestmark = pytest.mark.unit
+
+
+def test_abandoned_admission_retires_only_when_executor_dequeues_it(monkeypatch):
+    owner = OrgFanout(1)
+    queued = []
+    calls = []
+
+    def enqueue(fn):
+        future = Future()
+        queued.append((fn, future))
+        return future
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(owner._executor, "submit", enqueue)
+            assert (
+                iterate_orgs_bounded(
+                    ["abandoned"],
+                    calls.append,
+                    max_workers=1,
+                    per_org_timeout_seconds=0.001,
+                    owner=owner,
+                )
+                == []
+            )
+            assert len(queued) == 1
+            fn, future = queued[0]
+            assert not future.done()
+            assert owner.submit("replacement", calls.append) is None
+            assert len(queued) == 1
+            assert future.set_running_or_notify_cancel()
+            fn()
+            future.set_result(None)
+            assert owner.is_drained()
+            assert not calls
+        iterate_orgs_bounded(
+            ["later"],
+            calls.append,
+            max_workers=1,
+            per_org_timeout_seconds=1,
+            owner=owner,
+        )
+        assert calls == ["later"]
+    finally:
+        for _, future in queued:
+            if not future.done():
+                future.set_result(None)
+        owner.close()
+
+
+def test_stalled_owner_does_not_enqueue_replacement_entries(monkeypatch):
+    owner = OrgFanout(2)
+    release = threading.Event()
+    ready = threading.Barrier(3)
+
+    def blocked(_org_id):
+        ready.wait(timeout=2)
+        assert release.wait(5)
+
+    try:
+        iterate_orgs_bounded(
+            ["a", "b"],
+            blocked,
+            max_workers=2,
+            per_org_timeout_seconds=0.01,
+            owner=owner,
+        )
+        ready.wait(timeout=2)
+        submit = owner._executor.submit
+        enqueued = []
+
+        def count_submission(*args, **kwargs):
+            enqueued.append(1)
+            return submit(*args, **kwargs)
+
+        monkeypatch.setattr(owner._executor, "submit", count_submission)
+        for index in range(3):
+            iterate_orgs_bounded(
+                [f"deferred-{index}"],
+                lambda _: None,
+                max_workers=2,
+                per_org_timeout_seconds=0.01,
+                owner=owner,
+            )
+        assert not enqueued, "Cancelled queue entries still retain executor memory"
+    finally:
+        release.set()
+        owner.close()
 
 
 def test_shared_owner_cancels_starved_work_and_makes_progress_after_release():
@@ -65,7 +154,7 @@ def test_active_owner_cannot_be_resized_or_reused_after_close():
     assert not calls
 
 
-def test_owner_shutdown_cancels_queue_without_joining_or_deadlocking():
+def test_owner_shutdown_refuses_queue_without_joining_active_work():
     owner = OrgFanout(2)
     release = threading.Event()
     ready = threading.Barrier(3)
@@ -79,10 +168,12 @@ def test_owner_shutdown_cancels_queue_without_joining_or_deadlocking():
 
     first = owner.submit("a", blocked)
     second = owner.submit("b", blocked)
+    assert first is not None and second is not None
     shutdown = None
     try:
         ready.wait(timeout=2)
         queued = owner.submit("queued", seen.append)
+        assert queued is None
 
         def close():
             owner.close()
@@ -91,7 +182,6 @@ def test_owner_shutdown_cancels_queue_without_joining_or_deadlocking():
         shutdown = threading.Thread(target=close)
         shutdown.start()
         assert closed.wait(2), "Shutdown joined active work or deadlocked callbacks"
-        assert queued.future.cancelled()
         assert not first.future.done() and not second.future.done()
     finally:
         release.set()

@@ -10,6 +10,107 @@ from reflexio.server.services.lineage import gc_scheduler
 pytestmark = pytest.mark.unit
 
 
+def test_width_one_stays_on_scheduler_thread(monkeypatch):
+    def unused(_org: str) -> Never:
+        raise AssertionError("Sweep is supplied directly")
+
+    scheduler = gc_scheduler.LineageGCScheduler(
+        request_context_factory=unused, bootstrap_org_id="a"
+    )
+    threads = []
+    monkeypatch.setattr(
+        scheduler, "_sweep_org", lambda _: threads.append(threading.get_ident())
+    )
+    try:
+        scheduler._gc_tick(["a", "b"], max_workers=1)
+        assert threads == [threading.get_ident()] * 2
+        assert scheduler._fanout_owner is None
+    finally:
+        scheduler.stop()
+
+
+def test_real_stop_start_reuses_only_retired_capacity(monkeypatch):
+    def unused(_org: str) -> Never:
+        raise AssertionError("Sweep is supplied directly")
+
+    scheduler = gc_scheduler.LineageGCScheduler(
+        request_context_factory=unused, bootstrap_org_id="a"
+    )
+    calls = []
+    errors = []
+    completed = [threading.Event(), threading.Event()]
+
+    def loop():
+        try:
+            scheduler._gc_tick(["a"], max_workers=2)
+        except Exception as exc:
+            errors.append(type(exc).__name__)
+        finally:
+            completed[0 if not completed[0].is_set() else 1].set()
+
+    monkeypatch.setattr(scheduler, "_run_loop", loop)
+    monkeypatch.setattr(scheduler, "_sweep_org", calls.append)
+    try:
+        scheduler.start()
+        assert completed[0].wait(2)
+        scheduler.stop()
+        scheduler.start()
+        assert completed[1].wait(2)
+        assert not errors, errors
+        assert calls == ["a", "a"]
+    finally:
+        scheduler.stop()
+
+
+def test_restart_waits_for_old_work_instead_of_replacing_its_capacity(monkeypatch):
+    def unused(_org: str) -> Never:
+        raise AssertionError("Sweep is supplied directly")
+
+    scheduler = gc_scheduler.LineageGCScheduler(
+        request_context_factory=unused, bootstrap_org_id="a"
+    )
+    release = threading.Event()
+    finished_tick = threading.Event()
+    owner_work = []
+    monkeypatch.setattr(gc_scheduler, "_ORG_SWEEP_TIMEOUT_SECONDS", 0.01)
+
+    def sweep(_org):
+        assert release.wait(5)
+
+    def loop():
+        try:
+            scheduler._gc_tick(["a"], max_workers=2)
+            owner = scheduler._fanout_owner
+            assert owner is not None
+            if not owner_work:
+                work = owner.submit("a", sweep)
+                assert work is not None
+                owner_work.append(work)
+        finally:
+            finished_tick.set()
+
+    monkeypatch.setattr(scheduler, "_sweep_org", sweep)
+    monkeypatch.setattr(scheduler, "_run_loop", loop)
+    try:
+        scheduler.start()
+        assert finished_tick.wait(2)
+        scheduler.stop()
+        old_owner = scheduler._fanout_owner
+        scheduler.start()
+        assert not scheduler.is_running()
+        assert scheduler._fanout_owner is old_owner
+        release.set()
+        assert owner_work
+        owner_work[0].future.result(timeout=2)
+        finished_tick.clear()
+        scheduler.start()
+        assert finished_tick.wait(2)
+        assert scheduler._fanout_owner is not old_owner
+    finally:
+        release.set()
+        scheduler.stop()
+
+
 @pytest.mark.parametrize("next_orgs", [["a", "b"], ["c", "d"]])
 def test_scheduler_retains_capacity_until_timed_out_work_retires(
     next_orgs, monkeypatch
