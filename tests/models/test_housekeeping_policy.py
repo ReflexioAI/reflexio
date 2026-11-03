@@ -65,11 +65,14 @@ def test_cleanup_preserves_policy_holds_and_opaque_metadata_without_mutating():
     cleaned = strip_legacy_housekeeping_fields(payload)
     assert payload == original
     assert cleaned["opaque"] == original["opaque"]
+    from reflexio.config_migration import canonicalize_lineage_retention_policy
+
+    cleaned["lineage_gc"] = canonicalize_lineage_retention_policy(cleaned["lineage_gc"])
     cfg = Config.model_validate(
         {"storage_config": None, **{k: v for k, v in cleaned.items() if k != "opaque"}}
     )
-    assert cfg.lineage_gc.enabled is False
-    assert cfg.lineage_gc.tombstone_grace_window_days == 120
+    assert cfg.lineage_gc.tombstone_grace_window_days == 0
+    assert original["lineage_gc"]["tombstone_grace_window_days"] == 120
     assert cfg.governance_retention.audit_events_max_age_days == 0
     assert cfg.governance_retention.audit_events_delete_batch_limit == 2000
 
@@ -102,7 +105,7 @@ def test_supported_audit_batch_survives_cleanup_and_roundtrip(limit):
 
     payload = {
         "storage_config": None,
-        "lineage_gc": {"enabled": False},
+        "lineage_gc": {"tombstone_grace_window_days": 0},
         "governance_retention": {
             "audit_events_max_age_days": 0,
             "audit_events_delete_batch_limit": limit,
@@ -113,7 +116,7 @@ def test_supported_audit_batch_survives_cleanup_and_roundtrip(limit):
     cfg = validate_stored_config(payload)
     assert cfg.governance_retention.audit_events_delete_batch_limit == limit
     assert cfg.governance_retention.audit_events_max_age_days == 0
-    assert cfg.lineage_gc.enabled is False
+    assert cfg.lineage_gc.tombstone_grace_window_days == 0
     assert (
         validate_stored_config(
             cfg.model_dump(mode="json")

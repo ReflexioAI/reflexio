@@ -36,7 +36,7 @@ def reflexio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Reflex
     )
     instance = _reflexio(str(tmp_path))
     config = instance.request_context.configurator.get_config()
-    config.lineage_gc.enabled = False
+    config.lineage_gc.tombstone_grace_window_days = 0
     config.expiry_reclamation.enabled = False
     yield instance
 

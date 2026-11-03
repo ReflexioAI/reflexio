@@ -12,6 +12,7 @@ import pytest
 from reflexio.cli.config_upgrade import prepare_local_config
 from reflexio.config_document import decode_config_document
 from reflexio.config_env import StoredConfigurationError
+from reflexio.config_file import FILE_FORMAT_VERSION
 from reflexio.server.services.configurator.local_file_config_storage import (
     LocalFileConfigStorage,
 )
@@ -78,7 +79,10 @@ def test_startup_refusal_keeps_old_reader_then_allows_drained_upgrade(tmp_path):
         # Simulate completion by the old writer; admission itself never repairs it.
         conn.execute("UPDATE _agent_runs SET status='finalized' WHERE id='old-run'")
     assert prepare_local_config("owner", base_dir=str(tmp_path))
-    assert json.loads(path.read_bytes())["_reflexio_config_file"]["version"] == 11
+    assert (
+        json.loads(path.read_bytes())["_reflexio_config_file"]["version"]
+        == FILE_FORMAT_VERSION
+    )
     with pytest.raises(StoredConfigurationError):
         reader(path.read_bytes())
 

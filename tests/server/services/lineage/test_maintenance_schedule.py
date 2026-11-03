@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from reflexio.models.config_schema import LineageGCConfig
 from reflexio.server.services.lineage import gc_scheduler as gc
 
 
@@ -20,7 +21,7 @@ def isolated_hooks(monkeypatch):
 
 def test_process_cadence_survives_environment_changes(monkeypatch):
     monkeypatch.setenv("REFLEXIO_MAINTENANCE_INTERVAL_SECONDS", "37")
-    config = SimpleNamespace(lineage_gc=SimpleNamespace(enabled=False))
+    config = SimpleNamespace(lineage_gc=LineageGCConfig(tombstone_grace_window_days=0))
     context = SimpleNamespace(
         org_id="org",
         storage=None,

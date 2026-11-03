@@ -1597,3 +1597,21 @@ restart still uses the existing process shutdown/kill lifecycle.
 Admission uses a freed worker even while another organization remains stalled.
 It checks shutdown after capacity wakes; work admitted before shutdown still
 finishes, while new organizations are refused.
+
+### Lineage reclamation policy
+
+`lineage_gc.tombstone_grace_window_days` owns Class A consent and retention.
+Zero holds both expired-profile tombstoning and tombstone deletion indefinitely;
+positive days retain exactly that retirement grace (default90). Plain-row expiry,
+row caps, governance holds and maintenance scheduling stay independent. The
+retired `lineage_gc.enabled` is rejected by current readers and writers.
+
+Before serving, the existing locked local-file preparation upgrades generations
+0–11 to12, preserving exact original bytes. Historical false maps to zero; true
+or absent preserves valid positive grace. Invalid dormant grace refuses startup
+without rewriting the file. An unmarked zero was invalid historically and cannot
+become an automatic hold. Current generation12 never replays conversion. Old
+SDK/library writers must stop before upgrading; generation11 readers refuse12.
+Do not roll back only the image after new writes. Restore an unchanged original
+through the existing owner, or forward-repair; never overwrite later edits.
+Disabled custom grace remains in the original receipt for deliberate recovery.

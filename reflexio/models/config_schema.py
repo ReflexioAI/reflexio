@@ -739,53 +739,29 @@ class PlaybookOptimizerConfig(BaseModel):
 
 
 class LineageGCConfig(BaseModel):
-    """Configuration for the tombstone garbage-collection job (enabled by default).
+    """One Class A reclamation policy: zero holds; positive days set grace.
 
-    Purpose
-    -------
-    Retains tombstone content for ``tombstone_grace_window_days`` days after the
-    row's *retirement instant* (``retired_at``) to support audit, replay of dedup
-    and aggregation runs, and rollback.  After the window expires the row is
-    hard-deleted and a ``hard_delete`` lineage event is recorded.
-
-    Age basis
-    ---------
-    The GC ages on ``retired_at`` — the INTEGER epoch set when a row is tombstoned
-    (merged, superseded, or archived).  Rows with ``retired_at = NULL`` (created
-    before the column was added) are never eligible; they have no retirement clock.
-
-    Grace window
-    ------------
-    90 days is the default grace window.  This matches common 90-day soft-delete
-    retention policies and satisfies GDPR Art. 5(1)(e) storage-limitation for
-    personal data in profiles.  The value is a per-deployment policy knob; ratify
-    with your DPO before shortening it in production.  The 90-day floor also
-    preserves tombstones long enough for B3 changelog replay and rollback
-    consumers — raise ``tombstone_grace_window_days`` further if your replay
-    horizon exceeds 90 days.
-
-    Enabled by default
-    ------------------
-    GC is ON by default so tombstones created by the soft-delete flags (also ON by
-    default) are reclaimed automatically.  Disabling GC while soft-delete is enabled
-    allows tombstone counts to grow without bound — only do this deliberately (e.g.
-    extended audit hold) and with a plan to re-enable.
-
-    Disabling
-    ---------
-    Set ``enabled = False`` in your deployment config to hold all tombstones
-    indefinitely (e.g. for an extended audit window or rollback standby period).
+    The hold covers both TTL-expired profile tombstoning and tombstone deletion.
+    Positive grace is measured from each tombstone's retirement instant; rows
+    without a retirement clock remain ineligible. Defaults retain the historical
+    90-day grace. Plain-row expiry and row-count policies are independent.
     """
 
     model_config = ConfigDict(hide_input_in_errors=True)
 
-    enabled: bool = True
-    tombstone_grace_window_days: int = Field(default=90, gt=0)
+    tombstone_grace_window_days: int = Field(default=90, ge=0)
+
+    def reclamation_cutoff(self, now: int) -> int | None:
+        """Resolve consent and age once, before either Class A storage phase."""
+        if self.tombstone_grace_window_days == 0:
+            return None
+        return now - self.tombstone_grace_window_days * 86400
 
     @model_validator(mode="before")
     @classmethod
     def discard_legacy_execution_settings(cls, data: Any) -> Any:
-        """Accept former defaults, reject custom execution policy inputs."""
+        """Current reads never translate the former enable switch."""
+        data = _reject_obsolete_fields(data, ("enabled",))
         return strip_legacy_housekeeping_fields({"lineage_gc": data})["lineage_gc"]
 
 
@@ -797,7 +773,7 @@ class ExpiryReclamationConfig(BaseModel):
 
     Opt-in by default (``enabled=False``) so operators control a staged rollout
     of the direct-delete Class B sweeps and are not surprised by deletions on
-    upgrade.  ``lineage_gc.enabled`` (which defaults to True) is unaffected and
+    upgrade.  Positive ``lineage_gc.tombstone_grace_window_days`` is unaffected and
     continues to drive the Class A profile-expiry and tombstone-GC paths.
     """
 

@@ -24,6 +24,7 @@ import types
 
 import pytest
 
+from reflexio.models.config_schema import LineageGCConfig
 from reflexio.server.services.lineage.gc_scheduler import (
     LineageGCScheduler,
     set_project_id_provider,
@@ -166,7 +167,7 @@ def test_project_sweep_failures_are_scoped_per_project(transient_failure_classif
         gc_expired_tombstones=lambda **_kwargs: 0,
     )
     cfg = types.SimpleNamespace(
-        lineage_gc=types.SimpleNamespace(enabled=True, tombstone_grace_window_days=30),
+        lineage_gc=LineageGCConfig(tombstone_grace_window_days=30),
         expiry_reclamation=None,
     )
     scheduler = _scheduler()

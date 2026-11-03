@@ -977,7 +977,10 @@ def test_single_owner_preparation_retires_only_timing_and_preserves_original(
         if key not in {"resume_poll_interval_seconds", "resume_claim_ttl_seconds"}
     }
     assert owner.read_document() == expected
-    assert json.loads(path.read_text())["_reflexio_config_file"]["version"] == 11
+    assert (
+        json.loads(path.read_text())["_reflexio_config_file"]["version"]
+        == FILE_FORMAT_VERSION
+    )
     digest = hashlib.sha256(original).hexdigest()
     assert (
         tmp_path / ".config-migrations/config.json" / f"{digest}.json"
