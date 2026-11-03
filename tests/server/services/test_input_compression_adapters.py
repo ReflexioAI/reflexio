@@ -613,6 +613,53 @@ def test_capacity_repair_preserves_all_constraints_without_neighboring_routine_l
     assert result.output_tokens <= 4096
 
 
+def test_recovery_that_keeps_no_evidence_counts_as_a_failure(monkeypatch):
+    """Salvage that discards every group is still accepted, but no evidence of
+    the section survives, so it is a terminal failure for the alert."""
+    import litellm
+
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+    live_client = LiteLLMClient(
+        LiteLLMConfig(model="minimax/MiniMax-M3", max_tokens=8192, fallback_models=[])
+    )
+
+    def transport(_params, _hard_timeout):
+        return litellm.ModelResponse(
+            choices=[
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps(
+                            {"points": [{"evidence_refs": ["e999999"]}]}
+                        ),
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+        )
+
+    monkeypatch.setattr(live_client, "_completion_with_hard_timeout", transport)
+    monkeypatch.setattr(
+        "reflexio.server.llm.input_budget.litellm.token_counter", Mock(return_value=100)
+    )
+    sink = Mock()
+    monkeypatch.setattr("reflexio.server.operational_metrics._sink", sink)
+    result = compress_extraction_window(
+        [group()],
+        org_id="org",
+        project_id="project",
+        user_id="alice",
+        budget=CompressionBudget(output_tokens=2048),
+        client=live_client,
+        context_limits={live_client.config.model: 512000},
+    )
+    assert result.packet.points == []
+    failures = [c for c in sink.record.call_args_list if c.args[0] == "llm.failures"]
+    assert len(failures) == 1
+
+
 def test_bounded_repair_discards_only_whole_unverifiable_reference_groups(monkeypatch):
     import litellm
 
