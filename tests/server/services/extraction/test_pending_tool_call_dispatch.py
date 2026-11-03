@@ -7,7 +7,10 @@ from unittest.mock import patch
 
 import pytest
 
-from reflexio.models.config_schema import PendingToolCallConfig
+from reflexio.models.config_schema import (
+    PendingToolCallConfig,
+    PendingToolCallToolOverrideConfig,
+)
 from reflexio.server.llm.tools import AsyncAccepted
 from reflexio.server.services.extraction.pending_tool_call_dispatch import (
     AskHumanArgs,
@@ -77,7 +80,7 @@ def _tool_context(
         org_id="org_1",
         extractor_kind="profile",
         user_id=user_id,
-        config=config or PendingToolCallConfig(enabled=True),
+        config=config or PendingToolCallConfig(pending_ttl_seconds=86_400),
         dispatcher=NoopPendingToolCallDispatcher(),
     )
 
@@ -189,7 +192,7 @@ def test_admission_does_not_depend_on_observational_backlog_read(storage, monkey
     storage.create_agent_run(_agent_run("run_3"))
     tool = create_ask_human_tool()
     config = PendingToolCallConfig.model_validate(
-        {"enabled": True, "max_pending_followups_per_scope": 1}
+        {"pending_ttl_seconds": 86_400, "max_pending_followups_per_scope": 1}
     )
     from unittest.mock import Mock
 
@@ -308,7 +311,14 @@ def test_direct_handler_opt_out_refuses_before_storage_or_dispatch(storage, tool
     from unittest.mock import MagicMock
 
     ctx = _tool_context(
-        storage, run_id="disabled-handler", config=PendingToolCallConfig(enabled=False)
+        storage,
+        run_id="disabled-handler",
+        config=PendingToolCallConfig(
+            pending_ttl_seconds=0,
+            tool_overrides={
+                "ask_human": PendingToolCallToolOverrideConfig(pending_ttl_seconds=53)
+            },
+        ),
     )
     ctx.storage = MagicMock()
     ctx.dispatcher = MagicMock()
@@ -318,10 +328,38 @@ def test_direct_handler_opt_out_refuses_before_storage_or_dispatch(storage, tool
     else:
         tool = create_attach_pending_info_request_tool()
         args = AttachPendingInfoRequestArgs(pending_tool_call_id="not-to-be-read")
-    with pytest.raises(ValueError, match="pending_tool_call_config.enabled is false"):
+    with pytest.raises(
+        ValueError, match="pending_tool_call_config.pending_ttl_seconds is zero"
+    ):
         tool.handler(args, ctx)
     assert ctx.storage.mock_calls == []
     ctx.dispatcher.dispatch.assert_not_called()
+
+
+@pytest.mark.parametrize("base,override,expected", [(37, None, 37), (719, 53, 53)])
+def test_creation_persists_exact_selected_lifetime(storage, base, override, expected):
+    storage.create_agent_run(_agent_run("custom-lifetime"))
+    config = PendingToolCallConfig(
+        pending_ttl_seconds=base,
+        tool_overrides={
+            "ask_human": PendingToolCallToolOverrideConfig(pending_ttl_seconds=override)
+        },
+    )
+    before = datetime.now(UTC)
+    outcome = _handle(
+        create_ask_human_tool(),
+        AskHumanArgs(question="Synthetic lifetime decision?"),
+        _tool_context(storage, run_id="custom-lifetime", config=config),
+    )
+    after = datetime.now(UTC)
+    assert isinstance(outcome, AsyncAccepted)
+    pending = storage.get_pending_tool_call(outcome.pending_tool_call_id)
+    assert pending is not None and pending.expires_at is not None
+    assert (
+        before + timedelta(seconds=expected)
+        <= pending.expires_at
+        <= after + timedelta(seconds=expected)
+    )
 
 
 @pytest.mark.parametrize(

@@ -350,7 +350,7 @@ Key components:
 |------|---------|
 | `site_var_manager.py` | SiteVarManager with a per-instance cache - loads JSON/TXT configs |
 
-Pending tools use `pending_tool_call_config.enabled`; shared admission in
+Pending tools require a positive `pending_tool_call_config.pending_ttl_seconds`; zero disables new calls. Shared admission in
 `services/extraction/pending_tool_admission.py` protects fresh and resumed tool
 construction. Legacy non-neutral rollout files require explicit org-policy
 adoption; no constant enabled flag replaces their resolver.
@@ -1015,12 +1015,11 @@ not liveness estimates. The separate `ExtractionResumeScheduler`, its weak wake
 registry, idle backoff, and the worker's age-based `run_once`/`drain` dispatchers
 are removed. Metadata discovery cannot authorize execution or reset budgets.
 
-In this unshipped cutover, `pending_tool_policy.py::resolve_resume_timing` and
-the two `REFLEXIO_RESUME_*` timing inputs still remain in bootstrap validation
-while historical configuration conversion and generation admission are completed.
-They no longer select the execution loop. Customized historical policy must not
-be silently defaulted or copied into the renewable lease. No timing-knob
-retirement or mixed-writer upgrade qualification is claimed from deletion alone.
+Historical logical-claim timers are validated and retired through
+`pending_tool_policy.py::strip_legacy_pending_tool_timing` at the versioned
+upgrade boundary. The two `REFLEXIO_RESUME_*` environment inputs produce name-only
+obsolete-setting diagnostics and do not select or block execution. Customized
+historical timing is never copied into the renewable user lease.
 
 Pending information request admission uses the durable create-or-attach store
 operation directly. The warning-only `max_pending_followups_per_scope` base and

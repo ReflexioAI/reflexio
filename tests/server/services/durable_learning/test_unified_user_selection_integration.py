@@ -69,7 +69,9 @@ def test_shared_continuation_drains_accepted_answer_and_controls_only_new_tools(
     storage, resume, kind, _, events = publication
     initial._initial(publication, monkeypatch)
     context = resume.request_context
-    context.configurator.get_config().pending_tool_call_config.enabled = enabled
+    context.configurator.get_config().pending_tool_call_config.pending_ttl_seconds = (
+        86_400 if enabled else 0
+    )
     before = storage.get_agent_run("run_1")
     assert before is not None and before.status == AgentRunStatus.RESUME_READY
     # The historical paused-run fixture has no ordinary work row at all.

@@ -765,7 +765,7 @@ class TestCrossFieldValidators:
             "extractor_name" not in config.user_playbook_extractor_config.model_dump()
         )
         assert isinstance(config.pending_tool_call_config, PendingToolCallConfig)
-        assert config.pending_tool_call_config.enabled is False
+        assert config.pending_tool_call_config.pending_ttl_seconds == 0
 
     def test_config_disables_extractors_when_null(self):
         """Config: null extractor fields explicitly disable extraction."""
@@ -787,17 +787,17 @@ class TestCrossFieldValidators:
             }
         )
 
-        assert config.pending_tool_call_config.enabled is False
-        assert config.pending_tool_call_config.pending_ttl_seconds == 86_400
+        assert config.pending_tool_call_config.pending_ttl_seconds == 0
+        assert "enabled" not in config.pending_tool_call_config.model_dump()
 
     def test_pending_tool_calls_allow_managed_supabase_storage(self):
         """Managed Supabase is database-backed and supports pending tool calls."""
         config = Config(
             storage_config=StorageConfigManagedSupabase(managed_by="platform"),
-            pending_tool_call_config=PendingToolCallConfig(enabled=True),
+            pending_tool_call_config=PendingToolCallConfig(pending_ttl_seconds=86_400),
         )
 
-        assert config.pending_tool_call_config.enabled is True
+        assert config.pending_tool_call_config.pending_ttl_seconds == 86_400
 
     def test_pending_tool_calls_allow_managed_none_storage(self):
         """None storage_config is deployment-managed (enterprise) and is allowed.
@@ -808,16 +808,16 @@ class TestCrossFieldValidators:
         """
         config = Config(
             storage_config=None,
-            pending_tool_call_config=PendingToolCallConfig(enabled=True),
+            pending_tool_call_config=PendingToolCallConfig(pending_ttl_seconds=86_400),
         )
 
-        assert config.pending_tool_call_config.enabled is True
+        assert config.pending_tool_call_config.pending_ttl_seconds == 86_400
         assert config.storage_config is None
 
     def test_pending_tool_call_config_validates_positive_limits(self):
         """PendingToolCallConfig rejects invalid waiting and relevance policy."""
         with pytest.raises(ValidationError):
-            PendingToolCallConfig(pending_ttl_seconds=0)
+            PendingToolCallConfig(pending_ttl_seconds=-1)
         with pytest.raises(ValidationError):
             PendingToolCallConfig(similarity_threshold=1.1)
 

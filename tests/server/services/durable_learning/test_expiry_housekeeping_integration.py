@@ -82,7 +82,7 @@ def test_expiry_gate_logs_known_work_once_and_reenable_needs_no_callback(store, 
     question = _question(store, "gated")
     context = _context(store)
     config = context.configurator.get_config()
-    config.pending_tool_call_config.enabled = False
+    config.pending_tool_call_config.pending_ttl_seconds = 0
     scheduler = DurableLearningScheduler(
         request_context_factory=lambda _: context,
         org_ids_provider=lambda: discover_work(store),
@@ -96,7 +96,7 @@ def test_expiry_gate_logs_known_work_once_and_reenable_needs_no_callback(store, 
         sum("durable_expiry_skipped_gate_disabled" in r.message for r in caplog.records)
         == 1
     )
-    config.pending_tool_call_config.enabled = True
+    config.pending_tool_call_config.pending_ttl_seconds = 86_400
     for _ in range(2):
         scheduler._run_once()
     assert (

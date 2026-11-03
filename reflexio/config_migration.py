@@ -20,6 +20,7 @@ _LEGACY_MERGE_LIMIT = TypeAdapter(Annotated[int, Field(ge=0)])
 _LEGACY_METRIC_CALL_LIMIT = TypeAdapter(Annotated[int, Field(gt=0)])
 _LEGACY_RETRIEVAL_POOL = TypeAdapter(Annotated[int, Field(gt=0)])
 _LEGACY_AUDIT_RETENTION_DAYS = TypeAdapter(Annotated[int, Field(gt=0)])
+_LEGACY_PENDING_LIFETIME = TypeAdapter(Annotated[int, Field(gt=0)])
 _LEGACY_OPTIMIZER_JITTER = TypeAdapter(
     Annotated[float, Field(ge=0, le=threading.TIMEOUT_MAX, allow_inf_nan=False)]
 )
@@ -150,6 +151,30 @@ def canonicalize_retrieval_floor_policy(data: Any) -> Any:
     }
     normalized.setdefault("candidate_pool_size", pool_size if enabled else 0)
     return normalized
+
+
+def canonicalize_pending_creation_policy(data: Any, *, historical: bool = False) -> Any:
+    """Fold historical creation consent into its lifetime at an upgrade boundary.
+
+    Validate dormant lifetimes before discarding the old switch. Original saved
+    documents retain them for recovery; current execution has one authority.
+    """
+    if not isinstance(data, dict) or ("enabled" not in data and not historical):
+        return data
+    try:
+        enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(data.get("enabled", False))
+        # Frozen historical default, never a current runtime lifetime.
+        lifetime = _LEGACY_PENDING_LIFETIME.validate_python(
+            data.get("pending_ttl_seconds", 86_400)
+        )
+    except ValidationError:
+        raise ConfigurationMigrationError(
+            "Invalid saved pending-tool creation enabled or lifetime setting"
+        ) from None
+    return {
+        **{key: value for key, value in data.items() if key != "enabled"},
+        "pending_ttl_seconds": lifetime if enabled else 0,
+    }
 
 
 def canonicalize_lineage_retention_policy(
@@ -515,8 +540,10 @@ def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
             },
         }
     if "pending_tool_call_config" in payload:
-        payload["pending_tool_call_config"] = strip_retired_pending_followup_warning(
-            strip_legacy_pending_tool_timing(payload["pending_tool_call_config"])
+        payload["pending_tool_call_config"] = canonicalize_pending_creation_policy(
+            strip_retired_pending_followup_warning(
+                strip_legacy_pending_tool_timing(payload["pending_tool_call_config"])
+            )
         )
     if "playbook_optimizer_config" in payload:
         payload["playbook_optimizer_config"] = _normalize_optimizer_policy(

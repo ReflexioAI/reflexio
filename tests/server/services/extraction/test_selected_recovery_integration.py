@@ -68,7 +68,7 @@ def context(tmp_path, monkeypatch):
         profile_extractor_config=ProfileExtractorConfig(
             extraction_definition_prompt="test"
         ),
-        pending_tool_call_config=PendingToolCallConfig(enabled=False),
+        pending_tool_call_config=PendingToolCallConfig(pending_ttl_seconds=0),
     )
     ctx.configurator.get_agent_context.return_value = "test"
     ctx.prompt_manager = MagicMock()
@@ -187,7 +187,10 @@ def test_recovery_selects_only_named_run_with_disabled_resume(context):
         "finalizing",
         "finalized",
     ]
-    assert not context.configurator.get_config().pending_tool_call_config.enabled
+    assert not (
+        context.configurator.get_config().pending_tool_call_config.pending_ttl_seconds
+        > 0
+    )
     with pytest.raises(RecoveryRefusedError):
         worker.recover_selected(selection, operation_id="again")
 
@@ -466,7 +469,9 @@ def test_playbook_validator_cannot_discard_saved_candidates():
 
 
 def test_interrupted_selected_run_keeps_source_checks_in_ordinary_retry(context):
-    context.configurator.get_config().pending_tool_call_config.enabled = True
+    context.configurator.get_config().pending_tool_call_config.pending_ttl_seconds = (
+        86_400
+    )
     run = seed(context)
     worker = ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
     selection = selection_from_report(inspect_run(context, run))
@@ -509,7 +514,9 @@ def _publish_with_pending_delivery(context, *, kind="profile", selected=True):
     context.configurator.get_config().user_playbook_extractor_config = PlaybookConfig(
         extraction_definition_prompt="test"
     )
-    context.configurator.get_config().pending_tool_call_config.enabled = True
+    context.configurator.get_config().pending_tool_call_config.pending_ttl_seconds = (
+        86_400
+    )
     context.prompt_manager = PromptManager()
     entry = (
         {"content": "Synthetic result", "time_to_live": "infinity"}

@@ -51,7 +51,7 @@ def test_http_oversized_answer_preserves_qualifier_and_fails_without_dispatch(
     # on the ordinary factory and preserving the route/authorization contract.
     monkeypatch.setattr(type(configurator), "create_storage", scoped_storage)
     updates: dict[str, Any] = {
-        "pending_tool_call_config": PendingToolCallConfig(enabled=True)
+        "pending_tool_call_config": PendingToolCallConfig(pending_ttl_seconds=86_400)
     }
     if kind == "playbook":
         updates.update(

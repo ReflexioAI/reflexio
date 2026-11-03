@@ -1615,3 +1615,29 @@ SDK/library writers must stop before upgrading; generation11 readers refuse12.
 Do not roll back only the image after new writes. Restore an unchanged original
 through the existing owner, or forward-repair; never overwrite later edits.
 Disabled custom grace remains in the original receipt for deliberate recovery.
+
+### Pending-tool creation lifetime
+
+`pending_tool_call_config.pending_ttl_seconds` is the single new-call policy:
+zero (default) disables creation; positive seconds select its exact lifetime.
+Positive per-tool overrides refine an admitted call and cannot reopen a zero
+base. Deduplication, answer reuse/relevance, HMAC and retry budgets stay
+independent. Zero also preserves the former pause of the periodic pending-call expiry sweep.
+Disabling creation does not cancel accepted work, change persisted
+`expires_at`, block callbacks or discard answers. Existing frozen-policy checks
+still refuse actual execution-policy changes.
+
+Current readers reject the retired `enabled` field. Locked local preparation
+upgrades generations0–12 to13, preserving original bytes. Historical false or
+missing consent becomes zero; true preserves its positive lifetime (historical
+default86400 only when omitted). Invalid dormant lifetime refuses without a
+write. Current generation13 never replays that conversion. Generation12 readers
+refuse13; stop older writers before upgrading and use original-preserving fenced
+recovery or forward repair after new writes.
+
+New internal frozen snapshots carry `creation_policy_version:1`. Complete old
+snapshots compare through validated historical conversion while returning the
+untouched original witness. Missing/unknown/mixed encoding, HMAC changes, unknown
+fields and real policy drift remain refusals. This metadata is not org policy.
+Enterprise must adopt the matched canonical-v16 migration and release gates;
+do not perform a pin-only enterprise adoption of this SDK.

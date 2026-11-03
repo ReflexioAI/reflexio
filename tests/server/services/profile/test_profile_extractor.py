@@ -713,7 +713,9 @@ class TestResumableAgentPath:
         request_context.configurator.get_config = MagicMock(
             return_value=Config(
                 storage_config=StorageConfigSQLite(),
-                pending_tool_call_config=PendingToolCallConfig(enabled=True),
+                pending_tool_call_config=PendingToolCallConfig(
+                    pending_ttl_seconds=86_400
+                ),
             )
         )
         request_context.prompt_manager = MagicMock()
@@ -781,7 +783,7 @@ class TestResumableAgentPath:
         request_context.configurator.get_config = MagicMock(
             return_value=Config(
                 storage_config=StorageConfigSQLite(),
-                pending_tool_call_config=PendingToolCallConfig(enabled=False),
+                pending_tool_call_config=PendingToolCallConfig(pending_ttl_seconds=0),
             )
         )
         request_context.prompt_manager = MagicMock()
@@ -843,7 +845,7 @@ class TestResumableAgentPath:
             return_value=Config(
                 storage_config=StorageConfigSQLite(),
                 pending_tool_call_config=PendingToolCallConfig(
-                    enabled=True,
+                    pending_ttl_seconds=86_400,
                 ),
             )
         )

@@ -11,7 +11,10 @@ from typing import Annotated, Any
 
 from pydantic import Field, TypeAdapter, ValidationError
 
-from reflexio.config_migration import ConfigurationMigrationError
+from reflexio.config_migration import (
+    ConfigurationMigrationError,
+    canonicalize_pending_creation_policy,
+)
 
 logger = logging.getLogger(__name__)
 RETIRED_PENDING_TOOL_TIMING_FIELDS = (
@@ -32,6 +35,27 @@ _LEGACY_CLAIM = TypeAdapter(Annotated[int, Field(gt=0, le=((1 << 31) - 1) // 6)]
 
 class PendingToolTimingMigrationError(ConfigurationMigrationError):
     """Malformed saved timing cannot be discarded by an upgrade."""
+
+
+def comparable_pending_creation_snapshot(data: dict[str, Any]) -> dict[str, Any]:
+    """Validate the creation encoding without erasing frozen witness fields.
+
+    Old complete snapshots contain enabled. Current snapshots carry a format
+    stamp, so an incomplete old snapshot cannot acquire positive consent from
+    the absence of the former switch. This is witness metadata, not org policy.
+    """
+    stamp = "creation_policy_version"
+    if stamp in data:
+        if type(data[stamp]) is not int or data[stamp] != 1 or "enabled" in data:
+            raise ConfigurationMigrationError(
+                "Invalid pending creation snapshot format"
+            )
+        return dict(data)
+    if "enabled" not in data or "pending_ttl_seconds" not in data:
+        raise ConfigurationMigrationError(
+            "Unrecognized pending creation snapshot format"
+        )
+    return {**canonicalize_pending_creation_policy(data, historical=True), stamp: 1}
 
 
 def warn_retired_resume_timing(environment: Mapping[str, str]) -> None:

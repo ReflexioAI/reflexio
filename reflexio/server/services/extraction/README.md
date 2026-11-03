@@ -657,7 +657,7 @@ distinct, while the existing structured repair inherits the same contract. See
 
 The former `resumable_extraction_agent.enabled` and `enabled_org_ids` sitevar
 fields no longer select execution. Their framework is removed; the existing
-org `pending_tool_call_config.enabled` owns pending-tool admission. Storage is
+org creation lifetime `pending_tool_call_config.pending_ttl_seconds` owns pending-tool admission: zero disables new calls and positive seconds select their lifetime. Storage is
 still required. Disabling new tools does not disable the permanent extraction
 loop or change the existing resume scheduler/finalization policy.
 
@@ -676,7 +676,7 @@ or before enabling pending tools:
    not discover or rewrite customer configuration automatically.
 2. With the old valid policy, an org was allowed when global `enabled` was true
    or its ID was in `enabled_org_ids`. For every denied org, set the existing
-   `pending_tool_call_config.enabled` to false through the normal config update
+   `pending_tool_call_config.pending_ttl_seconds` to zero through the normal config update
    path. For allowed orgs, preserve their current opt-in value. If a custom
    future-org template opts in despite a global/cohort denial, make that
    template opt out too. Enterprise project overlays cannot override this org setting; other hosts must

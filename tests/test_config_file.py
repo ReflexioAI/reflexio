@@ -946,7 +946,7 @@ def test_current_preparation_edit_retains_noop_bytes_and_accepts_nested_edits(tm
 
 @pytest.mark.parametrize("version", [0, 10])
 @pytest.mark.parametrize("ttl", [60, 1800])
-def test_single_owner_preparation_retires_only_timing_and_preserves_original(
+def test_preparation_retires_timing_and_preserves_creation_optout_and_original(
     tmp_path, version, ttl
 ):
     path = tmp_path / "config.json"
@@ -974,8 +974,11 @@ def test_single_owner_preparation_retires_only_timing_and_preserves_original(
     expected["pending_tool_call_config"] = {
         key: value
         for key, value in payload["pending_tool_call_config"].items()
-        if key not in {"resume_poll_interval_seconds", "resume_claim_ttl_seconds"}
+        if key
+        not in {"resume_poll_interval_seconds", "resume_claim_ttl_seconds", "enabled"}
     }
+    assert payload["pending_tool_call_config"]["enabled"] is False
+    expected["pending_tool_call_config"]["pending_ttl_seconds"] = 0
     assert owner.read_document() == expected
     assert (
         json.loads(path.read_text())["_reflexio_config_file"]["version"]

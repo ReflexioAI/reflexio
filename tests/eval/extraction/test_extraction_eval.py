@@ -220,7 +220,7 @@ def test_real_judge_smoke():  # pragma: no cover - manual, costs money
 # leaves the full agent loop + RIDM + config + ctor wiring under test.
 #
 # Pending-tool-calls: the auto-wired ``Config`` has
-# ``pending_tool_call_config.enabled == False`` by default, so only
+# ``pending_tool_call_config.pending_ttl_seconds == 0`` by default, so only
 # ``finish_extraction`` is registered and the loop runs a single forced-tool
 # pass — exactly two ``litellm.completion`` calls total (one per extractor).
 

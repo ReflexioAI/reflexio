@@ -644,7 +644,7 @@ def test_overflow_human_tools_wait_for_pending_and_reuse_complete_resolved_answe
             org_id=storage.org_id,
             extractor_kind="profile",
             user_id=window.user_id,
-            config=PendingToolCallConfig(enabled=True),
+            config=PendingToolCallConfig(pending_ttl_seconds=86_400),
         )
         ctx = bind_pending_tool_execution(
             ctx, storage=storage, run=coordinator.saved_run
@@ -2775,6 +2775,7 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
     assert worker.drain_org("stream-test", 1, 300) == (
         1 if replay in {"clean", "empty"} else 0
     )
+    row = now = corrupt_manifest = None
     if replay not in {"clean", "empty"}:
         assert len(storage.get_user_playbooks(user_id="u")) == 1
         token_bill.assert_not_called()
@@ -2974,6 +2975,7 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
         }
         token_bill.assert_not_called()
         learning_bill.assert_not_called()
+        assert row is not None and now is not None
         _assert_source_projection_failure_preserves_journal(
             storage, worker, row["window_id"], now, corrupt_manifest
         )
@@ -3174,9 +3176,9 @@ def test_enabled_overflow_profile_uses_real_window_commit_once(
         },
     ).json()["success"]
     storage = engine.get_storage()
+    attempts = 0
     if fail_commit:
         complete = storage.complete_extraction
-        attempts = 0
 
         def fail_first_commit(*args):
             nonlocal attempts
@@ -3242,7 +3244,7 @@ def test_http_overflow_human_answer_resumes_same_window_and_commits_once(
     config = engine.request_context.configurator
     root = config.get_config()
     updates: dict[str, Any] = {
-        "pending_tool_call_config": PendingToolCallConfig(enabled=True)
+        "pending_tool_call_config": PendingToolCallConfig(pending_ttl_seconds=86_400)
     }
     if kind == "playbook":
         updates.update(

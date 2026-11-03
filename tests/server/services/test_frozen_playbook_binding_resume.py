@@ -198,7 +198,7 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
     monkeypatch.setattr(
         resumable_agent, "matches_frozen_window_binding", child_compatible
     )
-    pending = PendingToolCallConfig(enabled=True)
+    pending = PendingToolCallConfig(pending_ttl_seconds=86_400)
     monkeypatch.setattr(resumable_agent, "pending_tool_calls_enabled", lambda _: True)
     monkeypatch.setattr(resumable_agent, "_pending_tool_call_config", lambda _: pending)
     lookup = Mock(return_value=[])

@@ -1012,7 +1012,9 @@ class TestResumableAgentPath:
         request_context.configurator.get_config = MagicMock(
             return_value=Config(
                 storage_config=StorageConfigSQLite(),
-                pending_tool_call_config=PendingToolCallConfig(enabled=True),
+                pending_tool_call_config=PendingToolCallConfig(
+                    pending_ttl_seconds=86_400
+                ),
             )
         )
         request_context.prompt_manager = MagicMock()
@@ -1100,7 +1102,9 @@ class TestStructuredPlaybookExtraction:
         request_context.configurator.get_config = MagicMock(
             return_value=Config(
                 storage_config=StorageConfigSQLite(),
-                pending_tool_call_config=PendingToolCallConfig(enabled=True),
+                pending_tool_call_config=PendingToolCallConfig(
+                    pending_ttl_seconds=86_400
+                ),
             )
         )
         request_context.prompt_manager = MagicMock()
@@ -2197,7 +2201,9 @@ class TestRationaleRoundTrip:
         request_context.configurator.get_config = MagicMock(
             return_value=Config(
                 storage_config=StorageConfigSQLite(),
-                pending_tool_call_config=PendingToolCallConfig(enabled=True),
+                pending_tool_call_config=PendingToolCallConfig(
+                    pending_ttl_seconds=86_400
+                ),
             )
         )
         request_context.prompt_manager = MagicMock()
@@ -2373,7 +2379,9 @@ class TestPlaybookContentExtraction:
         request_context.configurator.get_config = MagicMock(
             return_value=Config(
                 storage_config=StorageConfigSQLite(),
-                pending_tool_call_config=PendingToolCallConfig(enabled=True),
+                pending_tool_call_config=PendingToolCallConfig(
+                    pending_ttl_seconds=86_400
+                ),
             )
         )
         request_context.prompt_manager = MagicMock()

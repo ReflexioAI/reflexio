@@ -45,8 +45,8 @@ def test_admitted_turn_delivers_erased_output_debt_without_user_work(
     assert storage.get_agent_run(run.id) is None
     assert storage.conn.execute("SELECT COUNT(*) FROM learning_work").fetchone()[0] == 0
     context = resume_worker.request_context
-    context.configurator.get_config().pending_tool_call_config.enabled = (
-        pending_tools_enabled
+    context.configurator.get_config().pending_tool_call_config.pending_ttl_seconds = (
+        86_400 if pending_tools_enabled else 0
     )
     presence = storage._deferred_work_presence()
     assert presence.financial and not presence.resume and not presence.expiry

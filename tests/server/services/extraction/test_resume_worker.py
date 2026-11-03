@@ -102,7 +102,7 @@ def request_context(storage):
             extraction_definition_prompt="Extract durable user deployment facts.",
         ),
         pending_tool_call_config=PendingToolCallConfig(
-            enabled=True,
+            pending_ttl_seconds=86_400,
             max_finalization_attempts=3,
         ),
     )
@@ -128,7 +128,7 @@ def _finalization_context(storage: SQLiteStorage) -> RequestContext:
         user_playbook_extractor_config=PlaybookConfig(
             extraction_definition_prompt="Extract durable operating rules.",
         ),
-        pending_tool_call_config=PendingToolCallConfig(enabled=True),
+        pending_tool_call_config=PendingToolCallConfig(pending_ttl_seconds=86_400),
     )
     context.prompt_manager = MagicMock()
     context.prompt_manager.get_active_version.return_value = None
@@ -480,8 +480,8 @@ def test_resume_worker_resumes_profile_run_and_consumes_dependency(
 ):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
-    request_context.configurator.get_config().pending_tool_call_config.enabled = (
-        pending_enabled
+    request_context.configurator.get_config().pending_tool_call_config.pending_ttl_seconds = (
+        86_400 if pending_enabled else 0
     )
     _seed_interactions(storage)
     _seed_ready_run(storage)
@@ -707,7 +707,7 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
         user_playbook_extractor_config=PlaybookConfig(
             extraction_definition_prompt="Extract durable operating rules.",
         ),
-        pending_tool_call_config=PendingToolCallConfig(enabled=True),
+        pending_tool_call_config=PendingToolCallConfig(pending_ttl_seconds=86_400),
     )
     request_id = f"request_{extractor_kind}_delivery_retry"
     run_id = f"run_{extractor_kind}_delivery_retry"
@@ -953,7 +953,7 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
         user_playbook_extractor_config=PlaybookConfig(
             extraction_definition_prompt="Extract durable operating rules.",
         ),
-        pending_tool_call_config=PendingToolCallConfig(enabled=True),
+        pending_tool_call_config=PendingToolCallConfig(pending_ttl_seconds=86_400),
     )
     events: list[UsageEvent] = []
     delivery_attempts: list[UsageEvent] = []
@@ -996,6 +996,7 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
                 # most one class rotation and stop at this output's commit,
                 # before a subsequent turn can retry financial delivery.
                 processed = 0
+                first_attempt = None
                 for _ in range(3):
                     processed += worker.drain_org(
                         storage.org_id, batch_size=1, lease_seconds=300
@@ -2282,7 +2283,7 @@ def test_direct_continuation_cannot_reopen_pending_tools_after_org_opt_out(
     request_context, extractor_kind
 ):
     config = request_context.configurator.get_config()
-    config.pending_tool_call_config.enabled = False
+    config.pending_tool_call_config.pending_ttl_seconds = 0
     worker = ExtractionResumeWorker(
         request_context=request_context, llm_client=MagicMock()
     )

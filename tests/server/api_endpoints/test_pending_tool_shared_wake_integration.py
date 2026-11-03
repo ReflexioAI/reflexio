@@ -62,7 +62,7 @@ def _context(storage, directory):
     ctx.configurator = MagicMock()
     ctx.configurator.get_config.return_value = Config(
         storage_config=StorageConfigSQLite(db_path=storage.db_path),
-        pending_tool_call_config=PendingToolCallConfig(enabled=True),
+        pending_tool_call_config=PendingToolCallConfig(pending_ttl_seconds=86_400),
     )
     return ctx
 

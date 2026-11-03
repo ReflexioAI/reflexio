@@ -58,7 +58,7 @@ def _owned(store, user="one"):
 def _context(store):
     config = Config(
         storage_config=StorageConfigSQLite(db_path=store.db_path),
-        pending_tool_call_config=PendingToolCallConfig(enabled=True),
+        pending_tool_call_config=PendingToolCallConfig(pending_ttl_seconds=86_400),
     )
     context = RequestContext.__new__(RequestContext)
     context.org_id = store.org_id
@@ -637,7 +637,9 @@ def test_accepted_work_validates_configuration_without_creation_veto(
     context = _context(store)
     config = context.configurator.get_config()
     assert config is not None
-    config.pending_tool_call_config.enabled = creation_policy is True
+    config.pending_tool_call_config.pending_ttl_seconds = (
+        86_400 if creation_policy is True else 0
+    )
     configurator = MagicMock()
     configurator.get_config.return_value = config
     if creation_policy == "unavailable":

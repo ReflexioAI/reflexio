@@ -89,6 +89,7 @@ def test_busy_yield_requires_the_actual_live_owner(pipeline, withdrawal):
     user, token = storage.claim_extraction("old", 300)
     window = storage.prepare_extraction(user, token)
     assert window is not None
+    before = replacement = None
     if withdrawal == "replacement":
         with storage._stream_sql() as db:
             db.query("UPDATE learning_work SET lease_until=0 WHERE user_id=?", (user,))
@@ -103,6 +104,7 @@ def test_busy_yield_requires_the_actual_live_owner(pipeline, withdrawal):
         )
     storage.release_user_extraction(user, token)
     if withdrawal == "replacement":
+        assert before is not None and replacement is not None
         assert _state(storage) == before
         storage.release_user_extraction(user, replacement)
     else:
@@ -156,7 +158,7 @@ def test_paid_compatibility_tool_contention_reaches_existing_window_ceiling(
     engine, worker, http = pipeline
     storage = engine.get_storage()
     config = engine.request_context.configurator.get_config()
-    config.pending_tool_call_config.enabled = True
+    config.pending_tool_call_config.pending_ttl_seconds = 86_400
     engine.request_context.configurator.set_config(config)
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     # Select the established historical compatibility adapter; all ownership,
@@ -265,7 +267,7 @@ def test_image_compatibility_completed_compute_save_contention_is_bounded(
     engine, worker, http = pipeline
     storage = engine.get_storage()
     config = engine.request_context.configurator.get_config()
-    config.pending_tool_call_config.enabled = True
+    config.pending_tool_call_config.pending_ttl_seconds = 86_400
     engine.request_context.configurator.set_config(config)
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "cloud")
