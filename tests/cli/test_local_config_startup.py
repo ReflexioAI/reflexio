@@ -139,6 +139,12 @@ def test_ordinary_restart_preserves_database_and_unrelated_raw_fields(
     assert audit.pop("audit_events_retention_days") == 365
     audit["audit_events_max_age_days"] = 0
     expected["governance_retention"] = audit
+    # Keep the frozen generation-zero witness literal. Its historical default
+    # enabled policy becomes the same positive grace without a second switch.
+    lineage = dict(expected["lineage_gc"])
+    assert lineage.pop("enabled") is True
+    assert lineage["tombstone_grace_window_days"] == 90
+    expected["lineage_gc"] = lineage
     assert logical == expected
     first = saved_local_config.read_bytes()
     run_services.execute(args, storage=explicit_storage)
