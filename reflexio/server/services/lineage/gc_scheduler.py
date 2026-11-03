@@ -46,7 +46,7 @@ from reflexio.server.background_work import (
 )
 from reflexio.server.env_utils import env_str
 from reflexio.server.error_reporting import capture_anomaly
-from reflexio.server.org_fanout import iterate_orgs_bounded
+from reflexio.server.org_fanout import OrgFanout, iterate_orgs_bounded
 from reflexio.server.scheduling import LeaderGate, ThreadedScheduler
 from reflexio.server.services.storage.retention import get_row_retention_limits
 from reflexio.server.services.storage.retention_sweep import (
@@ -310,6 +310,7 @@ class LineageGCScheduler(ThreadedScheduler):
         self.org_id_provider = org_id_provider
         # Orgs that timed out on the PREVIOUS tick; a repeat escalates.
         self._prior_timeout_orgs: set[str] = set()
+        self._fanout_owner: OrgFanout | None = None
         # Set by any org's Class C pass that could not complete. Written from
         # up to `_org_fanout_workers` threads, so it takes a lock rather than
         # relying on the GIL to make `|=` atomic.
@@ -327,7 +328,18 @@ class LineageGCScheduler(ThreadedScheduler):
     def _on_started(self) -> None:
         logger.info("event=lineage_gc_scheduler_started")
 
+    def _should_start(self) -> bool:
+        if self._fanout_owner is not None and self._stop_event.is_set():
+            if not self._fanout_owner.is_drained():
+                logger.warning("event=lineage_gc_restart_deferred")
+                return False
+            self._fanout_owner.close()
+            self._fanout_owner = None
+        return True
+
     def _on_stopped(self) -> None:
+        if self._fanout_owner is not None:
+            self._fanout_owner.close()
         logger.info("event=lineage_gc_scheduler_stopped")
 
     def _discover_org_ids(self, bootstrap_ctx: RequestContext) -> list[str]:
@@ -676,12 +688,18 @@ class LineageGCScheduler(ThreadedScheduler):
             finally:
                 del self._worker_generation.value
 
+        owner = self._fanout_owner
+        if owner is not None and owner.max_workers != max_workers:
+            raise ValueError("Restart the scheduler to change its fan-out capacity")
+        if max_workers > 1 and owner is None:
+            owner = self._fanout_owner = OrgFanout(max_workers)
         timed_out = iterate_orgs_bounded(
             org_ids,
             _sweep_in_generation,
             max_workers=max_workers,
             per_org_timeout_seconds=_ORG_SWEEP_TIMEOUT_SECONDS,
             stop_event=self._stop_event,
+            owner=owner,
         )
         # A timeout does NOT fail the tick. The fast retry re-sweeps the WHOLE
         # fleet, and one slow org would otherwise buy every org three extra
