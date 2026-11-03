@@ -37,6 +37,10 @@ optional local stores still work without keys. Neither option migrates stored re
 The required-write policy accepts `true` and `false` only (case-insensitive);
 unset or blank defaults to false. Invalid values refuse before writes, without
 echoing the supplied value. Replace numeric or other boolean spellings explicitly.
+Malformed key entries retain the existing rotation-ring filtering behavior.
+Unexpected key-constructor failures propagate instead of silently producing an
+unkeyed codec and allowing optional plaintext storage. Correct the underlying
+failure before retrying; changing the required-write policy is not a recovery.
 
 Before replacing an image or SDK that reads `REFLEXIO_FERNET_KEYS`, preserve all
 existing keys from both rings in `FERNET_KEYS` and deliberately select the first

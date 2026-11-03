@@ -61,7 +61,7 @@ class EncryptManager:
         for k in fernet_key_list:
             try:
                 fernets += [Fernet(k)]
-            except Exception:  # noqa: S112, PERF203
+            except ValueError:  # noqa: S112, PERF203 — malformed rotation entries
                 continue
         if fernets:
             self.multi_fernet = MultiFernet(fernets)
