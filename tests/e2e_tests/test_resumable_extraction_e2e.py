@@ -61,7 +61,7 @@ def _request_context(storage: SQLiteStorage) -> RequestContext:
             }
         ),
         pending_tool_call_config=PendingToolCallConfig(
-            enabled=True,
+            pending_ttl_seconds=86_400,
         ),
     )
     ctx.configurator.get_agent_context.return_value = "Test agent context"
@@ -307,7 +307,6 @@ def _live_resumable_config(marker: str) -> tuple[dict[str, Any], str, str]:
                 "context_prompt": "Live E2E test for resumable extraction.",
             },
             "pending_tool_call_config": {
-                "enabled": True,
                 "pending_ttl_seconds": 3600,
                 "dedup_cache_seconds": 60,
                 "prior_answer_valid_seconds": 3600,

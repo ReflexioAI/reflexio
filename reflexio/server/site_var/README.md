@@ -34,8 +34,8 @@ remain supported.
 
 ## Pending-tool admission
 
-Pending-info tools use the existing organization setting
-`pending_tool_call_config.enabled` and require storage. Fresh extraction,
+Pending-info tools require a positive organization lifetime
+`pending_tool_call_config.pending_ttl_seconds` and storage. Fresh extraction,
 scheduled resumes and direct continuation tool construction share
 [`pending_tool_admission.py`](../services/extraction/pending_tool_admission.py).
 The extraction loop itself remains permanent. Per-tool TTL, answer freshness

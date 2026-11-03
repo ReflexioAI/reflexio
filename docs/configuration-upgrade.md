@@ -1,5 +1,19 @@
 # Canonical environment names
 
+For org pending-tool policy, replace the former enable switch through the
+generation13 local-file preparation (or matched enterprise canonical-v16
+upgrade). `pending_tool_call_config.pending_ttl_seconds:0` disables new calls;
+positive values select their exact lifetime. Historical missing/false consent
+maps to zero, true preserves a valid positive duration. Per-tool overrides do
+not reopen an org opt-out. Accepted calls, callbacks and stored expiry keep
+their existing durable authority. See [developer.md](../developer.md#pending-tool-creation-lifetime)
+for writer closure, recovery and frozen-witness behavior.
+
+The offline converter resolves this policy from the source file generation
+before dropping physical metadata. A positive historical lifetime with no
+enable switch remains off; a generation13 positive lifetime stays enabled.
+It never stamps a historical implicit opt-out as current positive consent.
+
 Legacy configuration spellings are no longer accepted. The first environment
 loader rejects their presence before dotenv loading or blank-value pruning;
 direct policy readers reject their obsolete names too. An error names the old

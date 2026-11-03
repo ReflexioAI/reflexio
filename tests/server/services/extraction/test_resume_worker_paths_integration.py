@@ -97,7 +97,9 @@ def _context(
     tool_can_use: list[ToolUseConfig] | None = None,
     max_resume_attempts: int | None = None,
 ) -> RequestContext:
-    pending = PendingToolCallConfig(enabled=True, max_finalization_attempts=3)
+    pending = PendingToolCallConfig(
+        pending_ttl_seconds=86_400, max_finalization_attempts=3
+    )
     if max_resume_attempts is not None:
         pending = pending.model_copy(
             update={"max_resume_attempts": max_resume_attempts}

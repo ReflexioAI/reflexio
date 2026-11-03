@@ -63,7 +63,9 @@ def test_public_corrected_consumed_answer_keeps_protocol_parent_out_of_legacy_wo
     configurator.set_config(
         configurator.get_config().model_copy(
             update={
-                "pending_tool_call_config": PendingToolCallConfig(enabled=True),
+                "pending_tool_call_config": PendingToolCallConfig(
+                    pending_ttl_seconds=86_400
+                ),
             }
         )
     )

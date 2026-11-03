@@ -40,7 +40,7 @@ def _reject_retired_rollout() -> None:
             return
     raise ValueError(
         "Retired resumable_extraction_agent rollout policy requires explicit "
-        "adoption into pending_tool_call_config.enabled. Preserve existing "
+        "adoption into pending_tool_call_config.pending_ttl_seconds. Preserve existing "
         "org opt-outs and disable previously denied orgs before removing the "
         "retired policy from feature_flags.json/txt. No values were copied."
     )
@@ -51,8 +51,8 @@ def _disabled_reason(
 ) -> str | None:
     if pending is None:
         return "no pending_tool_call_config on the resolved config"
-    if not pending.enabled:
-        return "pending_tool_call_config.enabled is false"
+    if pending.creation_lifetime_seconds() == 0:
+        return "pending_tool_call_config.pending_ttl_seconds is zero"
     _reject_retired_rollout()
     if storage is None:
         return "the request context has no storage"

@@ -28,7 +28,7 @@ def test_first_parent_of_old_profile_window_completes_and_replays_once(
         monkeypatch.setattr(
             resumable_agent,
             "_pending_tool_call_config",
-            lambda _: PendingToolCallConfig(enabled=True),
+            lambda _: PendingToolCallConfig(pending_ttl_seconds=86_400),
         )
     prepare = storage.prepare_extraction
     legacy_policy = None

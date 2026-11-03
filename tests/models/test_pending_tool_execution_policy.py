@@ -41,7 +41,8 @@ def test_explicit_conversion_retires_valid_custom_policy_without_mutation(poll, 
     converted = strip_retired_config_fields({"pending_tool_call_config": pending})
     assert converted == {
         "pending_tool_call_config": {
-            k: v for k, v in pending.items() if k not in FIELDS
+            **{k: v for k, v in pending.items() if k not in (*FIELDS, "enabled")},
+            "pending_ttl_seconds": 0,
         }
     }
     assert pending == original
@@ -53,7 +54,7 @@ def test_explicit_conversion_retires_valid_custom_policy_without_mutation(poll, 
 @pytest.mark.parametrize("value", [5, 600, None, "invalid"])
 def test_current_model_rejects_even_historical_defaults(key, value):
     with pytest.raises(ValueError, match=key):
-        PendingToolCallConfig.model_validate({"enabled": False, key: value})
+        PendingToolCallConfig.model_validate({key: value})
 
 
 @pytest.mark.parametrize(
@@ -112,7 +113,7 @@ def test_local_policy_requires_preparation_and_preserves_exact_original(tmp_path
             load()
         assert path.read_text() == original
     assert LocalConfigFile(path).prepare()
-    assert not storage.load_config().pending_tool_call_config.enabled
+    assert not (storage.load_config().pending_tool_call_config.pending_ttl_seconds > 0)
     assert (
         "resume_claim_ttl_seconds"
         not in json.loads(path.read_text())["pending_tool_call_config"]

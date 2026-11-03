@@ -41,6 +41,7 @@ def test_raw_pending_warning_cleanup_is_narrow_and_nonmutating(historical_value)
     cleaned = strip_retired_config_fields(raw)
     expected = deepcopy(original)
     expected["pending_tool_call_config"].pop("max_pending_followups_per_scope")
+    assert expected["pending_tool_call_config"].pop("enabled") is True
     expected["pending_tool_call_config"]["tool_overrides"]["ask_human"].pop(
         "max_pending_followups_per_scope"
     )

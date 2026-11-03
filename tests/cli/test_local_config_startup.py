@@ -145,6 +145,11 @@ def test_ordinary_restart_preserves_database_and_unrelated_raw_fields(
     assert lineage.pop("enabled") is True
     assert lineage["tombstone_grace_window_days"] == 90
     expected["lineage_gc"] = lineage
+    pending = dict(expected["pending_tool_call_config"])
+    assert pending.pop("enabled") is False
+    assert pending["pending_ttl_seconds"] == 86_400
+    pending["pending_ttl_seconds"] = 0
+    expected["pending_tool_call_config"] = pending
     assert logical == expected
     first = saved_local_config.read_bytes()
     run_services.execute(args, storage=explicit_storage)

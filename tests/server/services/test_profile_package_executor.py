@@ -166,11 +166,6 @@ def test_restart_preserves_candidates_and_paid_calls(pipeline, monkeypatch, boun
         target, name = storage, "update_agent_run_status"
         original = target.update_agent_run_status
 
-        def interrupted(*args, **kwargs):
-            if args[1] == AgentRunStatus.AGENT_COMPLETED:
-                raise RuntimeError("injected pause")
-            return original(*args, **kwargs)
-
         failure = None
     else:
         target, name = (
@@ -181,6 +176,12 @@ def test_restart_preserves_candidates_and_paid_calls(pipeline, monkeypatch, boun
         )
         original = getattr(target, name)
         failure = RuntimeError("injected pause")
+
+    def interrupted(*args, **kwargs):
+        if args[1] == AgentRunStatus.AGENT_COMPLETED:
+            raise RuntimeError("injected pause")
+        return original(*args, **kwargs)
+
     monkeypatch.setattr(
         target, name, Mock(side_effect=failure) if failure else interrupted
     )
@@ -204,8 +205,9 @@ def test_restart_preserves_candidates_and_paid_calls(pipeline, monkeypatch, boun
 
 
 @pytest.mark.parametrize("historical_pending_warning", [False, True])
+@pytest.mark.parametrize("historical_pending_creation", [False, True])
 def test_retired_name_resume_keeps_frozen_profile_candidates_and_paid_calls(
-    pipeline, monkeypatch, historical_pending_warning
+    pipeline, monkeypatch, historical_pending_warning, historical_pending_creation
 ):
     from reflexio.models.config_schema import (
         PendingToolCallConfig,
@@ -213,6 +215,7 @@ def test_retired_name_resume_keeps_frozen_profile_candidates_and_paid_calls(
         ProfileExtractorConfig,
     )
     from reflexio.server.services.durable_learning import window_executor
+    from reflexio.server.services.extraction import profile_package_preparation
     from reflexio.server.services.storage.storage_base import AgentRunStatus
     from tests.server.services.extraction.test_profile_package_consumer import (
         legacy_warning_config,
@@ -223,21 +226,36 @@ def test_retired_name_resume_keeps_frozen_profile_candidates_and_paid_calls(
 
     engine, storage, window, token, client, calls = setup(pipeline, monkeypatch)
     pending = PendingToolCallConfig(
-        enabled=True,
+        pending_ttl_seconds=86_400,
         hmac_secrets=["fixture-signing-secret"],
         tool_overrides={
             "ask_human": PendingToolCallToolOverrideConfig(pending_ttl_seconds=90)
         },
     )
     root_config = engine.request_context.configurator.get_config()
-    if historical_pending_warning:
-        root_config.pending_tool_call_config = legacy_warning_config(pending)
+    snapshot_policy = profile_package_preparation.pending_tool_policy_snapshot
+    if historical_pending_creation:
+
+        def historical_snapshot(config, frozen=None):
+            assert frozen is None
+            historical = snapshot_policy(config)
+            assert historical.pop("creation_policy_version") == 1
+            assert historical["pending_ttl_seconds"] == 86_400
+            return {**historical, "enabled": True}
+
+        # Admit the old literal policy before hashing any native contract or
+        # parent. Never rewrite an already admitted witness to make it pass.
         monkeypatch.setattr(
-            engine.request_context.configurator, "get_config", lambda: root_config
+            profile_package_preparation,
+            "pending_tool_policy_snapshot",
+            historical_snapshot,
+        )
+    if historical_pending_warning or historical_pending_creation:
+        root_config.pending_tool_call_config = (
+            legacy_warning_config(pending) if historical_pending_warning else pending
         )
         monkeypatch.setattr(
-            "reflexio.server.services.durable_learning.profile_package_executor.pending_tool_calls_enabled",
-            lambda _: True,
+            engine.request_context.configurator, "get_config", lambda: root_config
         )
     # Use the former schema before admission so native contracts, compression
     # witnesses and the parent snapshot all contain the historical field.
@@ -263,6 +281,9 @@ def test_retired_name_resume_keeps_frozen_profile_candidates_and_paid_calls(
     monkeypatch.setattr(storage, "update_agent_run_status", interrupt)
     with pytest.raises(RuntimeError, match="pause before parent completion"):
         executor.execute(window, token)
+    monkeypatch.setattr(
+        profile_package_preparation, "pending_tool_policy_snapshot", snapshot_policy
+    )
     monkeypatch.setattr(storage, "update_agent_run_status", complete)
     parent = storage.get_agent_run(f"window:{window.window_id}")
     parent_id = parent.id
@@ -275,6 +296,11 @@ def test_retired_name_resume_keeps_frozen_profile_candidates_and_paid_calls(
     )
     assert len(calls) == 3
     assert storage.get_user_profile("u") == []
+    if historical_pending_creation:
+        historical = snapshot["profile_package_preparation"]["pending_tool_config"]
+        assert historical["enabled"] is True
+        assert "creation_policy_version" not in historical
+        assert len(historical["hmac_secrets_digest"]) == 64
     if historical_pending_warning:
         frozen_pending = snapshot["profile_package_preparation"]["pending_tool_config"]
         assert frozen_pending["max_pending_followups_per_scope"] == 37
@@ -367,7 +393,7 @@ def test_native_eight_turns_keep_all_fallback_attempts(pipeline, monkeypatch, fi
 
     engine, storage, window, token, client, calls = setup(pipeline, monkeypatch)
     config = engine.request_context.configurator.get_config()
-    config.pending_tool_call_config = PendingToolCallConfig(enabled=True)
+    config.pending_tool_call_config = PendingToolCallConfig(pending_ttl_seconds=86_400)
     engine.request_context.configurator.set_config(config)
     monkeypatch.setattr(
         "reflexio.server.services.durable_learning.profile_package_executor.pending_tool_calls_enabled",

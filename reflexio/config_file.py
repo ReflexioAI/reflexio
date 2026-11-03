@@ -23,7 +23,8 @@ from reflexio.config_env import StoredConfigurationError
 NATIVE_POOL_AUTHORITY_VERSION = 10
 SINGLE_OWNER_EXECUTION_VERSION = 11
 LINEAGE_RETENTION_VERSION = 12
-FILE_FORMAT_VERSION = LINEAGE_RETENTION_VERSION
+PENDING_CREATION_VERSION = 13
+FILE_FORMAT_VERSION = PENDING_CREATION_VERSION
 _METADATA_KEY = "_reflexio_config_file"
 
 
@@ -55,6 +56,18 @@ def _decode(raw: bytes) -> tuple[dict[str, Any], dict[str, Any]]:
             "or restore the original file before restarting"
         )
     return document, metadata
+
+
+def _require_prepared_pending_creation(data: dict[str, Any], version: int) -> None:
+    """A strict reader/editor cannot infer new consent from an old duration."""
+    if version < PENDING_CREATION_VERSION and isinstance(
+        data.get("pending_tool_call_config"), dict
+    ):
+        raise StoredConfigurationError(
+            "Saved pending_tool_call_config requires versioned preparation before "
+            "reading or editing; restart through the normal launcher or use "
+            "config upgrade-file. No pending policy was selected."
+        )
 
 
 def _reject_ambiguous_output_policy(data: dict[str, Any], version: int) -> None:
@@ -169,6 +182,20 @@ def _validate_sdk_document(data: dict[str, Any]) -> None:
     validate_stored_config(data)
 
 
+def _prepare_pending_creation(data: dict[str, Any], version: int) -> dict[str, Any]:
+    """Resolve unchanged historical lifetime fields before dropping generation."""
+    if version >= PENDING_CREATION_VERSION or "pending_tool_call_config" not in data:
+        return data
+    from reflexio.config_migration import canonicalize_pending_creation_policy
+
+    return {
+        **data,
+        "pending_tool_call_config": canonicalize_pending_creation_policy(
+            data["pending_tool_call_config"], historical=True
+        ),
+    }
+
+
 def _prepare_document(data: dict[str, Any], version: int) -> dict[str, Any]:
     """Transform only generations older than this artifact, without publishing."""
     from reflexio.config_migration import (
@@ -233,7 +260,7 @@ def _prepare_document(data: dict[str, Any], version: int) -> dict[str, Any]:
         canonical["lineage_gc"] = canonicalize_lineage_retention_policy(
             canonical["lineage_gc"], historical=True
         )
-    return canonical
+    return _prepare_pending_creation(canonical, version)
 
 
 def _admit_storage_transition(
@@ -287,6 +314,7 @@ class LocalConfigFile:
     def read_document(self) -> dict[str, Any]:
         """Read strict runtime policy without transforming or writing it."""
         document, metadata = self._read_snapshot()
+        _require_prepared_pending_creation(document, metadata.get("version", 0))
         _reject_ambiguous_output_policy(document, metadata.get("version", 0))
         return document
 
@@ -294,10 +322,14 @@ class LocalConfigFile:
         """Read historical policy only for an explicitly selected offline conversion.
 
         Future/foreign formats still refuse; unlike runtime loading, conversion
-        may deliberately adopt a formerly ignored canonical spelling.
+        may deliberately adopt a formerly ignored canonical spelling. Unchanged
+        historical lifetime fields resolve before their generation is discarded.
         """
-        document, _metadata = self._read_snapshot()
-        return document
+        document, metadata = self._read_snapshot()
+        # A lifetime existed before consent became lifetime-owned. Preserve
+        # its historical opt-out while physical generation is still available;
+        # the subsequent logical canonicalizer cannot recover that evidence.
+        return _prepare_pending_creation(document, metadata.get("version", 0))
 
     def publish_document(
         self,
@@ -307,7 +339,12 @@ class LocalConfigFile:
         admit: Callable[[dict[str, Any]], None] | None = None,
     ) -> bool:
         """Publish an explicit full replacement; this is not a read/merge patch."""
-        data, _supplied_metadata = _decode(document.encode("utf-8"))
+        data, supplied_metadata = _decode(document.encode("utf-8"))
+        # Unmarked full replacements explicitly select current logical policy.
+        # An envelope declaring an old physical generation cannot relabel it.
+        _require_prepared_pending_creation(
+            data, supplied_metadata.get("version", FILE_FORMAT_VERSION)
+        )
         self._validate(data)
         target = self._target()
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -357,6 +394,7 @@ class LocalConfigFile:
         with FileLock(f"{target}.lock", timeout=30, mode=0o600):
             original = target.read_bytes()
             data, metadata = _decode(original)
+            _require_prepared_pending_creation(data, metadata.get("version", 0))
             _reject_ambiguous_policy(data, metadata.get("version", 0))
             self._validate(data)
             edit(data)

@@ -454,7 +454,7 @@ def test_actual_pending_tool_wait_resumes_full_answer_and_remaining_turns(
         )
     )
     tools_config = PendingToolCallConfig(
-        enabled=True,
+        pending_ttl_seconds=86_400,
         hmac_secrets=["fixture-signing-secret"],
         tool_overrides={
             "ask_human": PendingToolCallToolOverrideConfig(pending_ttl_seconds=90)
@@ -567,7 +567,7 @@ def test_warning_retirement_keeps_real_frozen_pending_policy_strict(
     package_pipeline, monkeypatch, change
 ):
     config = PendingToolCallConfig(
-        enabled=True,
+        pending_ttl_seconds=86_400,
         hmac_secrets=["fixture-signing-secret"],
         tool_overrides={
             "ask_human": PendingToolCallToolOverrideConfig(pending_ttl_seconds=90)

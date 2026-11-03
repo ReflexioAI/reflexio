@@ -14,11 +14,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from reflexio.config_migration import ConfigurationMigrationError
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import UserProfile
 from reflexio.models.config_schema import PendingToolCallConfig, ProfileExtractorConfig
 from reflexio.pending_tool_policy import (
-    PendingToolTimingMigrationError,
+    comparable_pending_creation_snapshot,
     strip_legacy_pending_tool_timing,
     strip_retired_pending_followup_warning,
 )
@@ -221,26 +222,32 @@ def pending_tool_policy_snapshot(
 ) -> dict[str, Any]:
     """Validate live policy while retaining an admitted contract's original snapshot.
 
-    Only validated retired timing and the observational warning may differ.
+    Only validated historical creation encoding, retired timing and the
+    observational warning may differ.
     Secret rotation, real policy changes and unknown fields remain strict; no model round-trip may
     discard witness data. The caller verifies the parent/preparation contract.
     """
     current = {
         **config.model_dump(mode="json", exclude={"hmac_secrets"}),
         "hmac_secrets_digest": _digest(config.hmac_secrets),
+        "creation_policy_version": 1,
     }
     if frozen is None:
         return current
     try:
-        actual = strip_legacy_pending_tool_timing(
-            strip_retired_pending_followup_warning(current)
+        actual = comparable_pending_creation_snapshot(
+            strip_legacy_pending_tool_timing(
+                strip_retired_pending_followup_warning(current)
+            )
         )
-        expected = strip_legacy_pending_tool_timing(
-            strip_retired_pending_followup_warning(frozen)
+        expected = comparable_pending_creation_snapshot(
+            strip_legacy_pending_tool_timing(
+                strip_retired_pending_followup_warning(frozen)
+            )
         )
-    except PendingToolTimingMigrationError:
+    except ConfigurationMigrationError:
         raise InputBudgetConfigurationError(
-            "Frozen profile pending tool timing is invalid"
+            "Frozen profile pending tool policy is invalid"
         ) from None
     if actual != expected:
         raise InputBudgetConfigurationError(

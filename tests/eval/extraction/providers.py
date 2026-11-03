@@ -23,8 +23,8 @@ Call path (owned storage and source seeding required):
 Pending tool calls (single-pass guarantee):
     The resumable agent only registers the async ``ask_human`` /
     ``attach_pending_info_request`` tools when ``pending_tool_calls_enabled``
-    is true, which requires ``config.pending_tool_call_config.enabled``. That
-    field defaults to ``False`` on the auto-wired ``Config``, so by default
+    is true, which requires a positive ``config.pending_tool_call_config.pending_ttl_seconds``. That
+    lifetime defaults to zero on the auto-wired ``Config``, so by default
     only ``finish_extraction`` is registered and the loop runs a single
     forced-tool pass -- equivalent to the old single-shot structured call. No
     extra turns, no resume chain. We therefore do NOT need to disable anything

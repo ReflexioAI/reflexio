@@ -833,8 +833,11 @@ class PendingToolCallToolOverrideConfig(BaseModel):
 class PendingToolCallConfig(BaseModel):
     """Configuration for non-blocking pending tool calls."""
 
-    enabled: bool = False
-    pending_ttl_seconds: int = Field(default=86_400, gt=0)
+    pending_ttl_seconds: int = Field(
+        default=0,
+        ge=0,
+        description="Lifetime of new pending calls; zero disables their creation.",
+    )
     dedup_cache_seconds: int = Field(default=300, gt=0)
     prior_answer_valid_seconds: int = Field(default=2_592_000, gt=0)
     similarity_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -849,8 +852,19 @@ class PendingToolCallConfig(BaseModel):
     @classmethod
     def discard_retired_execution_policy(cls, data: Any) -> Any:
         return strip_retired_pending_followup_warning(
-            _reject_obsolete_fields(data, RETIRED_PENDING_TOOL_TIMING_FIELDS)
+            _reject_obsolete_fields(
+                data, (*RETIRED_PENDING_TOOL_TIMING_FIELDS, "enabled")
+            )
         )
+
+    def creation_lifetime_seconds(self, tool_name: str | None = None) -> int:
+        """Resolve creation consent before a tool may refine the lifetime."""
+        if self.pending_ttl_seconds == 0:
+            return 0
+        override = self.tool_overrides.get(tool_name) if tool_name is not None else None
+        if override is not None and override.pending_ttl_seconds is not None:
+            return override.pending_ttl_seconds
+        return self.pending_ttl_seconds
 
     def for_tool(self, tool_name: str) -> EffectivePendingToolCallConfig:
         """Return base settings with an optional exact tool-name override."""
@@ -864,7 +878,7 @@ class PendingToolCallConfig(BaseModel):
             return getattr(self, name)
 
         return EffectivePendingToolCallConfig(
-            pending_ttl_seconds=_value("pending_ttl_seconds"),
+            pending_ttl_seconds=self.creation_lifetime_seconds(tool_name),
             dedup_cache_seconds=_value("dedup_cache_seconds"),
             prior_answer_valid_seconds=_value("prior_answer_valid_seconds"),
             similarity_threshold=_value("similarity_threshold"),
@@ -989,7 +1003,7 @@ class Config(BaseModel):
     playbook_optimizer_config: PlaybookOptimizerConfig = Field(
         default_factory=PlaybookOptimizerConfig
     )
-    # Tombstone GC job gate (opt-in, off by default — see LineageGCConfig)
+    # Class A reclamation consent and grace; zero holds (see LineageGCConfig)
     lineage_gc: LineageGCConfig = Field(default_factory=LineageGCConfig)
     # Direct-delete reclamation of expired plain rows (share links, pending tool calls)
     expiry_reclamation: ExpiryReclamationConfig = Field(
@@ -1080,7 +1094,7 @@ class Config(BaseModel):
         database backend (sqlite/supabase/postgres).
         """
         if (
-            self.pending_tool_call_config.enabled
+            self.pending_tool_call_config.creation_lifetime_seconds() > 0
             and self.storage_config is not None
             and not isinstance(
                 self.storage_config,
@@ -1093,7 +1107,8 @@ class Config(BaseModel):
             )
         ):
             raise ValueError(
-                "pending_tool_call_config.enabled requires sqlite, supabase, or postgres storage"
+                "Positive pending_tool_call_config.pending_ttl_seconds requires "
+                "sqlite, supabase, or postgres storage"
             )
         return self
 

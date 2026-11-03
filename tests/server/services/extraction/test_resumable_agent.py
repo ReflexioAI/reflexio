@@ -460,7 +460,7 @@ def test_resumable_agent_uses_auto_tool_choice_with_extra_tools(
         org_id="org_1",
         extractor_kind="profile",
         user_id="user_1",
-        config=PendingToolCallConfig(enabled=True),
+        config=PendingToolCallConfig(pending_ttl_seconds=86_400),
     )
     responses = (
         [make_tc("ask_human", {"question": "Which deployment standard?"}), response]
@@ -665,7 +665,7 @@ def test_resumable_agent_resume_uses_persisted_step_budget(
         org_id="org_1",
         extractor_kind="profile",
         user_id="user_1",
-        config=PendingToolCallConfig(enabled=True),
+        config=PendingToolCallConfig(pending_ttl_seconds=86_400),
     )
     # The model keeps calling an intermediate tool (ask_human) instead of
     # delivering the structured finish, consuming the single remaining step so
@@ -1043,11 +1043,15 @@ def test_non_neutral_rollout_requires_explicit_org_policy_adoption(
         storage=object(),
         configurator=SimpleNamespace(
             get_config=lambda: SimpleNamespace(
-                pending_tool_call_config=PendingToolCallConfig(enabled=True)
+                pending_tool_call_config=PendingToolCallConfig(
+                    pending_ttl_seconds=86_400
+                )
             )
         ),
     )
-    with pytest.raises(ValueError, match="pending_tool_call_config.enabled"):
+    with pytest.raises(
+        ValueError, match="pending_tool_call_config.pending_ttl_seconds"
+    ):
         resumable_agent_module.pending_tool_calls_enabled(cast(RequestContext, context))
 
 

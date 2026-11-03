@@ -15,6 +15,7 @@ from reflexio.models.config_schema import (
     APIKeyConfig,
     CustomEndpointConfig,
     PendingToolCallConfig,
+    PendingToolCallToolOverrideConfig,
     ProfileExtractorConfig,
 )
 from reflexio.server.llm.input_budget import (
@@ -938,7 +939,7 @@ def test_frozen_pending_policy_retires_timing_without_rewriting_witness(poll, tt
     )
 
     config = PendingToolCallConfig(
-        enabled=False, hmac_secrets=["synthetic-secret"], max_resume_attempts=7
+        pending_ttl_seconds=0, hmac_secrets=["synthetic-secret"], max_resume_attempts=7
     )
     current = pending_tool_policy_snapshot(config)
     frozen = {
@@ -955,6 +956,69 @@ def test_frozen_pending_policy_retires_timing_without_rewriting_witness(poll, tt
     assert "synthetic-secret" not in json.dumps(witness)
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_historical_creation_snapshot_preserves_original_witness_and_secret_digest(
+    enabled,
+):
+    from reflexio.server.services.extraction.profile_package_preparation import (
+        pending_tool_policy_snapshot,
+    )
+
+    config = PendingToolCallConfig(
+        pending_ttl_seconds=37 if enabled else 0,
+        hmac_secrets=["synthetic-secret"],
+        tool_overrides={
+            "ask_human": PendingToolCallToolOverrideConfig(pending_ttl_seconds=53)
+        },
+    )
+    current = pending_tool_policy_snapshot(config)
+    frozen = {**copy.deepcopy(current), "enabled": enabled, "pending_ttl_seconds": 37}
+    assert frozen.pop("creation_policy_version") == 1
+    before = copy.deepcopy(frozen)
+    witness = pending_tool_policy_snapshot(config, frozen)
+    assert witness == before and witness is not frozen and frozen == before
+    assert witness["hmac_secrets_digest"] == current["hmac_secrets_digest"]
+    assert "synthetic-secret" not in json.dumps(witness)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_encoding",
+        "mixed",
+        "future",
+        "invalid_dormant",
+        "consent",
+        "missing_ttl",
+    ],
+)
+def test_creation_encoding_cannot_launder_ambiguous_or_changed_frozen_policy(mutation):
+    from reflexio.server.services.extraction.profile_package_preparation import (
+        pending_tool_policy_snapshot,
+    )
+
+    config = PendingToolCallConfig(pending_ttl_seconds=37)
+    frozen = pending_tool_policy_snapshot(config)
+    if mutation == "missing_encoding":
+        frozen.pop("creation_policy_version")
+    elif mutation == "mixed":
+        frozen["enabled"] = True
+    elif mutation == "future":
+        frozen["creation_policy_version"] = 2
+    else:
+        frozen.pop("creation_policy_version")
+        frozen["enabled"] = False
+        if mutation == "invalid_dormant":
+            frozen["pending_ttl_seconds"] = "PRIVATE_INVALID_TTL"
+        elif mutation == "missing_ttl":
+            frozen.pop("pending_ttl_seconds")
+    before = copy.deepcopy(frozen)
+    with pytest.raises(InputBudgetConfigurationError) as error:
+        pending_tool_policy_snapshot(config, frozen)
+    assert frozen == before
+    assert "PRIVATE_INVALID_TTL" not in str(error.value)
+
+
 @pytest.mark.parametrize(
     "mutation", ["unknown", "secret", "policy", "creation_enabled", "invalid_timing"]
 )
@@ -963,7 +1027,9 @@ def test_frozen_pending_policy_cannot_hide_non_timing_or_invalid_changes(mutatio
         pending_tool_policy_snapshot,
     )
 
-    config = PendingToolCallConfig(enabled=False, hmac_secrets=["synthetic-secret"])
+    config = PendingToolCallConfig(
+        pending_ttl_seconds=0, hmac_secrets=["synthetic-secret"]
+    )
     frozen = pending_tool_policy_snapshot(config)
     frozen["resume_claim_ttl_seconds"] = 1800
     if mutation == "unknown":
