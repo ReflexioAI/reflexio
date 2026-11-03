@@ -1,0 +1,183 @@
+"""Capture real original-v1 storage with deterministic, zero-network inference."""
+import json
+import os
+import sqlite3
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+
+from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.services.durable_learning.window_executor import WindowExecutor
+from reflexio.server.services.storage.storage_base._extraction_stream import (
+    validate_extraction_overflow_manifest,
+)
+from tests.server.services import test_durable_window_pipeline as durable
+
+pipeline = durable.pipeline
+
+
+class SimulatedProcessDeath(BaseException):
+    pass
+
+
+@pytest.mark.parametrize("phase", ["running", "completed_effects", "completed_acked", "completed_before_ack"])
+def test_capture_original_v1_predecessor(pipeline, monkeypatch, phase):
+    assert "scripted-predecessor-sdk-6769bd3e" in LiteLLMClient.__module__ or "scripted-predecessor-sdk-6769bd3e" in __import__("inspect").getfile(LiteLLMClient)
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    monkeypatch.setenv("REFLEXIO_LLM_CONTEXT_LIMITS_JSON", '{"minimax/MiniMax-M3":1000000,"gpt-4o":65536}')
+    monkeypatch.setattr("reflexio.server.llm.input_budget.litellm.token_counter", lambda **_: 100)
+    calls = []
+
+    def respond(params, hard_timeout):
+        del hard_timeout
+        calls.append(1)
+        if len(calls) == 1:
+            raise SimulatedProcessDeath()
+        schema = getattr(params.get("response_format"), "__name__", "") or json.dumps(params.get("response_format"), default=str)
+        content = {"profiles": [{"content": "The user prefers concise answers.", "time_to_live": "infinity", "source_span": "I prefer concise answers with details 0"}]}
+        if "ProfileDeduplicationOutput" in schema or any("unique_ids" in str(m.get("content", "")) for m in params["messages"]):
+            content = {"duplicate_groups": [], "unique_ids": ["NEW-0"], "deletions": []}
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(content), tool_calls=None, refusal=None), finish_reason="stop")], usage=SimpleNamespace(prompt_tokens=100, completion_tokens=20, total_tokens=120, cache_read_input_tokens=0, cache_creation_input_tokens=0), model="minimax/MiniMax-M3", _hidden_params={"custom_llm_provider": "minimax"})
+
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", Mock(side_effect=respond))
+    engine, worker, client = pipeline
+    assert client.post("/api/publish_interaction", json=durable.payload("original-v1", force=True)).json()["success"]
+    storage = engine.get_storage()
+    with pytest.raises(SimulatedProcessDeath):
+        worker.drain_org("stream-test", 1, 300)
+    if phase != "running":
+        if phase == "completed_effects":
+            monkeypatch.setattr(WindowExecutor, "_bill", lambda *_: (_ for _ in ()).throw(RuntimeError("synthetic billing transport unavailable")))
+        else:
+            from reflexio.server.usage_metrics import configure_usage_event_recorder, UsageEventDeliveryStatus
+            events = []
+            configure_usage_event_recorder(lambda event: events.append(event) or UsageEventDeliveryStatus.APPENDED)
+            if phase == "completed_before_ack":
+                monkeypatch.setattr(storage, "ack_extraction_effects", lambda *_a, **_kw: (_ for _ in ()).throw(SimulatedProcessDeath()))
+        if phase == "completed_before_ack":
+            with pytest.raises(SimulatedProcessDeath):
+                worker.drain_org("stream-test", 2, 300)
+        else:
+            worker.drain_org("stream-test", 2, 300)
+        assert storage.extraction_status("u", "original-v1")["status"] == "done"
+        assert storage.count_all_profiles() == 1
+        if phase in ("completed_acked", "completed_before_ack"):
+            if phase == "completed_acked":
+                worker.drain_org("stream-test", 2, 300)
+            configure_usage_event_recorder(None)
+            assert len([e for e in events if e.event_key.startswith(("tok:", "learn:"))]) == 2
+    root = Path(os.environ["REFLEXIO_SYNTHETIC_CAPTURE_DIR"])
+    root.mkdir(exist_ok=True)
+    target = root / (phase + ".sqlite")
+    with sqlite3.connect(storage.db_path) as original, sqlite3.connect(target) as backup:
+        original.backup(backup)
+    with sqlite3.connect(target) as conn:
+        rows = conn.execute("SELECT status,generation_request_snapshot,committed_output FROM _agent_runs").fetchall()
+        assert len(rows) == 1
+        manifest = json.loads(rows[0][1])["overflow"]
+        validate_extraction_overflow_manifest(manifest)
+        assert manifest["version"] == 1 and manifest["attempts"]
+        windows = conn.execute("SELECT completed,effects_done,effects FROM extraction_windows").fetchall()
+        assert len(windows) == 1
+        receipts = conn.execute("SELECT count(*) FROM _agent_run_finalization_receipts").fetchone()[0]
+        if phase == "running":
+            assert rows[0][0] == "running" and rows[0][2] is None
+            assert windows[0][0] == 0 and receipts == 0
+        else:
+            assert windows[0][0] == 1 and windows[0][1] == (1 if phase == "completed_acked" else 0)
+            assert json.loads(windows[0][2])["billing"] is not None
+            assert rows[0][0] == ("finalized" if phase in ("completed_acked", "completed_before_ack") else "agent_completed") and receipts == 1
+        summary = {"phase": phase, "database": str(target), "run_status": rows[0][0], "journal_version": manifest["version"], "attempt_count": len(manifest["attempts"]), "receipt_count": receipts, "completed": bool(windows[0][0]), "effects_pending": not bool(windows[0][1]), "scripted_completion_calls": len(calls), "external_inference_calls": 0, "predecessor_sdk": "6769bd3e4385a7a322d9ba76da152883c0af668a"}
+        (root / (phase + ".json")).write_text(json.dumps(summary, indent=2) + "\n")
+        print("SCRIPTED_ORIGINAL_V1_CAPTURE=" + json.dumps(summary, sort_keys=True))
+
+
+def test_capture_original_v1_no_body_source_projection(pipeline, monkeypatch):
+    from reflexio.models.config_schema import UserPlaybookExtractorConfig
+    from reflexio.server.services.extraction.protected_record import ProtectedEvidence, ProtectedRecord
+    from reflexio.server.services.playbook.service import PlaybookGenerationService
+    engine, worker, client = pipeline
+    configurator = engine.request_context.configurator
+    configurator.set_config(configurator.get_config().model_copy(update={"profile_extractor_config":None,"user_playbook_extractor_config":UserPlaybookExtractorConfig(extraction_definition_prompt="Learn deployment instructions")}))
+    monkeypatch.setenv("MOCK_LLM_RESPONSE","false")
+    monkeypatch.setenv("REFLEXIO_LLM_CONTEXT_LIMITS_JSON",'{"minimax/MiniMax-M3":1000000,"gpt-4o":65536}')
+    def prepare(_self, coordinator, _config):
+        prepared = coordinator.require_prepared()
+        assert len(prepared.chunks)>1
+        selected=next(span for chunk in prepared.chunks for span in chunk.spans if span.role=="User")
+        coordinator.record=ProtectedRecord(evidence=(ProtectedEvidence(kind="instruction",evidence_refs=(selected.evidence_ref,),quote=selected.text),))
+        checkpoint=coordinator.checkpoint
+        checkpoint["protected_record"]=coordinator.record.model_dump(mode="json")
+        checkpoint["protected_coverage"]=[coordinator.candidate_key(chunk.text) for chunk in prepared.chunks]
+        coordinator.save_checkpoint(checkpoint)
+    monkeypatch.setattr(WindowExecutor,"_prepare_overflow_context",prepare)
+    storage=engine.get_storage()
+    monkeypatch.setattr(storage,"_get_embedding",lambda *_args,**_kwargs:[0.1]*512)
+    monkeypatch.setattr(storage,"_expand_document",lambda *_args,**_kwargs:None)
+    monkeypatch.setattr(PlaybookGenerationService,"_dispatch_playbook_schedulers",lambda *_args,**_kwargs:None)
+    monkeypatch.setattr(PlaybookGenerationService,"compute_generation",Mock(side_effect=AssertionError("Source projection must not run a prose generator")))
+    monkeypatch.setattr(LiteLLMClient,"_completion_with_hard_timeout",Mock(side_effect=AssertionError("Scripted semantic selection must not call a provider")))
+    body=durable.payload("original-v1-projection",count=3,force=True)
+    body["agent_version"]="v"
+    body["interaction_data_list"]=[{"role":"User","content":"Verify the named destination before presenting the plan. Keep STAGING_APPROVAL_REQUIRED. File inspection is not execution."},{"role":"Assistant","content":"Diagnostic output. "*18000},{"role":"Assistant","content":"No deployment performed."}]
+    assert client.post("/api/publish_interaction",json=body).json()["success"]
+    assert worker.drain_org("stream-test",1,300)==1
+    root=Path(os.environ["REFLEXIO_SYNTHETIC_CAPTURE_DIR"])
+    target=root/"completed_projection_no_body.sqlite"
+    with sqlite3.connect(storage.db_path) as original,sqlite3.connect(target) as backup:
+        original.backup(backup)
+    with sqlite3.connect(target) as conn:
+        rows=conn.execute("SELECT status,generation_request_snapshot,committed_output FROM _agent_runs").fetchall()
+        assert len(rows)==1 and rows[0][0]=="agent_completed" and rows[0][2] is None
+        manifest=json.loads(rows[0][1])["overflow"]
+        validate_extraction_overflow_manifest(manifest)
+        assert manifest["version"]==1
+        window=conn.execute("SELECT completed,effects_done,effects FROM extraction_windows").fetchone()
+        assert window[0]==1 and window[1]==0 and json.loads(window[2])["billing"] is not None
+        assert conn.execute("SELECT count(*) FROM _agent_run_finalization_receipts").fetchone()[0]==1
+        assert conn.execute("SELECT count(*) FROM user_playbooks").fetchone()[0]==1
+    summary={"phase":"completed_projection_no_body","database":str(target),"run_status":"agent_completed","journal_version":1,"attempt_count":len(manifest["attempts"]),"receipt_count":1,"completed":True,"effects_pending":True,"committed_output_absent":True,"scripted_semantic_boundary":True,"external_inference_calls":0,"predecessor_sdk":"6769bd3e4385a7a322d9ba76da152883c0af668a"}
+    (root/"completed_projection_no_body.json").write_text(json.dumps(summary,indent=2)+"\n")
+    print("SCRIPTED_ORIGINAL_V1_CAPTURE="+json.dumps(summary,sort_keys=True))
+
+
+def test_capture_original_v1_erased_ack(pipeline, monkeypatch):
+    from reflexio.server.services.storage.sqlite_storage._extraction_stream import SQLiteStreamSQL
+    from reflexio.server.usage_metrics import configure_usage_event_recorder, UsageEventDeliveryStatus
+    original_bill = WindowExecutor._bill
+    root = Path(os.environ['REFLEXIO_SYNTHETIC_CAPTURE_DIR'])
+    # Reuse the exact scripted original publisher/worker boundary, in a separate
+    # capture folder so previous evidence files remain immutable.
+    pending_root = root / 'erased-predecessor'
+    pending_root.mkdir(exist_ok=True)
+    monkeypatch.setenv('REFLEXIO_SYNTHETIC_CAPTURE_DIR', str(pending_root))
+    test_capture_original_v1_predecessor(pipeline, monkeypatch, 'completed_effects')
+    engine, worker, _ = pipeline
+    storage = engine.get_storage()
+    monkeypatch.setattr(WindowExecutor, '_bill', original_bill)
+    storage.delete_request('original-v1')
+    with sqlite3.connect(storage.db_path) as conn:
+        due = conn.execute('SELECT effects_retry_at FROM extraction_windows').fetchone()[0]
+    monkeypatch.setattr(SQLiteStreamSQL, 'now', lambda _: due + 2)
+    events = []
+    configure_usage_event_recorder(lambda event: events.append(event) or UsageEventDeliveryStatus.APPENDED)
+    try:
+        worker.drain_org('stream-test', 2, 300)
+    finally:
+        configure_usage_event_recorder(None)
+    target = root / 'completed_erased_acked.sqlite'
+    with sqlite3.connect(storage.db_path) as original, sqlite3.connect(target) as backup:
+        original.backup(backup)
+    with sqlite3.connect(target) as conn:
+        run = conn.execute('SELECT status,generation_request_snapshot FROM _agent_runs').fetchone()
+        window = conn.execute('SELECT completed,invalidated,effects_done,effects,manifest,outcome FROM extraction_windows').fetchone()
+        assert run[0] == 'agent_completed'
+        assert window[:3] == (1, 1, 1)
+        assert window[4] == '[]' and window[5] is None
+        assert len([event for event in events if event.event_key.startswith(('tok:', 'learn:'))]) == 2
+        assert conn.execute('SELECT count(*) FROM _agent_run_finalization_receipts').fetchone()[0] == 1
+    summary = {'phase': 'completed_erased_acked', 'run_status': run[0], 'completed': True, 'invalidated': True, 'effects_pending': False, 'committed_original_financial_events': 2, 'external_inference_calls': 0, 'predecessor_sdk': '6769bd3e4385a7a322d9ba76da152883c0af668a'}
+    (root / 'completed_erased_acked.json').write_text(json.dumps(summary, indent=2)+'\n')
+    print('SCRIPTED_ORIGINAL_V1_CAPTURE='+json.dumps(summary, sort_keys=True))
