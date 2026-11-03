@@ -326,7 +326,7 @@ def test_a_blank_body_reissues_the_callers_exact_request(
 def test_a_final_blank_failure_logs_its_kind_and_diagnostics(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The final ERROR names reasoning exhaustion with the counts that prove it."""
+    """The final WARNING names reasoning exhaustion with the counts that prove it."""
 
     def serve(**_params: Any) -> MagicMock:
         response = _response("\n\n", finish_reason="length")
@@ -358,7 +358,7 @@ def test_a_final_blank_failure_logs_its_kind_and_diagnostics(
         and "success=False" in record.getMessage()
     ]
     assert len(ends) == 1
-    assert ends[0].levelno == logging.ERROR
+    assert ends[0].levelno == logging.WARNING
     line = ends[0].getMessage()
     for field in (
         "failure_kind=reasoning_exhausted ",
@@ -567,7 +567,7 @@ def _plain_rung_failure_lines(client: LiteLLMClient, caplog: Any) -> list[str]:
     """Run the plain (no-validator) rung to exhaustion; return its two log lines.
 
     Those are the corrective-retry WARNING and the final ``llm_request_end``
-    ERROR -- the only lines a rejected reply leaves on this rung.
+    WARNING -- the only lines a rejected reply leaves on this rung.
     """
     with (
         caplog.at_level(logging.WARNING),
