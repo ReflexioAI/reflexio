@@ -816,6 +816,7 @@ class TextGenerationMixin:
         fallback_models: list[str] | None = None,
         structured_output_validator: StructuredOutputValidator | None = None,
         provider_request_guard: ProviderRequestGuard | None = None,
+        caller_reports_repair_failure: bool = False,
         **kwargs: Any,
     ) -> str | BaseModel | ToolCallingChatResponse:
         """
@@ -842,6 +843,10 @@ class TextGenerationMixin:
                 repair ladder for parse, blank, and semantic failures.
             provider_request_guard: Optional internal guard invoked on the exact
                 built params immediately before each provider attempt.
+            caller_reports_repair_failure: Set by a caller that salvages
+                ``StructuredOutputRepairError``. The client then leaves the
+                terminal ``llm.failures`` count to the caller, which records it
+                only when it cannot recover, so a salvaged reply never pages.
             **kwargs: Additional parameters including:
                 - response_format: Pydantic BaseModel class for structured output
                 - parse_structured_output: Whether to parse structured output (default True)
@@ -867,6 +872,7 @@ class TextGenerationMixin:
             fallback_models=fallback_models,
             structured_output_validator=structured_output_validator,
             provider_request_guard=provider_request_guard,
+            caller_reports_repair_failure=caller_reports_repair_failure,
             **kwargs,
         ).value
 
@@ -882,6 +888,7 @@ class TextGenerationMixin:
         fallback_models: list[str] | None = None,
         structured_output_validator: StructuredOutputValidator | None = None,
         provider_request_guard: ProviderRequestGuard | None = None,
+        caller_reports_repair_failure: bool = False,
         **kwargs: Any,
     ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse]:
         """Generate a chat response paired with observed model provenance."""
@@ -924,6 +931,8 @@ class TextGenerationMixin:
             kwargs["structured_output_validator"] = structured_output_validator
         if provider_request_guard is not None:
             kwargs["provider_request_guard"] = provider_request_guard
+        if caller_reports_repair_failure:
+            kwargs["caller_reports_repair_failure"] = caller_reports_repair_failure
 
         return self._make_request(final_messages, **kwargs)
 
@@ -1583,6 +1592,9 @@ class TextGenerationMixin:
         self, messages: list[dict[str, Any]], **kwargs: Any
     ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse]:
         """Measure the complete fallback walk, not individual provider rungs."""
+        caller_reports_repair_failure = kwargs.pop(
+            "caller_reports_repair_failure", False
+        )
         started = time.monotonic()
         outcome = "success"
         try:
@@ -1590,9 +1602,13 @@ class TextGenerationMixin:
         except ProviderRequestGuardError:
             outcome = "cancelled"
             raise
-        except LiteLLMClientError:
+        except LiteLLMClientError as error:
             outcome = "failure"
-            record_health("llm.failures")
+            if not (
+                caller_reports_repair_failure
+                and isinstance(error, StructuredOutputRepairError)
+            ):
+                record_health("llm.failures")
             raise
         except BaseException:
             outcome = "aborted"

@@ -16,6 +16,7 @@ from reflexio.server.llm import StructuredOutputRepairError
 from reflexio.server.llm.input_budget import check_request_input_budget
 from reflexio.server.llm.litellm_client import LiteLLMClient, ProviderRequestGuardError
 from reflexio.server.llm.token_accounting import RunTokenCapture, run_token_capture
+from reflexio.server.operational_metrics import record_health
 from reflexio.server.services.input_compression import (
     CompressionBudget,
     CompressionCall,
@@ -99,6 +100,50 @@ def _recoverable_selection(
     ):
         return error.parsed_output, True
     raise error
+
+
+def _recover_selection(
+    call: CompressionCall, error: StructuredOutputRepairError, model: str
+) -> tuple[CompressionChoice, int]:
+    """Salvage a rejected selection, or re-raise ``error`` when it cannot be."""
+    candidate, recovered_prior = _recoverable_selection(error, model)
+    visible = set(call.visible_refs)
+    retained = [
+        point
+        for point in candidate.points
+        if all(ref in visible for ref in point.evidence_refs)
+    ]
+    discarded = len(candidate.points) - len(retained)
+    choice = _ReferenceSelection(points=retained).choice()
+    capacity_loss = bool(call.validate_selection(choice))
+    if not discarded and not capacity_loss:
+        raise error
+    choice.omissions = (
+        [
+            f"Host discarded {discarded} entire groups with unseen references after bounded repair; source selection is incomplete."
+        ]
+        if discarded
+        else [
+            "Host: Selection still exceeds capacity after bounded repair; whole points may be omitted."
+        ]
+    )
+    if recovered_prior:
+        choice.omissions.insert(
+            0,
+            "Host used the earlier complete schema-valid selection after the final repair failed parsing; source selection is incomplete.",
+        )
+    choice.omission_counts = OmissionCounts(unseen_reference_groups=discarded)
+    if call.validate(choice):
+        raise error
+    logger.info(
+        "event=compression_selection_recovered failure_kind=%s "
+        "discarded_groups=%d capacity_loss=%s recovered_prior=%s",
+        error.failure_kind,
+        discarded,
+        capacity_loss,
+        recovered_prior,
+    )
+    return choice, discarded
 
 
 class CompressionUsageCapture(RunTokenCapture):
@@ -351,38 +396,14 @@ def plan_with_client(
                     **request_options(),
                     provider_request_guard=guard,
                     structured_output_validator=validate,
+                    caller_reports_repair_failure=True,
                 )
             except StructuredOutputRepairError as error:
-                candidate, recovered_prior = _recoverable_selection(error, model)
-                visible = set(call.visible_refs)
-                retained = [
-                    point
-                    for point in candidate.points
-                    if all(ref in visible for ref in point.evidence_refs)
-                ]
-                discarded = len(candidate.points) - len(retained)
-                choice = _ReferenceSelection(points=retained).choice()
-                capacity_loss = bool(call.validate_selection(choice))
-                if not discarded and not capacity_loss:
-                    raise
-                choice.omissions = (
-                    [
-                        f"Host discarded {discarded} entire groups with unseen references after bounded repair; source selection is incomplete."
-                    ]
-                    if discarded
-                    else [
-                        "Host: Selection still exceeds capacity after bounded repair; whole points may be omitted."
-                    ]
-                )
-                if recovered_prior:
-                    choice.omissions.insert(
-                        0,
-                        "Host used the earlier complete schema-valid selection after the final repair failed parsing; source selection is incomplete.",
-                    )
-                choice.omission_counts = OmissionCounts(
-                    unseen_reference_groups=discarded
-                )
-                if call.validate(choice):
+                try:
+                    choice, discarded = _recover_selection(call, error, model)
+                except StructuredOutputRepairError:
+                    # Terminal only now: the client left this count to us.
+                    record_health("llm.failures")
                     raise
                 reference_recoveries += bool(discarded)
                 return choice
