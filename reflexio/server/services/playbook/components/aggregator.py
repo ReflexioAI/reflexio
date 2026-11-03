@@ -2556,7 +2556,9 @@ class PlaybookAggregator:
                 )
             )
             self._postproc._record_postprocessing_artifacts(artifact_count)
-            logger.error(
+            # WARNING: the caller defers this cluster's rebuild with backoff
+            # (``defer_playbook_aggregation_cluster_rebuild``), so nothing is lost.
+            logger.warning(
                 "AgentPlaybook aggregation failed due to %s, returning None.",
                 processed_error,
             )

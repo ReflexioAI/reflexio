@@ -1,8 +1,8 @@
 """Severity of extractor failures in ``ExtractionRunLifecycleMixin``.
 
-A failed automatic window is retried forever with capped backoff, so early
-attempts must not page; anything that is not a known-retried window keeps
-paging on its first failure.
+A failed automatic window is retried until it parks, and the park logs the
+one ERROR, so no attempt pages; anything that is not a known-retried window
+keeps paging on its first failure.
 """
 
 from __future__ import annotations
@@ -14,10 +14,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from reflexio.server.services.base_generation._extraction_lifecycle import (
-    WINDOW_FAILURE_ERROR_ATTEMPT,
     _failure_template,
 )
 from reflexio.server.services.base_generation_service import ExtractorExecutionError
+from reflexio.server.services.storage.storage_base._extraction_stream import (
+    MAX_EXTRACTION_WINDOW_ATTEMPTS,
+)
 from tests.server.services.test_base_generation_service_characterization import (
     _CharRequest,
     _CharService,
@@ -55,9 +57,8 @@ def _failure_levels(service: _CharService, caplog: pytest.LogCaptureFixture) -> 
     ("prior_attempts", "expected"),
     [
         (0, logging.WARNING),
-        (WINDOW_FAILURE_ERROR_ATTEMPT - 2, logging.WARNING),
-        (WINDOW_FAILURE_ERROR_ATTEMPT - 1, logging.ERROR),
-        (WINDOW_FAILURE_ERROR_ATTEMPT + 5, logging.ERROR),
+        (MAX_EXTRACTION_WINDOW_ATTEMPTS - 1, logging.WARNING),
+        (None, logging.ERROR),
     ],
 )
 def test_window_failure_severity_follows_attempt_count(

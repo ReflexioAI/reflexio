@@ -680,16 +680,19 @@ def test_artifact_postprocessing_runs_before_exception_logging(caplog):
 
     with (
         caplog.at_level(
-            logging.ERROR,
+            logging.WARNING,
             logger="reflexio.server.services.playbook.components.aggregator",
         ),
         patch.dict("os.environ", {"MOCK_LLM_RESPONSE": ""}),
     ):
-        result = agg._generate_playbook_from_cluster(cluster, "None")
+        outcome = agg._generate_playbook_from_cluster_outcome(cluster, "None")
 
-    assert result is None
+    assert outcome.status == "retryable_failure"
     assert "<<TOKEN_" not in caplog.text
     assert "a processed artifact" in caplog.text
+    # The cluster's rebuild is deferred and retried, so this must not count as
+    # a production error.
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
 # ---------------------------------------------------------------------------
