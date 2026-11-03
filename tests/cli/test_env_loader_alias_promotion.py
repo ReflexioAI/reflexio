@@ -51,6 +51,22 @@ def test_canonical_process_target_keeps_precedence(monkeypatch, tmp_path):
     assert os.environ["DATA_DB_URL"] == "process-target"
 
 
+def test_scoped_rejection_observes_live_assignments_without_rejecting_other_scopes():
+    canonical = "REFLEXIO_DB_LEASE_TIMEOUT_SECONDS"
+    removed = "REFLEXIO_POSTGRES_STATEMENT_TIMEOUT_MS"
+    env: dict[str, str] = {}
+    reject_removed_env(env, canonical=canonical)
+    env[removed] = ""
+    with pytest.raises(ValueError, match=removed):
+        reject_removed_env(env, canonical=canonical)
+    del env[removed]
+    env["DATA_SUPABASE_DB_URL"] = "private-target"
+    reject_removed_env(env, canonical=canonical)
+    with pytest.raises(ValueError, match="DATA_SUPABASE_DB_URL") as error:
+        reject_removed_env(env)
+    assert "private-target" not in str(error.value)
+
+
 @pytest.mark.parametrize("disabled", ["1", "true", "T", "yes", "Y"])
 def test_disabled_dotenv_does_not_validate_or_prune_file(
     monkeypatch, tmp_path, disabled

@@ -54,7 +54,7 @@ def reject_removed_env(
     obsolete = sorted(
         name
         for name in aliases
-        if name in env and (canonical is None or aliases[name] == canonical)
+        if (canonical is None or aliases[name] == canonical) and name in env
     )
     if obsolete:
         source_cap = "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOK_SOURCE_USER_PLAYBOOKS"
