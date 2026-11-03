@@ -444,7 +444,9 @@ class ResumeSelectionStore:
         if work_class == "learning" and expected_run is not None:
             raise ValueError("Learning selection cannot adopt a resumable run")
         with (
-            self.commit_scope(),
+            storage._coordination_commit_scope()
+            if expected_run is None
+            else self.commit_scope(),
             self._stream_sql(coordination=expected_run is None) as db,
         ):
             if self._owned_user_work_position(db, user_id, token) != expected_position:
