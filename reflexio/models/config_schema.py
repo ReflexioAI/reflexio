@@ -12,6 +12,7 @@ from pydantic import (
     Field,
     TypeAdapter,
     ValidationError,
+    field_validator,
     model_validator,
 )
 
@@ -322,10 +323,19 @@ class DeepSeekConfig(BaseModel):
 
 
 class DashScopeConfig(BaseModel):
-    """Alibaba DashScope (Qwen) API configuration."""
+    """Alibaba DashScope configuration with the shared provider URL policy."""
+
+    model_config = ConfigDict(hide_input_in_errors=True)
 
     api_key: NonEmptyStr
     api_base: str | None = None  # None = default; set for intl vs China endpoint
+
+    @field_validator("api_base")
+    @classmethod
+    def validate_api_base(cls, value: str | None) -> str | None:
+        # Preserve the provider-default meaning of an empty override and the
+        # public string interface used by provider dispatch and saved config.
+        return str(TypeAdapter(SafeHttpUrl).validate_python(value)) if value else None
 
 
 class ZAIConfig(BaseModel):

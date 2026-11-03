@@ -343,6 +343,14 @@ cost improvements; measure those separately.
 - Powered by LiteLLM — configure your preferred provider via API keys or custom endpoints
 - [OpenAI-compatible gateway configuration and verified limits](developer.md#openai-compatible-gateways-including-orcarouter-492)
 
+DashScope's optional `api_key_config.dashscope.api_base` uses the same HTTP URL
+safety policy as custom and Azure endpoints. Omitted, null or empty overrides
+retain the provider default; regional endpoints remain configurable strings.
+Cloud-metadata destinations and non-HTTP schemes are rejected during direct and
+saved configuration loading. Private and loopback URLs retain the existing
+`REFLEXIO_BLOCK_PRIVATE_URLS` policy. Correct an unsafe saved endpoint before
+loading it; it is not silently replaced with a different region.
+
 ## SDK Usage
 
 For detailed API documentation, see the [full API reference](https://www.reflexio.ai/docs/api-reference).
