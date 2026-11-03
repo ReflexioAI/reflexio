@@ -67,7 +67,7 @@ def _make_ctx_factory(
     storage = SQLiteStorage(org_id=_ORG_ID, db_path=str(tmp_path / "gc_b_test.db"))
     cfg = SimpleNamespace(
         lineage_gc=LineageGCConfig(
-            enabled=lineage_gc_enabled, tombstone_grace_window_days=1
+            tombstone_grace_window_days=(1) if lineage_gc_enabled else 0
         ),
         expiry_reclamation=ExpiryReclamationConfig(enabled=expiry_reclamation_enabled),
     )

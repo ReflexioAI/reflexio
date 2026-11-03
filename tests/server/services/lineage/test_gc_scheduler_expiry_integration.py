@@ -39,9 +39,7 @@ def real_ctx_factory(tmp_path):
     than now-1day).
     """
     storage = SQLiteStorage(org_id=_ORG_ID, db_path=str(tmp_path / "gc_test.db"))
-    cfg = SimpleNamespace(
-        lineage_gc=LineageGCConfig(enabled=True, tombstone_grace_window_days=1)
-    )
+    cfg = SimpleNamespace(lineage_gc=LineageGCConfig(tombstone_grace_window_days=1))
 
     def factory(org_id: str) -> RequestContext:
         ctx = RequestContext.__new__(RequestContext)
@@ -89,6 +87,58 @@ def test_tick_tombstones_then_gc_reclaims_expired(real_ctx_factory, org_id):
     # The tombstone_grace_window_days=1 ensures a freshly-tombstoned row is NOT
     # hard-deleted in the same tick.  The row must exist and be EXPIRED.
     assert row is not None and row.status == Status.EXPIRED
+
+
+def test_one_policy_holds_both_phases_then_applies_custom_grace(
+    real_ctx_factory, org_id, monkeypatch
+):
+    """Zero holds all Class A work; custom days reach actual SQLite deletion."""
+    from reflexio.server.services.lineage import gc_scheduler as gc
+
+    now = 1_900_000_000
+    monkeypatch.setattr(gc.time, "time", lambda: now)
+    ctx = real_ctx_factory(org_id)
+    policy = ctx.configurator.get_config().lineage_gc
+    for profile_id in ("expired-active", "retired-old", "retired-recent"):
+        ctx.storage.add_user_profile(
+            "u1",
+            [
+                UserProfile(
+                    profile_id=profile_id,
+                    user_id="u1",
+                    content="synthetic retention evidence",
+                    last_modified_timestamp=1,
+                    generated_from_request_id="r1",
+                    expiration_timestamp=100,
+                )
+            ],
+        )
+    for profile_id, age in (("retired-old", 38), ("retired-recent", 36)):
+        ctx.storage.conn.execute(
+            "UPDATE profiles SET status = ?, retired_at = ? WHERE profile_id = ?",
+            (Status.EXPIRED.value, now - age * 86400, profile_id),
+        )
+    ctx.storage.conn.commit()
+    scheduler = LineageGCScheduler(
+        request_context_factory=real_ctx_factory, bootstrap_org_id=org_id
+    )
+    policy.tombstone_grace_window_days = 0
+    scheduler._gc_tick([org_id])
+    held = ctx.storage.get_profile_by_id("expired-active", include_tombstones=True)
+    assert held is not None and held.status != Status.EXPIRED
+    assert (
+        ctx.storage.get_profile_by_id("retired-old", include_tombstones=True)
+        is not None
+    )
+    policy.tombstone_grace_window_days = 37
+    scheduler._gc_tick([org_id])
+    expired = ctx.storage.get_profile_by_id("expired-active", include_tombstones=True)
+    assert expired is not None and expired.status == Status.EXPIRED
+    assert ctx.storage.get_profile_by_id("retired-old", include_tombstones=True) is None
+    assert (
+        ctx.storage.get_profile_by_id("retired-recent", include_tombstones=True)
+        is not None
+    )
 
 
 def test_real_worker_uses_captured_cadence_and_preserves_retention_hold(
@@ -146,7 +196,7 @@ def test_real_worker_uses_captured_cadence_and_preserves_retention_hold(
         expired = ctx.storage.get_profile_by_id("expire-now", include_tombstones=True)
         assert expired is not None and expired.status == Status.EXPIRED
         add("hold-this")
-        ctx.configurator.get_config().lineage_gc.enabled = False
+        ctx.configurator.get_config().lineage_gc.tombstone_grace_window_days = 0
         scheduler.wake()
         assert second.wait(3)
         held = ctx.storage.get_profile_by_id("hold-this", include_tombstones=True)

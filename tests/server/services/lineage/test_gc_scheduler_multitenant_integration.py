@@ -49,7 +49,7 @@ pytestmark = pytest.mark.integration
 def _both_enabled_config() -> SimpleNamespace:
     """Config with Class A (lineage_gc) and Class B (expiry_reclamation) enabled."""
     return SimpleNamespace(
-        lineage_gc=LineageGCConfig(enabled=True, tombstone_grace_window_days=1),
+        lineage_gc=LineageGCConfig(tombstone_grace_window_days=1),
         expiry_reclamation=ExpiryReclamationConfig(enabled=True),
     )
 
@@ -237,9 +237,7 @@ def test_maybe_start_lineage_gc_reads_module_provider_hook(tmp_path):
         ctx.storage_base_dir = None
         configurator = MagicMock()
         configurator.get_config.return_value = SimpleNamespace(
-            lineage_gc=SimpleNamespace(
-                enabled=True, poll_interval_seconds=3600, tombstone_grace_window_days=1
-            ),
+            lineage_gc=LineageGCConfig(tombstone_grace_window_days=1),
             expiry_reclamation=cfg.expiry_reclamation,
         )
         ctx.configurator = configurator

@@ -57,7 +57,7 @@ def _make_ctx(org_id: str, *, lineage_gc: LineageGCConfig, storage=None):
 
 
 def _default_factory(org_id: str):
-    return _make_ctx(org_id, lineage_gc=LineageGCConfig(enabled=True))
+    return _make_ctx(org_id, lineage_gc=LineageGCConfig(tombstone_grace_window_days=90))
 
 
 def _scheduler(*, bootstrap_org_id: str = "org_bootstrap", factory=None):
@@ -112,7 +112,9 @@ def gc_scheduler_factory():
                 else None
             )
             return _make_ctx(
-                org_id, lineage_gc=LineageGCConfig(enabled=False), storage=storage
+                org_id,
+                lineage_gc=LineageGCConfig(tombstone_grace_window_days=0),
+                storage=storage,
             )
 
         sched = LineageGCScheduler(
@@ -138,7 +140,7 @@ def gc_scheduler_factory():
 
 def test_gc_tick_calls_all_entity_types_with_correct_cutoff():
     grace_days = 30
-    cfg = LineageGCConfig(enabled=True, tombstone_grace_window_days=grace_days)
+    cfg = LineageGCConfig(tombstone_grace_window_days=grace_days)
     storage = _make_storage(gc_return=0)
     ctx = _make_ctx("org_1", lineage_gc=cfg, storage=storage)
 
@@ -171,7 +173,7 @@ def test_gc_tick_calls_all_entity_types_with_correct_cutoff():
 
 
 def test_gc_tick_skips_disabled_org():
-    cfg = LineageGCConfig(enabled=False)
+    cfg = LineageGCConfig(tombstone_grace_window_days=0)
     storage = _make_storage()
     ctx = _make_ctx("org_disabled", lineage_gc=cfg, storage=storage)
 
@@ -188,7 +190,7 @@ def test_gc_tick_skips_disabled_org():
 
 def test_gc_tick_continues_after_org_failure():
     good_storage = _make_storage(gc_return=1)
-    good_cfg = LineageGCConfig(enabled=True, tombstone_grace_window_days=10)
+    good_cfg = LineageGCConfig(tombstone_grace_window_days=10)
 
     def factory(org_id: str):
         if org_id == "org_bad":
@@ -214,7 +216,7 @@ def test_gc_tick_continues_after_org_failure():
 def test_gc_tick_fires_high_volume_anomaly():
     # Each of the 3 entity types returns enough to exceed the threshold in total
     per_entity = (_HIGH_VOLUME_THRESHOLD // len(_ENTITY_TYPES)) + 1
-    cfg = LineageGCConfig(enabled=True, tombstone_grace_window_days=10)
+    cfg = LineageGCConfig(tombstone_grace_window_days=10)
     storage = _make_storage(gc_return=per_entity)
     ctx = _make_ctx("org_bigdel", lineage_gc=cfg, storage=storage)
 
@@ -241,7 +243,7 @@ def test_gc_tick_no_high_volume_anomaly_below_threshold():
         f">= _HIGH_VOLUME_THRESHOLD={_HIGH_VOLUME_THRESHOLD}; adjust the calculation"
     )
 
-    cfg = LineageGCConfig(enabled=True, tombstone_grace_window_days=10)
+    cfg = LineageGCConfig(tombstone_grace_window_days=10)
     storage = _make_storage(gc_return=per_entity)
     ctx = _make_ctx("org_small", lineage_gc=cfg, storage=storage)
 
@@ -264,7 +266,7 @@ def test_gc_tick_never_runs_governance_retention():
     present, _gc_tick must NEVER call gc_governance_retention directly — that
     behavior is only invoked if an enterprise per-org sweep is registered via
     register_per_org_sweep (Task 1 seam)."""
-    cfg = LineageGCConfig(enabled=True, tombstone_grace_window_days=10)
+    cfg = LineageGCConfig(tombstone_grace_window_days=10)
     storage = _make_storage(gc_return=0)
     ctx = _make_ctx("org_gov", lineage_gc=cfg, storage=storage)
     # Attach a governance_retention config that *would* have enabled the
@@ -285,7 +287,7 @@ def test_gc_tick_never_runs_governance_retention():
 def test_gc_tick_works_for_legacy_config_without_governance_retention():
     """Legacy-config path: a config object lacking ``governance_retention`` still
     ticks fine — the reduced gate only reads ``lineage_gc.enabled``."""
-    cfg = LineageGCConfig(enabled=True, tombstone_grace_window_days=10)
+    cfg = LineageGCConfig(tombstone_grace_window_days=10)
     storage = _make_storage(gc_return=0)
     # _make_ctx builds SimpleNamespace(lineage_gc=...) with NO governance_retention.
     ctx = _make_ctx("org_legacy", lineage_gc=cfg, storage=storage)
@@ -300,7 +302,7 @@ def test_gc_tick_works_for_legacy_config_without_governance_retention():
 
 def test_lineage_gc_enabled_default_is_true():
     """Default-flip tripwire: OSS must always reclaim tombstones by default."""
-    assert LineageGCConfig().enabled is True
+    assert LineageGCConfig().reclamation_cutoff(int(time.time())) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +322,7 @@ def test_maybe_start_lineage_gc_returns_none_when_disabled(monkeypatch):
     monkeypatch.setattr(
         gc_scheduler, "get_row_retention_limits", lambda: {"interactions": 0}
     )
-    cfg = LineageGCConfig(enabled=False)
+    cfg = LineageGCConfig(tombstone_grace_window_days=0)
     ctx = _make_ctx("org_1", lineage_gc=cfg)
     result = maybe_start_lineage_gc(lambda _: ctx, bootstrap_org_id="org_1")  # type: ignore[arg-type]
     assert result is None
@@ -332,7 +334,7 @@ def test_maybe_start_lineage_gc_starts_for_retention_alone():
     With every other gate off but row caps still active, the scheduler MUST
     start: Class C is where retention now runs, and nothing else would run it.
     """
-    cfg = LineageGCConfig(enabled=False)
+    cfg = LineageGCConfig(tombstone_grace_window_days=0)
     ctx = _make_ctx("org_1", lineage_gc=cfg)
     sched = maybe_start_lineage_gc(lambda _: ctx, bootstrap_org_id="org_1")  # type: ignore[arg-type]
     assert sched is not None
@@ -340,7 +342,7 @@ def test_maybe_start_lineage_gc_starts_for_retention_alone():
 
 
 def test_maybe_start_lineage_gc_returns_scheduler_when_enabled():
-    cfg = LineageGCConfig(enabled=True)
+    cfg = LineageGCConfig(tombstone_grace_window_days=90)
     ctx = _make_ctx("org_1", lineage_gc=cfg)
     sched = maybe_start_lineage_gc(lambda _: ctx, bootstrap_org_id="org_1")  # type: ignore[arg-type]
     assert sched is not None
@@ -353,7 +355,9 @@ def test_gc_scheduler_recovers_when_first_org_appears():
 
     def factory(org_id: str):
         factory_calls.append(org_id)
-        return _make_ctx(org_id, lineage_gc=LineageGCConfig(enabled=True))
+        return _make_ctx(
+            org_id, lineage_gc=LineageGCConfig(tombstone_grace_window_days=90)
+        )
 
     scheduler = LineageGCScheduler(
         request_context_factory=factory,  # type: ignore[arg-type]
@@ -455,7 +459,7 @@ def test_discover_org_ids_not_implemented_warns_and_falls_back_to_bootstrap(
     processed and a warning is logged (degraded mode is VISIBLE)."""
     storage = MagicMock()
     storage.list_org_ids.side_effect = NotImplementedError("not impl")
-    cfg = LineageGCConfig(enabled=True, tombstone_grace_window_days=7)
+    cfg = LineageGCConfig(tombstone_grace_window_days=7)
     bootstrap_ctx = _make_ctx("org_bootstrap", lineage_gc=cfg, storage=storage)
 
     sched = _scheduler(bootstrap_org_id="org_bootstrap")
@@ -479,7 +483,9 @@ def test_discover_org_ids_provider_raises_falls_back_to_bootstrap():
     to _run_loop (which would skip the entire tick). The old NotImplementedError
     fallback behaviour is restored — bootstrap is always swept.
     """
-    bootstrap_ctx = _make_ctx("org_bootstrap", lineage_gc=LineageGCConfig(enabled=True))
+    bootstrap_ctx = _make_ctx(
+        "org_bootstrap", lineage_gc=LineageGCConfig(tombstone_grace_window_days=90)
+    )
 
     def exploding_provider() -> list[str]:
         raise RuntimeError("provider blown up")
@@ -520,7 +526,7 @@ def test_sqlite_list_org_ids_returns_own_org(tmp_path):
 def test_gc_tick_stops_mid_tick_when_stop_event_set():
     """_gc_tick must break out of the per-org loop when _stop_event fires."""
     calls: list[str] = []
-    cfg = LineageGCConfig(enabled=True, tombstone_grace_window_days=7)
+    cfg = LineageGCConfig(tombstone_grace_window_days=7)
 
     def factory(org_id: str):
         calls.append(org_id)
@@ -549,7 +555,9 @@ def test_gc_tick_stops_mid_tick_when_stop_event_set():
 def _config(*, lineage_gc_enabled: bool = True, audit_events_max_age_days: int = 0):
     """Build a minimal config-like object for dead-knob warning tests."""
     return SimpleNamespace(
-        lineage_gc=SimpleNamespace(enabled=lineage_gc_enabled),
+        lineage_gc=LineageGCConfig(
+            tombstone_grace_window_days=(90) if lineage_gc_enabled else 0
+        ),
         governance_retention=SimpleNamespace(
             audit_events_max_age_days=audit_events_max_age_days
         ),
@@ -702,7 +710,7 @@ def test_gc_tick_runs_registered_per_org_sweep_gated_live():
     try:
         # Disable both Class-A and Class-B to confirm the per-org sweep runs
         # unconditionally regardless of those gates.
-        cfg = LineageGCConfig(enabled=False)
+        cfg = LineageGCConfig(tombstone_grace_window_days=0)
         sched = _scheduler(
             factory=lambda org_id: _make_ctx(
                 org_id, lineage_gc=cfg, storage=_make_storage()
@@ -742,7 +750,7 @@ def test_gc_tick_isolates_per_org_sweep_failure():
     register_per_org_sweep(raising_sweep)
     register_per_org_sweep(sibling_sweep)
     try:
-        cfg = LineageGCConfig(enabled=False)
+        cfg = LineageGCConfig(tombstone_grace_window_days=0)
         sched = _scheduler(
             factory=lambda org_id: _make_ctx(
                 org_id, lineage_gc=cfg, storage=_make_storage()
@@ -785,7 +793,7 @@ def test_maybe_start_starts_when_a_per_org_sweep_is_registered_even_with_flags_o
     sched = None
     try:
         cfg = SimpleNamespace(
-            lineage_gc=SimpleNamespace(enabled=False, poll_interval_seconds=86400),
+            lineage_gc=LineageGCConfig(tombstone_grace_window_days=0),
             expiry_reclamation=SimpleNamespace(enabled=False),
             governance_retention=SimpleNamespace(audit_events_max_age_days=0),
         )
@@ -941,7 +949,7 @@ def test_maybe_start_lineage_gc_reads_module_leader_gate_hook():
             return True
 
     gate = _Gate()
-    cfg = LineageGCConfig(enabled=True)
+    cfg = LineageGCConfig(tombstone_grace_window_days=90)
     ctx = _make_ctx("org_1", lineage_gc=cfg)
 
     set_maintenance_schedule(MaintenanceSchedule(leader_gate=gate))

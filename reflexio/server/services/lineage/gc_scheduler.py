@@ -1,10 +1,10 @@
 """Process-local scheduler for lineage tombstone garbage collection and expiry reclamation.
 
-Startup runs when EITHER ``lineage_gc.enabled`` OR ``expiry_reclamation.enabled``
+Startup runs when EITHER positive ``lineage_gc.tombstone_grace_window_days`` OR ``expiry_reclamation.enabled``
 OR ``governance_retention.audit_events_max_age_days > 0`` is set in the bootstrap
 org's config. Each tick evaluates every org independently.
 
-- **Class A** (profile expiry sweep + tombstone GC): gated on ``lineage_gc.enabled``.
+- **Class A** (profile expiry sweep + tombstone GC): gated on positive ``lineage_gc.tombstone_grace_window_days``.
   Hard-deletes expired tombstones per that org's ``lineage_gc`` config.
 - **Class B** (plain-row direct-delete sweeps, no PII/audit obligation): gated on
   ``expiry_reclamation.enabled``. Currently sweeps expired share links and expired
@@ -545,8 +545,9 @@ class LineageGCScheduler(ThreadedScheduler):
         # rather than read from the bound scope, which is inert in OSS.
         unit = f"{org_id}:{project_id}"
         # Class A: profile expiry sweep (requires PII/grace sign-off; gated on
-        # lineage_gc.enabled independently of Class B).
-        if cfg.lineage_gc.enabled:
+        # positive lineage grace independently of Class B).
+        cutoff = cfg.lineage_gc.reclamation_cutoff(int(time.time()))
+        if cutoff is not None:
             try:
                 expired_tombstoned = storage.expire_active_profiles(
                     now=int(time.time())
@@ -578,15 +579,11 @@ class LineageGCScheduler(ThreadedScheduler):
 
             # Tombstone GC: each entity type is independent within the loop.
             try:
-                older_than_epoch = (
-                    int(time.time())
-                    - cfg.lineage_gc.tombstone_grace_window_days * 86400
-                )
                 tombstone_deleted = 0
                 for entity_type in _ENTITY_TYPES:
                     tombstone_deleted += storage.gc_expired_tombstones(
                         entity_type=entity_type,
-                        older_than_epoch=older_than_epoch,
+                        older_than_epoch=cutoff,
                     )
                 if tombstone_deleted:
                     logger.info(
@@ -955,7 +952,7 @@ def maybe_start_lineage_gc(
 ) -> LineageGCScheduler | None:
     """Start the scheduler when bootstrap config enables tombstone GC or expiry reclamation.
 
-    Startup runs when the bootstrap-org config sets ``lineage_gc.enabled``
+    Startup runs when the bootstrap-org config sets positive ``lineage_gc.tombstone_grace_window_days``
     (Class A: profile expiry + tombstone GC), ``expiry_reclamation.enabled``
     (Class B: plain-row direct-delete sweeps), or
     ``governance_retention.audit_events_max_age_days > 0`` — OR when any sweep
@@ -1055,7 +1052,7 @@ def maybe_start_lineage_gc(
         )
         governance_retention_enabled = getattr(gr, "audit_events_max_age_days", 0) > 0
         config_enabled = bool(
-            cfg.lineage_gc.enabled
+            cfg.lineage_gc.reclamation_cutoff(int(time.time())) is not None
             or expiry_reclamation_enabled
             or governance_retention_enabled
         )
@@ -1090,7 +1087,7 @@ def maybe_start_lineage_gc(
     # Class C (row-count retention) is its own start condition, and must be:
     # the caps are env-driven and unconditional, so they cannot ride another
     # feature's flag. Before this was here, an OSS deployment that set
-    # `lineage_gc.enabled = false` -- which this module's own docstring frames
+    # `lineage_gc.tombstone_grace_window_days = 0` -- which this module's own docstring frames
     # as a deliberate operator choice, and which `maybe_start_lineage_gc`'s
     # criteria REQUIRE until DPO sign-off -- got no scheduler, and so no row
     # caps at all. They had been enforced on every publish until the sweep

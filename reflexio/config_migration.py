@@ -152,6 +152,34 @@ def canonicalize_retrieval_floor_policy(data: Any) -> Any:
     return normalized
 
 
+def canonicalize_lineage_retention_policy(
+    data: Any, *, historical: bool = False
+) -> Any:
+    """Convert historical Class A consent only at an explicit upgrade boundary.
+
+    Dormant custom grace remains recoverable in the original saved document,
+    not as a second current setting. Validate it even when deletion was held.
+    """
+    if not isinstance(data, dict) or ("enabled" not in data and not historical):
+        return data
+    try:
+        enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(data.get("enabled", True))
+        # Frozen historical default, never a replacement for current policy.
+        days = _LEGACY_AUDIT_RETENTION_DAYS.validate_python(
+            data.get("tombstone_grace_window_days", 90)
+        )
+    except ValidationError:
+        raise ConfigurationMigrationError(
+            "Invalid saved lineage reclamation enabled or grace setting"
+        ) from None
+    if "enabled" not in data:
+        return data
+    return {
+        **{key: value for key, value in data.items() if key != "enabled"},
+        "tombstone_grace_window_days": days if enabled else 0,
+    }
+
+
 def canonicalize_audit_retention_policy(data: Any) -> Any:
     """Preserve historical deletion consent, including disabled custom ages."""
     old_fields = {"audit_events_retention_enabled", "audit_events_retention_days"}
@@ -497,6 +525,10 @@ def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
     if "retrieval_floor" in payload:
         payload["retrieval_floor"] = canonicalize_retrieval_floor_policy(
             payload["retrieval_floor"]
+        )
+    if "lineage_gc" in payload:
+        payload["lineage_gc"] = canonicalize_lineage_retention_policy(
+            payload["lineage_gc"]
         )
     if "governance_retention" in payload:
         payload["governance_retention"] = canonicalize_audit_retention_policy(

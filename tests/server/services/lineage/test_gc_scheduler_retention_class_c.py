@@ -32,6 +32,7 @@ from unittest.mock import create_autospec, patch
 
 import pytest
 
+from reflexio.models.config_schema import LineageGCConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.extensions import register_service
 from reflexio.server.services.lineage import gc_scheduler
@@ -92,7 +93,7 @@ def _ctx():
         storage=types.SimpleNamespace(),
         configurator=types.SimpleNamespace(
             get_config=lambda: types.SimpleNamespace(
-                lineage_gc=types.SimpleNamespace(enabled=False),
+                lineage_gc=LineageGCConfig(tombstone_grace_window_days=0),
                 expiry_reclamation=types.SimpleNamespace(enabled=False),
             )
         ),
@@ -194,8 +195,8 @@ def _bootstrap_ctx(
     context.storage = types.SimpleNamespace()
     context.configurator = types.SimpleNamespace(
         get_config=lambda: types.SimpleNamespace(
-            lineage_gc=types.SimpleNamespace(
-                enabled=lineage_gc, poll_interval_seconds=86400
+            lineage_gc=LineageGCConfig(
+                tombstone_grace_window_days=(90) if lineage_gc else 0
             ),
             expiry_reclamation=types.SimpleNamespace(enabled=expiry),
             governance_retention=types.SimpleNamespace(
@@ -286,9 +287,7 @@ def _failing_ctx():
         storage=types.SimpleNamespace(),
         configurator=types.SimpleNamespace(
             get_config=lambda: types.SimpleNamespace(
-                lineage_gc=types.SimpleNamespace(
-                    enabled=False, poll_interval_seconds=86400
-                ),
+                lineage_gc=LineageGCConfig(tombstone_grace_window_days=0),
                 expiry_reclamation=types.SimpleNamespace(enabled=False),
             )
         ),
@@ -376,9 +375,7 @@ def test_internal_interval_shorter_than_retry_is_not_lengthened(monkeypatch):
         storage=types.SimpleNamespace(),
         configurator=types.SimpleNamespace(
             get_config=lambda: types.SimpleNamespace(
-                lineage_gc=types.SimpleNamespace(
-                    enabled=False, poll_interval_seconds=60
-                ),
+                lineage_gc=LineageGCConfig(tombstone_grace_window_days=0),
                 expiry_reclamation=types.SimpleNamespace(enabled=False),
             )
         ),

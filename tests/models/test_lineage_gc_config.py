@@ -12,7 +12,6 @@ from reflexio.models.config_schema import (
 
 def test_lineage_gc_config_defaults():
     cfg = LineageGCConfig()
-    assert cfg.enabled is True
     assert cfg.tombstone_grace_window_days == 90
     assert "poll_interval_seconds" not in cfg.model_dump()
 
@@ -20,19 +19,13 @@ def test_lineage_gc_config_defaults():
 def test_config_has_lineage_gc_default():
     cfg = Config(storage_config=StorageConfigSQLite())
     assert isinstance(cfg.lineage_gc, LineageGCConfig)
-    assert cfg.lineage_gc.enabled is True
-
-
-def test_lineage_gc_enabled_can_be_set():
-    """enabled=True is the default; explicitly setting it is a no-op but must still work."""
-    cfg = LineageGCConfig(enabled=True)
-    assert cfg.enabled is True
+    assert cfg.lineage_gc.tombstone_grace_window_days == 90
 
 
 def test_lineage_gc_can_be_explicitly_disabled():
-    """Explicit enabled=False must override the default-on."""
-    cfg = LineageGCConfig(enabled=False)
-    assert cfg.enabled is False
+    """Zero grace holds reclamation instead of deleting immediately."""
+    cfg = LineageGCConfig(tombstone_grace_window_days=0)
+    assert cfg.reclamation_cutoff(1_900_000_000) is None
 
 
 def test_lineage_gc_fields_can_be_overridden():
@@ -51,12 +44,12 @@ def test_lineage_gc_null_falls_back_to_default():
 
 
 # ---------------------------------------------------------------------------
-# Bounds validation: negative/zero values must be rejected
+# Bounds validation: negative values must be rejected
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("days", [0, -1, -90])
-def test_lineage_gc_rejects_non_positive_grace_window(days: int):
+@pytest.mark.parametrize("days", [-1, -90])
+def test_lineage_gc_rejects_negative_grace_window(days: int):
     with pytest.raises(ValidationError):
         LineageGCConfig(tombstone_grace_window_days=days)
 

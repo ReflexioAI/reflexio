@@ -22,7 +22,8 @@ from reflexio.config_env import StoredConfigurationError
 
 NATIVE_POOL_AUTHORITY_VERSION = 10
 SINGLE_OWNER_EXECUTION_VERSION = 11
-FILE_FORMAT_VERSION = SINGLE_OWNER_EXECUTION_VERSION
+LINEAGE_RETENTION_VERSION = 12
+FILE_FORMAT_VERSION = LINEAGE_RETENTION_VERSION
 _METADATA_KEY = "_reflexio_config_file"
 
 
@@ -174,6 +175,7 @@ def _prepare_document(data: dict[str, Any], version: int) -> dict[str, Any]:
         canonicalize_agent_optimizer_policy,
         canonicalize_audit_retention_policy,
         canonicalize_custom_endpoint_policy,
+        canonicalize_lineage_retention_policy,
         canonicalize_optimizer_work_budget,
         canonicalize_retrieval_floor_policy,
         retire_optimizer_jitter_policy,
@@ -226,6 +228,10 @@ def _prepare_document(data: dict[str, Any], version: int) -> dict[str, Any]:
 
         canonical["pending_tool_call_config"] = strip_legacy_pending_tool_timing(
             canonical["pending_tool_call_config"]
+        )
+    if version < LINEAGE_RETENTION_VERSION and "lineage_gc" in canonical:
+        canonical["lineage_gc"] = canonicalize_lineage_retention_policy(
+            canonical["lineage_gc"], historical=True
         )
     return canonical
 

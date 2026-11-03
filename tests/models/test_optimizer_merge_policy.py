@@ -154,7 +154,7 @@ def test_optimizer_normalization_keeps_housekeeping_migration_safeguards():
     original = deepcopy(payload)
     normalized = strip_retired_config_fields(payload)
     assert payload == original
-    assert normalized["lineage_gc"] == {"enabled": False}
+    assert normalized["lineage_gc"] == {"tombstone_grace_window_days": 0}
     assert normalized["playbook_optimizer_config"] == {"max_merge_invocations": 0}
     payload["lineage_gc"]["poll_interval_seconds"] = 7
     with pytest.raises(HousekeepingMigrationError):

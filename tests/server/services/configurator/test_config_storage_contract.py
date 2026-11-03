@@ -281,12 +281,14 @@ def test_retired_custom_policy_propagates_without_resetting_file(
         load_storage_from_config,
         save_storage_to_config,
     )
+    from reflexio.config_file import FILE_FORMAT_VERSION
     from reflexio.config_migration import StoredConfigurationError
 
     storage = _make_local_file_storage(str(tmp_path))
     payload = {
         "storage_config": {"type": "sqlite"},
-        "lineage_gc": {"enabled": False},
+        "_reflexio_config_file": {"version": FILE_FORMAT_VERSION},
+        "lineage_gc": {"tombstone_grace_window_days": 0},
         "agent_context_prompt": "preserve me",
     }
     payload.setdefault(section, {})[field] = "private-custom-policy"
@@ -333,7 +335,7 @@ def test_invalid_recognized_policy_preserves_file_and_blocks_cli_fallback(
     payload = {
         "_reflexio_config_file": {"version": FILE_FORMAT_VERSION},
         "storage_config": {"type": "sqlite"},
-        "lineage_gc": {"enabled": False},
+        "lineage_gc": {"tombstone_grace_window_days": 0},
         "agent_context_prompt": "private-customer-prompt",
         "governance_retention": invalid_policy,
     }
@@ -355,11 +357,11 @@ def test_invalid_recognized_policy_preserves_file_and_blocks_cli_fallback(
     }
     path.write_text(json.dumps(payload))
     cfg = storage.load_config()
-    assert cfg.lineage_gc.enabled is False
+    assert cfg.lineage_gc.tombstone_grace_window_days == 0
     assert cfg.governance_retention.audit_events_max_age_days == 45
     storage.save_config(cfg)
     reloaded = storage.load_config()
-    assert reloaded.lineage_gc.enabled is False
+    assert reloaded.lineage_gc.tombstone_grace_window_days == 0
     assert reloaded.governance_retention.audit_events_delete_batch_limit == 2
 
 
