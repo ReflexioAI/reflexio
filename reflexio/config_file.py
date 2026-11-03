@@ -58,6 +58,18 @@ def _decode(raw: bytes) -> tuple[dict[str, Any], dict[str, Any]]:
     return document, metadata
 
 
+def _require_prepared_pending_creation(data: dict[str, Any], version: int) -> None:
+    """A strict reader/editor cannot infer new consent from an old duration."""
+    if version < PENDING_CREATION_VERSION and isinstance(
+        data.get("pending_tool_call_config"), dict
+    ):
+        raise StoredConfigurationError(
+            "Saved pending_tool_call_config requires versioned preparation before "
+            "reading or editing; restart through the normal launcher or use "
+            "config upgrade-file. No pending policy was selected."
+        )
+
+
 def _reject_ambiguous_output_policy(data: dict[str, Any], version: int) -> None:
     llm = data.get("llm_config")
     if (
@@ -302,6 +314,7 @@ class LocalConfigFile:
     def read_document(self) -> dict[str, Any]:
         """Read strict runtime policy without transforming or writing it."""
         document, metadata = self._read_snapshot()
+        _require_prepared_pending_creation(document, metadata.get("version", 0))
         _reject_ambiguous_output_policy(document, metadata.get("version", 0))
         return document
 
@@ -326,7 +339,12 @@ class LocalConfigFile:
         admit: Callable[[dict[str, Any]], None] | None = None,
     ) -> bool:
         """Publish an explicit full replacement; this is not a read/merge patch."""
-        data, _supplied_metadata = _decode(document.encode("utf-8"))
+        data, supplied_metadata = _decode(document.encode("utf-8"))
+        # Unmarked full replacements explicitly select current logical policy.
+        # An envelope declaring an old physical generation cannot relabel it.
+        _require_prepared_pending_creation(
+            data, supplied_metadata.get("version", FILE_FORMAT_VERSION)
+        )
         self._validate(data)
         target = self._target()
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -376,6 +394,7 @@ class LocalConfigFile:
         with FileLock(f"{target}.lock", timeout=30, mode=0o600):
             original = target.read_bytes()
             data, metadata = _decode(original)
+            _require_prepared_pending_creation(data, metadata.get("version", 0))
             _reject_ambiguous_policy(data, metadata.get("version", 0))
             self._validate(data)
             edit(data)

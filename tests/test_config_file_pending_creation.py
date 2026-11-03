@@ -13,6 +13,90 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.mark.parametrize("version", range(14))
+@pytest.mark.parametrize(
+    "operation", ["raw", "storage", "configurator", "bootstrap", "edit"]
+)
+def test_unprepared_history_cannot_be_read_or_stamped_by_unrelated_edit(
+    tmp_path, version, operation
+):
+    from reflexio.cli.bootstrap_config import load_storage_from_config
+    from reflexio.server.services.configurator.configurator import DefaultConfigurator
+    from reflexio.server.services.configurator.local_file_config_storage import (
+        LocalFileConfigStorage,
+    )
+
+    storage = LocalFileConfigStorage("consent", base_dir=str(tmp_path))
+    path = tmp_path / "configs/config_consent.json"
+    path.parent.mkdir()
+    document = {
+        "storage_config": {"type": "sqlite", "db_path": None},
+        "pending_tool_call_config": {"pending_ttl_seconds": 37},
+    }
+    if version:
+        document["_reflexio_config_file"] = {"version": version}
+    original = json.dumps(document).encode()
+    path.write_bytes(original)
+    owner = LocalConfigFile(path)
+    edits = []
+
+    def change_storage(data):
+        edits.append(True)
+        data["storage_config"]["db_path"] = "selected.sqlite"
+
+    def invoke():
+        if operation == "raw":
+            return owner.read_document()
+        if operation == "storage":
+            return storage.load_config()
+        if operation == "configurator":
+            return DefaultConfigurator("consent", base_dir=str(tmp_path))
+        if operation == "bootstrap":
+            return load_storage_from_config("consent", base_dir=str(tmp_path))
+        return owner.edit_document(change_storage)
+
+    if version < 13:
+        with pytest.raises(StoredConfigurationError, match="pending_tool_call_config"):
+            invoke()
+        assert path.read_bytes() == original and edits == []
+        assert not (tmp_path / "configs/.config-migrations").exists()
+    else:
+        invoke()
+        assert (
+            owner.read_document()["pending_tool_call_config"]["pending_ttl_seconds"]
+            == 37
+        )
+        if operation != "edit":
+            assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("version", range(1, 14))
+def test_full_replacement_cannot_silently_relabel_supplied_historical_envelope(
+    tmp_path, version
+):
+    path = tmp_path / "config.json"
+    original = b'{"storage_config":null}'
+    path.write_bytes(original)
+    document = json.dumps(
+        {
+            "storage_config": None,
+            "pending_tool_call_config": {"pending_ttl_seconds": 37},
+            "_reflexio_config_file": {"version": version},
+        }
+    )
+    owner = LocalConfigFile(path)
+    if version < 13:
+        with pytest.raises(StoredConfigurationError, match="pending_tool_call_config"):
+            owner.publish_document(document)
+        assert path.read_bytes() == original
+    else:
+        assert owner.publish_document(document)
+        assert (
+            owner.read_document()["pending_tool_call_config"]["pending_ttl_seconds"]
+            == 37
+        )
+
+
+@pytest.mark.parametrize("version", range(14))
 def test_offline_copy_preserves_generation_owned_creation_consent(tmp_path, version):
     from typer.testing import CliRunner
 

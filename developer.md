@@ -1635,6 +1635,12 @@ write. Current generation13 never replays that conversion. Generation12 readers
 refuse13; stop older writers before upgrading and use original-preserving fenced
 recovery or forward repair after new writes.
 
+Direct library reads and storage-only edits refuse an older file containing a
+pending policy until preparation completes. A full replacement carrying an old
+file envelope also refuses; an explicit current logical replacement retains its
+normal publication semantics. No reader or unrelated edit can stamp historical
+positive duration as current consent.
+
 New internal frozen snapshots carry `creation_policy_version:1`. Complete old
 snapshots compare through validated historical conversion while returning the
 untouched original witness. Missing/unknown/mixed encoding, HMAC changes, unknown
