@@ -33,7 +33,7 @@ execution = transitions.execution
 pytestmark = pytest.mark.integration
 
 
-def _answer(storage, run, identifier):
+def _answer(storage, run, identifier, *, valid_for_seconds=30):
     now = datetime.now(UTC)
     question = f"What is the correct answer for {identifier}?"
     scope = human_feedback_scope(storage.org_id)
@@ -62,7 +62,7 @@ def _answer(storage, run, identifier):
         identifier,
         result={"answer": f"Answer {identifier}"},
         resolved_at=now,
-        valid_for_seconds=30,
+        valid_for_seconds=valid_for_seconds,
     )
     assert resolved is not None
     return resolved
@@ -219,7 +219,12 @@ def test_lease_expiry_after_consumption_rolls_back(output, monkeypatch):
 @pytest.mark.parametrize("missing_last", [False, True])
 def test_owned_input_pages_do_not_impose_overflow_answer_limit(execution, missing_last):
     storage, run, _, _ = execution
-    answers = [_answer(storage, run, f"page_answer_{i:04}") for i in range(1001)]
+    # Creating 1001 answers can outlast the default 30s window on a loaded
+    # runner; expiry is covered separately, so keep every answer current here.
+    answers = [
+        _answer(storage, run, f"page_answer_{i:04}", valid_for_seconds=3600)
+        for i in range(1001)
+    ]
     completed = _output(storage, run, answers)
     if missing_last:
         storage._execute(

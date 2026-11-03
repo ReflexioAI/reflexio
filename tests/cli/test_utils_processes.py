@@ -170,13 +170,22 @@ class TestKillProcesses:
     def test_empty_list_is_a_noop(self) -> None:
         utils.kill_processes([])
 
-    @pytest.mark.skipif(
-        not hasattr(os, "geteuid") or os.geteuid() == 0,
-        reason="needs an unprivileged user so signalling PID 1 is refused",
-    )
-    def test_permission_denied_is_reported_not_raised(self, capsys) -> None:
-        utils.kill_processes([1], graceful_timeout=0)
-        assert "Warning: no permission to kill PID 1" in capsys.readouterr().out
+    def test_permission_denied_is_reported_not_raised(
+        self, capsys, monkeypatch
+    ) -> None:
+        # Simulated: no real PID is reliably unsignallable. Inside a container
+        # running as one non-root user, PID 1 is the test runner's own parent,
+        # so a real signal to it stopped the whole run.
+        sent = []
+
+        def refuse(pid: int, sig: int) -> None:
+            sent.append((pid, sig))
+            raise PermissionError
+
+        monkeypatch.setattr(utils.os, "kill", refuse)
+        utils.kill_processes([4242], graceful_timeout=0)
+        assert "Warning: no permission to kill PID 4242" in capsys.readouterr().out
+        assert sent == [(4242, signal.SIGTERM), (4242, signal.SIGKILL)]
 
 
 class TestPidfiles:
