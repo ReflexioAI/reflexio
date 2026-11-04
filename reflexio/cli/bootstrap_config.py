@@ -149,7 +149,9 @@ def save_storage_to_config(
     only ``storage_config`` under its file publication lock. Old explicit native
     selections retain their historical environment policy once; current files
     own their canonical budgets. Selecting SQLite again preserves its database
-    path. Unrelated raw fields, including extension fields, are preserved.
+    path. Re-selecting either remote adapter for the exact same primary DSN
+    retains its saved schema unless a nonblank namespace is explicitly selected.
+    Unrelated raw fields, including extension fields, are preserved.
 
     Args:
         storage_type: Backend name ("sqlite", "supabase", "postgres").
@@ -223,6 +225,15 @@ def save_storage_to_config(
             # A backend selection does not request a different SQLite database.
             return
         selected = replacement
+        if (
+            isinstance(selected, (StorageConfigPostgres, StorageConfigSupabase))
+            and isinstance(existing, (StorageConfigPostgres, StorageConfigSupabase))
+            and selected.db_url == existing.db_url
+            and selected.schema_name is None
+        ):
+            # A repeated backend selection is not a request to leave the saved
+            # namespace. Do not carry it across an actual primary retarget.
+            selected = selected.model_copy(update={"schema_name": existing.schema_name})
         if isinstance(selected, StorageConfigPostgres):
             fields = selected.model_dump(mode="json")
             if generation < NATIVE_POOL_AUTHORITY_VERSION:

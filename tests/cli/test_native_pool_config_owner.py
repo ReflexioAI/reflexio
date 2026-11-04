@@ -38,7 +38,7 @@ def native_environment(monkeypatch):
         @classmethod
         def validate_storage_upgrade(cls, document, *, org_id, base_dir):
             raw = document.get("storage_config")
-            if isinstance(raw, dict) and raw.get("type") == "postgres":
+            if isinstance(raw, dict) and raw.get("type") in {"postgres", "supabase"}:
                 assert raw["db_url"].startswith("postgresql://")
                 return
             super().validate_storage_upgrade(document, org_id=org_id, base_dir=base_dir)
@@ -271,3 +271,57 @@ def test_legacy_unset_native_budgets_retain_generation_nine_defaults(tmp_path):
         "read_pool_size": None,
         "read_pool_acquire_timeout": None,
     }
+
+
+@pytest.mark.parametrize("selected_backend", ["postgres", "supabase"])
+@pytest.mark.parametrize("saved_backend", ["postgres", "supabase"])
+@pytest.mark.parametrize("current", [False, True])
+@pytest.mark.parametrize("schema_env", [None, "", "  "])
+def test_same_database_backend_selection_preserves_saved_namespace(
+    tmp_path, monkeypatch, selected_backend, saved_backend, current, schema_env
+):
+    path = stored(tmp_path, current=current)
+    document = json.loads(path.read_text())
+    document["storage_config"] = {
+        "type": saved_backend,
+        "db_url": "postgresql://selected.invalid/new",
+        "schema": "customer_namespace",
+        **(POLICY if saved_backend == "postgres" else {}),
+    }
+    path.write_text(json.dumps(document))
+    if schema_env is not None:
+        monkeypatch.setenv("REFLEXIO_POSTGRES_SCHEMA", schema_env)
+    save_storage_to_config(selected_backend, org_id=ORG, base_dir=str(tmp_path))
+    selected = LocalConfigFile(path).read_document()["storage_config"]
+    assert selected["type"] == selected_backend
+    assert selected["schema"] == "customer_namespace"
+    assert selected["db_url"] == "postgresql://selected.invalid/new"
+    # A second explicit start must preserve the same target after publication.
+    save_storage_to_config(selected_backend, org_id=ORG, base_dir=str(tmp_path))
+    assert LocalConfigFile(path).read_document()["storage_config"] == selected
+
+
+@pytest.mark.parametrize("selected_backend", ["postgres", "supabase"])
+def test_different_primary_does_not_inherit_old_namespace(tmp_path, selected_backend):
+    path = stored(tmp_path)
+    document = json.loads(path.read_text())
+    document["storage_config"]["schema"] = "former_namespace"
+    path.write_text(json.dumps(document))
+    save_storage_to_config(selected_backend, org_id=ORG, base_dir=str(tmp_path))
+    selected = LocalConfigFile(path).read_document()["storage_config"]
+    assert selected["db_url"] == "postgresql://selected.invalid/new"
+    assert selected["schema"] is None
+
+
+def test_explicit_namespace_still_selects_new_target_on_same_primary(
+    tmp_path, monkeypatch
+):
+    path = stored(tmp_path)
+    document = json.loads(path.read_text())
+    document["storage_config"].update(
+        db_url="postgresql://selected.invalid/new", schema="former_namespace"
+    )
+    path.write_text(json.dumps(document))
+    monkeypatch.setenv("REFLEXIO_POSTGRES_SCHEMA", "selected_namespace")
+    _, selected = select(tmp_path)
+    assert selected["storage_config"]["schema"] == "selected_namespace"
