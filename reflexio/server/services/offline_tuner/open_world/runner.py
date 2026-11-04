@@ -1,67 +1,15 @@
-"""Shared job lease and stage-storage contracts for the offline-tuner worker.
+"""Shared job lease for the offline-tuner worker.
 
-The retired contrast/held-out state machine has been removed. The single active
-method is RuleEvidenceAttemptRunner in rule_evidence_runtime.py.
+The stage-storage contract (``OpenWorldStageStore``) lives in
+``offline_tuner.open_world_port`` with the rest of the storage port. The single
+active method is RuleEvidenceAttemptRunner in rule_evidence_runtime.py.
 """
 
 from dataclasses import dataclass
-from typing import Any, Protocol
 
 from reflexio.models.api_schema.domain import (
     OptimizationJobClaim,
-    OptimizationJobStage,
-    OptimizationTerminalOutcome,
-    PlaybookOptimizationJob,
 )
-
-
-class OpenWorldStageStore(Protocol):
-    """The job-lifecycle surface the runner advances an attempt through.
-
-    Public because ``open_world_composition.OpenWorldStoragePort`` is built from
-    it: a method added here is a method the composition check requires.
-    """
-
-    def advance_playbook_optimization_stage(
-        self,
-        job_id: int,
-        fence: int,
-        stage: OptimizationJobStage,
-        *,
-        terminal_outcome: OptimizationTerminalOutcome | None = None,
-        now: int | None = None,
-    ) -> bool: ...
-
-    def get_playbook_optimization_job(
-        self, job_id: int
-    ) -> PlaybookOptimizationJob | None: ...
-
-    def update_playbook_optimization_job(
-        self, job_id: int, *, metadata_json: str | None = None
-    ) -> None: ...
-
-    def merge_playbook_optimization_job_metadata(
-        self, job_id: int, patch: dict[str, Any]
-    ) -> None: ...
-
-    def renew_playbook_optimization_job_lease(
-        self,
-        job_id: int,
-        owner: str,
-        fence: int,
-        lease_seconds: int,
-        *,
-        now: int | None = None,
-    ) -> OptimizationJobClaim: ...
-
-    def reclaim_playbook_optimization_job(
-        self,
-        job_id: int,
-        owner: str,
-        lease_seconds: int = 60,
-        *,
-        now: int | None = None,
-    ) -> OptimizationJobClaim: ...
 
 
 @dataclass
