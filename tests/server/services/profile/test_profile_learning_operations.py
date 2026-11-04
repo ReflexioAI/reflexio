@@ -253,6 +253,7 @@ def window(role="user", text="Delivery entrance is north."):
             "interactions": [
                 {
                     "interaction_id": 1,
+                    "created_at": 200,
                     "role": role,
                     "content": text,
                     "user_action_description": None,
@@ -434,6 +435,12 @@ def test_native_explicit_renewal_changes_only_retention(native):
         "snapshot",
         "groups",
     }
+    rows, retired, _ = con._build_deduplicated_results(
+        new, old, out, "owner", "request"
+    )
+    assert retired == ["old"]
+    assert rows[0].last_modified_timestamp == old[0].last_modified_timestamp
+    assert rows[0].expiration_timestamp == 200 + 7 * 86400
 
 
 def test_native_author_renderer_preserves_canonical_semantic_policy(native):
@@ -541,3 +548,55 @@ def test_native_whole_forget_with_redundant_fresh_preference_keeps_authority(
         assert "EXISTING-1" not in out.duplicate_groups[0].item_ids
         assert old[1].content == "The user prefers concise replies."
         assert old[1].last_modified_timestamp == 100
+
+
+def retention_write():
+    return SimpleNamespace(
+        evidence=[
+            SimpleNamespace(
+                session_id="session",
+                interaction_id=1,
+                role="user",
+                stance="retention_instruction",
+            )
+        ],
+        time_to_live="one_day",
+        explicit_deadline=None,
+    )
+
+
+def test_relative_retention_uses_instruction_clock_not_extraction_clock(native):
+    source = window(text="Please remember my tea preference for one day.")
+    source[0]["interactions"][0]["created_at"] = 100
+    con = compiler(native, source)
+    # Delayed extraction and carried facts must not restart the instruction.
+    assert con._deadline(retention_write()) == 86500
+
+
+@pytest.mark.parametrize("timestamp", [None, True, "100", 100.5])
+def test_relative_retention_refuses_missing_or_untyped_instruction_clock(
+    native, timestamp
+):
+    source = window(text="Please remember my tea preference for one day.")
+    source[0]["interactions"][0]["created_at"] = timestamp
+    with pytest.raises(ValueError, match="instruction timestamp"):
+        compiler(native, source)._deadline(retention_write())
+
+
+def test_relative_retention_refuses_conflicting_instruction_clocks(native):
+    source = window(text="Please remember my tea preference for one day.")
+    source[0]["interactions"][0]["created_at"] = 100
+    second = deepcopy(source[0]["interactions"][0])
+    second.update(interaction_id=2, created_at=200)
+    source[0]["interactions"].append(second)
+    write = retention_write()
+    write.evidence.append(
+        SimpleNamespace(
+            session_id="session",
+            interaction_id=2,
+            role="user",
+            stance="retention_instruction",
+        )
+    )
+    with pytest.raises(ValueError, match="instruction timestamp"):
+        compiler(native, source)._deadline(write)

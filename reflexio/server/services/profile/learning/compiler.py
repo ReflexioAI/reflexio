@@ -1115,19 +1115,24 @@ def _compiler_classes(base: Any) -> Any:  # noqa: C901
                 result["boundary"] = boundary
             return result
 
-        def _retention_texts(self, write: Any) -> Any:
+        def _retention_sources(self, write: Any) -> Any:
             sources = {
                 (session["session_id"], interaction["interaction_id"]): interaction
                 for session in getattr(self, "review_window", [])
                 for interaction in session["interactions"]
             }
             return [
-                sources.get((e.session_id, e.interaction_id), {}).get("content", "")
+                sources.get((e.session_id, e.interaction_id), {})
                 for e in write.evidence
                 if e.role == "user" and e.stance == "retention_instruction"
             ]
 
-        def _deadline(self, write: Any, origin: Any = None) -> Any:
+        def _retention_texts(self, write: Any) -> Any:
+            return [
+                source.get("content", "") for source in self._retention_sources(write)
+            ]
+
+        def _deadline(self, write: Any) -> Any:
             """Logical boundary, before conversion to native inclusive integer seconds."""
             times = [
                 item
@@ -1160,12 +1165,26 @@ def _compiler_classes(base: Any) -> Any:  # noqa: C901
             if write.explicit_deadline is None:
                 if anchored_expiry is not None:
                     return anchored_expiry
-                if origin is not None:
-                    return cm.calculate_expiration_timestamp(
-                        origin.last_modified_timestamp,
-                        cm.ProfileTimeToLive(write.time_to_live),
+                if not categories:
+                    return None
+                # A relative storage instruction starts at its original recorded
+                # turn, never at extraction/replay or the carried fact's timestamp.
+                # This is not an inferred factual-validity date.
+                timestamps = [
+                    source.get("created_at")
+                    for source in self._retention_sources(write)
+                ]
+                if (
+                    not timestamps
+                    or any(type(value) is not int for value in timestamps)
+                    or len(set(timestamps)) != 1
+                ):
+                    raise ValueError(
+                        "Relative retention requires one instruction timestamp"
                     )
-                return None
+                return cm.calculate_expiration_timestamp(
+                    timestamps[0], cm.ProfileTimeToLive(write.time_to_live)
+                )
             # fromisoformat accepts fractional offsets (and some Python
             # versions even erase a subsecond zero-hour offset). Validate the
             # declared whole-second RFC3339 spelling before parsing, then check
@@ -1486,7 +1505,7 @@ def _compiler_classes(base: Any) -> Any:  # noqa: C901
                 else {"basis": write.lifetime_basis}
             )
             if write.lifetime_basis == "explicit_retention":
-                deadline = self._deadline(write, origin)
+                deadline = self._deadline(write)
                 if deadline is None:
                     raise ValueError("Validated explicit lifetime lost its deadline")
                 # Native expiry is last-visible-at at integer-second
