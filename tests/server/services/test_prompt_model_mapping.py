@@ -71,6 +71,13 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     # ShadowComparisonOutput; the mock dispatch lives in the integration
     # tests rather than the global heuristic mock, so no registry key.
     "shadow_comparison": ("v1.1.0", None),
+    # Offline tuner open-world analyst roles. Their structured outputs are
+    # served by the sealed qualification fixture client, not the global mock,
+    # so no registry key; a new version also changes the template digest the
+    # packaged qualification responses pin.
+    "offline_tuner_open_world_discovery": ("v1.5.0", None),
+    "offline_tuner_open_world_held_out": ("v1.1.0", None),
+    "offline_tuner_open_world_candidate": ("v1.2.0", None),
 }
 
 
