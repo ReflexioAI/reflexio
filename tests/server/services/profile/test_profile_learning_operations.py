@@ -244,7 +244,7 @@ def native():
     )
 
 
-def window(role="user", text="Delivery entrance is north."):
+def window(role="user", text="Delivery entrance is north.", action_description=None):
     return [
         {
             "session_id": "session",
@@ -256,7 +256,7 @@ def window(role="user", text="Delivery entrance is north."):
                     "created_at": 200,
                     "role": role,
                     "content": text,
-                    "user_action_description": None,
+                    "user_action_description": action_description,
                 }
             ],
         }
@@ -307,9 +307,10 @@ def actual(
     text="Forget Cedar Studio but keep Saturday painting.",
     old_content="User paints Saturdays at Cedar Studio.",
     fresh="Requested removal of Cedar Studio",
+    action_description=None,
 ):
 
-    source = window(text=text)
+    source = window(text=text, action_description=action_description)
     evidence = book(source)
     con = compiler(native, source)
     old = [profile(native, "old", old_content, ttl="one_month", timestamp=100)]
@@ -394,12 +395,24 @@ def test_native_replacement_with_one_evidence_decision_and_bad_terms_nonfatal(na
     assert con._plan_errors(out, new, old)
 
 
-def test_native_explicit_renewal_changes_only_retention(native):
+@pytest.mark.parametrize("retention_field", ["content", "user_action_description"])
+@pytest.mark.parametrize("rule", ["one_week", "2026-11-05T00:00:00Z"])
+def test_native_explicit_renewal_changes_only_retention(native, retention_field, rule):
+    instruction = (
+        "Please remember my painting fact for one week starting now."
+        if rule == "one_week"
+        else "Please keep my painting fact through 2026-11-05T00:00:00Z."
+    )
     con, e, b, new, old, eid = actual(
         native,
-        text="Please remember my painting fact for one week starting now.",
+        text=instruction if retention_field == "content" else "Remember this forever.",
         fresh="Renew painting memory",
+        action_description=instruction if retention_field != "content" else None,
     )
+    if retention_field != "content":
+        eid = e.rendered_window[0]["interactions"][0][retention_field]["excerpts"][0][
+            "excerpt_id"
+        ]
     wire = {
         "snapshot": b.snapshot,
         "groups": [
@@ -413,7 +426,7 @@ def test_native_explicit_renewal_changes_only_retention(native):
                                 "target": target(0, 6),
                                 "explicit_retention": {
                                     "source_new_id": "NEW-0",
-                                    "rule": "one_week",
+                                    "rule": rule,
                                     "boundary": "through",
                                     "evidence": [
                                         {
@@ -440,7 +453,9 @@ def test_native_explicit_renewal_changes_only_retention(native):
     )
     assert retired == ["old"]
     assert rows[0].last_modified_timestamp == old[0].last_modified_timestamp
-    assert rows[0].expiration_timestamp == 200 + 7 * 86400
+    assert rows[0].expiration_timestamp == (
+        200 + 7 * 86400 if rule == "one_week" else 1793836800
+    )
 
 
 def test_native_author_renderer_preserves_canonical_semantic_policy(native):

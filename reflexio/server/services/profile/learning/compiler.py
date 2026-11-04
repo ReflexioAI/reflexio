@@ -540,6 +540,7 @@ def _compiler_classes(base: Any) -> Any:  # noqa: C901
         role: Literal["user", "assistant", "system", "tool"]
         stance: EvidenceStance
         quote: str = Field(min_length=1, max_length=360)
+        source_field: Literal["content", "user_action_description"] = "content"
         model_config = ConfigDict(extra="forbid")
 
     class AddressedEvidence(BaseModel):
@@ -1128,8 +1129,16 @@ def _compiler_classes(base: Any) -> Any:  # noqa: C901
             ]
 
         def _retention_texts(self, write: Any) -> Any:
+            references = [
+                e
+                for e in write.evidence
+                if e.role == "user" and e.stance == "retention_instruction"
+            ]
             return [
-                source.get("content", "") for source in self._retention_sources(write)
+                source.get(getattr(reference, "source_field", "content"), "") or ""
+                for source, reference in zip(
+                    self._retention_sources(write), references, strict=True
+                )
             ]
 
         def _deadline(self, write: Any) -> Any:
@@ -1537,14 +1546,39 @@ def _compiler_classes(base: Any) -> Any:  # noqa: C901
                 and self._lifetime(existing_profiles[index]).get("basis")
                 not in {"system_estimate", "current_reaffirmation"}
             ]
-            if constrained and write.lifetime_basis != "explicit_retention":
-                profile.expiration_timestamp = min(
-                    [p.expiration_timestamp for p in constrained]
-                )
-                # Preserve the original machine lifetime constraint.
-                # Detailed authority stays in private audit artifacts.
-                earliest = min(constrained, key=lambda p: p.expiration_timestamp)
-                lifetime = dict(self._lifetime(earliest)) or {"basis": "unknown"}
+            if write.lifetime_basis != "explicit_retention":
+                from .explicit_retention import due_epoch
+
+                if constrained:
+                    profile.expiration_timestamp = min(
+                        p.expiration_timestamp for p in constrained
+                    )
+                    earliest = min(constrained, key=lambda p: p.expiration_timestamp)
+                    lifetime = dict(self._lifetime(earliest)) or {"basis": "unknown"}
+                # Visibility expiry and physical-erasure authority are separate.
+                # An earlier unknown expiry cannot cancel a later explicit duty.
+                # Decode all linked old rows canonically: conflicting/malformed
+                # legacy authority must fail rather than disappear in projection.
+                explicit = []
+                for kind, index in sorted(linked):
+                    if kind == "EXISTING":
+                        prior = existing_profiles[index]
+                        due = due_epoch(prior.custom_features)
+                        if due is not None:
+                            explicit.append((due, self._lifetime(prior)))
+                if explicit:
+                    due, inherited = min(
+                        explicit,
+                        key=lambda item: (
+                            item[0],
+                            item[1]["logical_deadline"],
+                            item[1]["boundary"],
+                        ),
+                    )
+                    lifetime = dict(inherited)
+                    profile.expiration_timestamp = min(
+                        profile.expiration_timestamp, due - 1
+                    )
             return lifetime, linked
 
         def _unit_signature(self, write: Any, group: Any, new: Any, old: Any) -> Any:

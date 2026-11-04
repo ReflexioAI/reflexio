@@ -71,11 +71,60 @@ def install_crashing_model(monkeypatch: pytest.MonkeyPatch) -> list[int]:
                 }
             ]
         }
-        if "ProfileDeduplicationOutput" in schema_name or any(
-            "unique_ids" in str(message.get("content", ""))
-            for message in params["messages"]
-        ):
-            content = {"duplicate_groups": [], "unique_ids": ["NEW-0"], "deletions": []}
+        if "OperationOutput" in schema_name:
+            # This provider authors the current wire from the actual visible
+            # source book; crash recovery must exercise the real compiler.
+            for message in params["messages"]:
+                text = message.get("content", "")
+                marker = '\n\n{"original_window":'
+                start = text.find(marker) if isinstance(text, str) else -1
+                if start < 0:
+                    continue
+                payload, _ = json.JSONDecoder().raw_decode(text[start + 2 :])
+                groups = []
+                excerpts = [
+                    excerpt
+                    for session in payload["original_window"]
+                    for interaction in session["interactions"]
+                    if interaction["role"] == "user"
+                    for excerpt in interaction["content"]["excerpts"]
+                ]
+                for proposal in payload["NEW"]:
+                    quote = proposal["source_span"]
+                    evidence = next(e for e in excerpts if quote in e["text"])
+                    groups.append(
+                        {
+                            "new_ids": [proposal["id"]],
+                            "writes": [
+                                {
+                                    "clauses": [
+                                        {
+                                            "action": "assert",
+                                            "source_new_id": proposal["id"],
+                                            "content": quote,
+                                            "evidence": [
+                                                {
+                                                    "excerpt_id": evidence[
+                                                        "excerpt_id"
+                                                    ],
+                                                    "stance": "assertion",
+                                                }
+                                            ],
+                                        }
+                                    ]
+                                }
+                            ],
+                            "forget": [],
+                        }
+                    )
+                content = {"snapshot": payload["snapshot"], "groups": groups}
+                break
+            else:
+                raise AssertionError(
+                    "Current operation prompt must expose its source book"
+                )
+        elif "ProfileDeduplicationOutput" in schema_name:
+            raise AssertionError("Retired profile actor must not be requested")
         return SimpleNamespace(
             choices=[
                 SimpleNamespace(

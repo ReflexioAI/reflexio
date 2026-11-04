@@ -36,3 +36,7 @@ Deadline candidate discovery uses a project-leading persisted JSON projection in
 Explicit native mock mode retains its native no-planner bypass; it is not evidence for source support, operation legality or model qualification. Tests of the actual method use the real request path with a controlled provider or the guarded live transport.
 
 Relative explicit retention starts at the original cited instruction’s recorded `created_at`, not extraction/replay time or the carried fact’s modification timestamp. Missing, untyped or conflicting instruction clocks are refused. An explicit clock stated in the source retains precedence; this storage-policy clock does not infer factual validity.
+
+Retention text is resolved from the exact source field addressed by its evidence ID, including `user_action_description`; unrelated text in the same interaction cannot lend a different duration. The operation wire remains code-owned excerpt IDs.
+
+The current author requires the complete original source to fit its native request budget. Successful source-package/chunked extraction does not guarantee that subsequent source-bound review fits. Oversized inputs can therefore be refused after extraction; the transfer has not qualified that capability. A source-partition or tool-reading design requires separately reviewed method qualification.

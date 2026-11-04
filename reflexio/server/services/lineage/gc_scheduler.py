@@ -560,11 +560,10 @@ class LineageGCScheduler(ThreadedScheduler):
             org_id (str): The org to sweep this tick.
         """
         deadline_only = getattr(self._worker_generation, "deadline_only", False)
-        failure_scope = (
-            f"profile-deadline-org:{org_id}"
-            if deadline_only
-            else f"lineage-gc:{org_id}"
-        )
+        # Context acquisition and configuration have separate streaks. A
+        # healthy deadline-only sweep cannot clear an ordinary-config failure.
+        context_scope = f"lineage-gc-context:{org_id}:{deadline_only}"
+        config_scope = f"lineage-gc-config:{org_id}"
         try:
             ctx = self.request_context_factory(org_id)
             if ctx.storage is None:
@@ -575,12 +574,13 @@ class LineageGCScheduler(ThreadedScheduler):
                 logger,
                 "lineage_gc_org_failed",
                 exc,
-                scope=failure_scope,
+                scope=context_scope,
                 org_id=org_id,
             )
             self._record_tick_failure()
             self._forget_profile_deadline_org(org_id)
             return
+        report_background_success(context_scope)
         cfg = None
         try:
             if not deadline_only:
@@ -591,12 +591,13 @@ class LineageGCScheduler(ThreadedScheduler):
                 logger,
                 "lineage_gc_org_failed",
                 exc,
-                scope=failure_scope,
+                scope=config_scope,
                 org_id=org_id,
             )
             self._record_tick_failure()
         else:
-            report_background_success(failure_scope)
+            if not deadline_only:
+                report_background_success(config_scope)
 
         # One pass per project, not one per org. Everything below writes
         # project-scoped tables; with no project bound the enterprise row-level

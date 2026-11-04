@@ -86,6 +86,7 @@ class EvidenceBook:
                             "session_id": session_id,
                             "interaction_id": interaction["interaction_id"],
                             "role": interaction["role"],
+                            "source_field": field,
                             "quote": piece,
                         }
                         excerpts.append(
