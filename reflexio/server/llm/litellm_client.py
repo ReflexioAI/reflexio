@@ -80,6 +80,7 @@ from reflexio.server.llm._litellm_text_generation import (
     StructuredOutputValidator,
     TextGenerationMixin,
     is_structured_output_correction_turn,
+    record_terminal_llm_failure,
     structured_output_correction_turn,
     structured_output_repair_idempotency_key,
 )
@@ -137,6 +138,7 @@ __all__ = [
     "create_litellm_client",
     "STRUCTURED_OUTPUT_CORRECTION_PREFIX",
     "is_structured_output_correction_turn",
+    "record_terminal_llm_failure",
     "structured_output_correction_turn",
     "structured_output_repair_idempotency_key",
 ]

@@ -12,11 +12,10 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from reflexio.server.llm import StructuredOutputRepairError
+from reflexio.server.llm import StructuredOutputRepairError, record_terminal_llm_failure
 from reflexio.server.llm.input_budget import check_request_input_budget
 from reflexio.server.llm.litellm_client import LiteLLMClient, ProviderRequestGuardError
 from reflexio.server.llm.token_accounting import RunTokenCapture, run_token_capture
-from reflexio.server.operational_metrics import record_health
 from reflexio.server.services.input_compression import (
     CompressionBudget,
     CompressionCall,
@@ -139,7 +138,7 @@ def _recover_selection(
     if not kept_points:
         # Accepted as before, but nothing of this section's evidence survives,
         # so the reply's work is lost: it counts as a terminal failure.
-        record_health("llm.failures")
+        record_terminal_llm_failure()
     logger.info(
         "event=compression_selection_recovered failure_kind=%s kept_points=%d "
         "discarded_groups=%d capacity_loss=%s recovered_prior=%s",
@@ -409,7 +408,7 @@ def plan_with_client(
                     choice, discarded = _recover_selection(call, error, model)
                 except StructuredOutputRepairError:
                     # Terminal only now: the client left this count to us.
-                    record_health("llm.failures")
+                    record_terminal_llm_failure()
                     raise
                 reference_recoveries += bool(discarded)
                 return choice

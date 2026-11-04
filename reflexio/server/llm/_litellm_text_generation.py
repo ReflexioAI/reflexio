@@ -682,6 +682,15 @@ def _rung_reason(error: Exception | None) -> str:
     return "transport_error"
 
 
+def record_terminal_llm_failure() -> None:
+    """Count one terminal LLM failure (``llm.failures``).
+
+    For a caller that passed ``caller_reports_repair_failure=True`` and could
+    not recover the reply. The client counts every other terminal failure.
+    """
+    record_health("llm.failures")
+
+
 class TextGenerationMixin:
     """Chat/response generation, completion-param build, hard-timeout, cost, multimodal.
 
@@ -1608,7 +1617,7 @@ class TextGenerationMixin:
                 caller_reports_repair_failure
                 and isinstance(error, StructuredOutputRepairError)
             ):
-                record_health("llm.failures")
+                record_terminal_llm_failure()
             raise
         except BaseException:
             outcome = "aborted"
