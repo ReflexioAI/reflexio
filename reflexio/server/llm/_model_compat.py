@@ -14,6 +14,7 @@ from typing import Any
 
 import litellm
 
+from reflexio.native_compute import configure_tokenizer_compute
 from reflexio.server.llm._litellm_types import LiteLLMClientError
 
 OPENAI_MODELS = frozenset({"gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"})
@@ -218,6 +219,7 @@ def apply_model_request_policy(params: dict[str, Any]) -> None:
 
 def model_completion(params: dict[str, Any]) -> Any:
     """Keep signed Claude blocks using a request-local LiteLLM logging hook."""
+    configure_tokenizer_compute()
     if qualified_model_id(params["model"]) not in ANTHROPIC_MODELS:
         return litellm.completion(**params)
     import datetime

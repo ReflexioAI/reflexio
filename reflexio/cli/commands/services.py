@@ -51,12 +51,11 @@ def _ensure_llm_configured(env_path: Path) -> None:
     Raises:
         typer.Exit: When stdin is not a TTY and no LLM key is configured.
     """
-    from dotenv import load_dotenv
-
     from reflexio.cli.commands.setup_cmd import (
         _prompt_embedding_provider,
         _prompt_llm_provider,
     )
+    from reflexio.cli.env_loader import _load_dotenv_pruned
     from reflexio.server.llm.model_defaults import (
         EMBEDDING_CAPABLE_PROVIDERS,
         GENERATION_CAPABLE_PROVIDERS,
@@ -131,7 +130,7 @@ def _ensure_llm_configured(env_path: Path) -> None:
     # the key just entered would never reach the process env. For this OSS local
     # first-run path the file value must win. (The enterprise mode-file path uses
     # override=False in load_reflexio_env_for_mode and is unaffected.)
-    load_dotenv(dotenv_path=env_path, override=True)
+    _load_dotenv_pruned(env_path, override=True)
     typer.echo()
 
 

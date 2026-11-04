@@ -8,7 +8,10 @@ import threading
 from abc import ABC, abstractmethod
 from typing import Any, Self, cast
 
-from reflexio.native_compute import configure_native_compute
+from reflexio.native_compute import (
+    configure_native_compute,
+    configure_tokenizer_compute,
+)
 from reflexio.removed_env import reject_removed_env
 from reflexio.server.env_utils import env_str, positive_int_env
 
@@ -93,6 +96,7 @@ class SentenceEncoder(ABC):
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Serialize the shared model with the process's actual mini-batch budget."""
+        configure_tokenizer_compute()
         model = self._load()
         safe = [(text or "")[: self.max_chars] for text in texts]
         batch_size = self.batch_size

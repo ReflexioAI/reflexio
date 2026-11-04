@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+from reflexio.cli.env_loader import block_implicit_dotenv_walkup
+from reflexio.native_compute import configure_tokenizer_compute
+
+# Explicit serving startup, after parent-package env loading and before native
+# imports. Direct SDK users still configure at each actual operation.
+block_implicit_dotenv_walkup()
+configure_tokenizer_compute()
+
 import logging
 import math
 import os

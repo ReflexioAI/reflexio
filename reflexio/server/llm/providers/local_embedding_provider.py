@@ -28,7 +28,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, BinaryIO, cast
 
-from reflexio.native_compute import configure_native_compute
+from reflexio.native_compute import (
+    configure_native_compute,
+    configure_tokenizer_compute,
+)
 from reflexio.removed_env import reject_removed_env
 from reflexio.server.llm.sentence_encoder import embedding_batch_size
 
@@ -169,6 +172,7 @@ class ONNXMiniLM:
     def __call__(self, documents: list[str]) -> list[list[float]]:
         if not documents:
             return []
+        configure_tokenizer_compute()
         if self._session is None:
             self._load_model()
         np = self._np

@@ -745,7 +745,11 @@ This bounds each backend's pool, not total CPU across concurrent operations.
 The model-only owner is independent of the application-wide configuration
 migration registry, so unrelated setting retirements do not invalidate model asset builds.
 Importing the owner in a client process has no side effects. Tokenizer fork
-safety remains separately controlled by `TOKENIZERS_PARALLELISM`.
+safety is owned by the same process policy. `TOKENIZERS_PARALLELISM` and
+`RAYON_NUM_THREADS` are derived outputs; old assignments do not select behavior.
+Cold tokenizer pools use the native budget. Unknown, forked, or lowered-budget
+pools remain serial until process restart; this does not resize existing pools
+or make inherited model objects fork-safe.
 
 This intentionally replaces Nomic's former unset/Torch-default behavior with the
 same explicit budget as E5 and MiniLM. To preserve a custom native thread limit,

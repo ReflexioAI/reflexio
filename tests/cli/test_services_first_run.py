@@ -77,12 +77,12 @@ class TestEnsureLlmConfigured:
                 "reflexio.cli.commands.setup_cmd._prompt_embedding_provider",
                 return_value=None,
             ) as mock_emb,
-            patch("dotenv.load_dotenv") as mock_load,
+            patch("reflexio.cli.env_loader._load_dotenv_pruned") as mock_load,
         ):
             _ensure_llm_configured(env)
         mock_llm.assert_called_once_with(env)
         mock_emb.assert_called_once_with(env, "openai")
-        mock_load.assert_called_once_with(dotenv_path=env, override=True)
+        mock_load.assert_called_once_with(env, override=True)
 
     def test_wizard_key_reaches_os_environ_after_reload(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

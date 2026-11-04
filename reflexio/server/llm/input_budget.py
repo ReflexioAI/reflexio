@@ -8,6 +8,7 @@ from typing import Any, Protocol
 
 import litellm
 
+from reflexio.native_compute import configure_tokenizer_compute
 from reflexio.server.llm._litellm_types import (
     ModelProvenance,
     ProviderRequestGuard,
@@ -181,6 +182,7 @@ def measure_request_input_tokens(params: Mapping[str, Any]) -> int:
     messages = params.get("messages")
     if not isinstance(messages, list):
         raise InputBudgetConfigurationError("Complete provider messages are required")
+    configure_tokenizer_compute()
     try:
         tokens = litellm.token_counter(
             model=model,

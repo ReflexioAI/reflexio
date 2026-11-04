@@ -8,7 +8,7 @@ from typing import Annotated
 import typer
 import uvicorn
 
-from reflexio.native_compute import native_compute_env
+from reflexio.native_compute import configure_native_compute
 
 app = typer.Typer(help="Run Reflexio embedding services.")
 
@@ -47,7 +47,7 @@ def serve(
 ) -> None:
     """Serve an OpenAI-compatible local embedding endpoint."""
     resolved_port = _resolve_port(port)
-    os.environ.update(native_compute_env(os.environ))
+    configure_native_compute()
     uvicorn.run(
         "reflexio.server.llm.embedding_service:app",
         host=host,

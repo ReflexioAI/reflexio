@@ -17,8 +17,9 @@ from pathlib import Path
 
 _logger = logging.getLogger(__name__)
 
-from dotenv import dotenv_values, load_dotenv
+from dotenv.main import DotEnv
 
+from reflexio.native_compute import TOKENIZER_ENV_OUTPUTS
 from reflexio.removed_env import reject_removed_env
 
 from .paths import reflexio_home
@@ -75,15 +76,14 @@ def block_implicit_dotenv_walkup() -> None:
     implicit autoload is redundant. This installs a shim on
     ``dotenv.load_dotenv`` that no-ops the path-less form while passing explicit
     ``load_dotenv(dotenv_path=...)`` / ``stream=...`` calls through unchanged.
-    Reflexio's own loader binds ``load_dotenv`` at import and always passes an
-    explicit path, so it is unaffected regardless.
+    Reflexio's own loader uses ``DotEnv`` with an explicit source, so it
+    is unaffected regardless.
 
     Must run before the first ``import litellm`` in the process — the CLI entry
     point (:func:`reflexio.cli.__main__.main`) calls it first thing. Idempotent.
-    Only the CLI launcher installs this: the spawned server subprocesses bind
-    the parent-resolved ``--port`` and the OSS server never reads
-    ``DEPLOYMENT_MODE``, so the launcher process is the only place the leak
-    changes behavior.
+    Explicit serving entrypoints install it too: their selected environment
+    must be resolved before native imports, and an implicit reload must not
+    overwrite the compute owner's derived outputs.
     """
     import functools
     from typing import IO
@@ -193,7 +193,7 @@ def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> Non
 
     Args:
         path: An existing .env path or in-memory bundled preset.
-        override: Forwarded to ``load_dotenv``. When False (default) the existing
+        override: Passed to ``DotEnv`` resolution and assignment. When False (default) the existing
             process environment wins over the file's values.
     """
     reject_removed_env(os.environ)
@@ -207,22 +207,20 @@ def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> Non
         "y",
     }:
         return
-    file_vals = (
-        dotenv_values(stream=StringIO(path.getvalue()))
-        if isinstance(path, StringIO)
-        else dotenv_values(path)
-    )
+    # Resolve the original source, including references to derived names, but
+    # never publish those outputs even transiently during an override reload.
+    file_vals = DotEnv(
+        dotenv_path=None if isinstance(path, StringIO) else path,
+        stream=StringIO(path.getvalue()) if isinstance(path, StringIO) else None,
+        override=override,
+    ).dict()
     reject_removed_env(file_vals)
-    if isinstance(path, StringIO):
-        load_dotenv(stream=StringIO(path.getvalue()), override=override)
-    else:
-        load_dotenv(dotenv_path=path, override=override)
     for key, value in file_vals.items():
-        if (
-            value is not None
-            and not value.strip()
-            and not os.environ.get(key, "").strip()
-        ):
+        if key in TOKENIZER_ENV_OUTPUTS or value is None:
+            continue
+        if override or key not in os.environ:
+            os.environ[key] = value
+        if not value.strip() and not os.environ.get(key, "").strip():
             os.environ.pop(key, None)
 
 
