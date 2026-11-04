@@ -2267,10 +2267,17 @@ class PlaybookAggregator:
         outcomes = self._generate_playbook_outcomes_with_source_clusters(
             clusters, existing_approved_playbooks, direction_overlap_threshold
         )
-        if self.explicit_operation_id is not None and any(
-            outcome.status == "retryable_failure" for outcome in outcomes
-        ):
+        failed = sum(outcome.status == "retryable_failure" for outcome in outcomes)
+        if self.explicit_operation_id is not None and failed:
             raise RuntimeError("explicit aggregation generation failed")
+        if failed:
+            # Unlike the rebuild path, nothing defers these clusters for retry:
+            # this run completes without them, so their output is lost.
+            logger.error(
+                "event=playbook_aggregation_clusters_dropped failed=%d clusters=%d",
+                failed,
+                len(outcomes),
+            )
         return [
             (outcome.playbook, outcome.source_cluster, outcome.provenance)
             for outcome in outcomes
@@ -2556,8 +2563,10 @@ class PlaybookAggregator:
                 )
             )
             self._postproc._record_postprocessing_artifacts(artifact_count)
-            # WARNING: the caller defers this cluster's rebuild with backoff
-            # (``defer_playbook_aggregation_cluster_rebuild``), so nothing is lost.
+            # WARNING: the rebuild path defers this cluster with backoff
+            # (``defer_playbook_aggregation_cluster_rebuild``); the full-run path
+            # that drops it logs its own ERROR
+            # (``_generate_playbooks_with_source_clusters``).
             logger.warning(
                 "AgentPlaybook aggregation failed due to %s, returning None.",
                 processed_error,

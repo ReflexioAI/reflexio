@@ -1936,6 +1936,29 @@ class TestProcessAggregationResponse:
             == "retryable_failure"
         )
 
+    def test_full_run_logs_an_error_for_clusters_it_drops(self, caplog):
+        """The full-run path does not defer a failed cluster, so dropping it is
+        lost output and must reach the error alerts."""
+        agg = _make_aggregator()
+        agg._generate_playbook_from_cluster_outcome = MagicMock(  # type: ignore[method-assign]
+            side_effect=[
+                aggregator_module.AggregationGenerationOutcome(
+                    "semantic_null", [_raw(1)]
+                ),
+                aggregator_module.AggregationGenerationOutcome(
+                    "retryable_failure", [_raw(2)]
+                ),
+            ]
+        )
+        with caplog.at_level(logging.ERROR, logger=aggregator_module.__name__):
+            pairs = agg._generate_playbooks_with_source_clusters(
+                {0: [_raw(1)], 1: [_raw(2)]}, []
+            )
+        assert pairs == []
+        assert [
+            r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR
+        ] == ["event=playbook_aggregation_clusters_dropped failed=1 clusters=2"]
+
     def test_batch_preserves_one_tagged_outcome_per_cluster(self):
         agg = _make_aggregator()
         cluster_a = [_raw(1)]

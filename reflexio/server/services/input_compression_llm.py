@@ -135,10 +135,16 @@ def _recover_selection(
     choice.omission_counts = OmissionCounts(unseen_reference_groups=discarded)
     if call.validate(choice):
         raise error
+    kept_points = len(call.pack_choice(choice).points)
+    if not kept_points:
+        # Accepted as before, but nothing of this section's evidence survives,
+        # so the reply's work is lost: it counts as a terminal failure.
+        record_health("llm.failures")
     logger.info(
-        "event=compression_selection_recovered failure_kind=%s "
+        "event=compression_selection_recovered failure_kind=%s kept_points=%d "
         "discarded_groups=%d capacity_loss=%s recovered_prior=%s",
         error.failure_kind,
+        kept_points,
         discarded,
         capacity_loss,
         recovered_prior,
