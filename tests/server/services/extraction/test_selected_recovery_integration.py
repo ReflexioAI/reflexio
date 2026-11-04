@@ -583,6 +583,153 @@ def _publish_with_pending_delivery(context, *, kind="profile", selected=True):
     return result, receipt, worker
 
 
+@pytest.mark.parametrize("cached_preparation", [False, True])
+def test_profile_recovery_authors_from_bound_source_and_reuses_saved_preparation(
+    context, monkeypatch, cached_preparation
+):
+    import time
+
+    import litellm
+
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+    from reflexio.server.prompt.prompt_manager import PromptManager
+    from reflexio.server.services.profile.service import ProfileGenerationService
+
+    quote = "I require separate approval before deploying."
+    source = context.storage.get_interactions_by_ids([1])[0]
+    context.storage._insert_interaction(source.model_copy(update={"content": quote}))
+    context.storage._insert_interaction(
+        source.model_copy(
+            update={
+                "interaction_id": 2,
+                "content": "Unrelated source outside this run.",
+            }
+        )
+    )
+    context.prompt_manager = PromptManager()
+    context.configurator.get_config().pending_tool_call_config.pending_ttl_seconds = (
+        86_400
+    )
+    run = seed(
+        context,
+        payload={
+            "profiles": [
+                {"content": quote, "source_span": quote, "time_to_live": "infinity"}
+            ]
+        },
+    )
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    monkeypatch.setenv("REFLEXIO_LLM_CONTEXT_LIMITS_JSON", '{"gpt-4o-mini":128000}')
+    monkeypatch.setattr(
+        "reflexio.server.services.deduplication_utils.resolve_model_name",
+        lambda *_a, **_k: "gpt-4o-mini",
+    )
+    client = LiteLLMClient(
+        LiteLLMConfig(model="gpt-4o-mini", max_tokens=8192, fallback_models=[])
+    )
+    calls = []
+
+    def author(params, _timeout):
+        payload = json.loads(params["messages"][0]["content"].rsplit("\n\n", 1)[1])
+        interactions = [
+            item
+            for group in payload["original_window"]
+            for item in group["interactions"]
+        ]
+        assert [item["interaction_id"] for item in interactions] == [1]
+        assert interactions[0]["role"] == "user"
+        excerpt = interactions[0]["content"]["excerpts"][0]
+        assert excerpt["text"] == quote
+        assert payload["EXISTING"] == [] and len(payload["NEW"]) == 1
+        output = {
+            "snapshot": payload["snapshot"],
+            "groups": [
+                {
+                    "new_ids": [payload["NEW"][0]["id"]],
+                    "writes": [
+                        {
+                            "clauses": [
+                                {
+                                    "action": "assert",
+                                    "source_new_id": payload["NEW"][0]["id"],
+                                    "content": quote,
+                                    "evidence": [
+                                        {
+                                            "excerpt_id": excerpt["excerpt_id"],
+                                            "stance": "assertion",
+                                        }
+                                    ],
+                                }
+                            ]
+                        }
+                    ],
+                    "forget": [],
+                }
+            ],
+        }
+        calls.append(output)
+        return litellm.ModelResponse(
+            choices=[
+                {
+                    "message": {"role": "assistant", "content": json.dumps(output)},
+                    "finish_reason": "stop",
+                }
+            ],
+            usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+        )
+
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", author)
+    worker = ExtractionResumeWorker(request_context=context, llm_client=client)
+    if cached_preparation:
+        with (
+            patch.object(
+                ProfileGenerationService,
+                "_persist_write_plan",
+                side_effect=RuntimeError("publication paused after preparation"),
+            ),
+            pytest.raises(RecoveryRefusedError, match="recovery_not_verified"),
+        ):
+            worker.recover_selected(
+                selection_from_report(inspect_run(context, run)),
+                operation_id="first",
+            )
+        run = context.storage.get_agent_run(run.id)
+        with context.storage._stream_sql(read_only=True) as db:
+            preparations = db.query(
+                "SELECT preparation FROM _agent_output_preparations "
+                "WHERE org_id=? AND run_id=? AND project_id=? LIMIT 1",
+                (context.org_id, run.id, ""),
+            )
+        assert len(preparations) == 1 and preparations[0]["preparation"] is not None
+        assert context.storage.get_user_profile("user") == []
+        monkeypatch.setattr(
+            "reflexio.server.services.extraction.resume_worker._request_interaction_models_from_ids",
+            MagicMock(
+                side_effect=AssertionError("Saved preparation cannot reload source")
+            ),
+        )
+        # Respect the real first-failure backoff; do not reset attempts or due
+        # timestamps to make the cached retry eligible.
+        deadline = time.monotonic() + 5
+        while "retry_not_due" in inspect_run(context, run)["blockers"]:
+            assert time.monotonic() < deadline, (
+                "Prepared publication retry stayed deferred"
+            )
+            time.sleep(0.02)
+    result = worker.recover_selected(
+        selection_from_report(inspect_run(context, run)), operation_id="finish"
+    )
+    assert result.status == AgentRunStatus.FINALIZED and len(calls) == 1
+    assert result.committed_output is not None and run.committed_output is not None
+    assert result.committed_output["output"] == run.committed_output["output"]
+    rows = context.storage.get_user_profile("user")
+    assert len(rows) == 1 and rows[0].content == quote
+    assert rows[0].source_interaction_ids == [1]
+    assert rows[0].custom_features["rsi_clauses_v14"]
+    assert DurableLearningWorker(lambda _: context).drain_org("org", 1, 300) == 0
+    assert len(calls) == 1
+
+
 def test_current_receipt_delivery_survives_source_change_and_attempt_ceiling(context):
     from reflexio.server.services.extraction.publication import _deliver
     from reflexio.server.usage_metrics import UsageEventDeliveryStatus
