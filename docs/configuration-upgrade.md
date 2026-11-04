@@ -124,7 +124,14 @@ only positive intervals.
 budget (default 2). It owns Torch, BLAS/OpenMP and ONNX intra-op session limits
 inside the inference service. ONNX inter-op remains one for its sequential graph
 execution. These are per-backend limits, not an aggregate process CPU quota.
-`TOKENIZERS_PARALLELISM` still controls tokenizer fork safety independently.
+`TOKENIZERS_PARALLELISM` and `RAYON_NUM_THREADS` are derived outputs, not
+independent settings. Remove their assignments when convenient; ordinary image
+replacement/restart requires no environment cleanup. The native numeric budget
+owns cold tokenizer pools; unknown, forked, or lowered-budget pools remain serial
+until restart. Dotenv may still interpolate these bindings in other values, but
+does not export them. This policy does not resize warm pools, interrupt active
+work, or repair inherited model objects/locks. Direct SDK callers that import
+tokenizers before configuring the owner use the conservative serial path.
 
 Remove old inference inputs `REFLEXIO_INFERENCE_TORCH_THREADS`, `OMP_NUM_THREADS`,
 `MKL_NUM_THREADS` and `OPENBLAS_NUM_THREADS`. Unlike the strictly rejected aliases

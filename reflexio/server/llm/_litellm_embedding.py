@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import litellm
 import tiktoken
 
+from reflexio.native_compute import configure_tokenizer_compute
 from reflexio.server import search_runtime
 from reflexio.server.llm._litellm_types import LiteLLMClientError
 from reflexio.server.llm._provider_concurrency import provider_slot
@@ -397,6 +398,7 @@ class EmbeddingMixin:
             search_scope = search_runtime.current()
             with provider_slot(params["model"]):
                 admit_external_compute()
+                configure_tokenizer_compute()
                 response = litellm.embedding(
                     **params,
                     # LiteLLM's overload says int; its implementation forwards

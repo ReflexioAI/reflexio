@@ -34,7 +34,8 @@ def test_budget_and_derived_environment(value, expected):
     assert result[BUDGET] == str(expected)
     assert all(result[name] == str(expected) for name in LEGACY[1:])
     assert LEGACY[0] not in result
-    assert result["TOKENIZERS_PARALLELISM"] == "false"
+    assert result.get("TOKENIZERS_PARALLELISM") == ("false" if expected == 1 else None)
+    assert result["RAYON_NUM_THREADS"] == str(expected)
     assert result["SECRET_KEY"] == "untouched"
 
 

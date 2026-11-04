@@ -8,7 +8,10 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from reflexio.native_compute import configure_native_compute
+from reflexio.native_compute import (
+    configure_native_compute,
+    configure_tokenizer_compute,
+)
 from reflexio.server.llm.rerank.common import (
     RERANK_ENABLED_ENV_VAR,
     CrossEncoderUnavailableError,
@@ -68,6 +71,7 @@ class CrossEncoderRunner:
             raise CrossEncoderUnavailableError(
                 f"Reranker is disabled by {RERANK_ENABLED_ENV_VAR}"
             )
+        configure_tokenizer_compute()
         if self._model is not None:
             return self._model
         with self._model_lock:
