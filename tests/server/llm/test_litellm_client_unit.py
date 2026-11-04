@@ -4194,11 +4194,34 @@ class TestLitellmIntegration:
         monkeypatch.setattr("litellm.completion", _slow)
 
         start = time.perf_counter()
-        with pytest.raises(LiteLLMClientError, match="hard timeout"):
+        with pytest.raises(LiteLLMClientError) as error:
             client.generate_chat_response(self._messages())
+        # Expiry before dispatch, during child startup and during the provider
+        # call share this typed timeout contract; their diagnostic wording varies.
+        assert isinstance(error.value.__cause__, LLMHardTimeoutError)
         # A single subprocess spawn/kill cycle (the blind same-model hard-timeout
         # retry was removed) — still far below the 1s the blocked call would take.
         assert time.perf_counter() - start < 1.0
+
+    def test_expired_child_startup_returns_timeout_without_provider_dispatch(
+        self, monkeypatch
+    ):
+        from reflexio.server.llm import _litellm_subprocess as worker
+
+        monkeypatch.setattr(worker, "_reset_llm_client_state_after_fork", lambda: None)
+        monkeypatch.setattr(worker, "_register_local_cli_providers", lambda: None)
+        completion = MagicMock(return_value=_make_completion_response("late"))
+        monkeypatch.setattr(worker, "model_completion", completion)
+        result_queue = MagicMock()
+
+        worker._litellm_completion_worker({}, result_queue, time.monotonic() - 1)
+
+        result_queue.put.assert_called_once()
+        status, payload = result_queue.put.call_args.args[0]
+        assert status == "error"
+        assert payload.hard_timeout is True
+        assert "child startup" in payload.message
+        completion.assert_not_called()
 
     @pytest.mark.skipif(
         multiprocessing.get_start_method() != "fork",
