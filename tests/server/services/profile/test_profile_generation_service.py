@@ -144,128 +144,53 @@ def sample_request_interaction_models(sample_interactions):
     ]
 
 
+def test_projection_does_not_change_native_storage_identity(service, request_context):
+    assert service.storage is request_context.storage
+
+
 # ===============================
 # Test: _build_should_run_prompt
 # ===============================
 
 
 class TestBuildShouldRunPrompt:
-    """Tests for _build_should_run_prompt with profile-specific config."""
+    """The producing extractor absorbs null decisions without a gate request."""
 
-    def test_returns_prompt_with_definition_only(
-        self, service, request_context, sample_request_interaction_models
+    @pytest.mark.parametrize(
+        "definition,override",
+        [
+            ("Extract preferences", None),
+            ("Basic profile", "User shared info"),
+            ("Extract hobbies", "User shared preference"),
+            ("Extract hobbies", None),
+        ],
+    )
+    def test_does_not_render_or_call_a_separate_model_gate(
+        self,
+        service,
+        request_context,
+        sample_request_interaction_models,
+        definition,
+        override,
     ):
-        """Prompt is rendered when config has extraction_definition_prompt."""
         config = ProfileExtractorConfig(
-            extraction_definition_prompt="Extract user preferences",
+            extraction_definition_prompt=definition,
+            should_extract_profile_prompt_override=override,
         )
-
         with (
+            patch.object(request_context.prompt_manager, "render_prompt") as render,
             patch.object(
-                service.configurator, "get_agent_context", return_value="Agent context"
-            ),
-            patch.object(
-                request_context.prompt_manager,
-                "render_prompt",
-                return_value="rendered prompt",
-            ) as mock_render,
+                service.client, "generate_chat_response_with_provenance"
+            ) as generate,
         ):
-            result = service._build_should_run_prompt(
-                config, sample_request_interaction_models
-            )
-
-            assert result == "rendered prompt"
-            variables = mock_render.call_args[0][1]
             assert (
-                "definition: Extract user preferences"
-                in variables["should_extract_profile_prompt"]
+                service._build_should_run_prompt(
+                    config, sample_request_interaction_models
+                )
+                is None
             )
-
-    def test_returns_prompt_with_override(
-        self, service, request_context, sample_request_interaction_models
-    ):
-        """Prompt includes override condition when config has should_extract_profile_prompt_override."""
-        config = ProfileExtractorConfig(
-            extraction_definition_prompt="Basic profile",
-            should_extract_profile_prompt_override="Check if user shared info",
-        )
-
-        with (
-            patch.object(
-                service.configurator, "get_agent_context", return_value="Agent context"
-            ),
-            patch.object(
-                request_context.prompt_manager,
-                "render_prompt",
-                return_value="rendered override",
-            ) as mock_render,
-        ):
-            result = service._build_should_run_prompt(
-                config, sample_request_interaction_models
-            )
-
-            assert result == "rendered override"
-            variables = mock_render.call_args[0][1]
-            assert (
-                "condition: Check if user shared info"
-                in variables["should_extract_profile_prompt"]
-            )
-
-    def test_renders_single_config_criteria(
-        self, service, request_context, sample_request_interaction_models
-    ):
-        """Single config renders definition and override criteria."""
-        config = ProfileExtractorConfig(
-            extraction_definition_prompt="Extract preferences",
-            should_extract_profile_prompt_override="User shared preference",
-        )
-
-        with (
-            patch.object(
-                service.configurator, "get_agent_context", return_value="Agent context"
-            ),
-            patch.object(
-                request_context.prompt_manager,
-                "render_prompt",
-                return_value="combined prompt",
-            ) as mock_render,
-        ):
-            result = service._build_should_run_prompt(
-                config, sample_request_interaction_models
-            )
-
-            assert result == "combined prompt"
-            variables = mock_render.call_args[0][1]
-            criteria = variables["should_extract_profile_prompt"]
-            assert "Extract preferences" in criteria
-            assert "User shared preference" in criteria
-
-    def test_renders_single_definition(
-        self, service, request_context, sample_request_interaction_models
-    ):
-        """Single config definition is included in criteria."""
-        config = ProfileExtractorConfig(
-            extraction_definition_prompt="Extract hobbies",
-        )
-
-        with (
-            patch.object(
-                service.configurator, "get_agent_context", return_value="Agent context"
-            ),
-            patch.object(
-                request_context.prompt_manager,
-                "render_prompt",
-                return_value="partial prompt",
-            ) as mock_render,
-        ):
-            result = service._build_should_run_prompt(
-                config, sample_request_interaction_models
-            )
-
-            assert result == "partial prompt"
-            variables = mock_render.call_args[0][1]
-            criteria = variables["should_extract_profile_prompt"]
-            assert "Extract hobbies" in criteria
+            render.assert_not_called()
+            generate.assert_not_called()
 
 
 # ===============================
@@ -276,12 +201,28 @@ class TestBuildShouldRunPrompt:
 class TestProcessResults:
     """Tests for _process_results with deduplication paths."""
 
+    @pytest.fixture(autouse=True)
+    def persistence_boundary(self, monkeypatch, sample_request_interaction_models):
+        # These tests own native application/provenance, not model reconciliation.
+        # The operation/evidence integration suite exercises the actual compiler.
+        from reflexio.server.services.profile.components.consolidator import (
+            ProfileConsolidator,
+        )
+
+        self._source = sample_request_interaction_models
+        monkeypatch.setattr(
+            ProfileConsolidator,
+            "deduplicate",
+            lambda _self, rows, *_args: (rows, [], []),
+        )
+
     def _setup_service_config(self, service, source="api"):
         """Helper to set service_config on the service."""
         service.service_config = ProfileGenerationServiceConfig(
             user_id="user_1",
             request_id="req_1",
             source=source,
+            review_interactions=self._source,
         )
 
     def test_empty_results_no_action(self, service, request_context):
@@ -327,6 +268,7 @@ class TestProcessResults:
             user_id="user_1",
             request_id="req_1",
             source="rerun",
+            review_interactions=self._source,
         )
 
         service_pending._process_results([[sample_profile]])
@@ -362,6 +304,7 @@ class TestProcessResults:
         )
 
         class FakeConsolidator:
+            OUTPUT_SCHEMA = MagicMock()
             model_provenance = provenance
             lineage_sources_by_profile_id = {"merged-profile": ["old-profile"]}
             consolidated_output_indices = {0}

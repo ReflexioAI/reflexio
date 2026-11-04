@@ -226,7 +226,9 @@ class ProfileStoreMixin:
         sql = f"SELECT * FROM profiles WHERE {' AND '.join(conditions)}"
         return [_row_to_profile(r) for r in self._fetchall(sql, all_params)]
 
-    def precompute_profile_embeddings(self, profiles: list[UserProfile]) -> None:
+    def precompute_profile_embeddings(
+        self, profiles: list[UserProfile], *, expand_documents: bool = True
+    ) -> None:
         """Populate ``.embedding`` / ``.expanded_terms`` in place; no DB write.
 
         Extracted verbatim from the former ``add_user_profile`` prelude so the
@@ -235,7 +237,7 @@ class ProfileStoreMixin:
         """
         for profile in profiles:
             embedding_text = "\n".join([profile.content, str(profile.custom_features)])
-            if self._should_expand_documents():
+            if expand_documents and self._should_expand_documents():
                 with ThreadPoolExecutor(max_workers=2) as executor:
                     emb_future = executor.submit(
                         copy_context().run, self._get_embedding, embedding_text

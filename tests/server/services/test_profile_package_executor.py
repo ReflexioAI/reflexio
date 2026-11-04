@@ -23,6 +23,54 @@ pipeline = durable.pipeline
 pytestmark = pytest.mark.integration
 
 
+def is_operation_request(params):
+    schema = params.get("response_format")
+    if hasattr(schema, "model_json_schema"):
+        return "snapshot" in schema.model_json_schema().get("properties", {})
+    return isinstance(schema, dict) and "snapshot" in schema.get("json_schema", {}).get(
+        "schema", {}
+    ).get("properties", {})
+
+
+def operation_response(params):
+    message = params["messages"][0]["content"]
+    payload = json.loads(message.rsplit("\n\n", 1)[1])
+    excerpts = [
+        excerpt
+        for session in payload["original_window"]
+        for interaction in session["interactions"]
+        if interaction["role"] == "user"
+        for excerpt in interaction["content"]["excerpts"]
+    ]
+    return {
+        "snapshot": payload["snapshot"],
+        "groups": [
+            {
+                "new_ids": [row["id"]],
+                "writes": [
+                    {
+                        "clauses": [
+                            {
+                                "action": "assert",
+                                "source_new_id": row["id"],
+                                "content": row["content"],
+                                "evidence": [
+                                    {
+                                        "excerpt_id": excerpts[0]["excerpt_id"],
+                                        "stance": "assertion",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ],
+                "forget": [],
+            }
+            for row in payload["NEW"]
+        ],
+    }
+
+
 def setup(pipeline, monkeypatch, *, gate=True, profiles=True):
     engine, _, http = pipeline
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
@@ -55,10 +103,8 @@ def setup(pipeline, monkeypatch, *, gate=True, profiles=True):
     def wire(params, _timeout):
         calls.append(copy.deepcopy(params))
         schema = params.get("response_format", {})
-        if "ProfileDeduplicationOutput" in str(schema):
-            content = json.dumps(
-                {"duplicate_groups": [], "unique_ids": ["NEW-0"], "deletions": []}
-            )
+        if is_operation_request(params):
+            content = json.dumps(operation_response(params))
         elif schema:
             content = json.dumps(
                 {
@@ -91,7 +137,7 @@ def setup(pipeline, monkeypatch, *, gate=True, profiles=True):
 
 @pytest.mark.parametrize(
     ("gate", "profiles", "expected"),
-    [(True, True, 1), (True, False, 0), (False, True, 0)],
+    [(True, True, 1), (True, False, 0), (False, True, 1)],
 )
 def test_actual_package_parent_publishes_once(
     pipeline, monkeypatch, gate, profiles, expected
@@ -114,16 +160,16 @@ def test_actual_package_parent_publishes_once(
     assert parent.status.value == "finalized"
     journal = parent.generation_request_snapshot["overflow"]
     assert journal["version"] == 2
-    assert (
-        len(journal["attempts"]) == len(calls) == (3 if expected else 2 if gate else 1)
-    )
+    assert len(journal["attempts"]) == len(calls) == (2 if profiles else 1)
     assert storage.extraction_status("u", "package-parent")["status"] == "done"
     effects = storage.pending_extraction_effects()
     assert len(effects) == 1
     assert effects[0][1]["billing"]["prompt_tokens"] == len(calls) * 100
-    if not gate:
+    if not profiles:
         assert effects[0][1]["billing"]["ids"] == []
-        assert effects[0][1]["billing"]["input_tokens"] == 0
+        # The fused extractor consumes the complete input even for a null
+        # decision; there is no preceding zero-output should-run gate.
+        assert effects[0][1]["billing"]["input_tokens"] > 0
 
 
 def test_cached_write_plan_cannot_change_profile_content(pipeline, monkeypatch):
@@ -143,7 +189,7 @@ def test_cached_write_plan_cannot_change_profile_content(pipeline, monkeypatch):
     resumed.outcome["write_plan"]["new_profiles"][0]["content"] = "tampered fact"
     with pytest.raises(InputBudgetConfigurationError, match="write plan changed"):
         executor.execute(resumed, token)
-    assert len(calls) == 3
+    assert len(calls) == 2
     assert storage.get_user_profile("u") == []
 
 
@@ -192,15 +238,42 @@ def test_restart_preserves_candidates_and_paid_calls(pipeline, monkeypatch, boun
     parent = storage.get_agent_run(f"window:{window.window_id}")
     checkpoint = parent.generation_request_snapshot["overflow"]["checkpoint"]
     frozen = copy.deepcopy(checkpoint["profile_package_candidates"])
+    prior_plan = copy.deepcopy(checkpoint.get("profile_package_plan"))
     assert storage.get_user_profile("u") == []
     monkeypatch.setattr(target, name, original)
+    complete = storage.complete_extraction
+    monkeypatch.setattr(
+        storage,
+        "complete_extraction",
+        Mock(side_effect=RuntimeError("resolved plan pause")),
+    )
+    with pytest.raises(RuntimeError, match="resolved plan pause"):
+        executor.execute(storage.prepare_extraction("u", token), token)
+    planned = copy.deepcopy(
+        storage.get_agent_run(parent.id).generation_request_snapshot["overflow"][
+            "checkpoint"
+        ]["profile_package_plan"]
+    )
+    if prior_plan is not None:
+        assert planned == prior_plan
+    monkeypatch.setattr(storage, "complete_extraction", complete)
     executor.execute(storage.prepare_extraction("u", token), token)
     rows = storage.get_user_profile("u")
     assert len(rows) == 1
-    assert rows[0].profile_id == frozen[0]["profile_id"]
-    assert rows[0].last_modified_timestamp == frozen[0]["last_modified_timestamp"]
-    assert rows[0].expiration_timestamp == frozen[0]["expiration_timestamp"]
-    assert len(calls) == 3
+    resolved = planned["write_plan"]["new_profiles"][0]
+    assert rows[0].profile_id == resolved["profile_id"] != frozen[0]["profile_id"]
+    assert rows[0].last_modified_timestamp == resolved["last_modified_timestamp"]
+    assert rows[0].expiration_timestamp == resolved["expiration_timestamp"]
+    clause = rows[0].custom_features["rsi_clauses_v14"][0]
+    assert clause["source_profile_ids"] == [frozen[0]["profile_id"]]
+    assert clause["factual_timestamp"] == frozen[0]["last_modified_timestamp"]
+    assert (
+        storage.get_agent_run(parent.id).generation_request_snapshot["overflow"][
+            "checkpoint"
+        ]["profile_package_candidates"]
+        == frozen
+    )
+    assert len(calls) == 2
     assert len(storage.pending_extraction_effects()) == 1
 
 
@@ -294,7 +367,7 @@ def test_retired_name_resume_keeps_frozen_profile_candidates_and_paid_calls(
         snapshot["profile_package_preparation"]["extractor_config"]["extractor_name"]
         == "historical-profile-label"
     )
-    assert len(calls) == 3
+    assert len(calls) == 2
     assert storage.get_user_profile("u") == []
     if historical_pending_creation:
         historical = snapshot["profile_package_preparation"]["pending_tool_config"]
@@ -335,38 +408,60 @@ def test_retired_name_resume_keeps_frozen_profile_candidates_and_paid_calls(
         == snapshot["overflow"]["input_protocol"]
     )
     candidates = snapshot["overflow"]["checkpoint"]["profile_package_candidates"]
+    planned = snapshot["overflow"]["checkpoint"]["profile_package_plan"]["write_plan"][
+        "new_profiles"
+    ]
     rows = storage.get_user_profile("u")
     assert len(rows) == 1
-    assert rows[0].profile_id == candidates[0]["profile_id"]
-    assert rows[0].last_modified_timestamp == candidates[0]["last_modified_timestamp"]
-    assert rows[0].expiration_timestamp == candidates[0]["expiration_timestamp"]
-    assert len(calls) == 3
+    assert rows[0].profile_id == planned[0]["profile_id"] != candidates[0]["profile_id"]
+    assert rows[0].last_modified_timestamp == planned[0]["last_modified_timestamp"]
+    assert rows[0].expiration_timestamp == planned[0]["expiration_timestamp"]
+    clause = rows[0].custom_features["rsi_clauses_v14"][0]
+    assert clause["source_profile_ids"] == [candidates[0]["profile_id"]]
+    assert clause["factual_timestamp"] == candidates[0]["last_modified_timestamp"]
+    assert len(calls) == 2
     assert len(storage.pending_extraction_effects()) == 1
     assert storage.extraction_status("u", "package-parent")["status"] == "done"
 
 
 @pytest.mark.parametrize("failure", ["invalid_first_parsed", "transport"])
-def test_native_dedup_host_fallback_is_durable(pipeline, monkeypatch, failure):
+def test_native_planner_failure_withholds_new_and_preserves_paid_attempts(
+    pipeline, monkeypatch, failure
+):
+    from reflexio.models.api_schema.service_schemas import UserProfile
+
     engine, storage, window, token, client, calls = setup(pipeline, monkeypatch)
+    incumbent = UserProfile(
+        profile_id="unchanged-incumbent",
+        user_id="u",
+        content="Prefers tea at work.",
+        last_modified_timestamp=100,
+        generated_from_request_id="prior",
+        embedding=[0.0] * 512,
+    )
+    storage.add_user_profile("u", [incumbent], skip_embedding=True)
+    monkeypatch.setattr(storage, "search_user_profile", Mock(return_value=[incumbent]))
+    embed = Mock(side_effect=AssertionError("Withheld proposals must not embed"))
+    monkeypatch.setattr(storage, "precompute_profile_embeddings", embed)
     transport = client._completion_with_hard_timeout
 
     def wire(params, timeout):
         response = transport(params, timeout)
-        if "ProfileDeduplicationOutput" in str(params.get("response_format")):
+        if is_operation_request(params):
             if failure == "transport":
                 raise RuntimeError("fixture provider unavailable")
-            response.choices[
-                0
-            ].message.content = (
-                '{"duplicate_groups":[],"unique_ids":["NEW-999"],"deletions":[]}'
+            output = operation_response(params)
+            output["groups"][0]["writes"][0]["clauses"][0]["evidence"][0]["stance"] = (
+                "draft"
             )
+            response.choices[0].message.content = json.dumps(output)
         return response
 
     monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
-    original = storage.precompute_profile_embeddings
+    original = storage.save_extraction_outcome
     monkeypatch.setattr(
         storage,
-        "precompute_profile_embeddings",
+        "save_extraction_outcome",
         Mock(side_effect=RuntimeError("after dedup")),
     )
     executor = ProfilePackageWindowExecutor(engine.request_context, client)
@@ -381,9 +476,13 @@ def test_native_dedup_host_fallback_is_durable(pipeline, monkeypatch, failure):
         2 if failure == "invalid_first_parsed" else 1
     )
     before = len(calls)
-    monkeypatch.setattr(storage, "precompute_profile_embeddings", original)
+    monkeypatch.setattr(storage, "save_extraction_outcome", original)
     executor.execute(storage.prepare_extraction("u", token), token)
-    assert len(storage.get_user_profile("u")) == 1
+    assert [row.profile_id for row in storage.get_user_profile("u")] == [
+        incumbent.profile_id
+    ]
+    assert storage.get_user_profile("u")[0].content == incumbent.content
+    embed.assert_not_called()
     assert len(calls) == before
 
 
@@ -462,7 +561,13 @@ def test_native_eight_turns_keep_all_fallback_attempts(pipeline, monkeypatch, fi
     journal = parent.generation_request_snapshot["overflow"]
     assert agent_calls == 16
     assert sum(item["stage"] == "profile_agent" for item in journal["attempts"]) == 16
-    assert len(calls) == len(journal["attempts"]) == (18 if finish else 17)
+    # Eight durable turns retain both native ladder attempts. The selected
+    # extractor owns null admission, so no separate paid gate precedes them.
+    assert len(calls) == len(journal["attempts"]) == (17 if finish else 16)
+    assert all(attempt["stage"] != "gate" for attempt in journal["attempts"])
+    assert sum(
+        attempt["stage"] == "profile_dedup" for attempt in journal["attempts"]
+    ) == int(finish)
     assert len(storage.get_user_profile("u")) == int(finish)
     if not finish:
         assert journal["checkpoint"]["active_child"]["max_steps_remaining"] == 0
@@ -501,7 +606,7 @@ def test_malformed_saved_dedup_cannot_publish_through_fallback(
     monkeypatch.setattr(storage, "precompute_profile_embeddings", original)
     with pytest.raises(InputBudgetConfigurationError):
         executor.execute(storage.prepare_extraction("u", token), token)
-    assert len(calls) == 3
+    assert len(calls) == 2
     assert storage.get_user_profile("u") == []
 
 
@@ -549,9 +654,9 @@ def test_frozen_old_projection_replays_without_vectors_or_new_search(
     context = parent.generation_request_snapshot["profile_package_preparation"][
         "context_profiles"
     ]
-    assert len(context) == 1
-    assert context[0]["profile_id"] == old.profile_id
-    assert context[0]["content"] == old.content
+    # Source-only extraction has no incumbent context; reconciliation still
+    # retrieves and freezes the exact old row for its own source-aware review.
+    assert context == []
     assert set(frozen[0]) == set(PROFILE_WITNESS_FIELDS)
     assert frozen[0]["notes"] == old.notes
     assert frozen[0]["custom_features"] == old.custom_features
@@ -559,14 +664,15 @@ def test_frozen_old_projection_replays_without_vectors_or_new_search(
     monkeypatch.setattr(storage, "precompute_profile_embeddings", original)
     executor.execute(storage.prepare_extraction("u", token), token)
     assert search.call_count == 1
-    assert len(calls) == 3
+    assert len(calls) == 2
     assert len(storage.get_user_profile("u")) == 2
 
 
 def test_nonfinite_embedding_never_reaches_publication(pipeline, monkeypatch):
     engine, storage, window, token, client, _ = setup(pipeline, monkeypatch)
 
-    def invalid_embeddings(profiles):
+    def invalid_embeddings(profiles, *, expand_documents=True):
+        assert expand_documents is False
         for profile in profiles:
             profile.embedding = [float("nan")] * 512
 
@@ -649,7 +755,11 @@ def test_shared_sql_cannot_replace_or_remove_frozen_profile_decisions(
     ).generation_request_snapshot["overflow"]
     assert actual["revision"] == revision
     assert actual["checkpoint"] == original
-    assert len(calls) == len(actual["attempts"]) == 3
+    assert len(calls) == len(actual["attempts"]) == 2
+    assert {attempt["stage"] for attempt in actual["attempts"]} == {
+        "profile_agent",
+        "profile_dedup",
+    }
     assert storage.get_user_profile("u") == []
 
 

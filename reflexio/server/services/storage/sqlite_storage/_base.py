@@ -1331,6 +1331,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             # statement commits separately. Roll back the whole base DDL on error.
             with self.conn:
                 cur.executescript("BEGIN;\n" + _DDL + "\nCOMMIT;")
+            from .profiles._explicit_retention import install_deadline_index
+
+            install_deadline_index(self.conn)
             init_subject_write_barrier_table(self.conn)
             init_playbook_aggregation_tables(self.conn)
             self.conn.commit()

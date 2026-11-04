@@ -55,7 +55,13 @@ from reflexio.server.services.extraction.resumable_agent import (
 from reflexio.server.services.extraction.source_package import render_source_package
 from reflexio.server.services.input_compression import CompressionBudget, EvidencePacket
 from reflexio.server.services.profile.components.consolidator import (
-    ProfileDeduplicationOutput,
+    ProfileConsolidator,
+)
+from reflexio.server.services.profile.learning.client_policy import (
+    producing_request_options,
+)
+from reflexio.server.services.profile.learning.extractor import (
+    profile_extraction_definition,
 )
 from reflexio.server.services.profile.profile_generation_service_utils import (
     PROFILE_SOURCE_EVIDENCE_INSTRUCTION,
@@ -86,7 +92,7 @@ def _validate_profile_native_contract(
 ) -> None:
     if schemas != {
         "agent": StructuredProfilesOutput.model_json_schema(),
-        "dedup": ProfileDeduplicationOutput.model_json_schema(),
+        "dedup": ProfileConsolidator.OUTPUT_SCHEMA.model_json_schema(),
     }:
         raise InputBudgetConfigurationError("Profile output schema changed")
     for stage, models in ladders.items():
@@ -148,7 +154,10 @@ def profile_package_original_seed(
         context_prompt=extractor_config.context_prompt.strip()
         if extractor_config.context_prompt
         else "",
-        extraction_definition_prompt=extractor_config.extraction_definition_prompt.strip(),
+        extraction_definition_prompt=profile_extraction_definition(
+            extractor_config.extraction_definition_prompt,
+            condition=extractor_config.should_extract_profile_prompt_override,
+        ).strip(),
         source_text=format_sessions_to_history_string(groups),
         template_identities=template_identities,
     )
@@ -348,7 +357,10 @@ def prepare_profile_package(
                 context_prompt=config.context_prompt.strip()
                 if config.context_prompt
                 else "",
-                extraction_definition_prompt=config.extraction_definition_prompt.strip(),
+                extraction_definition_prompt=profile_extraction_definition(
+                    config.extraction_definition_prompt,
+                    condition=config.should_extract_profile_prompt_override,
+                ).strip(),
                 source_text=source_text,
                 template_identities=templates,
             ),
@@ -379,8 +391,13 @@ def prepare_profile_package(
             "tools": tools or None,
             "tool_choice": "auto" if tools else None,
         },
-        "dedup": {"model": dedup_model, "response_format": ProfileDeduplicationOutput},
+        "dedup": {
+            "model": dedup_model,
+            "response_format": ProfileConsolidator.OUTPUT_SCHEMA,
+        },
     }
+    stage_options["agent"] = producing_request_options(client, stage_options["agent"])
+    stage_options["dedup"] = producing_request_options(client, stage_options["dedup"])
     ladders = {
         stage: list(client.get_completion_model_ladder(**options))
         if stage != "gate" or gate_enabled
@@ -447,11 +464,11 @@ def prepare_profile_package(
         "native_contracts": contracts,
         "schemas": {
             "agent": StructuredProfilesOutput.model_json_schema(),
-            "dedup": ProfileDeduplicationOutput.model_json_schema(),
+            "dedup": ProfileConsolidator.OUTPUT_SCHEMA.model_json_schema(),
         },
         "validator_policies": {
             "agent": "exact-visible-original-quote-v1",
-            "dedup": "native-profile-dedup-indices-v1",
+            "dedup": "profile-source-operation-wire-v28",
         },
         "context_limits_digest": _digest(dict(context_limits)),
         "input_target": PROFILE_PACKAGE_INPUT_TARGET,

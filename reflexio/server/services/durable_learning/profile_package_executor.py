@@ -10,7 +10,7 @@ import hashlib
 import json
 import time
 from dataclasses import asdict, replace
-from typing import Any
+from typing import Any, cast
 
 from reflexio.models.api_schema.service_schemas import UserProfile
 from reflexio.server.env_utils import env_bool, env_str
@@ -18,6 +18,7 @@ from reflexio.server.llm.input_budget import (
     InputBudgetConfigurationError,
     declared_context_limits,
 )
+from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.base_generation_service import PreparedGenerationRun
 from reflexio.server.services.deferred_learning_plan import GenerationComputePlan
@@ -55,8 +56,12 @@ from reflexio.server.services.extraction.resumable_agent import (
 )
 from reflexio.server.services.extractor_config_utils import get_extractor_name
 from reflexio.server.services.profile.components.extractor import (
-    MAX_EXISTING_PROFILES_FOR_CONTEXT,
     ProfileExtractor,
+)
+from reflexio.server.services.profile.learning.client_policy import ComponentClient
+from reflexio.server.services.profile.learning.compiler import (
+    operation_prompt_identity,
+    original_window,
 )
 from reflexio.server.services.profile.service import ProfileGenerationService
 from reflexio.server.services.storage.storage_base import AgentRunStatus, canonical_json
@@ -184,11 +189,7 @@ class ProfilePackageWindowExecutor(WindowExecutor):
             tools_active = snapshot["pending_tool_config"] is not None
             template = known.generation_request_snapshot["profile_dedup_template"]
         else:
-            profiles = sorted(
-                service.service_config.existing_data or [],
-                key=lambda row: row.last_modified_timestamp,
-                reverse=True,
-            )[:MAX_EXISTING_PROFILES_FOR_CONTEXT]
+            profiles = []  # Selected extractor authors from conversation only.
             context = self.context.configurator.get_agent_context()
             tools_active = pending_tool_calls_enabled(self.context)
             prior = (
@@ -213,9 +214,7 @@ class ProfilePackageWindowExecutor(WindowExecutor):
                 if tools_active
                 else None
             )
-            gate_enabled = not (
-                window.force or window.policy.get("skip_should_run_check", False)
-            )
+            gate_enabled = False  # The producing extractor owns null decisions.
             gate_model = service._resolve_should_run_model()
             # Resolve the same native dedup model as the ordinary service.
             from reflexio.server.services.profile.components.consolidator import (
@@ -226,7 +225,9 @@ class ProfilePackageWindowExecutor(WindowExecutor):
                 request_context=self.context, llm_client=self.client
             )
             dedup_model = native.model_name
-            template = manager.get_prompt_template_identity(native._get_prompt_id())
+            template = operation_prompt_identity()
+        if template != operation_prompt_identity():
+            raise InputBudgetConfigurationError("Profile operation prompt changed")
         expected = build_extractor_agent_run_record(
             org_id=self.storage.org_id,
             extractor_kind="profile",
@@ -344,11 +345,19 @@ class ProfilePackageWindowExecutor(WindowExecutor):
         coordinator.executor = self
         service.package_consolidator = PackageProfileConsolidator(
             request_context=self.context,
-            llm_client=self.client,
+            llm_client=cast(
+                "LiteLLMClient",
+                ComponentClient(
+                    self.client,
+                    "unified_change_planner",
+                    PackageProfileConsolidator.OUTPUT_SCHEMA,
+                ),
+            ),
             coordinator=coordinator,
             preparation=preparation,
             template_identity=template,
         )
+        service.package_consolidator.review_window = original_window(groups)
         return coordinator
 
     def _compute_overflow_window(

@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.llm.litellm_client import LiteLLMClient
-    from reflexio.server.services.profile.components.consolidator import (
-        ProfileConsolidator,
-    )
 
 from reflexio.models.api_schema.domain.entities import LineageContext
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
@@ -36,16 +34,9 @@ from reflexio.server.services.base_generation_service import (
 from reflexio.server.services.deferred_learning_plan import (
     ProfileWritePlan,
 )
-from reflexio.server.services.extraction.overflow_presentation import (
-    current_overflow_presentation,
-)
 from reflexio.server.services.profile.components.extractor import ProfileExtractor
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileGenerationRequest,
-    build_profile_gate_prompt,
-)
-from reflexio.server.services.service_utils import (
-    format_sessions_to_history_string,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,6 +69,7 @@ class ProfileGenerationServiceConfig:
     auto_run: bool = True
     force_extraction: bool = False
     window_interactions: list[RequestInteractionDataModel] | None = None
+    review_interactions: list[RequestInteractionDataModel] = field(default_factory=list)
     extraction_window_id: str | None = None
     frozen_extractor_config: dict[str, Any] | None = None
 
@@ -114,6 +106,7 @@ class ProfileGenerationService(
         super().__init__(llm_client=llm_client, request_context=request_context)
         self.allow_manual_trigger = allow_manual_trigger
         self.output_pending_status = output_pending_status
+        self.enrichment_consolidator = None
 
     def _load_generation_service_config(
         self, request: ProfileGenerationRequest
@@ -162,17 +155,30 @@ class ProfileGenerationService(
             [p for result in results if result for p in result]
         )
 
-    def _create_consolidator(self) -> ProfileConsolidator:
-        """Use native consolidation unless a scoped executor supplies its journal."""
+    def _create_consolidator(self) -> Any:
         from reflexio.server.services.profile.components.consolidator import (
             ProfileConsolidator,
         )
+        from reflexio.server.services.profile.learning.client_policy import (
+            ComponentClient,
+        )
+        from reflexio.server.services.profile.learning.compiler import original_window
 
-        return ProfileConsolidator(
+        self.enrichment_consolidator = ProfileConsolidator(
             request_context=self.request_context,
-            llm_client=self.client,
+            llm_client=ComponentClient(
+                self.client, "unified_change_planner", ProfileConsolidator.OUTPUT_SCHEMA
+            ),
             output_pending_status=self.output_pending_status,
         )
+        if self.service_config is None:
+            raise RuntimeError("Profile review requires native generation preparation")
+        self.enrichment_consolidator.review_window = original_window(
+            self.service_config.window_interactions
+            if self.service_config.window_interactions is not None
+            else self.service_config.review_interactions
+        )
+        return self.enrichment_consolidator
 
     def _resolve_write_plan(
         self, results: list[list[UserProfile]]
@@ -238,7 +244,15 @@ class ProfileGenerationService(
         # Precompute embeddings on the new rows (compute-side, NO DB write). The
         # persist half passes skip_embedding=True so no embedding runs in the fence.
         if all_new_profiles:
-            self.storage.precompute_profile_embeddings(all_new_profiles)  # type: ignore[reportOptionalMemberAccess]
+            from reflexio.server.services.profile.learning.semantic_embedding import (
+                SemanticEmbeddingStorage,
+            )
+
+            # Projection is compute-only. Keep self.storage's exact native
+            # identity for user-work fencing and every publication path.
+            SemanticEmbeddingStorage(self.storage).precompute_profile_embeddings(
+                all_new_profiles
+            )
 
         lineage_contexts: list[LineageContext] = []
         from reflexio.server.services.extraction.overflow_coordinator import (
@@ -280,6 +294,50 @@ class ProfileGenerationService(
         )
 
     def _persist_write_plan(self, plan: ProfileWritePlan) -> None:
+        """Publish the final resolved plan and explicit constraints atomically.
+
+        This seam is shared by cached durable plans, inline output publication
+        and direct finalization; it sees the actual final plan in every path.
+        The caller's ownership fence and native outer commit remain in force.
+        """
+        from reflexio.server.services.profile.learning.explicit_retention import (
+            persist_with_deadlines,
+        )
+
+        persist_with_deadlines(
+            self.storage,
+            plan,
+            lambda: self._persist_profile_rows(plan),
+            int(time.time()),
+        )
+
+        from reflexio.server.services.profile.learning.explicit_retention import (
+            due_epoch,
+        )
+
+        self._profile_deadlines_changed = any(
+            due_epoch(row.custom_features) is not None for row in plan.new_profiles
+        )
+
+    def _dispatch_profile_deadlines(self) -> None:
+        """Notify existing ownership only after the native outer commit."""
+        if not getattr(self, "_profile_deadlines_changed", False):
+            return
+        from reflexio.server.services.lineage.gc_scheduler import (
+            notify_profile_deadline_change,
+        )
+
+        notify_profile_deadline_change(
+            org_id=self.org_id,
+            project_id=cast(Any, self.storage)._profile_deadline_project_id() or None,
+        )
+        self._profile_deadlines_changed = False
+
+    def emit_generation_side_effects(self, plan: Any) -> None:
+        self._dispatch_profile_deadlines()
+        super().emit_generation_side_effects(plan)
+
+    def _persist_profile_rows(self, plan: ProfileWritePlan) -> None:
         """Persist-half of profile finalization — apply the resolved write-plan.
 
         Issues only the fence-critical row writes: inserts the new profiles
@@ -375,6 +433,7 @@ class ProfileGenerationService(
         with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
             fence_explicit_extraction(self.storage)  # type: ignore[reportArgumentType]
             self._persist_write_plan(plan)
+        self._dispatch_profile_deadlines()
         return [str(row.profile_id) for row in plan.new_profiles if row.profile_id]
 
     def check_and_update_profiles(self, profiles: list[UserProfile]) -> None:
@@ -396,55 +455,19 @@ class ProfileGenerationService(
         extractor_config: ProfileExtractorConfig,
         service_config: ProfileGenerationServiceConfig,
     ) -> ProfileExtractor:
-        """
-        Create a ProfileExtractor instance from configuration.
+        from reflexio.server.services.profile.learning.extractor import create_extractor
 
-        Args:
-            extractor_config: ProfileExtractorConfig configuration object from YAML
-            service_config: ProfileGenerationServiceConfig containing runtime parameters
-
-        Returns:
-            ProfileExtractor instance
-        """
-        return ProfileExtractor(
-            request_context=self.request_context,
-            llm_client=self.client,
-            extractor_config=extractor_config,
-            service_config=service_config,
-            agent_context=self.configurator.get_agent_context(),
-        )
+        return create_extractor(self, extractor_config, service_config)
 
     def _build_should_run_prompt(
         self,
         scoped_config: ProfileExtractorConfig,
         session_data_models: list[RequestInteractionDataModel],
     ) -> str | None:
-        """
-        Build prompt for consolidated should_extract_profile check.
-
-        Renders the configured extractor's profile definition and override
-        condition for one LLM call.
-
-        Args:
-            scoped_config: Profile extractor config that had scoped interactions
-            session_data_models: Deduplicated request interaction data models
-
-        Returns:
-            str | None: The rendered prompt, or None if no criteria to check
-        """
-        presentation = current_overflow_presentation.get()
-        new_interactions = (
-            presentation.text
-            if presentation is not None
-            else format_sessions_to_history_string(session_data_models)
-        )
-        return build_profile_gate_prompt(
-            prompt_manager=self.request_context.prompt_manager,
-            agent_context_prompt=self.configurator.get_agent_context(),
-            extraction_definition_prompt=scoped_config.extraction_definition_prompt,
-            condition_prompt=scoped_config.should_extract_profile_prompt_override,
-            source_text=new_interactions,
-        )
+        # Native cheap checks, scope, overflow admission and cursors remain native.
+        # The producing extraction call returns null when no useful memory exists.
+        del scoped_config, session_data_models
+        return None
 
     def _get_extractor_state_service_name(self) -> str:
         """
