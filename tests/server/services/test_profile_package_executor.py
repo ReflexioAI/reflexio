@@ -668,6 +668,106 @@ def test_frozen_old_projection_replays_without_vectors_or_new_search(
     assert len(storage.get_user_profile("u")) == 2
 
 
+@pytest.mark.parametrize("resume_inputs", [False, True])
+def test_incumbent_operation_validates_on_fresh_and_cached_package_inputs(
+    pipeline, monkeypatch, resume_inputs
+):
+    from reflexio.models.api_schema.service_schemas import UserProfile
+    from reflexio.server.services.extraction.profile_package_consolidator import (
+        PackageProfileConsolidator,
+    )
+
+    engine, storage, window, token, client, calls = setup(pipeline, monkeypatch)
+    old = UserProfile(
+        profile_id="old",
+        user_id="u",
+        content="Enjoys hiking outdoors",
+        last_modified_timestamp=100,
+        generated_from_request_id="package-parent",
+        embedding=[0.0] * 512,
+    )
+    storage.add_user_profile("u", [old], skip_embedding=True)
+    search = Mock(return_value=[old])
+    monkeypatch.setattr(storage, "search_user_profile", search)
+    original_call = PackageProfileConsolidator._call_native_dedup
+    rendered = []
+
+    def before_author(self, messages, output_schema, validator):
+        rendered.append(copy.deepcopy(messages))
+        if resume_inputs and len(rendered) == 1:
+            raise InputBudgetConfigurationError("interrupted after frozen inputs")
+        return original_call(self, messages, output_schema, validator)
+
+    monkeypatch.setattr(PackageProfileConsolidator, "_call_native_dedup", before_author)
+    original_response = operation_response
+
+    def incumbent_response(params):
+        result = original_response(params)
+        payload = json.loads(params["messages"][0]["content"].rsplit("\n\n", 1)[1])
+        incumbent = payload["EXISTING"][0]
+        assert incumbent["content"] == old.content
+        result["groups"][0]["writes"].insert(
+            0,
+            {
+                "clauses": [
+                    {
+                        "action": "carry",
+                        "target": {
+                            "row_id": incumbent["id"],
+                            "start_token": 0,
+                            "end_token": len(incumbent["token_positions"]),
+                        },
+                    }
+                ]
+            },
+        )
+        return result
+
+    monkeypatch.setattr(
+        "tests.server.services.test_profile_package_executor.operation_response",
+        incumbent_response,
+    )
+    executor = ProfilePackageWindowExecutor(engine.request_context, client)
+    if resume_inputs:
+        with pytest.raises(InputBudgetConfigurationError, match="after frozen inputs"):
+            executor.execute(window, token)
+        parent = storage.get_agent_run(f"window:{window.window_id}")
+        before = copy.deepcopy(parent.generation_request_snapshot["overflow"])
+        checkpoint = before["checkpoint"]
+        assert checkpoint["profile_dedup_inputs"]["old"][0]["profile_id"] == "old"
+        assert "profile_dedup_decision" not in checkpoint
+        assert len(calls) == len(before["attempts"]) == 1
+        assert storage.get_user_profile("u")[0].content == old.content
+        assert storage.pending_extraction_effects() == []
+        window = storage.prepare_extraction("u", token)
+    executor.execute(window, token)
+    parent = storage.get_agent_run(f"window:{window.window_id}")
+    journal = parent.generation_request_snapshot["overflow"]
+    assert search.call_count == 1
+    assert len(calls) == len(journal["attempts"]) == 2
+    assert journal["checkpoint"]["profile_dedup_decision"]["disposition"] == "validated"
+    assert len([request for request in calls if is_operation_request(request)]) == 1
+    if resume_inputs:
+        assert rendered[0] == rendered[1] == calls[-1]["messages"]
+        assert journal["attempts"][0] == before["attempts"][0]
+        assert (
+            journal["checkpoint"]["profile_dedup_inputs"]
+            == checkpoint["profile_dedup_inputs"]
+        )
+        assert (
+            journal["checkpoint"]["profile_package_candidates"]
+            == checkpoint["profile_package_candidates"]
+        )
+    rows = storage.get_user_profile("u")
+    assert len(rows) == 2
+    assert any(
+        row.profile_id == old.profile_id and row.content == old.content for row in rows
+    )
+    assert any(row.content == "Prefers concise answers" for row in rows)
+    assert len(storage.pending_extraction_effects()) == 1
+    assert storage.extraction_status("u", "package-parent")["status"] == "done"
+
+
 def test_nonfinite_embedding_never_reaches_publication(pipeline, monkeypatch):
     engine, storage, window, token, client, _ = setup(pipeline, monkeypatch)
 

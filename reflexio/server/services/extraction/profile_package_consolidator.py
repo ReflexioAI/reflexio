@@ -110,6 +110,9 @@ class PackageProfileConsolidator(ProfileConsolidator):
             ):
                 raise InputBudgetConfigurationError("Frozen historical profile changed")
         self._validate_old()
+        # Cached retrieval bypasses the compiler's retrieval hook. Restore the
+        # same incumbent state used to validate a newly retrieved operation plan.
+        self._existing_atoms = old
         return old
 
     def _render_dedup_prompt(
