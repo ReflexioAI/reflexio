@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Any
+from functools import wraps
+from typing import Any, Concatenate
 
 from reflexio.server.services.storage.retention import (
     OPTIMIZATION_HISTORY_TARGET,
@@ -183,6 +185,17 @@ def get_retention_target(target_name: str) -> RetentionTarget:
         raise ValueError(f"Unknown retention target: {target_name}") from exc
 
 
+def _retention_operation[**P, R](
+    method: Callable[Concatenate[RetentionMixin, P], R],
+) -> Callable[Concatenate[RetentionMixin, P], R]:
+    @wraps(method)
+    def run(self: RetentionMixin, /, *args: P.args, **kwargs: P.kwargs) -> R:
+        with self._retention_scope():
+            return method(self, *args, **kwargs)
+
+    return run
+
+
 class RetentionMixin(ABC):
     """Backend-agnostic orchestration of row-retention cleanup.
 
@@ -191,6 +204,7 @@ class RetentionMixin(ABC):
     cascade/delete ordering is identical across all three backends.
     """
 
+    @_retention_operation
     def count_retention_target_rows(self, target_name: str) -> int:
         """Return the current row count for a retention target.
 
@@ -207,6 +221,7 @@ class RetentionMixin(ABC):
             return self._retention_count_optimization_rows()
         return self._retention_count_rows(target)
 
+    @_retention_operation
     def estimate_retention_target_rows(self, target_name: str) -> int | None:
         """Return a cheap upper-bound estimate of a target's rows, or ``None``.
 
@@ -228,6 +243,7 @@ class RetentionMixin(ABC):
             return None
         return self._retention_estimate_rows(target)
 
+    @_retention_operation
     def probe_retention_targets(
         self, exact_count_from: Mapping[str, float]
     ) -> dict[str, RetentionProbe]:
@@ -249,6 +265,7 @@ class RetentionMixin(ABC):
         """
         return self._retention_probe_targets(exact_count_from)
 
+    @_retention_operation
     def delete_oldest_retention_target_rows(self, target_name: str, count: int) -> int:
         """Delete up to ``count`` oldest rows for a retention target.
 
@@ -289,6 +306,7 @@ class RetentionMixin(ABC):
         self._retention_perform_delete(target, keys)
         return len(keys)
 
+    @_retention_operation
     def expire_retention_target_rows(
         self,
         target_name: str,
@@ -444,6 +462,7 @@ class RetentionMixin(ABC):
             keys = protect(target.name, keys)
         return keys
 
+    @_retention_operation
     def gc_retired_optimization_jobs(
         self,
         *,
@@ -548,6 +567,15 @@ class RetentionMixin(ABC):
         return 0
 
     # -- Backend hooks --
+
+    def _retention_scope(self) -> AbstractContextManager[None]:
+        """Own backend execution context for a complete public retention call.
+
+        Backends may pin credentials or refuse an incompatible transaction here.
+        The default adds no transaction, connection, or process-wide policy.
+        Nested retention calls must remain safe and restore the caller's context.
+        """
+        return nullcontext()
 
     @abstractmethod
     def _retention_table_exists(self, table_name: str) -> bool:
