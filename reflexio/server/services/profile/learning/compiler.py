@@ -16,6 +16,8 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
+from reflexio.server.env_utils import env_bool
+
 from . import linked_plan as prior
 
 InputError = ValueError
@@ -1986,6 +1988,14 @@ def make_consolidator(base: Any) -> Any:
         OUTPUT_SCHEMA = Output
 
         def deduplicate(self, new_profiles: Any, user_id: Any, request_id: Any) -> Any:
+            if env_bool("MOCK_LLM_RESPONSE", default=False):
+                # Native mock mode deliberately has no planner or source book.
+                # It is never evidence for semantic/source qualification.
+                self.lifetime_audit = []
+                self.source_binding_audit = []
+                self.enrichment_audit = []
+                self.enrichment_diagnostics = []
+                return base.deduplicate(self, new_profiles, user_id, request_id)
             with operation_scope() as scope:
                 self._operation_scope = scope
                 try:

@@ -366,17 +366,55 @@ class ProfileExplicitRetentionMixin:
         user_id: str | None = None,
         batch_size: int = 256,
         limit: int | None = None,
+        profile_ids: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Run persisted-state catch-up from a managed idle tick or publication.
+        """Purge indexed background candidates or an exact publication touched set.
 
-        The scheduler may bound successful/stale job attempts per tick with limit;
-        publication leaves it unset to remove every due owned copy atomically.
+        Explicit identities use existing by-ID locks, without discovery/index
+        readiness. Their checks and deletions share one native transaction.
+        None retains indexed managed catch-up; an empty set performs no reads.
         Failures propagate to the existing scheduler/publication failure owner.
         """
         _whole_seconds(now)
         if limit is not None and (type(limit) is not int or limit < 1):
             raise ValueError("Deadline work limit must be positive")
         audit: list[dict[str, Any]] = []
+        if profile_ids is not None:
+            if isinstance(profile_ids, (str, bytes)) or any(
+                not isinstance(identity, str) or not identity
+                for identity in profile_ids
+            ):
+                raise ValueError("Deadline touched identities must be nonempty strings")
+            if not profile_ids:
+                return audit
+            if not user_id:
+                raise ValueError(
+                    "Deadline touched identities require an explicit owner"
+                )
+            project_id = self._profile_deadline_project_id()
+            with self.commit_scope():
+                for identity in sorted(set(profile_ids)):
+                    if limit is not None and len(audit) >= limit:
+                        break
+                    rows = self._profile_deadline_rows(
+                        user_id=user_id,
+                        after_profile_id="",
+                        limit=1,
+                        profile_id=identity,
+                        lock=True,
+                    )
+                    if not rows:
+                        continue
+                    row = rows[0]
+                    self._check_deadline_identity(row, project_id, user_id)
+                    if row["profile_id"] != identity:
+                        raise ValueError("Deadline locking returned another profile")
+                    job = job_for(row)
+                    if job is not None and job.due <= now:
+                        audit.append(
+                            self.delete_profile_deadline(job, now, user_id=user_id)
+                        )
+            return audit
         cursor = ""
         while limit is None or len(audit) < limit:
             count = batch_size if limit is None else min(batch_size, limit - len(audit))
@@ -394,14 +432,21 @@ class ProfileExplicitRetentionMixin:
 def persist_with_deadlines[T](
     storage: Any, write_plan: Any, persist: Callable[[], T], now: int
 ) -> tuple[T, list[dict[str, Any]]]:
-    """Bind old versions, publish and purge overdue copies in one native commit.
+    """Bind, publish and enforce touched deadlines in one native commit.
 
-    The write plan carries bindings through durable outcome encode/decode. No
-    process-local compiler state is required when resuming a cached plan.
+    The final durable write plan supplies the finite touched set. Unrelated
+    persisted deadlines remain indexed background work, so a deferred discovery
+    index cannot block publication or postpone erasure of a touched overdue row.
     """
     _whole_seconds(now)
     audit = []
     user_id = write_plan.user_id if write_plan is not None else None
+    touched_ids = (
+        [profile.profile_id for profile in write_plan.new_profiles]
+        + list(write_plan.superseded_ids)
+        if write_plan is not None
+        else []
+    )
     with storage.commit_scope():
         if write_plan is not None:
             audit.extend(
@@ -410,5 +455,9 @@ def persist_with_deadlines[T](
                 )
             )
         result = persist()
-        audit.extend(storage.purge_profile_deadlines(now, user_id=user_id))
+        audit.extend(
+            storage.purge_profile_deadlines(
+                now, user_id=user_id, profile_ids=touched_ids
+            )
+        )
     return result, audit

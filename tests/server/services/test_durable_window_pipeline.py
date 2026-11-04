@@ -3875,7 +3875,10 @@ def test_compute_has_no_learning_writes_and_commit_has_no_model_calls(
         engine.request_context, create_generation_litellm_client(engine.request_context)
     )
     service, request, _ = executor.service(window)
-    with monkeypatch.context() as patches:
+    with (
+        owned_user_work_context(storage, user, token, 300),
+        monkeypatch.context() as patches,
+    ):
         for name in (
             "add_user_profile",
             "supersede_profiles_by_ids",
@@ -4298,8 +4301,6 @@ def test_erasure_cancels_uncommitted_window_run_instead_of_resuming_it(
 ):
 
     from reflexio.server.services.storage.storage_base import (
-        AgentBinding,
-        AgentRunRecord,
         AgentRunStatus,
     )
 
@@ -4316,24 +4317,11 @@ def test_erasure_cancels_uncommitted_window_run_instead_of_resuming_it(
     storage = engine.get_storage()
     with storage._stream_sql() as db:
         window_id = db.query("SELECT window_id FROM extraction_windows")[0]["window_id"]
-    # The external model double skips the resumable loop, so seed the same
-    # durable agent-completed state that a crash after a real model call leaves.
-    storage.create_agent_run(
-        AgentRunRecord(
-            id=f"window:{window_id}",
-            binding=AgentBinding(
-                org_id="stream-test",
-                user_id="u",
-                extractor_kind="profile",
-                request_id="erased",
-                agent_version=None,
-                source="test",
-            ),
-            status=AgentRunStatus.AGENT_COMPLETED,
-            generation_request_snapshot={},
-            committed_output={"profiles": []},
-        )
-    )
+    # The real native path already persisted this source-bound parent before
+    # publication failed; cancellation must act on that exact saved execution.
+    parent = storage.get_agent_run(f"window:{window_id}")
+    assert parent.status == AgentRunStatus.AGENT_COMPLETED
+    assert parent.committed_output is not None
     # Even an old completed model call belongs to the window engine until its
     # learning writes and cursor commit together.
     assert storage._resume_candidate_page("finalization")[1] is None
@@ -5095,7 +5083,7 @@ def test_post_commit_followup_failure_preserves_admission(pipeline, monkeypatch,
 
 
 @pytest.mark.parametrize("completion", ["explicit", "publish", "idle", "batch_wait"])
-def test_two_short_messages_reach_judge_and_negative_is_covered(
+def test_two_short_messages_reach_producing_extraction_and_null_is_covered(
     pipeline, monkeypatch, completion
 ):
     from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -5114,17 +5102,27 @@ def test_two_short_messages_reach_judge_and_negative_is_covered(
     clock = [1000.0]
     monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: clock[0])
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
+    import litellm
 
-    judge = Mock(return_value=CompletionResult("false", ModelProvenance()))
-    monkeypatch.setattr(LiteLLMClient, "generate_chat_response_with_provenance", judge)
+    producing = Mock(
+        return_value=litellm.ModelResponse(
+            choices=[
+                {
+                    "message": {"role": "assistant", "content": '{"profiles": []}'},
+                    "finish_reason": "stop",
+                }
+            ],
+            usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+        )
+    )
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", producing)
     data = {**payload("short", count=2), "session_finished": completion == "publish"}
     data["interaction_data_list"][0]["content"] = "Use uv"
     data["interaction_data_list"][1]["content"] = "OK"
     assert client.post("/api/publish_interaction", json=data).json()["success"]
     if completion != "publish":
         worker.drain_org("stream-test", 1, 300)
-        judge.assert_not_called()
+        producing.assert_not_called()
     if completion == "explicit":
         result = client.post(
             "/api/finalize_session", json={"user_id": "u", "session_id": "s"}
@@ -5141,10 +5139,11 @@ def test_two_short_messages_reach_judge_and_negative_is_covered(
         )
         clock[0] += 29
         worker.drain_org("stream-test", 1, 300)
-        judge.assert_not_called()
+        producing.assert_not_called()
         clock[0] += 1
     worker.drain_org("stream-test", 1, 300)
-    judge.assert_called_once()
+    producing.assert_called_once()
+    assert producing.call_args.args[0]["response_format"]
     storage = engine.get_storage()
     assert storage.extraction_status("u", "short")["status"] == "done"
     assert storage.count_all_profiles() == 0
@@ -5152,7 +5151,7 @@ def test_two_short_messages_reach_judge_and_negative_is_covered(
         "/api/finalize_session", json={"user_id": "u", "session_id": "s"}
     ).json()["success"]
     worker.drain_org("stream-test", 1, 300)
-    judge.assert_called_once()
+    producing.assert_called_once()
 
 
 @pytest.mark.parametrize("transport", ["http", "library"])

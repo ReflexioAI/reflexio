@@ -328,10 +328,12 @@ def test_clock_and_budget_validation_do_not_start_writes(storage):
         storage.list_profile_deadline_jobs(limit=0)
     with pytest.raises(ValueError, match="positive"):
         storage.purge_profile_deadlines(100, limit=0)
-    # A null native write plan still performs overdue catch-up in its commit.
+    # A null native write plan touches no profiles; catch-up stays background-owned.
     save(storage, profile("due"))
     result, audit = persist_with_deadlines(storage, None, lambda: "empty", 100)
-    assert result == "empty" and len(audit) == 1
+    assert result == "empty" and audit == []
+    assert physical_ids(storage) == ["due"]
+    assert len(storage.purge_profile_deadlines(100, user_id="owner")) == 1
     assert physical_ids(storage) == []
 
 
@@ -388,3 +390,74 @@ def test_native_final_resolved_write_plan_owns_deadline_publication(
             old.profile_id,
             fresh.profile_id,
         }
+
+
+@pytest.mark.parametrize("overdue", [False, True])
+def test_publication_enforces_only_touched_ids_without_discovery(
+    storage, monkeypatch, overdue
+):
+    unrelated = profile("unrelated")
+    foreign = profile("foreign", owner="other")
+    fresh = profile("fresh")
+    if not overdue:
+        fresh.custom_features = None
+        fresh.expiration_timestamp = 999
+    save(storage, unrelated, foreign)
+
+    def unavailable(**kwargs):
+        raise AssertionError("Publication must not use indexed discovery")
+
+    monkeypatch.setattr(storage, "list_profile_deadline_jobs", unavailable)
+    result, audit = persist_with_deadlines(
+        storage,
+        ProfileWritePlan("owner", "publish", [fresh], []),
+        lambda: (save(storage, fresh), "published")[1],
+        100,
+    )
+    assert result == "published"
+    assert physical_ids(storage) == (
+        ["foreign", "unrelated"] if overdue else ["foreign", "fresh", "unrelated"]
+    )
+    assert {event.entity_id for event in hard_deletes(storage)} == (
+        {"fresh"} if overdue else set()
+    )
+    assert len(audit) == int(overdue)
+    # Foreign identities cannot grant deletion, even if named directly.
+    assert (
+        storage.purge_profile_deadlines(
+            100, user_id="owner", profile_ids=[foreign.profile_id]
+        )
+        == []
+    )
+
+
+def test_empty_publication_touched_set_performs_no_deadline_reads(storage, monkeypatch):
+    def forbidden(**kwargs):
+        raise AssertionError("Empty touched set must not query")
+
+    monkeypatch.setattr(storage, "_profile_deadline_rows", forbidden)
+    assert storage.purge_profile_deadlines(100, profile_ids=[]) == []
+    assert persist_with_deadlines(storage, None, lambda: "empty", 100) == ("empty", [])
+    assert persist_with_deadlines(
+        storage, ProfileWritePlan("owner", "empty", [], []), lambda: "empty", 100
+    ) == ("empty", [])
+
+
+def test_touched_authority_failure_rolls_back_prior_deletion_and_publication(storage):
+    due, invalid, fresh = profile("a-due"), profile("z-invalid"), profile("fresh")
+    invalid.custom_features = features(True)
+    save(storage, due, invalid)
+    with pytest.raises(ValueError, match="exact deadline"):
+        persist_with_deadlines(
+            storage,
+            ProfileWritePlan(
+                "owner", "publish", [fresh], [due.profile_id, invalid.profile_id]
+            ),
+            lambda: save(storage, fresh),
+            100,
+        )
+    assert physical_ids(storage) == ["a-due", "z-invalid"]
+    assert hard_deletes(storage) == []
+    assert sorted(
+        row[0] for row in storage.conn.execute("SELECT profile_id FROM profiles_fts")
+    ) == ["a-due", "z-invalid"]

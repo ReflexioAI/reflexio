@@ -81,6 +81,31 @@ def test_readiness_refusal_never_consolidates_incomplete_history(
 # ===============================
 
 
+@pytest.mark.parametrize("has_source", [False, True])
+def test_native_mock_bypass_preserves_profiles_without_planner(
+    monkeypatch,
+    mock_request_context,
+    mock_llm_client,
+    mock_site_var_manager,
+    has_source,
+):
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "true")
+    consolidator = ProfileConsolidator(mock_request_context, mock_llm_client)
+    if has_source:
+        consolidator.review_window = _review_window()
+    profile = UserProfile(
+        profile_id="mock-profile",
+        user_id="u",
+        content="Prefers concise answers",
+        last_modified_timestamp=100,
+        generated_from_request_id="request",
+    )
+    assert consolidator.deduplicate([profile], "u", "request") == ([profile], [], [])
+    mock_llm_client.generate_chat_response_with_provenance.assert_not_called()
+    mock_request_context.storage.search_user_profile.assert_not_called()
+    assert consolidator.model_provenance is None
+
+
 @pytest.fixture
 def mock_llm_client():
     """Create a mock LLM client."""
