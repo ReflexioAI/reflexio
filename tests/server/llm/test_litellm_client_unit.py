@@ -4183,50 +4183,15 @@ class TestLitellmIntegration:
         # The owned walk never delegates a fallback chain to litellm.
         assert "fallbacks" not in captured
 
-    @pytest.mark.parametrize("startup_expired", [False, True])
-    def test_completion_has_client_side_hard_timeout(
-        self, monkeypatch, tmp_path, startup_expired
-    ):
+    def test_completion_has_client_side_hard_timeout(self, monkeypatch):
         monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "0")
         client = LiteLLMClient(LiteLLMConfig(model="x", timeout=cast(Any, 0.01)))
-        called = tmp_path / "provider-called"
 
         def _slow(**_params):
-            called.touch()
             time.sleep(1)
             return _make_completion_response("late")
 
         monkeypatch.setattr("litellm.completion", _slow)
-        if startup_expired:
-            if "fork" not in multiprocessing.get_all_start_methods():
-                pytest.skip(
-                    "controlled child-startup expiry needs inherited fork mocks"
-                )
-            from reflexio.server.llm import _litellm_subprocess
-            from reflexio.server.llm._native_cli import NativeCLIOwner
-
-            context = multiprocessing.get_context("fork")
-            expired = context.Event()
-            original_reset = _litellm_subprocess._reset_llm_client_state_after_fork
-            original_started = NativeCLIOwner.worker_started
-
-            def expire_before_dispatch():
-                original_reset()
-                time.sleep(0.02)
-                expired.set()
-
-            def pause_parent(owner):
-                original_started(owner)
-                assert expired.wait(0.5), "child never reached its startup deadline"
-                time.sleep(0.02)
-
-            monkeypatch.setattr(multiprocessing, "get_context", lambda: context)
-            monkeypatch.setattr(
-                _litellm_subprocess,
-                "_reset_llm_client_state_after_fork",
-                expire_before_dispatch,
-            )
-            monkeypatch.setattr(NativeCLIOwner, "worker_started", pause_parent)
 
         start = time.perf_counter()
         with pytest.raises(LiteLLMClientError) as error:
@@ -4237,8 +4202,26 @@ class TestLitellmIntegration:
         # A single subprocess spawn/kill cycle (the blind same-model hard-timeout
         # retry was removed) — still far below the 1s the blocked call would take.
         assert time.perf_counter() - start < 1.0
-        if startup_expired:
-            assert not called.exists(), "expired startup dispatched a provider request"
+
+    def test_expired_child_startup_returns_timeout_without_provider_dispatch(
+        self, monkeypatch
+    ):
+        from reflexio.server.llm import _litellm_subprocess as worker
+
+        monkeypatch.setattr(worker, "_reset_llm_client_state_after_fork", lambda: None)
+        monkeypatch.setattr(worker, "_register_local_cli_providers", lambda: None)
+        completion = MagicMock(return_value=_make_completion_response("late"))
+        monkeypatch.setattr(worker, "model_completion", completion)
+        result_queue = MagicMock()
+
+        worker._litellm_completion_worker({}, result_queue, time.monotonic() - 1)
+
+        result_queue.put.assert_called_once()
+        status, payload = result_queue.put.call_args.args[0]
+        assert status == "error"
+        assert payload.hard_timeout is True
+        assert "child startup" in payload.message
+        completion.assert_not_called()
 
     @pytest.mark.skipif(
         multiprocessing.get_start_method() != "fork",
