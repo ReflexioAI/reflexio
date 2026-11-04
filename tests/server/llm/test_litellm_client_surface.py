@@ -48,6 +48,10 @@ PUBLIC_SYMBOLS = [
     # the enterprise open-world analyst, whose boundary guard forbids importing
     # `_litellm_text_generation` directly and whose allowlist only ever shrinks.
     "STRUCTURED_OUTPUT_CORRECTION_PREFIX",
+    # A caller that passed ``caller_reports_repair_failure=True`` records its
+    # own terminal failure through this, so the compressor stays a leaf over
+    # ``reflexio.server.llm`` (the enterprise dependency guard requires it).
+    "record_terminal_llm_failure",
     "structured_output_correction_turn",
 ]
 
