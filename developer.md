@@ -60,6 +60,14 @@ uv run reflexio services start --storage sqlite    # local SQLite (default)
 uv run reflexio services start --storage supabase  # Supabase PostgreSQL
 ```
 
+Repeated remote backend selection preserves a saved `storage_config.schema` when
+`DATA_DB_URL` exactly matches the saved primary DSN and no nonblank namespace is
+explicitly supplied. This applies across the PostgreSQL adapters. An explicit
+`REFLEXIO_POSTGRES_SCHEMA` still selects the namespace for native PostgreSQL;
+selecting a different primary uses the new target's namespace/default instead of
+inheriting the former database's schema. Existing files use the normal locked
+publication/upgrade path; no manual rewrite or new setting is required.
+
 Stop services with `./stop_services.sh`.
 
 Local inference starts before the backend. Its readiness wait allows up to five
