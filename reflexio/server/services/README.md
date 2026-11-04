@@ -61,6 +61,7 @@ strings before deleting old import paths in the same PR.
 | `shadow_comparison/` | `ShadowComparisonJudge` (`judge.py`) plus pure outcome helpers (`outcome.py`) - per-turn regular-vs-shadow verdicts written to a separate table. Compact by design; see [README](shadow_comparison/README.md). |
 | `evaluation_overview/` | Dashboard/read-side rollups: `service.py` entry point, `components/` aggregation helpers, and root `eval_sampler.py` shared with regenerate jobs. See [README](evaluation_overview/README.md). |
 | `playbook_optimizer/` | Scenario-based playbook optimization: mature flat package with `optimizer.py`, `scheduler.py`, `rollout.py`, `judge.py`, `models.py`, `scenario_resolver.py`, `gepa_adapter.py`, and `assistant_webhook.py`. See [README](playbook_optimizer/README.md). |
+| `offline_tuner/` | Offline user-playbook tuner engine: deterministic evidence selection, judge+tuner contracts, citation verification, qualification fixtures and sweep progress records. No storage implementation or scheduler of its own. See [README](offline_tuner/README.md). |
 | `braintrust/` | Braintrust export/sync: `service.py`, `client.py`, `_cron.py`, `_encryption.py`. |
 | `lineage/` | Current-record resolution and tombstone GC: `resolve.py`, `gc_scheduler.py`. |
 | `governance/` | Subject-reference and retention/barrier policy contracts: `config.py`, `service.py`, `subject_refs.py`. Storage and lineage code use these helpers to preserve governance constraints during writes, supersedes, and cleanup. |
