@@ -632,6 +632,13 @@ The sweep still protects unfinished extraction inputs, overlap context and
 retention holds; caps may be exceeded between sweeps. Publishing acknowledges
 the durable admission transaction and does not wait for this housekeeping.
 
+`RetentionMixin` enters the backend's `_retention_scope` around each complete
+public operation, including nested calls and failure unwinding. Its default is
+a no-op: SQLite and existing backends gain no extra transaction or connection.
+A backend with project credentials can use this one boundary to pin cleanup's
+credential and refuse an incompatible active transaction before any SQL,
+instead of relying on ambient defaults separately in every retention hook.
+
 Cleanup's simple lock is acquired atomically and released only with its holder's
 token. If storage raises during release, the manager retains that token for an
 explicit retry. A definitive release result forgets the token, including when a
