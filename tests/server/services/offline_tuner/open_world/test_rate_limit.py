@@ -42,6 +42,7 @@ import pytest
 
 from reflexio.server.llm import LiteLLMClientError
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.llm.provider_circuit import ProviderCircuitOpenError
 from reflexio.server.services.offline_tuner.open_world.analyst import (
     _RATE_LIMIT_BACKOFF_CAP_SECONDS,
     _RATE_LIMIT_RETRY_BUDGET_SECONDS,
@@ -148,6 +149,7 @@ def test_the_upstream_error_type_is_read_when_the_ladder_wraps_it() -> None:
     outer = LiteLLMClientError("API call failed: transport gave up")
     outer.__cause__ = inner
     assert rate_limit_evidence(outer) == "transport"
+    assert rate_limit_evidence(ProviderCircuitOpenError("refused")) == "circuit_open"
 
 
 def test_the_http_200_base_resp_shape_is_detected_from_raw_content() -> None:
@@ -311,7 +313,10 @@ def test_the_budget_bounds_the_total_sleep_and_then_raises(
     # be asserting something this layer never receives.
     cause = raised.value.__cause__
     assert isinstance(cause, LiteLLMClientError)
-    assert rate_limit_evidence(cause) == "transport"
+    # A permanent limit opens the provider circuit after repeated 429s, so the
+    # last crossing is the circuit's refusal: still rate-limit evidence, and
+    # still inside the one shared budget.
+    assert rate_limit_evidence(cause) == "circuit_open"
     assert max(slept) <= _RATE_LIMIT_BACKOFF_CAP_SECONDS
 
 

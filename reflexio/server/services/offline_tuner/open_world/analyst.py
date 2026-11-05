@@ -29,6 +29,7 @@ from reflexio.server.llm.litellm_client import (
     structured_output_correction_turn,
     structured_output_repair_idempotency_key,
 )
+from reflexio.server.llm.provider_circuit import ProviderCircuitOpenError
 from reflexio.server.prompt.prompt_manager import PromptManager
 
 from ..evidence.manifests import canonical_json_bytes
@@ -1426,13 +1427,18 @@ def rate_limit_evidence(exc: BaseException) -> str | None:
     Returns:
         str | None: ``"base_resp"`` when a MiniMax application-level rate-limit
         status appears inside an otherwise-successful body, ``"transport"`` for
-        an HTTP 429 or a ``RateLimitError`` class, and ``None`` when neither
-        shape is present.
+        an HTTP 429 or a ``RateLimitError`` class, ``"circuit_open"`` when the
+        provider circuit refused the call after repeated such failures, and
+        ``None`` when no shape is present.
     """
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen and len(seen) < 12:
         seen.add(id(current))
+        # Repeated rate limits open the provider circuit, which then refuses
+        # without sending; the same back-off applies, within the same budget.
+        if isinstance(current, ProviderCircuitOpenError):
+            return "circuit_open"
         text = str(current)
         raw = getattr(current, "raw_content", None)
         # BEFORE the transport arm: a `base_resp` body reaches here wrapped in
