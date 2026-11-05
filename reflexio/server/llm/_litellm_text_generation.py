@@ -1863,6 +1863,9 @@ class TextGenerationMixin:
                 circuit_route(turn_params), model=str(turn_params.get("model"))
             )
             request_start = time.perf_counter()
+            # What the provider was actually given once every deadline (walk,
+            # caller, search scope) applied; set at dispatch.
+            dispatch_allowance: float | None = None
             self.logger.info(
                 "event=llm_request_start model=%s timeout=%s has_response_format=%s num_retries=0 hard_timeout=%.3f",
                 turn_params.get("model"),
@@ -1889,6 +1892,10 @@ class TextGenerationMixin:
                     scope = search_runtime.current()
                     if scope is not None and scope.deadline is not None:
                         turn_deadline = min(turn_deadline, scope.deadline)
+                    dispatch_allowance = min(
+                        self._coerce_timeout_seconds(turn_params),
+                        turn_deadline - time.monotonic(),
+                    )
 
                     def check_turn_deadline() -> None:
                         search_runtime.checkpoint()
@@ -2057,10 +2064,14 @@ class TextGenerationMixin:
                 raise
             except Exception as e:
                 transient = _is_expected_transient_llm_error(e)
+                allowance = (
+                    dispatch_allowance
+                    if dispatch_allowance is not None
+                    else self._coerce_timeout_seconds(turn_params)
+                )
                 if transient and not (
                     _is_timeout_error(e)
-                    and self._coerce_timeout_seconds(turn_params)
-                    < _OUTAGE_EVIDENCE_MIN_TIMEOUT_SECONDS
+                    and allowance < _OUTAGE_EVIDENCE_MIN_TIMEOUT_SECONDS
                 ):
                     circuit_call.failed()
                 log = self.logger.warning if transient else self.logger.error

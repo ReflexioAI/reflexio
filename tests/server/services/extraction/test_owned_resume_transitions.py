@@ -252,8 +252,8 @@ def test_readiness_refund_is_fenced_through_commit(execution, monkeypatch):
     monkeypatch.setattr(worker, "_resume_run", entered_model)
     defer = storage.defer_extraction_resume
 
-    def expire_after_refund(*args):
-        assert defer(*args)
+    def expire_after_refund(*args, **kwargs):
+        assert defer(*args, **kwargs)
         with storage._stream_sql() as db:
             db.query(
                 "UPDATE learning_work SET lease_until=0 WHERE org_id=? AND user_id=?",

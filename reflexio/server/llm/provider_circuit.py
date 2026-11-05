@@ -74,7 +74,8 @@ def circuit_route(params: Mapping[str, Any]) -> str:
     digest = (
         hashlib.sha256(str(credential).encode()).hexdigest()[:12] if credential else "-"
     )
-    return f"{params.get('model')}|{params.get('api_base') or ''}|{digest}"
+    endpoint = params.get("api_base") or params.get("base_url") or ""
+    return f"{params.get('model')}|{endpoint}|{digest}"
 
 
 def _route_ref(route: str) -> str:

@@ -192,8 +192,9 @@ def test_provider_wait_seconds(error, outage, expected):
 
 def test_routes_of_one_model_do_not_share_an_outage():
     other = circuit_route({"model": MODEL, "api_base": "https://other.invalid/v1"})
+    based = circuit_route({"model": MODEL, "base_url": "https://based.invalid/v1"})
     keyed = circuit_route({"model": MODEL, "api_key": "secret-a"})
-    assert len({ROUTE, other, keyed}) == 3
+    assert len({ROUTE, other, based, keyed}) == 4
     assert "secret-a" not in keyed
     for _ in range(OPEN_AFTER_FAILURES):
         provider_circuit.admit(ROUTE, model=MODEL).failed()
@@ -312,3 +313,28 @@ def test_sustained_provider_cap_saturation_opens_the_breaker(monkeypatch):
     # The last rung wraps the saturation; durable work finds its route on the cause.
     assert isinstance(raised.value.__cause__, ProviderCapSaturatedError)
     assert provider_wait_seconds(raised.value) is not None
+
+
+def test_a_search_deadline_expiring_is_not_outage_evidence(monkeypatch):
+    import time
+
+    from reflexio.server import search_runtime
+
+    client = LiteLLMClient(LiteLLMConfig(model=MODEL, timeout=120, fallback_models=[]))
+
+    def timing_out(_params, _hard_timeout):
+        raise TimeoutError("search budget spent")
+
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", timing_out)
+    # The configured timeout is long, but a search scope leaves five seconds.
+    scope = search_runtime.SearchScope(deadline=time.monotonic() + 5)
+    token = search_runtime._scope.set(scope)
+    try:
+        for _ in range(OPEN_AFTER_FAILURES):
+            with pytest.raises(LiteLLMClientError) as raised:
+                client.generate_chat_response([{"role": "user", "content": "hi"}])
+    finally:
+        search_runtime._scope.reset(token)
+    route = raised.value.circuit_route
+    assert route is not None
+    assert provider_circuit.outage_retry_delay(route) is None
