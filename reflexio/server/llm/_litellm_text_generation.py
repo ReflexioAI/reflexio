@@ -632,6 +632,29 @@ def _is_expected_transient_llm_error(exc: BaseException) -> bool:
     return False
 
 
+# A timeout is evidence of a provider outage only when the attempt was given at
+# least this long. Under a shorter caller budget (document expansion allows
+# 25 s and degrades to plain full-text search) it says the provider was slower
+# than that caller allowed, not that it is down for callers that wait longer.
+_OUTAGE_EVIDENCE_MIN_TIMEOUT_SECONDS = 60.0
+_TIMEOUT_ERROR_NAMES: frozenset[str] = frozenset({"Timeout", "APITimeoutError"})
+
+
+def _is_timeout_error(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, TimeoutError):
+            return True
+        if type(current).__name__ in _TIMEOUT_ERROR_NAMES:
+            return True
+        if getattr(current, "upstream_error_type", None) in _TIMEOUT_ERROR_NAMES:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def is_provider_unavailable_error(exc: BaseException) -> bool:
     """The provider could not serve the call: retry later, the item is not at fault.
 
@@ -2019,14 +2042,22 @@ class TextGenerationMixin:
                 StructuredOutputParseError,
                 StructuredOutputRepairError,
                 ProviderCapSaturatedError,
-            ):
+            ) as e:
                 # Advance-worthy rung failures owned by the walk: parse/repair
                 # exhaustion and a saturated fail-closed provider cap must reach
                 # the walker UNWRAPPED so it can classify the reason and advance.
+                # Saturation means calls to this provider are backing up: the
+                # same availability evidence as a failed call.
+                if isinstance(e, ProviderCapSaturatedError):
+                    circuit_call.failed()
                 raise
             except Exception as e:
                 transient = _is_expected_transient_llm_error(e)
-                if transient:
+                if transient and not (
+                    _is_timeout_error(e)
+                    and self._coerce_timeout_seconds(turn_params)
+                    < _OUTAGE_EVIDENCE_MIN_TIMEOUT_SECONDS
+                ):
                     circuit_call.failed()
                 log = self.logger.warning if transient else self.logger.error
                 log(

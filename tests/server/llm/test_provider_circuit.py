@@ -195,7 +195,7 @@ def test_client_opens_on_timeouts_then_refuses_without_calling_the_provider(
 ):
     sink = Mock()
     monkeypatch.setattr("reflexio.server.operational_metrics._sink", sink)
-    client = LiteLLMClient(LiteLLMConfig(model=MODEL, timeout=30, fallback_models=[]))
+    client = LiteLLMClient(LiteLLMConfig(model=MODEL, timeout=120, fallback_models=[]))
     sent: list[str] = []
 
     def timing_out(params, _hard_timeout):
@@ -227,3 +227,54 @@ def test_client_opens_on_timeouts_then_refuses_without_calling_the_provider(
         breaker._circuits[MODEL].open_until = 0.0
     assert client.generate_chat_response([{"role": "user", "content": "hi"}]) == "ok"
     assert breaker.outage_retry_delay() is None
+
+
+@pytest.mark.parametrize(
+    ("timeout", "error", "opens"),
+    [
+        (25, TimeoutError("caller budget spent"), False),
+        (120, TimeoutError("provider stalled"), True),
+        # Unavailability that is not a timeout counts under any budget.
+        (25, ConnectionError("refused"), True),
+    ],
+)
+def test_short_budget_timeouts_are_not_outage_evidence(
+    monkeypatch, timeout, error, opens
+):
+    import litellm
+
+    client = LiteLLMClient(
+        LiteLLMConfig(model=MODEL, timeout=timeout, fallback_models=[])
+    )
+    if isinstance(error, ConnectionError):
+        error = litellm.APIConnectionError(
+            message="refused", llm_provider="test", model=MODEL
+        )
+
+    def failing(_params, _hard_timeout):
+        raise error
+
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", failing)
+    for _ in range(OPEN_AFTER_FAILURES):
+        with pytest.raises(Exception):  # noqa: B017 -- any terminal failure
+            client.generate_chat_response([{"role": "user", "content": "hi"}])
+    assert (provider_circuit.outage_retry_delay() is not None) is opens
+
+
+def test_sustained_provider_cap_saturation_opens_the_breaker(monkeypatch):
+    from contextlib import contextmanager
+
+    from reflexio.server.llm import _litellm_text_generation as ttg
+    from reflexio.server.llm._provider_concurrency import ProviderCapSaturatedError
+
+    @contextmanager
+    def saturated(_model, *, max_wait):
+        raise ProviderCapSaturatedError("no permit")
+        yield
+
+    monkeypatch.setattr(ttg, "provider_slot", saturated)
+    client = LiteLLMClient(LiteLLMConfig(model=MODEL, timeout=120, fallback_models=[]))
+    for _ in range(OPEN_AFTER_FAILURES):
+        with pytest.raises(Exception):  # noqa: B017 -- any terminal failure
+            client.generate_chat_response([{"role": "user", "content": "hi"}])
+    assert provider_circuit.outage_retry_delay() is not None
