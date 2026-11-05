@@ -45,6 +45,10 @@ MAX_EXTRACTION_WINDOW_ATTEMPTS = 12
 # ``<ExceptionClass>@<locator>`` of the failure that parked it. Messages are
 # never stored. The prefix is what operator re-arm and status reads key on.
 RETRY_EXHAUSTED_PREFIX = "retry_exhausted:"
+# ``last_error`` of a cursor waiting out a provider outage without being
+# charged (``retry_extraction(..., wait_seconds=...)``), then the failure's
+# ``<ExceptionClass>@<locator>``.
+PROVIDER_WAIT_PREFIX = "provider_wait:"
 # A write-ahead debit, not a separate retry counter or configuration choice.
 _WINDOW_COMPUTE_ADMITTED = "interrupted_compute"
 # A policy mismatch parks as a configuration error, held directly or by the
@@ -1077,15 +1081,24 @@ class ExtractionStreamStore:
                 (completed_at, json.dumps(effects), window.window_id),
             )
             # A completed window is progress, so restart a still-pending user's
-            # backlog clock -- unless a sibling cursor is failing (this cursor's
-            # attempts were reset above), which must keep aging and alarm.
+            # backlog clock -- unless a sibling cursor is failing or waiting out
+            # a provider outage (this cursor was reset above), which must keep
+            # aging and alarm. An uncharged wait has no attempts; its marker
+            # stays until the window completes or is charged, even once due.
             db.query(
                 f"UPDATE {db.table('learning_work')} SET due_at=0,lease_until=0,lease_token=NULL,"
                 "pending_since=CASE WHEN pending_since>0 AND NOT EXISTS ("
-                f"SELECT 1 FROM {db.table('extraction_cursors')} WHERE user_id=? AND attempts>0"
+                f"SELECT 1 FROM {db.table('extraction_cursors')} WHERE user_id=? "
+                "AND (attempts>0 OR last_error LIKE ?)"
                 ") THEN ? ELSE pending_since END "
                 "WHERE org_id=? AND user_id=?",
-                (window.user_id, db.now(), self.org_id, window.user_id),
+                (
+                    window.user_id,
+                    f"{PROVIDER_WAIT_PREFIX}%",
+                    db.now(),
+                    self.org_id,
+                    window.user_id,
+                ),
             )
 
     def begin_extraction_attempt(self, window: Window, token: str) -> None:
@@ -1141,7 +1154,14 @@ class ExtractionStreamStore:
             return attempts
         return attempts + 1
 
-    def retry_extraction(self, window: Window, token: str, error: str) -> bool:
+    def retry_extraction(
+        self,
+        window: Window,
+        token: str,
+        error: str,
+        *,
+        wait_seconds: float | None = None,
+    ) -> bool:
         """Record one failed attempt and schedule the next, or park the cursor.
 
         Every failure class the worker does not hold itself lands here, so the
@@ -1151,10 +1171,16 @@ class ExtractionStreamStore:
         an operator re-arms it (``rearm_exhausted_extraction``); a re-armed
         cursor keeps its count, so one more failure parks it again.
 
+        With ``wait_seconds`` the failure is not the window's (its provider is
+        down): this turn's admission debit is refunded, the count returns to
+        what it was before the turn, and the window retries after the wait. It
+        never parks. A crash still keeps the debit, as before.
+
         Args:
             window (Window): The failed window.
             token (str): The caller's user lease.
             error (str): ``<ExceptionClass>@<locator>``; never a message.
+            wait_seconds (float | None): Uncharged wait before the next attempt.
 
         Returns:
             bool: True when this failure parked the cursor.
@@ -1165,13 +1191,17 @@ class ExtractionStreamStore:
                 f"SELECT attempts,last_error FROM {db.table('extraction_cursors')} WHERE user_id=? AND kind=? AND project_id=?",
                 (window.user_id, window.kind, window.project_id),
             )[0]
-            attempts = self._failed_window_attempts(window, row)
-            parked = attempts >= MAX_EXTRACTION_WINDOW_ATTEMPTS
-            if parked:
-                due = float("inf")
-                error = RETRY_EXHAUSTED_PREFIX + error
+            if wait_seconds is not None:
+                attempts, parked = window.attempts, False
+                due = db.now() + max(0.0, wait_seconds)
             else:
-                due = db.now() + min(300, 2 ** min(attempts - 1, 9))
+                attempts = self._failed_window_attempts(window, row)
+                parked = attempts >= MAX_EXTRACTION_WINDOW_ATTEMPTS
+                if parked:
+                    due = float("inf")
+                    error = RETRY_EXHAUSTED_PREFIX + error
+                else:
+                    due = db.now() + min(300, 2 ** min(attempts - 1, 9))
             db.query(
                 f"UPDATE {db.table('extraction_cursors')} SET attempts=?,retry_at=?,last_error=?,last_turn=? "
                 "WHERE user_id=? AND kind=? AND project_id=?",
@@ -2141,21 +2171,26 @@ class ExtractionStreamStore:
         claimed_at: str,
         attempt_count: int,
         next_resume_at: str,
+        *,
+        last_error: str = "ReadinessUnavailableError",
     ) -> bool:
         """Refund one infrastructure deferral under the same fenced user lease.
 
         Claim, status and attempt checks prevent stale owners or repeated calls
         from refunding another execution attempt. No agent output is discarded.
+        ``last_error`` names the infrastructure that deferred it (readiness, or
+        an unavailable provider), never a message.
         """
         with self._stream_sql() as db:
             rows = db.query(
                 f"UPDATE {db.table('_agent_runs')} SET resume_attempts=resume_attempts-1, "
-                "status='resume_ready', next_resume_at=?, updated_at=?, last_error='ReadinessUnavailableError' "
+                "status='resume_ready', next_resume_at=?, updated_at=?, last_error=? "
                 "WHERE id=? AND status='resuming' AND claimed_by=? AND claimed_at=? "
                 "AND resume_attempts=? AND resume_attempts>0 RETURNING id",
                 (
                     next_resume_at,
                     datetime.now(UTC).isoformat(),
+                    last_error,
                     run_id,
                     claimed_by,
                     claimed_at,

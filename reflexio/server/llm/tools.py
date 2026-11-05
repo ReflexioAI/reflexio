@@ -215,6 +215,10 @@ class ToolLoopResult(BaseModel):
     # error reports and durable ``last_error`` columns, where tenant text must not go.
     error_type: str | None = None
     error_detail: str | None = None
+    # Runtime-only: the exception itself, so a caller can chain it (``raise
+    # ... from``) and durable work can tell a provider outage from its own
+    # failure. Never serialized; its message may hold tenant text.
+    error: BaseException | None = Field(default=None, exclude=True, repr=False)
 
     @property
     def failure_label(self) -> str:
@@ -948,6 +952,7 @@ def run_tool_loop(
             max_steps_remaining=0,
             error_type=error_type,
             error_detail=error_detail,
+            error=error,
         )
 
     return ToolLoopResult(

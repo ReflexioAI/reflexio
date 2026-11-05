@@ -19,6 +19,7 @@ from reflexio.server.background_work import (
     report_background_success,
 )
 from reflexio.server.env_utils import env_str
+from reflexio.server.llm.provider_circuit import provider_wait_seconds
 from reflexio.server.operation_limiter import operation_limit_value
 from reflexio.server.operational_metrics import record_health
 from reflexio.server.services.durable_learning.window_executor import (
@@ -35,6 +36,7 @@ from reflexio.server.services.storage.error import (
 from reflexio.server.services.storage.storage_base import AgentRunRecord, BaseStorage
 from reflexio.server.services.storage.storage_base._extraction_stream import (
     MAX_EXTRACTION_WINDOW_ATTEMPTS,
+    PROVIDER_WAIT_PREFIX,
     LeaseLostError,
     Window,
     WindowEffectsDeletedError,
@@ -446,6 +448,11 @@ class DurableLearningWorker:
                 )
             record_health("worker.input_budget_failures", reason=reason)
             return "input_budget_failure"
+        wait = provider_wait_seconds(exc)
+        if wait is not None:
+            return DurableLearningWorker._wait_for_provider(
+                storage, window, token, exc, wait
+            )
         where = exception_locator(exc)
         logger.warning(
             "Extraction window failed kind=%s error=%s at=%s",
@@ -478,6 +485,39 @@ class DurableLearningWorker:
             return "parked"
         record_health("worker.retries", phase="window")
         return "failure"
+
+    @staticmethod
+    def _wait_for_provider(
+        storage: BaseStorage, window: Window, token: str, exc: Exception, wait: float
+    ) -> str:
+        """The provider is down for everyone: wait for it, spending no attempt.
+
+        Only a window that fails while the provider serves other calls is
+        charged (the ordinary path below), so an outage of any length never
+        parks work, and a window that fails on its own still does.
+        """
+        where = exception_locator(exc)
+        logger.warning(
+            "Extraction window waiting for provider kind=%s retry_in_seconds=%.0f "
+            "error=%s at=%s",
+            window.kind,
+            wait,
+            type(exc).__name__,
+            where,
+        )
+        try:
+            storage.retry_extraction(
+                window,
+                token,
+                f"{PROVIDER_WAIT_PREFIX}{type(exc).__name__}@{where}",
+                wait_seconds=wait,
+            )
+        except LeaseLostError:
+            storage.retry_extraction_effects(window)
+            record_health("worker.retries", phase="effects")
+            return "failure"
+        record_health("worker.retries", phase="provider_wait")
+        return "provider_wait"
 
     @staticmethod
     def _run_owned_resume(

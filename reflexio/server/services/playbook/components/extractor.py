@@ -729,7 +729,7 @@ class PlaybookExtractor:
                 raise RuntimeError(
                     "Playbook extraction failed without structured output: "
                     f"{result.failure_label}"
-                )
+                ) from result.error
             return []
         if coordinator is not None and coordinator.carried_source_spans is not None:
             prompt_context = _carried_playbook_context(

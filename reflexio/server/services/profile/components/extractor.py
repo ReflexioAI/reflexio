@@ -601,7 +601,7 @@ class ProfileExtractor:
                 raise ExtractionIncompleteError(
                     f"Profile extraction did not finish: {result.failure_label}",
                     error_detail=result.error_detail,
-                )
+                ) from result.error
             logger.warning(
                 "Profile extraction did not finish: %s", result.failure_label
             )

@@ -5,6 +5,10 @@ import pytest
 from reflexio.models.api_schema.domain.entities import Interaction, Request
 from reflexio.server.services.extraction.history_inputs import HistoricalInputs
 from reflexio.server.services.storage.storage_base import LeaseLostError
+from reflexio.server.services.storage.storage_base._extraction_stream import (
+    MAX_EXTRACTION_WINDOW_ATTEMPTS,
+    PROVIDER_WAIT_PREFIX,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -151,6 +155,61 @@ def test_prepared_window_carries_its_cursor_attempt_count(storage):
         window = storage.prepare_extraction(user, token)
         assert window.attempts == expected
     storage.complete_extraction(window, token, {})
+
+
+@pytest.mark.parametrize("before", [0, MAX_EXTRACTION_WINDOW_ATTEMPTS - 1])
+def test_provider_wait_refunds_the_admission_and_never_parks(
+    storage, monkeypatch, before
+):
+    clock = _clock(monkeypatch, 1000)
+    publish(storage, 10)
+    user, token = storage.claim_extraction("worker", 300)
+    with storage._stream_sql() as db:
+        db.query("UPDATE extraction_cursors SET attempts=?", (before,))
+    window = storage.prepare_extraction(user, token)
+    assert window.attempts == before
+    # The final allowance pre-arms the park before dispatch.
+    storage.begin_extraction_attempt(window, token)
+    parked = storage.retry_extraction(
+        window, token, f"{PROVIDER_WAIT_PREFIX}TimeoutError@x.py:1", wait_seconds=120
+    )
+    assert parked is False
+    with storage._stream_sql(read_only=True) as db:
+        cursor = db.query(
+            "SELECT attempts,retry_at,last_error FROM extraction_cursors"
+        )[0]
+    assert cursor["attempts"] == before
+    assert cursor["retry_at"] == clock[0] + 120
+    assert cursor["last_error"].startswith(PROVIDER_WAIT_PREFIX)
+    assert storage.extraction_status("u", "r")["status"] == "pending"
+    # After the wait the same window runs again with its count unchanged.
+    clock[0] += 120
+    user, token = storage.claim_extraction("worker", 300)
+    again = storage.prepare_extraction(user, token)
+    assert again.window_id == window.window_id and again.attempts == before
+
+
+def test_a_provider_wait_keeps_the_backlog_clock_through_a_sibling_success(
+    storage, monkeypatch
+):
+    # Profile waits out an outage (no attempts, only a due time) while the
+    # playbook cursor completes: the user's work is still late and must age.
+    clock = _clock(monkeypatch, 1000)
+    publish(storage, 10, playbook=True)
+    user, token = storage.claim_extraction("worker", 300)
+    waiting = storage.prepare_extraction(user, token)
+    storage.retry_extraction(
+        waiting, token, f"{PROVIDER_WAIT_PREFIX}X@x.py:1", wait_seconds=30
+    )
+    # The wait has come due, but the window has not run again: still stuck.
+    clock[0] += 60
+    user, token = storage.claim_extraction("worker", 300)
+    sibling = storage.prepare_extraction(user, token)
+    assert sibling.kind != waiting.kind
+    storage.complete_extraction(sibling, token, {})
+    storage.ack_extraction_effects(sibling.window_id)
+    clock[0] = 1000 + 7200
+    assert storage.oldest_extraction_backlog_age() == 7200
 
 
 @pytest.mark.parametrize(

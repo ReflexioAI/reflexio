@@ -24,6 +24,7 @@ from reflexio.server.llm.compute_admission import (
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
+from reflexio.server.llm.provider_circuit import provider_wait_seconds
 from reflexio.server.services.extraction.agent_run_records import build_scope_hash
 from reflexio.server.services.extraction.answer_inputs import answer_input_scope
 from reflexio.server.services.extraction.history_inputs import HistoricalInputs
@@ -113,6 +114,10 @@ def _refuse_overflow_protocol_run(run: AgentRunRecord) -> None:
 
 class ResumeWorkerError(RuntimeError):
     """Base error for retryable resume-worker failures."""
+
+
+class ResumeProviderWaitError(ResumeWorkerError):
+    """The agent left the run RESUMING to wait out a provider outage."""
 
 
 def _next_retry_at(attempt_count: int) -> datetime:
@@ -652,6 +657,69 @@ class ExtractionResumeWorker:
             self.storage.settle_agent_preparation_failure(updated, entry.identity)
             return updated
 
+    def _defer_without_charge(
+        self, run: AgentRunRecord, *, wait_seconds: float, reason: str
+    ) -> AgentRunRecord | None:
+        """Retry later without spending an attempt: the failure was not the run's.
+
+        Readiness that is not yet available, or a provider that is down for
+        every caller, says nothing about this run. Its admitted attempt is
+        refunded under the same claim; output already committed is kept.
+        """
+        from reflexio.server.services.durable_learning.user_lease import (
+            owned_agent_run_write,
+        )
+
+        active = self._active_claim
+        if active is None or active.id != run.id:
+            raise LeaseLostError("Deferral has no retained execution") from None
+        if (
+            active.status == AgentRunStatus.AGENT_COMPLETED
+            and active.committed_output is not None
+        ):
+            # The returned witness proves output committed. Retry conversion,
+            # without rereading a newer owner's output or refunding its call.
+            return self._update_claimed_status(
+                run.id,
+                AgentRunStatus.FINALIZATION_FAILED,
+                next_resume_at=datetime.now(UTC) + timedelta(seconds=wait_seconds),
+                last_error=reason,
+            )
+        if (
+            active.status != AgentRunStatus.RESUMING
+            or active.claimed_by is None
+            or active.claimed_at is None
+        ):
+            raise LeaseLostError("Deferral lost its execution claim") from None
+        if active.resume_attempts == run.resume_attempts:
+            # Preparation never charged this execution. Do not refund a
+            # previous model call when the failure came before entry.
+            return self._update_claimed_status(
+                run.id,
+                AgentRunStatus.RESUME_READY,
+                next_resume_at=datetime.now(UTC) + timedelta(seconds=wait_seconds),
+                last_error=reason,
+            )
+        with owned_agent_run_write(self.storage, active):
+            deferred = self.storage.defer_extraction_resume(
+                run.id,
+                active.claimed_by,
+                active.claimed_at.isoformat(),
+                active.resume_attempts,
+                (datetime.now(UTC) + timedelta(seconds=wait_seconds)).isoformat(),
+                last_error=reason,
+            )
+            # This read returns our own CAS result under the held writer
+            # locks; it cannot confer a replacement execution's authority.
+            updated = self.storage.get_agent_run(run.id) if deferred else None
+            if deferred and (
+                updated is None or updated.status != AgentRunStatus.RESUME_READY
+            ):
+                raise LeaseLostError("Deferral result is unavailable") from None
+        if updated is not None:
+            self._active_claim = updated
+        return updated
+
     def _process_claimed_run(
         self, run: AgentRunRecord, pending_config: Any
     ) -> AgentRunRecord | None:
@@ -689,64 +757,9 @@ class ExtractionResumeWorker:
                     )
                 retain_compute_result()
         except ReadinessUnavailableError:
-            from reflexio.server.services.durable_learning.user_lease import (
-                owned_agent_run_write,
+            return self._defer_without_charge(
+                run, wait_seconds=30, reason="ReadinessUnavailableError"
             )
-
-            active = self._active_claim
-            if active is None or active.id != run.id:
-                raise LeaseLostError(
-                    "Readiness deferral has no retained execution"
-                ) from None
-            if (
-                active.status == AgentRunStatus.AGENT_COMPLETED
-                and active.committed_output is not None
-            ):
-                # The returned witness proves output committed. Retry conversion,
-                # without rereading a newer owner's output or refunding its call.
-                return self._update_claimed_status(
-                    run.id,
-                    AgentRunStatus.FINALIZATION_FAILED,
-                    next_resume_at=datetime.now(UTC) + timedelta(seconds=30),
-                    last_error="ReadinessUnavailableError",
-                )
-            if (
-                active.status != AgentRunStatus.RESUMING
-                or active.claimed_by is None
-                or active.claimed_at is None
-            ):
-                raise LeaseLostError(
-                    "Readiness deferral lost its execution claim"
-                ) from None
-            if active.resume_attempts == run.resume_attempts:
-                # Preparation never charged this execution. Do not refund a
-                # previous model call when readiness fails before entry.
-                return self._update_claimed_status(
-                    run.id,
-                    AgentRunStatus.RESUME_READY,
-                    next_resume_at=datetime.now(UTC) + timedelta(seconds=30),
-                    last_error="ReadinessUnavailableError",
-                )
-            with owned_agent_run_write(self.storage, active):
-                deferred = self.storage.defer_extraction_resume(
-                    run.id,
-                    active.claimed_by,
-                    active.claimed_at.isoformat(),
-                    active.resume_attempts,
-                    (datetime.now(UTC) + timedelta(seconds=30)).isoformat(),
-                )
-                # This read returns our own CAS result under the held writer
-                # locks; it cannot confer a replacement execution's authority.
-                updated = self.storage.get_agent_run(run.id) if deferred else None
-                if deferred and (
-                    updated is None or updated.status != AgentRunStatus.RESUME_READY
-                ):
-                    raise LeaseLostError(
-                        "Readiness deferral result is unavailable"
-                    ) from None
-            if updated is not None:
-                self._active_claim = updated
-            return updated
         except LeaseLostError:
             raise
         except Exception as exc:
@@ -769,6 +782,24 @@ class ExtractionResumeWorker:
                     else AgentRunStatus.RESUME_READY,
                     next_resume_at=datetime.now(UTC),
                     last_error="ExecutionInputBusyError",
+                )
+            wait = provider_wait_seconds(exc)
+            if wait is None and isinstance(exc, ResumeProviderWaitError):
+                # The agent already decided; the circuit may have closed since,
+                # in which case the provider is back and the run retries now.
+                wait = 0.0
+            if wait is not None:
+                # The provider is down for everyone: refund the attempt and
+                # wait for it, so an outage never exhausts the allowance.
+                logger.warning(
+                    "event=resumable_extraction_provider_wait run_id=%s "
+                    "retry_in_seconds=%.0f error=%s",
+                    run.id,
+                    wait,
+                    type(exc).__name__,
+                )
+                return self._defer_without_charge(
+                    run, wait_seconds=wait, reason="provider_unavailable"
                 )
             with error_tags(
                 subsystem="extraction",
@@ -1140,6 +1171,13 @@ class ExtractionResumeWorker:
             structured_output_validator=structured_output_validator,
         )
 
+        if result.provider_wait:
+            # The agent left the run RESUMING; the failure handler refunds the
+            # attempt and waits for the provider.
+            raise ResumeProviderWaitError(
+                f"{run.binding.extractor_kind.capitalize()} resume waits for its "
+                f"provider: {result.failure_label}"
+            ) from result.error
         witness = result.execution_run
         if (
             witness is None

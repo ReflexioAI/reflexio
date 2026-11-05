@@ -95,6 +95,11 @@ from reflexio.server.llm.model_defaults import (
     default_max_tokens_for_model,
     resolve_model_name,
 )
+from reflexio.server.llm.provider_circuit import (
+    ProviderCircuitOpenError,
+    circuit_route,
+    provider_circuit,
+)
 from reflexio.server.llm.token_accounting import RunTokenTotals, run_token_capture
 from reflexio.server.operational_metrics import record_health
 
@@ -612,7 +617,8 @@ def _is_expected_transient_llm_error(exc: BaseException) -> bool:
     seen: set[int] = set()
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        if isinstance(current, TimeoutError):  # incl. LLMHardTimeoutError
+        # A breaker refusal: the provider recently failed this way, nothing sent.
+        if isinstance(current, TimeoutError | ProviderCircuitOpenError):
             return True
         if type(current).__name__ in _TRANSIENT_LLM_ERROR_NAMES:
             return True
@@ -622,6 +628,48 @@ def _is_expected_transient_llm_error(exc: BaseException) -> bool:
         if status is None:
             status = getattr(current, "status_code", None)
         if isinstance(status, int) and status in _TRANSIENT_UPSTREAM_STATUS_CODES:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+# A timeout is evidence of a provider outage only when the attempt was given at
+# least this long. Under a shorter caller budget (document expansion allows
+# 25 s and degrades to plain full-text search) it says the provider was slower
+# than that caller allowed, not that it is down for callers that wait longer.
+_OUTAGE_EVIDENCE_MIN_TIMEOUT_SECONDS = 60.0
+_TIMEOUT_ERROR_NAMES: frozenset[str] = frozenset({"Timeout", "APITimeoutError"})
+
+
+def _is_timeout_error(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, TimeoutError):
+            return True
+        if type(current).__name__ in _TIMEOUT_ERROR_NAMES:
+            return True
+        if getattr(current, "upstream_error_type", None) in _TIMEOUT_ERROR_NAMES:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def is_provider_unavailable_error(exc: BaseException) -> bool:
+    """The provider could not serve the call: retry later, the item is not at fault.
+
+    The transient upstream failures above plus a saturated local provider cap
+    (``ProviderCapSaturatedError``), which means calls to the provider are
+    backing up. Bad or invalid answers are not included.
+    """
+    if _is_expected_transient_llm_error(exc):
+        return True
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ProviderCapSaturatedError):
             return True
         current = current.__cause__ or current.__context__
     return False
@@ -1612,12 +1660,18 @@ class TextGenerationMixin:
             outcome = "cancelled"
             raise
         except LiteLLMClientError as error:
-            outcome = "failure"
-            if not (
-                caller_reports_repair_failure
-                and isinstance(error, StructuredOutputRepairError)
-            ):
-                record_terminal_llm_failure()
+            # ``llm.failures`` counts failures a person may need to act on. A
+            # provider outage is retried by its caller and reported once, when
+            # sustained, by the provider circuit.
+            if is_provider_unavailable_error(error):
+                outcome = "provider_unavailable"
+            else:
+                outcome = "failure"
+                if not (
+                    caller_reports_repair_failure
+                    and isinstance(error, StructuredOutputRepairError)
+                ):
+                    record_terminal_llm_failure()
             raise
         except BaseException:
             outcome = "aborted"
@@ -1803,7 +1857,15 @@ class TextGenerationMixin:
             *,
             detect_refusal: bool,
         ) -> _StructuredAttempt:
+            # Refused before any slot wait or log line: an open breaker sends
+            # nothing, and the walk treats the refusal as this rung's failure.
+            circuit_call = provider_circuit.admit(
+                circuit_route(turn_params), model=str(turn_params.get("model"))
+            )
             request_start = time.perf_counter()
+            # What the provider was actually given once every deadline (walk,
+            # caller, search scope) applied; set at dispatch.
+            dispatch_allowance: float | None = None
             self.logger.info(
                 "event=llm_request_start model=%s timeout=%s has_response_format=%s num_retries=0 hard_timeout=%.3f",
                 turn_params.get("model"),
@@ -1830,6 +1892,10 @@ class TextGenerationMixin:
                     scope = search_runtime.current()
                     if scope is not None and scope.deadline is not None:
                         turn_deadline = min(turn_deadline, scope.deadline)
+                    dispatch_allowance = min(
+                        self._coerce_timeout_seconds(turn_params),
+                        turn_deadline - time.monotonic(),
+                    )
 
                     def check_turn_deadline() -> None:
                         search_runtime.checkpoint()
@@ -1866,6 +1932,9 @@ class TextGenerationMixin:
                     response = self._completion_with_hard_timeout(
                         turn_params, turn_deadline - time.monotonic()
                     )
+                    # The provider answered; what the answer holds is not a
+                    # question of availability.
+                    circuit_call.succeeded()
                     record_compute_result()
                 # BEFORE any read of the response body. This call is what
                 # accumulates the run-scoped provider total, and everything
@@ -1983,17 +2052,29 @@ class TextGenerationMixin:
                 StructuredOutputParseError,
                 StructuredOutputRepairError,
                 ProviderCapSaturatedError,
-            ):
+            ) as e:
                 # Advance-worthy rung failures owned by the walk: parse/repair
                 # exhaustion and a saturated fail-closed provider cap must reach
                 # the walker UNWRAPPED so it can classify the reason and advance.
+                # Saturation means calls to this provider are backing up: the
+                # same availability evidence as a failed call.
+                if isinstance(e, ProviderCapSaturatedError):
+                    circuit_call.failed()
+                    e.circuit_route = circuit_call.route
                 raise
             except Exception as e:
-                log = (
-                    self.logger.warning
-                    if _is_expected_transient_llm_error(e)
-                    else self.logger.error
+                transient = _is_expected_transient_llm_error(e)
+                allowance = (
+                    dispatch_allowance
+                    if dispatch_allowance is not None
+                    else self._coerce_timeout_seconds(turn_params)
                 )
+                if transient and not (
+                    _is_timeout_error(e)
+                    and allowance < _OUTAGE_EVIDENCE_MIN_TIMEOUT_SECONDS
+                ):
+                    circuit_call.failed()
+                log = self.logger.warning if transient else self.logger.error
                 log(
                     "event=llm_request_end model=%s elapsed_seconds=%.3f success=False error_type=%s error=%s",
                     turn_params.get("model"),
@@ -2001,7 +2082,12 @@ class TextGenerationMixin:
                     type(e).__name__,
                     e,
                 )
-                raise LiteLLMClientError(f"API call failed: {e}") from e
+                failure = LiteLLMClientError(f"API call failed: {e}")
+                # Which breaker decides whether durable work is charged for it.
+                failure.circuit_route = circuit_call.route
+                raise failure from e
+            finally:
+                circuit_call.close()
 
         def _echo_content(
             raw_content: str | None,

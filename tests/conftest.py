@@ -79,6 +79,7 @@ os.environ["LOCAL_STORAGE_PATH"] = str(_REFLEXIO_TEST_HOME / ".reflexio" / "data
 # interval.
 import reflexio.server as _test_server  # noqa: E402
 from reflexio.server.extensions import reset_services  # noqa: E402
+from reflexio.server.llm.provider_circuit import provider_circuit  # noqa: E402
 from reflexio.server.llm.token_accounting import run_token_capture  # noqa: E402
 
 _test_server.LOCAL_STORAGE_PATH = os.environ["LOCAL_STORAGE_PATH"]
@@ -273,6 +274,9 @@ def _reset_runtime_services() -> Iterator[None]:
     for var in _OSS_TEST_POLLUTING_ENV_VARS:
         os.environ.pop(var, None)
     reset_services()
+    # Provider failures a test simulates must not open a breaker that
+    # refuses the next test's calls.
+    provider_circuit.reset()
     # `begin_run_token_capture()` installs a fresh capture per generation run
     # and never uninstalls it (see its docstring), so a test that calls
     # `service.run()` on the pytest thread leaves its capture as the ambient
@@ -282,6 +286,7 @@ def _reset_runtime_services() -> Iterator[None]:
     yield
     run_token_capture.set(None)
     reset_services()
+    provider_circuit.reset()
     # Local schedulers capture a test's context and storage. Stop them before
     # the next test; otherwise they keep polling deleted SQLite directories
     # and mutmut records their utility calls against unrelated tests.
