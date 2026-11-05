@@ -2,9 +2,9 @@
 
 Two things live here, and both are deliberately free of any ``storage``
 import, so storage can name them. It sits at the ``offline_tuner`` package
-level rather than in ``evidence/``: ``storage.open_world_evidence`` imports
+level rather than in ``evidence/``: ``open_world_records`` imports
 it, and importing any ``evidence`` module runs that package's eager
-``__init__``, which imports ``storage.open_world_evidence`` back.
+``__init__``, which imports storage modules back.
 
 **The refusal set.** Every way the durable open-world path refuses an attempt
 is one member of :class:`OpenWorldRefusal`. Each refusal has exactly one

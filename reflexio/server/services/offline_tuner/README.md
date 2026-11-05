@@ -15,9 +15,11 @@ Description: Engine of the offline user-playbook tuner: deterministic evidence s
 | `open_world/analyst.py` | Role-separated analyst adapters over `LiteLLMClient` and `PromptManager` |
 | `open_world/citations.py` | Span-scoped citation verification tolerant of rendering noise only |
 | `open_world/qualification.py`, `open_world/rule_evidence_authority.py` | Versioned synthetic qualification fixtures and the immutable identities of the evidence-driven method |
-| `open_world/reducer.py`, `open_world/runner.py` | Deterministic memo reduction and the shared job-lease/stage-storage contracts |
+| `open_world/reducer.py`, `open_world/runner.py` | Deterministic memo reduction and the shared job lease |
 | `open_world/shared_compaction.py` | Shared compression dispatch and cache journal inside one fenced job |
 | `open_world_invocations.py`, `open_world_job_metadata.py` | Refusal vocabulary, durable invocation records and advisory job-metadata keys |
+| `open_world_port.py`, `open_world_records.py` | `OpenWorldStoragePort` (the consumer Protocols a storage backend implements to run the active open-world path) and the storage records and refusal errors it returns and raises |
+| `exposure_receipts.py` | Signed search receipts and their verification; `receipt_project_id()` is the project resolver issuer and local verifier share |
 | `search_projection.py`, `models.py` | Immutable candidate search projection and `CandidateRevision` |
 | `exposure_ledger.py` | `ExposureLedgerRecorder`: turns a final search batch into user-playbook exposure events on the org's storage |
 | `retention.py`, `sweep_progress.py` | Bounded retention sweeps over a supplied storage, and per-tick progress records |
