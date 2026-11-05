@@ -6,12 +6,15 @@ import hashlib
 import hmac
 import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from reflexio.models.config_schema import (
@@ -49,9 +52,15 @@ def storage():
         yield SQLiteStorage(org_id="org_1", db_path=f"{temp_dir}/reflexio.db")
 
 
+@pytest.fixture(scope="module")
+def pending_app() -> FastAPI:
+    """Build static routes once; each client owns its context and database."""
+    return create_app(get_org_id=lambda: "org_1")
+
+
 @pytest.fixture
-def client(storage):
-    app = create_app(get_org_id=lambda: "org_1")
+def client(storage, pending_app: FastAPI) -> Iterator[TestClient]:
+    app = pending_app
 
     fake_ctx = RequestContext.__new__(RequestContext)
     fake_ctx.org_id = "org_1"
@@ -61,10 +70,12 @@ def client(storage):
     fake_ctx.configurator.get_config.return_value = Config(
         storage_config=StorageConfigSQLite()
     )
-    app.state.fake_ctx = fake_ctx
-
-    app.dependency_overrides[get_request_context] = lambda: fake_ctx
-    return TestClient(app, raise_server_exceptions=True)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(app.state, "fake_ctx", fake_ctx, raising=False)
+        patch.setitem(app.dependency_overrides, get_request_context, lambda: fake_ctx)
+        # Closing the client does not start a lifespan, matching these tests.
+        with closing(TestClient(app, raise_server_exceptions=True)) as client:
+            yield client
 
 
 def _agent_run(run_id: str, status: AgentRunStatus) -> AgentRunRecord:
