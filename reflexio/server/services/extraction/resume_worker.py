@@ -1163,6 +1163,13 @@ class ExtractionResumeWorker:
             structured_output_validator=structured_output_validator,
         )
 
+        if result.error is not None and provider_wait_seconds(result.error) is not None:
+            # The agent left the run RESUMING; the failure handler refunds the
+            # attempt and waits for the provider.
+            raise ResumeWorkerError(
+                f"{run.binding.extractor_kind.capitalize()} resume waits for its "
+                f"provider: {result.failure_label}"
+            ) from result.error
         witness = result.execution_run
         if (
             witness is None

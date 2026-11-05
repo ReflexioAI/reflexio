@@ -640,6 +640,7 @@ class TestRun:
             model_provenance=None,
             failure_label="error (LiteLLMClientError/transient)",
             error_detail="transient",
+            error=None,
         )
         module = "reflexio.server.services.profile.components.extractor"
         with (

@@ -15,6 +15,9 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
+from reflexio.server.llm._litellm_text_generation import (
+    is_provider_unavailable_error,
+)
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.compute_admission import (
     compute_attempt_scope,
@@ -28,6 +31,7 @@ from reflexio.server.llm.input_budget import (
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
+from reflexio.server.llm.provider_circuit import provider_wait_seconds
 from reflexio.server.llm.tools import (
     Tool,
     ToolLoopTrace,
@@ -156,6 +160,8 @@ class AgentRunResult:
     error_type: str | None = None
     error_detail: str | None = None
     execution_run: AgentRunRecord | None = field(default=None, repr=False)
+    # Runtime-only cause of an "error" run, for chaining; never persisted.
+    error: BaseException | None = field(default=None, repr=False)
 
     @property
     def failure_label(self) -> str:
@@ -882,7 +888,16 @@ class ResumableExtractionAgent:
                         "Profile turn lacks an attempt scope"
                     )
                 child_attempts.extend(attempts)
-            remaining -= 1
+            # A turn the provider never answered did no work, so it spends no
+            # step: otherwise every attempt during an outage burns one and the
+            # window is held once the child's steps run out. Physical dispatch
+            # IDs are still recorded below, so the attempt ledger stays whole.
+            if not (
+                result.finished_reason == "error"
+                and result.error is not None
+                and is_provider_unavailable_error(result.error)
+            ):
+                remaining -= 1
             trace.turns.extend(result.trace.turns)
             trace.finished = result.trace.finished
             if (
@@ -912,7 +927,7 @@ class ResumableExtractionAgent:
                 raise ExtractionIncompleteError(
                     f"Overflow extraction child did not finish: {result.failure_label}",
                     error_detail=result.error_detail,
-                )
+                ) from result.error
             current_messages = result.messages
         else:
             raise InputBudgetExceededError(
@@ -1185,6 +1200,23 @@ class ResumableExtractionAgent:
                     "finished_reason": result.finished_reason,
                 },
             )
+        elif (
+            run.status == AgentRunStatus.RESUMING
+            and result.error is not None
+            and provider_wait_seconds(result.error) is not None
+        ):
+            # The provider is down for everyone. A resumed run's FAILED would be
+            # terminal, so leave it RESUMING: its worker refunds the attempt and
+            # waits for the provider instead. (A window run is re-adopted on
+            # retry whatever its status, so it takes the ordinary path below.)
+            stored_run = None
+            logger.warning(
+                "event=extraction_agent_provider_wait org_id=%s run_id=%s "
+                "error_type=%s",
+                run.binding.org_id,
+                run.id,
+                result.error_type,
+            )
         else:
             last_error = f"Extraction agent did not finish: {result.failure_label}"
             try:
@@ -1241,4 +1273,5 @@ class ResumableExtractionAgent:
             error_type=result.error_type,
             error_detail=result.error_detail,
             execution_run=stored_run,
+            error=result.error,
         )

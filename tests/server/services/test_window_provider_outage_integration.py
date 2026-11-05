@@ -145,3 +145,51 @@ def test_only_failures_outside_an_outage_count(pipeline, monkeypatch, outage_fir
         healthy(3)
         outage(20)
     assert _cursor(storage)["attempts"] == 3
+
+
+def test_an_outage_inside_the_extraction_agent_turn_waits_uncharged(
+    pipeline, monkeypatch
+):
+    """The provider fails inside the agent's own model turn, not before it.
+
+    The tool loop turns a provider failure into a result rather than raising;
+    the window must still see the provider failure (and its route) beneath
+    the extractor's own error, through the real client and the real breaker.
+    """
+    import litellm
+
+    from reflexio.server.llm.litellm_client import LiteLLMClient
+
+    engine, worker, client = pipeline
+    assert client.post("/api/publish_interaction", json=payload("agent")).json()[
+        "success"
+    ]
+    storage = engine.get_storage()
+    # Run the real extractor: its agent turn is where the provider fails.
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    monkeypatch.setattr(
+        ProfileGenerationService, "_should_run_before_extraction", lambda *_: True
+    )
+    sent: list[str] = []
+
+    def rate_limited(self, params, _hard_timeout):
+        sent.append(params["model"])
+        raise litellm.exceptions.RateLimitError(
+            message="usage limit reached",
+            llm_provider="test",
+            model=str(params["model"]),
+        )
+
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", rate_limited)
+
+    for _ in range(3 * MAX_EXTRACTION_WINDOW_ATTEMPTS):
+        _drain_once(worker, storage)
+
+    cursor = _cursor(storage)
+    # At most the failures that opened the breaker were charged; none after it.
+    assert cursor["attempts"] <= OPEN_AFTER_FAILURES
+    assert cursor["retry_at"] != float("inf")
+    assert cursor["last_error"].startswith(PROVIDER_WAIT_PREFIX)
+    assert storage.extraction_status("u", "agent")["status"] == "pending"
+    # While open, the breaker sent nothing more than its probes.
+    assert len(sent) < 3 * MAX_EXTRACTION_WINDOW_ATTEMPTS

@@ -618,6 +618,67 @@ def test_resumable_agent_resume_injects_resolved_tool_result(
     assert "An answer not supplied" not in json.dumps(result.messages)
 
 
+@pytest.mark.parametrize("outage", [True, False])
+def test_resume_turn_failing_during_an_outage_stays_resumable(
+    monkeypatch, storage, outage
+):
+    """A provider outage in the agent's own turn must not end a resumed run.
+
+    FAILED is terminal for a resumed run, so during an outage (the route's
+    breaker open) the run stays RESUMING for its worker to refund and wait.
+    A failure while the provider serves other calls still fails it.
+    """
+    import litellm
+
+    from reflexio.server.llm import _litellm_text_generation as ttg
+    from reflexio.server.llm.provider_circuit import (
+        OPEN_AFTER_FAILURES,
+        provider_circuit,
+    )
+
+    # One route for every call, so the test opens exactly the agent's breaker.
+    monkeypatch.setattr(ttg, "circuit_route", lambda _params: "test-route")
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    run = storage.create_agent_run(
+        AgentRunRecord(
+            id="run_outage",
+            binding=_agent_run("run_outage").binding,
+            status=AgentRunStatus.RESUMING,
+            generation_request_snapshot={"request_id": "request_run_outage"},
+            max_steps_remaining=3,
+        )
+    )
+    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
+    agent = ResumableExtractionAgent(client=client, storage=storage, max_steps=8)
+    rate_limited = litellm.exceptions.RateLimitError(
+        message="usage limit reached", llm_provider="anthropic", model="m"
+    )
+    if outage:
+        for _ in range(OPEN_AFTER_FAILURES):
+            provider_circuit.admit("test-route", model="m").failed()
+    with patch("litellm.completion", side_effect=rate_limited):
+        result = agent.resume(
+            source_inputs=_source_inputs(agent.storage, run),
+            run=run,
+            messages=[{"role": "user", "content": "resume extraction"}],
+            history_inputs=HistoricalInputs(),
+            output_schema=StructuredProfilesOutput,
+            resolved_tool_calls=[],
+        )
+
+    assert result.finished_reason == "error"
+    assert result.error is not None
+    stored = storage.get_agent_run(run.id)
+    assert stored is not None
+    if outage:
+        assert stored.status == AgentRunStatus.RESUMING
+        assert stored.max_steps_remaining == 3
+    else:
+        assert stored.status == AgentRunStatus.FAILED
+
+
 def test_resumable_agent_resume_uses_persisted_step_budget(
     monkeypatch,
     storage,
