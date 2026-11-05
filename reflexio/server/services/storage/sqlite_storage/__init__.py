@@ -40,6 +40,7 @@ from .playbook import (
     UserPlaybookStoreMixin,
 )
 from .profiles import InteractionStoreMixin, ProfileSearchMixin, ProfileStoreMixin
+from .profiles._explicit_retention import ExplicitRetentionMixin
 
 
 class SQLiteStorage(
@@ -47,6 +48,7 @@ class SQLiteStorage(
     SQLiteAgentRunStoreMixin,
     SQLitePendingToolCallStoreMixin,
     SQLiteRunToolDependencyStoreMixin,
+    ExplicitRetentionMixin,
     ProfileStoreMixin,
     InteractionStoreMixin,
     ProfileSearchMixin,

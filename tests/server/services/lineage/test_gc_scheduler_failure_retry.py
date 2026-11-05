@@ -206,3 +206,43 @@ def test_no_provider_keeps_the_configured_interval():
     )
     scheduler._tick_had_failure = False
     assert scheduler._next_interval(_DAY) == _DAY
+
+
+def test_deadline_context_success_does_not_clear_failed_ordinary_config(monkeypatch):
+    """A healthy deadline tick must not erase the ordinary sweep's outage."""
+    failures: list[str] = []
+    successes: list[str] = []
+    monkeypatch.setattr(
+        gc_scheduler,
+        "report_background_failure",
+        lambda *_args, scope, **_kwargs: failures.append(scope),
+    )
+    monkeypatch.setattr(gc_scheduler, "report_background_success", successes.append)
+
+    def unavailable_config():
+        raise ConnectionError("config unavailable")
+
+    context = SimpleNamespace(
+        storage=object(), configurator=SimpleNamespace(get_config=unavailable_config)
+    )
+    scheduler = LineageGCScheduler(
+        request_context_factory=lambda _org: context,  # type: ignore[arg-type]
+        bootstrap_org_id="org-boot",
+    )
+    monkeypatch.setattr(scheduler, "_project_ids_for", lambda _org: [])
+    scheduler._sweep_org("org-1")
+    assert failures == ["lineage-gc-config:org-1"]
+    assert successes == ["lineage-gc-context:org-1:False"]
+    scheduler._worker_generation.deadline_only = True
+    scheduler._sweep_org("org-1")
+    assert successes == [
+        "lineage-gc-context:org-1:False",
+        "lineage-gc-context:org-1:True",
+    ]
+    context.configurator.get_config = lambda: SimpleNamespace()
+    scheduler._worker_generation.deadline_only = False
+    scheduler._sweep_org("org-1")
+    assert successes[-2:] == [
+        "lineage-gc-context:org-1:False",
+        "lineage-gc-config:org-1",
+    ]

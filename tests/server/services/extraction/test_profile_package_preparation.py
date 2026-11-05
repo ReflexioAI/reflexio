@@ -229,11 +229,19 @@ def test_preparation_prices_actual_full_native_requests_and_is_provider_free(
 
 
 @pytest.mark.parametrize("repetitions", [1, 5000])
+@pytest.mark.parametrize(
+    "condition", [None, "", "Only extract confirmed deployment requirements."]
+)
 def test_original_lookup_seed_matches_existing_extractor_before_overflow_policy(
     repetitions,
+    condition,
 ):
+
     from reflexio.server.services.extraction.prior_answer_search import (
         build_knowledge_need_query,
+    )
+    from reflexio.server.services.profile.learning.extractor import (
+        SourceOnlyProfileExtractor,
     )
     from reflexio.server.services.profile.profile_generation_service_utils import (
         construct_profile_extraction_messages_from_sessions,
@@ -242,16 +250,20 @@ def test_original_lookup_seed_matches_existing_extractor_before_overflow_policy(
     original = group()
     original.interactions[0].content = "Preserve approval conditions. " * repetitions
     config = ProfileExtractorConfig(
-        extraction_definition_prompt=" Stable preferences ", context_prompt=" Context "
+        extraction_definition_prompt=" Stable preferences ",
+        context_prompt=" Context ",
+        should_extract_profile_prompt_override=condition,
     )
     manager = PromptManager()
+    native_extractor = object.__new__(SourceOnlyProfileExtractor)
+    native_extractor.config = config
     native = construct_profile_extraction_messages_from_sessions(
         prompt_manager=manager,
         request_interaction_data_models=[original],
         existing_profiles=[],
         agent_context_prompt="Agent context",
         context_prompt=(config.context_prompt or "").strip(),
-        extraction_definition_prompt=config.extraction_definition_prompt.strip(),
+        extraction_definition_prompt=native_extractor._extraction_definition(),
     )
     seed = profile_package_original_seed(
         prompt_manager=manager,
@@ -270,6 +282,22 @@ def test_original_lookup_seed_matches_existing_extractor_before_overflow_policy(
     assert build_knowledge_need_query(messages=seed, **query_options) == (
         build_knowledge_need_query(messages=native, **query_options)
     )
+
+
+def test_custom_eligibility_is_fused_into_producing_prompt_without_a_separate_gate(
+    monkeypatch,
+):
+    condition = "Only extract confirmed deployment requirements."
+    config = ProfileExtractorConfig(
+        extraction_definition_prompt="Stable preferences",
+        should_extract_profile_prompt_override=condition,
+    )
+    prepared, _ = preparation(monkeypatch, extractor_config=config, gate_enabled=False)
+    prompt = str(prepared.agent_messages("Original conversation"))
+    assert condition in prompt
+    assert "return null profiles" in prompt
+    assert prepared.gate_messages("Original conversation") == []
+    assert prepared.snapshot["consumer"]["ladders"]["gate"] == []
 
 
 def test_pending_tools_are_real_and_counted_with_the_actual_schema(monkeypatch):
@@ -468,14 +496,21 @@ def test_actual_native_agent_and_semantic_repair_pass_the_frozen_checker(
     monkeypatch.setattr(client, "_completion_with_hard_timeout", transport)
     token = extraction_provider_guard.set(guard)
     try:
-        result = client.generate_chat_response(
-            messages,
-            model_role=ModelRole.EXTRACTION_AGENT,
-            response_format=StructuredProfilesOutput,
-            structured_output_validator=validator,
-            tools=None,
-            tool_choice=None,
+        from reflexio.server.services.profile.learning.client_policy import (
+            producing_request_options,
         )
+
+        options = producing_request_options(
+            client,
+            {
+                "model_role": ModelRole.EXTRACTION_AGENT,
+                "response_format": StructuredProfilesOutput,
+                "structured_output_validator": validator,
+                "tools": None,
+                "tool_choice": None,
+            },
+        )
+        result = client.generate_chat_response(messages, **options)
     finally:
         extraction_provider_guard.reset(token)
     assert isinstance(result, StructuredProfilesOutput)
@@ -867,7 +902,9 @@ def test_unrelated_or_unbounded_validator_suffix_refuses(monkeypatch, mutation):
 
 
 @pytest.mark.parametrize("passthrough", [True, False])
-@pytest.mark.parametrize("drift", ["template", "schema", "consumer_ladder"])
+@pytest.mark.parametrize(
+    "drift", ["template", "schema", "dedup_schema", "consumer_ladder"]
+)
 def test_consumer_drift_refuses_before_cache_or_provider(
     monkeypatch, tmp_path, passthrough, drift
 ):
@@ -915,6 +952,21 @@ def test_consumer_drift_refuses_before_cache_or_provider(
             StructuredProfilesOutput,
             "model_json_schema",
             Mock(return_value={"type": "null"}),
+        )
+    elif drift == "dedup_schema":
+        from reflexio.server.services.profile.components.consolidator import (
+            ProfileConsolidator,
+            ProfileDeduplicationOutput,
+        )
+
+        # A frozen native legacy decision schema is not an operation author
+        # contract. Refuse before even cache lookup; never reinterpret it.
+        legacy_schema = ProfileDeduplicationOutput.model_json_schema()
+        assert "snapshot" not in legacy_schema["properties"]
+        monkeypatch.setattr(
+            ProfileConsolidator.OUTPUT_SCHEMA,
+            "model_json_schema",
+            Mock(return_value=legacy_schema),
         )
     else:
         client.config.fallback_models.append("gpt-4o")

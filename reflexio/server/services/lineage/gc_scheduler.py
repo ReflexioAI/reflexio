@@ -1,8 +1,10 @@
 """Process-local scheduler for lineage tombstone garbage collection and expiry reclamation.
 
-Startup runs when EITHER positive ``lineage_gc.tombstone_grace_window_days`` OR ``expiry_reclamation.enabled``
-OR ``governance_retention.audit_events_max_age_days > 0`` is set in the bootstrap
-org's config. Each tick evaluates every org independently.
+Native explicit profile retention starts independently of the ordinary cleanup
+knobs. Other startup conditions remain positive
+``lineage_gc.tombstone_grace_window_days``, ``expiry_reclamation.enabled``,
+``governance_retention.audit_events_max_age_days``, row caps or registered sweeps.
+Each tick evaluates every visited org/project independently.
 
 - **Class A** (profile expiry sweep + tombstone GC): gated on positive ``lineage_gc.tombstone_grace_window_days``.
   Hard-deletes expired tombstones per that org's ``lineage_gc`` config.
@@ -26,13 +28,20 @@ rather than charged to the tick then running.
 
 Healthy sweeps share one captured process cadence (default daily), including
 ``expiry_reclamation`` and ``governance_retention``.
+
+Explicit profile retention uses this same leader, thread and org-fanout owner.
+It discovers persisted deadlines at most 60 seconds of idle wait apart, and
+dispatches cached due scopes sooner without rerunning ordinary maintenance.
+This bounds discovery waits, not database/queue execution or deletion latency.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -48,6 +57,9 @@ from reflexio.server.env_utils import env_str
 from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.org_fanout import OrgFanout, iterate_orgs_bounded
 from reflexio.server.scheduling import LeaderGate, ThreadedScheduler
+from reflexio.server.services.profile.learning.explicit_retention import (
+    ProfileExplicitRetentionMixin,
+)
 from reflexio.server.services.storage.retention import get_row_retention_limits
 from reflexio.server.services.storage.retention_sweep import (
     RetentionSweepResult,
@@ -62,6 +74,28 @@ _MIN_POLL_SECONDS = 1
 _BOOTSTRAP_RETRY_INTERVAL_SECONDS = 5
 _ORG_SWEEP_TIMEOUT_SECONDS = 60.0
 _DEFAULT_ORG_FANOUT_WORKERS = 8
+_PROFILE_DEADLINE_DISCOVERY_SECONDS = 60.0
+_PROFILE_DEADLINE_PURGE_LIMIT = 1000
+
+_profile_deadline_schedulers: weakref.WeakSet[LineageGCScheduler] = weakref.WeakSet()
+_profile_deadline_schedulers_lock = threading.Lock()
+
+
+def notify_profile_deadline_change(
+    *, org_id: str | None = None, project_id: str | None = None
+) -> None:
+    """After a committed publication, wake the existing local scheduler owner.
+
+    With actual owner/project identities, rediscover only that admitted scope.
+    A no-argument call wakes without forcing a fleet scan; cross-process or
+    unknown-org changes use the bounded periodic discovery cadence. A scoped
+    notification during a tick survives it and requests fresh scoped discovery.
+    """
+    with _profile_deadline_schedulers_lock:
+        schedulers = list(_profile_deadline_schedulers)
+    for scheduler in schedulers:
+        scheduler._notify_profile_deadline_change(org_id=org_id, project_id=project_id)
+
 
 # How soon to tick again after a tick in which work FAILED, rather than waiting
 # the captured healthy maintenance interval (default 86400s).
@@ -147,11 +181,18 @@ def set_project_id_provider(provider: Callable[[str], list[str]] | None) -> None
 
 @dataclass(frozen=True)
 class MaintenanceSchedule:
-    """One captured process cadence and its fleet coordination/wait policy."""
+    """Captured ordinary cadence and continuous fleet eligibility.
+
+    The optional initial-delay provider receives interval_seconds once, and
+    delays only ordinary maintenance, not explicit-deadline discovery. A
+    deployment with a UTC startup slot supplies that delay separately from its
+    continuous leader gate. Healthy/retry maintenance waits remain unchanged.
+    """
 
     interval_seconds: int = DAILY_SWEEP_SECONDS
     leader_gate: LeaderGate | None = None
     healthy_interval_provider: Callable[[float], float] | None = None
+    initial_maintenance_delay_provider: Callable[[float], float] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -279,7 +320,7 @@ def clear_per_org_sweeps() -> None:
 
 
 class LineageGCScheduler(ThreadedScheduler):
-    """Polling daemon that hard-deletes expired tombstones per org."""
+    """One owner for ordinary maintenance and explicit profile deadlines."""
 
     def __init__(
         self,
@@ -324,8 +365,25 @@ class LineageGCScheduler(ThreadedScheduler):
         self._worker_generation = threading.local()
         # Consecutive ticks that ended in failure, to bound the fast retry.
         self._consecutive_failed_ticks = 0
+        initial_delay = (
+            _healthy_interval(
+                self._schedule.interval_seconds,
+                self._schedule.initial_maintenance_delay_provider,
+            )
+            if self._schedule.initial_maintenance_delay_provider is not None
+            else 0.0
+        )
+        self._maintenance_due = time.monotonic() + initial_delay
+        self._deadline_discovery_due = 0.0
+        self._deadline_discovery_active = False
+        self._profile_deadlines: dict[tuple[str, str | None], int] = {}
+        self._deadline_eligible_orgs: set[str] = set()
+        self._deadline_dirty: dict[tuple[str, str | None], int] = {}
+        self._deadline_wake_generation = 0
 
     def _on_started(self) -> None:
+        with _profile_deadline_schedulers_lock:
+            _profile_deadline_schedulers.add(self)
         logger.info("event=lineage_gc_scheduler_started")
 
     def _should_start(self) -> bool:
@@ -335,12 +393,98 @@ class LineageGCScheduler(ThreadedScheduler):
                 return False
             self._fanout_owner.close()
             self._fanout_owner = None
+        # Set before the thread starts; an on-start hook runs after its first
+        # tick may already have computed the next discovery time.
+        self._deadline_discovery_due = 0.0
         return True
 
     def _on_stopped(self) -> None:
+        with _profile_deadline_schedulers_lock:
+            _profile_deadline_schedulers.discard(self)
         if self._fanout_owner is not None:
             self._fanout_owner.close()
         logger.info("event=lineage_gc_scheduler_stopped")
+
+    def _notify_profile_deadline_change(
+        self, *, org_id: str | None = None, project_id: str | None = None
+    ) -> None:
+        if org_id is not None:
+            with self._failure_lock:
+                self._deadline_wake_generation += 1
+                self._deadline_dirty[(org_id, project_id or None)] = (
+                    self._deadline_wake_generation
+                )
+        self.wake()
+
+    def _record_profile_deadline(
+        self, org_id: str, project_id: str | None, due: int | None
+    ) -> None:
+        generation = getattr(self._worker_generation, "value", self._tick_generation)
+        with self._failure_lock:
+            if generation != self._tick_generation:
+                return
+            self._deadline_discovery_active = True
+            key = (org_id, project_id)
+            if due is None:
+                self._profile_deadlines.pop(key, None)
+            else:
+                self._profile_deadlines[key] = due
+
+    def _forget_profile_deadline_org(self, org_id: str) -> None:
+        generation = getattr(self._worker_generation, "value", self._tick_generation)
+        with self._failure_lock:
+            if generation == self._tick_generation:
+                self._profile_deadlines = {
+                    key: due
+                    for key, due in self._profile_deadlines.items()
+                    if key[0] != org_id
+                }
+
+    def _sweep_profile_deadlines(
+        self, org_id: str, storage: BaseStorage, project_id: str | None
+    ) -> None:
+        if not isinstance(storage, ProfileExplicitRetentionMixin):
+            return
+        unit = f"{org_id}:{project_id}"
+        try:
+            now = int(time.time())
+            due = storage.next_profile_deadline()
+            if due is not None and due <= now:
+                audit = storage.purge_profile_deadlines(
+                    now, limit=_PROFILE_DEADLINE_PURGE_LIMIT
+                )
+                logger.info(
+                    "event=profile_explicit_retention org_id=%s project_id=%s attempts=%d",
+                    org_id,
+                    project_id,
+                    len(audit),
+                )
+                due = storage.next_profile_deadline()
+            self._record_profile_deadline(org_id, project_id, due)
+        except Exception as exc:
+            capture_anomaly(
+                "profile.explicit_retention.failed",
+                org_id=org_id,
+                project_id=project_id,
+            )
+            report_background_failure(
+                logger,
+                "profile_explicit_retention_failed",
+                exc,
+                scope=f"profile-explicit-retention:{unit}",
+                org_id=org_id,
+                project_id=project_id,
+            )
+            self._record_tick_failure()
+            # A failed scope retries on discovery, not a stale due timer every
+            # second. Never report its unknown state as successful deletion.
+            self._record_profile_deadline(org_id, project_id, None)
+        else:
+            generation = getattr(
+                self._worker_generation, "value", self._tick_generation
+            )
+            if generation == self._tick_generation:
+                report_background_success(f"profile-explicit-retention:{unit}")
 
     def _discover_org_ids(self, bootstrap_ctx: RequestContext) -> list[str]:
         """Return the orgs this tick should sweep.
@@ -415,23 +559,45 @@ class LineageGCScheduler(ThreadedScheduler):
         Args:
             org_id (str): The org to sweep this tick.
         """
+        deadline_only = getattr(self._worker_generation, "deadline_only", False)
+        # Context acquisition and configuration have separate streaks. A
+        # healthy deadline-only sweep cannot clear an ordinary-config failure.
+        context_scope = f"lineage-gc-context:{org_id}:{deadline_only}"
+        config_scope = f"lineage-gc-config:{org_id}"
         try:
             ctx = self.request_context_factory(org_id)
             if ctx.storage is None:
                 return
-            cfg = ctx.configurator.get_config()
         except Exception as exc:
             capture_anomaly("lineage.gc.run_failed", org_id=org_id)
             report_background_failure(
                 logger,
                 "lineage_gc_org_failed",
                 exc,
-                scope=f"lineage-gc:{org_id}",
+                scope=context_scope,
                 org_id=org_id,
             )
             self._record_tick_failure()
+            self._forget_profile_deadline_org(org_id)
             return
-        report_background_success(f"lineage-gc:{org_id}")
+        report_background_success(context_scope)
+        cfg = None
+        try:
+            if not deadline_only:
+                cfg = ctx.configurator.get_config()
+        except Exception as exc:
+            capture_anomaly("lineage.gc.run_failed", org_id=org_id)
+            report_background_failure(
+                logger,
+                "lineage_gc_org_failed",
+                exc,
+                scope=config_scope,
+                org_id=org_id,
+            )
+            self._record_tick_failure()
+        else:
+            if not deadline_only:
+                report_background_success(config_scope)
 
         # One pass per project, not one per org. Everything below writes
         # project-scoped tables; with no project bound the enterprise row-level
@@ -442,7 +608,25 @@ class LineageGCScheduler(ThreadedScheduler):
         # `expiry_reclamation` are deliberately NOT project-overridable, so
         # there is one window per org and re-reading it per project would imply
         # a per-project value that cannot exist.
-        for project_id in self._project_ids_for(org_id):
+        self._worker_generation.project_enumeration_failed = False
+        project_ids = self._project_ids_for(org_id)
+        generation = getattr(self._worker_generation, "value", self._tick_generation)
+        targets = getattr(self._worker_generation, "deadline_targets", None)
+        if not self._worker_generation.project_enumeration_failed:
+            with self._failure_lock:
+                if generation == self._tick_generation:
+                    self._profile_deadlines = {
+                        key: due
+                        for key, due in self._profile_deadlines.items()
+                        if key[0] != org_id or key[1] in project_ids
+                    }
+        for project_id in project_ids:
+            if (
+                deadline_only
+                and targets is not None
+                and (org_id, project_id) not in targets
+            ):
+                continue
             scope = (
                 None
                 if project_id is None
@@ -450,7 +634,9 @@ class LineageGCScheduler(ThreadedScheduler):
             )
             try:
                 with bind_work_scope(scope):
-                    self._sweep_project_data(org_id, ctx.storage, cfg, project_id)
+                    self._sweep_profile_deadlines(org_id, ctx.storage, project_id)
+                    if not deadline_only and cfg is not None:
+                        self._sweep_project_data(org_id, ctx.storage, cfg, project_id)
             except WorkScopeError:
                 # A project that vanished between enumeration and binding.
                 # Escalate and keep going: letting this out of the loop would
@@ -463,11 +649,14 @@ class LineageGCScheduler(ThreadedScheduler):
                     org_id,
                     project_id,
                 )
+                self._record_tick_failure()
+                self._record_profile_deadline(org_id, project_id, None)
 
         # Per-org sweeps: invoked unconditionally once per org (the real gate
         # lives in each enterprise closure). Extracted to keep _gc_tick's
         # cyclomatic complexity in check and to mirror _run_global_sweeps.
-        self._run_per_org_sweeps(org_id)
+        if not deadline_only and cfg is not None:
+            self._run_per_org_sweeps(org_id)
 
     def _project_ids_for(self, org_id: str) -> list[str | None]:
         """Return the project ids to sweep for ``org_id``.
@@ -487,6 +676,7 @@ class LineageGCScheduler(ThreadedScheduler):
         try:
             project_ids: list[str | None] = list(_project_id_provider_hook(org_id))
         except Exception as exc:
+            self._worker_generation.project_enumeration_failed = True
             # Enumeration is the whole tick for this org; a failure here must
             # not silently degrade to an unscoped pass that deletes nothing.
             capture_anomaly("lineage.gc.project_enumeration_failed", org_id=org_id)
@@ -501,6 +691,7 @@ class LineageGCScheduler(ThreadedScheduler):
             # -- so without this the tick reports clean while retention did not
             # run at all. That is the silence this whole change exists to remove.
             self._record_tick_failure()
+            self._forget_profile_deadline_org(org_id)
             return []
         if project_ids:
             report_background_success(f"lineage-gc-projects:{org_id}")
@@ -665,7 +856,14 @@ class LineageGCScheduler(ThreadedScheduler):
         if result.failed:
             self._record_tick_failure()
 
-    def _gc_tick(self, org_ids: list[str], *, max_workers: int = 1) -> None:
+    def _gc_tick(
+        self,
+        org_ids: list[str],
+        *,
+        max_workers: int = 1,
+        deadline_only: bool = False,
+        deadline_targets: frozenset[tuple[str, str | None]] | None = None,
+    ) -> None:
         """Run one GC pass across the given org IDs.
 
         Factored out of ``_run_loop`` so tests can exercise it without threads.
@@ -680,10 +878,14 @@ class LineageGCScheduler(ThreadedScheduler):
 
         def _sweep_in_generation(org_id: str) -> None:
             self._worker_generation.value = generation
+            self._worker_generation.deadline_only = deadline_only
+            self._worker_generation.deadline_targets = deadline_targets
             try:
                 self._sweep_org(org_id)
             finally:
                 del self._worker_generation.value
+                del self._worker_generation.deadline_only
+                del self._worker_generation.deadline_targets
 
         owner = self._fanout_owner
         if owner is not None and owner.max_workers != max_workers:
@@ -709,6 +911,8 @@ class LineageGCScheduler(ThreadedScheduler):
         for org_id in set(timed_out) & self._prior_timeout_orgs:
             capture_anomaly("lineage.gc.org_sweep_timeout_repeat", org_id=org_id)
         self._prior_timeout_orgs = set(timed_out)
+        for org_id in timed_out:
+            self._forget_profile_deadline_org(org_id)
 
     def _org_fanout_workers(self, bootstrap_ctx: RequestContext) -> int:
         """Resolve the fan-out width: SQLite pins to 1; else env (default 8).
@@ -910,10 +1114,26 @@ class LineageGCScheduler(ThreadedScheduler):
         return max(fast, _MIN_POLL_SECONDS)
 
     def _run_once(self) -> float:
+        started = time.monotonic()
         with self._failure_lock:
             self._tick_generation += 1
             self._tick_had_failure = False
-        self._run_always_global_sweeps()
+            maintenance = (
+                not self._deadline_discovery_active
+                and self._schedule.initial_maintenance_delay_provider is None
+            ) or started >= self._maintenance_due
+            discovery = maintenance or started >= self._deadline_discovery_due
+            dirty = dict(self._deadline_dirty)
+            targets = frozenset(
+                {
+                    key
+                    for key, due in self._profile_deadlines.items()
+                    if due <= time.time()
+                }
+                | {key for key in dirty if key[0] in self._deadline_eligible_orgs}
+            )
+        if maintenance:
+            self._run_always_global_sweeps()
         poll_interval = self._schedule.interval_seconds
         try:
             if (
@@ -929,10 +1149,35 @@ class LineageGCScheduler(ThreadedScheduler):
                     return _BOOTSTRAP_RETRY_INTERVAL_SECONDS
                 self.bootstrap_org_id = org_ids[0]
             bootstrap_ctx = self.request_context_factory(self.bootstrap_org_id)
-            cfg = bootstrap_ctx.configurator.get_config()
-            org_ids = self._discover_org_ids(bootstrap_ctx)
-            self._gc_tick(org_ids, max_workers=self._org_fanout_workers(bootstrap_ctx))
-            self._run_global_sweeps(cfg)
+            if isinstance(
+                getattr(bootstrap_ctx, "storage", None), ProfileExplicitRetentionMixin
+            ):
+                self._deadline_discovery_active = True
+            org_ids = (
+                self._discover_org_ids(bootstrap_ctx)
+                if discovery
+                else sorted({key[0] for key in targets})
+            )
+            if discovery and not self._tick_had_failure:
+                with self._failure_lock:
+                    self._deadline_eligible_orgs = set(org_ids)
+                    self._profile_deadlines = {
+                        key: due
+                        for key, due in self._profile_deadlines.items()
+                        if key[0] in org_ids
+                    }
+            workers = self._org_fanout_workers(bootstrap_ctx)
+            if maintenance:
+                self._gc_tick(org_ids, max_workers=workers)
+                cfg = bootstrap_ctx.configurator.get_config()
+                self._run_global_sweeps(cfg)
+            else:
+                self._gc_tick(
+                    org_ids,
+                    max_workers=workers,
+                    deadline_only=True,
+                    deadline_targets=None if discovery else targets,
+                )
         except Exception as exc:
             report_background_failure(
                 logger, "lineage_gc_scheduler_tick_failed", exc, scope="lineage-gc-tick"
@@ -940,7 +1185,31 @@ class LineageGCScheduler(ThreadedScheduler):
             self._record_tick_failure()
         else:
             report_background_success("lineage-gc-tick")
-        return self._next_interval(poll_interval)
+        if maintenance:
+            interval = self._next_interval(poll_interval)
+            self._maintenance_due = time.monotonic() + interval
+            if not self._deadline_discovery_active:
+                return interval
+        if discovery:
+            self._deadline_discovery_due = (
+                time.monotonic() + _PROFILE_DEADLINE_DISCOVERY_SECONDS
+            )
+        with self._failure_lock:
+            for key, version in dirty.items():
+                if (discovery or key in targets) and self._deadline_dirty.get(
+                    key
+                ) == version:
+                    self._deadline_dirty.pop(key)
+            due = min(self._profile_deadlines.values(), default=None)
+        wait = (
+            min(self._maintenance_due, self._deadline_discovery_due) - time.monotonic()
+        )
+        if due is not None:
+            wait = min(wait, due - time.time())
+        # Authority is in whole seconds. Round dispatch waits upward, keeping
+        # an integer maintenance cadence stable across spurious/local wakes;
+        # this may add less than one second, never an exact timer guarantee.
+        return max(_MIN_POLL_SECONDS, math.ceil(wait))
 
 
 def maybe_start_lineage_gc(
@@ -950,7 +1219,7 @@ def maybe_start_lineage_gc(
     org_id_provider: Callable[[], list[str]] | None = None,
     leader_gate: LeaderGate | None = None,
 ) -> LineageGCScheduler | None:
-    """Start the scheduler when bootstrap config enables tombstone GC or expiry reclamation.
+    """Start for native explicit retention or enabled ordinary maintenance.
 
     Startup runs when the bootstrap-org config sets positive ``lineage_gc.tombstone_grace_window_days``
     (Class A: profile expiry + tombstone GC), ``expiry_reclamation.enabled``
@@ -959,8 +1228,9 @@ def maybe_start_lineage_gc(
     hook has been registered via :func:`register_per_org_sweep` /
     :func:`register_global_sweep`. Registered hooks carry their own per-org gate
     in the enterprise closure, so the scheduler must start to evaluate them even
-    when none of the bootstrap-org flags are set. Returns ``None`` only if none
-    of these conditions hold.
+    when none of the bootstrap-org flags are set. Native explicit profile
+    retention also starts with every ordinary knob disabled. Returns ``None``
+    only when no supported startup condition holds.
 
     Tombstone-GC enablement criteria (must ALL hold before enabling ``lineage_gc``
     for a production org):
@@ -1018,9 +1288,13 @@ def maybe_start_lineage_gc(
     # Gated on a positive limit rather than hardcoded True so that disabling
     # every cap (`REFLEXIO_ROW_LIMIT_*=0`) still answers "nothing to do".
     retention_enabled = any(limit > 0 for limit in get_row_retention_limits().values())
+    explicit_retention_enabled = False
 
     try:
         ctx = request_context_factory(bootstrap_org_id)
+        explicit_retention_enabled = isinstance(
+            getattr(ctx, "storage", None), ProfileExplicitRetentionMixin
+        )
         cfg = ctx.configurator.get_config()
 
         # Dead-knob warning: audit-event retention is an ENTERPRISE-only feature
@@ -1058,7 +1332,9 @@ def maybe_start_lineage_gc(
         )
     except Exception as exc:
         # Only a deployment with nothing registered has nothing to lose here.
-        if not (has_registered_sweeps or retention_enabled):
+        if not (
+            has_registered_sweeps or retention_enabled or explicit_retention_enabled
+        ):
             logger.warning(
                 "event=lineage_gc_scheduler_start_skipped error_type=%s error=%s",
                 type(exc).__name__,
@@ -1093,7 +1369,12 @@ def maybe_start_lineage_gc(
     # caps at all. They had been enforced on every publish until the sweep
     # moved here, so that would have been a silent regression into unbounded
     # table growth. `retention_enabled` is resolved above, before the config read.
-    if not (config_enabled or has_registered_sweeps or retention_enabled):
+    if not (
+        config_enabled
+        or has_registered_sweeps
+        or retention_enabled
+        or explicit_retention_enabled
+    ):
         return None
 
     scheduler = LineageGCScheduler(
@@ -1103,5 +1384,6 @@ def maybe_start_lineage_gc(
         leader_gate=leader_gate,
         schedule=schedule,
     )
+    scheduler._deadline_discovery_active = explicit_retention_enabled
     scheduler.start()
     return scheduler

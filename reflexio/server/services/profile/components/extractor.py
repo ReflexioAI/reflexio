@@ -422,6 +422,10 @@ class ProfileExtractor:
                 )
         return new_profiles
 
+    def _extraction_definition(self) -> str:
+        """Prompt content is separate from the frozen user-config identity."""
+        return self.config.extraction_definition_prompt.strip()
+
     def _generate_raw_updates_from_sessions(
         self,
         request_interaction_data_models: list[RequestInteractionDataModel],
@@ -450,7 +454,7 @@ class ProfileExtractor:
             context_prompt=(
                 self.config.context_prompt.strip() if self.config.context_prompt else ""
             ),
-            extraction_definition_prompt=self.config.extraction_definition_prompt.strip(),
+            extraction_definition_prompt=self._extraction_definition(),
             existing_profiles=existing_profiles,
             user_id=self.service_config.user_id,
         )
@@ -506,7 +510,7 @@ class ProfileExtractor:
                     context_prompt=self.config.context_prompt.strip()
                     if self.config.context_prompt
                     else "",
-                    extraction_definition_prompt=self.config.extraction_definition_prompt.strip(),
+                    extraction_definition_prompt=self._extraction_definition(),
                     existing_profiles=profiles,
                 )
                 messages.append(

@@ -227,10 +227,20 @@ def test_library_reopen_resumes_idle_deadline_without_another_publish(
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     clock = [1000.0]
     monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: clock[0])
-    from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
+    import litellm
 
-    judge = Mock(return_value=CompletionResult("false", ModelProvenance()))
-    monkeypatch.setattr(LiteLLMClient, "generate_chat_response_with_provenance", judge)
+    producing = Mock(
+        return_value=litellm.ModelResponse(
+            choices=[
+                {
+                    "message": {"role": "assistant", "content": '{"profiles": []}'},
+                    "finish_reason": "stop",
+                }
+            ],
+            usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+        )
+    )
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", producing)
     context = _context(tmp_path / "idle-reopen", "idle-reopen")
     config = context.configurator
     config.set_config(
@@ -274,7 +284,7 @@ def test_library_reopen_resumes_idle_deadline_without_another_publish(
             )
 
     wait_for(scheduled)
-    judge.assert_not_called()
+    producing.assert_not_called()
     # Retire this process's scheduler, then reopen from persisted state at due time.
     with local._lock:
         scheduler = local._schedulers.pop(context.storage_base_dir)
@@ -290,7 +300,8 @@ def test_library_reopen_resumes_idle_deadline_without_another_publish(
             reopened.get_storage().extraction_status("u", "short")["status"] == "done"
         )
     )
-    judge.assert_called_once()
+    producing.assert_called_once()
+    assert producing.call_args.args[0]["response_format"]
     assert reopened.get_storage().count_all_profiles() == 0
 
 

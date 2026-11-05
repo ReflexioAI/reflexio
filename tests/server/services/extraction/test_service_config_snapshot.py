@@ -41,7 +41,12 @@ from reflexio.server.usage_metrics import (
     exempt_usage_event_recorder,
 )
 
-EXCLUDED = {"window_interactions", "existing_data", "frozen_extractor_config"}
+EXCLUDED = {
+    "window_interactions",
+    "review_interactions",
+    "existing_data",
+    "frozen_extractor_config",
+}
 PRIVATE = "PRIVATE-USER-CONTENT"
 
 
@@ -73,6 +78,7 @@ def _profile_config() -> ProfileGenerationServiceConfig:
         source="api",
         existing_data=[{"content": PRIVATE}],
         window_interactions=_groups(),
+        review_interactions=_groups(),
         extraction_window_id="w",
         frozen_extractor_config={"extraction_definition_prompt": PRIVATE},
     )
@@ -94,6 +100,7 @@ class _ModelConfig(BaseModel):
     request_id: str = "r"
     existing_data: list[str] = [PRIVATE]
     window_interactions: list[str] = [PRIVATE]
+    review_interactions: list[str] = [PRIVATE]
     frozen_extractor_config: dict[str, str] = {"prompt": PRIVATE}
 
 

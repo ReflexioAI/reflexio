@@ -88,6 +88,71 @@ def _scripted_audited_response(params: dict) -> dict | None:
     }
 
 
+def _scripted_profile_operation_response(params: dict) -> dict | None:
+    """Author source-quoted NEW-only operations through the real compiler."""
+    import json
+
+    for message in params.get("messages", []):
+        content = message.get("content", "")
+        if not isinstance(content, str):
+            continue
+        marker = '\n\n{"original_window":'
+        start = content.find(marker)
+        if start < 0:
+            continue
+        payload, _ = json.JSONDecoder().raw_decode(content[start + 2 :])
+        assert {"snapshot", "NEW", "EXISTING", "original_window"} <= payload.keys()
+        excerpts = [
+            excerpt
+            for session in payload["original_window"]
+            for interaction in session["interactions"]
+            if interaction["role"] == "user"
+            for excerpt in interaction["content"]["excerpts"]
+        ]
+        groups = []
+        for proposal in payload["NEW"]:
+            quote = proposal["source_span"]
+            # Old extraction outputs can predate source_span. Author from the
+            # complete original window, never from an ungrounded cached claim.
+            evidence = (
+                next(
+                    (excerpt for excerpt in excerpts if quote in excerpt["text"]),
+                    None,
+                )
+                if quote
+                else next(iter(excerpts), None)
+            )
+            assert evidence is not None, (
+                "Fixture proposals need real user source quotes"
+            )
+            quote = quote or evidence["text"]
+            groups.append(
+                {
+                    "new_ids": [proposal["id"]],
+                    "writes": [
+                        {
+                            "clauses": [
+                                {
+                                    "action": "assert",
+                                    "source_new_id": proposal["id"],
+                                    "content": quote,
+                                    "evidence": [
+                                        {
+                                            "excerpt_id": evidence["excerpt_id"],
+                                            "stance": "assertion",
+                                        }
+                                    ],
+                                }
+                            ]
+                        }
+                    ],
+                    "forget": [],
+                }
+            )
+        return {"snapshot": payload["snapshot"], "groups": groups}
+    return None
+
+
 def _prepared_presentation_text() -> str:
     from reflexio.server.services.extraction.overflow_presentation import (
         current_overflow_presentation,
@@ -2484,6 +2549,26 @@ def test_overflow_source_witness_rejects_replacement_with_unchanged_sequence(
 
 @pytest.fixture
 def pipeline(tmp_path, monkeypatch):
+    import json
+
+    import litellm
+
+    completion = litellm.completion
+
+    def native_completion(*args, **kwargs):
+        # Retain the shared mock's strict-provider-schema checks and all its
+        # other stage routing; only this file supplies the selected author wire.
+        response = completion(*args, **kwargs)
+        assert isinstance(response, Mock), "Native fixture requires the provider double"
+        operation = _scripted_profile_operation_response(kwargs)
+        if operation is not None:
+            response.choices[0].message.content = json.dumps(operation)
+        return response
+
+    monkeypatch.setattr(litellm, "completion", native_completion)
+    # Exercise native request construction against the installed provider
+    # double, rather than the client's canned schema-independent shortcut.
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     # Drive turns explicitly so crashes and overlapping publishes are reproducible.
     monkeypatch.setattr(
         "reflexio.server.services.durable_learning.local.ensure_local_extraction",
@@ -3000,7 +3085,7 @@ def test_http_ack_is_durable_and_backlog_does_not_skip(pipeline, monkeypatch):
         )
         entered.set()
         assert released.wait(5)
-        return False
+        return True
 
     monkeypatch.setattr(ProfileGenerationService, "_should_run_before_extraction", gate)
     response = client.post("/api/publish_interaction", json=payload("first"))
@@ -3044,7 +3129,7 @@ def test_ingestion_failure_not_acknowledged(pipeline, monkeypatch):
 def test_sync_request_completes_while_later_tail_remains(pipeline, monkeypatch):
     engine, worker, client = pipeline
     monkeypatch.setattr(
-        ProfileGenerationService, "_should_run_before_extraction", lambda *_: False
+        ProfileGenerationService, "_should_run_before_extraction", lambda *_: True
     )
     with ThreadPoolExecutor(max_workers=1) as pool:
         waiting = pool.submit(
@@ -3081,6 +3166,13 @@ def test_real_extractor_persist_and_outcome_replay(pipeline):
     storage = engine.get_storage()
     assert storage.extraction_status("u", "extract")["status"] == "done"
     assert storage.count_all_profiles() > 0
+    source_texts = {
+        item["content"] for item in payload("extract")["interaction_data_list"]
+    }
+    for profile in storage.get_user_profile("u"):
+        assert profile.content in source_texts
+        assert profile.source_interaction_ids
+        assert profile.custom_features["rsi_clauses_v14"]
     before = storage.count_all_profiles()
     with patch.object(
         ProfileGenerationService,
@@ -3092,10 +3184,10 @@ def test_real_extractor_persist_and_outcome_replay(pipeline):
 
 
 @pytest.mark.parametrize("short_session", [False, True])
-@pytest.mark.parametrize("gate_negative", [False, True])
+@pytest.mark.parametrize("null_profiles", [False, True])
 @pytest.mark.parametrize("fail_commit", [False, True])
 def test_enabled_overflow_profile_uses_real_window_commit_once(
-    pipeline, monkeypatch, gate_negative, fail_commit, short_session
+    pipeline, monkeypatch, null_profiles, fail_commit, short_session
 ):
     import json
     from types import SimpleNamespace
@@ -3148,18 +3240,15 @@ def test_enabled_overflow_profile_uses_real_window_commit_once(
 
         response = deepcopy(completion)
         response_format = params.get("response_format")
-        schema_name = getattr(response_format, "__name__", "") or json.dumps(
-            response_format, default=str
-        )
-        if response_format is None and not params.get("tools"):
-            response.choices[0].message.content = "false" if gate_negative else "true"
-        if "ProfileDeduplicationOutput" in schema_name or any(
-            "unique_ids" in str(message.get("content", ""))
-            for message in params["messages"]
-        ):
-            response.choices[0].message.content = json.dumps(
-                {"duplicate_groups": [], "unique_ids": ["NEW-0"], "deletions": []}
+        operation = _scripted_profile_operation_response(params)
+        if operation is not None:
+            response.choices[0].message.content = json.dumps(operation)
+        else:
+            assert response_format is not None or params.get("tools"), (
+                "No separate gate"
             )
+            if null_profiles:
+                response.choices[0].message.content = json.dumps({"profiles": []})
         return response
 
     dispatch = Mock(side_effect=respond)
@@ -3170,7 +3259,7 @@ def test_enabled_overflow_profile_uses_real_window_commit_once(
             **payload(
                 "overflow-enabled",
                 count=2 if short_session else 10,
-                force=not gate_negative and not short_session,
+                force=not null_profiles and not short_session,
             ),
             "session_finished": short_session,
         },
@@ -3203,8 +3292,8 @@ def test_enabled_overflow_profile_uses_real_window_commit_once(
         worker.drain_org("stream-test", 1, 300)
         assert attempts == 2
     assert storage.extraction_status("u", "overflow-enabled")["status"] == "done"
-    assert storage.count_all_profiles() == (0 if gate_negative else 1)
-    expected_calls = 1 if gate_negative else 3 if short_session else 2
+    assert storage.count_all_profiles() == (0 if null_profiles else 1)
+    expected_calls = 1 if null_profiles else 2
     assert dispatch.call_count == expected_calls
     with storage._stream_sql() as db:
         rows = db.query("SELECT id FROM _agent_runs WHERE user_id=? LIMIT 2", ("u",))
@@ -3220,7 +3309,7 @@ def test_enabled_overflow_profile_uses_real_window_commit_once(
         == 100 * expected_calls
     )
     worker.drain_org("stream-test", 1, 300)
-    assert storage.count_all_profiles() == (0 if gate_negative else 1)
+    assert storage.count_all_profiles() == (0 if null_profiles else 1)
     assert dispatch.call_count == expected_calls
     assert storage.get_agent_run(run.id).status.value == "finalized"
     _assert_initial_window_has_no_competing_receipt(storage, run.id)
@@ -3341,11 +3430,8 @@ def test_http_overflow_human_answer_resumes_same_window_and_commits_once(
                     }
                 ]
             }
-        elif "ProfileDeduplicationOutput" in name or any(
-            "unique_ids" in str(message.get("content", ""))
-            for message in params["messages"]
-        ):
-            result = {"duplicate_groups": [], "unique_ids": ["NEW-0"], "deletions": []}
+        elif (operation := _scripted_profile_operation_response(params)) is not None:
+            result = operation
         else:
             answered_messages.extend(params["messages"])
             assert answer in json.dumps(params["messages"], ensure_ascii=False)
@@ -3689,7 +3775,7 @@ def test_transient_failures_retry_beyond_three_attempts(pipeline, monkeypatch):
         attempts.append(1)
         if len(attempts) <= 4:
             raise RuntimeError("provider temporarily unavailable")
-        return False
+        return True
 
     monkeypatch.setattr(ProfileGenerationService, "_should_run_before_extraction", gate)
     storage = engine.get_storage()
@@ -3756,7 +3842,7 @@ def test_worker_heartbeat_keeps_long_window_exclusive(pipeline, monkeypatch):
     def gate(*_):
         entered.set()
         assert release.wait(8)
-        return False
+        return True
 
     monkeypatch.setattr(ProfileGenerationService, "_should_run_before_extraction", gate)
     assert client.post("/api/publish_interaction", json=payload("long")).json()[
@@ -3789,7 +3875,10 @@ def test_compute_has_no_learning_writes_and_commit_has_no_model_calls(
         engine.request_context, create_generation_litellm_client(engine.request_context)
     )
     service, request, _ = executor.service(window)
-    with monkeypatch.context() as patches:
+    with (
+        owned_user_work_context(storage, user, token, 300),
+        monkeypatch.context() as patches,
+    ):
         for name in (
             "add_user_profile",
             "supersede_profiles_by_ids",
@@ -3901,7 +3990,7 @@ def test_occupied_budget_leaves_durable_work_unclaimed(pipeline, monkeypatch):
         )
     budget.release()
     monkeypatch.setattr(
-        ProfileGenerationService, "_should_run_before_extraction", lambda *_: False
+        ProfileGenerationService, "_should_run_before_extraction", lambda *_: True
     )
     assert worker.drain_org("stream-test", 1, 300) == 1
 
@@ -3917,7 +4006,7 @@ def test_two_users_compute_concurrently_and_same_user_waits(pipeline, monkeypatc
     def gate(*_):
         entered.wait(timeout=3)
         assert release.wait(3)
-        return False
+        return True
 
     monkeypatch.setattr(ProfileGenerationService, "_should_run_before_extraction", gate)
     for user in ["u", "v"]:
@@ -4212,8 +4301,6 @@ def test_erasure_cancels_uncommitted_window_run_instead_of_resuming_it(
 ):
 
     from reflexio.server.services.storage.storage_base import (
-        AgentBinding,
-        AgentRunRecord,
         AgentRunStatus,
     )
 
@@ -4230,24 +4317,11 @@ def test_erasure_cancels_uncommitted_window_run_instead_of_resuming_it(
     storage = engine.get_storage()
     with storage._stream_sql() as db:
         window_id = db.query("SELECT window_id FROM extraction_windows")[0]["window_id"]
-    # The external model double skips the resumable loop, so seed the same
-    # durable agent-completed state that a crash after a real model call leaves.
-    storage.create_agent_run(
-        AgentRunRecord(
-            id=f"window:{window_id}",
-            binding=AgentBinding(
-                org_id="stream-test",
-                user_id="u",
-                extractor_kind="profile",
-                request_id="erased",
-                agent_version=None,
-                source="test",
-            ),
-            status=AgentRunStatus.AGENT_COMPLETED,
-            generation_request_snapshot={},
-            committed_output={"profiles": []},
-        )
-    )
+    # The real native path already persisted this source-bound parent before
+    # publication failed; cancellation must act on that exact saved execution.
+    parent = storage.get_agent_run(f"window:{window_id}")
+    assert parent.status == AgentRunStatus.AGENT_COMPLETED
+    assert parent.committed_output is not None
     # Even an old completed model call belongs to the window engine until its
     # learning writes and cursor commit together.
     assert storage._resume_candidate_page("finalization")[1] is None
@@ -4519,8 +4593,8 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
                 if "supporting_evidence" in prompt
                 else "ReviewOutput"
             )
-        elif "unique_ids" in prompt:
-            name = "ProfileDeduplicationOutput"
+        elif _scripted_profile_operation_response(params) is not None:
+            name = "ProfileOperationOutput"
         schemas.append(name)
         audited = _scripted_audited_response(params)
         if audited is not None:
@@ -4572,11 +4646,8 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
                         "excerpts": [{"evidence_id": "C1-E1", "text": span.text}],
                     }
                 ]
-        elif "ProfileDeduplicationOutput" in name or any(
-            "unique_ids" in str(message.get("content", ""))
-            for message in params["messages"]
-        ):
-            result = {"duplicate_groups": [], "unique_ids": ["NEW-0"], "deletions": []}
+        elif (operation := _scripted_profile_operation_response(params)) is not None:
+            result = operation
         else:
             raise AssertionError(f"Saved extraction must not redispatch: {name}")
         return SimpleNamespace(
@@ -4659,10 +4730,7 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
         else:
             persisted_profiles = storage.get_user_profile(window.user_id)
             assert len(persisted_profiles) == 1
-            assert (
-                persisted_profiles[0].content
-                == run.committed_output["output"]["profiles"][0]["content"]
-            )
+            assert persisted_profiles[0].content == span.text
             assert (
                 persisted_profiles[0].source_interaction_ids
                 == run.binding.source_interaction_ids
@@ -4670,7 +4738,8 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
             assert (persisted_profiles[0].custom_features or {}).get(
                 "source_span"
             ) is None
-            assert any("ProfileDeduplicationOutput" in name for name in schemas)
+            assert any("ProfileOperationOutput" in name for name in schemas)
+            assert persisted_profiles[0].custom_features["rsi_clauses_v14"]
     assert storage.get_agent_run(run.id).committed_output == run.committed_output
 
 
@@ -4692,7 +4761,7 @@ def test_profile_consolidation_control_failure_preserves_extracted_window_withou
         current_overflow_coordinator,
     )
     from reflexio.server.services.profile.components.consolidator import (
-        ProfileDeduplicationOutput,
+        ProfileConsolidator,
     )
     from reflexio.server.services.storage.storage_base._extraction_stream import (
         LeaseLostError,
@@ -4770,7 +4839,7 @@ def test_profile_consolidation_control_failure_preserves_extracted_window_withou
     checkpoints = []
 
     def fail_consolidation(*args, **kwargs):
-        if kwargs.get("response_format") is ProfileDeduplicationOutput:
+        if kwargs.get("response_format") is ProfileConsolidator.OUTPUT_SCHEMA:
             coordinator = current_overflow_coordinator.get()
             assert coordinator is not None
             coordinator.require_full_source_coverage()
@@ -5014,7 +5083,7 @@ def test_post_commit_followup_failure_preserves_admission(pipeline, monkeypatch,
 
 
 @pytest.mark.parametrize("completion", ["explicit", "publish", "idle", "batch_wait"])
-def test_two_short_messages_reach_judge_and_negative_is_covered(
+def test_two_short_messages_reach_producing_extraction_and_null_is_covered(
     pipeline, monkeypatch, completion
 ):
     from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -5033,17 +5102,27 @@ def test_two_short_messages_reach_judge_and_negative_is_covered(
     clock = [1000.0]
     monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: clock[0])
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
+    import litellm
 
-    judge = Mock(return_value=CompletionResult("false", ModelProvenance()))
-    monkeypatch.setattr(LiteLLMClient, "generate_chat_response_with_provenance", judge)
+    producing = Mock(
+        return_value=litellm.ModelResponse(
+            choices=[
+                {
+                    "message": {"role": "assistant", "content": '{"profiles": []}'},
+                    "finish_reason": "stop",
+                }
+            ],
+            usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+        )
+    )
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", producing)
     data = {**payload("short", count=2), "session_finished": completion == "publish"}
     data["interaction_data_list"][0]["content"] = "Use uv"
     data["interaction_data_list"][1]["content"] = "OK"
     assert client.post("/api/publish_interaction", json=data).json()["success"]
     if completion != "publish":
         worker.drain_org("stream-test", 1, 300)
-        judge.assert_not_called()
+        producing.assert_not_called()
     if completion == "explicit":
         result = client.post(
             "/api/finalize_session", json={"user_id": "u", "session_id": "s"}
@@ -5060,10 +5139,11 @@ def test_two_short_messages_reach_judge_and_negative_is_covered(
         )
         clock[0] += 29
         worker.drain_org("stream-test", 1, 300)
-        judge.assert_not_called()
+        producing.assert_not_called()
         clock[0] += 1
     worker.drain_org("stream-test", 1, 300)
-    judge.assert_called_once()
+    producing.assert_called_once()
+    assert producing.call_args.args[0]["response_format"]
     storage = engine.get_storage()
     assert storage.extraction_status("u", "short")["status"] == "done"
     assert storage.count_all_profiles() == 0
@@ -5071,7 +5151,7 @@ def test_two_short_messages_reach_judge_and_negative_is_covered(
         "/api/finalize_session", json={"user_id": "u", "session_id": "s"}
     ).json()["success"]
     worker.drain_org("stream-test", 1, 300)
-    judge.assert_called_once()
+    producing.assert_called_once()
 
 
 @pytest.mark.parametrize("transport", ["http", "library"])
