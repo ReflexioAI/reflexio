@@ -162,6 +162,9 @@ class AgentRunResult:
     execution_run: AgentRunRecord | None = field(default=None, repr=False)
     # Runtime-only cause of an "error" run, for chaining; never persisted.
     error: BaseException | None = field(default=None, repr=False)
+    # The run was left RESUMING to wait out a provider outage. Decided once,
+    # here: the circuit may close before the worker looks again.
+    provider_wait: bool = False
 
     @property
     def failure_label(self) -> str:
@@ -1115,6 +1118,7 @@ class ResumableExtractionAgent:
         )
         from reflexio.server.services.storage.storage_base import LeaseLostError
 
+        provider_wait = False
         claim_fence: dict[str, Any] = {
             "expected_claimed_by": run.claimed_by,
             "expected_claimed_at": run.claimed_at,
@@ -1210,6 +1214,7 @@ class ResumableExtractionAgent:
             # waits for the provider instead. (A window run is re-adopted on
             # retry whatever its status, so it takes the ordinary path below.)
             stored_run = None
+            provider_wait = True
             logger.warning(
                 "event=extraction_agent_provider_wait org_id=%s run_id=%s "
                 "error_type=%s",
@@ -1274,4 +1279,5 @@ class ResumableExtractionAgent:
             error_detail=result.error_detail,
             execution_run=stored_run,
             error=result.error,
+            provider_wait=provider_wait,
         )

@@ -116,6 +116,10 @@ class ResumeWorkerError(RuntimeError):
     """Base error for retryable resume-worker failures."""
 
 
+class ResumeProviderWaitError(ResumeWorkerError):
+    """The agent left the run RESUMING to wait out a provider outage."""
+
+
 def _next_retry_at(attempt_count: int) -> datetime:
     delay_seconds = min(300, max(1, 2 ** max(0, attempt_count - 1)))
     return datetime.now(UTC) + timedelta(seconds=delay_seconds)
@@ -780,6 +784,10 @@ class ExtractionResumeWorker:
                     last_error="ExecutionInputBusyError",
                 )
             wait = provider_wait_seconds(exc)
+            if wait is None and isinstance(exc, ResumeProviderWaitError):
+                # The agent already decided; the circuit may have closed since,
+                # in which case the provider is back and the run retries now.
+                wait = 0.0
             if wait is not None:
                 # The provider is down for everyone: refund the attempt and
                 # wait for it, so an outage never exhausts the allowance.
@@ -1163,10 +1171,10 @@ class ExtractionResumeWorker:
             structured_output_validator=structured_output_validator,
         )
 
-        if result.error is not None and provider_wait_seconds(result.error) is not None:
+        if result.provider_wait:
             # The agent left the run RESUMING; the failure handler refunds the
             # attempt and waits for the provider.
-            raise ResumeWorkerError(
+            raise ResumeProviderWaitError(
                 f"{run.binding.extractor_kind.capitalize()} resume waits for its "
                 f"provider: {result.failure_label}"
             ) from result.error

@@ -2058,6 +2058,43 @@ def test_provider_outage_refunds_resume_attempts_until_recovery(
     assert finalized.status == AgentRunStatus.FINALIZED
 
 
+def test_agent_provider_wait_is_honoured_after_the_circuit_closes(
+    storage, request_context, monkeypatch
+):
+    """The agent's wait decision stands even if the provider recovered since.
+
+    The circuit can close between the agent leaving the run RESUMING and the
+    worker handling it; recomputing would strand the claim. The run is
+    refunded and retries at once instead.
+    """
+    from reflexio.server.llm._litellm_types import LiteLLMClientError
+    from reflexio.server.services.durable_learning.worker import DurableLearningWorker
+    from reflexio.server.services.extraction.resume_worker import (
+        ResumeProviderWaitError,
+    )
+
+    _seed_interactions(storage)
+    _seed_ready_run(storage)
+    worker = DurableLearningWorker(lambda _org: request_context)
+
+    def waited(active_worker, current, _calls):
+        reserve_compute_attempt()
+        cause = LiteLLMClientError("API call failed: provider stalled")
+        cause.circuit_route = "closed-route"
+        raise ResumeProviderWaitError("resume waits for its provider") from cause
+
+    monkeypatch.setattr(ExtractionResumeWorker, "_resume_run", waited)
+    before = datetime.now(UTC)
+    worker.drain_org(storage.org_id, batch_size=6, lease_seconds=300)
+    current = storage.get_agent_run("run_1")
+    assert current is not None
+    assert current.status == AgentRunStatus.RESUME_READY
+    assert current.resume_attempts == 0
+    assert current.last_error == "provider_unavailable"
+    assert current.next_resume_at is not None
+    assert (current.next_resume_at - before).total_seconds() < 5
+
+
 def test_readiness_resume_refund_cannot_mutate_new_owner_or_refund_twice(storage):
     from reflexio.server.services.durable_learning.user_lease import (
         adopt_agent_run_for_execution,

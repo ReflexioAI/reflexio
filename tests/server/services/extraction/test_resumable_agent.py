@@ -670,6 +670,7 @@ def test_resume_turn_failing_during_an_outage_stays_resumable(
 
     assert result.finished_reason == "error"
     assert result.error is not None
+    assert result.provider_wait is outage
     stored = storage.get_agent_run(run.id)
     assert stored is not None
     if outage:
