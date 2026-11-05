@@ -35,8 +35,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
+from importlib import import_module
+from threading import RLock
 from typing import Any
 from unittest.mock import MagicMock, NonCallableMock, patch
 
@@ -293,29 +296,69 @@ def _is_e2e_test_run(config: Any) -> bool:
     return False
 
 
-# Global patcher reference kept alive across the test session.
+# One active session patch and at most one pending import notification.
 _litellm_patcher = None
+_litellm_mock_requested = False
+_litellm_hook_pending = False
+_litellm_mock_lock = RLock()
+
+
+def _reset_mock_lock() -> None:
+    global _litellm_mock_lock
+    _litellm_mock_lock = RLock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_mock_lock)
+
+
+def _activate_litellm_mock(module: Any) -> None:
+    global _litellm_patcher, _litellm_hook_pending
+    _litellm_hook_pending = False
+    # An already-present module may still be initializing on another thread.
+    # Match patch's normal import barrier before touching its attributes.
+    import_module("litellm")
+    with _litellm_mock_lock:
+        if not _litellm_mock_requested or _litellm_patcher is not None:
+            return
+        _litellm_patcher = patch.object(
+            module, "completion", side_effect=_mock_completion
+        )
+        _litellm_patcher.start()
 
 
 def configure_llm_mock(config: Any) -> None:
-    """Call from ``pytest_configure`` to patch litellm for non-e2e tests."""
-    global _litellm_patcher  # noqa: PLW0603
-
+    """Arm the non-e2e session mock before any code receives LiteLLM."""
+    global _litellm_patcher, _litellm_mock_requested, _litellm_hook_pending
     if _is_e2e_test_run(config):
         return
-
     os.environ["MOCK_LLM_RESPONSE"] = "true"
-    _litellm_patcher = patch("litellm.completion", side_effect=_mock_completion)
-    _litellm_patcher.start()
+    _litellm_mock_requested = True
+    if not getattr(getattr(config, "option", None), "collectonly", False):
+        # Executing tests retain the existing eager module-initialization context.
+        module = import_module("litellm")
+        _activate_litellm_mock(module)
+        return
+    if _litellm_hook_pending or _litellm_patcher is not None:
+        return
+    from wrapt import register_post_import_hook
+
+    _litellm_hook_pending = True
+    register_post_import_hook(_activate_litellm_mock, "litellm")
 
 
 def cleanup_llm_mock(config: Any) -> None:  # noqa: ARG001
-    """Call from ``pytest_unconfigure`` to stop the patcher."""
-    global _litellm_patcher  # noqa: PLW0603
-
-    if _litellm_patcher:
-        _litellm_patcher.stop()
-        _litellm_patcher = None
+    """Disarm a deferred mock or restore an installed one."""
+    global _litellm_patcher, _litellm_mock_requested
+    requested = _litellm_mock_requested
+    _litellm_mock_requested = False
+    if requested and not _litellm_hook_pending and "litellm" in sys.modules:
+        # A post-import callback finishes under that module's import lock.
+        import_module("litellm")
+    with _litellm_mock_lock:
+        if _litellm_patcher is not None:
+            _litellm_patcher.stop()
+            _litellm_patcher = None
 
 
 def litellm_is_patched() -> bool:
@@ -353,6 +396,8 @@ def unpatched_litellm() -> Iterator[None]:
         None: A context in which ``litellm.completion`` is the real function
             and ``MOCK_LLM_RESPONSE`` is unset.
     """
+    if _litellm_mock_requested:
+        import_module("litellm")
     patcher = _litellm_patcher
     previous_flag = os.environ.get("MOCK_LLM_RESPONSE")
 

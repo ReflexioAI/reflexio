@@ -424,6 +424,14 @@ uv run pytest -m unit                  # by marker
 uv run pytest -k "test_name"           # by name
 ```
 
+Collection-only pytest runs arm the session LiteLLM mock through wrapt's
+post-import hook, avoiding the dependency import when no collected code needs it.
+Actual test execution retains eager setup. An importing module still receives the
+mocked completion function; cleanup disarms pending activation and restores an
+active patch. `unpatched_litellm` retains its explicit live-test guard and restoration.
+The credential floor uses the canonical provider-key mapping before detecting local
+CLI providers, while retaining removed-environment validation and the no-key fallback.
+
 ### Writing Tests
 
 - Place tests in `tests/` mirroring the source structure (e.g., `tests/server/` for `reflexio/server/`)
