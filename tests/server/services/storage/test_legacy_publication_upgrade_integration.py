@@ -44,6 +44,30 @@ from reflexio.test_support.legacy_publication import restore_legacy_publication_
 pytestmark = pytest.mark.integration
 
 
+def test_fresh_schema_needs_no_additive_column_upgrades(tmp_path, monkeypatch):
+    alterations = []
+    original_connect = sqlite3.connect
+
+    def connect(*args, **kwargs):
+        conn = original_connect(*args, **kwargs)
+
+        def authorize(action, database, table, _column, _trigger):
+            if action == sqlite3.SQLITE_ALTER_TABLE:
+                alterations.append((database, table))
+            return sqlite3.SQLITE_OK
+
+        conn.set_authorizer(authorize)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    storage = SQLiteStorage(org_id="fresh_schema", db_path=str(tmp_path / "fresh.db"))
+    try:
+        assert not storage.conn.in_transaction
+        assert not alterations, f"Fresh initialization altered tables: {alterations!r}"
+    finally:
+        storage.conn.close()
+
+
 def _row(conn):
     conn.row_factory = sqlite3.Row
     return dict(conn.execute("SELECT * FROM _agent_runs").fetchone())
