@@ -35,7 +35,6 @@ import pytest
 def test_mock_import_lifecycle(mode: str, tmp_path: Path) -> None:
     env = dict(
         os.environ,
-        SENTRY_DSN="",
         PYTHON_DOTENV_DISABLED="1",
         LITELLM_MODE="PRODUCTION",
         LITELLM_LOCAL_MODEL_COST_MAP="True",
@@ -79,7 +78,7 @@ assert os.environ[name] == 'sk-placeholder-mock'
 assert 'litellm' not in sys.modules
 """,
         ],
-        env=dict(os.environ, PYTHON_DOTENV_DISABLED="1", SENTRY_DSN=""),
+        env=dict(os.environ, PYTHON_DOTENV_DISABLED="1"),
         text=True,
         capture_output=True,
         timeout=15,
