@@ -3627,7 +3627,8 @@ CREATE TABLE IF NOT EXISTS profiles (
     merged_into TEXT,
     superseded_by TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    retired_at INTEGER
+    retired_at INTEGER,
+    governance_subject_ref TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_profiles_user_id ON profiles(user_id);
 CREATE INDEX IF NOT EXISTS idx_profiles_status ON profiles(status);
@@ -3649,7 +3650,9 @@ CREATE TABLE IF NOT EXISTS interactions (
     tools_used TEXT,
     citations TEXT,
     retrieved_learnings TEXT,
-    embedding TEXT
+    embedding TEXT,
+    governance_subject_ref TEXT,
+    ingestion_seq INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_interactions_user_id ON interactions(user_id);
 CREATE INDEX IF NOT EXISTS idx_interactions_request_id ON interactions(request_id);
@@ -3667,6 +3670,8 @@ CREATE TABLE IF NOT EXISTS requests (
     evaluation_only INTEGER NOT NULL DEFAULT 0,
     retrieval_experiment_id TEXT,
     retrieval_experiment_arm TEXT,
+    governance_subject_ref TEXT,
+    learning_admission TEXT,
     CHECK (
         (retrieval_experiment_id IS NULL AND retrieval_experiment_arm IS NULL)
         OR
@@ -3737,7 +3742,8 @@ CREATE TABLE IF NOT EXISTS user_playbooks (
     reader_angle TEXT,
     merged_into INTEGER,
     superseded_by INTEGER,
-    retired_at INTEGER
+    retired_at INTEGER,
+    governance_subject_ref TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_user_playbooks_playbook_name ON user_playbooks(playbook_name);
 CREATE INDEX IF NOT EXISTS idx_user_playbooks_agent_version ON user_playbooks(agent_version);
@@ -3787,7 +3793,8 @@ CREATE TABLE IF NOT EXISTS agent_success_evaluation_result (
     -- The last request the judge saw, in (created_at, request_id) order, and
     -- how many interactions it judged. NULL on rows written before cutovers.
     trajectory_through_request_id TEXT,
-    trajectory_interaction_count INTEGER
+    trajectory_interaction_count INTEGER,
+    governance_subject_ref TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_eval_agent_version ON agent_success_evaluation_result(agent_version);
 CREATE INDEX IF NOT EXISTS idx_eval_created_at ON agent_success_evaluation_result(created_at);
@@ -3813,6 +3820,9 @@ CREATE TABLE IF NOT EXISTS retrieved_learning_evaluation (
     impact_reason TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL,
     governance_subject_ref TEXT,
+    diagnosis TEXT,
+    evaluated_playbook_digest TEXT,
+    diagnosis_evidence_complete INTEGER NOT NULL DEFAULT 0,
     UNIQUE (user_id, session_id, interaction_id, kind, learning_id)
 );
 CREATE INDEX IF NOT EXISTS idx_rle_created_at_result_id
@@ -4110,7 +4120,12 @@ CREATE TABLE IF NOT EXISTS _agent_runs (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     expires_at TEXT,
-    last_error TEXT
+    last_error TEXT,
+    progress_stage TEXT,
+    last_progress_at TEXT,
+    recovery_operation_id TEXT,
+    recovery_history TEXT NOT NULL DEFAULT '[]',
+    user_work_token TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_agent_runs_ready ON _agent_runs(status, next_resume_at, updated_at);
 CREATE INDEX IF NOT EXISTS idx_agent_runs_binding ON _agent_runs(org_id, extractor_kind, user_id);

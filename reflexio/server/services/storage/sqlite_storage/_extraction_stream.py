@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS learning_work (
  org_id TEXT NOT NULL, user_id TEXT NOT NULL, highwater INTEGER NOT NULL DEFAULT 0,
  pending_since REAL NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 0, last_turn REAL NOT NULL DEFAULT 0, due_at REAL NOT NULL DEFAULT 0,
  lease_token TEXT, lease_owner TEXT, lease_until REAL NOT NULL DEFAULT 0,
+    position_json TEXT,
  PRIMARY KEY(org_id,user_id)
 );
 CREATE INDEX IF NOT EXISTS learning_work_due ON learning_work(due_at,lease_until);

@@ -188,6 +188,13 @@ The `--reload + --workers > 1` combination is rejected at CLI parse time (autore
 
 When the storage backend is SQLite and `--workers > 1`, a warning is logged at startup — SQLite supports concurrent reads but serializes writes (even in WAL mode), so high-QPS writes hit `SQLITE_BUSY`. Switch to Postgres/Supabase for higher write throughput.
 
+Fresh SQLite databases declare the current columns directly in their creation
+DDL, avoiding additive column upgrades during initialization. Existing migration
+helpers still install indexes/triggers and upgrade older or partial database
+files. The fresh-schema regression checks real SQLite authorization events;
+legacy-schema tests continue exercising the upgrade paths.
+
+
 ### Why this matters
 
 Long-uptime processes accumulate memory regardless of source (request handlers, ORM caches, third-party libraries, fragmented allocators). Without recycling, RSS grows monotonically over days/weeks. With request-count recycling at workers≥2, one worker exits cleanly after ~max_requests served, the manager respawns it under a fresh PID, and the peer worker absorbs traffic during the ~1-2s respawn window — zero downtime.
