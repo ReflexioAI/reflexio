@@ -101,3 +101,14 @@ def test_generation_provider_rejects_an_embedding_only_provider(
         lambda: ["local"],
     )
     assert real_generation_provider() is None
+
+
+@pytest.mark.parametrize("value", ["", "0", "1"])
+def test_existing_key_still_rejects_retired_embedding_setting(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", _PLACEHOLDER_KEY)
+    monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", value)
+    with pytest.raises(ValueError, match="REFLEXIO_EMBEDDING_PROVIDER"):
+        ensure_provider_credential()

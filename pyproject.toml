@@ -86,6 +86,7 @@ dev = [
     "pytest-asyncio>=0.25.0",
     "pytest-xdist>=3.8.0",
     "pytest-timeout>=2.3.1",
+    "wrapt>=2.1.2",
     "black>=24.10.0",
     "moto>=5.0.28",
     "jupyterlab>=4.4.3",

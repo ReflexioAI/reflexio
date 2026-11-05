@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 from collections.abc import Collection
 
+from reflexio.removed_env import reject_removed_env
 from reflexio.server.llm.model_defaults import (
     GENERATION_CAPABLE_PROVIDERS,
     detect_available_providers,
@@ -39,11 +40,20 @@ def ensure_provider_credential() -> None:
     gating a live provider call must ask :func:`real_provider_key` rather than
     ``os.getenv``.
 
-    Gating on :func:`detect_available_providers` rather than a hand-copied list
-    of env var names keeps this from drifting, and correctly treats an
-    embedding-only provider (``local``) as "no generation provider" — that case
-    resolves embeddings fine but still raises for every other model role.
+    The canonical provider-key mapping avoids importing optional execution
+    adapters when a generation key already satisfies the floor. Otherwise
+    :func:`detect_available_providers` retains local CLI detection and treats
+    an embedding-only provider (``local``) as "no generation provider".
     """
+    # A generation key already satisfies the floor; detecting optional local
+    # CLIs would only import their execution adapters unnecessarily.
+    if any(
+        provider in GENERATION_CAPABLE_PROVIDERS and os.environ.get(name)
+        for name, provider in provider_env_vars().items()
+    ):
+        # Retain the validation otherwise reached by local capability detection.
+        reject_removed_env(os.environ, canonical="REFLEXIO_EMBEDDING_PROVIDER")
+        return
     if any(p in GENERATION_CAPABLE_PROVIDERS for p in detect_available_providers()):
         return
     os.environ["OPENAI_API_KEY"] = _PLACEHOLDER_KEY

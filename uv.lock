@@ -4784,6 +4784,7 @@ dev = [
     { name = "ruff" },
     { name = "syrupy" },
     { name = "twine" },
+    { name = "wrapt" },
 ]
 docs = [
     { name = "griffe" },
@@ -4874,6 +4875,7 @@ dev = [
     { name = "ruff", specifier = ">=0.15.0" },
     { name = "syrupy", specifier = ">=5.0" },
     { name = "twine", specifier = ">=6.0.0" },
+    { name = "wrapt", specifier = ">=2.1.2" },
 ]
 docs = [
     { name = "griffe", specifier = ">=0.38.0" },
