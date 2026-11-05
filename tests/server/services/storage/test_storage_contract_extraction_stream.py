@@ -199,8 +199,9 @@ def test_a_provider_wait_keeps_the_backlog_clock_through_a_sibling_success(
     user, token = storage.claim_extraction("worker", 300)
     waiting = storage.prepare_extraction(user, token)
     storage.retry_extraction(
-        waiting, token, "provider_wait:X@x.py:1", wait_seconds=3600
+        waiting, token, f"{PROVIDER_WAIT_PREFIX}X@x.py:1", wait_seconds=30
     )
+    # The wait has come due, but the window has not run again: still stuck.
     clock[0] += 60
     user, token = storage.claim_extraction("worker", 300)
     sibling = storage.prepare_extraction(user, token)

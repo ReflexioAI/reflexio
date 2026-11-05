@@ -1083,15 +1083,22 @@ class ExtractionStreamStore:
             # A completed window is progress, so restart a still-pending user's
             # backlog clock -- unless a sibling cursor is failing or waiting out
             # a provider outage (this cursor was reset above), which must keep
-            # aging and alarm. An uncharged wait has no attempts, only a due time.
+            # aging and alarm. An uncharged wait has no attempts; its marker
+            # stays until the window completes or is charged, even once due.
             db.query(
                 f"UPDATE {db.table('learning_work')} SET due_at=0,lease_until=0,lease_token=NULL,"
                 "pending_since=CASE WHEN pending_since>0 AND NOT EXISTS ("
                 f"SELECT 1 FROM {db.table('extraction_cursors')} WHERE user_id=? "
-                "AND (attempts>0 OR retry_at>?)"
+                "AND (attempts>0 OR last_error LIKE ?)"
                 ") THEN ? ELSE pending_since END "
                 "WHERE org_id=? AND user_id=?",
-                (window.user_id, completed_at, db.now(), self.org_id, window.user_id),
+                (
+                    window.user_id,
+                    f"{PROVIDER_WAIT_PREFIX}%",
+                    db.now(),
+                    self.org_id,
+                    window.user_id,
+                ),
             )
 
     def begin_extraction_attempt(self, window: Window, token: str) -> None:
