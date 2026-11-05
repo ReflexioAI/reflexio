@@ -562,6 +562,12 @@ Different users can extract concurrently within `REFLEXIO_PUBLISH_LEARNING_WORKE
 A failing window retries with backoff capped at five minutes, up to 12 attempts
 (about 18 minutes); the 12th failure parks the cursor, logs one ERROR naming the
 failure's source location, and reports `failed` with reason `retry_exhausted`.
+A model-provider outage does not count toward those attempts: while the provider
+circuit is open (it opens after five provider failures in a row), a window that
+fails with a timeout, rate limit, overload or connection error waits for the
+provider's next test call and retries without spending an attempt, however long
+the outage lasts. Only a window that fails while the provider serves other calls
+is charged.
 An operator re-arms it with
 `reflexio.server.services.extraction.input_recovery.plan_input_budget_recovery`
 then `apply_input_budget_recovery`; a re-armed window gets one more attempt.

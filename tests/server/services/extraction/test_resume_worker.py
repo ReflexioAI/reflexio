@@ -1991,6 +1991,68 @@ def test_readiness_resume_deferral_refunds_attempt_and_recovers(
     assert finalized.resume_attempts == 1
 
 
+@pytest.mark.parametrize("outage", [True, False])
+def test_provider_outage_refunds_resume_attempts_until_recovery(
+    storage, request_context, monkeypatch, outage
+):
+    """An outage never exhausts the run's allowance; its own failures still do."""
+    from reflexio.server.llm.provider_circuit import (
+        OPEN_AFTER_FAILURES,
+        provider_circuit,
+    )
+    from reflexio.server.services.durable_learning.worker import DurableLearningWorker
+
+    _seed_interactions(storage)
+    _seed_ready_run(storage)
+    worker = DurableLearningWorker(lambda _org: request_context)
+    if outage:
+        for _ in range(OPEN_AFTER_FAILURES):
+            provider_circuit.admit("test/model").failed()
+
+    def timing_out(active_worker, current, _calls):
+        reserve_compute_attempt()
+        raise TimeoutError("provider stalled")
+
+    resume = MagicMock(side_effect=timing_out)
+    monkeypatch.setattr(
+        ExtractionResumeWorker,
+        "_resume_run",
+        lambda active_worker, run, calls: resume(active_worker, run, calls),
+    )
+    limit = request_context.configurator.get_config().pending_tool_call_config
+    for _ in range(limit.max_resume_attempts + 3):
+        worker.drain_org(storage.org_id, batch_size=6, lease_seconds=300)
+        current = storage.get_agent_run("run_1")
+        assert current is not None
+        if current.status == AgentRunStatus.FAILED:
+            break
+        storage.update_agent_run_status(
+            "run_1",
+            AgentRunStatus.RESUME_READY,
+            next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
+        )
+    current = storage.get_agent_run("run_1")
+    assert current is not None
+    if not outage:
+        assert current.status == AgentRunStatus.FAILED
+        return
+    assert current.status == AgentRunStatus.RESUME_READY
+    assert current.resume_attempts == 0
+    assert current.last_error == "provider_unavailable"
+    assert resume.call_count == limit.max_resume_attempts + 3
+
+    provider_circuit.reset()
+
+    def resumed(active_worker, current, _calls):
+        return _commit_resumed_output(active_worker, current, {"profiles": []})
+
+    resume.side_effect = resumed
+    assert worker.drain_org(storage.org_id, batch_size=6, lease_seconds=300) == 1
+    finalized = storage.get_agent_run("run_1")
+    assert finalized is not None
+    assert finalized.status == AgentRunStatus.FINALIZED
+
+
 def test_readiness_resume_refund_cannot_mutate_new_owner_or_refund_twice(storage):
     from reflexio.server.services.durable_learning.user_lease import (
         adopt_agent_run_for_execution,
