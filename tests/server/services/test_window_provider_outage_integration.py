@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import pytest
 
+from reflexio.server.llm._litellm_types import LiteLLMClientError
 from reflexio.server.llm.provider_circuit import (
     OPEN_AFTER_FAILURES,
+    circuit_route,
     provider_circuit,
 )
 from reflexio.server.services.profile.service import ProfileGenerationService
@@ -36,15 +38,20 @@ from tests.server.services.test_window_retry_ceiling_integration import (
     _drain_once,
 )
 
+ROUTE = circuit_route({"model": "test/model"})
+
 
 def _provider_times_out(*_args: object) -> bool:
-    raise TimeoutError("provider request timed out")
+    # The shape the client raises: its wrapper, naming the route that failed.
+    failure = LiteLLMClientError("API call failed: provider request timed out")
+    failure.circuit_route = ROUTE
+    raise failure from TimeoutError("provider request timed out")
 
 
 def _open_breaker() -> None:
     for _ in range(OPEN_AFTER_FAILURES):
-        provider_circuit.admit("test/model").failed()
-    assert provider_circuit.outage_retry_delay() is not None
+        provider_circuit.admit(ROUTE, model="test/model").failed()
+    assert provider_circuit.outage_retry_delay(ROUTE) is not None
 
 
 def test_outage_waits_without_charging_and_completes_after_recovery(
@@ -72,7 +79,7 @@ def test_outage_waits_without_charging_and_completes_after_recovery(
     cursor = _cursor(storage)
     assert cursor["attempts"] == 0
     assert cursor["retry_at"] != float("inf")
-    assert cursor["last_error"].startswith(f"{PROVIDER_WAIT_PREFIX}TimeoutError@")
+    assert cursor["last_error"].startswith(f"{PROVIDER_WAIT_PREFIX}LiteLLMClientError@")
     assert storage.extraction_status("u", "outage")["status"] == "pending"
 
     # The provider recovers: the same window runs and completes.
@@ -105,7 +112,9 @@ def test_failure_while_the_provider_serves_others_is_charged_and_parks(
     cursor = _cursor(storage)
     assert cursor["attempts"] == MAX_EXTRACTION_WINDOW_ATTEMPTS
     assert cursor["retry_at"] == float("inf")
-    assert cursor["last_error"].startswith(f"{RETRY_EXHAUSTED_PREFIX}TimeoutError@")
+    assert cursor["last_error"].startswith(
+        f"{RETRY_EXHAUSTED_PREFIX}LiteLLMClientError@"
+    )
 
 
 @pytest.mark.parametrize("outage_first", [True, False])

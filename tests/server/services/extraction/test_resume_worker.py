@@ -1996,8 +1996,10 @@ def test_provider_outage_refunds_resume_attempts_until_recovery(
     storage, request_context, monkeypatch, outage
 ):
     """An outage never exhausts the run's allowance; its own failures still do."""
+    from reflexio.server.llm._litellm_types import LiteLLMClientError
     from reflexio.server.llm.provider_circuit import (
         OPEN_AFTER_FAILURES,
+        circuit_route,
         provider_circuit,
     )
     from reflexio.server.services.durable_learning.worker import DurableLearningWorker
@@ -2005,13 +2007,16 @@ def test_provider_outage_refunds_resume_attempts_until_recovery(
     _seed_interactions(storage)
     _seed_ready_run(storage)
     worker = DurableLearningWorker(lambda _org: request_context)
+    route = circuit_route({"model": "test/model"})
     if outage:
         for _ in range(OPEN_AFTER_FAILURES):
-            provider_circuit.admit("test/model").failed()
+            provider_circuit.admit(route, model="test/model").failed()
 
     def timing_out(active_worker, current, _calls):
         reserve_compute_attempt()
-        raise TimeoutError("provider stalled")
+        failure = LiteLLMClientError("API call failed: provider stalled")
+        failure.circuit_route = route
+        raise failure from TimeoutError("provider stalled")
 
     resume = MagicMock(side_effect=timing_out)
     monkeypatch.setattr(

@@ -53,6 +53,8 @@ class ProviderCapSaturatedError(Exception):
     ) -> None:
         super().__init__(message)
         self.first_parsed_provenance = first_parsed_provenance
+        # The provider route whose breaker this saturation counted against.
+        self.circuit_route: str | None = None
 
 
 def _parse_per_provider_cap() -> dict[str, int]:

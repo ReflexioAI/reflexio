@@ -97,6 +97,7 @@ from reflexio.server.llm.model_defaults import (
 )
 from reflexio.server.llm.provider_circuit import (
     ProviderCircuitOpenError,
+    circuit_route,
     provider_circuit,
 )
 from reflexio.server.llm.token_accounting import RunTokenTotals, run_token_capture
@@ -1858,7 +1859,9 @@ class TextGenerationMixin:
         ) -> _StructuredAttempt:
             # Refused before any slot wait or log line: an open breaker sends
             # nothing, and the walk treats the refusal as this rung's failure.
-            circuit_call = provider_circuit.admit(str(turn_params.get("model")))
+            circuit_call = provider_circuit.admit(
+                circuit_route(turn_params), model=str(turn_params.get("model"))
+            )
             request_start = time.perf_counter()
             self.logger.info(
                 "event=llm_request_start model=%s timeout=%s has_response_format=%s num_retries=0 hard_timeout=%.3f",
@@ -2050,6 +2053,7 @@ class TextGenerationMixin:
                 # same availability evidence as a failed call.
                 if isinstance(e, ProviderCapSaturatedError):
                     circuit_call.failed()
+                    e.circuit_route = circuit_call.route
                 raise
             except Exception as e:
                 transient = _is_expected_transient_llm_error(e)
@@ -2067,7 +2071,10 @@ class TextGenerationMixin:
                     type(e).__name__,
                     e,
                 )
-                raise LiteLLMClientError(f"API call failed: {e}") from e
+                failure = LiteLLMClientError(f"API call failed: {e}")
+                # Which breaker decides whether durable work is charged for it.
+                failure.circuit_route = circuit_call.route
+                raise failure from e
             finally:
                 circuit_call.close()
 

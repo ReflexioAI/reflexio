@@ -180,6 +180,9 @@ class LiteLLMClientError(Exception):
         self.first_parsed_provenance = first_parsed_provenance
         self.upstream_error_type = upstream_error_type
         self.upstream_status_code = upstream_status_code
+        # Set by the client on a provider failure: the route whose breaker
+        # decides whether durable work is charged for it.
+        self.circuit_route: str | None = None
 
 
 class StructuredOutputRepairError(LiteLLMClientError):
