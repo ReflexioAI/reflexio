@@ -13,11 +13,14 @@ import hmac
 import json
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from reflexio.models.config_schema import (
@@ -71,11 +74,28 @@ def ctx(storage, org_id, tmp_path) -> RequestContext:
     return context
 
 
+@pytest.fixture(scope="module")
+def pending_app() -> FastAPI:
+    """Keep routes static while the client binds its own organization."""
+
+    def resolve_org() -> str:
+        return app.state.pending_test_org_id
+
+    app = create_app(get_org_id=resolve_org)
+    return app
+
+
 @pytest.fixture
-def client(ctx, org_id, tmp_path) -> TestClient:
-    app = create_app(get_org_id=lambda: org_id)
-    app.dependency_overrides[get_request_context] = lambda: ctx
-    return TestClient(app, raise_server_exceptions=True, client=(tmp_path.name, 50000))
+def client(ctx, org_id, tmp_path, pending_app: FastAPI) -> Iterator[TestClient]:
+    app = pending_app
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(app.state, "pending_test_org_id", org_id, raising=False)
+        patch.setitem(app.dependency_overrides, get_request_context, lambda: ctx)
+        # Closing the client does not start a lifespan, matching these tests.
+        with closing(
+            TestClient(app, raise_server_exceptions=True, client=(tmp_path.name, 50000))
+        ) as client:
+            yield client
 
 
 def _call(

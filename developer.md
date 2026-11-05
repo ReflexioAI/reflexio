@@ -411,6 +411,12 @@ npx tsc --noEmit                # Type check
 
 ## Testing
 
+The pending-tool-call HTTP suites build static FastAPI routes once per module.
+Each case still owns its SQLite database, request context, organization binding
+and client. Fixture patches restore dependency overrides and request state even
+on failure; closing the client preserves the suites' existing no-lifespan behavior.
+Tests that exercise app construction or startup configuration need their own app.
+
 - Framework: **pytest** with `pytest-xdist` (parallel via `-n auto`)
 - Timeout: 120 seconds per test
 - Coverage minimum: 65% (branch coverage enabled)
