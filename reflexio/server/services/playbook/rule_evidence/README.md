@@ -1,7 +1,7 @@
 # Source-linked offline playbook tuning
 
 One active method: four-dimensional session-local evidence followed by a global
-audit of the complete original rule. This is the RSI global-rule-audit V7 transfer;
+audit of the complete original rule. This promotes scope-first calibration on the global-rule-audit V7 method;
 there is no competing baseline router, fallback tuner or scalar-outcome prerequisite.
 
 `run_rule_evidence(data, invoke)` receives one owned incumbent and original sessions
@@ -58,3 +58,15 @@ schema that dispatch uses. These pure builders own no model calls or resource
 capacity. A proposal preview with empty diagnostics/audits measures only its fixed
 source envelope; the normal 60,000-token proxy check still validates the complete
 request after diagnosis, and the caller must enforce native provider headroom.
+
+Scope-first calibration checks the incumbent trigger and complete clause before
+attributing a defect. Session diagnostics can retain up to six original-turn
+counterevidence references. The whole-rule tuner treats diagnostics as evidence,
+checks conditions and exceptions, and still repairs independently supported
+intrinsic contradictions. Input, four assessment dimensions, exact-edit checks,
+4096-token generation bounds and publication ownership remain unchanged.
+
+The bounded exposed DEV comparison supported five of six candidate decisions
+versus three of six baseline decisions, with no measured supported regression.
+The oversized case still had unsupported reasoning; these results do not establish
+population reliability, efficiency or future customer-agent improvement.

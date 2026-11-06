@@ -85,6 +85,8 @@ class CounterTurns(models.EvidenceModel):
     r2: int | None = None
     r3: int | None = None
     r4: int | None = None
+    r5: int | None = None
+    r6: int | None = None
 
 
 class SlotObservation(models.EvidenceModel):
@@ -215,7 +217,7 @@ def judge_schema(data: models.RuleEvidenceInput, source: models.Session) -> Any:
     contrary = create_model(
         "CounterTurns",
         __base__=CounterTurns,
-        **cast(dict[str, Any], {f"r{i}": (turn_id | None, None) for i in range(1, 5)}),
+        **cast(dict[str, Any], {f"r{i}": (turn_id | None, None) for i in range(1, 7)}),
     )
     observation = create_model(
         "SlotObservation",

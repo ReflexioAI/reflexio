@@ -594,7 +594,7 @@ def test_counter_reference_null_padding_preserves_exact_diagnosis(
     )
     assert padded == snapshot  # Normalization must not mutate retained raw evidence.
     counter_schema = schema.model_json_schema()["$defs"]["CounterTurns"]
-    assert set(counter_schema["properties"]) == {"r1", "r2", "r3", "r4"}
+    assert set(counter_schema["properties"]) == {"r1", "r2", "r3", "r4", "r5", "r6"}
     assert counter_schema["additionalProperties"] is False
 
 
@@ -602,11 +602,11 @@ def test_counter_reference_null_padding_preserves_exact_diagnosis(
 @pytest.mark.parametrize(
     "extra",
     [
-        {"r5": 3},
-        {"r6": 8},
+        {"r5": 999},
+        {"r6": 999},
         {"r5": False},
         {"r6": "3"},
-        {"r5": None, "r6": 3},
+        {"r5": None, "r6": 999},
         {"r7": None},
         {"unrecognized": None},
     ],
@@ -630,3 +630,57 @@ def test_counter_reference_padding_does_not_admit_new_evidence_or_unknown_fields
                 schema.model_validate(body)
             else:
                 schema.model_validate_json(json.dumps(body))
+
+
+@pytest.mark.parametrize("mode", ["python", "json", "native_parser"])
+def test_six_counter_references_survive_native_proposal_route(data, diagnostic, mode):
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+    from reflexio.server.services.playbook.rule_evidence.wire import resolve_diagnostic
+
+    value = data.model_dump(mode="json")
+    turns = [3, 8, 13, 21, 34, 55]
+    value["sessions"][0]["messages"] = [
+        {"turn": turn, "role": "tool", "content": "Source status: queued."}
+        for turn in turns
+    ]
+    source = RuleEvidenceInput.model_validate(value)
+    body = wire_diagnostic(diagnostic)
+    body["rule_assessment"]["counterevidence_refs"] = {
+        f"r{i}": turn for i, turn in enumerate(turns, 1)
+    }
+    snapshot = json.loads(json.dumps(body))
+    schema = judge_schema(source, source.sessions[0])
+    if mode == "python":
+        parsed = schema.model_validate(body)
+    elif mode == "json":
+        parsed = schema.model_validate_json(json.dumps(body))
+    else:
+        client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
+        parsed = client._maybe_parse_structured_output(json.dumps(body), schema, True)
+    for i in range(1, 7):
+        slot = schema.model_json_schema()["$defs"]["CounterTurns"]["properties"][
+            f"r{i}"
+        ]
+        assert slot["anyOf"][0] == {"$ref": "#/$defs/OriginalTurn"}
+    _, audit = resolve_diagnostic(parsed, source, source.sessions[0])
+    assert audit["counterevidence_refs"] == [
+        {"session_id": "s", "turn": turn} for turn in turns
+    ]
+    calls = []
+
+    def invoke(system, payload, response_schema):
+        calls.append((system, payload))
+        answer = (
+            body if issubclass(response_schema, BoundedTargetDiagnostic) else repair()
+        )
+        return response_schema.model_validate_json(json.dumps(answer))
+
+    result = run_rule_evidence(source, invoke)
+    assert len(calls) == 2
+    assert result.decision == "proposal"
+    assert (
+        result.revised_content
+        == "Send once. Report queued as queued. Keep the recipient."
+    )
+    assert calls[1][1]["original_source"] == source.model_dump(mode="json")
+    assert body == snapshot
