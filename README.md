@@ -94,7 +94,7 @@ Publish conversations from your agent, and Reflexio closes the self-improvement 
 | --- | --- |
 | [Python](https://www.python.org/) >= 3.12 | Required for PyPI and source installs |
 | [uv](https://docs.astral.sh/uv/getting-started/installation/) | Required when running from source |
-| Python's linked SQLite runtime | >= 3.35.0 (required for local SQLite storage; not the standalone `sqlite3` CLI) |
+| Python's linked SQLite runtime | >= 3.38.0 (required for local SQLite storage; not the standalone `sqlite3` CLI) |
 | [Node.js](https://nodejs.org/) >= 18 | Required only for the local docs site in a source checkout |
 
 Check the SQLite runtime linked to Python with:

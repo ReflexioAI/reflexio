@@ -234,5 +234,5 @@ def test_sqlite_versions_without_returning_and_drop_column_are_rejected(
 ) -> None:
     monkeypatch.setattr(sqlite_base.sqlite3, "sqlite_version_info", (3, 34, 1))
 
-    with pytest.raises(RuntimeError, match="SQLite 3.35.0 or newer"):
+    with pytest.raises(RuntimeError, match="SQLite 3.38.0 or newer"):
         _storage(str(tmp_path / "old-sqlite.db"))
