@@ -161,6 +161,24 @@ class CompressionBudget:
             raise CompressionError("Compression budgets must be positive")
 
 
+# Host-authored omission notices a cached selection may carry. Journal receipts
+# (``extraction.overflow_protocol``) accept exactly these shapes.
+UNSEEN_REFERENCE_OMISSION = (
+    "Host discarded {discarded} entire groups with unseen references; "
+    "source selection is incomplete."
+)
+CAPACITY_OMISSION = "Host: Selection exceeds capacity; whole points may be omitted."
+RECENT_EVIDENCE_OMISSION = (
+    "Host selected the {offered} most recent of {visible} visible passages "
+    "because the provider selection was unusable; source selection is incomplete."
+)
+_MAX_CHOICE_POINTS = 128
+
+
+def _no_recent_evidence() -> CompressionChoice:
+    raise CompressionError("Compression call has no host evidence fallback")
+
+
 @dataclass(frozen=True)
 class CompressionCall:
     key: str
@@ -168,6 +186,9 @@ class CompressionCall:
     output_tokens: int
     pack_choice: Callable[[CompressionChoice], EvidencePacket]
     visible_refs: tuple[str, ...] = ()
+    # Deterministic, provider-free selection of original visible passages,
+    # for a caller whose provider selection left nothing usable.
+    recent_evidence_choice: Callable[[], CompressionChoice] = _no_recent_evidence
 
     def validate(self, choice: CompressionChoice) -> list[str]:
         """Validate a possibly partial whole-point result without hiding errors."""
@@ -613,6 +634,42 @@ def _pack_choice(
     return result
 
 
+def _recent_evidence_choice(
+    available: Mapping[str, EvidenceSource], required_speakers: frozenset[str]
+) -> CompressionChoice:
+    """Rank every visible passage newest first as one whole point each.
+
+    No provider output is involved: the host copies original spans exactly as
+    for any selection, and ``_pack_choice`` keeps ranked points that fit,
+    recording capacity drops. The newest passage of each required speaker
+    leads, so the speaker rule is satisfied whenever any such passage fits.
+    """
+    position = {ref: index for index, ref in enumerate(available)}
+    newest_first = sorted(
+        available,
+        key=lambda ref: (available[ref].source_order, position[ref]),
+        reverse=True,
+    )
+    leading = [
+        next(ref for ref in newest_first if available[ref].speaker == speaker)
+        for speaker in sorted(required_speakers)
+        if any(source.speaker == speaker for source in available.values())
+    ]
+    ranked = [*leading, *(ref for ref in newest_first if ref not in leading)]
+    offered = ranked[:_MAX_CHOICE_POINTS]
+    return CompressionChoice(
+        points=[
+            CompressionPoint(category="selected_evidence", evidence_refs=[ref])
+            for ref in offered
+        ],
+        omissions=[
+            RECENT_EVIDENCE_OMISSION.format(
+                offered=len(offered), visible=len(available)
+            )
+        ],
+    )
+
+
 def _require_speakers(
     packet: EvidencePacket,
     available: Mapping[str, EvidenceSource],
@@ -623,7 +680,7 @@ def _require_speakers(
     Held at every selection, so it holds inductively for the final packet:
     merged products keep their children's evidence, and a speaker absent from
     a selection's input cannot be demanded of it. A violation is a validation
-    error, so the provider is asked to repair before the host gives up.
+    error; the native seam then salvages or falls back to recent evidence.
     """
     kept = {source.speaker for source in packet.evidence}
     for speaker in sorted(required_speakers - kept):
@@ -935,6 +992,7 @@ def plan_compression_input(
                         budget.output_tokens,
                         pack_choice,
                         tuple(available),
+                        lambda: _recent_evidence_choice(available, required),
                     )
                 )
                 calls += 1

@@ -322,8 +322,8 @@ metadata and labels. Preserved conversation fields have their own host-created g
 The provider schema stays closed, but host parsing projects each reference group
 onto its exact `evidence_refs` list before strict validation. Surplus generated
 fields are discarded; none become evidence, labels or omission claims. Missing,
-empty or wrongly typed lists still fail, and unseen references retain the same
-bounded repair and whole-group rejection policy. The top-level envelope remains
+empty or wrongly typed lists still fail and keep the client's bounded parse
+repair; unseen references are settled by host whole-group rejection. The top-level envelope remains
 strict. Truncated JSON is not recovered. Projection semantics are versioned in
 the plan contract: old journal roots fail closed on changed witnesses rather
 than resetting their spent attempts. This is shared by extraction and offline
@@ -366,18 +366,25 @@ copied quotations. This is a bounded partial result, not proof of semantic
 completeness: a model can still place counterevidence in a separate dropped
 point. Exact-source and downstream quality qualification remain required.
 
-After the existing bounded semantic repair, the guarded seam can discard entire
-groups containing unseen references from a complete schema-valid response.
-Every retained group is revalidated. No individual reference is guessed or
-removed from a retained group. If the final repair fails parsing, the seam may
-use the latest earlier schema-valid selection only when both observed finish
-reasons are explicitly `stop`, under the same pinned single-model ladder. The
-malformed final content is never salvaged. Missing finish metadata, truncation,
-refusal, model-route, provider-budget and integrity failures remain errors.
-Host omission notices
-and `provider_reference_recoveries` make this partial selection visible. That
-counter describes new provider work in this operation; cache hits may carry
-earlier omission notices without a new recovery.
+A schema-valid selection that breaks the selection rules (unseen references,
+capacity, required speakers) is not sent back for a corrective repair turn:
+production showed that repair rarely succeeded. The guarded seam settles it
+without another provider call. It discards entire groups containing unseen
+references and revalidates every retained group; no individual reference is
+guessed or removed from a retained group. When nothing usable remains, the host
+falls back to the most recent visible original passages that fit, one whole
+point each, led by the newest passage of each required speaker. Every path
+copies original spans only. Unparseable output keeps the client's single
+bounded parse repair; an exhausted repair, refusal, model-route,
+provider-budget and integrity failures remain errors. Host omission notices,
+`provider_reference_recoveries` and the WARNING event
+`compression_selection_salvaged reason=<unseen_refs|capacity|rejected>
+fallback=<none|recent_evidence> kept_points=N discarded_groups=N` make this
+partial selection visible. The counter describes new provider work in this
+operation; cache hits may carry earlier omission notices without a new recovery.
+Settlement semantics are bound by `_REFERENCE_CONTRACT`
+(`evidence-refs-only-v4`), so older cached selections and journal roots fail
+closed rather than mixing with these.
 
 `packet.omission_counts` carries two bounded host-owned counters through unions,
 model reductions and cache replay: `capacity_points` and
@@ -387,13 +394,10 @@ selection has no new human-readable omission notice. Actual output measurements
 include this metadata; the offline adapter also retains it in the analyst's
 non-citable compaction summary.
 
-Before accepting capacity loss, native selection validation reports how many
-whole points would be dropped and asks for tighter original passages through
-the existing bounded semantic-repair mechanism. This can remove unrelated
-neighboring logs without the server severing a point's evidence. If the complete
-repaired selection still exceeds capacity, the host may retain fitting whole
-points, recording the partial result and omission totals. All repair attempts
-consume the same guarded quota; source-integrity errors still abort.
+When a selection exceeds capacity, the host retains fitting whole points in
+the provider's ranked order, recording the partial result and omission totals,
+without severing a point's evidence. Parse repairs consume the same guarded
+quota; source-integrity errors still abort.
 Complete selections are admitted first at their true size. Space for a new
 omission notice is reserved only when the complete selection cannot fit.
 

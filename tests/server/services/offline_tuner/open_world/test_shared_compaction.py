@@ -283,7 +283,7 @@ def test_exact_logical_byte_limit_and_one_byte_over():
         encode_selection(choice)
 
 
-def test_semantic_recovery_binds_the_response_actually_consumed(monkeypatch):
+def test_salvaged_selection_binds_the_single_response_consumed(monkeypatch):
     calls = []
     original = fake_transport(calls)
 
@@ -301,7 +301,8 @@ def test_semantic_recovery_binds_the_response_actually_consumed(monkeypatch):
     storage = MemoryCheckpoints()
     journal, (_, result) = run(storage, source, trajectory)
     assert result.provider_reference_recoveries > 0
-    assert len(calls) >= 2
+    # Selection rule violations are settled by the host, never re-asked.
+    assert result.provider_attempts == len(calls) >= 1
     observed = {
         key[1]: SharedReceipt.model_validate(value).payload
         for key, value in storage.rows.items()
@@ -316,7 +317,7 @@ def test_semantic_recovery_binds_the_response_actually_consumed(monkeypatch):
     for selection in selections:
         attempt = observed[selection.attempt]  # pyright: ignore[reportAttributeAccessIssue]
         assert attempt.response.content_digest == selection.response_digest  # pyright: ignore[reportAttributeAccessIssue, reportOptionalMemberAccess]
-        assert attempt.ordinal % 2 == 0  # pyright: ignore[reportAttributeAccessIssue]
+    assert len(selections) == len(observed) == len(calls)
     assert journal.consumed_attempt in observed
 
 

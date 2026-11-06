@@ -10,13 +10,15 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from reflexio.server.llm import StructuredOutputRepairError, record_terminal_llm_failure
 from reflexio.server.llm.input_budget import check_request_input_budget
 from reflexio.server.llm.litellm_client import LiteLLMClient, ProviderRequestGuardError
 from reflexio.server.llm.token_accounting import RunTokenCapture, run_token_capture
 from reflexio.server.services.input_compression import (
+    CAPACITY_OMISSION,
+    UNSEEN_REFERENCE_OMISSION,
     CompressionBudget,
     CompressionCall,
     CompressionChoice,
@@ -34,7 +36,7 @@ from reflexio.server.services.input_compression import (
 )
 
 logger = logging.getLogger(__name__)
-_REFERENCE_CONTRACT = "evidence-refs-only-v3"
+_REFERENCE_CONTRACT = "evidence-refs-only-v4"
 
 
 class _ReferenceGroup(BaseModel):
@@ -78,34 +80,18 @@ class _ReferenceSelection(BaseModel):
         )
 
 
-def _recoverable_selection(
-    error: StructuredOutputRepairError, model: str
-) -> tuple[_ReferenceSelection, bool]:
-    # Recover only an actually complete, schema-valid selection. A malformed
-    # final repair must not erase a prior complete one; never salvage malformed
-    # groups or infer either finish reason.
-    if error.model != model:
-        raise error
-    if error.failure_kind == "semantic" and isinstance(error.raw_content, str):
-        try:
-            return _ReferenceSelection.model_validate_json(error.raw_content), False
-        except ValidationError:
-            raise error from None
-    if (
-        error.failure_kind == "parse"
-        and error.finish_reason == "stop"
-        and error.parsed_output_finish_reason == "stop"
-        and isinstance(error.parsed_output, _ReferenceSelection)
-    ):
-        return error.parsed_output, True
-    raise error
-
-
-def _recover_selection(
-    call: CompressionCall, error: StructuredOutputRepairError, model: str
+def _salvage_selection(
+    call: CompressionCall, candidate: _ReferenceSelection
 ) -> tuple[CompressionChoice, int]:
-    """Salvage a rejected selection, or re-raise ``error`` when it cannot be."""
-    candidate, recovered_prior = _recoverable_selection(error, model)
+    """Accept a rule-violating selection without asking the provider again.
+
+    Production showed the corrective repair turn rarely fixed these replies, so
+    the host settles them: drop whole groups citing unseen IDs, let whole-point
+    packing record capacity loss, and when nothing usable remains, fall back to
+    the most recent visible original passages. Every path copies original
+    spans only and records its omissions. Integrity and capacity errors that
+    no selection can satisfy still raise from ``pack_choice``.
+    """
     visible = set(call.visible_refs)
     retained = [
         point
@@ -114,39 +100,40 @@ def _recover_selection(
     ]
     discarded = len(candidate.points) - len(retained)
     choice = _ReferenceSelection(points=retained).choice()
-    capacity_loss = bool(call.validate_selection(choice))
-    if not discarded and not capacity_loss:
-        raise error
-    choice.omissions = (
-        [
-            f"Host discarded {discarded} entire groups with unseen references after bounded repair; source selection is incomplete."
-        ]
-        if discarded
-        else [
-            "Host: Selection still exceeds capacity after bounded repair; whole points may be omitted."
-        ]
+    over_capacity = not call.validate(choice) and bool(call.validate_selection(choice))
+    reason = "unseen_refs" if discarded else "capacity" if over_capacity else "rejected"
+    usable = (
+        bool(retained)
+        and not call.validate(choice)
+        and bool(call.pack_choice(choice).points)
     )
-    if recovered_prior:
-        choice.omissions.insert(
-            0,
-            "Host used the earlier complete schema-valid selection after the final repair failed parsing; source selection is incomplete.",
-        )
+    if usable:
+        fallback = "none"
+        choice.omissions = [
+            UNSEEN_REFERENCE_OMISSION.format(discarded=discarded)
+            if discarded
+            else CAPACITY_OMISSION
+        ]
+    else:
+        fallback = "recent_evidence"
+        choice = call.recent_evidence_choice()
+        if discarded:
+            choice.omissions.insert(
+                0, UNSEEN_REFERENCE_OMISSION.format(discarded=discarded)
+            )
     choice.omission_counts = OmissionCounts(unseen_reference_groups=discarded)
-    if call.validate(choice):
-        raise error
     kept_points = len(call.pack_choice(choice).points)
     if not kept_points:
-        # Accepted as before, but nothing of this section's evidence survives,
-        # so the reply's work is lost: it counts as a terminal failure.
+        # Accepted, but nothing of this section's evidence survives, so the
+        # reply's work is lost: it counts as a terminal failure.
         record_terminal_llm_failure()
-    logger.info(
-        "event=compression_selection_recovered failure_kind=%s kept_points=%d "
-        "discarded_groups=%d capacity_loss=%s recovered_prior=%s",
-        error.failure_kind,
+    logger.warning(
+        "event=compression_selection_salvaged reason=%s fallback=%s "
+        "kept_points=%d discarded_groups=%d",
+        reason,
+        fallback,
         kept_points,
         discarded,
-        capacity_loss,
-        recovered_prior,
     )
     return choice, discarded
 
@@ -185,7 +172,9 @@ class ClientCompressionPlan:
     """Transient native preparation; persist its witness, never private sources.
 
     The native witness adds actual generation policy and capacity declarations
-    to the core witness. Existing v6 selection cache identities remain exact.
+    to the core witness. ``_REFERENCE_CONTRACT`` binds selection-settlement
+    semantics into both, so a change there retires older cache entries and
+    journal roots instead of mixing with them.
     Callers must still own source authorization and durable dispatch accounting.
     """
 
@@ -393,9 +382,11 @@ def plan_with_client(
             nonlocal reference_recoveries
 
             def validate(value: BaseModel) -> list[str]:
+                # Parse failures keep the client's bounded repair. Selection
+                # rule violations do not: the host salvages them below.
                 if not isinstance(value, _ReferenceSelection):
                     return ["Expected structured compression selections"]
-                return call.validate_selection(value.choice())
+                return []
 
             try:
                 result = client.generate_chat_response(
@@ -405,18 +396,22 @@ def plan_with_client(
                     structured_output_validator=validate,
                     caller_reports_repair_failure=True,
                 )
-            except StructuredOutputRepairError as error:
-                try:
-                    choice, discarded = _recover_selection(call, error, model)
-                except StructuredOutputRepairError:
-                    # Terminal only now: the client left this count to us.
-                    record_terminal_llm_failure()
-                    raise
-                reference_recoveries += bool(discarded)
-                return choice
+            except StructuredOutputRepairError:
+                # Terminal only now: the client left this count to us.
+                record_terminal_llm_failure()
+                raise
             if not isinstance(result, _ReferenceSelection):
                 raise CompressionError("Provider returned no structured compression")
-            return result.choice()
+            choice = result.choice()
+            if not call.validate_selection(choice):
+                return choice
+            try:
+                choice, discarded = _salvage_selection(call, result)
+            except CompressionError:
+                record_terminal_llm_failure()
+                raise
+            reference_recoveries += bool(discarded)
+            return choice
 
         capture = CompressionUsageCapture(run_token_capture.get())
         token = run_token_capture.set(capture)
