@@ -169,7 +169,7 @@ UNSEEN_REFERENCE_OMISSION = (
 )
 CAPACITY_OMISSION = "Host: Selection exceeds capacity; whole points may be omitted."
 RECENT_EVIDENCE_OMISSION = (
-    "Host selected the {offered} most recent of {visible} visible passages "
+    "Host offered {offered} of {visible} visible passages, newest first, "
     "because the provider selection was unusable; source selection is incomplete."
 )
 _MAX_CHOICE_POINTS = 128
@@ -635,7 +635,9 @@ def _pack_choice(
             omitted += 1
     result = packet_for(retained, omitted)
     if not admissible(result):
-        raise CompressionError("Compression summary alone exceeds reduction capacity")
+        raise _RenderedCapacityError(
+            "Compression summary alone exceeds reduction capacity"
+        )
     return result
 
 
@@ -657,14 +659,15 @@ def _recent_evidence_choice(
     omissions: Sequence[str],
     omission_counts: OmissionCounts,
 ) -> CompressionChoice:
-    """Rank every visible passage newest first as one whole point each.
+    """Rank visible passages that fit newest first, one whole point each.
 
     No provider output is involved: the host copies original spans exactly as
     for any selection, and ``pack`` (whole-point packing without the speaker
-    rule) keeps ranked points that fit, recording capacity drops. For each
-    required speaker, the newest of its passages that survives that same
-    packing pass leads, so the speaker rule holds whenever any of its passages
-    can fit; the remaining passages follow newest first.
+    rule) keeps ranked points that fit, recording capacity drops. Only passages
+    that fit on their own are offered, so the point limit never hides an older
+    fitting passage behind newer ones that cannot fit. For each required
+    speaker, the newest of its passages that survives the same packing pass
+    leads, so the speaker rule holds whenever any of its passages can fit.
     """
     position = {ref: index for index, ref in enumerate(available)}
     newest_first = sorted(
@@ -672,39 +675,55 @@ def _recent_evidence_choice(
         key=lambda ref: (available[ref].source_order, position[ref]),
         reverse=True,
     )
-    notes = [
-        *omissions,
-        RECENT_EVIDENCE_OMISSION.format(
-            offered=min(len(available), _MAX_CHOICE_POINTS), visible=len(available)
-        ),
-    ]
 
-    def ranked(leading: list[str]) -> CompressionChoice:
-        refs = [*leading, *(ref for ref in newest_first if ref not in leading)]
+    def choice_of(refs: Sequence[str], offered: int) -> CompressionChoice:
         return CompressionChoice(
             points=[
                 CompressionPoint(category="selected_evidence", evidence_refs=[ref])
-                for ref in refs[:_MAX_CHOICE_POINTS]
+                for ref in refs
             ],
-            omissions=notes,
+            omissions=[
+                *omissions,
+                RECENT_EVIDENCE_OMISSION.format(
+                    offered=offered, visible=len(available)
+                ),
+            ],
             omission_counts=omission_counts,
         )
 
-    def survives(leading: list[str]) -> bool:
+    def kept(choice: CompressionChoice) -> set[str]:
+        # Only measured capacity means "does not fit"; integrity and other
+        # source errors from the caller's renderer must still abort.
         try:
-            packet = pack(ranked(leading))
-        except CompressionError:
-            return False
-        kept = {ref for point in packet.points for ref in point.evidence_refs}
-        return all(available[ref].source_id in kept for ref in leading)
+            packet = pack(choice)
+        except _RenderedCapacityError:
+            return set()
+        return {ref for point in packet.points for ref in point.evidence_refs}
+
+    # The widest notice this call can carry, so a passage that fits here
+    # still fits beside the final (never longer) notice.
+    widest = min(len(available), _MAX_CHOICE_POINTS)
+    pool = [
+        ref
+        for ref in newest_first
+        if available[ref].source_id in kept(choice_of([ref], widest))
+    ]
+
+    def ranked(leading: list[str]) -> list[str]:
+        refs = [*leading, *(ref for ref in pool if ref not in leading)]
+        return refs[:_MAX_CHOICE_POINTS]
 
     leading: list[str] = []
     for speaker in sorted(required_speakers):
-        for ref in newest_first:
-            if available[ref].speaker == speaker and survives([*leading, ref]):
+        for ref in pool:
+            if available[ref].speaker != speaker:
+                continue
+            survivors = kept(choice_of(ranked([*leading, ref]), widest))
+            if all(available[item].source_id in survivors for item in [*leading, ref]):
                 leading.append(ref)
                 break
-    return ranked(leading)
+    refs = ranked(leading)
+    return choice_of(refs, len(refs))
 
 
 def _require_speakers(

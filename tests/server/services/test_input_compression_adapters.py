@@ -673,8 +673,9 @@ def test_selection_with_only_unseen_refs_falls_back_to_recent_original_evidence(
     assert result.packet.omission_counts.capacity_points > 0
     assert any(
         re.fullmatch(
-            r"Host selected the (\d+) most recent of \1 visible passages because "
-            r"the provider selection was unusable; source selection is incomplete\.",
+            r"Host offered [1-9]\d* of [1-9]\d* visible passages, newest first, "
+            r"because the provider selection was unusable; source selection is "
+            r"incomplete\.",
             note,
         )
         for note in result.packet.omissions
@@ -1502,3 +1503,44 @@ def test_fallback_keeps_an_older_required_speaker_passage_that_fits(caplog):
     assert _salvage_events(caplog)[0].startswith(
         "event=compression_selection_salvaged reason=rejected fallback=recent_evidence"
     )
+
+
+def test_fallback_point_limit_never_hides_an_older_fitting_passage():
+    from reflexio.server.services.input_compression import (
+        CompressionChoice,
+        CompressionPoint,
+        OmissionCounts,
+        _pack_choice,
+        _recent_evidence_choice,
+    )
+
+    def source(order, text):
+        return EvidenceSource(
+            source_id=f"s{order}",
+            request_id="r",
+            interaction_id=order + 1,
+            field="content",
+            speaker="User",
+            source_order=order,
+            text=text,
+        )
+
+    available = {
+        f"e{order + 1}": source(order, "fits" if order == 0 else "too large " * 400)
+        for order in range(129)
+    }
+
+    def measure(packet):
+        return len(packet.render())
+
+    oldest = CompressionChoice(
+        points=[CompressionPoint(category="selected_evidence", evidence_refs=["e1"])],
+        omissions=["x" * 200],
+    )
+    budget = measure(_pack_choice(oldest, available, 10**9, measure, lambda _p: True))
+
+    def pack(choice):
+        return _pack_choice(choice, available, budget, measure, lambda _p: True)
+
+    choice = _recent_evidence_choice(available, frozenset(), pack, [], OmissionCounts())
+    assert [item.source_id for item in pack(choice).evidence] == ["s0"]
