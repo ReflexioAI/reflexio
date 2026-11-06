@@ -161,6 +161,26 @@ class CompressionBudget:
             raise CompressionError("Compression budgets must be positive")
 
 
+# Host-authored omission notices a cached selection may carry. Journal receipts
+# (``extraction.overflow_protocol``) accept exactly these shapes.
+UNSEEN_REFERENCE_OMISSION = (
+    "Host discarded {discarded} entire groups with unseen references; "
+    "source selection is incomplete."
+)
+CAPACITY_OMISSION = "Host: Selection exceeds capacity; whole points may be omitted."
+RECENT_EVIDENCE_OMISSION = (
+    "Host offered {offered} of {visible} visible passages, newest first, "
+    "because the provider selection was unusable; source selection is incomplete."
+)
+_MAX_CHOICE_POINTS = 128
+
+
+def _no_recent_evidence(
+    _omissions: Sequence[str], _omission_counts: OmissionCounts
+) -> CompressionChoice:
+    raise CompressionError("Compression call has no host evidence fallback")
+
+
 @dataclass(frozen=True)
 class CompressionCall:
     key: str
@@ -168,6 +188,12 @@ class CompressionCall:
     output_tokens: int
     pack_choice: Callable[[CompressionChoice], EvidencePacket]
     visible_refs: tuple[str, ...] = ()
+    # Deterministic, provider-free selection of original visible passages,
+    # for a caller whose provider selection left nothing usable. The caller's
+    # own host notices and counts are part of the choice it sizes.
+    recent_evidence_choice: Callable[
+        [Sequence[str], OmissionCounts], CompressionChoice
+    ] = _no_recent_evidence
 
     def validate(self, choice: CompressionChoice) -> list[str]:
         """Validate a possibly partial whole-point result without hiding errors."""
@@ -613,6 +639,113 @@ def _pack_choice(
     return result
 
 
+def _with_prior_omissions(
+    choice: CompressionChoice, packets: Sequence[EvidencePacket]
+) -> CompressionChoice:
+    # Cache only this selection's LOCAL counts. Reconstruct inherited counts
+    # from its children on every read, never add them twice.
+    counts = choice.omission_counts
+    for packet in packets:
+        counts = counts.plus(packet.omission_counts)
+    return choice.model_copy(update={"omission_counts": counts})
+
+
+def _fits_whole(
+    choice: CompressionChoice,
+    available: Mapping[str, EvidenceSource],
+    output_tokens: int,
+    measure_output: Callable[[EvidencePacket], int],
+    admissible: Callable[[EvidencePacket], bool],
+) -> bool:
+    """Whether every point fits as-is: ``_pack_choice``'s complete branch."""
+    try:
+        packet = _materialize(choice, available, output_tokens, measure_output)
+    except _RenderedCapacityError:
+        # Only measured capacity is a miss; integrity errors still abort.
+        return False
+    return admissible(packet)
+
+
+def _recent_evidence_choice(
+    available: Mapping[str, EvidenceSource],
+    required_speakers: frozenset[str],
+    fits: Callable[[CompressionChoice], bool],
+    cost: Callable[[EvidenceSource], int],
+    omissions: Sequence[str],
+    omission_counts: OmissionCounts,
+) -> CompressionChoice:
+    """Select visible passages newest first, one whole point each, that fit.
+
+    No provider output is involved: the host copies original spans exactly as
+    for any selection. The selection is grown one passage at a time and each
+    step is sized as a whole (``fits``), with the caller's notices and counts,
+    so the returned choice packs completely and nothing ranked is dropped
+    later. Required speakers are admitted first, as one set.
+    """
+    position = {ref: index for index, ref in enumerate(available)}
+    newest_first = sorted(
+        available,
+        key=lambda ref: (available[ref].source_order, position[ref]),
+        reverse=True,
+    )
+    # Size every step with the widest notice this call can carry; the final
+    # notice is never longer, so a fitting selection still fits.
+    widest = min(len(available), _MAX_CHOICE_POINTS)
+
+    def choice_of(refs: Sequence[str], offered: int) -> CompressionChoice:
+        return CompressionChoice(
+            points=[
+                CompressionPoint(category="selected_evidence", evidence_refs=[ref])
+                for ref in refs
+            ],
+            omissions=[
+                *omissions,
+                RECENT_EVIDENCE_OMISSION.format(
+                    offered=offered, visible=len(available)
+                ),
+            ],
+            omission_counts=omission_counts,
+        )
+
+    selected: list[str] = []
+
+    def admit(candidates: Sequence[str]) -> bool:
+        for ref in candidates:
+            if len(selected) >= _MAX_CHOICE_POINTS:
+                return False
+            if ref not in selected and fits(choice_of([*selected, ref], widest)):
+                selected.append(ref)
+                return True
+        return False
+
+    # Required speakers are admitted as one set, so an earlier speaker's pick
+    # cannot crowd out a later one: their newest passages if those fit
+    # together, else their cheapest by rendered ``cost`` (newest on ties). Only if neither set fits
+    # is each admitted best-effort; the speaker rule then decides.
+    rank = {ref: index for index, ref in enumerate(newest_first)}
+    by_speaker = [
+        [ref for ref in newest_first if available[ref].speaker == speaker]
+        for speaker in sorted(required_speakers)
+    ]
+    by_speaker = [refs for refs in by_speaker if refs]
+    for lead in (
+        [refs[0] for refs in by_speaker],
+        [
+            min(refs, key=lambda ref: (cost(available[ref]), rank[ref]))
+            for refs in by_speaker
+        ],
+    ):
+        if fits(choice_of(lead, widest)):
+            selected.extend(lead)
+            break
+    else:
+        for refs in by_speaker:
+            admit(refs)
+    for ref in newest_first:
+        admit([ref])
+    return choice_of(selected, len(selected))
+
+
 def _require_speakers(
     packet: EvidencePacket,
     available: Mapping[str, EvidenceSource],
@@ -623,7 +756,7 @@ def _require_speakers(
     Held at every selection, so it holds inductively for the final packet:
     merged products keep their children's evidence, and a speaker absent from
     a selection's input cannot be demanded of it. A violation is a validation
-    error, so the provider is asked to repair before the host gives up.
+    error; the native seam then salvages or falls back to recent evidence.
     """
     kept = {source.speaker for source in packet.evidence}
     for speaker in sorted(required_speakers - kept):
@@ -902,21 +1035,16 @@ def plan_compression_input(
             )
             inspect_node(CompressionNodeInput(key, input_refs_digest))
 
-            def with_prior_omissions(choice: CompressionChoice) -> CompressionChoice:
-                # Cache only this selection's LOCAL counts. Reconstruct inherited
-                # counts from its children on every read, never add them twice.
-                counts = choice.omission_counts
-                for packet in packets:
-                    counts = counts.plus(packet.omission_counts)
-                return choice.model_copy(update={"omission_counts": counts})
+            def admissible(packet: EvidencePacket) -> bool:
+                return final or parent_cost(packet) <= intermediate_limit
 
             def pack_choice(choice: CompressionChoice) -> EvidencePacket:
                 packet = _pack_choice(
-                    with_prior_omissions(choice),
+                    _with_prior_omissions(choice, packets),
                     available,
                     budget.output_tokens,
                     measure_output,
-                    lambda packet: final or parent_cost(packet) <= intermediate_limit,
+                    admissible,
                 )
                 _require_speakers(packet, available, required)
                 return packet
@@ -935,6 +1063,22 @@ def plan_compression_input(
                         budget.output_tokens,
                         pack_choice,
                         tuple(available),
+                        lambda omissions, counts: _recent_evidence_choice(
+                            available,
+                            required,
+                            lambda choice: _fits_whole(
+                                _with_prior_omissions(choice, packets),
+                                available,
+                                budget.output_tokens,
+                                measure_output,
+                                admissible,
+                            ),
+                            lambda source: measure_output(
+                                EvidencePacket(evidence=[source])
+                            ),
+                            omissions,
+                            counts,
+                        ),
                     )
                 )
                 calls += 1

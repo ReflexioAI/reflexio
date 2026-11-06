@@ -13,13 +13,43 @@ import re
 from collections import Counter
 from typing import Any
 
+from reflexio.server.services.input_compression import (
+    CAPACITY_OMISSION,
+    RECENT_EVIDENCE_OMISSION,
+    UNSEEN_REFERENCE_OMISSION,
+)
+
 STAGES = ("compress", "gate", "profile_agent", "profile_dedup", "playbook_intent")
 MAX_SELECTION_BYTES = 64 * 1024
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
-_HOST_OMISSION = re.compile(
-    r"Host discarded [1-9][0-9]* entire groups with unseen references after bounded repair; source selection is incomplete\.\Z"
+
+
+def _notice_pattern(
+    template: str, *, may_be_zero: frozenset[str] = frozenset()
+) -> re.Pattern[str]:
+    """Match one host notice template; each ``{name}`` field is a count.
+
+    Counts are positive unless named in ``may_be_zero``.
+    """
+    parts = re.split(r"\{(\w+)\}", template)
+    pattern = "".join(
+        re.escape(part)
+        if index % 2 == 0
+        else r"(?:0|[1-9][0-9]*)"
+        if part in may_be_zero
+        else r"[1-9][0-9]*"
+        for index, part in enumerate(parts)
+    )
+    return re.compile(pattern + r"\Z")
+
+
+# The exact host notices the native seam may cache; nothing provider-authored.
+_HOST_OMISSIONS = (
+    _notice_pattern(UNSEEN_REFERENCE_OMISSION),
+    # Nothing may fit; that empty result is accepted and counted as terminal.
+    _notice_pattern(RECENT_EVIDENCE_OMISSION, may_be_zero=frozenset({"offered"})),
+    _notice_pattern(CAPACITY_OMISSION),
 )
-_CAPACITY_OMISSION = "Host: Selection still exceeds capacity after bounded repair; whole points may be omitted."
 
 
 def _require(condition: bool, message: str) -> None:
@@ -263,10 +293,7 @@ def validate_selection_receipt(
         and all(
             isinstance(value, str)
             and len(value) <= 512
-            and (
-                value == _CAPACITY_OMISSION
-                or _HOST_OMISSION.fullmatch(value) is not None
-            )
+            and (any(pattern.fullmatch(value) for pattern in _HOST_OMISSIONS))
             for value in omissions
         ),
         "Invalid host source omission diagnostics",

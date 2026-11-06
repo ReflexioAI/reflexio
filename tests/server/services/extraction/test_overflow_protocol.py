@@ -22,6 +22,11 @@ from reflexio.server.services.durable_learning.user_lease import (
 )
 from reflexio.server.services.extraction.overflow_coordinator import OverflowCoordinator
 from reflexio.server.services.extraction.overflow_protocol import package_stage_caps
+from reflexio.server.services.input_compression import (
+    CAPACITY_OMISSION,
+    RECENT_EVIDENCE_OMISSION,
+    UNSEEN_REFERENCE_OMISSION,
+)
 from reflexio.server.services.profile.profile_generation_service_utils import (
     StructuredProfilesOutput,
 )
@@ -97,7 +102,7 @@ def selection(manifest, *, ids=None):
             ],
             "omission_counts": {"capacity_points": 3, "unseen_reference_groups": 2},
             "omissions": [
-                "Host discarded 2 entire groups with unseen references after bounded repair; source selection is incomplete."
+                "Host discarded 2 entire groups with unseen references; source selection is incomplete."
             ],
         },
     }
@@ -157,6 +162,37 @@ def test_selection_cache_retains_exact_host_omission_metadata_without_author_pro
     assert validate_extraction_overflow_manifest(manifest) is manifest
     assert json.dumps(manifest, sort_keys=True) == before
     assert "model_provenance" not in receipt
+
+
+@pytest.mark.parametrize(
+    ("notice", "accepted"),
+    [
+        (UNSEEN_REFERENCE_OMISSION.format(discarded=3), True),
+        (CAPACITY_OMISSION, True),
+        (RECENT_EVIDENCE_OMISSION.format(offered=5, visible=9), True),
+        (RECENT_EVIDENCE_OMISSION.format(offered=0, visible=9), True),
+        (RECENT_EVIDENCE_OMISSION.format(offered=5, visible=0), False),
+        (UNSEEN_REFERENCE_OMISSION.format(discarded=0), False),
+        (RECENT_EVIDENCE_OMISSION.format(offered="5 x", visible=9), False),
+        (CAPACITY_OMISSION + " Provider says done.", False),
+        (
+            "Host discarded 2 entire groups with unseen references after bounded "
+            "repair; source selection is incomplete.",
+            False,
+        ),
+    ],
+)
+def test_selection_receipt_accepts_exactly_the_seam_host_notices(notice, accepted):
+    manifest = OverflowCoordinator.initial_package_manifest(DIGEST, protocol())
+    manifest["attempts"] = [attempt("paid")]
+    receipt = selection(manifest)
+    receipt["output"]["omissions"] = [notice]
+    manifest["checkpoint"]["completed_steps"][NODE] = receipt
+    if accepted:
+        assert validate_extraction_overflow_manifest(manifest) is manifest
+    else:
+        with pytest.raises(OverflowCheckpointConflictError):
+            validate_extraction_overflow_manifest(manifest)
 
 
 @pytest.mark.parametrize(

@@ -1,6 +1,7 @@
 """Scoped window preparation and real model-wrapper dispatch contracts."""
 
 import json
+import re
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
@@ -15,7 +16,9 @@ from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.token_accounting import RunTokenCapture, run_token_capture
 from reflexio.server.services.extraction.compression import compress_extraction_window
 from reflexio.server.services.input_compression import (
+    CAPACITY_OMISSION,
     CompressionBudget,
+    EvidencePacket,
     EvidenceSource,
 )
 from reflexio.server.services.input_compression_llm import (
@@ -425,17 +428,16 @@ def test_real_litellm_repair_dispatch_preserves_guards_and_parent_accounting(
             and "input_packets" in json.JSONDecoder().raw_decode(message["content"])[0]
         )
         ref = body["input_packets"][0]["evidence"][0]["source_id"]
-        choice = {
-            "points": [
-                {
-                    "evidence_refs": ["unseen" if len(requests) == 1 else ref],
-                }
-            ],
-        }
+        # Parse failures keep the client's bounded repair turn.
+        content = (
+            "{"
+            if len(requests) == 1
+            else json.dumps({"points": [{"evidence_refs": [ref]}]})
+        )
         return litellm.ModelResponse(
             choices=[
                 {
-                    "message": {"role": "assistant", "content": json.dumps(choice)},
+                    "message": {"role": "assistant", "content": content},
                     "finish_reason": "stop",
                 }
             ],
@@ -460,10 +462,8 @@ def test_real_litellm_repair_dispatch_preserves_guards_and_parent_accounting(
     assert all(request["model"] == live_client.config.model for request in requests)
 
 
-@pytest.mark.parametrize("repair_fits", [True, False])
-def test_capacity_feedback_repairs_or_keeps_explicit_whole_point_partial_result(
-    monkeypatch, repair_fits
-):
+def _live_client(monkeypatch, reply):
+    """A real LiteLLMClient whose transport answers ``reply(body, requests)``."""
     import litellm
 
     from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
@@ -481,17 +481,12 @@ def test_capacity_feedback_repairs_or_keeps_explicit_whole_point_partial_result(
             if isinstance(message.get("content"), str)
             and message["content"].startswith('{"allowed_evidence_refs"')
         )
-        refs = body["allowed_evidence_refs"]
-        if repair_fits and len(requests) == 2:
-            refs = refs[:1]
         return litellm.ModelResponse(
             choices=[
                 {
                     "message": {
                         "role": "assistant",
-                        "content": json.dumps(
-                            {"points": [{"evidence_refs": [ref]} for ref in refs]}
-                        ),
+                        "content": json.dumps(reply(body, requests)),
                     },
                     "finish_reason": "stop",
                 }
@@ -502,6 +497,35 @@ def test_capacity_feedback_repairs_or_keeps_explicit_whole_point_partial_result(
     monkeypatch.setattr(live_client, "_completion_with_hard_timeout", transport)
     monkeypatch.setattr(
         "reflexio.server.llm.input_budget.litellm.token_counter", Mock(return_value=100)
+    )
+    sink = Mock()
+    monkeypatch.setattr("reflexio.server.operational_metrics._sink", sink)
+    return live_client, requests, sink
+
+
+def _failures(sink) -> int:
+    return len([c for c in sink.record.call_args_list if c.args[0] == "llm.failures"])
+
+
+def _salvage_events(caplog) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelname == "WARNING"
+        and r.getMessage().startswith("event=compression_selection_salvaged")
+    ]
+
+
+def test_capacity_violation_keeps_explicit_whole_point_partial_result_without_repair(
+    monkeypatch, caplog
+):
+    live_client, requests, sink = _live_client(
+        monkeypatch,
+        lambda body, _requests: {
+            "points": [
+                {"evidence_refs": [ref]} for ref in body["allowed_evidence_refs"]
+            ]
+        },
     )
     sources = [
         EvidenceSource(
@@ -524,57 +548,35 @@ def test_capacity_feedback_repairs_or_keeps_explicit_whole_point_partial_result(
         context_limits={live_client.config.model: 512000},
     )
     assert result.sections == 1
-    assert len(requests) == result.provider_attempts == 2
+    assert len(requests) == result.provider_attempts == 1
     assert result.provider_reference_recoveries == 0
     assert result.packet.points and result.output_tokens <= 1024
-    assert bool(result.packet.omission_counts.capacity_points) is not repair_fits
-    assert result.provider_input_tokens == 200 and result.provider_output_tokens == 40
+    assert result.packet.omission_counts.capacity_points > 0
+    assert CAPACITY_OMISSION in result.packet.omissions
+    assert result.provider_input_tokens == 100 and result.provider_output_tokens == 20
+    assert _salvage_events(caplog) == [
+        "event=compression_selection_salvaged reason=capacity fallback=none "
+        f"kept_points={len(result.packet.points)} discarded_groups=0"
+    ]
+    assert not _failures(sink)
 
 
-def test_capacity_repair_preserves_all_constraints_without_neighboring_routine_logs(
-    monkeypatch,
-):
-    import litellm
-
-    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-
-    live_client = LiteLLMClient(
-        LiteLLMConfig(model="minimax/MiniMax-M3", max_tokens=8192, fallback_models=[])
-    )
-    requests = []
-
-    def transport(params, _hard_timeout):
-        requests.append(params)
-        body = next(
-            json.loads(message["content"])
-            for message in params["messages"]
-            if isinstance(message.get("content"), str)
-            and message["content"].startswith('{"allowed_evidence_refs"')
-        )
+def test_capacity_violation_never_severs_a_group_without_repair(monkeypatch):
+    def reply(body, _requests):
         records = body["input_packets"][0]["evidence"]
-        groups = []
-        for index in range(0, len(records), 2):
-            refs = [records[index]["source_id"]]
-            if len(requests) == 1:
-                refs.append(records[index + 1]["source_id"])
-            groups.append({"evidence_refs": refs})
-        return litellm.ModelResponse(
-            choices=[
+        return {
+            "points": [
                 {
-                    "message": {
-                        "role": "assistant",
-                        "content": json.dumps({"points": groups}),
-                    },
-                    "finish_reason": "stop",
+                    "evidence_refs": [
+                        records[index]["source_id"],
+                        records[index + 1]["source_id"],
+                    ]
                 }
-            ],
-            usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
-        )
+                for index in range(0, len(records), 2)
+            ]
+        }
 
-    monkeypatch.setattr(live_client, "_completion_with_hard_timeout", transport)
-    monkeypatch.setattr(
-        "reflexio.server.llm.input_budget.litellm.token_counter", Mock(return_value=100)
-    )
+    live_client, requests, _sink = _live_client(monkeypatch, reply)
     sources = []
     for index in range(1, 11):
         for field, text in (
@@ -604,48 +606,188 @@ def test_capacity_repair_preserves_all_constraints_without_neighboring_routine_l
         context_limits={live_client.config.model: 512000},
     )
     assert result.sections == result.calls == 1
-    assert result.provider_attempts == len(requests) == 2
-    assert result.packet.omission_counts.capacity_points == 0
-    assert len(result.packet.evidence) == 10
-    assert [source.text for source in result.packet.evidence] == [
-        source.text for source in sources if source.field == "content"
-    ]
+    assert result.provider_attempts == len(requests) == 1
+    assert result.packet.omission_counts.capacity_points > 0
+    assert result.packet.points
+    # Whole points only: every kept constraint keeps its paired passage.
+    assert all(len(point.evidence_refs) == 2 for point in result.packet.points)
+    assert len(result.packet.evidence) == 2 * len(result.packet.points)
+    originals = {source.source_id: source.text for source in sources}
+    assert all(
+        item.text in originals[item.source_id.rsplit(":", 2)[0]]
+        for item in result.packet.evidence
+    )
     assert result.output_tokens <= 4096
 
 
-def test_recovery_that_keeps_no_evidence_counts_as_a_failure(monkeypatch):
-    """Salvage that discards every group is still accepted, but no evidence of
-    the section survives, so it is a terminal failure for the alert."""
-    import litellm
-
-    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-
-    live_client = LiteLLMClient(
-        LiteLLMConfig(model="minimax/MiniMax-M3", max_tokens=8192, fallback_models=[])
+def test_selection_with_only_unseen_refs_falls_back_to_recent_original_evidence(
+    monkeypatch, caplog
+):
+    live_client, requests, sink = _live_client(
+        monkeypatch,
+        lambda _body, _requests: {"points": [{"evidence_refs": ["e999999"]}]},
     )
-
-    def transport(_params, _hard_timeout):
-        return litellm.ModelResponse(
-            choices=[
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": json.dumps(
-                            {"points": [{"evidence_refs": ["e999999"]}]}
-                        ),
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
-            usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+    sources = [
+        EvidenceSource(
+            source_id=f"source-{index}",
+            request_id="request",
+            interaction_id=index,
+            field="content",
+            speaker="User",
+            source_order=index,
+            text=f"Turn {index} approval " * 150,
         )
-
-    monkeypatch.setattr(live_client, "_completion_with_hard_timeout", transport)
-    monkeypatch.setattr(
-        "reflexio.server.llm.input_budget.litellm.token_counter", Mock(return_value=100)
+        for index in range(1, 9)
+    ]
+    cache = {}
+    kwargs = {
+        "scope": {"org_id": "org", "project_id": "project", "user_id": "alice"},
+        "policy": "extraction",
+        "budget": CompressionBudget(output_tokens=1024),
+        "client": live_client,
+        "context_limits": {live_client.config.model: 512000},
+        "load": cache.get,
+        "save": cache.__setitem__,
+    }
+    result = compress_with_client(sources, **kwargs)
+    assert len(requests) == result.provider_attempts == 1
+    assert result.provider_reference_recoveries == 1
+    assert result.output_tokens <= 1024
+    kept = list(
+        dict.fromkeys(
+            item.source_id.rsplit(":", 2)[0] for item in result.packet.evidence
+        )
     )
-    sink = Mock()
-    monkeypatch.setattr("reflexio.server.operational_metrics._sink", sink)
+    # The newest passages that fit, in chronological order, copied verbatim.
+    assert kept and kept == [f"source-{i}" for i in range(9 - len(kept), 9)]
+    assert len(kept) < len(sources)
+    originals = {source.source_id: source.text for source in sources}
+    assert all(
+        item.text in originals[item.source_id.rsplit(":", 2)[0]]
+        for item in result.packet.evidence
+    )
+    assert all(
+        point.category == "selected_evidence" and point.detail == "Original evidence."
+        for point in result.packet.points
+    )
+    assert result.packet.omission_counts.unseen_reference_groups == 1
+    # The fallback sizes its own selection, so nothing it offers is dropped;
+    # the shortfall is stated in its notice instead.
+    assert result.packet.omission_counts.capacity_points == 0
+    offered = [
+        match
+        for note in result.packet.omissions
+        if (
+            match := re.fullmatch(
+                r"Host offered ([1-9]\d*) of ([1-9]\d*) visible passages, newest "
+                r"first, because the provider selection was unusable; source "
+                r"selection is incomplete\.",
+                note,
+            )
+        )
+    ]
+    assert len(offered) == 1
+    assert int(offered[0][1]) == len(result.packet.points) < int(offered[0][2])
+    assert any("discarded 1 entire groups" in n for n in result.packet.omissions)
+    assert _salvage_events(caplog) == [
+        "event=compression_selection_salvaged reason=unseen_refs "
+        f"fallback=recent_evidence kept_points={len(result.packet.points)} "
+        "discarded_groups=1"
+    ]
+    # Evidence survived, so this is not a terminal failure.
+    assert not _failures(sink)
+    replay = compress_with_client(sources, **kwargs)
+    assert replay.packet == result.packet and replay.provider_attempts == 0
+
+
+def test_recent_evidence_fallback_leads_with_each_required_speaker(monkeypatch):
+    live_client, requests, _sink = _live_client(
+        monkeypatch, lambda _body, _requests: {"points": []}
+    )
+    sources = [
+        EvidenceSource(
+            source_id="assistant-early",
+            request_id="request",
+            interaction_id=1,
+            field="content",
+            speaker="Assistant",
+            source_order=1,
+            text="Assistant approval note " * 150,
+        ),
+        *(
+            EvidenceSource(
+                source_id=f"user-{index}",
+                request_id="request",
+                interaction_id=index,
+                field="content",
+                speaker="User",
+                source_order=index,
+                text=f"User turn {index} approval " * 150,
+            )
+            for index in range(2, 9)
+        ),
+    ]
+    result = compress_with_client(
+        sources,
+        scope={"org_id": "org", "project_id": "project", "user_id": "alice"},
+        policy="extraction",
+        budget=CompressionBudget(output_tokens=1024),
+        client=live_client,
+        context_limits={live_client.config.model: 512000},
+        required_speakers=("Assistant",),
+    )
+    assert len(requests) == 1
+    speakers = {item.speaker for item in result.packet.evidence}
+    assert "Assistant" in speakers and "User" in speakers
+    assert result.packet.evidence[-1].source_id.startswith("user-8")
+
+
+def test_unusable_selection_with_no_fitting_fallback_is_terminal(monkeypatch):
+    from reflexio.server.services.input_compression import (
+        CompressionError,
+        packet_tokens,
+    )
+
+    live_client, requests, sink = _live_client(
+        monkeypatch, lambda _body, _requests: {"points": [{"evidence_refs": ["e9999"]}]}
+    )
+
+    def measure(packet):
+        if requests and packet.evidence:
+            raise CompressionError("Original source changed")
+        return packet_tokens(packet)
+
+    with pytest.raises(CompressionError, match="Original source changed"):
+        compress_with_client(
+            [
+                EvidenceSource(
+                    source_id="source",
+                    request_id="request",
+                    interaction_id=1,
+                    field="content",
+                    speaker="User",
+                    source_order=0,
+                    text="approval " + "log " * 1500,
+                )
+            ],
+            scope={"org_id": "org", "project_id": "project", "user_id": "alice"},
+            policy="extraction",
+            budget=CompressionBudget(output_tokens=1024),
+            client=live_client,
+            context_limits={live_client.config.model: 512000},
+            measure_output=measure,
+        )
+    assert len(requests) == 1
+    assert _failures(sink) == 1
+
+
+def test_valid_selection_is_accepted_unchanged_without_salvage(monkeypatch, caplog):
+    live_client, requests, sink = _live_client(
+        monkeypatch,
+        lambda body, _requests: {
+            "points": [{"evidence_refs": [body["allowed_evidence_refs"][-1]]}]
+        },
+    )
     result = compress_extraction_window(
         [group()],
         org_id="org",
@@ -655,12 +797,21 @@ def test_recovery_that_keeps_no_evidence_counts_as_a_failure(monkeypatch):
         client=live_client,
         context_limits={live_client.config.model: 512000},
     )
-    assert result.packet.points == []
-    failures = [c for c in sink.record.call_args_list if c.args[0] == "llm.failures"]
-    assert len(failures) == 1
+    assert len(requests) == result.provider_attempts == result.calls
+    assert result.provider_reference_recoveries == 0
+    assert result.packet.points
+    assert not any(
+        note.startswith(("Host discarded", "Host selected", CAPACITY_OMISSION))
+        for note in result.packet.omissions
+    )
+    assert result.packet.omission_counts.unseen_reference_groups == 0
+    assert not _salvage_events(caplog)
+    assert not _failures(sink)
 
 
-def test_bounded_repair_discards_only_whole_unverifiable_reference_groups(monkeypatch):
+def test_salvage_discards_only_whole_unverifiable_reference_groups_without_repair(
+    monkeypatch,
+):
     import litellm
 
     from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
@@ -720,7 +871,7 @@ def test_bounded_repair_discards_only_whole_unverifiable_reference_groups(monkey
         load=cache.get,
         save=cache.__setitem__,
     )
-    assert len(requests) == result.provider_attempts == 2
+    assert len(requests) == result.provider_attempts == 1
     assert result.provider_reference_recoveries == 1
     assert result.packet.omission_counts.unseen_reference_groups == 1
     assert len(result.packet.points) == len(result.packet.evidence) == 1
@@ -728,7 +879,7 @@ def test_bounded_repair_discards_only_whole_unverifiable_reference_groups(monkey
     assert any(
         "discarded 1 entire groups" in notice for notice in result.packet.omissions
     )
-    assert result.provider_input_tokens == 200 and result.provider_output_tokens == 40
+    assert result.provider_input_tokens == 100 and result.provider_output_tokens == 20
     # A salvaged selection is not a terminal LLM failure, so it must not page.
     assert not [c for c in sink.record.call_args_list if c.args[0] == "llm.failures"]
     replay = compress_extraction_window(
@@ -745,7 +896,7 @@ def test_bounded_repair_discards_only_whole_unverifiable_reference_groups(monkey
     assert replay.packet == result.packet
     assert replay.packet.omission_counts.unseen_reference_groups == 1
     assert replay.provider_attempts == replay.provider_reference_recoveries == 0
-    assert len(requests) == 2
+    assert len(requests) == 1
 
 
 @pytest.mark.parametrize(
@@ -757,7 +908,7 @@ def test_bounded_repair_discards_only_whole_unverifiable_reference_groups(monkey
         ("semantic", "minimax/MiniMax-M3", True),
     ],
 )
-def test_reference_recovery_never_accepts_parse_refusal_route_or_integrity_failure(
+def test_exhausted_client_repair_is_never_salvaged_and_counts_once(
     monkeypatch, failure_kind, error_model, integrity_fault
 ):
     from reflexio.server.llm import StructuredOutputRepairError
@@ -1216,3 +1367,386 @@ def test_native_selection_contract_and_node_witnesses_survive_warm_replay(monkey
     with pytest.raises(ProviderRequestGuardError, match="changed"):
         prepared.execute(inspect_node=changed_nodes)
     changed_nodes.assert_not_called()
+
+
+def test_salvage_judges_usability_with_its_own_omission_notice(caplog):
+    """A group that fits only without the host notice must not end empty."""
+    from reflexio.server.services.input_compression import (
+        CompressionCall,
+        CompressionChoice,
+        CompressionPoint,
+        _fits_whole,
+        _pack_choice,
+        _recent_evidence_choice,
+    )
+    from reflexio.server.services.input_compression_llm import (
+        _ReferenceSelection,
+        _salvage_selection,
+    )
+
+    def source(source_id, text):
+        return EvidenceSource(
+            source_id=source_id,
+            request_id="r",
+            interaction_id=1,
+            field="content",
+            speaker="User",
+            source_order=1,
+            text=text,
+        )
+
+    available = {"e1": source("s1", "approval " * 150), "e2": source("s2", "short")}
+
+    def measure(packet):
+        return len(packet.render())
+
+    exact = CompressionChoice(
+        points=[CompressionPoint(category="selected_evidence", evidence_refs=["e1"])]
+    )
+    budget = measure(_pack_choice(exact, available, 10_000, measure, lambda _p: True))
+
+    def pack(choice):
+        return _pack_choice(choice, available, budget, measure, lambda _p: True)
+
+    call = CompressionCall(
+        "key",
+        [],
+        budget,
+        pack,
+        tuple(available),
+        lambda notes, counts: _recent_evidence_choice(
+            available,
+            frozenset(),
+            lambda c: _fits_whole(c, available, budget, measure, lambda _p: True),
+            lambda source: measure(EvidencePacket(evidence=[source])),
+            notes,
+            counts,
+        ),
+    )
+    choice, discarded = _salvage_selection(
+        call,
+        _ReferenceSelection.model_validate(
+            {"points": [{"evidence_refs": ["e1"]}, {"evidence_refs": ["bad"]}]}
+        ),
+    )
+    packet = pack(choice)
+    assert discarded == 1
+    assert [item.text for item in packet.evidence] == ["short"]
+    assert choice.omission_counts.unseen_reference_groups == 1
+    assert _salvage_events(caplog) == [
+        "event=compression_selection_salvaged reason=unseen_refs "
+        "fallback=recent_evidence kept_points=1 discarded_groups=1"
+    ]
+
+
+def test_fallback_keeps_an_older_required_speaker_passage_that_fits(caplog):
+    """The newest required-speaker passage may not fit; an older one must lead."""
+    from reflexio.server.services.input_compression import (
+        RECENT_EVIDENCE_OMISSION,
+        CompressionCall,
+        CompressionChoice,
+        CompressionPoint,
+        OmissionCounts,
+        _fits_whole,
+        _pack_choice,
+        _recent_evidence_choice,
+        _require_speakers,
+    )
+    from reflexio.server.services.input_compression_llm import (
+        _ReferenceSelection,
+        _salvage_selection,
+    )
+
+    def source(source_id, speaker, order, text):
+        return EvidenceSource(
+            source_id=source_id,
+            request_id="r",
+            interaction_id=order,
+            field="content",
+            speaker=speaker,
+            source_order=order,
+            text=text,
+        )
+
+    available = {
+        "e1": source("agent-old", "Assistant", 1, "agent note " * 40),
+        "e2": source("user-a", "User", 2, "user turn a " * 40),
+        "e3": source("user-b", "User", 3, "user turn b " * 40),
+        "e4": source("agent-new", "Assistant", 4, "agent dump " * 4000),
+    }
+    required = frozenset({"Assistant"})
+
+    def measure(packet):
+        return len(packet.render())
+
+    notice = RECENT_EVIDENCE_OMISSION.format(offered=4, visible=4)
+    two_users = CompressionChoice(
+        points=[
+            CompressionPoint(category="selected_evidence", evidence_refs=[ref])
+            for ref in ("e3", "e2")
+        ],
+        omissions=[notice],
+    )
+    budget = measure(
+        _pack_choice(two_users, available, 1_000_000, measure, lambda _p: True)
+    )
+
+    def pack_points(choice):
+        return _pack_choice(choice, available, budget, measure, lambda _p: True)
+
+    def pack(choice):
+        packet = pack_points(choice)
+        _require_speakers(packet, available, required)
+        return packet
+
+    call = CompressionCall(
+        "key",
+        [],
+        budget,
+        pack,
+        tuple(available),
+        lambda notes, counts: _recent_evidence_choice(
+            available,
+            required,
+            lambda c: _fits_whole(c, available, budget, measure, lambda _p: True),
+            lambda source: measure(EvidencePacket(evidence=[source])),
+            notes,
+            counts,
+        ),
+    )
+    # Newest-first alone would admit the two User turns and leave no room.
+    assert len(available["e4"].text) > budget
+    choice, _ = _salvage_selection(call, _ReferenceSelection(points=[]))
+    packet = pack(choice)
+    assert "agent-old" in {item.source_id for item in packet.evidence}
+    assert choice.omission_counts == OmissionCounts()
+    assert _salvage_events(caplog)[0].startswith(
+        "event=compression_selection_salvaged reason=rejected fallback=recent_evidence"
+    )
+
+
+def test_fallback_point_limit_never_hides_an_older_fitting_passage():
+    from reflexio.server.services.input_compression import (
+        CompressionChoice,
+        CompressionPoint,
+        OmissionCounts,
+        _fits_whole,
+        _pack_choice,
+        _recent_evidence_choice,
+    )
+
+    def source(order, text):
+        return EvidenceSource(
+            source_id=f"s{order}",
+            request_id="r",
+            interaction_id=order + 1,
+            field="content",
+            speaker="User",
+            source_order=order,
+            text=text,
+        )
+
+    available = {
+        f"e{order + 1}": source(order, "fits" if order == 0 else "too large " * 400)
+        for order in range(129)
+    }
+
+    def measure(packet):
+        return len(packet.render())
+
+    oldest = CompressionChoice(
+        points=[CompressionPoint(category="selected_evidence", evidence_refs=["e1"])],
+        omissions=["x" * 200],
+    )
+    budget = measure(_pack_choice(oldest, available, 10**9, measure, lambda _p: True))
+
+    def pack(choice):
+        return _pack_choice(choice, available, budget, measure, lambda _p: True)
+
+    choice = _recent_evidence_choice(
+        available,
+        frozenset(),
+        lambda c: _fits_whole(c, available, budget, measure, lambda _p: True),
+        lambda source: measure(EvidencePacket(evidence=[source])),
+        [],
+        OmissionCounts(),
+    )
+    assert [item.source_id for item in pack(choice).evidence] == ["s0"]
+
+
+def test_fallback_returns_a_selection_that_packs_whole_without_drops():
+    """Each passage fits alone but not together: keep one, drop nothing later."""
+    from reflexio.server.services.input_compression import (
+        RECENT_EVIDENCE_OMISSION,
+        CompressionChoice,
+        CompressionPoint,
+        OmissionCounts,
+        _fits_whole,
+        _pack_choice,
+        _recent_evidence_choice,
+    )
+
+    available = {
+        f"e{order}": EvidenceSource(
+            source_id=f"s{order}",
+            request_id="r",
+            interaction_id=order,
+            field="content",
+            speaker="User",
+            source_order=order,
+            text=f"passage {order} " * 100,
+        )
+        for order in (1, 2)
+    }
+
+    def measure(packet):
+        return len(packet.render())
+
+    one = CompressionChoice(
+        points=[CompressionPoint(category="selected_evidence", evidence_refs=["e2"])],
+        omissions=[RECENT_EVIDENCE_OMISSION.format(offered=2, visible=2)],
+    )
+    budget = measure(_pack_choice(one, available, 10**9, measure, lambda _p: True))
+    choice = _recent_evidence_choice(
+        available,
+        frozenset(),
+        lambda c: _fits_whole(c, available, budget, measure, lambda _p: True),
+        lambda source: measure(EvidencePacket(evidence=[source])),
+        [],
+        OmissionCounts(),
+    )
+    packet = _pack_choice(choice, available, budget, measure, lambda _p: True)
+    assert [item.source_id for item in packet.evidence] == ["s2"]
+    assert packet.omission_counts.capacity_points == 0
+    assert packet.omissions == [RECENT_EVIDENCE_OMISSION.format(offered=1, visible=2)]
+
+
+def test_fallback_admits_all_required_speakers_as_one_fitting_set():
+    """A large newest Assistant passage must not crowd out the User passage."""
+    from reflexio.server.services.input_compression import (
+        RECENT_EVIDENCE_OMISSION,
+        CompressionChoice,
+        CompressionPoint,
+        OmissionCounts,
+        _fits_whole,
+        _pack_choice,
+        _recent_evidence_choice,
+        _require_speakers,
+    )
+
+    def source(source_id, speaker, order, text):
+        return EvidenceSource(
+            source_id=source_id,
+            request_id="r",
+            interaction_id=order,
+            field="content",
+            speaker=speaker,
+            source_order=order,
+            text=text,
+        )
+
+    available = {
+        "e1": source("agent-old", "Assistant", 1, "agent note " * 20),
+        "e2": source("user", "User", 2, "user turn " * 40),
+        "e3": source("agent-new", "Assistant", 3, "agent dump " * 60),
+    }
+    required = frozenset({"Assistant", "User"})
+
+    def measure(packet):
+        return len(packet.render())
+
+    def fits(choice, budget):
+        return _fits_whole(choice, available, budget, measure, lambda _p: True)
+
+    notice = RECENT_EVIDENCE_OMISSION.format(offered=3, visible=3)
+    smallest_pair = CompressionChoice(
+        points=[
+            CompressionPoint(category="selected_evidence", evidence_refs=[ref])
+            for ref in ("e1", "e2")
+        ],
+        omissions=[notice],
+    )
+    budget = measure(
+        _pack_choice(smallest_pair, available, 10**9, measure, lambda _p: True)
+    )
+    # The newest Assistant passage fits alone but not beside the User passage.
+    assert fits(
+        CompressionChoice(
+            points=[
+                CompressionPoint(category="selected_evidence", evidence_refs=["e3"])
+            ],
+            omissions=[notice],
+        ),
+        budget,
+    )
+    choice = _recent_evidence_choice(
+        available,
+        required,
+        lambda c: fits(c, budget),
+        lambda source: measure(EvidencePacket(evidence=[source])),
+        [],
+        OmissionCounts(),
+    )
+    packet = _pack_choice(choice, available, budget, measure, lambda _p: True)
+    _require_speakers(packet, available, required)
+    assert {item.source_id for item in packet.evidence} == {"agent-old", "user"}
+
+
+def test_fallback_ranks_required_speaker_passages_by_rendered_cost():
+    """A short but escape-heavy passage is costlier than a longer plain one."""
+    from reflexio.server.services.input_compression import (
+        RECENT_EVIDENCE_OMISSION,
+        CompressionChoice,
+        CompressionPoint,
+        OmissionCounts,
+        _fits_whole,
+        _pack_choice,
+        _recent_evidence_choice,
+        _require_speakers,
+    )
+
+    def source(source_id, speaker, order, text):
+        return EvidenceSource(
+            source_id=source_id,
+            request_id="r",
+            interaction_id=order,
+            field="content",
+            speaker=speaker,
+            source_order=order,
+            text=text,
+        )
+
+    available = {
+        "e1": source("agent-plain", "Assistant", 1, "a" * 220),
+        "e2": source("user", "User", 2, "user turn " * 30),
+        "e3": source("agent-escaped", "Assistant", 3, "\n" * 200),
+        "e4": source("agent-new", "Assistant", 4, "agent dump " * 80),
+    }
+    required = frozenset({"Assistant", "User"})
+
+    def measure(packet):
+        return len(packet.render())
+
+    assert len(available["e3"].text) < len(available["e1"].text)
+    assert measure(EvidencePacket(evidence=[available["e3"]])) > measure(
+        EvidencePacket(evidence=[available["e1"]])
+    )
+    cheapest = CompressionChoice(
+        points=[
+            CompressionPoint(category="selected_evidence", evidence_refs=[ref])
+            for ref in ("e1", "e2")
+        ],
+        omissions=[RECENT_EVIDENCE_OMISSION.format(offered=4, visible=4)],
+    )
+    budget = measure(_pack_choice(cheapest, available, 10**9, measure, lambda _p: True))
+    choice = _recent_evidence_choice(
+        available,
+        required,
+        lambda c: _fits_whole(c, available, budget, measure, lambda _p: True),
+        lambda item: measure(EvidencePacket(evidence=[item])),
+        [],
+        OmissionCounts(),
+    )
+    packet = _pack_choice(choice, available, budget, measure, lambda _p: True)
+    _require_speakers(packet, available, required)
+    assert {item.source_id for item in packet.evidence} == {"agent-plain", "user"}
