@@ -181,6 +181,9 @@ def compress_session_evidence(
         "estimate_output": lambda packet: render_size(pricing_document, packet),
         "output_contract": SESSION_OUTPUT_CONTRACT
         + (":" + consumer_contract if consumer_contract else ""),
+        # The native consumer refuses a document with no agent span, so a
+        # selection may not drop them all after the provider has been paid.
+        "required_speakers": ("agent",),
     }
     if journal is None:
         result = compress_with_client(

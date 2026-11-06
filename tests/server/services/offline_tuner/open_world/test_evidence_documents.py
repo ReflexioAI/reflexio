@@ -410,3 +410,34 @@ def test_ordinary_projection_keeps_tool_content_but_omits_tools_used_metadata():
         and span.speaker == "other"
         for span in compaction_sources
     )
+
+
+def test_a_whitespace_only_turn_is_skipped_rather_than_failing_rehydration() -> None:
+    # EvidenceSpan refuses blank text, so projecting a blank turn used to fail
+    # the whole frozen attempt even when the rest of the session was citable.
+    frozen, _ = _frozen()
+    event = _event(
+        session_id="session-1", outcome="unknown", content="Observed agent action"
+    )
+    trajectory = deepcopy(event.trajectory)
+    assert trajectory is not None
+    interactions = trajectory["requests"][0]["interactions"]
+    interactions[0]["content"] = " \n\t "
+    original_bytes = canonical_trajectory_bytes(trajectory)
+    event = replace(
+        event,
+        trajectory=trajectory,
+        trajectory_digest=sha256(original_bytes).hexdigest(),
+        trajectory_byte_count=len(original_bytes),
+        trajectory_token_count=count_input_tokens(original_bytes.decode()),
+    )
+    snapshot = OpenWorldEvidenceSnapshot(tenant_id="tenant-1", events=(event,))
+    bundle = select_open_world_evidence(snapshot, frozen.bundle.target).bundle
+
+    evidence = rehydrate_frozen_evidence(replace(frozen, bundle=bundle), snapshot)
+
+    document = evidence.documents_by_session[("user-1", "session-1")]
+    paths = [span.field_path for span in document.spans]
+    assert "requests[0].interactions[0].content" not in paths
+    assert "requests[0].interactions[1].content" in paths
+    assert any(span.speaker == "agent" for span in document.spans)

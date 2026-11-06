@@ -605,3 +605,46 @@ def test_self_consistent_digest_cannot_authorize_foreign_row_binding(
             before_call=Mock(),
         )
     dispatch.assert_not_called()
+
+
+def test_session_compression_requires_an_agent_passage_in_every_selection(
+    monkeypatch,
+):
+    # The native consumer refuses a document with no agent span; the engine
+    # must be told so it can repair a selection before the result is admitted.
+    from reflexio.server.services.input_compression import compress_input
+    from reflexio.server.services.offline_tuner.open_world import (
+        hierarchical_compaction as adapter,
+    )
+
+    original, trajectory = _freeze_document(document())
+    seen = {}
+
+    def wrapper(sources, **kwargs):
+        seen.update(kwargs)
+        return compress_input(
+            sources,
+            scope=kwargs["scope"],
+            policy=kwargs["policy"],
+            budget=kwargs["budget"],
+            model_contract="fixture",
+            complete=Mock(side_effect=AssertionError("Small document passes")),
+            measure_output=kwargs["measure_output"],
+            estimate_output=kwargs["estimate_output"],
+            output_contract=kwargs["output_contract"],
+            required_speakers=kwargs["required_speakers"],
+        )
+
+    monkeypatch.setattr(adapter, "compress_with_client", wrapper)
+    adapter.compress_session_evidence(
+        original,
+        project_id="project",
+        through_request_id="request",
+        frozen_trajectory=trajectory,
+        governance_epochs=(),
+        budget=CompressionBudget(output_tokens=4096),
+        client=Mock(),
+        context_limits={},
+        before_call=lambda: None,
+    )
+    assert seen["required_speakers"] == ("agent",)
