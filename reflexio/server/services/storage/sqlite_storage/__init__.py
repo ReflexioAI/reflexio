@@ -10,6 +10,7 @@ from ._base import (
 from ._extraction_stream import SQLiteExtractionStreamMixin, SQLiteStreamSQL
 from ._extras import ExtrasMixin
 from ._lineage import SQLiteLineageMixin
+from ._open_world import SQLiteOpenWorldMixin
 from ._operations import OperationMixin
 from ._requests import RequestMixin
 from ._session_outcomes import SessionOutcomeStoreMixin
@@ -60,6 +61,7 @@ class SQLiteStorage(
     AgentEvaluationResultStoreMixin,
     SubjectWriteGateMixin,
     SQLiteLineageMixin,
+    SQLiteOpenWorldMixin,
     OperationMixin,
     ExtrasMixin,
     SQLiteStallStateMixin,

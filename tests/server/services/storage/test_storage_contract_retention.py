@@ -217,12 +217,6 @@ def test_retention_exposure_age_boundary_is_strict(storage: BaseStorage) -> None
     now = 2_000_000_000
     cutoff = now - OPEN_WORLD_EVIDENCE_RETENTION_WINDOW_SECONDS
     conn = storage.conn  # type: ignore[attr-defined]
-    conn.execute(
-        """CREATE TABLE user_playbook_exposure_events (
-            exposure_event_id TEXT PRIMARY KEY,
-            ingested_at INTEGER NOT NULL
-        )"""
-    )
     conn.executemany(
         """INSERT INTO user_playbook_exposure_events
            (exposure_event_id, ingested_at)

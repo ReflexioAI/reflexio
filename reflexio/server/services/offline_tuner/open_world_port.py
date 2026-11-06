@@ -44,6 +44,8 @@ from reflexio.server.services.offline_tuner.open_world_records import (
     OpenWorldEvidenceStorageRecord,
     OpenWorldInvocationRow,
     OpenWorldQualificationAuthorityRow,
+    SweepProgressRecord,
+    SweepQueueEntry,
 )
 from reflexio.server.services.playbook.publication import (
     ProvisionalPublicationResult,
@@ -278,12 +280,46 @@ class OpenWorldProvisionalPublicationStore(
     ) -> ProvisionalPublicationResult | None: ...
 
 
+class OpenWorldSweepProgressStore(Protocol):
+    """The sweep's durable progress: one record per tick, and the queue it drains.
+
+    The admission rules both methods apply, and their constants, are in
+    ``open_world_records`` (the "Sweep progress" section). The sweep reaches
+    storage only through these two calls.
+    """
+
+    def record_open_world_sweep_progress(
+        self, *, user_playbook_id: int, outcome: str, job_id: int | None
+    ) -> SweepProgressRecord:
+        """Record that a playbook had its tick today, whatever the outcome.
+
+        One row per playbook per UTC day, chosen with ``attempted_at`` from one
+        clock read. A re-record the same day replaces ``outcome`` and
+        ``attempted_at``, keeps the earlier ``job_id`` when given none, and
+        increments ``attempt_count``. Raises when ``user_playbook_id`` or
+        ``job_id`` is not positive or ``outcome`` is blank, writing nothing.
+        """
+        ...
+
+    def list_open_world_playbooks_without_progress(
+        self, *, limit: int, window_seconds: int | None
+    ) -> tuple[SweepQueueEntry, ...]:
+        """Current playbooks whose day is not spent, oldest attempt first.
+
+        ``window_seconds`` admits only playbooks with a published exposure no
+        older than that many seconds before the start of today (UTC); ``None``
+        admits every current playbook. A limit below 1 reads as 1.
+        """
+        ...
+
+
 class OpenWorldStoragePort(
     OpenWorldStageStore,
     OpenWorldBundleStorage,
     OpenWorldAttemptStorage,
     OpenWorldFreezeReads,
     OpenWorldProvisionalPublicationStore,
+    OpenWorldSweepProgressStore,
     Protocol,
 ):
     """Everything the active open-world path asks of one storage."""
@@ -296,5 +332,6 @@ __all__ = [
     "OpenWorldProvisionalPublicationStore",
     "OpenWorldStageStore",
     "OpenWorldStoragePort",
+    "OpenWorldSweepProgressStore",
     "PublishedLifecycle",
 ]

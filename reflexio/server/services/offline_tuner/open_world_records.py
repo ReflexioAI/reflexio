@@ -13,7 +13,7 @@ refusal from another module would be caught by nobody's ``except``.
 """
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from reflexio.models.api_schema.domain import (
     OptimizationJobClaim,
@@ -289,6 +289,157 @@ class OnlineSessionMemoRow:
     created_at: int
 
 
+# ===========================================================================
+# Sweep progress: the queue's admission rules and the rows it returns
+# ===========================================================================
+#
+# Every storage backend applies these rules in its sweep-queue read, and the
+# sweep (``sweep_progress``) relies on them. They live here, with the storage
+# records, so a backend can import them without importing the sweep, which
+# resolves storage itself. A backend whose rules are SQL literals (Postgres)
+# cannot import them; a cross-backend contract test holds it to these values.
+
+# ---------------------------------------------------------------------------
+# THE ONE RETRY-ELIGIBLE OUTCOME
+# ---------------------------------------------------------------------------
+#
+# Every other tick outcome spends the playbook's day. This one does not, and it
+# is the only one that does not.
+#
+# WHY IT HAD TO BE ITS OWN STATE. Both obvious answers for a rate-limited tick
+# are wrong, and they are wrong in opposite directions:
+#
+#   * Write an ordinary day-bucket record and the playbook is skipped until
+#     00:00 UTC over a provider condition that typically clears in one window.
+#     The day is spent on an attempt that was never answered.
+#   * Write nothing and the queue read -- whose whole predicate is "no progress
+#     record today" -- returns the same playbook on the very next tick, every
+#     tick, and the sweep takes ONE playbook per tick, so the entire org's
+#     queue stalls behind it.
+#
+# So the record is written (the queue moves on) and carries a state that lets
+# the row STOP blocking once a cooldown has elapsed: attempted, not completed,
+# retry eligible.
+#
+# WHY DISPATCHING ON THE LABEL IS ACCEPTABLE HERE. `20260911020000` gave
+# `outcome` no vocabulary CHECK on the express ground that "a column nothing
+# dispatches on" must not acquire one -- and this makes exactly one read
+# dispatch on exactly one value. That is a narrower coupling than a CHECK: a
+# new outcome label still needs no migration, and an unrecognised label simply
+# spends the day, which is the safe direction. What it DOES create is a
+# dual-expression identity between this constant and the literal inside the
+# storage SQL, which must be asserted by a test rather than kept in step by
+# hand.
+RETRY_ELIGIBLE_OUTCOME = "rate_limited"
+
+#: How long a rate-limited record blocks its playbook before the queue may
+#: return it.
+#:
+#: Not a provider-derived number -- MiniMax publishes no `Retry-After` and no
+#: 429 contract, so there is nothing to derive it from. It is a QUEUE-FAIRNESS
+#: number: at the 120s tick interval, 900s is roughly seven ticks in which
+#: other playbooks get their turn, which is what stops one rate-limited
+#: playbook monopolising a serialized queue. Shorter and the stall returns;
+#: much longer and a limit that clears inside the hour loses the day anyway.
+RATE_LIMIT_RETRY_COOLDOWN_SECONDS = 900
+
+#: Ceiling on how many ticks ONE playbook may consume in one UTC day.
+#:
+#: This is the money bound, and without it the cooldown above is an unbounded
+#: spend authorisation: a provider rate-limited all day would hand the same
+#: playbook a fresh attempt every 15 minutes, ~96 times, each one re-paying for
+#: whichever stages completed before the limit was hit. Three means the first
+#: attempt plus at most two retries.
+MAX_SAME_DAY_SWEEP_ATTEMPTS = 3
+
+# ---------------------------------------------------------------------------
+# THE EVIDENCE-GATED RE-ATTEMPT
+# ---------------------------------------------------------------------------
+#
+# The second exception to "a record spends the day", enforced by the storage
+# backend's sweep-queue read. A playbook swept minutes
+# after its first exposure records `ineligible_*` for want of judged sessions;
+# without this it waits until 00:00 UTC however much traffic arrives. The row
+# stops blocking once the cooldown below has elapsed AND a session that exposed
+# the playbook has a newer outcome or a newer request. The new-request arm is
+# what keeps it from deadlocking: the outcome bridge judges on behalf of the
+# tick's playbook, so a spent playbook's sessions need never get a new outcome.
+#
+# The cap is MAX_SAME_DAY_SWEEP_ATTEMPTS, SHARED with the rate-limited
+# exception rather than a second budget: `attempt_count` counts every record of
+# the day whatever its outcome. Like RETRY_ELIGIBLE_OUTCOME, both values are
+# restated as literals in a storage backend's SQL, which must agree with them.
+
+#: Outcome-label prefix whose rows may be re-attempted the same day. The sweep
+#: writes ``ineligible_<reason>`` from this (``SWEEP_OUTCOME_INELIGIBLE_PREFIX``
+#: aliases it), and the queue read matches it with ``starts_with``.
+EVIDENCE_REATTEMPT_PREFIX = "ineligible_"
+
+#: How long an ``ineligible_*`` record blocks its playbook before new evidence
+#: may re-admit it. Shorter than the rate-limit cooldown because nothing
+#: external has to clear -- the evidence gate already requires new activity --
+#: so this only stops one busy session re-admitting its playbook every tick.
+EVIDENCE_REATTEMPT_COOLDOWN_SECONDS = 300
+
+#: How far BEFORE an ``ineligible_*`` attempt a request still counts as new
+#: evidence. The attempt's bridge pass only judges sessions that are READY --
+#: a reaction settled ``REACTION_SETTLE_SECONDS`` (30), or the session idle for
+#: the judge's floor ``GROUP_EVALUATION_DELAY_SECONDS`` (600) -- so a session
+#: whose last request landed less than 600s before the attempt was still
+#: PENDING at it: invisible to that attempt, judgeable later. Without this the
+#: rule only counts activity AFTER the attempt, and a sweep that lands seconds
+#: after the last turn of sessions that then end loses the playbook its day.
+#: 600 is the longest pending case; it also covers the 30s settle and the 300s
+#: re-judge interval. Restated as a literal in a storage backend's SQL, which
+#: must agree with it.
+EVIDENCE_REATTEMPT_LOOKBACK_SECONDS = 600
+
+#: The ordering key a playbook that has NEVER had a tick carries.
+#:
+#: The SQL orders ``NULLS FIRST`` because a never-attempted playbook is the
+#: oldest thing there is. A sentinel BELOW every real epoch is what makes plain
+#: tuple comparison in Python reproduce that ordering exactly -- the merge in
+#: the daemon is a ``min`` over entries from several orgs, and ``None`` would
+#: make that raise ``TypeError`` while ``0`` would collide with a (legal, if
+#: never-observed) stored ``attempted_at`` of zero. Anything a caller sorts by
+#: therefore sorts the same way the database did.
+NEVER_ATTEMPTED_EPOCH = -1
+
+
+class SweepQueueEntry(NamedTuple):
+    """One queue position: the playbook, and the key it is ordered by.
+
+    The KEY is carried, not just the id, and that is the whole point of this
+    type. ``run_open_world_sweep(org)`` is per-org, so a caller holding only
+    ids can do no better than visit orgs in some fixed sequence -- which serves
+    whichever org it reaches first every night and starves the rest forever,
+    the exact failure fleet-wide oldest-attempt-first ordering exists to
+    prevent. Storage is per-org tenant schema, so there is no single global
+    query to ask instead; the ordering key has to leave this function for the
+    merge to happen anywhere at all.
+    """
+
+    playbook_id: int
+    last_attempt_epoch: int
+
+
+class SweepProgressRecord(NamedTuple):
+    """The progress row as stored after one sweep tick was recorded.
+
+    ``outcome`` is the trimmed label storage kept, ``job_id`` the surviving job
+    (a re-record without one keeps the earlier one), and ``attempted_at`` the
+    epoch second of the ONE clock read that also chose ``progress_day``.
+    ``progress_day`` is that instant's UTC day as an ISO ``YYYY-MM-DD`` string,
+    which is what the sweep logs.
+    """
+
+    user_playbook_id: int
+    progress_day: str
+    outcome: str
+    job_id: int | None
+    attempted_at: int
+
+
 __all__ = [
     "OPEN_WORLD_ATTEMPT_DECISION_ARTIFACT_KIND",
     "OPEN_WORLD_CANDIDATE_ARTIFACT_KIND",
@@ -314,4 +465,13 @@ __all__ = [
     "OpenWorldQualificationAuthorityStaleError",
     "OpenWorldSessionMemoRow",
     "StorageError",
+    "EVIDENCE_REATTEMPT_COOLDOWN_SECONDS",
+    "EVIDENCE_REATTEMPT_LOOKBACK_SECONDS",
+    "EVIDENCE_REATTEMPT_PREFIX",
+    "MAX_SAME_DAY_SWEEP_ATTEMPTS",
+    "NEVER_ATTEMPTED_EPOCH",
+    "RATE_LIMIT_RETRY_COOLDOWN_SECONDS",
+    "RETRY_ELIGIBLE_OUTCOME",
+    "SweepProgressRecord",
+    "SweepQueueEntry",
 ]
