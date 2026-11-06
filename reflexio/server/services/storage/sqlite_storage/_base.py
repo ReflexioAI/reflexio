@@ -83,7 +83,9 @@ logger = logging.getLogger(__name__)
 
 _TRAJECTORY_FETCH_SIZE = 256
 _SESSION_OUTCOME_MIGRATION_BATCH_SIZE = 256
-_MINIMUM_SQLITE_VERSION = (3, 35, 0)
+# 3.35 brought RETURNING and DROP COLUMN; 3.38 brought unixepoch(), which the
+# aggregation, lineage and open-world tables use.
+_MINIMUM_SQLITE_VERSION = (3, 38, 0)
 # Literals Phase 7 retired. The rebuild's trigger asks TWO questions, not one:
 # "is every required literal present?" (the expand direction, which was all it
 # ever asked) AND "is any retired literal still present?" (the contract
@@ -1052,8 +1054,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         # or a claim behind.
         if sqlite3.sqlite_version_info < _MINIMUM_SQLITE_VERSION:
             detected_version = ".".join(map(str, sqlite3.sqlite_version_info))
+            minimum_version = ".".join(map(str, _MINIMUM_SQLITE_VERSION))
             raise RuntimeError(
-                f"SQLite 3.35.0 or newer is required; detected {detected_version}"
+                f"SQLite {minimum_version} or newer is required; detected {detected_version}"
             )
 
         # Resolve db_path: explicit arg > a file derived from org_id under
