@@ -68,6 +68,7 @@ from reflexio.server.llm._model_compat import (
     apply_model_request_policy,
     ensure_model_capabilities,
     model_completion,
+    reasoning_exhausted_retry_extra_body,
 )
 from reflexio.server.llm._native_cli import NATIVE_CLI_REQUEST, NativeCLIOwner
 from reflexio.server.llm._provider_concurrency import (
@@ -1729,6 +1730,8 @@ class TextGenerationMixin:
 
         def _finish(
             attempt: _StructuredAttempt,
+            *,
+            thinking_disabled: bool = False,
         ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse]:
             search_runtime.checkpoint()
             if time.monotonic() >= walk_deadline:
@@ -1737,7 +1740,10 @@ class TextGenerationMixin:
                 )
             assert attempt.provenance is not None  # noqa: S101
             return CompletionResult(
-                attempt.value, attempt.provenance, usage=attempt.usage
+                attempt.value,
+                attempt.provenance,
+                usage=attempt.usage,
+                thinking_disabled=thinking_disabled,
             )
 
         if structured_output_validator is not None and (
@@ -2351,6 +2357,111 @@ class TextGenerationMixin:
                     )
                 )
 
+        def _retry_without_thinking(
+            *,
+            rung_messages: list[dict[str, Any]],
+            rung_kwargs: dict[str, Any],
+            params: dict[str, Any],
+            exc: StructuredOutputParseError,
+            schema_name: str,
+        ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse] | None:
+            """Resend a reasoning-exhausted request ONCE with thinking disabled.
+
+            Replaces the same-cap repair turn for this one failure kind: an
+            empty body cut off by the output limit means hidden reasoning spent
+            the whole budget, and echoing "(empty response ...)" back at the
+            same cap does not change that. Returns None when the route cannot
+            disable thinking (``reasoning_exhausted_retry_extra_body``), so the
+            caller keeps its existing repair turn. Otherwise this IS the
+            rung's one extra turn: a valid answer returns, and any failure
+            raises the rung's repair-exhausted error with no further call.
+            """
+            retry_body = reasoning_exhausted_retry_extra_body(params)
+            if retry_body is None:
+                return None
+            # Re-keyed: the resend is a different request, and a provider
+            # honouring attempt 1's key could replay the empty answer.
+            retry_params, retry_rf, retry_parse, retry_timeout = _prepare_turn(
+                rung_messages,
+                {**_corrective_kwargs(rung_kwargs), "extra_body": retry_body},
+            )
+            model = str(retry_params.get("model"))
+            diagnostics = f" first_attempt {exc.log_fields()}"
+            try:
+                attempt = _call_and_parse(
+                    retry_params,
+                    retry_rf,
+                    retry_parse,
+                    retry_timeout,
+                    detect_refusal=True,
+                )
+            except StructuredOutputParseError as retry_exc:
+                attempt = _StructuredAttempt(
+                    value="",
+                    raw_content=retry_exc.raw_content,
+                    parsed_output=None,
+                    finish_reason=retry_exc.finish_reason,
+                    model=model,
+                    provenance=getattr(retry_exc, "provenance", None),
+                )
+                errors = retry_exc.validation_errors or (str(retry_exc),)
+                failure_kind = retry_exc.failure_kind
+                diagnostics += f" retry {retry_exc.log_fields()}"
+            except StructuredOutputRepairError as retry_exc:
+                self.logger.warning(
+                    "event=llm_reasoning_exhausted_retry model=%s schema=%s "
+                    "thinking=disabled outcome=%s%s",
+                    model,
+                    schema_name,
+                    retry_exc.failure_kind,
+                    diagnostics,
+                )
+                raise
+            except (LiteLLMClientError, ProviderCapSaturatedError) as retry_exc:
+                self.logger.warning(
+                    "event=llm_reasoning_exhausted_retry model=%s schema=%s "
+                    "thinking=disabled outcome=transport_error error_type=%s%s",
+                    model,
+                    schema_name,
+                    type(retry_exc).__name__,
+                    diagnostics,
+                )
+                raise
+            else:
+                valid, errors, failure_kind = _validate_attempt(attempt)
+                if valid:
+                    self.logger.warning(
+                        "event=llm_reasoning_exhausted_retry model=%s schema=%s "
+                        "thinking=disabled outcome=succeeded%s",
+                        model,
+                        schema_name,
+                        diagnostics,
+                    )
+                    return _finish(attempt, thinking_disabled=True)
+            self.logger.warning(
+                "event=llm_reasoning_exhausted_retry model=%s schema=%s "
+                "thinking=disabled outcome=%s%s%s",
+                model,
+                schema_name,
+                failure_kind,
+                diagnostics,
+                f" semantic_error_count={len(errors)}"
+                if failure_kind == "semantic" and errors
+                else "",
+            )
+            raise _repair_error(
+                failure_kind=failure_kind,
+                attempt=attempt,
+                parsed_output_finish_reason=(
+                    attempt.finish_reason if attempt.parsed_output is not None else None
+                ),
+                errors=errors,
+                model=model,
+                first_parsed_provenance=(
+                    attempt.provenance if attempt.parsed_output is not None else None
+                ),
+            )
+
         def _run_rung_validated(
             rung_messages: list[dict[str, Any]], rung_kwargs: dict[str, Any]
         ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse]:
@@ -2386,6 +2497,16 @@ class TextGenerationMixin:
                             exc, original_kwargs.get("response_format")
                         ),
                     )
+                if failure_kind == "reasoning_exhausted":
+                    retried = _retry_without_thinking(
+                        rung_messages=rung_messages,
+                        rung_kwargs=rung_kwargs,
+                        params=params,
+                        exc=exc,
+                        schema_name=schema_name,
+                    )
+                    if retried is not None:
+                        return retried
                 raw_content = exc.raw_content
                 finish_reason = exc.finish_reason
                 latest_parsed_output = None
