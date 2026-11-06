@@ -6,6 +6,7 @@ and a startup banner for the multi-service dev server.
 
 from __future__ import annotations
 
+import copy
 import itertools
 import logging
 import re
@@ -161,7 +162,7 @@ class DuplicateFilter(logging.Filter):
         self._window = window_seconds
         self._lock = threading.Lock()
 
-    def filter(self, record: logging.LogRecord) -> bool:
+    def filter(self, record: logging.LogRecord) -> bool | logging.LogRecord:
         """Return False to suppress duplicate messages within the time window.
 
         Keying on the template means a per-entity line emitted in a loop (one
@@ -195,14 +196,18 @@ class DuplicateFilter(logging.Filter):
             dropped = self._suppressed.pop(key, 0)
 
         if dropped:
-            # Format now and clear args: the suffix must survive the handler's
-            # own `record.getMessage()` %-substitution, which would otherwise
-            # re-apply args to a template that no longer matches them.
-            record.msg = (
+            # Annotate a copy: the record is shared with every other handler on
+            # the logger chain (file, Sentry, caplog), and the suffix belongs
+            # only to the handler this filter is attached to. Format now and
+            # clear args so the suffix survives the handler's own
+            # `getMessage()` %-substitution.
+            annotated = copy.copy(record)
+            annotated.msg = (
                 f"{record.getMessage()} "
                 f"[+{dropped} similar suppressed in the last {self._window}s]"
             )
-            record.args = None
+            annotated.args = None
+            return annotated
         return True
 
 
