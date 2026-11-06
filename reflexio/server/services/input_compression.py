@@ -679,8 +679,7 @@ def _recent_evidence_choice(
     for any selection. The selection is grown one passage at a time and each
     step is sized as a whole (``fits``), with the caller's notices and counts,
     so the returned choice packs completely and nothing ranked is dropped
-    later. For each required speaker, the newest of its passages that fits is
-    admitted first, so the speaker rule holds whenever any of them can fit.
+    later. Required speakers are admitted first, as one set.
     """
     position = {ref: index for index, ref in enumerate(available)}
     newest_first = sorted(
@@ -718,8 +717,29 @@ def _recent_evidence_choice(
                 return True
         return False
 
-    for speaker in sorted(required_speakers):
-        admit([ref for ref in newest_first if available[ref].speaker == speaker])
+    # Required speakers are admitted as one set, so an earlier speaker's pick
+    # cannot crowd out a later one: their newest passages if those fit
+    # together, else their shortest (newest on ties). Only if neither set fits
+    # is each admitted best-effort; the speaker rule then decides.
+    rank = {ref: index for index, ref in enumerate(newest_first)}
+    by_speaker = [
+        [ref for ref in newest_first if available[ref].speaker == speaker]
+        for speaker in sorted(required_speakers)
+    ]
+    by_speaker = [refs for refs in by_speaker if refs]
+    for lead in (
+        [refs[0] for refs in by_speaker],
+        [
+            min(refs, key=lambda ref: (len(available[ref].text), rank[ref]))
+            for refs in by_speaker
+        ],
+    ):
+        if fits(choice_of(lead, widest)):
+            selected.extend(lead)
+            break
+    else:
+        for refs in by_speaker:
+            admit(refs)
     for ref in newest_first:
         admit([ref])
     return choice_of(selected, len(selected))

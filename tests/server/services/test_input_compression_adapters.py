@@ -1614,3 +1614,69 @@ def test_fallback_returns_a_selection_that_packs_whole_without_drops():
     assert [item.source_id for item in packet.evidence] == ["s2"]
     assert packet.omission_counts.capacity_points == 0
     assert packet.omissions == [RECENT_EVIDENCE_OMISSION.format(offered=1, visible=2)]
+
+
+def test_fallback_admits_all_required_speakers_as_one_fitting_set():
+    """A large newest Assistant passage must not crowd out the User passage."""
+    from reflexio.server.services.input_compression import (
+        RECENT_EVIDENCE_OMISSION,
+        CompressionChoice,
+        CompressionPoint,
+        OmissionCounts,
+        _fits_whole,
+        _pack_choice,
+        _recent_evidence_choice,
+        _require_speakers,
+    )
+
+    def source(source_id, speaker, order, text):
+        return EvidenceSource(
+            source_id=source_id,
+            request_id="r",
+            interaction_id=order,
+            field="content",
+            speaker=speaker,
+            source_order=order,
+            text=text,
+        )
+
+    available = {
+        "e1": source("agent-old", "Assistant", 1, "agent note " * 20),
+        "e2": source("user", "User", 2, "user turn " * 40),
+        "e3": source("agent-new", "Assistant", 3, "agent dump " * 60),
+    }
+    required = frozenset({"Assistant", "User"})
+
+    def measure(packet):
+        return len(packet.render())
+
+    def fits(choice, budget):
+        return _fits_whole(choice, available, budget, measure, lambda _p: True)
+
+    notice = RECENT_EVIDENCE_OMISSION.format(offered=3, visible=3)
+    smallest_pair = CompressionChoice(
+        points=[
+            CompressionPoint(category="selected_evidence", evidence_refs=[ref])
+            for ref in ("e1", "e2")
+        ],
+        omissions=[notice],
+    )
+    budget = measure(
+        _pack_choice(smallest_pair, available, 10**9, measure, lambda _p: True)
+    )
+    # The newest Assistant passage fits alone but not beside the User passage.
+    assert fits(
+        CompressionChoice(
+            points=[
+                CompressionPoint(category="selected_evidence", evidence_refs=["e3"])
+            ],
+            omissions=[notice],
+        ),
+        budget,
+    )
+    choice = _recent_evidence_choice(
+        available, required, lambda c: fits(c, budget), [], OmissionCounts()
+    )
+    packet = _pack_choice(choice, available, budget, measure, lambda _p: True)
+    _require_speakers(packet, available, required)
+    assert {item.source_id for item in packet.evidence} == {"agent-old", "user"}
