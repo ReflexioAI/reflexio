@@ -10,6 +10,7 @@ https://docs.z.ai/guides/vlm/glm-5.3-flash
 Only direct provider IDs are covered; third-party routes retain their own policy.
 """
 
+from collections.abc import Mapping
 from typing import Any
 
 import litellm
@@ -24,6 +25,42 @@ ANTHROPIC_MODELS = frozenset(
 MINIMAX_PREVIEW_MODEL = "minimax/MiniMax-M3.1-Flash-Preview"
 GLM_MODELS = frozenset({"zai/glm-5.3", "zai/glm-5.3-flash", "zai/glm-5.3-flashx"})
 SECONDARY_MODELS = GLM_MODELS | {MINIMAX_PREVIEW_MODEL}
+
+# Routes whose provider documents a request field that turns thinking OFF,
+# used for the client's one reasoning-exhausted retry. MiniMax (text-openai-api,
+# verified 2026-11-06): for MiniMax-M3 `{"type": "disabled"}` "Skips thinking and
+# answers directly", while MiniMax-M3.1-Flash "always thinks and returns `400`
+# if `disabled` is sent" -- so this is an allowlist, never a provider prefix.
+REASONING_EXHAUSTED_RETRY_MODELS = frozenset({"minimax/MiniMax-M3"})
+
+
+def disabled_thinking() -> dict[str, str]:
+    """The one spelling of MiniMax/Z.ai's `thinking` value that turns it off."""
+    return {"type": "disabled"}
+
+
+def with_thinking_disabled(extra_body: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return ``extra_body`` (copied) with thinking disabled."""
+    return {**(extra_body or {}), "thinking": disabled_thinking()}
+
+
+def reasoning_exhausted_retry_extra_body(
+    request: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """The ``extra_body`` for a thinking-disabled resend of ``request``, or None.
+
+    ``request`` is built completion params (or kwargs) carrying ``model`` and
+    optionally ``extra_body``. None when the model cannot disable thinking or
+    the caller already chose a thinking mode: an explicit choice is the
+    caller's, not the client's, to override. Request guards that pin a
+    qualified contract derive the admissible retry from this same function.
+    """
+    if request.get("model") not in REASONING_EXHAUSTED_RETRY_MODELS:
+        return None
+    extra_body = request.get("extra_body") or {}
+    if "thinking" in request or "thinking" in extra_body:
+        return None
+    return with_thinking_disabled(extra_body)
 
 
 def qualified_model_id(model: str) -> str | None:

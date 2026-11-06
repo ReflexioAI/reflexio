@@ -90,6 +90,9 @@ def legacy_observed_usage(payload: dict[str, Any] | None) -> dict[str, int] | No
 # same request often finishes on a later dispatch (each further one succeeded
 # about a fifth of the time in production), so a few are worth spending before
 # the window is held instead of exhausting the rest of its attempt budget.
+# The fingerprint omits ``extra_body``, so the client's thinking-disabled resend
+# of a reasoning-exhausted request counts against the SAME budget: the two
+# thinking modes together spend at most this many truncated dispatches.
 MAX_TRUNCATED_REQUEST_DISPATCHES = 4
 
 

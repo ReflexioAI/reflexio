@@ -13,6 +13,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from reflexio.server.llm import StructuredOutputRepairError, record_terminal_llm_failure
+from reflexio.server.llm._model_compat import with_thinking_disabled
 from reflexio.server.llm.input_budget import check_request_input_budget
 from reflexio.server.llm.litellm_client import LiteLLMClient, ProviderRequestGuardError
 from reflexio.server.llm.token_accounting import RunTokenCapture, run_token_capture
@@ -262,11 +263,7 @@ def plan_with_client(
             "max_tokens": output_reservation,
             "temperature": 0,
             "fallback_models": [],
-            **(
-                {"extra_body": {"thinking": {"type": "disabled"}}}
-                if direct_answer
-                else {}
-            ),
+            **({"extra_body": with_thinking_disabled(None)} if direct_answer else {}),
         }
 
     native_contract = client.get_completion_request_contract(**request_options())

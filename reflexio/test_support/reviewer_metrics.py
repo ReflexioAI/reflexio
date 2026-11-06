@@ -8,6 +8,8 @@ import threading
 import time
 from typing import Any
 
+from reflexio.server.llm._model_compat import reasoning_exhausted_retry_extra_body
+
 
 class ReviewCallMetrics(logging.Handler):
     """Observe one serial replay call without retaining log text or source data."""
@@ -27,6 +29,7 @@ class ReviewCallMetrics(logging.Handler):
             "repair_attempts": 0,
             "repair_successes": 0,
             "repair_kinds": [],
+            "thinking_disabled_retries": 0,
             "attempt_seconds": [],
             "usage": [],
         }
@@ -76,6 +79,14 @@ class ReviewCallMetrics(logging.Handler):
             if self.effort
             else {}
         )
+        body = params.get("extra_body") or {}
+        # The client's reasoning-exhausted resend differs from the frozen
+        # request only by disabling thinking; recorded, never silently admitted.
+        thinking_disabled_retry = (
+            not expected_body
+            and body
+            == reasoning_exhausted_retry_extra_body({"model": params.get("model")})
+        )
         if self.max_tokens is None and not self.data["provider_requests"]:
             self.effective_max_tokens = params.get("max_tokens")
         if (
@@ -85,7 +96,7 @@ class ReviewCallMetrics(logging.Handler):
             or params.get("num_retries") != 0
             or not parse_structured
             or params.get("max_tokens") != self.effective_max_tokens
-            or (params.get("extra_body") or {}) != expected_body
+            or (body != expected_body and not thinking_disabled_retry)
         ):
             raise ValueError("Reviewer inference request drifted from frozen settings")
         # Explicit allowlist: never serialize params, messages, headers or credentials.
@@ -95,6 +106,7 @@ class ReviewCallMetrics(logging.Handler):
                 "temperature": params["temperature"],
                 "max_tokens": params.get("max_tokens"),
                 "reasoning_effort": self.effort,
+                "thinking_disabled_retry": thinking_disabled_retry,
             }
         )
 
@@ -113,6 +125,8 @@ class ReviewCallMetrics(logging.Handler):
                 text,
             ):
                 self.data["repair_kinds"].append(match[1])
+        if "event=llm_reasoning_exhausted_retry " in text:
+            self.data["thinking_disabled_retries"] += 1
         if "event=llm_structured_repair_succeeded " in text:
             self.data["repair_successes"] += 1
         if text.startswith("Token usage - "):
