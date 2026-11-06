@@ -117,13 +117,7 @@ def _salvage_selection(
     fallback = "none"
     if not (retained and not call.validate(choice) and call.pack_choice(choice).points):
         fallback = "recent_evidence"
-        recent = call.recent_evidence_choice()
-        choice = recent.model_copy(
-            update={
-                "omissions": [*unseen_notice, *recent.omissions],
-                "omission_counts": counts,
-            }
-        )
+        choice = call.recent_evidence_choice(unseen_notice, counts)
     kept_points = len(call.pack_choice(choice).points)
     if not kept_points:
         # Accepted, but nothing of this section's evidence survives, so the

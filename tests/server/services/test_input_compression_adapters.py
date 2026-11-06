@@ -1404,7 +1404,9 @@ def test_salvage_judges_usability_with_its_own_omission_notice(caplog):
         budget,
         pack,
         tuple(available),
-        lambda: _recent_evidence_choice(available, frozenset()),
+        lambda notes, counts: _recent_evidence_choice(
+            available, frozenset(), pack, notes, counts
+        ),
     )
     choice, discarded = _salvage_selection(
         call,
@@ -1420,3 +1422,83 @@ def test_salvage_judges_usability_with_its_own_omission_notice(caplog):
         "event=compression_selection_salvaged reason=unseen_refs "
         "fallback=recent_evidence kept_points=1 discarded_groups=1"
     ]
+
+
+def test_fallback_keeps_an_older_required_speaker_passage_that_fits(caplog):
+    """The newest required-speaker passage may not fit; an older one must lead."""
+    from reflexio.server.services.input_compression import (
+        RECENT_EVIDENCE_OMISSION,
+        CompressionCall,
+        CompressionChoice,
+        CompressionPoint,
+        OmissionCounts,
+        _pack_choice,
+        _recent_evidence_choice,
+        _require_speakers,
+    )
+    from reflexio.server.services.input_compression_llm import (
+        _ReferenceSelection,
+        _salvage_selection,
+    )
+
+    def source(source_id, speaker, order, text):
+        return EvidenceSource(
+            source_id=source_id,
+            request_id="r",
+            interaction_id=order,
+            field="content",
+            speaker=speaker,
+            source_order=order,
+            text=text,
+        )
+
+    available = {
+        "e1": source("agent-old", "Assistant", 1, "agent note " * 40),
+        "e2": source("user-a", "User", 2, "user turn a " * 40),
+        "e3": source("user-b", "User", 3, "user turn b " * 40),
+        "e4": source("agent-new", "Assistant", 4, "agent dump " * 4000),
+    }
+    required = frozenset({"Assistant"})
+
+    def measure(packet):
+        return len(packet.render())
+
+    notice = RECENT_EVIDENCE_OMISSION.format(offered=4, visible=4)
+    two_users = CompressionChoice(
+        points=[
+            CompressionPoint(category="selected_evidence", evidence_refs=[ref])
+            for ref in ("e3", "e2")
+        ],
+        omissions=[notice],
+    )
+    budget = measure(
+        _pack_choice(two_users, available, 1_000_000, measure, lambda _p: True)
+    )
+
+    def pack_points(choice):
+        return _pack_choice(choice, available, budget, measure, lambda _p: True)
+
+    def pack(choice):
+        packet = pack_points(choice)
+        _require_speakers(packet, available, required)
+        return packet
+
+    call = CompressionCall(
+        "key",
+        [],
+        budget,
+        pack,
+        tuple(available),
+        lambda notes, counts: _recent_evidence_choice(
+            available, required, pack_points, notes, counts
+        ),
+    )
+    # Newest-first alone would admit the two User turns and leave no room.
+    assert len(available["e4"].text) > budget
+    choice, _ = _salvage_selection(call, _ReferenceSelection(points=[]))
+    packet = pack(choice)
+    assert "agent-old" in {item.source_id for item in packet.evidence}
+    assert choice.omission_counts == OmissionCounts()
+    assert _salvage_events(caplog)[0].startswith(
+        "event=compression_selection_salvaged reason=rejected fallback=recent_evidence"
+    )

@@ -175,7 +175,9 @@ RECENT_EVIDENCE_OMISSION = (
 _MAX_CHOICE_POINTS = 128
 
 
-def _no_recent_evidence() -> CompressionChoice:
+def _no_recent_evidence(
+    _omissions: Sequence[str], _omission_counts: OmissionCounts
+) -> CompressionChoice:
     raise CompressionError("Compression call has no host evidence fallback")
 
 
@@ -187,8 +189,11 @@ class CompressionCall:
     pack_choice: Callable[[CompressionChoice], EvidencePacket]
     visible_refs: tuple[str, ...] = ()
     # Deterministic, provider-free selection of original visible passages,
-    # for a caller whose provider selection left nothing usable.
-    recent_evidence_choice: Callable[[], CompressionChoice] = _no_recent_evidence
+    # for a caller whose provider selection left nothing usable. The caller's
+    # own host notices and counts are part of the choice it sizes.
+    recent_evidence_choice: Callable[
+        [Sequence[str], OmissionCounts], CompressionChoice
+    ] = _no_recent_evidence
 
     def validate(self, choice: CompressionChoice) -> list[str]:
         """Validate a possibly partial whole-point result without hiding errors."""
@@ -634,15 +639,32 @@ def _pack_choice(
     return result
 
 
+def _with_prior_omissions(
+    choice: CompressionChoice, packets: Sequence[EvidencePacket]
+) -> CompressionChoice:
+    # Cache only this selection's LOCAL counts. Reconstruct inherited counts
+    # from its children on every read, never add them twice.
+    counts = choice.omission_counts
+    for packet in packets:
+        counts = counts.plus(packet.omission_counts)
+    return choice.model_copy(update={"omission_counts": counts})
+
+
 def _recent_evidence_choice(
-    available: Mapping[str, EvidenceSource], required_speakers: frozenset[str]
+    available: Mapping[str, EvidenceSource],
+    required_speakers: frozenset[str],
+    pack: Callable[[CompressionChoice], EvidencePacket],
+    omissions: Sequence[str],
+    omission_counts: OmissionCounts,
 ) -> CompressionChoice:
     """Rank every visible passage newest first as one whole point each.
 
     No provider output is involved: the host copies original spans exactly as
-    for any selection, and ``_pack_choice`` keeps ranked points that fit,
-    recording capacity drops. The newest passage of each required speaker
-    leads, so the speaker rule is satisfied whenever any such passage fits.
+    for any selection, and ``pack`` (whole-point packing without the speaker
+    rule) keeps ranked points that fit, recording capacity drops. For each
+    required speaker, the newest of its passages that survives that same
+    packing pass leads, so the speaker rule holds whenever any of its passages
+    can fit; the remaining passages follow newest first.
     """
     position = {ref: index for index, ref in enumerate(available)}
     newest_first = sorted(
@@ -650,24 +672,39 @@ def _recent_evidence_choice(
         key=lambda ref: (available[ref].source_order, position[ref]),
         reverse=True,
     )
-    leading = [
-        next(ref for ref in newest_first if available[ref].speaker == speaker)
-        for speaker in sorted(required_speakers)
-        if any(source.speaker == speaker for source in available.values())
+    notes = [
+        *omissions,
+        RECENT_EVIDENCE_OMISSION.format(
+            offered=min(len(available), _MAX_CHOICE_POINTS), visible=len(available)
+        ),
     ]
-    ranked = [*leading, *(ref for ref in newest_first if ref not in leading)]
-    offered = ranked[:_MAX_CHOICE_POINTS]
-    return CompressionChoice(
-        points=[
-            CompressionPoint(category="selected_evidence", evidence_refs=[ref])
-            for ref in offered
-        ],
-        omissions=[
-            RECENT_EVIDENCE_OMISSION.format(
-                offered=len(offered), visible=len(available)
-            )
-        ],
-    )
+
+    def ranked(leading: list[str]) -> CompressionChoice:
+        refs = [*leading, *(ref for ref in newest_first if ref not in leading)]
+        return CompressionChoice(
+            points=[
+                CompressionPoint(category="selected_evidence", evidence_refs=[ref])
+                for ref in refs[:_MAX_CHOICE_POINTS]
+            ],
+            omissions=notes,
+            omission_counts=omission_counts,
+        )
+
+    def survives(leading: list[str]) -> bool:
+        try:
+            packet = pack(ranked(leading))
+        except CompressionError:
+            return False
+        kept = {ref for point in packet.points for ref in point.evidence_refs}
+        return all(available[ref].source_id in kept for ref in leading)
+
+    leading: list[str] = []
+    for speaker in sorted(required_speakers):
+        for ref in newest_first:
+            if available[ref].speaker == speaker and survives([*leading, ref]):
+                leading.append(ref)
+                break
+    return ranked(leading)
 
 
 def _require_speakers(
@@ -959,22 +996,17 @@ def plan_compression_input(
             )
             inspect_node(CompressionNodeInput(key, input_refs_digest))
 
-            def with_prior_omissions(choice: CompressionChoice) -> CompressionChoice:
-                # Cache only this selection's LOCAL counts. Reconstruct inherited
-                # counts from its children on every read, never add them twice.
-                counts = choice.omission_counts
-                for packet in packets:
-                    counts = counts.plus(packet.omission_counts)
-                return choice.model_copy(update={"omission_counts": counts})
-
-            def pack_choice(choice: CompressionChoice) -> EvidencePacket:
-                packet = _pack_choice(
-                    with_prior_omissions(choice),
+            def pack_points(choice: CompressionChoice) -> EvidencePacket:
+                return _pack_choice(
+                    _with_prior_omissions(choice, packets),
                     available,
                     budget.output_tokens,
                     measure_output,
                     lambda packet: final or parent_cost(packet) <= intermediate_limit,
                 )
+
+            def pack_choice(choice: CompressionChoice) -> EvidencePacket:
+                packet = pack_points(choice)
                 _require_speakers(packet, available, required)
                 return packet
 
@@ -992,7 +1024,9 @@ def plan_compression_input(
                         budget.output_tokens,
                         pack_choice,
                         tuple(available),
-                        lambda: _recent_evidence_choice(available, required),
+                        lambda omissions, counts: _recent_evidence_choice(
+                            available, required, pack_points, omissions, counts
+                        ),
                     )
                 )
                 calls += 1
