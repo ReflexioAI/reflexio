@@ -7,7 +7,13 @@ implementing its sweep-progress member, ``OpenWorldSweepProgressStore``:
 * ``open_world_sweep_progress`` -- one row per playbook per UTC day, the
   record a sweep tick writes and the queue read drains.
 * ``user_playbook_exposure_events`` -- the published exposure ledger. The
-  queue's activity predicate reads it. Nothing on SQLite writes it yet.
+  queue's activity predicate reads it. Publishing an interaction writes it,
+  inside the interaction's transaction (:meth:`SQLiteOpenWorldMixin.
+  _record_published_exposures_locked`); clearing a user deletes the rows that
+  name them as viewer or playbook owner. ``integrity_state`` and
+  ``integrity_reasons`` are stored at write time from
+  :func:`~reflexio.server.services.search_exposure.exposure_event_integrity`,
+  the one definition; Postgres derives them in generated columns.
 
 The semantics mirror the Postgres functions ``record_open_world_sweep_progress``
 and the two-argument ``load_open_world_playbooks_without_progress`` row for
@@ -24,13 +30,22 @@ several times. Every result the contract can observe is the same.
 
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 import time
 from collections.abc import Callable
+from dataclasses import astuple
 from datetime import UTC, datetime
 from typing import Any
 
+from reflexio.models.api_schema.domain import Interaction
+from reflexio.server.services.offline_tuner.exposure_receipts import (
+    PUBLISHED_EXPOSURE_PREFIX,
+    build_published_exposure_events,
+    published_playbook_id,
+    receipt_project_id,
+)
 from reflexio.server.services.offline_tuner.open_world_records import (
     EVIDENCE_REATTEMPT_COOLDOWN_SECONDS,
     EVIDENCE_REATTEMPT_LOOKBACK_SECONDS,
@@ -42,15 +57,16 @@ from reflexio.server.services.offline_tuner.open_world_records import (
     SweepProgressRecord,
     SweepQueueEntry,
 )
+from reflexio.server.services.search_exposure import (
+    UserPlaybookExposureEvent,
+    exposure_event_integrity,
+)
 from reflexio.server.services.storage.error import StorageError
 
 from ._base import SQLiteStorageBase
 
 _SECONDS_PER_DAY = 86_400
 
-#: The exposure-event id prefix the published-exposure path writes. Only these
-#: rows count as activity, as in the Postgres read.
-_PUBLISHED_EXPOSURE_PREFIX = "publish-v1:"
 
 _OPEN_WORLD_DDL = """
 CREATE TABLE IF NOT EXISTS open_world_sweep_progress (
@@ -65,8 +81,13 @@ CREATE TABLE IF NOT EXISTS open_world_sweep_progress (
 CREATE INDEX IF NOT EXISTS idx_open_world_sweep_progress_attempted_at
     ON open_world_sweep_progress(user_playbook_id, attempted_at DESC);
 
+"""
+
+# Only the activity predicate's (playbook, window) read and the request join
+# are indexed; a single-tenant ledger needs no per-subject indexes.
+_EXPOSURE_DDL = """
 CREATE TABLE IF NOT EXISTS user_playbook_exposure_events (
-    exposure_event_id TEXT PRIMARY KEY,
+    exposure_event_id TEXT PRIMARY KEY CHECK (trim(exposure_event_id, ' ') != ''),
     request_id TEXT,
     session_id TEXT,
     user_id TEXT,
@@ -75,9 +96,15 @@ CREATE TABLE IF NOT EXISTS user_playbook_exposure_events (
     served_semantic_digest TEXT,
     served_full_version_fingerprint TEXT,
     exposed_at INTEGER,
-    ingested_at INTEGER NOT NULL,
+    ingested_at INTEGER NOT NULL CHECK (ingested_at >= 0),
     governance_subject_ref TEXT,
-    playbook_owner_governance_subject_ref TEXT
+    playbook_owner_governance_subject_ref TEXT,
+    integrity_state TEXT NOT NULL,
+    integrity_reasons TEXT NOT NULL,
+    CHECK (
+        (integrity_state = 'complete' AND integrity_reasons = '[]')
+        OR (integrity_state = 'incomplete' AND integrity_reasons != '[]')
+    )
 );
 CREATE INDEX IF NOT EXISTS idx_up_exposure_events_playbook_window
     ON user_playbook_exposure_events(
@@ -86,6 +113,43 @@ CREATE INDEX IF NOT EXISTS idx_up_exposure_events_playbook_window
 CREATE INDEX IF NOT EXISTS idx_up_exposure_events_request_id
     ON user_playbook_exposure_events(request_id);
 """
+
+#: Every stored column of an exposure row, in ``UserPlaybookExposureEvent``
+#: field order, then the two integrity columns.
+_EXPOSURE_COLUMNS = (
+    "exposure_event_id",
+    "request_id",
+    "session_id",
+    "user_id",
+    "playbook_owner_user_id",
+    "user_playbook_id",
+    "served_semantic_digest",
+    "served_full_version_fingerprint",
+    "exposed_at",
+    "ingested_at",
+    "governance_subject_ref",
+    "playbook_owner_governance_subject_ref",
+    "integrity_state",
+    "integrity_reasons",
+)
+
+_INSERT_EXPOSURE_SQL = (
+    f"INSERT INTO user_playbook_exposure_events ({', '.join(_EXPOSURE_COLUMNS)})"
+    f" VALUES ({', '.join('?' * len(_EXPOSURE_COLUMNS))})"
+    " ON CONFLICT (exposure_event_id) DO NOTHING"
+)
+
+#: Columns an existing event must match for a re-record to be a no-op. The two
+#: timestamps are exempt, as the Postgres writer exempts them when the publish
+#: path asks it to reuse existing timestamps.
+_EXPOSURE_IDENTITY_COLUMNS = tuple(
+    name for name in _EXPOSURE_COLUMNS[:12] if name not in {"exposed_at", "ingested_at"}
+)
+
+
+def _exposure_row(event: UserPlaybookExposureEvent) -> tuple[object, ...]:
+    state, reasons = exposure_event_integrity(event)
+    return (*astuple(event), state, json.dumps(list(reasons)))
 
 
 def migrate_open_world(conn: sqlite3.Connection) -> None:
@@ -96,6 +160,40 @@ def migrate_open_world(conn: sqlite3.Connection) -> None:
     """
     with conn:
         conn.executescript("BEGIN;\n" + _OPEN_WORLD_DDL + "\nCOMMIT;")
+    _rebuild_exposure_ledger_without_integrity(conn)
+    with conn:
+        conn.executescript("BEGIN;\n" + _EXPOSURE_DDL + "\nCOMMIT;")
+
+
+def _rebuild_exposure_ledger_without_integrity(conn: sqlite3.Connection) -> None:
+    """Bring a ledger created before the integrity columns to the current shape.
+
+    The table first shipped without ``integrity_state`` / ``integrity_reasons``
+    (and without its CHECKs). SQLite cannot add a ``NOT NULL`` column without a
+    default, so the table is rebuilt: rows are read, the old table and its
+    indexes dropped, and every row re-inserted with its integrity computed by
+    the one shared function. A no-op when the table is absent or current.
+    """
+    columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(user_playbook_exposure_events)")
+    }
+    if not columns or "integrity_state" in columns:
+        return
+    with conn:
+        conn.execute("BEGIN")
+        rows = conn.execute(
+            f"SELECT {', '.join(_EXPOSURE_COLUMNS[:12])}"
+            " FROM user_playbook_exposure_events"
+        ).fetchall()
+        conn.execute("DROP TABLE user_playbook_exposure_events")
+        for statement in _EXPOSURE_DDL.split(";"):
+            if statement.strip():
+                conn.execute(statement)
+        conn.executemany(
+            _INSERT_EXPOSURE_SQL,
+            [_exposure_row(UserPlaybookExposureEvent(*tuple(row))) for row in rows],
+        )
 
 
 _RECORD_SQL = """
@@ -233,11 +331,105 @@ def _clock_reading(clock: Callable[[], float]) -> tuple[int, str]:
 
 
 class SQLiteOpenWorldMixin:
-    """``OpenWorldSweepProgressStore`` on SQLite."""
+    """``OpenWorldSweepProgressStore`` on SQLite, and the published-exposure ledger."""
 
     conn: sqlite3.Connection
+    org_id: str
     _lock: Any
     _own_transaction: Any
+    _subject_ref_for_user_id: Any
+    _assert_subject_writable_locked: Any
+
+    def _record_published_exposures_locked(self, interaction: Interaction) -> None:
+        """Record a NEWLY inserted interaction's served user playbooks.
+
+        Runs inside the interaction's own transaction, under the storage lock,
+        after its row is written, so its exposure rows commit with it or not
+        at all. Events come from :func:`build_published_exposure_events`;
+        served digests only from a receipt that verifies.
+
+        A reference this store cannot attribute records nothing and does not
+        fail the publish: an id naming no playbook, a playbook without an
+        owner, or an interaction whose request (or its session) is not
+        stored. Postgres refuses the whole publish instead; the shared port
+        contract records the difference (``refuses_unattributable_exposure``).
+
+        Raises:
+            SubjectWriteBarrierError: A playbook owner is under an erasure
+                barrier; the interaction rolls back with it.
+            StorageError: An event id is already stored with different content.
+        """
+        playbook_ids = sorted(
+            {
+                number
+                for ref in interaction.retrieved_learnings
+                if ref.kind == "user_playbook"
+                and (number := published_playbook_id(ref.learning_id)) is not None
+            }
+        )
+        if not playbook_ids:
+            return
+        request = self.conn.execute(
+            "SELECT session_id FROM requests WHERE request_id = ? AND user_id = ?",
+            (interaction.request_id, interaction.user_id),
+        ).fetchone()
+        if request is None or not request["session_id"]:
+            return
+        owners = {
+            int(row["user_playbook_id"]): str(row["user_id"])
+            for row in self.conn.execute(
+                "SELECT user_playbook_id, user_id FROM user_playbooks"
+                f" WHERE user_playbook_id IN ({', '.join('?' * len(playbook_ids))})",
+                playbook_ids,
+            ).fetchall()
+            if row["user_id"]
+        }
+        for owner_ref in sorted(
+            {self._subject_ref_for_user_id(owner) for owner in owners.values()}
+        ):
+            self._assert_subject_writable_locked(owner_ref)
+        events = build_published_exposure_events(
+            interaction,
+            org_id=self.org_id,
+            project_id=receipt_project_id(),
+            session_id=str(request["session_id"]),
+            owners=owners,
+            subject_ref=self._subject_ref_for_user_id,
+            ingested_at=int(time.time()),
+        )
+        for event in events:
+            if self.conn.execute(_INSERT_EXPOSURE_SQL, _exposure_row(event)).rowcount:
+                continue
+            existing = self.conn.execute(
+                f"SELECT {', '.join(_EXPOSURE_IDENTITY_COLUMNS)}"
+                " FROM user_playbook_exposure_events WHERE exposure_event_id = ?",
+                (event.exposure_event_id,),
+            ).fetchone()
+            if existing is None or tuple(existing) != tuple(
+                getattr(event, name) for name in _EXPOSURE_IDENTITY_COLUMNS
+            ):
+                raise StorageError(
+                    message="user playbook exposure event conflict: "
+                    + event.exposure_event_id
+                )
+
+    def _delete_exposure_events_for_user_locked(self, user_id: str) -> int:
+        """Delete every exposure naming ``user_id`` as viewer or playbook owner.
+
+        Matches by user id and by governance subject ref, as the Postgres
+        clear does. The caller owns the transaction.
+
+        Returns:
+            int: Rows deleted.
+        """
+        subject_ref = self._subject_ref_for_user_id(user_id)
+        return self.conn.execute(
+            "DELETE FROM user_playbook_exposure_events"
+            " WHERE governance_subject_ref = ? OR user_id = ?"
+            " OR playbook_owner_governance_subject_ref = ?"
+            " OR playbook_owner_user_id = ?",
+            (subject_ref, user_id, subject_ref, user_id),
+        ).rowcount
 
     #: The clock both sweep-progress methods read, once per call. Tests replace
     #: it on an instance to place the call at a chosen instant.
@@ -317,7 +509,7 @@ class SQLiteOpenWorldMixin:
             "day_start": now - now % _SECONDS_PER_DAY,
             "window_seconds": None if window_seconds is None else int(window_seconds),
             "limit": max(int(limit), 1),
-            "published_prefix": _PUBLISHED_EXPOSURE_PREFIX,
+            "published_prefix": PUBLISHED_EXPOSURE_PREFIX,
             "evidence_prefix": EVIDENCE_REATTEMPT_PREFIX,
             "retry_outcome": RETRY_ELIGIBLE_OUTCOME,
             "attempt_cap": MAX_SAME_DAY_SWEEP_ATTEMPTS,

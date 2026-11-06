@@ -27,6 +27,11 @@ All data is synthetic.
 
 Invariants covered
 ------------------
+I10, I11, I12 and I18 (exposure part) -- the published-exposure ledger, in
+:class:`~reflexio.test_support.open_world_exposure_contract.PublishedExposureContract`,
+which :class:`OpenWorldPortContract` inherits so no binding can run one half
+without the other.
+
 I16 -- sweep progress (``OpenWorldSweepProgressStore``):
 
 * one row per playbook per UTC day, its day and ``attempted_at`` from one
@@ -67,6 +72,10 @@ from reflexio.server.services.offline_tuner.open_world_records import (
     SweepProgressRecord,
     SweepQueueEntry,
 )
+from reflexio.test_support.open_world_exposure_contract import (
+    ExposureHarness,
+    PublishedExposureContract,
+)
 
 _DAY = 86_400
 #: A synthetic activity window: two weeks, the shape of the production policy.
@@ -89,7 +98,7 @@ class ProgressRow(NamedTuple):
     attempt_count: int
 
 
-class PortHarness(Protocol):
+class PortHarness(ExposureHarness, Protocol):
     """What a backend binding supplies: the store and direct-write seeders.
 
     Seeders write the backend's tables directly, bypassing the port, so a test
@@ -221,7 +230,7 @@ def _attempted_at(harness: PortHarness, playbook_id: int) -> int:
     return row.attempted_at
 
 
-class OpenWorldPortContract:
+class OpenWorldPortContract(PublishedExposureContract):
     """The port's behaviour, asserted identically on every backend."""
 
     # ----------------------------------------------------------------- I16
