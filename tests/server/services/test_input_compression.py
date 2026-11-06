@@ -1015,3 +1015,62 @@ def test_explicit_standalone_project_is_scoped_and_distinct_from_named_project()
     ):
         with pytest.raises(CompressionError, match="scoped"):
             plan(source_data, scope=scope)
+
+
+def _agent_source(index, text):
+    return source(index, text).model_copy(update={"speaker": "agent"})
+
+
+def test_required_speaker_is_repaired_into_every_selection_that_saw_one():
+    # A consumer that needs an agent passage must not receive a packet whose
+    # selections dropped them all after the provider was paid.
+    sources = [
+        source(i, f"Constraint {i}: approval is required. " + "log " * 700)
+        for i in range(1, 7)
+    ]
+    sources.insert(3, _agent_source(9, "Agent ran the deploy. " + "log " * 700))
+    sources = [s.model_copy(update={"source_order": i}) for i, s in enumerate(sources)]
+    rejected = []
+
+    def complete(call):
+        packets = packets_for(call)
+        evidence = [s for packet in packets for s in packet["evidence"]]
+        refs = [s["source_id"] for s in evidence if "approval" in s["text"]][:1]
+        refs = refs or [evidence[0]["source_id"]]
+        choice = CompressionChoice(
+            points=[CompressionPoint(category="constraint", evidence_refs=refs)]
+        )
+        errors = call.validate(choice)
+        if errors:
+            rejected.extend(errors)
+            agent = [s["source_id"] for s in evidence if s["speaker"] == "agent"]
+            choice.points.insert(
+                0, CompressionPoint(category="observation", evidence_refs=agent[:1])
+            )
+        return choice
+
+    result = run(sources, complete=complete, required_speakers=("agent",))
+
+    assert any("'agent' passage" in error for error in rejected)
+    assert any(s.speaker == "agent" for s in result.packet.evidence)
+
+    without = run(sources, complete=selected)
+    assert not any(s.speaker == "agent" for s in without.packet.evidence)
+
+
+def test_a_cached_selection_missing_a_required_speaker_is_refused():
+    sources = [
+        source(1, "Constraint: approval is required. " + "log " * 700),
+        _agent_source(2, "Agent ran the deploy. " + "log " * 700),
+    ]
+    cache = {}
+    run(sources, complete=selected, save=cache.__setitem__)
+    assert cache
+
+    with pytest.raises(CompressionError, match="'agent' passage"):
+        run(
+            sources,
+            complete=lambda _call: pytest.fail("Replay must use saved selections"),
+            load=cache.get,
+            required_speakers=("agent",),
+        )

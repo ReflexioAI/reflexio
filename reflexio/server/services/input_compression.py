@@ -613,6 +613,28 @@ def _pack_choice(
     return result
 
 
+def _require_speakers(
+    packet: EvidencePacket,
+    available: Mapping[str, EvidenceSource],
+    required_speakers: frozenset[str],
+) -> None:
+    """Keep at least one passage of each required speaker this selection saw.
+
+    Held at every selection, so it holds inductively for the final packet:
+    merged products keep their children's evidence, and a speaker absent from
+    a selection's input cannot be demanded of it. A violation is a validation
+    error, so the provider is asked to repair before the host gives up.
+    """
+    kept = {source.speaker for source in packet.evidence}
+    for speaker in sorted(required_speakers - kept):
+        refs = [ref for ref, source in available.items() if source.speaker == speaker]
+        if refs:
+            raise CompressionError(
+                f"Selection must cite at least one {speaker!r} passage; "
+                f"keep a point citing one of: {', '.join(refs[:8])}."
+            )
+
+
 def _combine(
     products: list[EvidencePacket],
     *,
@@ -671,6 +693,7 @@ def plan_compression_input(
     output_contract: str = "packet-json-v1",
     estimate_output: Callable[[EvidencePacket], int] | None = None,
     response_schema: Mapping[str, Any] | None = None,
+    required_speakers: Sequence[str] = (),
 ) -> CompressionPlan:
     """Freeze exact section geometry without model, cache or storage access.
 
@@ -684,6 +707,9 @@ def plan_compression_input(
     # Freeze caller-owned containers before callbacks or later execution.
     sources = tuple(sources)
     scope = dict(scope)
+    # An acceptance rule, like the capacity checks: it changes no request,
+    # section or cached key, so admitted plans and their witnesses still bind.
+    required = frozenset(required_speakers)
     schema = (
         json.loads(_json(dict(response_schema)))
         if response_schema is not None
@@ -885,13 +911,15 @@ def plan_compression_input(
                 return choice.model_copy(update={"omission_counts": counts})
 
             def pack_choice(choice: CompressionChoice) -> EvidencePacket:
-                return _pack_choice(
+                packet = _pack_choice(
                     with_prior_omissions(choice),
                     available,
                     budget.output_tokens,
                     measure_output,
                     lambda packet: final or parent_cost(packet) <= intermediate_limit,
                 )
+                _require_speakers(packet, available, required)
+                return packet
 
             cached = load(key)
             if cached is not None:
@@ -965,6 +993,7 @@ def compress_input(
     output_contract: str = "packet-json-v1",
     estimate_output: Callable[[EvidencePacket], int] | None = None,
     response_schema: Mapping[str, Any] | None = None,
+    required_speakers: Sequence[str] = (),
 ) -> CompressionResult:
     """Prepare and execute bounded source compression through the same plan.
 
@@ -982,4 +1011,5 @@ def compress_input(
         output_contract=output_contract,
         estimate_output=estimate_output,
         response_schema=response_schema,
+        required_speakers=required_speakers,
     ).execute(complete=complete, load=load, save=save)

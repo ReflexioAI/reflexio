@@ -218,6 +218,7 @@ def plan_with_client(
     measure_output: Callable[[EvidencePacket], int] = packet_tokens,
     output_contract: str = "packet-json-v1",
     estimate_output: Callable[[EvidencePacket], int] | None = None,
+    required_speakers: Sequence[str] = (),
 ) -> ClientCompressionPlan:
     """Prepare and price actual initial native requests without provider/cache I/O.
 
@@ -298,6 +299,7 @@ def plan_with_client(
         output_contract=output_contract,
         estimate_output=estimate_output,
         response_schema=_ReferenceSelection.model_json_schema(),
+        required_speakers=required_speakers,
     )
 
     def check_leaf_requests() -> tuple[tuple[str, int], ...]:
@@ -453,6 +455,7 @@ def compress_with_client(
     measure_output: Callable[[EvidencePacket], int] = packet_tokens,
     output_contract: str = "packet-json-v1",
     estimate_output: Callable[[EvidencePacket], int] | None = None,
+    required_speakers: Sequence[str] = (),
 ) -> CompressionResult:
     """Prepare and execute through the same native plan and usage guards.
 
@@ -470,4 +473,5 @@ def compress_with_client(
         measure_output=measure_output,
         output_contract=output_contract,
         estimate_output=estimate_output,
+        required_speakers=required_speakers,
     ).execute(before_call=before_call, load=load, save=save)

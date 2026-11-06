@@ -368,7 +368,8 @@ def project_trajectory_spans(
                     )
                 )
             for field, text in fields:
-                if not text:
+                # A span must carry citable text; a blank turn has none.
+                if not text.strip():
                     continue
                 field_path = f"requests[{request_index}].interactions[{interaction_index}].{field}"
                 speaker = (
