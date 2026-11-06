@@ -33,6 +33,8 @@ _OSS_TEST_POLLUTING_ENV_VARS = (
     "REFLEXIO_RERANK_SERVICE_TIMEOUT_MS",
     "REFLEXIO_RERANK_ENABLED",
     "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
+    "REFLEXIO_URL",
+    "IS_TEST_ENV",
 )
 for _var in _OSS_TEST_POLLUTING_ENV_VARS:
     os.environ.pop(_var, None)
@@ -298,6 +300,19 @@ def _reset_runtime_services() -> Iterator[None]:
             scheduler.stop(timeout_seconds=5)
             assert not scheduler.is_running(), (
                 "test-owned aggregation scheduler did not stop"
+            )
+    # Constructing a library engine starts a durable-learning scheduler for its
+    # storage directory; left running it logs discovery failures into later
+    # tests' caplog. Stop outside ``_lock``: the scheduler's callback takes it.
+    durable_module = sys.modules.get("reflexio.server.services.durable_learning.local")
+    if durable_module is not None:
+        with durable_module._lock:
+            durable = list(durable_module._schedulers.values())
+            durable_module._schedulers.clear()
+        for scheduler in durable:
+            scheduler.stop(timeout_seconds=5)
+            assert not scheduler.is_running(), (
+                "test-owned durable learning scheduler did not stop"
             )
     for var in _OSS_TEST_POLLUTING_ENV_VARS:
         os.environ.pop(var, None)

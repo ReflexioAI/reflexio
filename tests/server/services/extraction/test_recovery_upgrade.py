@@ -6,6 +6,13 @@ from reflexio.models.api_schema.service_schemas import UserProfile
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.sqlite_storage._base import SQLiteStorageBase
 
+_RECOVERY_COLUMNS = (
+    "progress_stage",
+    "last_progress_at",
+    "recovery_operation_id",
+    "recovery_history",
+)
+
 
 def test_historical_rows_and_receipts_survive_reopen_upgrade(tmp_path):
     path = str(tmp_path / "historical.db")
@@ -14,8 +21,12 @@ def test_historical_rows_and_receipts_survive_reopen_upgrade(tmp_path):
     with patch.object(SQLiteStorageBase, "_migrate_agent_runs_schema"):
         storage = SQLiteStorage(org_id="org", db_path=path)
     try:
+        # Fresh databases now create these columns directly, so remove them to
+        # recover the layout an existing pre-recovery database actually has.
+        for name in _RECOVERY_COLUMNS:
+            storage.conn.execute(f"ALTER TABLE _agent_runs DROP COLUMN {name}")
         columns = [r[1] for r in storage.conn.execute("PRAGMA table_info(_agent_runs)")]
-        assert "last_progress_at" not in columns
+        assert not set(_RECOVERY_COLUMNS) & set(columns)
         for identifier, status in (
             ("old-running", "running"),
             ("old-output", "finalization_failed"),
