@@ -744,3 +744,97 @@ def test_a_failure_that_is_not_the_judge_still_reaches_the_scheduler(
     failure keeps propagating to ``GroupEvaluationScheduler._run_callback``."""
     with pytest.raises(RuntimeError, match="storage down"):
         _run_with_failure(service, monkeypatch, [RuntimeError("storage down")])
+
+
+# --- provider outage: wait, uncharged --------------------------------------------------
+
+_OUTAGE_ROUTE = "minimax/MiniMax-M3||-"
+
+
+def _open_breaker() -> None:
+    from reflexio.server.llm.provider_circuit import (
+        OPEN_AFTER_FAILURES,
+        provider_circuit,
+    )
+
+    for _ in range(OPEN_AFTER_FAILURES):
+        provider_circuit.admit(_OUTAGE_ROUTE, model="minimax/MiniMax-M3").failed()
+
+
+def _circuit_refusal() -> BaseException:
+    from reflexio.server.llm.provider_circuit import ProviderCircuitOpenError
+
+    refused = ProviderCircuitOpenError(
+        "Provider circuit open for minimax/MiniMax-M3; request not sent"
+    )
+    refused.circuit_route = _OUTAGE_ROUTE
+    return refused
+
+
+def test_an_open_breaker_waits_without_spending_retries(
+    service: GenerationService,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """PYTHON-FASTAPI-18Z: four refusals by an open breaker spent every retry
+    and dropped the evaluation at ERROR. An outage longer than the retry bound
+    must wait for the provider and then evaluate."""
+    _open_breaker()
+    refusals: list[BaseException] = [
+        _extractor_failure(_circuit_refusal()) for _ in range(6)
+    ]
+    with caplog.at_level(logging.INFO):
+        scheduler, runner = _run_with_failure(service, monkeypatch, refusals)
+
+    assert runner.call_count == 6 + 1  # more than 1 + 3: no retry was charged
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+    waits = [
+        r
+        for r in _gen_records(caplog, logging.WARNING)
+        if "event=agent_success_provider_wait" in r.getMessage()
+    ]
+    assert len(waits) == 6
+    assert all("attempt=0/3" in r.getMessage() for r in waits)
+    for call in scheduler.schedule.call_args_list[1:]:
+        assert call.kwargs["delay_seconds"] > 0
+
+
+def test_retries_after_an_outage_keep_their_full_bound(
+    service: GenerationService,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The bound for genuine transient failures is unchanged by an outage."""
+    _open_breaker()
+    failures: list[BaseException] = [
+        _extractor_failure(_circuit_refusal()) for _ in range(3)
+    ]
+    failures += [_extractor_failure(ValueError("unknown verdict"))]
+    with caplog.at_level(logging.INFO):
+        _, runner = _run_with_failure(service, monkeypatch, failures)
+
+    assert runner.call_count == 4
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1
+    assert "after 1 attempt(s) (transient=False)" in errors[0].getMessage()
+
+
+def test_a_rate_limit_while_the_breaker_is_closed_keeps_the_bounded_retry(
+    service: GenerationService,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The provider serves other calls: the session owns the failure, as in
+    durable extraction, and the existing bound applies."""
+    failures: list[BaseException] = []
+    for _ in range(10):
+        cause = _zai_rate_limit()
+        cause.circuit_route = _OUTAGE_ROUTE  # type: ignore[attr-defined]
+        failures.append(_extractor_failure(cause))
+    with caplog.at_level(logging.INFO):
+        _, runner = _run_with_failure(service, monkeypatch, failures)
+
+    assert runner.call_count == 1 + 3
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1
+    assert "after 4 attempt(s) (transient=True)" in errors[0].getMessage()

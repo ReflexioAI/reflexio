@@ -20,6 +20,7 @@ from reflexio.server import publish_timing
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.llm.provider_circuit import provider_wait_seconds
 from reflexio.server.llm.tools import describe_tool_loop_error
 from reflexio.server.services.agent_success_evaluation.runner import (
     run_group_evaluation,
@@ -983,6 +984,37 @@ class GenerationService:
                     # report (the runner logged it at WARNING): a transient
                     # provider failure is re-armed with the same families,
                     # bounded; anything else, or the last attempt, is an ERROR.
+                    # A provider outage (its breaker open) is neither: like
+                    # durable extraction, the session waits for the provider
+                    # and the attempt is not charged.
+                    wait = provider_wait_seconds(exc)
+                    if wait is not None:
+                        logger.warning(
+                            "event=agent_success_provider_wait session=%s"
+                            " attempt=%d/%d retry_in_seconds=%.0f error_type=%s",
+                            _sid,
+                            _attempt,
+                            _MAX_GROUP_EVALUATION_RETRIES,
+                            wait,
+                            type(exc.__cause__ or exc).__name__,
+                        )
+                        scheduler.schedule(
+                            key,
+                            make_callback(
+                                _org_id,
+                                _user_id,
+                                _sid,
+                                _av,
+                                _src,
+                                _rc,
+                                _llm,
+                                _run_agent_success,
+                                _run_retrieved_learning,
+                                _attempt,
+                            ),
+                            delay_seconds=wait,
+                        )
+                        return
                     transient = _is_transient_evaluation_failure(exc)
                     if transient and _attempt < _MAX_GROUP_EVALUATION_RETRIES:
                         logger.warning(

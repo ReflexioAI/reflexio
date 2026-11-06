@@ -29,6 +29,7 @@ from reflexio.server.llm.litellm_client import (
     LiteLLMClientError,
     StructuredOutputParseError,
 )
+from reflexio.server.llm.provider_circuit import provider_wait_seconds
 from reflexio.server.services.offline_tuner.evidence.manifests import (
     canonical_json_bytes,
 )
@@ -988,6 +989,14 @@ class RuleEvidenceAttemptRunner:
             TimeoutError,
         ) as exc:
             reason: AttemptTerminalFailureReason = "infrastructure_failure"
+            # Retry-eligible, not day-spending: the analyst's budget ran out on
+            # a rate limit, or the provider is down for every caller (the
+            # durable-extraction classification). A refusal from an open
+            # breaker, e.g. during compaction, never reached the provider.
+            rate_limited = (
+                isinstance(exc, OpenWorldProviderRateLimitedError)
+                or provider_wait_seconds(exc) is not None
+            )
             if isinstance(exc, OpenWorldRefusalError):
                 reason = cast(
                     AttemptTerminalFailureReason, terminal_reason_for(exc.refusal)
@@ -1001,7 +1010,7 @@ class RuleEvidenceAttemptRunner:
             if claim is None:
                 return AttemptTerminalFailure(
                     reason=reason,
-                    rate_limited=isinstance(exc, OpenWorldProviderRateLimitedError),
+                    rate_limited=rate_limited,
                     output_rejected=output_rejected,
                     failure_detail=failure_detail,
                 )
@@ -1028,7 +1037,7 @@ class RuleEvidenceAttemptRunner:
                 )
             return AttemptTerminalFailure(
                 reason=reason,
-                rate_limited=isinstance(exc, OpenWorldProviderRateLimitedError),
+                rate_limited=rate_limited,
                 output_rejected=output_rejected,
                 failure_detail=failure_detail,
             )
