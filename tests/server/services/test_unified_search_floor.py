@@ -85,7 +85,7 @@ def test_expired_reranker_does_not_start_source_suppression_lookup(monkeypatch):
     storage.get_source_user_playbook_ids_for_agent_playbooks = MagicMock(
         return_value={}
     )
-    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "true")
+    monkeypatch.setenv("REFLEXIO_RERANK_BUDGET_MS", "5000")
     monkeypatch.setattr(
         uss,
         "_run_phase_a",
@@ -303,7 +303,7 @@ def test_floor_disabled_returns_all(monkeypatch):
 def test_global_reranker_flag_disables_floor_and_pool(monkeypatch):
     pbs = [_fake_user_playbook("a"), _fake_user_playbook("b")]
     phase_b_calls = []
-    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "false")
+    monkeypatch.setenv("REFLEXIO_RERANK_BUDGET_MS", "0")
     monkeypatch.setattr(
         uss,
         "_run_phase_a",

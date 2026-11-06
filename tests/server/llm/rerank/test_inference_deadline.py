@@ -15,8 +15,7 @@ def _install(monkeypatch, transport):
     url = "http://owned-inference.test"
     monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", url)
     monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "internal_service")
-    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "true")
-    monkeypatch.setenv("REFLEXIO_RERANK_SERVICE_TIMEOUT_MS", "5000")
+    monkeypatch.setenv("REFLEXIO_RERANK_BUDGET_MS", "5000")
     monkeypatch.setattr(
         provider,
         "_configured_model_cache",
@@ -129,8 +128,7 @@ def test_reranking_sends_remaining_compute_budget_over_loopback_http(monkeypatch
     try:
         monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", url)
         monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "internal_service")
-        monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "true")
-        monkeypatch.setenv("REFLEXIO_RERANK_SERVICE_TIMEOUT_MS", "5000")
+        monkeypatch.setenv("REFLEXIO_RERANK_BUDGET_MS", "5000")
         monkeypatch.setattr(
             provider,
             "_configured_model_cache",

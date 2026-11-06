@@ -56,7 +56,7 @@ def test_reranker_first_load_applies_budget_before_model_import(
     from reflexio.server.llm.rerank.common import ENGLISH_RERANK_MODEL
 
     monkeypatch.setenv(name, "3")
-    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "true")
+    monkeypatch.setenv("REFLEXIO_RERANK_BUDGET_MS", "5000")
     model = Mock()
     constructor = Mock(return_value=model)
 

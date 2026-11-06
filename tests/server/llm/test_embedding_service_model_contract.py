@@ -15,7 +15,7 @@ def isolated_daemon_model(monkeypatch):
 
 @pytest.mark.parametrize("query_only", [False, True])
 def test_factory_exposes_pinned_identity_and_actual_workload(monkeypatch, query_only):
-    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "false")
+    monkeypatch.setenv("REFLEXIO_RERANK_BUDGET_MS", "0")
     identity = {
         "model": "custom/pinned",
         "revision": "immutable-revision",
@@ -41,7 +41,7 @@ def test_factory_exposes_pinned_identity_and_actual_workload(monkeypatch, query_
 
 
 def test_factory_does_not_invent_an_unconfigured_revision(monkeypatch):
-    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "false")
+    monkeypatch.setenv("REFLEXIO_RERANK_BUDGET_MS", "0")
     with TestClient(create_embedding_app()) as client:
         response = client.get("/health/model")
     assert response.status_code == 503

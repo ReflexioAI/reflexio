@@ -65,7 +65,7 @@ def _set_model(
 
 def test_reranker_uses_embedding_service_url_and_discovered_model(monkeypatch) -> None:
     monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://inference:8089/")
-    monkeypatch.setenv("REFLEXIO_RERANK_SERVICE_TIMEOUT_MS", "2500")
+    monkeypatch.setenv("REFLEXIO_RERANK_BUDGET_MS", "2500")
     _set_model(monkeypatch)
 
     class _Client:
@@ -100,7 +100,7 @@ def test_separate_reranker_url_override_is_ignored(monkeypatch) -> None:
 
 
 def test_disabled_reranker_makes_no_discovery_or_http_request(monkeypatch) -> None:
-    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "false")
+    monkeypatch.setenv("REFLEXIO_RERANK_BUDGET_MS", "0")
     monkeypatch.setattr(
         reranker,
         "resolve_service_configured_reranker_model",

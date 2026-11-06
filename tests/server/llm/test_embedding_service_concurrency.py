@@ -102,7 +102,7 @@ def test_service_owns_nomic_lifecycle_without_registration_marker(
         monkeypatch.delenv("REFLEXIO_EMBEDDING_DAEMON", raising=False)
     else:
         monkeypatch.setenv("REFLEXIO_EMBEDDING_DAEMON", old_marker)
-    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "false")
+    monkeypatch.setenv("REFLEXIO_RERANK_BUDGET_MS", "0")
     model = _ConcurrencyModel(hold=0)
     _reset_service_state(monkeypatch, model)
     app = es.create_embedding_app(default_model=es.NOMIC_TEXT_MODEL)
@@ -615,7 +615,7 @@ def test_http_timeout_is_the_unscheduled_queue_deadline(monkeypatch):
 
     monkeypatch.setattr(es, "_ACTIVE_MODEL", None)
     monkeypatch.setattr(es, "_MICRO_BATCH_QUEUE", [])
-    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "false")
+    monkeypatch.setenv("REFLEXIO_RERANK_BUDGET_MS", "0")
     release = threading.Event()
     finished = threading.Event()
     calls = []

@@ -10,7 +10,7 @@ from reflexio.server.llm.rerank import cross_encoder_reranker as reranker
 
 @pytest.fixture
 def endpoints(monkeypatch):
-    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "true")
+    monkeypatch.setenv("REFLEXIO_RERANK_BUDGET_MS", "5000")
     monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "internal_service")
     monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://shared")
     monkeypatch.setenv("REFLEXIO_QUERY_EMBEDDING_SERVICE_URL", "http://reserved")

@@ -77,7 +77,7 @@ def test_cached_reranker_planning_configures_before_preprocess_and_lock(monkeypa
     model.preprocess.return_value = {"attention_mask": mask}
     runner._model = model
     monkeypatch.setattr(runner, "_predict_lock", _PolicyLock())
-    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "true")
+    monkeypatch.setenv("REFLEXIO_RERANK_BUDGET_MS", "5000")
     assert RerankWork(runner, "query").select_chunk_size(["doc"] * 8) == 16
     model.preprocess.assert_called_once()
 

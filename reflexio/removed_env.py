@@ -3,6 +3,8 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "REFLEXIO_RERANK_ENABLED": "REFLEXIO_RERANK_BUDGET_MS",
+    "REFLEXIO_RERANK_SERVICE_TIMEOUT_MS": "REFLEXIO_RERANK_BUDGET_MS",
     "REFLEXIO_FERNET_KEYS": "FERNET_KEYS",
     "REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS": "REFLEXIO_EMBED_BATCH_SIZE",
     "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOK_SOURCE_USER_PLAYBOOKS": "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOKS",
@@ -139,6 +141,16 @@ def reject_removed_env(
                 "; zero audit cadence disables periodic schema audits; preserve "
                 "a positive cadence to enable them, with 86400 as the unchanged "
                 "default. Values are seconds, not booleans"
+            )
+        if {
+            "REFLEXIO_RERANK_ENABLED",
+            "REFLEXIO_RERANK_SERVICE_TIMEOUT_MS",
+        }.intersection(obsolete):
+            migration += (
+                "; preserve disabled reranking with REFLEXIO_RERANK_BUDGET_MS=0; "
+                "otherwise preserve the previous positive service timeout, default 5000. "
+                "Old zero or negative timeouts meant 1ms, not disabled: use 1 to preserve them. "
+                "Remove both old assignments; no values are copied automatically"
             )
         if "CLAUDE_SMART_USE_LOCAL_EMBEDDING" in obsolete:
             migration += (

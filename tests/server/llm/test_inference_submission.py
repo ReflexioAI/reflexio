@@ -128,7 +128,7 @@ def test_scheduler_failures_reach_both_http_callers(status):
 
 
 def test_cpu_startup_refuses_enabled_unavailable_reranker(monkeypatch):
-    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "true")
+    monkeypatch.setenv("REFLEXIO_RERANK_BUDGET_MS", "5000")
 
     async def submit(*args):
         return []

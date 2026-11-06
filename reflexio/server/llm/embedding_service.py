@@ -500,7 +500,7 @@ def create_embedding_app(
         if not rerank_allowed or not reranker_enabled():
             raise HTTPException(
                 status_code=503,
-                detail="Reranking is disabled by REFLEXIO_RERANK_ENABLED",
+                detail="Reranking is disabled by its execution budget or query workload",
             )
         try:
             if inference_submit is not None:

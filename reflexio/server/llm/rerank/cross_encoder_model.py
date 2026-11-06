@@ -13,7 +13,7 @@ from reflexio.native_compute import (
     configure_tokenizer_compute,
 )
 from reflexio.server.llm.rerank.common import (
-    RERANK_ENABLED_ENV_VAR,
+    RERANK_BUDGET_ENV_VAR,
     CrossEncoderUnavailableError,
     reranker_enabled,
     reranker_revision,
@@ -69,7 +69,7 @@ class CrossEncoderRunner:
     def _get_model(self) -> Any:
         if not reranker_enabled():
             raise CrossEncoderUnavailableError(
-                f"Reranker is disabled by {RERANK_ENABLED_ENV_VAR}"
+                f"Reranker is disabled by {RERANK_BUDGET_ENV_VAR}"
             )
         configure_tokenizer_compute()
         if self._model is not None:
@@ -132,9 +132,7 @@ class CrossEncoderRunner:
     def prewarm(self) -> bool:
         if not reranker_enabled():
             self._set_readiness(ready=False)
-            _LOGGER.info(
-                "Reranker prewarm skipped because %s=false", RERANK_ENABLED_ENV_VAR
-            )
+            _LOGGER.info("Reranker prewarm skipped because %s=0", RERANK_BUDGET_ENV_VAR)
             return False
         try:
             self.score_pairs("warmup", ["warmup"])

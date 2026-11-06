@@ -70,7 +70,7 @@ def test_saved_retrieval_policy_survives_upgrade_and_real_search(
             ]
         ],
     )
-    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "true")
+    monkeypatch.setenv("REFLEXIO_RERANK_BUDGET_MS", "5000")
     calls = []
 
     def score(query, documents):

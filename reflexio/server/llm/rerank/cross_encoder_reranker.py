@@ -20,16 +20,13 @@ from reflexio.server.llm.providers.embedding_service_provider import (
     validate_search_reranker_service,
 )
 from reflexio.server.llm.rerank.common import (
-    RERANK_ENABLED_ENV_VAR,
+    RERANK_BUDGET_ENV_VAR,
     RERANK_MODEL,
     CrossEncoderUnavailableError,
-    reranker_enabled,
+    reranker_budget_ms,
 )
 from reflexio.server.search_runtime import increment
 from reflexio.server.tracing import profile_step
-
-_SERVICE_TIMEOUT_MS_ENV_VAR = "REFLEXIO_RERANK_SERVICE_TIMEOUT_MS"
-_DEFAULT_SERVICE_TIMEOUT_MS = 5_000
 
 
 def score_pairs(query: str, docs: list[str]) -> list[float]:
@@ -64,11 +61,13 @@ def score_search_pairs_with_model(
 def _score_pairs_with_model(
     query: str, docs: list[str], *, isolated: bool, search: bool = False
 ) -> tuple[str, list[float]]:
-    if not reranker_enabled():
-        raise CrossEncoderUnavailableError(
-            f"Reranker is disabled by {RERANK_ENABLED_ENV_VAR}"
-        )
+    budget_ms = reranker_budget_ms()
     checkpoint()
+    if budget_ms == 0:
+        raise CrossEncoderUnavailableError(
+            f"Reranker is disabled by {RERANK_BUDGET_ENV_VAR}=0",
+            report_failure=False,
+        )
     service_url = inference_service_url()
     expected_local_unavailability = not isolated and _is_colocated_service(service_url)
     try:
@@ -98,6 +97,7 @@ def _score_pairs_with_model(
             docs,
             expected_local_unavailability=expected_local_unavailability,
             search=search,
+            budget_ms=budget_ms,
         )
     )
     if isolated and docs:
@@ -126,12 +126,13 @@ def _score_pairs_remote(
     *,
     expected_local_unavailability: bool,
     search: bool = False,
+    budget_ms: int,
 ) -> list[float]:
     url = f"{service_url.rstrip('/')}/v1/rerank"
     payload = {"model": model, "query": query, "documents": docs}
     if search:
         payload["priority"] = "search"
-    timeout_seconds = remaining(_rerank_service_timeout_seconds())
+    timeout_seconds = remaining(budget_ms / 1000)
     payload["timeout_ms"] = max(1, min(600_000, int(remaining(timeout_seconds) * 1000)))
     with profile_step(
         "search.rerank.api",
@@ -178,17 +179,6 @@ def _score_pairs_remote(
             raise CrossEncoderUnavailableError(
                 f"Rerank service request failed at {url}: {exc}"
             ) from exc
-
-
-def _rerank_service_timeout_seconds() -> float:
-    raw = env_str(_SERVICE_TIMEOUT_MS_ENV_VAR, str(_DEFAULT_SERVICE_TIMEOUT_MS))
-    try:
-        timeout_ms = int(raw)
-    except ValueError as exc:
-        raise CrossEncoderUnavailableError(
-            f"{_SERVICE_TIMEOUT_MS_ENV_VAR} must be an integer number of milliseconds"
-        ) from exc
-    return max(timeout_ms, 1) / 1000
 
 
 def _ordered_scores_from_response(data: Any, expected_count: int) -> list[float]:

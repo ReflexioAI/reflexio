@@ -17,7 +17,7 @@ from reflexio.server.llm.rerank.cross_encoder_model import CrossEncoderRunner
 
 @pytest.fixture
 def real_runner(monkeypatch):
-    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "true")
+    monkeypatch.setenv("REFLEXIO_RERANK_BUDGET_MS", "5000")
     monkeypatch.setattr(embedding_service, "_ACTIVE_MODEL", None)
     runner = CrossEncoderRunner(RERANK_MODEL)
     model = Mock()
@@ -53,7 +53,7 @@ def fail_scoring(client):
 
 
 def test_search_worker_admits_query_and_rerank_but_rejects_documents(monkeypatch):
-    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "true")
+    monkeypatch.setenv("REFLEXIO_RERANK_BUDGET_MS", "5000")
     monkeypatch.setattr(embedding_service, "_ACTIVE_MODEL", None)
     runner = SimpleNamespace(
         prewarm=lambda: True,

@@ -78,6 +78,31 @@ the model download/warmup timed out. Check the preceding `[embedding]` logs for
 the failing stage. This deadline accommodation is platform-independent; a
 Windows-only model initialization failure still needs its own diagnosis.
 
+### Reranking execution budget and upgrades
+
+`REFLEXIO_RERANK_BUDGET_MS` is the single admission and execution allowance.
+Unset/blank uses 5000ms; zero disables model loading/prewarm and reranker calls.
+A positive finite integer preserves the HTTP scoring timeout. Discovery retains
+its existing admission/transport policy; outer search/compute deadlines,
+worker capacities, query-only workload restrictions, endpoint and device policy
+retain their authority. Request timeout retains existing fail-open handling;
+expiry of an enclosing operation still propagates to that caller.
+
+Both `REFLEXIO_RERANK_ENABLED` and `REFLEXIO_RERANK_SERVICE_TIMEOUT_MS` are
+retired; startup and direct policy reads reject their assignments, even blanks.
+Before upgrading, choose the effective budget in each affected process:
+
+- Previously disabled reranking: set `REFLEXIO_RERANK_BUDGET_MS=0`.
+- Previously enabled/default: preserve the positive old timeout; unset/blank was
+  5000ms. Historical zero/negative timeouts clamped to 1ms, so use `1` to preserve
+  them. They did not disable reranking.
+
+Then remove both old assignments from the selected file and process exports.
+The runtime never rewrites environment files. A disabled policy has no dormant
+positive budget to restore; explicitly choose the desired positive allowance
+when re-enabling. Query-only inference remains ineligible for reranking even
+with a positive inherited budget.
+
 ### Embedding policy and upgrades
 
 The selected embedding model owns execution. An explicit cloud model uses its

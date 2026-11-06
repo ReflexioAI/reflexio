@@ -167,7 +167,7 @@ def test_rerank_endpoint_reports_unavailable_runner() -> None:
 
 
 def test_disabled_reranker_skips_prewarm_and_scoring(monkeypatch) -> None:
-    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "false")
+    monkeypatch.setenv("REFLEXIO_RERANK_BUDGET_MS", "0")
     runner = _Runner()
     with TestClient(create_embedding_app(reranker_runner=runner)) as client:  # type: ignore[arg-type]
         health = client.get("/health")

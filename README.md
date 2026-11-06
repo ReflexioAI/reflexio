@@ -154,10 +154,12 @@ When the backend is selected, the launcher also starts the local inference
 service on port 8069 unless `REFLEXIO_EMBEDDING_SERVICE_URL` points to a remote
 service. It serves embeddings and the optional cross-encoder reranker; cloud
 embedding configurations still use it for reranking. The deployment-wide
-`REFLEXIO_RERANK_ENABLED` flag defaults to `true`. Set it to `false` to skip
-reranker model loading/prewarm and disable reranker requests. Automatic
+`REFLEXIO_RERANK_BUDGET_MS` defaults to `5000`. Zero declines reranker model
+loading/prewarm and requests; a positive value preserves the HTTP scoring
+timeout. Discovery keeps its existing deadline owner; enclosing search/model
+deadlines can tighten both phases. Automatic
 unified-search relevance flooring (which includes reranking) remains separately
-off by default through `retrieval_floor.enabled`. If the loopback inference
+off by default through `retrieval_floor.candidate_pool_size=0`. If the loopback inference
 service is unavailable, automatic reranking is silently skipped and retrieval
 order is preserved. An unavailable remote/internal service is reported while
 search still fails open.

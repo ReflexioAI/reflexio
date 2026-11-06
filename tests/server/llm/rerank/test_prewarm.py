@@ -18,7 +18,7 @@ def test_prewarm_returns_false_when_scoring_fails():
 
 
 def test_disabled_prewarm_does_not_load_model(monkeypatch):
-    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "false")
+    monkeypatch.setenv("REFLEXIO_RERANK_BUDGET_MS", "0")
     runner = CrossEncoderRunner(RERANK_MODEL)
     with patch.object(runner, "_get_model") as get_model:
         assert runner.prewarm() is False
