@@ -31,6 +31,7 @@ from reflexio.server.background_work import (
 from reflexio.server.callback_executor import drain_callbacks, submit_callback
 from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.llm.provider_circuit import provider_wait_seconds
 from reflexio.server.services.tagging.service import TaggingService
 from reflexio.server.work_scope import (
     WorkScope,
@@ -82,9 +83,15 @@ class TaggingScheduler:
         self._thread.start()
         logger.info("TaggingScheduler started")
 
-    def schedule(self, key: TaggingKey, callback: Callable) -> None:
-        """Schedule or reschedule a tagging pass for ``key`` (slides the fire time forward)."""
-        fire_time = time.monotonic() + _EFFECTIVE_DELAY_SECONDS
+    def schedule(
+        self, key: TaggingKey, callback: Callable, *, delay_seconds: float = 0.0
+    ) -> None:
+        """Schedule or reschedule a tagging pass for ``key`` (slides the fire time forward).
+
+        ``delay_seconds`` can lengthen the debounce (a provider outage's retry
+        delay), never shorten it.
+        """
+        fire_time = time.monotonic() + max(_EFFECTIVE_DELAY_SECONDS, delay_seconds)
         with self._mutex:
             sequence = next(self._sequence)
             self._scheduled[key] = (fire_time, sequence, callback)
@@ -166,8 +173,20 @@ class TaggingScheduler:
                 project_id=key[1],
                 user_id=key[2],
             )
-        except Exception:
-            logger.exception("Tagging callback failed for key=%s", key)
+        except Exception as exc:
+            # Same classification as durable extraction: while the provider's
+            # breaker is open the pass waits for it instead of being dropped.
+            wait = provider_wait_seconds(exc)
+            if wait is None:
+                logger.exception("Tagging callback failed for key=%s", key)
+                return
+            logger.warning(
+                "event=tagging_provider_wait key=%s retry_in_seconds=%.0f error=%s",
+                key,
+                wait,
+                type(exc).__name__,
+            )
+            TaggingScheduler.get_instance().schedule(key, callback, delay_seconds=wait)
 
 
 def schedule_tagging(

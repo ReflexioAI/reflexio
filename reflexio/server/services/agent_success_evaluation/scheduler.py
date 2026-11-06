@@ -96,7 +96,9 @@ class GroupEvaluationScheduler:
         self._thread.start()
         logger.info("GroupEvaluationScheduler started")
 
-    def schedule(self, key: GroupKey, callback: Callable) -> None:
+    def schedule(
+        self, key: GroupKey, callback: Callable, *, delay_seconds: float = 0.0
+    ) -> None:
         """Schedule or reschedule a group evaluation.
 
         If the group already has a pending evaluation, its fire time is updated
@@ -106,8 +108,10 @@ class GroupEvaluationScheduler:
         Args:
             key: Tuple of (org_id, user_id, session_id)
             callback: Zero-argument callable to run when the timer fires
+            delay_seconds: A longer wait than the inactivity delay, e.g. a
+                provider outage's retry delay. Never shortens it.
         """
-        fire_time = time.monotonic() + _EFFECTIVE_DELAY_SECONDS
+        fire_time = time.monotonic() + max(_EFFECTIVE_DELAY_SECONDS, delay_seconds)
         with self._mutex:
             self._scheduled[key] = (fire_time, callback)
             heapq.heappush(self._heap, (fire_time, key))

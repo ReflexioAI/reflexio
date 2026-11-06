@@ -101,3 +101,91 @@ def test_test_mode_cannot_change_tagging_policy(monkeypatch):
     monkeypatch.setenv("IS_TEST_ENV", "true")
     policy = runpy.run_path(tagging_scheduler.__file__)
     assert policy["_EFFECTIVE_DELAY_SECONDS"] == 15
+
+
+# --- provider outage -----------------------------------------------------------------
+
+_OUTAGE_ROUTE = "test/tagging-model||-"
+
+
+def _open_breaker() -> None:
+    from reflexio.server.llm.provider_circuit import (
+        OPEN_AFTER_FAILURES,
+        provider_circuit,
+    )
+
+    for _ in range(OPEN_AFTER_FAILURES):
+        provider_circuit.admit(_OUTAGE_ROUTE, model="test/tagging-model").failed()
+
+
+def _circuit_refusal() -> BaseException:
+    from reflexio.server.llm.provider_circuit import ProviderCircuitOpenError
+
+    refused = ProviderCircuitOpenError("Provider circuit open; request not sent")
+    refused.circuit_route = _OUTAGE_ROUTE
+    return refused
+
+
+class _RecordingScheduler:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, Any, float]] = []
+
+    def schedule(self, key: Any, callback: Any, *, delay_seconds: float = 0.0) -> None:
+        self.calls.append((key, callback, delay_seconds))
+
+
+def test_a_pass_refused_by_an_open_breaker_waits_for_the_provider(
+    monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """PYTHON-FASTAPI-18W's sibling: an outage dropped the pass at ERROR."""
+    _open_breaker()
+    recorder = _RecordingScheduler()
+    monkeypatch.setattr(
+        TaggingScheduler, "get_instance", classmethod(lambda _cls: recorder)
+    )
+    key = ("org", None, "outage-user", "v1")
+
+    def callback() -> None:
+        raise _circuit_refusal()
+
+    with caplog.at_level("INFO"):
+        TaggingScheduler._run_callback(key, callback)
+
+    assert [(k, c) for k, c, _ in recorder.calls] == [(key, callback)]
+    assert recorder.calls[0][2] > 0
+    assert [r for r in caplog.records if r.levelname == "ERROR"] == []
+    assert any("event=tagging_provider_wait" in r.getMessage() for r in caplog.records)
+
+
+def test_an_ordinary_tagging_failure_is_still_reported_and_dropped(
+    monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    recorder = _RecordingScheduler()
+    monkeypatch.setattr(
+        TaggingScheduler, "get_instance", classmethod(lambda _cls: recorder)
+    )
+
+    def callback() -> None:
+        raise ValueError("tagging bug")
+
+    with caplog.at_level("INFO"):
+        TaggingScheduler._run_callback(("org", None, "bug-user", "v1"), callback)
+
+    assert recorder.calls == []
+    assert any(
+        r.levelname == "ERROR" and "Tagging callback failed" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_an_outage_delay_lengthens_but_never_shortens_the_debounce(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(tagging_scheduler, "_EFFECTIVE_DELAY_SECONDS", 15.0)
+    monkeypatch.setattr(tagging_scheduler.time, "monotonic", lambda: 100.0)
+    scheduler = TaggingScheduler()
+    scheduler.schedule(("org", None, "a", "v1"), lambda: None, delay_seconds=600.0)
+    scheduler.schedule(("org", None, "b", "v1"), lambda: None, delay_seconds=0.0)
+    with scheduler._mutex:
+        fire = {key[2]: when for when, _seq, key in scheduler._heap}
+    assert fire == {"a": 700.0, "b": 115.0}
