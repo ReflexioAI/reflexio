@@ -99,29 +99,31 @@ def _salvage_selection(
         if all(ref in visible for ref in point.evidence_refs)
     ]
     discarded = len(candidate.points) - len(retained)
-    choice = _ReferenceSelection(points=retained).choice()
-    over_capacity = not call.validate(choice) and bool(call.validate_selection(choice))
-    reason = "unseen_refs" if discarded else "capacity" if over_capacity else "rejected"
-    usable = (
-        bool(retained)
-        and not call.validate(choice)
-        and bool(call.pack_choice(choice).points)
+    unseen_notice = (
+        [UNSEEN_REFERENCE_OMISSION.format(discarded=discarded)] if discarded else []
     )
-    if usable:
-        fallback = "none"
-        choice.omissions = [
-            UNSEEN_REFERENCE_OMISSION.format(discarded=discarded)
-            if discarded
-            else CAPACITY_OMISSION
-        ]
-    else:
+    counts = OmissionCounts(unseen_reference_groups=discarded)
+    bare = _ReferenceSelection(points=retained).choice()
+    over_capacity = not call.validate(bare) and bool(call.validate_selection(bare))
+    reason = "unseen_refs" if discarded else "capacity" if over_capacity else "rejected"
+    # Judge usability on the exact choice that will be cached: its host notice
+    # and counts occupy rendered capacity too.
+    choice = bare.model_copy(
+        update={
+            "omissions": unseen_notice or [CAPACITY_OMISSION],
+            "omission_counts": counts,
+        }
+    )
+    fallback = "none"
+    if not (retained and not call.validate(choice) and call.pack_choice(choice).points):
         fallback = "recent_evidence"
-        choice = call.recent_evidence_choice()
-        if discarded:
-            choice.omissions.insert(
-                0, UNSEEN_REFERENCE_OMISSION.format(discarded=discarded)
-            )
-    choice.omission_counts = OmissionCounts(unseen_reference_groups=discarded)
+        recent = call.recent_evidence_choice()
+        choice = recent.model_copy(
+            update={
+                "omissions": [*unseen_notice, *recent.omissions],
+                "omission_counts": counts,
+            }
+        )
     kept_points = len(call.pack_choice(choice).points)
     if not kept_points:
         # Accepted, but nothing of this section's evidence survives, so the

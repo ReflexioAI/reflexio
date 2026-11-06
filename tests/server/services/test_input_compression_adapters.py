@@ -1358,3 +1358,65 @@ def test_native_selection_contract_and_node_witnesses_survive_warm_replay(monkey
     with pytest.raises(ProviderRequestGuardError, match="changed"):
         prepared.execute(inspect_node=changed_nodes)
     changed_nodes.assert_not_called()
+
+
+def test_salvage_judges_usability_with_its_own_omission_notice(caplog):
+    """A group that fits only without the host notice must not end empty."""
+    from reflexio.server.services.input_compression import (
+        CompressionCall,
+        CompressionChoice,
+        CompressionPoint,
+        _pack_choice,
+        _recent_evidence_choice,
+    )
+    from reflexio.server.services.input_compression_llm import (
+        _ReferenceSelection,
+        _salvage_selection,
+    )
+
+    def source(source_id, text):
+        return EvidenceSource(
+            source_id=source_id,
+            request_id="r",
+            interaction_id=1,
+            field="content",
+            speaker="User",
+            source_order=1,
+            text=text,
+        )
+
+    available = {"e1": source("s1", "approval " * 150), "e2": source("s2", "short")}
+
+    def measure(packet):
+        return len(packet.render())
+
+    exact = CompressionChoice(
+        points=[CompressionPoint(category="selected_evidence", evidence_refs=["e1"])]
+    )
+    budget = measure(_pack_choice(exact, available, 10_000, measure, lambda _p: True))
+
+    def pack(choice):
+        return _pack_choice(choice, available, budget, measure, lambda _p: True)
+
+    call = CompressionCall(
+        "key",
+        [],
+        budget,
+        pack,
+        tuple(available),
+        lambda: _recent_evidence_choice(available, frozenset()),
+    )
+    choice, discarded = _salvage_selection(
+        call,
+        _ReferenceSelection.model_validate(
+            {"points": [{"evidence_refs": ["e1"]}, {"evidence_refs": ["bad"]}]}
+        ),
+    )
+    packet = pack(choice)
+    assert discarded == 1
+    assert [item.text for item in packet.evidence] == ["short"]
+    assert choice.omission_counts.unseen_reference_groups == 1
+    assert _salvage_events(caplog) == [
+        "event=compression_selection_salvaged reason=unseen_refs "
+        "fallback=recent_evidence kept_points=1 discarded_groups=1"
+    ]
