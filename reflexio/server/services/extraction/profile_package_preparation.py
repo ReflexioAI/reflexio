@@ -26,6 +26,7 @@ from reflexio.pending_tool_policy import (
 from reflexio.server.llm._litellm_text_generation import (
     _is_structured_output_validation_repair_turn,
 )
+from reflexio.server.llm._model_compat import reasoning_exhausted_retry_extra_body
 from reflexio.server.llm.input_budget import (
     InputBudgetConfigurationError,
     check_request_input_budget,
@@ -197,6 +198,24 @@ class ProfilePackagePreparation:
         self._check_request(
             stage, raw_messages, params, ladder, parse_structured_output
         )
+
+
+def _is_thinking_disabled_retry(
+    client: Any, expected: dict[str, Any], actual_contract: str
+) -> bool:
+    """Whether a dispatch is the client's reasoning-exhausted resend of ``expected``.
+
+    That resend differs from the admitted request ONLY by disabling thinking,
+    derived by the same function the client uses
+    (``reasoning_exhausted_retry_extra_body``); the caller requires its
+    messages to be the admitted ones verbatim.
+    """
+    retry_body = reasoning_exhausted_retry_extra_body(expected)
+    return retry_body is not None and actual_contract == _digest(
+        client._completion_request_contract_from_params(
+            {**expected, "extra_body": retry_body}
+        )
+    )
 
 
 def _extractor_snapshot(
@@ -534,17 +553,21 @@ def prepare_profile_package(
             client._completion_request_contract_from_params(params)
         )
         expected = requests(stage, raw_messages)[index]
+        thinking_disabled_retry = _is_thinking_disabled_retry(
+            client, expected, actual_contract
+        )
         if (
-            actual_contract != contracts[stage][index]
-            or _digest(client._completion_request_contract_from_params(expected))
-            != contracts[stage][index]
-        ):
+            actual_contract != contracts[stage][index] and not thinking_disabled_retry
+        ) or _digest(
+            client._completion_request_contract_from_params(expected)
+        ) != contracts[stage][index]:
             raise InputBudgetConfigurationError("Profile native contract changed")
         actual_messages = params.get("messages")
         if not isinstance(actual_messages, list) or (
             actual_messages != expected["messages"]
             and not (
-                stage != "gate"
+                not thinking_disabled_retry
+                and stage != "gate"
                 and (
                     is_structured_output_correction_turn(
                         expected["messages"], actual_messages

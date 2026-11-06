@@ -18,6 +18,7 @@ from reflexio.models.config_schema import (
     PendingToolCallToolOverrideConfig,
     ProfileExtractorConfig,
 )
+from reflexio.server.llm._litellm_text_generation import _validation_repair_correction
 from reflexio.server.llm.input_budget import (
     InputBudgetConfigurationError,
     InputBudgetExceededError,
@@ -482,6 +483,105 @@ def test_actual_native_agent_and_semantic_repair_pass_the_frozen_checker(
     assert reserve.call_count == len(seen) == 2
     assert seen[0]["messages"] != seen[1]["messages"]
     assert len(messages) == 3
+
+
+def test_reasoning_exhausted_resend_passes_the_frozen_checker(monkeypatch):
+    """The thinking-disabled resend is admitted against the frozen M3 contract."""
+    prepared, client = preparation(
+        monkeypatch,
+        client=LiteLLMClient(
+            LiteLLMConfig(
+                model="minimax/MiniMax-M3", max_tokens=8192, fallback_models=[]
+            )
+        ),
+    )
+    messages = prepared.agent_messages("original source package")
+    reserve = Mock()
+    seen = []
+
+    def guard(params, _timeout, ladder, parse):
+        prepared.check_request("agent", messages, params, ladder, parse)
+        reserve()
+
+    def transport(params, _timeout):
+        seen.append(copy.deepcopy(params))
+        exhausted = len(seen) == 1
+        return litellm.ModelResponse(
+            choices=[
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "" if exhausted else '{"profiles":[]}',
+                    },
+                    "finish_reason": "length" if exhausted else "stop",
+                }
+            ]
+        )
+
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", transport)
+    token = extraction_provider_guard.set(guard)
+    try:
+        result = client.generate_chat_response(
+            messages,
+            model_role=ModelRole.EXTRACTION_AGENT,
+            response_format=StructuredProfilesOutput,
+            structured_output_validator=Mock(return_value=[]),
+            tools=None,
+            tool_choice=None,
+        )
+    finally:
+        extraction_provider_guard.reset(token)
+    assert isinstance(result, StructuredProfilesOutput)
+    assert reserve.call_count == len(seen) == 2
+    assert seen[1]["messages"] == seen[0]["messages"]
+    assert seen[1]["extra_body"]["thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.parametrize("model", ["gpt-4o-mini", "minimax/MiniMax-M3"])
+@pytest.mark.parametrize("repair_messages", [False, True])
+def test_thinking_disabled_dispatch_is_refused_unless_it_is_the_resend(
+    monkeypatch, model, repair_messages
+):
+    """Only M3's resend of the admitted messages may disable thinking."""
+    prepared, client = preparation(
+        monkeypatch,
+        client=LiteLLMClient(
+            LiteLLMConfig(model=model, max_tokens=8192, fallback_models=[])
+        ),
+    )
+    messages = prepared.agent_messages("original source package")
+    params = build_profile_package_request(
+        client,
+        messages,
+        model=model,
+        response_format=StructuredProfilesOutput,
+        tools=None,
+        tool_choice=None,
+        fallback_models=[],
+    )
+    params["num_retries"] = 0
+    params["extra_body"] = {
+        **(params.get("extra_body") or {}),
+        "thinking": {"type": "disabled"},
+    }
+    if repair_messages:
+        # A well-formed repair turn, admissible WITH thinking unchanged; the
+        # resend may disable thinking only for the admitted messages verbatim.
+        params["messages"] = [
+            *params["messages"],
+            {"role": "assistant", "content": "(empty response)"},
+            {
+                "role": "user",
+                "content": _validation_repair_correction(
+                    "StructuredProfilesOutput", ["Response was empty."]
+                ),
+            },
+        ]
+    if model == "minimax/MiniMax-M3" and not repair_messages:
+        prepared.check_request("agent", messages, params, (model,), True)
+        return
+    with pytest.raises(InputBudgetConfigurationError):
+        prepared.check_request("agent", messages, params, (model,), True)
 
 
 @pytest.mark.parametrize(

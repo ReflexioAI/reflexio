@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
 
+from reflexio.server.llm._model_compat import disabled_thinking, with_thinking_disabled
 from reflexio.server.llm.litellm_client import LiteLLMClient, ProviderRequestGuardError
 from reflexio.server.metering_signals import count_input_tokens
 from reflexio.server.services.offline_tuner.evidence.compaction import (
@@ -187,9 +188,10 @@ class SessionCompactor:
                 raise ProviderRequestGuardError(
                     "compaction model changed during request"
                 )
-            if direct_answer and params.get("extra_body", {}).get("thinking") != {
-                "type": "disabled"
-            }:
+            if (
+                direct_answer
+                and params.get("extra_body", {}).get("thinking") != disabled_thinking()
+            ):
                 raise ProviderRequestGuardError("compaction thinking mode changed")
             messages = params.get("messages", [])
             # UTF-8 bytes are a conservative tokenizer-independent ceiling;
@@ -305,7 +307,7 @@ class SessionCompactor:
             )
 
         request_options: dict[str, Any] = (
-            {"extra_body": {"thinking": {"type": "disabled"}}} if direct_answer else {}
+            {"extra_body": with_thinking_disabled(None)} if direct_answer else {}
         )
         result = self.client.generate_chat_response(
             [{"role": "user", "content": model_payload}],

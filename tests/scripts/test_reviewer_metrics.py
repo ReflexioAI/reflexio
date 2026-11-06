@@ -86,6 +86,34 @@ def test_guard_refuses_settings_drift_before_attempt(change):
     assert metrics.data["provider_requests"] == []
 
 
+@pytest.mark.parametrize(
+    ("model", "effort", "admitted"),
+    [
+        ("minimax/MiniMax-M3", None, True),
+        ("minimax/MiniMax-M3.1-Flash-Preview", None, False),
+        ("minimax/MiniMax-M3", "high", False),
+    ],
+)
+def test_guard_records_only_the_derived_thinking_disabled_resend(
+    model, effort, admitted
+):
+    metrics = ReviewCallMetrics(model, 8192, effort)
+    params = {
+        "model": model,
+        "temperature": 0.7,
+        "num_retries": 0,
+        "max_tokens": 8192,
+        "extra_body": {"thinking": {"type": "disabled"}},
+    }
+    if not admitted:
+        with pytest.raises(ValueError, match="drifted"):
+            metrics.guard(params, 125, (model,), True)
+        assert metrics.data["provider_requests"] == []
+        return
+    metrics.guard(params, 125, (model,), True)
+    assert metrics.data["provider_requests"][0]["thinking_disabled_retry"] is True
+
+
 def test_failed_call_restores_observer_and_does_not_claim_complete():
     metrics = ReviewCallMetrics("model", None, None)
     log = metrics.log

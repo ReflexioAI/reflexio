@@ -43,6 +43,9 @@ class CompletionResult[T]:
     provenance: ModelProvenance
     # Final provider response only; earlier retry/fallback usage is not included.
     usage: Any | None = None
+    # True when this value came from the reasoning-exhausted retry, which
+    # resent the request with thinking disabled. Kept for quality audits.
+    thinking_disabled: bool = False
 
 
 @dataclass

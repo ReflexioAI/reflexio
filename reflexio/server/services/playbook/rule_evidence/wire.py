@@ -417,5 +417,7 @@ def generation_profile(
         raise ValueError("unsupported rule-evidence stage")
     profile: dict[str, Any] = {"max_tokens": 4096}
     if "minimax" in provider.casefold().split(":"):
-        profile["extra_body"] = {"thinking": {"type": "disabled"}}
+        from reflexio.server.llm._model_compat import with_thinking_disabled
+
+        profile["extra_body"] = with_thinking_disabled(None)
     return profile

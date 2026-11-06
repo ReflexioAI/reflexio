@@ -167,3 +167,52 @@ def test_request_that_finishes_after_transient_truncation_is_learned(
     assert storage.extraction_status("u", "truncated")["status"] == "done"
     assert storage.count_all_profiles() > 0
     assert "OutputTruncatedRequestError" not in caplog.text
+
+
+def _thinking_disabled(params) -> bool:
+    return (params.get("extra_body") or {}).get("thinking") == {"type": "disabled"}
+
+
+def test_thinking_disabled_resend_shares_the_truncation_budget(pipeline, monkeypatch):
+    """The resend is counted: both thinking modes together stay within the cap."""
+    storage, window_id, dispatch = _run(
+        pipeline, monkeypatch, _failing_extraction("length", "")
+    )
+    _cursor, _run_row, checkpoint = _state(storage, window_id)
+    extraction = [
+        call.args[0]
+        for call in dispatch.call_args_list
+        if _extraction_request(call.args[0])
+    ]
+    resends = [params for params in extraction if _thinking_disabled(params)]
+    assert resends
+    assert len(resends) < len(extraction)
+    assert max(_request_counts(dispatch).values()) == MAX_TRUNCATED_REQUEST_DISPATCHES
+    assert set(checkpoint["truncated_requests"].values()) == {
+        MAX_TRUNCATED_REQUEST_DISPATCHES
+    }
+
+
+def test_thinking_disabled_resend_answer_flows_through(pipeline, monkeypatch, caplog):
+    """Thinking exhausts every budget; the direct answer completes the window."""
+    truncate = _failing_extraction("length", "")
+
+    def respond(params, hard_timeout):
+        if _extraction_request(params) and not _thinking_disabled(params):
+            return truncate(params, hard_timeout)
+        return _respond(params, hard_timeout)
+
+    storage, _window_id, dispatch = _run(pipeline, monkeypatch, respond)
+    assert storage.extraction_status("u", "truncated")["status"] == "done"
+    assert storage.count_all_profiles() > 0
+    resends = [
+        call.args[0]
+        for call in dispatch.call_args_list
+        if _extraction_request(call.args[0]) and _thinking_disabled(call.args[0])
+    ]
+    assert resends
+    # Each resend answered at once; no request approached the truncation cap.
+    assert max(_request_counts(dispatch).values()) < MAX_TRUNCATED_REQUEST_DISPATCHES
+    assert "OutputTruncatedRequestError" not in caplog.text
+    assert "outcome=succeeded" in caplog.text
+    assert "event=llm_structured_repair_attempted" not in caplog.text
