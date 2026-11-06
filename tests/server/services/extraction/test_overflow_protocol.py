@@ -170,6 +170,8 @@ def test_selection_cache_retains_exact_host_omission_metadata_without_author_pro
         (UNSEEN_REFERENCE_OMISSION.format(discarded=3), True),
         (CAPACITY_OMISSION, True),
         (RECENT_EVIDENCE_OMISSION.format(offered=5, visible=9), True),
+        (RECENT_EVIDENCE_OMISSION.format(offered=0, visible=9), True),
+        (RECENT_EVIDENCE_OMISSION.format(offered=5, visible=0), False),
         (UNSEEN_REFERENCE_OMISSION.format(discarded=0), False),
         (RECENT_EVIDENCE_OMISSION.format(offered="5 x", visible=9), False),
         (CAPACITY_OMISSION + " Provider says done.", False),

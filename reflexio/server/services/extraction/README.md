@@ -372,9 +372,10 @@ production showed that repair rarely succeeded. The guarded seam settles it
 without another provider call. It discards entire groups containing unseen
 references and revalidates every retained group; no individual reference is
 guessed or removed from a retained group. When nothing usable remains, the host
-falls back to the most recent visible original passages that fit, one whole
-point each, led by the newest passage of each required speaker. Every path
-copies original spans only. Unparseable output keeps the client's single
+falls back to visible original passages, newest first, one whole point each,
+admitting each only while the whole selection fits; the newest fitting passage
+of each required speaker is admitted first. Its notice states how many of the
+visible passages it offered. Every path copies original spans only. Unparseable output keeps the client's single
 bounded parse repair; an exhausted repair, refusal, model-route,
 provider-budget and integrity failures remain errors. Host omission notices,
 `provider_reference_recoveries` and the WARNING event

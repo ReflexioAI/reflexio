@@ -635,9 +635,7 @@ def _pack_choice(
             omitted += 1
     result = packet_for(retained, omitted)
     if not admissible(result):
-        raise _RenderedCapacityError(
-            "Compression summary alone exceeds reduction capacity"
-        )
+        raise CompressionError("Compression summary alone exceeds reduction capacity")
     return result
 
 
@@ -652,22 +650,37 @@ def _with_prior_omissions(
     return choice.model_copy(update={"omission_counts": counts})
 
 
+def _fits_whole(
+    choice: CompressionChoice,
+    available: Mapping[str, EvidenceSource],
+    output_tokens: int,
+    measure_output: Callable[[EvidencePacket], int],
+    admissible: Callable[[EvidencePacket], bool],
+) -> bool:
+    """Whether every point fits as-is: ``_pack_choice``'s complete branch."""
+    try:
+        packet = _materialize(choice, available, output_tokens, measure_output)
+    except _RenderedCapacityError:
+        # Only measured capacity is a miss; integrity errors still abort.
+        return False
+    return admissible(packet)
+
+
 def _recent_evidence_choice(
     available: Mapping[str, EvidenceSource],
     required_speakers: frozenset[str],
-    pack: Callable[[CompressionChoice], EvidencePacket],
+    fits: Callable[[CompressionChoice], bool],
     omissions: Sequence[str],
     omission_counts: OmissionCounts,
 ) -> CompressionChoice:
-    """Rank visible passages that fit newest first, one whole point each.
+    """Select visible passages newest first, one whole point each, that fit.
 
     No provider output is involved: the host copies original spans exactly as
-    for any selection, and ``pack`` (whole-point packing without the speaker
-    rule) keeps ranked points that fit, recording capacity drops. Only passages
-    that fit on their own are offered, so the point limit never hides an older
-    fitting passage behind newer ones that cannot fit. For each required
-    speaker, the newest of its passages that survives the same packing pass
-    leads, so the speaker rule holds whenever any of its passages can fit.
+    for any selection. The selection is grown one passage at a time and each
+    step is sized as a whole (``fits``), with the caller's notices and counts,
+    so the returned choice packs completely and nothing ranked is dropped
+    later. For each required speaker, the newest of its passages that fits is
+    admitted first, so the speaker rule holds whenever any of them can fit.
     """
     position = {ref: index for index, ref in enumerate(available)}
     newest_first = sorted(
@@ -675,6 +688,9 @@ def _recent_evidence_choice(
         key=lambda ref: (available[ref].source_order, position[ref]),
         reverse=True,
     )
+    # Size every step with the widest notice this call can carry; the final
+    # notice is never longer, so a fitting selection still fits.
+    widest = min(len(available), _MAX_CHOICE_POINTS)
 
     def choice_of(refs: Sequence[str], offered: int) -> CompressionChoice:
         return CompressionChoice(
@@ -691,39 +707,22 @@ def _recent_evidence_choice(
             omission_counts=omission_counts,
         )
 
-    def kept(choice: CompressionChoice) -> set[str]:
-        # Only measured capacity means "does not fit"; integrity and other
-        # source errors from the caller's renderer must still abort.
-        try:
-            packet = pack(choice)
-        except _RenderedCapacityError:
-            return set()
-        return {ref for point in packet.points for ref in point.evidence_refs}
+    selected: list[str] = []
 
-    # The widest notice this call can carry, so a passage that fits here
-    # still fits beside the final (never longer) notice.
-    widest = min(len(available), _MAX_CHOICE_POINTS)
-    pool = [
-        ref
-        for ref in newest_first
-        if available[ref].source_id in kept(choice_of([ref], widest))
-    ]
+    def admit(candidates: Sequence[str]) -> bool:
+        for ref in candidates:
+            if len(selected) >= _MAX_CHOICE_POINTS:
+                return False
+            if ref not in selected and fits(choice_of([*selected, ref], widest)):
+                selected.append(ref)
+                return True
+        return False
 
-    def ranked(leading: list[str]) -> list[str]:
-        refs = [*leading, *(ref for ref in pool if ref not in leading)]
-        return refs[:_MAX_CHOICE_POINTS]
-
-    leading: list[str] = []
     for speaker in sorted(required_speakers):
-        for ref in pool:
-            if available[ref].speaker != speaker:
-                continue
-            survivors = kept(choice_of(ranked([*leading, ref]), widest))
-            if all(available[item].source_id in survivors for item in [*leading, ref]):
-                leading.append(ref)
-                break
-    refs = ranked(leading)
-    return choice_of(refs, len(refs))
+        admit([ref for ref in newest_first if available[ref].speaker == speaker])
+    for ref in newest_first:
+        admit([ref])
+    return choice_of(selected, len(selected))
 
 
 def _require_speakers(
@@ -1015,17 +1014,17 @@ def plan_compression_input(
             )
             inspect_node(CompressionNodeInput(key, input_refs_digest))
 
-            def pack_points(choice: CompressionChoice) -> EvidencePacket:
-                return _pack_choice(
+            def admissible(packet: EvidencePacket) -> bool:
+                return final or parent_cost(packet) <= intermediate_limit
+
+            def pack_choice(choice: CompressionChoice) -> EvidencePacket:
+                packet = _pack_choice(
                     _with_prior_omissions(choice, packets),
                     available,
                     budget.output_tokens,
                     measure_output,
-                    lambda packet: final or parent_cost(packet) <= intermediate_limit,
+                    admissible,
                 )
-
-            def pack_choice(choice: CompressionChoice) -> EvidencePacket:
-                packet = pack_points(choice)
                 _require_speakers(packet, available, required)
                 return packet
 
@@ -1044,7 +1043,17 @@ def plan_compression_input(
                         pack_choice,
                         tuple(available),
                         lambda omissions, counts: _recent_evidence_choice(
-                            available, required, pack_points, omissions, counts
+                            available,
+                            required,
+                            lambda choice: _fits_whole(
+                                _with_prior_omissions(choice, packets),
+                                available,
+                                budget.output_tokens,
+                                measure_output,
+                                admissible,
+                            ),
+                            omissions,
+                            counts,
                         ),
                     )
                 )

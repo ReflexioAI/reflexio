@@ -24,11 +24,20 @@ MAX_SELECTION_BYTES = 64 * 1024
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 
-def _notice_pattern(template: str) -> re.Pattern[str]:
-    """Match one host notice template; each ``{name}`` field is a positive count."""
+def _notice_pattern(
+    template: str, *, may_be_zero: frozenset[str] = frozenset()
+) -> re.Pattern[str]:
+    """Match one host notice template; each ``{name}`` field is a count.
+
+    Counts are positive unless named in ``may_be_zero``.
+    """
     parts = re.split(r"\{(\w+)\}", template)
     pattern = "".join(
-        r"[1-9][0-9]*" if index % 2 else re.escape(part)
+        re.escape(part)
+        if index % 2 == 0
+        else r"(?:0|[1-9][0-9]*)"
+        if part in may_be_zero
+        else r"[1-9][0-9]*"
         for index, part in enumerate(parts)
     )
     return re.compile(pattern + r"\Z")
@@ -37,7 +46,8 @@ def _notice_pattern(template: str) -> re.Pattern[str]:
 # The exact host notices the native seam may cache; nothing provider-authored.
 _HOST_OMISSIONS = (
     _notice_pattern(UNSEEN_REFERENCE_OMISSION),
-    _notice_pattern(RECENT_EVIDENCE_OMISSION),
+    # Nothing may fit; that empty result is accepted and counted as terminal.
+    _notice_pattern(RECENT_EVIDENCE_OMISSION, may_be_zero=frozenset({"offered"})),
     _notice_pattern(CAPACITY_OMISSION),
 )
 

@@ -670,16 +670,23 @@ def test_selection_with_only_unseen_refs_falls_back_to_recent_original_evidence(
         for point in result.packet.points
     )
     assert result.packet.omission_counts.unseen_reference_groups == 1
-    assert result.packet.omission_counts.capacity_points > 0
-    assert any(
-        re.fullmatch(
-            r"Host offered [1-9]\d* of [1-9]\d* visible passages, newest first, "
-            r"because the provider selection was unusable; source selection is "
-            r"incomplete\.",
-            note,
-        )
+    # The fallback sizes its own selection, so nothing it offers is dropped;
+    # the shortfall is stated in its notice instead.
+    assert result.packet.omission_counts.capacity_points == 0
+    offered = [
+        match
         for note in result.packet.omissions
-    )
+        if (
+            match := re.fullmatch(
+                r"Host offered ([1-9]\d*) of ([1-9]\d*) visible passages, newest "
+                r"first, because the provider selection was unusable; source "
+                r"selection is incomplete\.",
+                note,
+            )
+        )
+    ]
+    assert len(offered) == 1
+    assert int(offered[0][1]) == len(result.packet.points) < int(offered[0][2])
     assert any("discarded 1 entire groups" in n for n in result.packet.omissions)
     assert _salvage_events(caplog) == [
         "event=compression_selection_salvaged reason=unseen_refs "
@@ -1367,6 +1374,7 @@ def test_salvage_judges_usability_with_its_own_omission_notice(caplog):
         CompressionCall,
         CompressionChoice,
         CompressionPoint,
+        _fits_whole,
         _pack_choice,
         _recent_evidence_choice,
     )
@@ -1406,7 +1414,11 @@ def test_salvage_judges_usability_with_its_own_omission_notice(caplog):
         pack,
         tuple(available),
         lambda notes, counts: _recent_evidence_choice(
-            available, frozenset(), pack, notes, counts
+            available,
+            frozenset(),
+            lambda c: _fits_whole(c, available, budget, measure, lambda _p: True),
+            notes,
+            counts,
         ),
     )
     choice, discarded = _salvage_selection(
@@ -1433,6 +1445,7 @@ def test_fallback_keeps_an_older_required_speaker_passage_that_fits(caplog):
         CompressionChoice,
         CompressionPoint,
         OmissionCounts,
+        _fits_whole,
         _pack_choice,
         _recent_evidence_choice,
         _require_speakers,
@@ -1491,7 +1504,11 @@ def test_fallback_keeps_an_older_required_speaker_passage_that_fits(caplog):
         pack,
         tuple(available),
         lambda notes, counts: _recent_evidence_choice(
-            available, required, pack_points, notes, counts
+            available,
+            required,
+            lambda c: _fits_whole(c, available, budget, measure, lambda _p: True),
+            notes,
+            counts,
         ),
     )
     # Newest-first alone would admit the two User turns and leave no room.
@@ -1510,6 +1527,7 @@ def test_fallback_point_limit_never_hides_an_older_fitting_passage():
         CompressionChoice,
         CompressionPoint,
         OmissionCounts,
+        _fits_whole,
         _pack_choice,
         _recent_evidence_choice,
     )
@@ -1542,5 +1560,57 @@ def test_fallback_point_limit_never_hides_an_older_fitting_passage():
     def pack(choice):
         return _pack_choice(choice, available, budget, measure, lambda _p: True)
 
-    choice = _recent_evidence_choice(available, frozenset(), pack, [], OmissionCounts())
+    choice = _recent_evidence_choice(
+        available,
+        frozenset(),
+        lambda c: _fits_whole(c, available, budget, measure, lambda _p: True),
+        [],
+        OmissionCounts(),
+    )
     assert [item.source_id for item in pack(choice).evidence] == ["s0"]
+
+
+def test_fallback_returns_a_selection_that_packs_whole_without_drops():
+    """Each passage fits alone but not together: keep one, drop nothing later."""
+    from reflexio.server.services.input_compression import (
+        RECENT_EVIDENCE_OMISSION,
+        CompressionChoice,
+        CompressionPoint,
+        OmissionCounts,
+        _fits_whole,
+        _pack_choice,
+        _recent_evidence_choice,
+    )
+
+    available = {
+        f"e{order}": EvidenceSource(
+            source_id=f"s{order}",
+            request_id="r",
+            interaction_id=order,
+            field="content",
+            speaker="User",
+            source_order=order,
+            text=f"passage {order} " * 100,
+        )
+        for order in (1, 2)
+    }
+
+    def measure(packet):
+        return len(packet.render())
+
+    one = CompressionChoice(
+        points=[CompressionPoint(category="selected_evidence", evidence_refs=["e2"])],
+        omissions=[RECENT_EVIDENCE_OMISSION.format(offered=2, visible=2)],
+    )
+    budget = measure(_pack_choice(one, available, 10**9, measure, lambda _p: True))
+    choice = _recent_evidence_choice(
+        available,
+        frozenset(),
+        lambda c: _fits_whole(c, available, budget, measure, lambda _p: True),
+        [],
+        OmissionCounts(),
+    )
+    packet = _pack_choice(choice, available, budget, measure, lambda _p: True)
+    assert [item.source_id for item in packet.evidence] == ["s2"]
+    assert packet.omission_counts.capacity_points == 0
+    assert packet.omissions == [RECENT_EVIDENCE_OMISSION.format(offered=1, visible=2)]
