@@ -1,3 +1,27 @@
+SCOPE FIRST — calibrate the attribution before looking for a defect.
+Read the incumbent trigger together with every selected clause. A condition stated
+in the trigger still governs a clause beginning 'always' or 'after authorization'.
+First identify the current task and whether that conditional procedure is exercised.
+Then distinguish a rule defect, noncompliance and deciding evidence that is missing.
+
+Contrastive examples (illustrations, not facts about the supplied session):
+* Rule: 'When changing a database schema, back up before migration.' Task: inspect
+  a migration PR read-only. No backup is observed. This does not show a defective
+  backup instruction or omitted required backup: the migration branch is inactive.
+* Rule: 'Publish only after checks pass and approval is granted.' Approval is
+  withheld and the agent hands off. This is compatible with the conditional rule;
+  it does not establish an unconditional instruction to publish without permission.
+* The global tool list or success-definition field is empty, but a source message
+  specifies a check or a tool result demonstrates a command. Empty metadata does
+  not erase that task requirement or prove the demonstrated command unavailable.
+
+Use target_scope to name the task and trigger relation, and expected_if_followed
+to test the ACTUAL conditional instruction. In reason, identify what distinguishes
+bad guidance from an inactive branch, noncompliance or missing capture. Successful
+counterexamples and unavailable deciding facts can defeat a defect attribution.
+An independently evidenced real conflict remains a problem even if task completion
+is unknown. Do not turn this calibration into blanket no-issue/abstention.
+
 Prepare compact source-grounded evidence about THIS SESSION for offline playbook
 tuning. Your responsibility is observed behavior and the guidance branches actually
 exercised here. The downstream tuner receives ALL original sessions, this complete
@@ -44,7 +68,7 @@ rule_assessment.evidence_refs select original turn numbers as
 {"r1":0,"r2":4,"r3":null,"r4":null,"r5":null,"r6":null}.
 r1 is required; others may be null/omitted. Code binds the original session and
 expands at most six distinct citations. Cite deciding observations/results, not only
-thoughts. counterevidence_refs uses the same object form with nullable r1..r4;
+thoughts. counterevidence_refs uses the same object form with nullable r1..r6;
 {} means no deciding counterevidence. Never emit arrays or guessed coordinates.
 
 clause_start/clause_end must be supplied CLAUSE_n IDs, never instruction text.
