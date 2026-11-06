@@ -17,6 +17,10 @@ Description: Engine of the offline user-playbook tuner: deterministic evidence s
 | `open_world/qualification.py`, `open_world/rule_evidence_authority.py` | Versioned synthetic qualification fixtures and the immutable identities of the evidence-driven method |
 | `open_world/reducer.py`, `open_world/runner.py` | Deterministic memo reduction and the shared job lease |
 | `open_world/shared_compaction.py` | Shared compression dispatch and cache journal inside one fenced job |
+| `evidence/open_world_store.py` | Atomic freeze and reload of one canonical evidence bundle through the storage port; not re-exported from `evidence/__init__` (import cycle) |
+| `open_world/evidence_documents.py`, `open_world/compaction.py`, `open_world/hierarchical_compaction.py`, `open_world/shared_compaction_preparer.py` | Frozen-evidence rehydration, native consumer sizing and shared long-input preparation |
+| `open_world/rule_evidence.py`, `open_world/rule_evidence_runtime.py`, `open_world/diagnostics.py` | Single-method diagnostics, exact-clause proposals, durable calls on `RuleEvidenceStorage` and terminal-failure diagnostics |
+| `open_world/publication.py` | `OpenWorldProvisionalPublisher`: provisional publication of one accepted attempt |
 | `open_world_invocations.py`, `open_world_job_metadata.py` | Refusal vocabulary, durable invocation records and advisory job-metadata keys |
 | `open_world_port.py`, `open_world_records.py` | `OpenWorldStoragePort` (the consumer Protocols a storage backend implements to run the active open-world path) and the storage records and refusal errors it returns and raises |
 | `exposure_receipts.py` | Signed search receipts and their verification; `receipt_project_id()` is the project resolver issuer and local verifier share |
