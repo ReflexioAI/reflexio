@@ -58,6 +58,7 @@ class InteractionStoreMixin:
     _subject_ref_for_user_id: Any
     _assert_subject_writable_locked: Any
     _own_transaction: Any
+    _record_published_exposures_locked: Any
 
     # ------------------------------------------------------------------
     # CRUD — Interactions
@@ -106,6 +107,16 @@ class InteractionStoreMixin:
                 if own_txn:
                     self.conn.execute("BEGIN IMMEDIATE")
                 self._assert_subject_writable_locked(subject_ref)
+                # Only a NEW interaction records exposures: re-publishing a
+                # stored one (an explicit id that already exists) is a replay.
+                is_new = (
+                    not interaction.interaction_id
+                    or self.conn.execute(
+                        "SELECT 1 FROM interactions WHERE interaction_id = ?",
+                        (interaction.interaction_id,),
+                    ).fetchone()
+                    is None
+                )
                 if interaction.interaction_id:
                     self.conn.execute(
                         """INSERT OR REPLACE INTO interactions
@@ -186,6 +197,8 @@ class InteractionStoreMixin:
                     )
                     iid = cur.lastrowid or 0
                     interaction.interaction_id = iid
+                if is_new:
+                    self._record_published_exposures_locked(interaction)
                 if own_txn:
                     self.conn.commit()
             except Exception:

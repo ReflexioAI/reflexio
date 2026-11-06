@@ -998,6 +998,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
     _delete_in_chunks: Any
     _delete_source_windows_for_user_playbook_ids: Any
     _subject_ref_for_user_id: Callable[[str], str]
+    # The exposure-ledger clear belongs to SQLiteOpenWorldMixin.
+    _delete_exposure_events_for_user_locked: Callable[[str], int]
     # Raw-answer erasure belongs to SQLitePendingToolCallStoreMixin.
     _erase_pending_tool_calls_for_user_unlocked: Callable[[str], int]
 
@@ -3463,7 +3465,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         Returns:
             dict[str, int]: Per-entity counts with keys ``session_outcomes``,
                 ``interactions``, ``user_playbooks``, ``profiles``, ``requests``,
-                ``purged_profiles``, and ``purged_user_playbooks``.
+                ``purged_profiles``, ``purged_user_playbooks`` and
+                ``user_playbook_exposure_events`` (rows naming the user as
+                viewer or as playbook owner).
                 ``profiles`` and ``user_playbooks`` reflect hard-deleted counts;
                 purged rows are counted separately.
         """
@@ -3560,6 +3564,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     "DELETE FROM learning_work WHERE org_id=? AND user_id=?",
                     (self.org_id, user_id),
                 )
+                exposure_events_deleted = self._delete_exposure_events_for_user_locked(
+                    user_id
+                )
                 interactions_cur = self.conn.execute(
                     "DELETE FROM interactions WHERE user_id = ?", (user_id,)
                 )
@@ -3604,6 +3611,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "requests": requests_cur.rowcount,
             "purged_profiles": len(purge_profile_ids),
             "purged_user_playbooks": len(purge_upb_ids),
+            "user_playbook_exposure_events": exposure_events_deleted,
         }
 
 
