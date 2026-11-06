@@ -54,8 +54,8 @@ def test_record_fields_preserves_payload_after_duplicate_filter(monkeypatch):
 
     assert duplicate_filter.filter(record())
     assert not duplicate_filter.filter(record())
-    emitted = record()
-    assert duplicate_filter.filter(emitted)
+    emitted = duplicate_filter.filter(record())
+    assert isinstance(emitted, logging.LogRecord)
     assert emitted.getMessage().endswith(" [+1 similar suppressed in the last 5s]")
     expected = {
         "event": "publish_timing",
@@ -63,7 +63,7 @@ def test_record_fields_preserves_payload_after_duplicate_filter(monkeypatch):
         "timing_id": "request-timing",
     }
     assert record_fields(emitted) == expected
-    # Multiple configured handlers can annotate the same emitted record.
+    # Stacked duplicate filters on one handler annotate the same record.
     emitted.msg += " [+2 similar suppressed in the last 10s]"
     assert record_fields(emitted) == expected
 

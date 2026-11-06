@@ -119,8 +119,9 @@ class TestDuplicateFilterSuppressionIsVisible:
 
         filt._recent.clear()  # simulate the window elapsing
         later = self._record("org %s is wedged", ("org_5",))
-        assert filt.filter(later) is True
-        assert "+3 similar suppressed" in later.getMessage()
+        emitted = filt.filter(later)
+        assert isinstance(emitted, logging.LogRecord)
+        assert "+3 similar suppressed" in emitted.getMessage()
 
     def test_emitted_message_survives_handler_reformatting(self):
         """The suffix must not be destroyed by the handler's own %-substitution."""
@@ -128,13 +129,36 @@ class TestDuplicateFilterSuppressionIsVisible:
         assert filt.filter(self._record("org %s is wedged", ("org_1",))) is True
         assert filt.filter(self._record("org %s is wedged", ("org_2",))) is False
         filt._recent.clear()
-        rec = self._record("org %s is wedged", ("org_3",))
-        filt.filter(rec)
+        rec = filt.filter(self._record("org %s is wedged", ("org_3",)))
+        assert isinstance(rec, logging.LogRecord)
         # getMessage() is what handlers call; calling it twice must be stable
         # and must not raise on a template whose args were cleared.
         assert rec.getMessage() == rec.getMessage()
         assert "org_3" in rec.getMessage()
         assert "+1 similar suppressed" in rec.getMessage()
+
+    def test_suffix_reaches_only_the_filtered_handler(self):
+        """Other handlers on the logger keep the record as it was logged."""
+        console, other = _Collect(), _Collect()
+        console.addFilter(DuplicateFilter(window_seconds=300))
+        log = logging.getLogger("test_log_format.suffix_scope")
+        log.propagate = False
+        log.addHandler(console)
+        log.addHandler(other)
+        try:
+            log.warning("org %s is wedged", "org_1")
+            log.warning("org %s is wedged", "org_2")
+            console.filters[0]._recent.clear()
+            log.warning("org %s is wedged", "org_3")
+        finally:
+            log.removeHandler(console)
+            log.removeHandler(other)
+        assert console.messages[-1].endswith("[+1 similar suppressed in the last 300s]")
+        assert other.messages == [
+            "org org_1 is wedged",
+            "org org_2 is wedged",
+            "org org_3 is wedged",
+        ]
 
     def test_distinct_templates_do_not_share_a_suppression_count(self):
         filt = DuplicateFilter(window_seconds=300)
@@ -150,6 +174,15 @@ class TestDuplicateFilterSuppressionIsVisible:
         assert filt.filter(rec) is True
         assert rec.getMessage() == "solo x"
         assert rec.args == ("x",)
+
+
+class _Collect(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
 
 
 def _info(msg: str) -> logging.LogRecord:
