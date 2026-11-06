@@ -197,7 +197,7 @@ class DuplicateFilter(logging.Filter):
 
         if dropped:
             # Annotate a copy: the record is shared with every other handler on
-            # the logger chain (file, Sentry, caplog), and the suffix belongs
+            # the logger chain (file log, error reporting, caplog), and the suffix belongs
             # only to the handler this filter is attached to. Format now and
             # clear args so the suffix survives the handler's own
             # `getMessage()` %-substitution.
