@@ -7,6 +7,9 @@ drop-a-method tripwire for the playbook decomposition.
 
 from __future__ import annotations
 
+from reflexio.server.services.offline_tuner.open_world_port import (
+    OpenWorldStoragePort,
+)
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import BaseStorage
 
@@ -76,6 +79,10 @@ def test_sqlite_surface_matches_base_abc() -> None:
     """
     sqlite_methods = _public_methods(SQLiteStorage)
     base_methods = _public_methods(BaseStorage)
+    # Open-world port members SQLite implements. The port is a Protocol, not
+    # part of the ABC, so its members are derived from it rather than listed.
+    port_members = _public_methods(OpenWorldStoragePort) - base_methods
+    allowed = _ALLOWED_EXTRAS | port_members
 
     # Membership guard: fail if a retention-allowlisted method is dropped from
     # SQLiteStorage (the subtraction check below stays green in that case).
@@ -84,11 +91,11 @@ def test_sqlite_surface_matches_base_abc() -> None:
         f"{_ALLOWED_EXTRAS - sqlite_methods}"
     )
 
-    assert sqlite_methods - _ALLOWED_EXTRAS == base_methods, (
+    assert sqlite_methods - allowed == base_methods, (
         f"SQLiteStorage method delta vs BaseStorage ABC "
-        f"(optional capabilities={_ALLOWED_EXTRAS}):\n"
+        f"(optional capabilities={_ALLOWED_EXTRAS}, port members):\n"
         f"  extra sqlite (not in allowlist): "
-        f"{sqlite_methods - base_methods - _ALLOWED_EXTRAS}\n"
+        f"{sqlite_methods - base_methods - allowed}\n"
         f"  extra base (missing in sqlite): {base_methods - sqlite_methods}"
     )
 

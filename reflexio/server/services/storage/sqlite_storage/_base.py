@@ -1346,6 +1346,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         from ._publication_preparations import migrate_publication_preparations
 
         migrate_publication_preparations(self.conn)
+        from ._open_world import migrate_open_world
+
+        with self._lock:
+            migrate_open_world(self.conn)
         self._migrate_agent_runs_schema()
         self._migrate_pending_tool_calls_schema()
         self._migrate_expanded_terms()
