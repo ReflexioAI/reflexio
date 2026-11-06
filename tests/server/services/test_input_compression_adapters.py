@@ -18,6 +18,7 @@ from reflexio.server.services.extraction.compression import compress_extraction_
 from reflexio.server.services.input_compression import (
     CAPACITY_OMISSION,
     CompressionBudget,
+    EvidencePacket,
     EvidenceSource,
 )
 from reflexio.server.services.input_compression_llm import (
@@ -1417,6 +1418,7 @@ def test_salvage_judges_usability_with_its_own_omission_notice(caplog):
             available,
             frozenset(),
             lambda c: _fits_whole(c, available, budget, measure, lambda _p: True),
+            lambda source: measure(EvidencePacket(evidence=[source])),
             notes,
             counts,
         ),
@@ -1507,6 +1509,7 @@ def test_fallback_keeps_an_older_required_speaker_passage_that_fits(caplog):
             available,
             required,
             lambda c: _fits_whole(c, available, budget, measure, lambda _p: True),
+            lambda source: measure(EvidencePacket(evidence=[source])),
             notes,
             counts,
         ),
@@ -1564,6 +1567,7 @@ def test_fallback_point_limit_never_hides_an_older_fitting_passage():
         available,
         frozenset(),
         lambda c: _fits_whole(c, available, budget, measure, lambda _p: True),
+        lambda source: measure(EvidencePacket(evidence=[source])),
         [],
         OmissionCounts(),
     )
@@ -1607,6 +1611,7 @@ def test_fallback_returns_a_selection_that_packs_whole_without_drops():
         available,
         frozenset(),
         lambda c: _fits_whole(c, available, budget, measure, lambda _p: True),
+        lambda source: measure(EvidencePacket(evidence=[source])),
         [],
         OmissionCounts(),
     )
@@ -1675,8 +1680,73 @@ def test_fallback_admits_all_required_speakers_as_one_fitting_set():
         budget,
     )
     choice = _recent_evidence_choice(
-        available, required, lambda c: fits(c, budget), [], OmissionCounts()
+        available,
+        required,
+        lambda c: fits(c, budget),
+        lambda source: measure(EvidencePacket(evidence=[source])),
+        [],
+        OmissionCounts(),
     )
     packet = _pack_choice(choice, available, budget, measure, lambda _p: True)
     _require_speakers(packet, available, required)
     assert {item.source_id for item in packet.evidence} == {"agent-old", "user"}
+
+
+def test_fallback_ranks_required_speaker_passages_by_rendered_cost():
+    """A short but escape-heavy passage is costlier than a longer plain one."""
+    from reflexio.server.services.input_compression import (
+        RECENT_EVIDENCE_OMISSION,
+        CompressionChoice,
+        CompressionPoint,
+        OmissionCounts,
+        _fits_whole,
+        _pack_choice,
+        _recent_evidence_choice,
+        _require_speakers,
+    )
+
+    def source(source_id, speaker, order, text):
+        return EvidenceSource(
+            source_id=source_id,
+            request_id="r",
+            interaction_id=order,
+            field="content",
+            speaker=speaker,
+            source_order=order,
+            text=text,
+        )
+
+    available = {
+        "e1": source("agent-plain", "Assistant", 1, "a" * 220),
+        "e2": source("user", "User", 2, "user turn " * 30),
+        "e3": source("agent-escaped", "Assistant", 3, "\n" * 200),
+        "e4": source("agent-new", "Assistant", 4, "agent dump " * 80),
+    }
+    required = frozenset({"Assistant", "User"})
+
+    def measure(packet):
+        return len(packet.render())
+
+    assert len(available["e3"].text) < len(available["e1"].text)
+    assert measure(EvidencePacket(evidence=[available["e3"]])) > measure(
+        EvidencePacket(evidence=[available["e1"]])
+    )
+    cheapest = CompressionChoice(
+        points=[
+            CompressionPoint(category="selected_evidence", evidence_refs=[ref])
+            for ref in ("e1", "e2")
+        ],
+        omissions=[RECENT_EVIDENCE_OMISSION.format(offered=4, visible=4)],
+    )
+    budget = measure(_pack_choice(cheapest, available, 10**9, measure, lambda _p: True))
+    choice = _recent_evidence_choice(
+        available,
+        required,
+        lambda c: _fits_whole(c, available, budget, measure, lambda _p: True),
+        lambda item: measure(EvidencePacket(evidence=[item])),
+        [],
+        OmissionCounts(),
+    )
+    packet = _pack_choice(choice, available, budget, measure, lambda _p: True)
+    _require_speakers(packet, available, required)
+    assert {item.source_id for item in packet.evidence} == {"agent-plain", "user"}

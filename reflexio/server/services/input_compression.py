@@ -670,6 +670,7 @@ def _recent_evidence_choice(
     available: Mapping[str, EvidenceSource],
     required_speakers: frozenset[str],
     fits: Callable[[CompressionChoice], bool],
+    cost: Callable[[EvidenceSource], int],
     omissions: Sequence[str],
     omission_counts: OmissionCounts,
 ) -> CompressionChoice:
@@ -719,7 +720,7 @@ def _recent_evidence_choice(
 
     # Required speakers are admitted as one set, so an earlier speaker's pick
     # cannot crowd out a later one: their newest passages if those fit
-    # together, else their shortest (newest on ties). Only if neither set fits
+    # together, else their cheapest by rendered ``cost`` (newest on ties). Only if neither set fits
     # is each admitted best-effort; the speaker rule then decides.
     rank = {ref: index for index, ref in enumerate(newest_first)}
     by_speaker = [
@@ -730,7 +731,7 @@ def _recent_evidence_choice(
     for lead in (
         [refs[0] for refs in by_speaker],
         [
-            min(refs, key=lambda ref: (len(available[ref].text), rank[ref]))
+            min(refs, key=lambda ref: (cost(available[ref]), rank[ref]))
             for refs in by_speaker
         ],
     ):
@@ -1071,6 +1072,9 @@ def plan_compression_input(
                                 budget.output_tokens,
                                 measure_output,
                                 admissible,
+                            ),
+                            lambda source: measure_output(
+                                EvidencePacket(evidence=[source])
                             ),
                             omissions,
                             counts,
