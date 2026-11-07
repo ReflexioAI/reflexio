@@ -186,6 +186,7 @@ class LiteLLMClientError(Exception):
         # Set by the client on a provider failure: the route whose breaker
         # decides whether durable work is charged for it.
         self.circuit_route: str | None = None
+        self.quota_exhausted = False
 
 
 class StructuredOutputRepairError(LiteLLMClientError):

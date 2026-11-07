@@ -39,6 +39,7 @@ from unittest.mock import MagicMock
 
 import litellm
 import pytest
+from litellm.exceptions import RateLimitError as LiteLLMRateLimitError
 
 from reflexio.server.llm import LiteLLMClientError
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
@@ -225,6 +226,43 @@ def test_a_rate_limited_crossing_is_retried_and_then_succeeds(
     assert len(slept) == 1
     assert result.value == _MEMO
     assert composed.rate_limit_budget_remaining < _RATE_LIMIT_RETRY_BUDGET_SECONDS
+
+
+def test_minimax_quota_backup_preserves_the_qualified_tuner_request(monkeypatch):
+    model = "minimax/MiniMax-M3"
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-primary")
+    monkeypatch.setenv("MINIMAX_BACKUP_API_KEY", "test-backup")
+    calls = []
+
+    def serve(**params):
+        calls.append(dict(params))
+        if params["api_key"] == "test-primary":
+            raise LiteLLMRateLimitError(
+                message="Token Plan usage limit reached (2056)",
+                llm_provider="minimax",
+                model=model,
+            )
+        response = _provider_response(_MEMO.model_dump_json())
+        response.model = "MiniMax-M3"
+        response._hidden_params = {"custom_llm_provider": "minimax"}
+        return response
+
+    monkeypatch.setattr(litellm, "completion", serve)
+    composed = compose_litellm_open_world_model_client(
+        LiteLLMClient(LiteLLMConfig(model=model, fallback_models=[]))
+    )
+    result = composed.complete(
+        messages=(ChatMessage("system", "policy"), ChatMessage("user", "data")),
+        response_format=DiscoveryMemo,
+        model_revision=model,
+        idempotency_key=_IDEMPOTENCY_KEY,
+    )
+    assert result.value == _MEMO
+    assert [p["api_key"] for p in calls] == ["test-primary", "test-backup"]
+    assert {k: v for k, v in calls[0].items() if k != "api_key"} == {
+        k: v for k, v in calls[1].items() if k != "api_key"
+    }
+    assert composed.rate_limit_budget_remaining == _RATE_LIMIT_RETRY_BUDGET_SECONDS
 
 
 def test_the_retry_reuses_the_idempotency_key_and_the_qualified_question(
