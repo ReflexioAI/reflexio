@@ -119,9 +119,14 @@ def test_actual_engine_orders_fast_checks_and_keeps_survivor_tests(
         ast.get_source_segment(conftest, node)
         for node in ast.parse(conftest).body
         if isinstance(node, ast.FunctionDef)
-        and node.name in ("pytest_collection_modifyitems", "pytest_runtest_logreport")
+        and node.name
+        in (
+            "pytest_collection_modifyitems",
+            "pytest_runtest_logreport",
+            "_mutmut_state",
+        )
     ]
-    assert len(hooks) == 2 and all(hooks)
+    assert len(hooks) == 3 and all(hooks)
     hook_source = "\n\n".join(source for source in hooks if source is not None)
     (tests / "conftest.py").write_text(
         "import json, math, os\nimport pytest\nfrom pathlib import Path\n"

@@ -126,6 +126,39 @@ def pytest_configure(config):
     configure_llm_mock(config)
 
 
+def _mutmut_state():
+    """mutmut 3's stats state, or a clear failure for an unrecognised engine.
+
+    The lockfile pins the engine; ``uv lock --upgrade`` may admit a later
+    major, which must stop the stats pass instead of silently mis-recording
+    it. Self-contained: the scratch lifecycle test extracts it with the hooks.
+    """
+    from importlib.metadata import version
+
+    supported_major = "3"
+    installed = version("mutmut")
+    hint = (
+        f"tests/conftest.py records test durations and coverage into mutmut "
+        f"{supported_major}'s internal state (mutmut.state); review the new "
+        "engine and update these hooks before admitting it"
+    )
+    if installed.split(".", 1)[0] != supported_major:
+        raise RuntimeError(f"Unsupported mutmut {installed}; {hint}")
+    try:
+        from mutmut.state import state
+
+        current = state()
+    except (ImportError, AttributeError) as exc:
+        raise RuntimeError(f"Unrecognized mutmut {installed} layout; {hint}") from exc
+    fields = ("duration_by_test", "tests_by_mangled_function_name", "_stats")
+    missing = [name for name in fields if not hasattr(current, name)]
+    if missing:
+        raise RuntimeError(
+            f"Unrecognized mutmut {installed} state (missing {missing}); {hint}"
+        )
+    return current
+
+
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     """Include fixture costs in mutation scheduling, only during statistics."""
     if os.environ.get("MUTANT_UNDER_TEST") != "stats" or report.when not in (
@@ -133,9 +166,7 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         "teardown",
     ):
         return
-    from mutmut.state import state
-
-    state().duration_by_test[report.nodeid] += report.duration
+    _mutmut_state().duration_by_test[report.nodeid] += report.duration
 
 
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)
@@ -146,9 +177,7 @@ def pytest_runtest_teardown(
     yield
     if os.environ.get("MUTANT_UNDER_TEST") != "stats":
         return
-    from mutmut.state import state
-
-    stats = state()
+    stats = _mutmut_state()
     for function in stats._stats:
         stats.tests_by_mangled_function_name[function].add(
             item.nodeid.removeprefix("mutants/")

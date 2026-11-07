@@ -32,6 +32,7 @@ def test_actual_engine_scratch_lifecycle(tmp_path: Path, mode: str):
         "pytest_sessionfinish",
         "pytest_runtest_makereport",
         "pytest_runtest_teardown",
+        "_mutmut_state",
     }
     lines = source.splitlines()
     hooks = []
@@ -39,7 +40,7 @@ def test_actual_engine_scratch_lifecycle(tmp_path: Path, mode: str):
         if isinstance(node, ast.FunctionDef) and node.name in functions:
             first = min([node.lineno, *(d.lineno for d in node.decorator_list)])
             hooks.append("\n".join(lines[first - 1 : node.end_lineno]))
-    assert len(hooks) == 3
+    assert len(hooks) == 4
     project = tmp_path / "project"
     tests = project / "tests"
     tests.mkdir(parents=True)

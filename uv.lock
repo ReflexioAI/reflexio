@@ -3545,7 +3545,7 @@ provides-extras = ["notebooks", "mem0"]
 dev = [
     { name = "build", specifier = ">=1.0.0" },
     { name = "jupyterlab", specifier = ">=4.4.3" },
-    { name = "mutmut", specifier = ">=3.8.0,<4" },
+    { name = "mutmut", specifier = ">=3.8.0" },
     { name = "polars", specifier = ">=1.40.1" },
     { name = "pyright", specifier = ">=1.1.400" },
     { name = "pytest", specifier = ">=8.3.4" },

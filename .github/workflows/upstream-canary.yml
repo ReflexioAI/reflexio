@@ -1,0 +1,247 @@
+name: Upstream dependency canary
+
+# Early evidence for the two runtime ceilings reflexio-ai keeps
+# (litellm <2, gepa <0.2; see pyproject.toml). Weekly, and on demand:
+#
+# * in-range: the newest release the ceiling admits. If it is newer than
+#   uv.lock, upgrade only that package in the lock, run its contract tests and,
+#   on success, open or update one pull request per package
+#   (branch upstream-canary/<package>). Never merged automatically.
+# * next-major: the newest release ignoring the ceiling. When it lies outside
+#   the ceiling, run the same tests against it. A pass is the evidence for
+#   widening the ceiling; a fail is the reason the ceiling stays.
+#
+# Any failure opens or updates a single issue (deduplicated by title).
+# Jobs that execute upstream code hold read-only tokens; only the jobs that
+# write a pull request or an issue get write scopes, and they run no upstream
+# code. Not a pull-request check.
+
+on:
+  schedule:
+    - cron: "23 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: Space-separated subset of "litellm gepa"
+        required: false
+        default: litellm gepa
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-canary
+  cancel-in-progress: false
+
+env:
+  ISSUE_TITLE: "Upstream dependency canary is failing"
+  PYTHON_DOTENV_DISABLED: "1"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.select.outputs.packages }}
+    steps:
+      - id: select
+        env:
+          REQUESTED: ${{ inputs.packages || 'litellm gepa' }}
+        run: |
+          selected=()
+          for package in $REQUESTED; do
+            case "$package" in
+              litellm|gepa) selected+=("\"$package\"") ;;
+              *) echo "::error::Unknown package $package"; exit 1 ;;
+            esac
+          done
+          (( ${#selected[@]} )) || { echo "::error::No package selected"; exit 1; }
+          echo "packages=[$(IFS=,; echo "${selected[*]}")]" >> "$GITHUB_OUTPUT"
+
+  canary:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.plan.outputs.packages) }}
+        mode: [in-range, next-major]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Resolve the candidate version
+        id: resolve
+        env:
+          PACKAGE: ${{ matrix.package }}
+          MODE: ${{ matrix.mode }}
+        run: |
+          locked=$(uv run --no-project --with packaging python scripts/upstream_canary.py locked "$PACKAGE")
+          if [[ "$MODE" == "in-range" ]]; then
+            # Upgrades only this package (and what it pulls in) within the ceiling.
+            uv lock --upgrade-package "$PACKAGE"
+            candidate=$(uv run --no-project --with packaging python scripts/upstream_canary.py locked "$PACKAGE")
+            uv sync --locked --group dev
+          else
+            uv sync --locked --group dev
+            echo "$PACKAGE" > "$RUNNER_TEMP/override.txt"
+            # The override drops every declared bound on the package, ours included.
+            uv pip install --upgrade --override "$RUNNER_TEMP/override.txt" "$PACKAGE"
+            candidate=$(uv run --no-sync python -c \
+              "import importlib.metadata, sys; print(importlib.metadata.version(sys.argv[1]))" "$PACKAGE")
+          fi
+          admitted=$(uv run --no-project --with packaging python scripts/upstream_canary.py admits "$PACKAGE" "$candidate")
+          run_tests=false
+          if [[ "$candidate" != "$locked" ]]; then
+            if [[ "$MODE" == "in-range" || "$admitted" == "false" ]]; then
+              run_tests=true
+            fi
+          fi
+          {
+            echo "locked=$locked"
+            echo "candidate=$candidate"
+            echo "admitted=$admitted"
+            echo "run_tests=$run_tests"
+          } >> "$GITHUB_OUTPUT"
+          echo "$PACKAGE $MODE: locked $locked, candidate $candidate, admitted by ceiling: $admitted, testing: $run_tests"
+
+      - name: Run the contract tests
+        if: steps.resolve.outputs.run_tests == 'true'
+        env:
+          PACKAGE: ${{ matrix.package }}
+        run: |
+          read -ra selection <<< "$(uv run --no-project --with packaging python scripts/upstream_canary.py tests "$PACKAGE")"
+          uv run --no-sync pytest "${selection[@]}" \
+            -m "not e2e and not requires_credentials" -o addopts= -n 2 \
+            --junitxml="$RUNNER_TEMP/canary.xml" -q
+
+      - name: Record the outcome
+        if: always()
+        env:
+          PACKAGE: ${{ matrix.package }}
+          MODE: ${{ matrix.mode }}
+          LOCKED: ${{ steps.resolve.outputs.locked }}
+          CANDIDATE: ${{ steps.resolve.outputs.candidate }}
+          ADMITTED: ${{ steps.resolve.outputs.admitted }}
+          TESTED: ${{ steps.resolve.outputs.run_tests }}
+          OUTCOME: ${{ job.status }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/result"
+          jq -n --arg package "$PACKAGE" --arg mode "$MODE" --arg locked "$LOCKED" \
+            --arg candidate "$CANDIDATE" --arg admitted "$ADMITTED" \
+            --arg tested "$TESTED" --arg outcome "$OUTCOME" \
+            '$ARGS.named' > "$RUNNER_TEMP/result/result.json"
+          cat "$RUNNER_TEMP/result/result.json"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: canary-${{ matrix.mode }}-${{ matrix.package }}
+          path: ${{ runner.temp }}/result/result.json
+
+  propose:
+    needs: canary
+    if: always() && needs.canary.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: canary-in-range-*
+          path: ${{ runner.temp }}/results
+          merge-multiple: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: Open or update one lock bump per passing package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.repository.default_branch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          shopt -s nullglob
+          for result in "$RUNNER_TEMP"/results/*/result.json; do
+            package=$(jq -r .package "$result")
+            candidate=$(jq -r .candidate "$result")
+            if [[ $(jq -r '.outcome == "success" and .tested == "true"' "$result") != true ]]; then
+              continue
+            fi
+            branch="upstream-canary/$package"
+            git checkout -q -B "$branch" "origin/$BASE"
+            # Pinned to the tested version: no code from the package runs here,
+            # and a release published since the test cannot slip in.
+            uv lock --upgrade-package "$package==$candidate"
+            if [[ $(uv run --no-project --with packaging python scripts/upstream_canary.py locked "$package") != "$candidate" ]]; then
+              echo "::error::$package did not lock to the tested $candidate"
+              exit 1
+            fi
+            git diff --quiet -- uv.lock && continue
+            git commit -q -m "chore(deps): lock $package $candidate" -- uv.lock
+            # This branch belongs to the canary; each run replaces its single commit.
+            git push --force-with-lease origin "$branch"
+            body=$(printf '%s\n' \
+              "Upgrades \`$package\` to \`$candidate\` in \`uv.lock\`, within the declared ceiling." \
+              "" \
+              "The upstream canary ran the $package contract tests against this version and they passed: $RUN_URL" \
+              "" \
+              "Review before merging; the canary never merges. Pull requests opened with the workflow token do not start other workflows, so close and reopen this one to run CI.")
+            existing=$(gh pr list --head "$branch" --state open --json number --jq '.[0].number')
+            if [[ -n "$existing" ]]; then
+              gh pr edit "$existing" --title "chore(deps): lock $package $candidate" --body "$body"
+            else
+              gh pr create --base "$BASE" --head "$branch" \
+                --title "chore(deps): lock $package $candidate" --body "$body"
+            fi
+          done
+
+  report:
+    needs: [canary, propose]
+    if: always() && (needs.canary.result == 'failure' || needs.propose.result == 'failure')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: canary-*
+          path: ${{ runner.temp }}/results
+      - name: Open or update the canary issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PROPOSE: ${{ needs.propose.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          shopt -s nullglob
+          {
+            echo "The upstream dependency canary failed: $RUN_URL"
+            echo
+            echo "| Package | Check | Locked | Candidate | Admitted by ceiling | Outcome |"
+            echo "| --- | --- | --- | --- | --- | --- |"
+            for result in "$RUNNER_TEMP"/results/*/result.json; do
+              jq -r '"| \(.package) | \(.mode) | \(.locked) | \(.candidate) | \(.admitted) | \(.outcome) |"' "$result"
+            done
+            echo
+            echo "Lock-bump job: $PROPOSE."
+            echo
+            echo "An in-range failure means the newest admitted release breaks a contract test: fix the caller or exclude that release. A next-major failure is why the ceiling stays; widen it once this check passes."
+          } > "$RUNNER_TEMP/body.md"
+          existing=$(gh issue list --state open --search "in:title \"$ISSUE_TITLE\"" \
+            --json number,title --jq "map(select(.title == \"$ISSUE_TITLE\"))[0].number")
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh issue create --title "$ISSUE_TITLE" --body-file "$RUNNER_TEMP/body.md"
+          fi
