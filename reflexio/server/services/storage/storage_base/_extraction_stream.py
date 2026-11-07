@@ -2444,7 +2444,7 @@ class ExtractionStreamStore:
         reservation is durable before provider dispatch; a crash leaves its
         usage unknown and never makes that attempt available again. The one
         refund is ``released_attempt_id``: an attempt the provider could not
-        serve during an outage (:func:`_release_unanswered_attempt`).
+        serve during an outage (:func:`release_unanswered_attempt`).
         """
         with self._stream_sql() as db:
             run_id, snapshot, manifest = self._load_locked_extraction_overflow(
@@ -2456,7 +2456,7 @@ class ExtractionStreamStore:
                 expected_input_protocol=expected_input_protocol,
             )
             if released_attempt_id is not None:
-                _release_unanswered_attempt(
+                release_unanswered_attempt(
                     manifest,
                     released_attempt_id,
                     alone=checkpoint is None
@@ -3465,7 +3465,7 @@ class ExtractionStreamStore:
                 )
 
 
-def _release_unanswered_attempt(
+def release_unanswered_attempt(
     manifest: dict[str, Any], attempt_id: str, *, alone: bool
 ) -> None:
     """Return one reserved attempt that the provider never answered.
