@@ -345,6 +345,13 @@ activate the separate shared-input compressor/package executor.
 To change which models Reflexio uses, edit [`reflexio/server/site_var/site_var_sources/llm_model_setting.json`](reflexio/server/site_var/site_var_sources/llm_model_setting.json).
 Use the provider prefix shown above (e.g., `anthropic/` for Anthropic models). Set the corresponding API key in your `.env` file.
 
+Retryable physical-request warnings record only the error type, reason and
+numeric upstream status, never provider exception text or a traceback. They do
+not attest logical completion: a failed primary can still succeed on backup.
+Unrecovered exceptions continue to the existing caller, which owns durable
+waiting, retry exhaustion and terminal failure reporting; this does not add a
+global error for a provider outage.
+
 Optionally set `MINIMAX_BACKUP_API_KEY` to another subscription's key. On explicit
 MiniMax plan exhaustion (2056), text generation retries the same request/model
 once with that key. The primary quota circuit opens immediately, skips blocked
