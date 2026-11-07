@@ -2,33 +2,27 @@ import json
 import logging
 from pathlib import Path
 
-import redis
-
 logger = logging.getLogger(__name__)
 
 
 class SiteVarManager:
     """
-    Manages site variables by loading JSON or text files from a source directory and caching them in Redis.
+    Manages site variables by loading JSON or text files from a source directory
+    and caching them in memory.
     Each file in the source directory represents a site variable with the filename as the key.
     Supports both .json and .txt files.
     """
 
-    def __init__(self, source_dir: str | None = None, enable_redis: bool = False):
+    def __init__(self, source_dir: str | None = None):
         """
         Initialize the SiteVarManager with a source directory for site variable files.
 
         Args:
             source_dir (Optional[str]): Directory containing JSON or text files for site variables
-            enable_redis (bool): Whether to enable Redis caching (default: False)
         """
         self.source_dir = source_dir or str(Path(__file__).parent / "site_var_sources")
-        self.enable_redis = enable_redis
-        self.redis = (
-            redis.Redis(host="localhost", port=6379, db=0) if enable_redis else None
-        )
 
-        # In-memory cache to avoid repeated file/Redis access
+        # In-memory cache to avoid repeated file access
         self._cache: dict[str, str | dict] = {}
 
         # Ensure source directory exists
@@ -40,7 +34,7 @@ class SiteVarManager:
 
     def get_site_var(self, name: str) -> str | dict | None:
         """
-        Get a site variable by name. Checks in-memory cache first, then Redis cache (if enabled), then loads from file.
+        Get a site variable by name. Checks the in-memory cache first, then loads from file.
         Supports both JSON and text files.
 
         Args:
@@ -50,52 +44,17 @@ class SiteVarManager:
             Optional[str | dict]: The site variable value as JSON dict (for JSON files) or plain text (for text files), or None if not found
         """
         try:
-            # First check in-memory cache
             if name in self._cache:
                 logger.debug("Retrieved site var %s from in-memory cache", name)
                 return self._cache[name]
 
-            # Then try to get from Redis cache if enabled
-            if self.enable_redis and self.redis is not None:
-                cached_value = self.redis.get(name)
-                if cached_value is not None:
-                    logger.debug("Retrieved site var %s from Redis cache", name)
-                    decoded_value = cached_value.decode("utf-8")  # type: ignore[reportAttributeAccessIssue]
-                    # Try to parse as JSON for dict values
-                    try:
-                        parsed_value = json.loads(decoded_value)
-                        self._cache[name] = parsed_value
-                        return parsed_value
-                    except json.JSONDecodeError:
-                        # It's a plain text value
-                        self._cache[name] = decoded_value
-                        return decoded_value
-
-            # If not in cache or Redis disabled, try to load from file
             content = self._load_from_file(name)
             if content is not None:
-                # Cache in memory
                 self._cache[name] = content
-
-                # Cache in Redis for future use if enabled
-                if self.enable_redis and self.redis is not None:
-                    # Convert dict to JSON string for Redis storage
-                    redis_value = (
-                        json.dumps(content) if isinstance(content, dict) else content
-                    )
-                    self.redis.set(name, redis_value)
-                    logger.debug("Cached site var %s in Redis", name)
                 return content
-            logger.warning("Site var %s not found in Redis or files", name)
+            logger.warning("Site var %s not found in files", name)
             return None
 
-        except redis.RedisError as e:
-            logger.error("Redis error while getting site var %s: %s", name, str(e))
-            # Fallback to file-based loading
-            content = self._load_from_file(name)
-            if content is not None:
-                self._cache[name] = content
-            return content
         except Exception as e:
             logger.error("Error loading site var %s: %s", name, str(e))
             return None
@@ -103,7 +62,7 @@ class SiteVarManager:
     def evict_cache(self) -> None:
         """
         Evict (clear) all cached site variables from in-memory cache.
-        This forces fresh loading from Redis or files on next access.
+        This forces fresh loading from files on next access.
         """
         cache_size = len(self._cache)
         self._cache.clear()
@@ -123,7 +82,7 @@ class SiteVarManager:
 
     def load_all_site_vars(self) -> dict[str, str | dict]:
         """
-        Load all site variables from files in the source directory and cache them in memory and Redis (if enabled).
+        Load all site variables from files in the source directory and cache them in memory.
         Supports both JSON and text files.
 
         Returns:

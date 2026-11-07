@@ -1,131 +1,126 @@
-import { MethodDef } from "../types";
+import type { MethodDef } from "../types";
 
 export const unifiedSearchMethods: MethodDef[] = [
-  {
-    id: "search",
-    pythonName: "search",
-    displayName: "Search",
-    group: "unified-search",
-    description:
-      "Search across all entity types (profiles, agent playbooks, user playbooks) in parallel.",
-    httpMethod: "POST",
-    endpoint: "/api/search",
-    requestStyle: "json_body",
-    params: [
-      {
-        name: "query",
-        type: "string",
-        required: true,
-        description: "Search query text",
-      },
-      {
-        name: "top_k",
-        type: "number",
-        required: false,
-        default: 5,
-        description: "Maximum results per entity type, from 1 to 100",
-      },
-      {
-        name: "threshold",
-        type: "number",
-        required: false,
-        default: 0.3,
-        description: "Similarity threshold for vector search (0.0 to 1.0)",
-      },
-      {
-        name: "agent_version",
-        type: "string",
-        required: false,
-        description:
-          "Filter by agent version (agent_playbooks, user_playbooks)",
-      },
-      {
-        name: "playbook_name",
-        type: "string",
-        required: false,
-        description:
-          "Filter by playbook name (agent_playbooks, user_playbooks)",
-      },
-      {
-        name: "user_id",
-        type: "string",
-        required: false,
-        description:
-          "Filter by user ID (profiles, user_playbooks), at most 255 characters",
-      },
-      {
-        name: "source",
-        type: "string",
-        required: false,
-        description:
-          "Filter every selected entity by exact source; agent playbooks match through linked user playbooks",
-      },
-      {
-        name: "entity_types",
-        type: "json",
-        required: false,
-        description:
-          'Entity types to search, e.g. ["profiles", "user_playbooks", "agent_playbooks"]',
-      },
-      {
-        name: "agent_playbook_status_filter",
-        type: "json",
-        required: false,
-        description:
-          'Agent playbook approval statuses to include, e.g. ["pending", "approved"]',
-      },
-      {
-        name: "enable_reformulation",
-        type: "boolean",
-        required: false,
-        default: false,
-        description:
-          "Enable pre-search LLM query reformulation; also extracts temporal signals (time windows, current-value intent) that make ranking time-sensitive",
-      },
-      {
-        name: "conversation_history",
-        type: "json",
-        required: false,
-        description:
-          'List of conversation turns for context, e.g. [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]',
-      },
-      {
-        name: "search_mode",
-        type: "enum",
-        required: false,
-        default: "hybrid",
-        description:
-          "Search mode: vector (embedding similarity), fts (full-text search), or hybrid (combined with RRF)",
-        enumValues: ["vector", "fts", "hybrid"],
-      },
-      {
-        name: "request_id",
-        type: "string",
-        required: false,
-        description:
-          "Caller correlation ID for the search turn, at most 255 characters",
-      },
-      {
-        name: "session_id",
-        type: "string",
-        required: false,
-        description:
-          "Agent session this search serves, at most 255 characters. When set, results already returned to the same session are skipped and next-best matches backfilled; searches without it neither read nor record session dedup state. Use a fresh ID for each new session and reuse it when publishing and evaluating that conversation",
-      },
-      {
-        name: "interaction_id",
-        type: "number",
-        required: false,
-        description:
-          "Caller interaction ID for the search turn; must be a positive integer (minimum 1)",
-      },
-      {
-        name: "reset_session_seen",
-        type: "boolean",
-        required: false,
-        description:
-          "When true and session_id is set, forget the results already returned to that session before deduplication, so they can be returned again. Use it on the first search after the agent's conversation was compacted. Ignored without session_id. Defaults to false",
-      },
-    ],
-  },
+	{
+		id: "search",
+		pythonName: "search",
+		displayName: "Search",
+		group: "unified-search",
+		description:
+			"Search across all entity types (profiles, agent playbooks, user playbooks) in parallel.",
+		httpMethod: "POST",
+		endpoint: "/api/search",
+		requestStyle: "json_body",
+		params: [
+			{
+				name: "query",
+				type: "string",
+				required: true,
+				description: "Search query text",
+			},
+			{
+				name: "top_k",
+				type: "number",
+				required: false,
+				default: 5,
+				description: "Maximum results per entity type, from 1 to 100",
+			},
+			{
+				name: "threshold",
+				type: "number",
+				required: false,
+				default: 0.3,
+				description: "Similarity threshold for vector search (0.0 to 1.0)",
+			},
+			{
+				name: "agent_version",
+				type: "string",
+				required: false,
+				description: "Filter by agent version (agent_playbooks, user_playbooks)",
+			},
+			{
+				name: "playbook_name",
+				type: "string",
+				required: false,
+				description: "Filter by playbook name (agent_playbooks, user_playbooks)",
+			},
+			{
+				name: "user_id",
+				type: "string",
+				required: false,
+				description: "Filter by user ID (profiles, user_playbooks), at most 255 characters",
+			},
+			{
+				name: "source",
+				type: "string",
+				required: false,
+				description:
+					"Filter every selected entity by exact source; agent playbooks match through linked user playbooks",
+			},
+			{
+				name: "entity_types",
+				type: "json",
+				required: false,
+				description:
+					'Entity types to search, e.g. ["profiles", "user_playbooks", "agent_playbooks"]',
+			},
+			{
+				name: "agent_playbook_status_filter",
+				type: "json",
+				required: false,
+				description: 'Agent playbook approval statuses to include, e.g. ["pending", "approved"]',
+			},
+			{
+				name: "enable_reformulation",
+				type: "boolean",
+				required: false,
+				default: false,
+				description:
+					"Enable pre-search LLM query reformulation; also extracts temporal signals (time windows, current-value intent) that make ranking time-sensitive",
+			},
+			{
+				name: "conversation_history",
+				type: "json",
+				required: false,
+				description:
+					'List of conversation turns for context, e.g. [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]',
+			},
+			{
+				name: "search_mode",
+				type: "enum",
+				required: false,
+				default: "hybrid",
+				description:
+					"Search mode: vector (embedding similarity), fts (full-text search), or hybrid (combined with RRF)",
+				enumValues: ["vector", "fts", "hybrid"],
+			},
+			{
+				name: "request_id",
+				type: "string",
+				required: false,
+				description: "Caller correlation ID for the search turn, at most 255 characters",
+			},
+			{
+				name: "session_id",
+				type: "string",
+				required: false,
+				description:
+					"Agent session this search serves, at most 255 characters. When set, results already returned to the same session are skipped and next-best matches backfilled; searches without it neither read nor record session dedup state. Use a fresh ID for each new session and reuse it when publishing and evaluating that conversation",
+			},
+			{
+				name: "interaction_id",
+				type: "number",
+				required: false,
+				description:
+					"Caller interaction ID for the search turn; must be a positive integer (minimum 1)",
+			},
+			{
+				name: "reset_session_seen",
+				type: "boolean",
+				required: false,
+				description:
+					"When true and session_id is set, forget the results already returned to that session before deduplication, so they can be returned again. Use it on the first search after the agent's conversation was compacted. Ignored without session_id. Defaults to false",
+			},
+		],
+	},
 ];

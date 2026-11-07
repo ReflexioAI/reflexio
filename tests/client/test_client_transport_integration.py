@@ -1,6 +1,6 @@
 """Client transport behaviour against a scripted loopback HTTP server.
 
-Both transports (``requests`` for blocking calls, ``aiohttp`` for native-async
+Both transports (``requests`` for blocking calls, ``httpx`` for native-async
 and fire-and-forget calls) must turn a misconfigured endpoint into a clear
 ``ReflexioAPIError`` instead of following a redirect or crashing on a non-JSON
 body. These tests send real HTTP to a stub server whose replies are scripted

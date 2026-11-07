@@ -1,5 +1,5 @@
 # /reflexio/server/site_var
-Description: File-backed model and retrieval defaults with optional Redis caching.
+Description: File-backed model and retrieval defaults with an in-memory cache.
 
 > Part of the [Reflexio Server](../README.md).
 
@@ -13,8 +13,7 @@ Description: File-backed model and retrieval defaults with optional Redis cachin
 
 
 1. **Global settings** - Text model names and retrieval defaults
-2. **Dual storage** - File-based with optional Redis caching
-3. **Auto-fallback** - Redis → File system graceful degradation
+2. **File-backed** - JSON/TXT source files, cached in memory per instance
 
 Embedding model selection belongs to `LLMConfig.embedding_model_name`; without
 an override, OSS uses `local/minilm-l6-v2`. The former
@@ -75,7 +74,6 @@ site_var/
 
 - **JSON priority**: `.json` files take precedence over `.txt`
 - **Variable name**: Filename without extension
-- **Redis optional**: Enable via `SiteVarManager(enable_redis=True)`
 
 ## Requirements / Problems to Avoid
 

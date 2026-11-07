@@ -10,32 +10,25 @@ dependencies = [
     # Client deps (lightweight)
     "pydantic>=2.0.0",
     "requests>=2.25.0",
-    "aiohttp>=3.11.12",
-    "python-dateutil>=2.8.0",
     "python-dotenv>=1.1.0",
     "pyyaml>=6.0",
     # Server deps
     "fastapi>=0.111.1",
-    # Explicit security floors for FastAPI's parser and Braintrust's Git helper.
+    # Explicit security floor for FastAPI's parser.
     "starlette>=1.3.1",
-    "gitpython>=3.1.58",
     "uvicorn>=0.34.0",
     "openai>=2.8.0",
-    "anthropic>=0.72.0",
     "litellm>=1.103.1,<2",
-    "braintrust>=0.12.0",
     "cryptography>=50.0.1",
-    "passlib>=1.7.4",
     "tenacity>=9.0.0",
     "bcrypt>=4.2.1",
-    "xlsxwriter>=3.2.2",
     "hdbscan>=0.8.40",
-    "redis>=6.2.0",
-    "websocket-client>=1.8.0",
     "tiktoken>=0.12.0",
     "slowapi>=0.1.9",
     "cachetools>=6.2.4",
     "colorlog>=6.10.1",
+    # Reports process RSS from the health endpoint.
+    "psutil>=7.2.2",
     "httpx>=0.28.1",
     "pydantic[email]>=2.13.0",
     "json-repair>=0.60.1",
@@ -51,12 +44,13 @@ dependencies = [
     "sentence-transformers>=3.0",
     # Native Nomic loading avoids the deprecated remote-code attention API.
     "transformers>=5.6.2",
-    "einops>=0.8.0",
     # Native KNN search via the sqlite-vec loadable extension. A pure-Python
     # fallback exists (see sqlite_storage/_base.py) for the rare platform whose
     # SQLite build can't load extensions, but ship the fast path by default.
     "sqlite-vec>=0.1.6",
     "urllib3>=2.7.0",
+    # Config documents round-trip exact Decimals (use_decimal=True,
+    # allow_nan=False in config_document.py); stdlib json cannot write them.
     "simplejson>=4.2.0",
     "threadpoolctl>=3.6,<4",
     "filelock>=3.20.3",
@@ -67,48 +61,23 @@ notebooks = ["pandas>=3.0.2"]
 # The wrapper is contract-tested against the mem0 2.0 line. Minor releases
 # have shipped breaking API changes, so certify each new line before widening.
 mem0 = ["mem0ai>=2.0,<2.1"]
-benchmark = [
-    "datasets>=4.8.4",
-    "fire>=0.7.1",
-    "python-docx>=1.2.0",
-    "pypdf>=6.10.0",
-    "openpyxl>=3.1.5",
-    "pdf2image>=1.17.0",
-    "reportlab>=4.4.10",
-    "fpdf2>=2.8.7",
-    "markdown>=3.10.2",
-]
 
 [dependency-groups]
 dev = [
-    "pre-commit>=4.0.1",
     "pytest>=8.3.4",
     "pytest-asyncio>=0.25.0",
     "pytest-xdist>=3.8.0",
     "pytest-timeout>=2.3.1",
     "wrapt>=2.1.2",
-    "black>=24.10.0",
-    "moto>=5.0.28",
     "jupyterlab>=4.4.3",
-    "matplotlib>=3.10.8",
     "ruff>=0.15.0",
     "pyright>=1.1.400",
     "pytest-cov>=6.0",
     "syrupy>=5.0",
     "mutmut>=3.8.0,<4",
-    "commitizen>=4.1.0",
-    "python-semantic-release>=10.0.0",
     "build>=1.0.0",
     "twine>=6.0.0",
     "polars>=1.40.1",
-    "psutil>=7.2.2",
-]
-docs = [
-    "mkdocs>=1.5.3",
-    "mkdocs-material>=9.5.3",
-    "mkdocstrings[python]>=0.24.0",
-    "griffe>=0.38.0",
-    "mkdocstrings-python>=1.7.0",
 ]
 
 [project.scripts]
@@ -215,7 +184,7 @@ select = [
     "PLR1716",# pylint: boolean-chained-comparison → chain
 ]
 ignore = [
-    "E501",   # line too long (handled by formatter/black)
+    "E501",   # line too long (handled by the formatter)
     "E402",   # module-level import not at top (common in __init__.py)
     "ANN002",  # missing type for *args (often inherited from frameworks)
     "ANN003",  # missing type for **kwargs (often inherited from frameworks)
@@ -275,29 +244,3 @@ source_paths = [
 pytest_add_cli_args_test_selection = ["tests/"]
 also_copy = ["reflexio/", "scripts/", "skills/", "docs/lib/methods/", ".env.example"]
 pytest_add_cli_args = ["-o", "addopts=", "--timeout=120", "--durations=50", "-m", "not integration and not e2e and not requires_credentials"]
-
-[tool.commitizen]
-name = "cz_conventional_commits"
-version_provider = "pep621"
-tag_format = "reflexio-v$version"
-update_changelog_on_bump = false
-
-[tool.semantic_release]
-version_toml = ["pyproject.toml:project.version"]
-tag_format = "reflexio-v{version}"
-commit_message = "chore(release): reflexio v{version}"
-build_command = "pip install build && python -m build"
-# Pre-1.0 convention: a breaking change bumps the MINOR (0.x.y -> 0.(x+1).0),
-# not MAJOR. So the B3 Task 7 breaking removal releases as 0.3.0, not 1.0.0.
-major_on_zero = false
-
-[tool.semantic_release.branches.main]
-match = "^(main|master)$"
-prerelease = false
-
-[tool.semantic_release.changelog]
-exclude_commit_patterns = ["^chore\\(release\\)"]
-
-[tool.semantic_release.remote]
-type = "github"
-token = { env = "GH_TOKEN" }

@@ -10,7 +10,13 @@
     "directory": "client_ts"
   },
   "homepage": "https://www.reflexio.ai/docs/api-reference/typescript",
-  "keywords": ["reflexio", "agent", "memory", "llm", "self-improving"],
+  "keywords": [
+    "reflexio",
+    "agent",
+    "memory",
+    "llm",
+    "self-improving"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -19,7 +25,11 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist/**/*.js", "dist/**/*.d.ts", "README.md"],
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "README.md"
+  ],
   "sideEffects": false,
   "engines": {
     "node": ">=20.3"
@@ -33,7 +43,6 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
     "openapi-typescript": "7.13.0",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"
