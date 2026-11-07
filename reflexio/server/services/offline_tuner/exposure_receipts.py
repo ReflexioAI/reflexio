@@ -17,12 +17,13 @@ import base64
 import binascii
 import hmac
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from hashlib import sha256
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from reflexio.models.api_schema.domain import Interaction
 from reflexio.server.extensions import get_service
 from reflexio.server.services.governance.config import (
     get_governance_ref_secret,
@@ -31,6 +32,7 @@ from reflexio.server.services.governance.config import (
 from reflexio.server.services.playbook.publication import canonical_json_bytes
 from reflexio.server.services.search_exposure import (
     SearchExposureBatch,
+    UserPlaybookExposureEvent,
     build_user_playbook_exposure_event,
 )
 from reflexio.server.work_scope import WORK_SCOPE_PROVIDER, current_project_id
@@ -186,3 +188,113 @@ def verify_exposure_receipt(
     ):
         return None
     return receipt
+
+
+#: Prefix of every exposure event recorded when an interaction is published.
+PUBLISHED_EXPOSURE_PREFIX = "publish-v1:"
+
+
+def published_playbook_id(value: str) -> int | None:
+    """Parse a retrieved ``user_playbook`` reference id, bounded to a bigint.
+
+    Args:
+        value (str): ``RetrievedLearning.learning_id``.
+
+    Returns:
+        int | None: The playbook id, or ``None`` when the reference cannot name
+            a stored playbook (not an integer, or outside ``(0, 2**63)``).
+    """
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if 0 < number < 2**63 else None
+
+
+def build_published_exposure_events(
+    interaction: Interaction,
+    *,
+    org_id: str,
+    project_id: str,
+    session_id: str,
+    owners: Mapping[int, str],
+    subject_ref: Callable[[str], str],
+    ingested_at: int,
+) -> list[UserPlaybookExposureEvent]:
+    """Build the exposure events one newly published interaction records.
+
+    Pure: the caller reads the owners and writes the events inside the
+    interaction's own transaction. One event per ``user_playbook`` reference
+    whose playbook is in ``owners``, in reference order. Served digests and
+    ``exposed_at`` come only from a receipt that verifies against this
+    interaction and the playbook's CURRENT owner; otherwise they are ``None``
+    and the event is honestly incomplete.
+
+    The event id is ``publish-v1:`` + sha256 of the canonical
+    ``{org_id, project_id, request_id, interaction_id, ordinal}``, where
+    ``ordinal`` is the reference's position among ALL retrieved learnings, so
+    a replay of the same interaction yields the same ids.
+
+    Args:
+        interaction (Interaction): The interaction, with its stored id.
+        org_id (str): The storage org.
+        project_id (str): The project receipts bind (see
+            :func:`receipt_project_id`).
+        session_id (str): The interaction's request session.
+        owners (Mapping[int, str]): Playbook id -> owner user id, for the
+            playbooks the store found. References to other ids are skipped.
+        subject_ref (Callable[[str], str]): User id -> governance subject ref.
+        ingested_at (int): Epoch seconds the events are recorded at.
+
+    Returns:
+        list[UserPlaybookExposureEvent]: The events, in reference order.
+    """
+    events: list[UserPlaybookExposureEvent] = []
+    for ordinal, ref in enumerate(interaction.retrieved_learnings):
+        if ref.kind != "user_playbook":
+            continue
+        playbook_id = published_playbook_id(ref.learning_id)
+        if playbook_id is None or playbook_id not in owners:
+            continue
+        owner = owners[playbook_id]
+        owner_ref = subject_ref(owner)
+        receipt = verify_exposure_receipt(
+            ref.exposure_receipt,
+            org_id=org_id,
+            project_id=project_id,
+            user_id=interaction.user_id,
+            session_id=session_id,
+            user_playbook_id=playbook_id,
+            owner_subject_ref=owner_ref,
+        )
+        identity = canonical_json_bytes(
+            {
+                "org_id": org_id,
+                "project_id": project_id,
+                "request_id": interaction.request_id,
+                "interaction_id": interaction.interaction_id,
+                "ordinal": ordinal,
+            }
+        )
+        events.append(
+            UserPlaybookExposureEvent(
+                exposure_event_id=PUBLISHED_EXPOSURE_PREFIX
+                + sha256(identity).hexdigest(),
+                request_id=interaction.request_id,
+                session_id=session_id,
+                user_id=interaction.user_id,
+                playbook_owner_user_id=owner,
+                user_playbook_id=playbook_id,
+                served_semantic_digest=receipt.served_semantic_digest
+                if receipt
+                else None,
+                served_full_version_fingerprint=(
+                    receipt.served_full_version_fingerprint if receipt else None
+                ),
+                exposed_at=receipt.exposed_at if receipt else None,
+                ingested_at=ingested_at,
+                governance_subject_ref=subject_ref(interaction.user_id),
+                playbook_owner_governance_subject_ref=owner_ref,
+            )
+        )
+    return events

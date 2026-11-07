@@ -210,21 +210,42 @@ def test_retention_request_cascade_cleans_interaction_fts(
 
 def test_retention_exposure_age_boundary_is_strict(storage: BaseStorage) -> None:
     """Only exposure evidence strictly older than 14 days is row-cap eligible."""
+    from reflexio.server.services.search_exposure import UserPlaybookExposureEvent
     from reflexio.server.services.storage.retention import (
         OPEN_WORLD_EVIDENCE_RETENTION_WINDOW_SECONDS,
+    )
+    from reflexio.server.services.storage.sqlite_storage._open_world import (
+        _INSERT_EXPOSURE_SQL,
+        _exposure_row,
     )
 
     now = 2_000_000_000
     cutoff = now - OPEN_WORLD_EVIDENCE_RETENTION_WINDOW_SECONDS
     conn = storage.conn  # type: ignore[attr-defined]
     conn.executemany(
-        """INSERT INTO user_playbook_exposure_events
-           (exposure_event_id, ingested_at)
-           VALUES (?, ?)""",
+        _INSERT_EXPOSURE_SQL,
         [
-            ("older", cutoff - 1),
-            ("exact", cutoff),
-            ("newer", cutoff + 1),
+            _exposure_row(
+                UserPlaybookExposureEvent(
+                    exposure_event_id=event_id,
+                    request_id=None,
+                    session_id=None,
+                    user_id=None,
+                    playbook_owner_user_id=None,
+                    user_playbook_id=None,
+                    served_semantic_digest=None,
+                    served_full_version_fingerprint=None,
+                    exposed_at=None,
+                    ingested_at=ingested_at,
+                    governance_subject_ref=None,
+                    playbook_owner_governance_subject_ref=None,
+                )
+            )
+            for event_id, ingested_at in (
+                ("older", cutoff - 1),
+                ("exact", cutoff),
+                ("newer", cutoff + 1),
+            )
         ],
     )
     conn.commit()
