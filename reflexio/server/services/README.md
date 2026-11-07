@@ -148,7 +148,9 @@ The planner rejects an oversized native leaf without repacking or dispatching.
 The returned `ClientCompressionPlan` exposes `.compression` for core geometry,
 its stronger `.witness`, and `.execute(before_call=..., load=..., save=...)`.
 Persist/compare that native witness in the durable caller: it additionally binds
-actual generation policy, the pinned transport ladder, capacity declarations,
+actual generation policy, the pinned transport ladder, the capacity
+declarations of that ladder's models (plain or `model@endpoint`; entries for
+other models cannot change a compression request and are not bound),
 initial augmented message digests and measured request sizes. Existing v6 node
 keys remain compatible; they do not replace this stronger parent binding.
 Execution checks model/policy and initial-message drift before reading cached
@@ -168,7 +170,14 @@ tool replies and revisions. Oversized evidence is selected under the same
 24-request owner as drafting and auditing, reserving at least two downstream
 calls. Existing durable windows store the plan witness and node receipts in
 `reconciliation_context`; parent attempt reservation and consolidation attribution
-commit atomically. Cached selections are revalidated against the original
+commit atomically. When a resumed window's rebuilt witness differs from the saved
+one (for example after a deploy changes the model contract), the saved plan is
+replaced only while nothing derived from it exists: no selection node and no
+audited consumer conversation (`PLAN_DERIVED_ARTIFACTS` in
+`extraction/reconciliation_journal.py`, enforced by the caller and by storage).
+Spent attempts stay charged and are logged as
+`event=consolidation_plan_replanned reason=witness_changed`. Otherwise the change
+fails closed with `Consolidation compression plan changed`. Cached selections are revalidated against the original
 authorized sources on resume. Legacy admitted conversations keep their original
 protocol. Opaque CLI providers retain their existing audited adapter without
 native capacity claims. Coordinator-free manual consolidation retains its existing

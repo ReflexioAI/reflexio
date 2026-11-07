@@ -10,6 +10,36 @@ from typing import Any
 
 KEY = "reconciliation_context"
 
+# Everything persisted after a compression plan is saved that carries that
+# plan's semantics. A saved plan may be replaced by a re-planned witness only
+# while none of these exists. Once one does, a changed witness fails closed, so
+# old selections never mix with a newer settlement contract.
+#
+# - ``nodes``: selection receipts settled under the saved plan's model and
+#   reference contract (the cached selections).
+# - ``audited_conversation``: the consumer conversation over the view those
+#   selections rendered. It is saved before every consumer request, so it
+#   precedes every consumer step receipt and the approved-batch receipt, and no
+#   writer removes it: its absence proves that no consumer work exists.
+#
+# Kept, not derived: ``attempt_ids``, the matching
+# ``audited_consolidation_budget.calls`` and the parent's attempt usage. They
+# are append-only physical-request accounting with no model output, and a
+# refund is forbidden. A re-planned selection claims only attempts reserved
+# after it starts, so spent attempts stay charged without being attributed to
+# new work. ``version``, ``operation_key`` and ``limit`` bind the operation's
+# payload, policy and model rather than the plan, and never change.
+PLAN_DERIVED_ARTIFACTS = ("nodes", "audited_conversation")
+
+
+def plan_derived_artifacts(checkpoint: dict[str, Any]) -> tuple[str, ...]:
+    """Name each persisted artifact built from the saved compression plan."""
+    present = {
+        "nodes": bool(checkpoint[KEY]["nodes"]),
+        "audited_conversation": checkpoint.get("audited_conversation") is not None,
+    }
+    return tuple(name for name in PLAN_DERIVED_ARTIFACTS if present[name])
+
 
 def _digest(value: Any) -> bool:
     return (
@@ -93,7 +123,11 @@ def validate_advance(previous: dict[str, Any], current: dict[str, Any]) -> None:
             new.get(field) != old[field]
             for field in ("version", "operation_key", "limit")
         )
-        or (old["plan"] is not None and new.get("plan") != old["plan"])
+        or (
+            old["plan"] is not None
+            and new.get("plan") != old["plan"]
+            and (new.get("plan") is None or plan_derived_artifacts(previous))
+        )
         or new.get("attempt_ids", [])[: len(old["attempt_ids"])] != old["attempt_ids"]
         or any(
             new.get("nodes", {}).get(key) != node for key, node in old["nodes"].items()

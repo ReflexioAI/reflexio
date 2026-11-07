@@ -309,12 +309,22 @@ def plan_with_client(
     ladder = client.get_completion_model_ladder(**request_options())
     if ladder != (model,):
         raise ProviderRequestGuardError("Compression requires a pinned model ladder")
+    # Bind only the declarations a compression request can consult: capacity
+    # lookup reads ``model`` or ``model@endpoint`` for the dispatched model, and
+    # dispatch is pinned to this ladder. Entries for other models cannot change
+    # any request, so editing them must not retire durable plans. Consumer
+    # capacity still binds through ``budget`` in the compression witness.
+    ladder_limits = {
+        key: limit
+        for key, limit in context_limits.items()
+        if any(key == name or key.startswith(f"{name}@") for name in ladder)
+    }
     witness = hashlib.sha256(
         json.dumps(
             {
                 "compression": compression.witness,
                 "native": native_contract,
-                "context_limits": context_limits,
+                "context_limits": ladder_limits,
                 "initial_native_requests": native_leaves,
                 "ladder": ladder,
             },

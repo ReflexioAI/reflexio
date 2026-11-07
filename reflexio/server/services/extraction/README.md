@@ -325,8 +325,10 @@ fields are discarded; none become evidence, labels or omission claims. Missing,
 empty or wrongly typed lists still fail and keep the client's bounded parse
 repair; unseen references are settled by host whole-group rejection. The top-level envelope remains
 strict. Truncated JSON is not recovered. Projection semantics are versioned in
-the plan contract: old journal roots fail closed on changed witnesses rather
-than resetting their spent attempts. This is shared by extraction and offline
+the plan contract: old journal roots with derived selections fail closed on
+changed witnesses rather than resetting their spent attempts. A consolidation
+journal root with nothing derived from it is re-planned instead, keeping its
+spent attempts (`reconciliation_journal.PLAN_DERIVED_ARTIFACTS`). This is shared by extraction and offline
 tuning; it does not change budgets or provider routes.
 Every cached selection is revalidated against the current visible source and
 the caller's actual output renderer. Cache identities bind scope, source,

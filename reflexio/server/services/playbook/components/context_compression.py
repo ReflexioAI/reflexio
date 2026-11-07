@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import replace
@@ -24,9 +25,14 @@ from reflexio.server.llm.input_budget import (
     request_input_capacity,
 )
 from reflexio.server.services import input_compression
-from reflexio.server.services.extraction.reconciliation_journal import KEY
+from reflexio.server.services.extraction.reconciliation_journal import (
+    KEY,
+    plan_derived_artifacts,
+)
 from reflexio.server.services.input_compression import CompressionBudget
 from reflexio.server.services.input_compression_llm import plan_with_client
+
+logger = logging.getLogger(__name__)
 
 CONTRACT = "consolidator-source-excerpts-v1"
 # Qualification must price compression plus the consumer, not just the packet.
@@ -219,6 +225,34 @@ def _budgets(actor: Any) -> CompressionBudget:
     )
 
 
+def _bind_plan(coordinator: Any, plan: Any) -> None:
+    """Save this window's plan witness, or re-plan one nothing derives from."""
+    checkpoint = coordinator.checkpoint
+    context = checkpoint[KEY]
+    witness = {
+        "witness": plan.witness,
+        "source_digest": plan.compression.source_digest,
+        "request_contract_digest": plan.request_contract_digest,
+    }
+    if context["plan"] == witness:
+        return
+    if context["plan"] is not None:
+        # A deploy can change the witness of an in-flight window. Only a plan
+        # with nothing built from it may be replaced; storage enforces the same
+        # rule (reconciliation_journal.validate_advance).
+        if plan_derived_artifacts(checkpoint):
+            raise InputBudgetConfigurationError(
+                "Consolidation compression plan changed"
+            )
+        logger.warning(
+            "event=consolidation_plan_replanned reason=witness_changed "
+            "attempts_kept=%d",
+            len(context["attempt_ids"]),
+        )
+    context["plan"] = witness
+    coordinator.save_checkpoint(checkpoint)
+
+
 def prepare_context(
     actor: Any, payload: dict[str, Any], references: dict[tuple[str, int], Any]
 ) -> tuple[dict[str, Any], dict[tuple[str, int], Any]]:
@@ -280,20 +314,7 @@ def prepare_context(
             output_contract=CONTRACT,
         )
         if coordinator is not None:
-            checkpoint = coordinator.checkpoint
-            context = checkpoint[KEY]
-            witness = {
-                "witness": plan.witness,
-                "source_digest": plan.compression.source_digest,
-                "request_contract_digest": plan.request_contract_digest,
-            }
-            if context["plan"] is not None and context["plan"] != witness:
-                raise InputBudgetConfigurationError(
-                    "Consolidation compression plan changed"
-                )
-            if context["plan"] is None:
-                context["plan"] = witness
-                coordinator.save_checkpoint(checkpoint)
+            _bind_plan(coordinator, plan)
         active: Any = None
         first_attempt = 0
 
