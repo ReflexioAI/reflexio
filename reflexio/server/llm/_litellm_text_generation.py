@@ -64,6 +64,7 @@ from reflexio.server.llm._litellm_types import (
     ToolCallingChatResponse,
     completion_metadata,
 )
+from reflexio.server.llm._minimax_quota import backup_credentials, quota_exhausted
 from reflexio.server.llm._model_compat import (
     apply_model_request_policy,
     ensure_model_capabilities,
@@ -1855,7 +1856,7 @@ class TextGenerationMixin:
                 choice, "finish_reason", None
             ) in ("refusal", "content_filter")
 
-        def _call_and_parse(
+        def _call_and_parse_once(
             turn_params: dict[str, Any],
             turn_response_format: Any,
             turn_parse_structured_output: bool,
@@ -2069,7 +2070,10 @@ class TextGenerationMixin:
                     e.circuit_route = circuit_call.route
                 raise
             except Exception as e:
-                transient = _is_expected_transient_llm_error(e)
+                exhausted = str(turn_params.get("model", "")).lower().startswith(
+                    "minimax/"
+                ) and quota_exhausted(e)
+                transient = exhausted or _is_expected_transient_llm_error(e)
                 allowance = (
                     dispatch_allowance
                     if dispatch_allowance is not None
@@ -2079,7 +2083,7 @@ class TextGenerationMixin:
                     _is_timeout_error(e)
                     and allowance < _OUTAGE_EVIDENCE_MIN_TIMEOUT_SECONDS
                 ):
-                    circuit_call.failed()
+                    circuit_call.failed(quota_exhausted=exhausted)
                 log = self.logger.warning if transient else self.logger.error
                 log(
                     "event=llm_request_end model=%s elapsed_seconds=%.3f success=False error_type=%s error=%s",
@@ -2091,9 +2095,48 @@ class TextGenerationMixin:
                 failure = LiteLLMClientError(f"API call failed: {e}")
                 # Which breaker decides whether durable work is charged for it.
                 failure.circuit_route = circuit_call.route
+                failure.quota_exhausted = exhausted
                 raise failure from e
             finally:
                 circuit_call.close()
+
+        def _call_and_parse(
+            turn_params: dict[str, Any],
+            turn_response_format: Any,
+            turn_parse_structured_output: bool,
+            turn_hard_timeout: float,
+            *,
+            detect_refusal: bool,
+        ) -> _StructuredAttempt:
+            credentials = backup_credentials(turn_params)
+            if credentials is not None:
+                # Materialize the implicit environment key so circuit identity
+                # cannot conflate it with the backup or another credential.
+                turn_params = {**turn_params, "api_key": credentials[0]}
+            try:
+                return _call_and_parse_once(
+                    turn_params,
+                    turn_response_format,
+                    turn_parse_structured_output,
+                    turn_hard_timeout,
+                    detect_refusal=detect_refusal,
+                )
+            except LiteLLMClientError as exc:
+                if credentials is None or not getattr(exc, "quota_exhausted", False):
+                    raise
+            # Exactly one credential retry, with the same model, prompt, guards
+            # and shared caller/walk deadline. Both routes keep their own breaker.
+            self.logger.info(
+                "event=llm_credential_fallback model=%s credential_slot=backup reason=quota_exhausted",
+                turn_params.get("model"),
+            )
+            return _call_and_parse_once(
+                {**turn_params, "api_key": credentials[1]},
+                turn_response_format,
+                turn_parse_structured_output,
+                turn_hard_timeout,
+                detect_refusal=detect_refusal,
+            )
 
         def _echo_content(
             raw_content: str | None,

@@ -63,6 +63,8 @@ RECOVERED_SIGNAL = "llm.provider_recovered"
 class ProviderCircuitOpenError(LiteLLMClientError):
     """The provider's breaker is open; no request was sent."""
 
+    quota_exhausted: bool = False
+
 
 def circuit_route(params: Mapping[str, Any]) -> str:
     """Route identity of a completion: model, endpoint, credential digest.
@@ -92,6 +94,7 @@ class _Circuit:
     outage_started: float | None = None
     probe_started: float | None = None
     announced: bool = False
+    quota_exhausted: bool = False
 
 
 class CallTicket:
@@ -108,11 +111,13 @@ class CallTicket:
             self._settled = True
             self._breaker._record(self.route, ok=True, probe=self._probe)
 
-    def failed(self) -> None:
+    def failed(self, *, quota_exhausted: bool = False) -> None:
         """The provider was unavailable for this call."""
         if not self._settled:
             self._settled = True
-            self._breaker._record(self.route, ok=False, probe=self._probe)
+            self._breaker._record(
+                self.route, ok=False, probe=self._probe, quota_exhausted=quota_exhausted
+            )
 
     def close(self) -> None:
         """No verdict (the call ended for an unrelated reason); free a probe."""
@@ -151,6 +156,7 @@ class ProviderCircuitBreaker:
                 ticket = CallTicket(self, route, probe=True)
             else:
                 ticket = None
+            quota_exhausted = circuit.quota_exhausted
         if announce is not None:
             self._announce_unavailable(*announce)
         if ticket is None:
@@ -158,6 +164,7 @@ class ProviderCircuitBreaker:
                 f"Provider circuit open for {model}; request not sent"
             )
             refused.circuit_route = route
+            refused.quota_exhausted = quota_exhausted
             raise refused
         return ticket
 
@@ -182,7 +189,9 @@ class ProviderCircuitBreaker:
         with self._lock:
             self._circuits.clear()
 
-    def _record(self, route: str, *, ok: bool, probe: bool) -> None:
+    def _record(
+        self, route: str, *, ok: bool, probe: bool, quota_exhausted: bool = False
+    ) -> None:
         recovered: tuple[str, float] | None = None
         announce: tuple[str, float] | None = None
         with self._lock:
@@ -193,6 +202,7 @@ class ProviderCircuitBreaker:
             now = self._clock()
             if probe:
                 circuit.probe_started = None
+            circuit.quota_exhausted |= quota_exhausted
             if ok:
                 if circuit.open_until is not None:
                     outage = now - (circuit.outage_started or now)
@@ -208,7 +218,7 @@ class ProviderCircuitBreaker:
                 self._circuits[route] = _Circuit(model=model)
             elif circuit.open_until is None:
                 circuit.failures += 1
-                if circuit.failures >= OPEN_AFTER_FAILURES:
+                if quota_exhausted or circuit.failures >= OPEN_AFTER_FAILURES:
                     circuit.outage_started = now
                     circuit.open_until = now + circuit.open_seconds
                     logger.warning(
