@@ -3433,8 +3433,10 @@ name = "reflexio-ai"
 version = "0.2.34"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "bcrypt" },
     { name = "cachetools" },
+    { name = "click" },
     { name = "colorlog" },
     { name = "cryptography" },
     { name = "fastapi" },
@@ -3453,6 +3455,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "requests" },
     { name = "rich" },
+    { name = "scikit-learn" },
     { name = "sentence-transformers" },
     { name = "simplejson" },
     { name = "slowapi" },
@@ -3462,6 +3465,7 @@ dependencies = [
     { name = "threadpoolctl" },
     { name = "tiktoken" },
     { name = "tokenizers" },
+    { name = "torch" },
     { name = "transformers" },
     { name = "typer" },
     { name = "urllib3" },
@@ -3496,8 +3500,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4.12.1" },
     { name = "bcrypt", specifier = ">=4.2.1" },
     { name = "cachetools", specifier = ">=6.2.4" },
+    { name = "click", specifier = ">=8.4.1" },
     { name = "colorlog", specifier = ">=6.10.1" },
     { name = "cryptography", specifier = ">=50.0.1" },
     { name = "fastapi", specifier = ">=0.111.1" },
@@ -3519,6 +3525,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.25.0" },
     { name = "rich", specifier = ">=13.0.0" },
+    { name = "scikit-learn", specifier = ">=1.8.0" },
     { name = "sentence-transformers", specifier = ">=3.0" },
     { name = "simplejson", specifier = ">=4.2.0" },
     { name = "slowapi", specifier = ">=0.1.9" },
@@ -3528,6 +3535,7 @@ requires-dist = [
     { name = "threadpoolctl", specifier = ">=3.6,<4" },
     { name = "tiktoken", specifier = ">=0.12.0" },
     { name = "tokenizers", specifier = ">=0.22.0" },
+    { name = "torch", specifier = ">=2.11.0" },
     { name = "transformers", specifier = ">=5.6.2" },
     { name = "typer", specifier = ">=0.15.0" },
     { name = "urllib3", specifier = ">=2.7.0" },
