@@ -357,9 +357,14 @@ other users. Logs identify the backup slot without logging credentials.
 
 ### Current model compatibility
 
-LiteLLM `>=1.103.1,<2` is required. Explicit model overrides support OpenAI
-`gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-luna`, and Anthropic `claude-fable-5-1`,
-`claude-opus-5-5`, `claude-sonnet-5-5`, plus the existing Haiku 4.5 model.
+LiteLLM `>=1.105.7,<2` is required, excluding 1.106.0 through 1.108.2: those
+releases import the proxy-only `mcp` package for every completion that passes
+`tools`, so tool calls fail on a base install
+([upstream issue](https://github.com/BerriAI/litellm/issues/46045)). The fix is on
+LiteLLM main (1.109.0rc1 passes); remove the exclusion if a 1.108.x patch carries
+it. Explicit model overrides support OpenAI `gpt-6-astra`, `gpt-6.1-sol`,
+`gpt-6-luna`, and Anthropic `claude-fable-5-1`, `claude-opus-5-5`,
+`claude-sonnet-5-5`, plus the existing Haiku 4.5 model.
 Direct `openai/` and `anthropic/` prefixes are supported; provider defaults
 remain unchanged.
 

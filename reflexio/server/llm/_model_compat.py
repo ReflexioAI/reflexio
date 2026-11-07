@@ -133,7 +133,7 @@ def ensure_model_capabilities(model: str) -> None:
 
 def _apply_minimax_thinking(params: dict[str, Any]) -> None:
     # MiniMax's OpenAI endpoint accepts adaptive/disabled, not Anthropic's
-    # enabled + budget_tokens. LiteLLM 1.103.1 forwards the latter verbatim
+    # enabled + budget_tokens. LiteLLM (1.103.1 through 1.105.7) forwards the latter verbatim
     # (and converts thinking=True to it). Normalize before that adapter,
     # including extra_body which wins over top-level request fields.
     # https://platform.minimax.io/docs/api-reference/text-openai-api
@@ -184,7 +184,7 @@ def apply_model_request_policy(params: dict[str, Any]) -> None:
         ):
             raise LiteLLMClientError(f"{qualified} requires reasoning_split=True.")
         if "reasoning_effort" in params:
-            # LiteLLM 1.103.1 omits this documented field from both provider
+            # LiteLLM (1.103.1 through 1.105.7) omits this documented field from both provider
             # adapters' supported parameter lists; otherwise drop_params loses it.
             params["allowed_openai_params"] = list(
                 dict.fromkeys(

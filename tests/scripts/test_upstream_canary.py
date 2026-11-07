@@ -36,8 +36,10 @@ def test_locked_version_is_admitted_and_the_next_major_is_not(package: str) -> N
 
 
 def test_main_reports_lowercase_booleans() -> None:
-    assert canary.main(["admits", "litellm", "1.103.1"]) == "true"
+    assert canary.main(["admits", "litellm", canary.locked("litellm")]) == "true"
     assert canary.main(["admits", "litellm", "2.0.0"]) == "false"
+    # An excluded known-bad release inside the ceiling is not admitted either.
+    assert canary.main(["admits", "litellm", "1.108.2"]) == "false"
     with pytest.raises(SystemExit):
         canary.main(["tests", "requests"])
 

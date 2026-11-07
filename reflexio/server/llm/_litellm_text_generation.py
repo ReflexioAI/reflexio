@@ -132,7 +132,7 @@ _TRANSIENT_LLM_ERROR_NAMES: frozenset[str] = frozenset(
 )
 
 # Upstream HTTP statuses that mean "retry later", for provider errors LiteLLM
-# does not map to one of the classes above. LiteLLM 1.103 raises a MiniMax 529
+# does not map to one of the classes above. LiteLLM 1.103-1.105 raises a MiniMax 529
 # overload as a generic ``APIError(status_code=529)`` and a 502 as
 # ``BadGatewayError``; neither name is listed. 500 is deliberately absent: a
 # genuine upstream 500 already arrives as ``InternalServerError``, while LiteLLM
