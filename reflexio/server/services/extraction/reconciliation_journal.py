@@ -27,7 +27,7 @@ KEY = "reconciliation_context"
 # are append-only physical-request accounting with no model output, and a
 # refund is forbidden -- except an attempt the provider never answered during
 # an outage, which the parent's journal releases together with its entry here
-# (``_release_unanswered_attempt``). A re-planned selection claims only attempts reserved
+# (``release_unanswered_attempt``). A re-planned selection claims only attempts reserved
 # after it starts, so spent attempts stay charged without being attributed to
 # new work. ``version``, ``operation_key`` and ``limit`` bind the operation's
 # payload, policy and model rather than the plan, and never change.
