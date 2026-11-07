@@ -28,6 +28,6 @@
     "@types/node": "^24.0.0",
     "openclaw": "2026.10.6",
     "typescript": "^5.9.0",
-    "vitest": "^3.2.0"
+    "vitest": "^4.1.11"
   }
 }

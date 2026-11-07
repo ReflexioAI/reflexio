@@ -5,13 +5,14 @@ from __future__ import annotations
 import sys
 from typing import Any
 
-import requests
+import httpx
 import typer
 
 from reflexio.cli.env_loader import get_env_path
-from reflexio.cli.errors import handle_errors
+from reflexio.cli.errors import CONNECTION_ERRORS, handle_errors
 from reflexio.cli.output import print_doctor_checks, render
 from reflexio.cli.state import resolve_api_key, resolve_url
+from reflexio.http_tls import tls_verify_from_env
 
 app = typer.Typer(help="Diagnose Reflexio setup.")
 
@@ -64,7 +65,13 @@ def doctor(ctx: typer.Context) -> None:
         headers["Authorization"] = f"Bearer {api_key}"
 
     try:
-        resp = requests.get(f"{url.rstrip('/')}/health", headers=headers, timeout=10)
+        resp = httpx.get(
+            f"{url.rstrip('/')}/health",
+            headers=headers,
+            timeout=10,
+            follow_redirects=True,
+            verify=tls_verify_from_env(),
+        )
         resp.raise_for_status()
         data = resp.json()
         status = data.get("status", "unknown")
@@ -76,7 +83,7 @@ def doctor(ctx: typer.Context) -> None:
                 "hint": None,
             }
         )
-    except requests.ConnectionError:
+    except CONNECTION_ERRORS:
         is_remote = url and "localhost" not in url and "127.0.0.1" not in url
         hint = (
             "Check your API key and network connection, or verify the server URL"
@@ -91,8 +98,8 @@ def doctor(ctx: typer.Context) -> None:
                 "hint": hint,
             }
         )
-    except requests.HTTPError as exc:
-        code = exc.response.status_code if exc.response is not None else 0
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code
         checks.append(
             {
                 "name": "server_health",

@@ -61,12 +61,11 @@ def client_with_server(storage):
 
     http_client = TestClient(app, raise_server_exceptions=True)
 
-    # Wrap the TestClient in a requests.Session-compatible shim so ReflexioClient
+    # Wrap the TestClient in a shim so ReflexioClient
     # can call it via its normal self.session.request(...) path.
     class _TestClientSession:
-        """Thin adapter making TestClient look like a requests.Session."""
+        """Thin adapter routing absolute client URLs to the TestClient."""
 
-        max_redirects = 0
         headers: dict = {}
 
         def update(self, d: dict) -> None:  # noqa: D401

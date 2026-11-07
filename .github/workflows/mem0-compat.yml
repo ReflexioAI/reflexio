@@ -47,7 +47,7 @@ jobs:
           if [[ "${{ matrix.mem0 }}" == "minimum" ]]; then
             python -m pip install "${wheel}[mem0]" "mem0ai==2.0.0"
           else
-            python -m pip install "${wheel}[mem0]" "mem0ai>=2.0,<2.1"
+            python -m pip install "${wheel}[mem0]" "mem0ai>=2.0,<2.3"
           fi
 
       - name: Verify installed contract

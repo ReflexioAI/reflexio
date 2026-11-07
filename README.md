@@ -465,7 +465,7 @@ represented safely in opted-in search results.
 `client.reflexio` exposes scoped Reflexio cleanup methods. Inherited mem0
 `delete*` methods and `reset()` remain mem0-only. `MemoryClient` and
 `AsyncMemoryClient` are wrapped; local `Memory` and `AsyncMemory` remain exact
-mem0 exports. The integration supports `mem0ai>=2.0,<2.1`.
+mem0 exports. The integration supports `mem0ai>=2.0,<2.3`.
 
 > **Migration from the removed LangChain integration.** The
 > `reflexio.integrations.langchain` package and its optional extra have been

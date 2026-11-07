@@ -1,7 +1,7 @@
 """Client transport behaviour against a scripted loopback HTTP server.
 
-Both transports (``requests`` for blocking calls, ``httpx`` for native-async
-and fire-and-forget calls) must turn a misconfigured endpoint into a clear
+Both transports (a shared ``httpx.Client`` for blocking calls, a per-call
+``httpx.AsyncClient`` for native-async and fire-and-forget calls) must turn a misconfigured endpoint into a clear
 ``ReflexioAPIError`` instead of following a redirect or crashing on a non-JSON
 body. These tests send real HTTP to a stub server whose replies are scripted
 per request, so the guards are exercised exactly as a wrong ``REFLEXIO_URL``
@@ -19,8 +19,8 @@ from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
+import httpx
 import pytest
-import requests
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -40,6 +40,7 @@ class Reply:
     body: bytes = b"{}"
     content_type: str | None = "application/json"
     headers: dict[str, str] = field(default_factory=dict)
+    delay: float = 0.0
 
 
 def json_reply(payload: dict, status: int = 200) -> Reply:
@@ -53,8 +54,10 @@ class StubServer:
     default: Reply = field(default_factory=Reply)
     seen: list[tuple[str, str, dict]] = field(default_factory=list)
 
-    def client(self) -> ReflexioClient:
-        return ReflexioClient(api_key="stub-key", url_endpoint=self.url, timeout=10)
+    def client(self, timeout: float = 10) -> ReflexioClient:
+        return ReflexioClient(
+            api_key="stub-key", url_endpoint=self.url, timeout=timeout
+        )
 
 
 def _free_port() -> int:
@@ -73,6 +76,8 @@ def stub() -> Iterator[StubServer]:
             (request.method, request.url.path, dict(request.headers.items()))
         )
         reply = server.replies.popleft() if server.replies else server.default
+        if reply.delay:
+            await asyncio.sleep(reply.delay)
         headers = dict(reply.headers)
         if reply.content_type is not None:
             headers["content-type"] = reply.content_type
@@ -145,17 +150,55 @@ def test_blocking_call_rejects_malformed_json_body(stub):
         stub.client().whoami()
 
 
-def test_blocking_call_never_follows_redirects(stub):
-    stub.replies.append(Reply(status=302, body=b"", headers={"location": "/elsewhere"}))
-    with pytest.raises(requests.TooManyRedirects):
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_blocking_call_never_follows_redirects(stub, status):
+    stub.replies.append(
+        Reply(status=status, body=b"", headers={"location": "/elsewhere"})
+    )
+    with pytest.raises(ReflexioAPIError, match="Unexpected redirect"):
         stub.client().whoami()
     assert [path for _, path, _ in stub.seen] == ["/api/whoami"]
 
 
+def test_blocking_post_is_not_replayed_as_get_on_redirect(stub):
+    stub.replies.append(Reply(status=302, body=b"", headers={"location": "/"}))
+    with pytest.raises(ReflexioAPIError, match="Unexpected redirect"):
+        stub.client().set_config({"storage_config": None})
+    assert [(method, path) for method, path, _ in stub.seen] == [
+        ("POST", "/api/set_config")
+    ]
+
+
+def test_blocking_call_applies_the_client_timeout(stub):
+    stub.replies.append(json_reply({"success": True, "org_id": "o"}))
+    stub.replies[-1].delay = 1.0
+    with pytest.raises(httpx.ReadTimeout):
+        stub.client(timeout=0.2).whoami()
+
+
+def test_blocking_call_outlives_httpx_default_timeout_budget():
+    # httpx defaults to 5s; the client must carry its own (300s) instead.
+    client = ReflexioClient(api_key="k", url_endpoint="http://127.0.0.1:1")
+    assert client.session.timeout == httpx.Timeout(300)
+    assert client.session.follow_redirects is False
+    # Proxy environment stays honored for blocking calls, as before.
+    assert client.session.trust_env is True
+
+
+def test_blocking_call_to_closed_port_raises_connect_error():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    client = ReflexioClient(url_endpoint=f"http://127.0.0.1:{port}", timeout=5)
+    with pytest.raises(httpx.ConnectError):
+        client.whoami()
+
+
 def test_blocking_call_raises_http_error_status(stub):
     stub.replies.append(json_reply({"detail": "nope"}, status=500))
-    with pytest.raises(requests.HTTPError):
+    with pytest.raises(httpx.HTTPStatusError) as error:
         stub.client().whoami()
+    assert error.value.response.status_code == 500
 
 
 # ------------------------------------------------------------------ async path

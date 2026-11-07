@@ -11,10 +11,10 @@ from typing import Any, Literal, TypeVar, get_args
 from urllib.parse import urljoin
 
 import httpx
-import requests
 from pydantic import BaseModel, ConfigDict
 
 from reflexio.defaults import DEFAULT_AGENT_VERSION
+from reflexio.http_tls import tls_verify_from_env
 from reflexio.models.api_schema.aggregation_operations import (
     PlaybookAggregationOperation,
     SubmitPlaybookAggregationRequest,
@@ -175,8 +175,8 @@ logger = logging.getLogger(__name__)
 
 
 class ReflexioAPIError(Exception):
-    """Raised when the API returns a successful HTTP status but the body
-    cannot be decoded as JSON.
+    """Raised when the API answers with a redirect, or with a successful HTTP
+    status whose body cannot be decoded as JSON.
 
     This is the "your REFLEXIO_URL points at a non-API host / a proxy
     returned an HTML error page with status 200" class of failure. The
@@ -221,14 +221,15 @@ class ReflexioClient:
         self.base_url = target or BACKEND_URL
         self.api_key = api_key or os.environ.get("REFLEXIO_API_KEY", "")
         self.timeout = timeout
-        self.session = requests.Session()
         # Treat any API 3xx as an error instead of silently following.
-        # ``requests`` default would demote POST→GET on 302, which has
-        # historically turned misconfigured base URLs (e.g. pointing at a
-        # marketing site that 302s to its www subdomain) into silent
-        # publish losses: the POST became a GET to a marketing page that
-        # returned HTML 200, which then crashed ``response.json()``.
-        self.session.max_redirects = 0
+        # Following would demote POST→GET on 302, which has historically
+        # turned misconfigured base URLs (e.g. pointing at a marketing site
+        # that 302s to its www subdomain) into silent publish losses: the
+        # POST became a GET to a marketing page that returned HTML 200,
+        # which then crashed ``response.json()``.
+        self.session = httpx.Client(
+            timeout=timeout, follow_redirects=False, verify=tls_verify_from_env()
+        )
         self._cache = InMemoryCache()
 
     def for_session(self, session_id: str) -> "SessionScopedClient":
@@ -410,7 +411,7 @@ class ReflexioClient:
     ) -> Any:
         """Make an HTTP request to the API and decode the JSON response.
 
-        Beyond ``requests.raise_for_status()`` this also guards against
+        Beyond ``raise_for_status()`` this also guards against
         the "2xx with non-JSON body" failure mode — typically a
         misconfigured base URL pointing at a marketing/proxy host that
         returns an HTML error or redirect page with status 200. Those
@@ -422,15 +423,17 @@ class ReflexioClient:
             method: HTTP method (GET, POST, DELETE).
             endpoint: API endpoint path.
             headers: Additional headers to include in the request.
-            **kwargs: Extra kwargs passed through to ``requests``.
+            **kwargs: Extra kwargs passed through to ``httpx.Client.request``.
 
         Returns:
             dict: Decoded JSON response, or ``{}`` for empty 2xx
                 bodies (e.g. 204 No Content).
 
         Raises:
-            requests.HTTPError: For 4xx/5xx status codes.
-            ReflexioAPIError: For 2xx responses whose body isn't JSON.
+            httpx.HTTPStatusError: For 4xx/5xx status codes.
+            httpx.TransportError: For connection, timeout and protocol failures.
+            ReflexioAPIError: For 3xx responses (never followed) and for 2xx
+                responses whose body isn't JSON.
         """
         url = urljoin(self.base_url, endpoint)
 
@@ -441,6 +444,13 @@ class ReflexioClient:
 
         kwargs.setdefault("timeout", self.timeout)
         response = self.session.request(method, url, headers=request_headers, **kwargs)
+        status = response.status_code
+        # ``isinstance``: fixtures that mock ``session.request`` may leave
+        # ``status_code`` as a MagicMock, which cannot be ordered.
+        if isinstance(status, int) and 300 <= status < 400:
+            raise ReflexioAPIError(
+                f"Unexpected redirect from {method} {url} (status {status})"
+            )
         response.raise_for_status()
 
         # Empty body on a successful response (e.g. 204 No Content).
@@ -451,7 +461,7 @@ class ReflexioClient:
             return {}
 
         # Content-Type guard is only enforced when the header is a real
-        # string. Test fixtures that mock ``Session.request`` without
+        # string. Test fixtures that mock ``session.request`` without
         # wiring headers return MagicMock values here and should keep
         # going straight to ``.json()`` for backward compatibility.
         content_type_raw = response.headers.get("Content-Type", "")
@@ -470,7 +480,7 @@ class ReflexioClient:
                 )
         try:
             return response.json()
-        except requests.exceptions.JSONDecodeError as exc:
+        except ValueError as exc:
             body_preview = response.text[:200] if isinstance(response.text, str) else ""
             raise ReflexioAPIError(
                 f"{method} {url} returned status {response.status_code} but "
@@ -773,7 +783,7 @@ class ReflexioClient:
             Older servers may also return ``"failed"``.
 
         Raises:
-            requests.HTTPError: 404 when the request_id is not known to the
+            httpx.HTTPStatusError: 404 when the request_id is not known to the
                 server for this org.
         """
         response = self._make_request(

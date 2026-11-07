@@ -8,7 +8,7 @@ import json
 import sys
 from typing import Any
 
-import requests
+import httpx
 from pydantic import ValidationError
 
 # Semantic exit codes (modeled on Lark CLI)
@@ -17,6 +17,15 @@ EXIT_GENERAL = 1
 EXIT_VALIDATION = 2
 EXIT_AUTH = 3
 EXIT_NETWORK = 4
+
+# The httpx failures that mean "the server could not be reached": the same
+# family ``requests.ConnectionError`` covered (refused/DNS/TLS, connect
+# timeout, proxy). Read timeouts and protocol errors stay outside it.
+CONNECTION_ERRORS: tuple[type[httpx.TransportError], ...] = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ProxyError,
+)
 
 
 class CliError(Exception):
@@ -43,7 +52,7 @@ class CliError(Exception):
         self.exit_code = exit_code
 
 
-def _classify_http_error(exc: requests.HTTPError) -> CliError:
+def _classify_http_error(exc: httpx.HTTPStatusError) -> CliError:
     """Map HTTP status codes to structured CliError instances.
 
     Args:
@@ -52,7 +61,7 @@ def _classify_http_error(exc: requests.HTTPError) -> CliError:
     Returns:
         CliError: Classified error with appropriate type, hint, and exit code
     """
-    status = exc.response.status_code if exc.response is not None else 0
+    status = exc.response.status_code
 
     if status in (401, 403):
         return CliError(
@@ -63,9 +72,8 @@ def _classify_http_error(exc: requests.HTTPError) -> CliError:
         )
     if status == 422:
         detail = ""
-        if exc.response is not None:
-            with contextlib.suppress(ValueError, AttributeError):
-                detail = exc.response.json().get("detail", "")
+        with contextlib.suppress(ValueError, AttributeError):
+            detail = exc.response.json().get("detail", "")
         return CliError(
             error_type="validation",
             message=f"Invalid request: {detail or exc}",
@@ -141,9 +149,9 @@ def render_error(error: CliError, json_mode: bool = False) -> None:
 def handle_errors(fn):  # noqa: ANN001, ANN201
     """Decorator that catches common exceptions and renders structured errors.
 
-    Catches ``CliError``, ``ConnectionError``, ``HTTPError``, and the
-    client's ``ReflexioAPIError`` (for "2xx with non-JSON body"
-    failures, typically a misconfigured ``REFLEXIO_URL`` pointing at a
+    Catches ``CliError``, connection failures, ``HTTPStatusError``, and the
+    client's ``ReflexioAPIError`` (for redirects and "2xx with non-JSON
+    body" failures, typically a misconfigured ``REFLEXIO_URL`` pointing at a
     marketing site or misrouting proxy), rendering them through the
     structured error system before exiting with the appropriate code.
     """
@@ -189,7 +197,7 @@ def handle_errors(fn):  # noqa: ANN001, ANN201
             )
             render_error(err, json_mode=json_mode)
             raise SystemExit(err.exit_code) from None
-        except requests.ConnectionError as exc:
+        except CONNECTION_ERRORS as exc:
             err = CliError(
                 error_type="network",
                 message=f"Connection failed: {exc}",
@@ -198,7 +206,7 @@ def handle_errors(fn):  # noqa: ANN001, ANN201
             )
             render_error(err, json_mode=json_mode)
             raise SystemExit(err.exit_code) from None
-        except requests.HTTPError as exc:
+        except httpx.HTTPStatusError as exc:
             err = _classify_http_error(exc)
             render_error(err, json_mode=json_mode)
             raise SystemExit(err.exit_code) from None

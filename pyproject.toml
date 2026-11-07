@@ -9,7 +9,6 @@ requires-python = ">=3.12"
 dependencies = [
     # Client deps (lightweight)
     "pydantic>=2.0.0",
-    "requests>=2.25.0",
     "python-dotenv>=1.1.0",
     "pyyaml>=6.0",
     # Server deps
@@ -17,12 +16,21 @@ dependencies = [
     # Explicit security floor for FastAPI's parser.
     "starlette>=1.3.1",
     "uvicorn>=0.34.0",
+    # Imported directly for worker-thread limits and offloading.
+    "anyio>=4.12.1",
     "openai>=2.8.0",
+    # Ceiling: LiteLLMClient depends on litellm 1.x response, tool-call and
+    # reasoning shapes; the ceiling protects PyPI installs of reflexio-ai (and
+    # claude-smart, through it) from an untested major. Widen once the weekly
+    # upstream-canary workflow passes its next-major check for 2.x. Its
+    # in-range check proposes lock bumps within the ceiling.
     "litellm>=1.103.1,<2",
     "cryptography>=50.0.1",
     "tenacity>=9.0.0",
     "bcrypt>=4.2.1",
     "hdbscan>=0.8.40",
+    # Agglomerative clustering and cosine distances for playbook aggregation.
+    "scikit-learn>=1.8.0",
     "tiktoken>=0.12.0",
     "slowapi>=0.1.9",
     "cachetools>=6.2.4",
@@ -32,9 +40,15 @@ dependencies = [
     "httpx>=0.28.1",
     "pydantic[email]>=2.13.0",
     "json-repair>=0.60.1",
+    # Ceiling: gepa is pre-1.0 and a 0.x minor may change the optimizer API
+    # (gepa.api.optimize, gepa.EvaluationBatch, and the type-only
+    # gepa.core.adapter.ProposalFn / gepa.core.state.GEPAState). Widen once the
+    # weekly upstream-canary workflow passes its next-major check for 0.2.
     "gepa>=0.1.1,<0.2",
     # CLI
     "typer>=0.15.0",
+    # The offline dispatcher parses global options with click directly.
+    "click>=8.4.1",
     "rich>=13.0.0",
     # Direct MiniLM ONNX inference; no vector database dependency.
     "onnxruntime>=1.23.2",
@@ -42,6 +56,8 @@ dependencies = [
     "numpy>=1.26.0",
     # Cross-encoder reranker and Nomic local embeddings.
     "sentence-transformers>=3.0",
+    # Imported directly to bound intra-op threads and build reranker heads.
+    "torch>=2.11.0",
     # Native Nomic loading avoids the deprecated remote-code attention API.
     "transformers>=5.6.2",
     # Native KNN search via the sqlite-vec loadable extension. A pure-Python
@@ -52,15 +68,17 @@ dependencies = [
     # Config documents round-trip exact Decimals (use_decimal=True,
     # allow_nan=False in config_document.py); stdlib json cannot write them.
     "simplejson>=4.2.0",
-    "threadpoolctl>=3.6,<4",
+    "threadpoolctl>=3.6",
     "filelock>=3.20.3",
 ]
 
 [project.optional-dependencies]
 notebooks = ["pandas>=3.0.2"]
-# The wrapper is contract-tested against the mem0 2.0 line. Minor releases
-# have shipped breaking API changes, so certify each new line before widening.
-mem0 = ["mem0ai>=2.0,<2.1"]
+# The wrapper is contract-tested against the mem0 2.0, 2.1 and 2.2 lines
+# (scripts/verify_mem0_artifact.py and tests/mem0 against the real package).
+# Minor releases have shipped breaking API changes, so certify each new line
+# before widening.
+mem0 = ["mem0ai>=2.0,<2.3"]
 
 [dependency-groups]
 dev = [
@@ -74,7 +92,9 @@ dev = [
     "pyright>=1.1.400",
     "pytest-cov>=6.0",
     "syrupy>=5.0",
-    "mutmut>=3.8.0,<4",
+    # No ceiling: the lockfile pins the engine. tests/conftest.py refuses any
+    # major other than the one whose internal state it writes, with a hint.
+    "mutmut>=3.8.0",
     "build>=1.0.0",
     "twine>=6.0.0",
     "polars>=1.40.1",
@@ -182,6 +202,7 @@ select = [
     "FLY",    # flynt (string join → f-string)
     "PLR1714",# pylint: repeated-equality-comparison → use `in`
     "PLR1716",# pylint: boolean-chained-comparison → chain
+    "TID251", # flake8-tidy-imports: banned APIs (see banned-api below)
 ]
 ignore = [
     "E501",   # line too long (handled by the formatter)
@@ -211,6 +232,9 @@ ignore = [
 "demo/**" = ["S101", "PTH", "G004", "ANN"]
 "reflexio/server/services/storage/sqlite_storage/**" = ["S608"]
 "reflexio/cli/**" = ["S603", "S607", "S104"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"requests".msg = "Use httpx for HTTP clients (sync and async)."
 
 [tool.ruff.lint.mccabe]
 max-complexity = 20

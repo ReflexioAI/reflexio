@@ -187,7 +187,7 @@ class TestInMemoryCache:
 class TestReflexioClientCache:
     """Test cases for cache integration in ReflexioClient."""
 
-    @patch("reflexio.client.client.requests.Session")
+    @patch("reflexio.client.client.httpx.Client")
     def test_get_profiles_cache_hit(self, mock_session_class):
         """Test that get_profiles returns cached result on cache hit."""
         # Setup mock
@@ -222,7 +222,7 @@ class TestReflexioClientCache:
         # Verify results are the same
         assert result1.model_dump() == result2.model_dump()  # noqa: S101
 
-    @patch("reflexio.client.client.requests.Session")
+    @patch("reflexio.client.client.httpx.Client")
     def test_get_profiles_force_refresh(self, mock_session_class):
         """Test that force_refresh bypasses cache."""
         # Setup mock
@@ -254,7 +254,7 @@ class TestReflexioClientCache:
         # Verify API was called twice
         assert mock_session.request.call_count == 2  # noqa: S101
 
-    @patch("reflexio.client.client.requests.Session")
+    @patch("reflexio.client.client.httpx.Client")
     def test_get_profiles_different_params(self, mock_session_class):
         """Test that different parameters result in cache miss."""
         # Setup mock
@@ -292,7 +292,7 @@ class TestReflexioClientCache:
         # Verify API was called twice (cache miss)
         assert mock_session.request.call_count == 2  # noqa: S101
 
-    @patch("reflexio.client.client.requests.Session")
+    @patch("reflexio.client.client.httpx.Client")
     def test_get_agent_playbooks_cache_hit(self, mock_session_class):
         """Test that get_agent_playbooks returns cached result on cache hit."""
         # Setup mock
@@ -322,7 +322,7 @@ class TestReflexioClientCache:
         # Verify results are the same
         assert result1.model_dump() == result2.model_dump()  # noqa: S101
 
-    @patch("reflexio.client.client.requests.Session")
+    @patch("reflexio.client.client.httpx.Client")
     def test_get_agent_playbooks_force_refresh(self, mock_session_class):
         """Test that force_refresh bypasses cache for get_agent_playbooks."""
         # Setup mock
@@ -349,7 +349,7 @@ class TestReflexioClientCache:
         # Verify API was called twice
         assert mock_session.request.call_count == 2  # noqa: S101
 
-    @patch("reflexio.client.client.requests.Session")
+    @patch("reflexio.client.client.httpx.Client")
     def test_get_agent_playbooks_with_none_request(self, mock_session_class):
         """Test that get_agent_playbooks with None request can be cached."""
         # Setup mock
@@ -375,7 +375,7 @@ class TestReflexioClientCache:
         # Verify API was only called once
         assert mock_session.request.call_count == 1  # noqa: S101
 
-    @patch("reflexio.client.client.requests.Session")
+    @patch("reflexio.client.client.httpx.Client")
     def test_delete_all_profiles_invalidates_cache(self, mock_session_class):
         """Test that delete_all_profiles clears the profiles cache."""
         mock_session = MagicMock()
@@ -415,7 +415,7 @@ class TestReflexioClientCache:
         client.get_profiles(request)
         assert mock_session.request.call_count == 3  # noqa: S101
 
-    @patch("reflexio.client.client.requests.Session")
+    @patch("reflexio.client.client.httpx.Client")
     def test_delete_all_interactions_clears_all_cache(self, mock_session_class):
         """Test that delete_all_interactions clears the entire cache."""
         mock_session = MagicMock()
@@ -455,7 +455,7 @@ class TestReflexioClientCache:
         client.get_agent_playbooks({"limit": 100})
         assert mock_session.request.call_count == 5  # noqa: S101
 
-    @patch("reflexio.client.client.requests.Session")
+    @patch("reflexio.client.client.httpx.Client")
     def test_cache_expiration_integration(self, mock_session_class):
         """Test that cache expires after TTL in client."""
         # Setup mock

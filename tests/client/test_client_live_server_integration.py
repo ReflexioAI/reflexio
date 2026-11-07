@@ -1,9 +1,9 @@
 """ReflexioClient against the real FastAPI app over loopback HTTP.
 
-The other client tests either mock ``requests.Session`` or adapt a Starlette
+The other client tests either mock ``httpx.Client`` or adapt a Starlette
 ``TestClient`` into it. Neither exercises the asynchronous transport, which
-every ``wait_for_response=False`` call uses (``httpx``), and neither sends a
-real HTTP request through ``requests``. Here the app runs under uvicorn on a
+every ``wait_for_response=False`` call uses, and neither sends a real HTTP
+request through the blocking ``httpx.Client``. Here the app runs under uvicorn on a
 free loopback port with real SQLite storage, so each call goes through the
 transport, the route and storage, and its effect is checked in storage.
 """
@@ -356,7 +356,7 @@ def test_profile_change_log_rerank_and_storage_stats(live):
 
 
 def test_rerank_outage_surfaces_as_http_503(live):
-    from requests import HTTPError
+    from httpx import HTTPStatusError
 
     from reflexio.server.llm.rerank.common import CrossEncoderUnavailableError
 
@@ -367,10 +367,9 @@ def test_rerank_outage_surfaces_as_http_503(live):
             "reflexio.server.llm.rerank.score_pairs",
             side_effect=CrossEncoderUnavailableError("no reranker"),
         ),
-        pytest.raises(HTTPError) as error,
+        pytest.raises(HTTPStatusError) as error,
     ):
         live.client.rerank_user_profiles(user_id="cy", query="vim", profile_ids=ids)
-    assert error.value.response is not None
     assert error.value.response.status_code == 503
 
 

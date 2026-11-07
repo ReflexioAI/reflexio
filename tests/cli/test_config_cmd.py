@@ -485,11 +485,13 @@ class TestConfigStorageEdges:
 
     @staticmethod
     def _http_error(status: int):
-        import requests
+        import httpx
 
-        response = requests.Response()
-        response.status_code = status
-        return requests.HTTPError(f"{status} error", response=response)
+        request = httpx.Request("GET", "http://reflexio.test/api/my_config")
+        response = httpx.Response(status, request=request)
+        return httpx.HTTPStatusError(
+            f"{status} error", request=request, response=response
+        )
 
     def test_missing_endpoint_is_actionable(self, runner: CliRunner, cli_app) -> None:
         client = MagicMock(base_url="http://old.reflexio.test")
@@ -511,10 +513,10 @@ class TestConfigStorageEdges:
     def test_connection_error_is_network_error(
         self, runner: CliRunner, cli_app
     ) -> None:
-        import requests
+        import httpx
 
         client = MagicMock(base_url="http://reflexio.test")
-        client.get_my_config.side_effect = requests.ConnectionError("refused")
+        client.get_my_config.side_effect = httpx.ConnectError("refused")
         result = self._invoke(runner, cli_app, client)
         assert result.exit_code == 4
         assert "Failed to reach http://reflexio.test/api/my_config" in result.output

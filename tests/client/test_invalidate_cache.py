@@ -10,7 +10,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_invalidate_cache_without_org_id_sends_empty_body(mock_session_class) -> None:
     """No org_id argument → empty JSON body so the server uses auth-resolved org."""
     from reflexio.client import ReflexioClient
@@ -36,7 +36,7 @@ def test_invalidate_cache_without_org_id_sends_empty_body(mock_session_class) ->
     assert kwargs["json"] == {}
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_invalidate_cache_with_org_id_sends_token(mock_session_class) -> None:
     """An explicit org_id is forwarded as a verification token in the body."""
     from reflexio.client import ReflexioClient

@@ -19,7 +19,7 @@ def _json_response(payload: dict[str, object]) -> MagicMock:
     return response
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_make_request_does_not_persist_per_call_headers(mock_session_class) -> None:
     mock_session = MagicMock()
     mock_session.headers = {}
@@ -93,11 +93,6 @@ async def test_async_transport_does_not_inherit_proxy_or_certificate_environment
     tmp_path,
 ) -> None:
     """Keep the former async transport's explicit-endpoint routing policy."""
-    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
-    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
-    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:1")
-    monkeypatch.setenv("NO_PROXY", "")
-    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "missing-ca.pem"))
     auth_seen: list[str | None] = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -112,12 +107,20 @@ async def test_async_transport_does_not_inherit_proxy_or_certificate_environment
             self.wfile.write(b'{"success": true}')
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    # Built before the environment is poisoned: the blocking transport does
+    # read proxy and certificate environment, and would load the missing CA
+    # file at construction.
+    client = ReflexioClient(
+        api_key="test-key", url_endpoint=f"http://127.0.0.1:{server.server_port}"
+    )
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("NO_PROXY", "")
+    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "missing-ca.pem"))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        client = ReflexioClient(
-            api_key="test-key", url_endpoint=f"http://127.0.0.1:{server.server_port}"
-        )
         assert await client._make_async_request("GET", "/api/whoami") == {
             "success": True
         }

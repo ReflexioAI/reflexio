@@ -342,6 +342,19 @@ activate the separate shared-input compressor/package executor.
 To change which models Reflexio uses, edit [`reflexio/server/site_var/site_var_sources/llm_model_setting.json`](reflexio/server/site_var/site_var_sources/llm_model_setting.json).
 Use the provider prefix shown above (e.g., `anthropic/` for Anthropic models). Set the corresponding API key in your `.env` file.
 
+Optionally set `MINIMAX_BACKUP_API_KEY` to another subscription's key. On explicit
+MiniMax plan exhaustion (2056), text generation retries the same request/model
+once with that key. The primary quota circuit opens immediately, skips blocked
+calls between probes, and returns to primary after a successful probe. Backup
+has its own circuit; if both fail, existing fallback/durable-wait behavior applies.
+Deadlines, input/lease guards, structured-output validation and token accounting
+still apply to every dispatched request. An empty or duplicate backup disables
+the feature. Only the matching environment `MINIMAX_API_KEY` on the default
+MiniMax endpoint may use it; different customer keys and custom endpoints cannot.
+Generic rate limits, timeouts, authentication errors and invalid responses do
+not activate credential fallback. Both accounts' quotas remain shared with their
+other users. Logs identify the backup slot without logging credentials.
+
 ### Current model compatibility
 
 LiteLLM `>=1.103.1,<2` is required. Explicit model overrides support OpenAI

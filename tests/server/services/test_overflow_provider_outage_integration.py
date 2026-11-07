@@ -236,3 +236,50 @@ def test_outage_probes_spend_no_package_stage_attempts(pipeline, monkeypatch):
     assert gate_attempts() == 1
     assert len(storage.get_user_profile("u")) == 1
     assert storage.extraction_status("u", "package-parent")["status"] == "done"
+
+
+def test_primary_quota_failover_leaves_only_answered_attempts(overflow, monkeypatch):
+    """An exhausted primary key fails over to the backup key within one request.
+
+    The exhausted primary opens its own route's breaker at once, so its
+    dispatch is an outage dispatch and returns its attempt; the backup's
+    answered dispatch is the one the journal keeps. Without the release, every
+    failover left an unanswered attempt charged in the journal.
+    """
+    from reflexio.server.llm._litellm_types import LiteLLMClientError
+
+    storage, provider, drain = overflow
+    monkeypatch.setenv("MINIMAX_API_KEY", "primary-key")
+    monkeypatch.setenv("MINIMAX_BACKUP_API_KEY", "backup-key")
+    monkeypatch.delenv("MINIMAX_API_BASE", raising=False)
+    answer = provider.__call__
+    keys: list[str | None] = []
+
+    def plan_exhausted_primary(_client, params, hard_timeout):
+        keys.append(params.get("api_key"))
+        if params.get("api_key") == "backup-key":
+            provider.down = False
+            return answer(params, hard_timeout)
+        provider.routes.append(circuit_route(params))
+        raise LiteLLMClientError(
+            "RateLimitError: Token Plan usage limit reached (2056)",
+            upstream_error_type="RateLimitError",
+            upstream_status_code=429,
+        )
+
+    monkeypatch.setattr(
+        LiteLLMClient, "_completion_with_hard_timeout", plan_exhausted_primary
+    )
+    drain(probe=False)
+
+    assert "backup-key" in keys and keys.count("backup-key") < len(keys)
+    assert storage.extraction_status("u", "outage")["status"] == "done"
+    with storage._stream_sql(read_only=True) as db:
+        window_id = db.query(
+            "SELECT window_id FROM extraction_windows WHERE user_id='u' AND kind='profile'"
+        )[0]["window_id"]
+    run = storage.get_agent_run(f"window:{window_id}")
+    assert run is not None
+    attempts = run.generation_request_snapshot["overflow"]["attempts"]
+    assert attempts
+    assert all(attempt["usage"] is not None for attempt in attempts)

@@ -42,6 +42,11 @@ SHARED_RULE = "provider_wait_seconds"
 
 #: Modules that classify LLM failures without deciding retry or terminality.
 EXEMPT: dict[str, str] = {
+    "server/llm/_minimax_quota.py": (
+        "classifies authenticated quota evidence for a same-request credential "
+        "retry inside the client; terminal failures retain their credential "
+        "route and durable owners consult provider_wait_seconds"
+    ),
     "server/llm/_litellm_text_generation.py": (
         "the client: defines the transient classification and feeds the breaker"
     ),

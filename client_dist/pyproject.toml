@@ -8,13 +8,12 @@ license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.0.0",
-    "requests>=2.25.0",
     "httpx>=0.28.1",
 ]
 
 [project.optional-dependencies]
 # Keep the lightweight client on the same certified mem0 line as reflexio-ai.
-mem0 = ["mem0ai>=2.0,<2.1"]
+mem0 = ["mem0ai>=2.0,<2.3"]
 
 [build-system]
 requires = ["hatchling"]
@@ -34,6 +33,7 @@ only-include = [
 "../reflexio/config_migration.py" = "reflexio/config_migration.py"
 "../reflexio/pending_tool_policy.py" = "reflexio/pending_tool_policy.py"
 "../reflexio/housekeeping_policy.py" = "reflexio/housekeeping_policy.py"
+"../reflexio/http_tls.py" = "reflexio/http_tls.py"
 "../reflexio/client" = "reflexio/client"
 "../reflexio/models" = "reflexio/models"
 "../reflexio/integrations" = "reflexio/integrations"
@@ -47,6 +47,7 @@ only-include = [
 "reflexio/config_migration.py" = "reflexio/config_migration.py"
 "reflexio/pending_tool_policy.py" = "reflexio/pending_tool_policy.py"
 "reflexio/housekeeping_policy.py" = "reflexio/housekeeping_policy.py"
+"reflexio/http_tls.py" = "reflexio/http_tls.py"
 "reflexio/client" = "reflexio/client"
 "reflexio/models" = "reflexio/models"
 "reflexio/integrations" = "reflexio/integrations"

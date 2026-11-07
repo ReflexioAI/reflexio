@@ -5,12 +5,19 @@ from __future__ import annotations
 import json
 import sys
 
-import requests
+import httpx
 import typer
 
-from reflexio.cli.errors import EXIT_NETWORK, CliError, handle_errors, render_error
+from reflexio.cli.errors import (
+    CONNECTION_ERRORS,
+    EXIT_NETWORK,
+    CliError,
+    handle_errors,
+    render_error,
+)
 from reflexio.cli.output import print_whoami_summary, render
 from reflexio.cli.state import CliState, get_client, resolve_api_key, resolve_url
+from reflexio.http_tls import tls_verify_from_env
 
 app = typer.Typer(help="Server health and status.")
 
@@ -38,9 +45,15 @@ def check(
         headers["Authorization"] = f"Bearer {api_key}"
 
     try:
-        resp = requests.get(f"{url}/health", headers=headers, timeout=10)
+        resp = httpx.get(
+            f"{url}/health",
+            headers=headers,
+            timeout=10,
+            follow_redirects=True,
+            verify=tls_verify_from_env(),
+        )
         resp.raise_for_status()
-    except requests.ConnectionError as exc:
+    except CONNECTION_ERRORS as exc:
         err = CliError(
             error_type="network",
             message=f"Cannot reach server at {url}",
@@ -49,19 +62,16 @@ def check(
         )
         render_error(err, json_mode=json_mode)
         raise SystemExit(1) from exc
-    except requests.HTTPError as exc:
-        response = exc.response
+    except httpx.HTTPStatusError as exc:
         if json_mode:
             envelope = {
                 "ok": False,
                 "error": {"type": "unhealthy", "message": str(exc), "url": url},
             }
             print(json.dumps(envelope, indent=2), file=sys.stderr)
-        elif response is None:
-            print(f"Error: Server at {url} returned an HTTP error", file=sys.stderr)
         else:
             print(
-                f"Error: Server at {url} returned {response.status_code}",
+                f"Error: Server at {url} returned {exc.response.status_code}",
                 file=sys.stderr,
             )
         raise SystemExit(1) from exc
@@ -94,8 +104,8 @@ def whoami(
 
     try:
         resp = client.whoami()
-    except requests.HTTPError as exc:
-        if exc.response is not None and exc.response.status_code == 404:
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
             # The server is up and reachable — it just doesn't ship the
             # /api/whoami endpoint yet. Don't tell the user to check
             # that their server is running; tell them the server may
@@ -117,7 +127,7 @@ def whoami(
             render_error(err, json_mode=json_mode)
             raise SystemExit(1) from exc
         raise  # let handle_errors classify other HTTP errors (401/403/etc.)
-    except requests.ConnectionError as exc:
+    except CONNECTION_ERRORS as exc:
         err = CliError(
             error_type="network",
             message=f"Failed to reach {client.base_url}/api/whoami: {exc}",

@@ -7,8 +7,8 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
-import requests
 import uvicorn
 from fastapi import FastAPI
 
@@ -129,7 +129,7 @@ def test_cli_waits_for_its_queued_operation_behind_busy_aggregation(
         assert server.started
         holder.start()
         assert occupied.wait(5)
-        busy = requests.post(
+        busy = httpx.post(
             sdk.base_url + "/api/run_playbook_aggregation",
             json={"agent_version": "v1"},
             timeout=5,
@@ -142,7 +142,7 @@ def test_cli_waits_for_its_queued_operation_behind_busy_aggregation(
 
         def lose_committed_response(**kwargs):
             admitted.append(submit(**kwargs))
-            raise requests.ReadTimeout("response lost after commit")
+            raise httpx.ReadTimeout("response lost after commit")
 
         if lose_response:
             monkeypatch.setattr(
