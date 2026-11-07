@@ -20,7 +20,10 @@ dependencies = [
     "anyio>=4.12.1",
     "openai>=2.8.0",
     # Ceiling: LiteLLMClient depends on litellm 1.x response, tool-call and
-    # reasoning shapes. Qualify provider contracts before admitting a 2.x major.
+    # reasoning shapes; the ceiling protects PyPI installs of reflexio-ai (and
+    # claude-smart, through it) from an untested major. Widen once the weekly
+    # upstream-canary workflow passes its next-major check for 2.x. Its
+    # in-range check proposes lock bumps within the ceiling.
     "litellm>=1.103.1,<2",
     "cryptography>=50.0.1",
     "tenacity>=9.0.0",
@@ -37,9 +40,10 @@ dependencies = [
     "httpx>=0.28.1",
     "pydantic[email]>=2.13.0",
     "json-repair>=0.60.1",
-    # Ceiling: gepa is pre-1.0 and the optimizer adapter imports its internal
-    # modules (gepa.core.adapter, gepa.core.state), whose layout a 0.x minor
-    # may change. Re-run the optimizer tests before admitting 0.2.
+    # Ceiling: gepa is pre-1.0 and a 0.x minor may change the optimizer API
+    # (gepa.api.optimize, gepa.EvaluationBatch, and the type-only
+    # gepa.core.adapter.ProposalFn / gepa.core.state.GEPAState). Widen once the
+    # weekly upstream-canary workflow passes its next-major check for 0.2.
     "gepa>=0.1.1,<0.2",
     # CLI
     "typer>=0.15.0",
@@ -88,9 +92,9 @@ dev = [
     "pyright>=1.1.400",
     "pytest-cov>=6.0",
     "syrupy>=5.0",
-    # Ceiling: tests/conftest.py imports mutmut 3 internals (mutmut.state,
-    # mutmut.configuration) and reads its mutmut-stats.json evidence.
-    "mutmut>=3.8.0,<4",
+    # No ceiling: the lockfile pins the engine. tests/conftest.py refuses any
+    # major other than the one whose internal state it writes, with a hint.
+    "mutmut>=3.8.0",
     "build>=1.0.0",
     "twine>=6.0.0",
     "polars>=1.40.1",

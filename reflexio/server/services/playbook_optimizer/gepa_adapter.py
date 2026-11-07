@@ -23,6 +23,9 @@ from .models import (
 from .rollout import MultiTurnRollout
 
 if TYPE_CHECKING:
+    # Annotations only. At runtime this module uses gepa's top-level
+    # re-export ``gepa.EvaluationBatch`` (see ``evaluate``), so a change to
+    # gepa's internal module layout cannot break execution.
     from gepa.core.adapter import EvaluationBatch, ProposalFn
     from gepa.core.state import GEPAState
 
@@ -123,7 +126,9 @@ class ReflexioPlaybookGEPAAdapter:
         candidate: dict[str, str],
         capture_traces: bool = False,
     ) -> EvaluationBatch[EvaluationTrajectory, CandidateEvaluationOutput]:
-        from gepa.core.adapter import EvaluationBatch
+        # The package re-exports it (gepa's own adapters import it this way);
+        # it declares no __all__, so type checkers call the re-export private.
+        from gepa import EvaluationBatch  # pyright: ignore[reportPrivateImportUsage]
 
         candidate_content = candidate.get(PLAYBOOK_CONTENT_COMPONENT, "")
         persisted_candidate = self._ensure_candidate(candidate_content)
