@@ -2,6 +2,7 @@
 
 import logging
 import time
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -22,6 +23,9 @@ from reflexio.server.llm.provider_circuit import (
     provider_wait_seconds,
 )
 from reflexio.server.llm.token_accounting import RunTokenCapture, run_token_capture
+from reflexio.server.services.durable_learning.worker import DurableLearningWorker
+from reflexio.server.services.storage.storage_base import BaseStorage
+from reflexio.server.services.storage.storage_base._extraction_stream import Window
 
 MODEL = "minimax/MiniMax-M3"
 PRIMARY = "scripted-primary"
@@ -247,3 +251,125 @@ def test_global_custom_endpoint_cannot_receive_backup(configured, monkeypatch):
 def test_missing_or_duplicate_backup_disables_failover(configured, monkeypatch, backup):
     monkeypatch.setenv("MINIMAX_BACKUP_API_KEY", backup)
     assert backup_credentials({"model": MODEL}) is None
+
+
+def test_recovered_quota_attempt_logs_only_content_free_diagnostics(
+    configured, monkeypatch, caplog
+):
+    private = "untrusted-provider-body credential=scripted-primary response=PRIVATE"
+    error = exhausted()
+    error.args = (str(error) + " " + private,)
+    sent = []
+
+    def dispatch(params, _timeout):
+        sent.append(params["api_key"])
+        if params["api_key"] == PRIMARY:
+            raise error
+        return response()
+
+    monkeypatch.setattr(configured, "_completion_with_hard_timeout", dispatch)
+    with caplog.at_level(logging.INFO):
+        answer = configured.generate_chat_response(MESSAGES, response_format=Diagnosis)
+    assert answer == Diagnosis(supported_gap=True)
+    assert sent == [PRIMARY, BACKUP]
+    attempts = [
+        record
+        for record in caplog.records
+        if "event=llm_request_end" in record.getMessage()
+        and "success=False" in record.getMessage()
+    ]
+    assert len(attempts) == 1
+    assert attempts[0].levelno == logging.WARNING
+    assert attempts[0].exc_info is None
+    message = attempts[0].getMessage()
+    assert "error_type=LiteLLMClientError" in message
+    assert "reason=quota_exhausted upstream_status_code=429" in message
+    assert " error=" not in message and "exception_type=" not in message
+    assert private not in caplog.text
+    assert "RateLimitError:" not in caplog.text
+    assert PRIMARY not in caplog.text and BACKUP not in caplog.text
+    assert "credential_slot=backup" in caplog.text
+
+
+def test_transient_attempt_diagnostics_do_not_render_an_untrusted_status(
+    configured, monkeypatch, caplog
+):
+    error = TimeoutError("PRIVATE provider response")
+    monkeypatch.setattr(error, "status_code", "PRIVATE status", raising=False)
+    dispatch = MagicMock(side_effect=error)
+    monkeypatch.setattr(configured, "_completion_with_hard_timeout", dispatch)
+    with caplog.at_level(logging.WARNING), pytest.raises(LiteLLMClientError) as raised:
+        configured.generate_chat_response(MESSAGES)
+    assert dispatch.call_count == 1
+    assert raised.value.__cause__ is error
+    assert "PRIVATE" in str(raised.value)  # Only logging changes, not the exception.
+    assert "PRIVATE" not in caplog.text
+    assert "reason=transient_provider_error upstream_status_code=None" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "case", ["both-quota", "customer-quota", "customer-auth", "transport"]
+)
+def test_unrecovered_client_error_still_reaches_the_real_window_failure_owner(
+    configured, monkeypatch, caplog, case
+):
+    if case == "customer-auth":
+        error = LiteLLMClientError("unauthorized", upstream_status_code=401)
+    elif case == "transport":
+        error = TimeoutError("transient network failure")
+    else:
+        error = exhausted()
+    if case.startswith("customer"):
+        configured = LiteLLMClient(
+            LiteLLMConfig(
+                model=MODEL,
+                fallback_models=[],
+                api_key_config=APIKeyConfig(
+                    minimax=MiniMaxConfig(api_key="customer-owned")
+                ),
+            )
+        )
+    sent = []
+
+    def dispatch(params, _timeout):
+        sent.append(params["api_key"])
+        raise error
+
+    monkeypatch.setattr(configured, "_completion_with_hard_timeout", dispatch)
+    storage = MagicMock(spec=BaseStorage)
+    storage.retry_extraction.return_value = True  # The owned work budget is spent.
+    window = Window(
+        window_id="owned",
+        user_id="u",
+        kind="profile",
+        project_id="",
+        predecessor=0,
+        end_seq=1,
+        manifest=[],
+        policy={},
+        force=False,
+        skip_aggregation=False,
+    )
+    with caplog.at_level(logging.WARNING), pytest.raises(LiteLLMClientError) as raised:
+        configured.generate_chat_response(MESSAGES)
+    outcome = DurableLearningWorker._handle_window_failure(
+        cast(BaseStorage, storage), window, "claim-token", raised.value
+    )
+    expected = [PRIMARY, BACKUP] if case == "both-quota" else [PRIMARY]
+    if case.startswith("customer"):
+        expected = ["customer-owned"]
+    assert sent == expected
+    if case in {"customer-auth", "transport"}:
+        assert outcome == "parked"
+        assert "wait_seconds" not in storage.retry_extraction.call_args.kwargs
+        assert any(
+            record.levelno == logging.ERROR
+            and "Extraction window parked" in record.getMessage()
+            for record in caplog.records
+        )
+    else:
+        # Exhausted providers still defer without spending a work attempt.
+        # A physical warning must not turn that existing grace into an ERROR.
+        assert outcome == "provider_wait"
+        assert storage.retry_extraction.call_args.kwargs["wait_seconds"] > 0
+        assert not any(record.levelno >= logging.ERROR for record in caplog.records)
