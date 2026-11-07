@@ -2084,14 +2084,33 @@ class TextGenerationMixin:
                     and allowance < _OUTAGE_EVIDENCE_MIN_TIMEOUT_SECONDS
                 ):
                     circuit_call.failed(quota_exhausted=exhausted)
-                log = self.logger.warning if transient else self.logger.error
-                log(
-                    "event=llm_request_end model=%s elapsed_seconds=%.3f success=False error_type=%s error=%s",
-                    turn_params.get("model"),
-                    time.perf_counter() - request_start,
-                    type(e).__name__,
-                    e,
-                )
+                if transient:
+                    # This is a physical attempt, not the logical operation's
+                    # outcome: another credential/rung or the caller may recover.
+                    # Provider exception text can contain credentials/content and
+                    # makes a handled WARNING look like an exception alarm.
+                    status = getattr(e, "upstream_status_code", None)
+                    if status is None:
+                        status = getattr(e, "status_code", None)
+                    self.logger.warning(
+                        "event=llm_request_end model=%s elapsed_seconds=%.3f success=False "
+                        "error_type=%s reason=%s upstream_status_code=%s",
+                        turn_params.get("model"),
+                        time.perf_counter() - request_start,
+                        type(e).__name__,
+                        "quota_exhausted" if exhausted else "transient_provider_error",
+                        status
+                        if type(status) is int and 100 <= status <= 599
+                        else None,
+                    )
+                else:
+                    self.logger.error(
+                        "event=llm_request_end model=%s elapsed_seconds=%.3f success=False error_type=%s error=%s",
+                        turn_params.get("model"),
+                        time.perf_counter() - request_start,
+                        type(e).__name__,
+                        e,
+                    )
                 failure = LiteLLMClientError(f"API call failed: {e}")
                 # Which breaker decides whether durable work is charged for it.
                 failure.circuit_route = circuit_call.route
