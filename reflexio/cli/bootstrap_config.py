@@ -235,6 +235,16 @@ def save_storage_to_config(
             # namespace. Do not carry it across an actual primary retarget.
             selected = selected.model_copy(update={"schema_name": existing.schema_name})
         if isinstance(selected, StorageConfigPostgres):
+            if (
+                isinstance(existing, StorageConfigPostgres)
+                and selected.db_url == existing.db_url
+                and (selected.schema_name or "public")
+                == (existing.schema_name or "public")
+                and selected.read_db_url is None
+            ):
+                selected = selected.model_copy(
+                    update={"read_db_url": existing.read_db_url}
+                )
             fields = selected.model_dump(mode="json")
             if generation < NATIVE_POOL_AUTHORITY_VERSION:
                 # An old explicit native backend selection reconstructed these

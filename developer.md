@@ -65,7 +65,10 @@ Repeated remote backend selection preserves a saved `storage_config.schema` when
 explicitly supplied. This applies across the PostgreSQL adapters. An explicit
 `REFLEXIO_POSTGRES_SCHEMA` still selects the namespace for native PostgreSQL;
 selecting a different primary uses the new target's namespace/default instead of
-inheriting the former database's schema. Existing files use the normal locked
+inheriting the former database's schema. Native PostgreSQL also retains its saved
+`storage_config.read_db_url` when the primary and effective namespace are unchanged
+and no nonblank replica override is supplied. An explicit namespace retarget does
+not inherit the former namespace's replica. Existing files use the normal locked
 publication/upgrade path; no manual rewrite or new setting is required.
 
 Stop services with `./stop_services.sh`.

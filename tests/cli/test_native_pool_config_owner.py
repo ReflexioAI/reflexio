@@ -325,3 +325,65 @@ def test_explicit_namespace_still_selects_new_target_on_same_primary(
     monkeypatch.setenv("REFLEXIO_POSTGRES_SCHEMA", "selected_namespace")
     _, selected = select(tmp_path)
     assert selected["storage_config"]["schema"] == "selected_namespace"
+
+
+@pytest.mark.parametrize("same_primary", [True, False])
+def test_native_selection_keeps_replica_only_with_its_saved_primary(
+    tmp_path, monkeypatch, same_primary
+):
+    path = stored(tmp_path)
+    document = json.loads(path.read_text())
+    document["storage_config"].update(
+        schema="saved_namespace", read_db_url="postgresql://replica.invalid/saved"
+    )
+    path.write_text(json.dumps(document))
+    if same_primary:
+        monkeypatch.setenv("DATA_DB_URL", "postgresql://former.invalid/old")
+    _, selected = select(tmp_path)
+    target = selected["storage_config"]
+    assert target["schema"] == ("saved_namespace" if same_primary else None)
+    assert target["read_db_url"] == (
+        "postgresql://replica.invalid/saved" if same_primary else None
+    )
+    assert {name: target[name] for name in POLICY} == POLICY
+    assert selected["opaque"] == {"keep": True}
+
+
+@pytest.mark.parametrize(
+    "new_namespace,expected_reader",
+    [("former_namespace", "postgresql://replica.invalid/old"), ("new_namespace", None)],
+)
+def test_namespace_retarget_does_not_inherit_unrelated_replica(
+    tmp_path, monkeypatch, new_namespace, expected_reader
+):
+    path = stored(tmp_path)
+    document = json.loads(path.read_text())
+    document["storage_config"].update(
+        schema="former_namespace", read_db_url="postgresql://replica.invalid/old"
+    )
+    path.write_text(json.dumps(document))
+    monkeypatch.setenv("DATA_DB_URL", "postgresql://former.invalid/old")
+    monkeypatch.setenv("REFLEXIO_POSTGRES_SCHEMA", new_namespace)
+    _, selected = select(tmp_path)
+    assert selected["storage_config"]["schema"] == new_namespace
+    assert selected["storage_config"]["read_db_url"] == expected_reader
+
+
+@pytest.mark.parametrize("same_primary", [True, False])
+def test_explicit_reader_selects_its_target_without_reusing_saved_replica(
+    tmp_path, monkeypatch, same_primary
+):
+    path = stored(tmp_path)
+    document = json.loads(path.read_text())
+    document["storage_config"]["read_db_url"] = "postgresql://replica.invalid/saved"
+    path.write_text(json.dumps(document))
+    if same_primary:
+        monkeypatch.setenv("DATA_DB_URL", "postgresql://former.invalid/old")
+    monkeypatch.setenv(
+        "REFLEXIO_POSTGRES_READ_DB_URL", "postgresql://replica.invalid/selected"
+    )
+    _, selected = select(tmp_path)
+    assert (
+        selected["storage_config"]["read_db_url"]
+        == "postgresql://replica.invalid/selected"
+    )
