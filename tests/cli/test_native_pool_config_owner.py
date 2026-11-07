@@ -313,7 +313,7 @@ def test_different_primary_does_not_inherit_old_namespace(tmp_path, selected_bac
     assert selected["schema"] is None
 
 
-def test_explicit_namespace_still_selects_new_target_on_same_primary(
+def test_predecessor_namespace_import_still_selects_its_observed_target(
     tmp_path, monkeypatch
 ):
     path = stored(tmp_path)
@@ -322,6 +322,146 @@ def test_explicit_namespace_still_selects_new_target_on_same_primary(
         db_url="postgresql://selected.invalid/new", schema="former_namespace"
     )
     path.write_text(json.dumps(document))
+    document["_reflexio_config_file"]["version"] = 13
+    path.write_text(json.dumps(document))
     monkeypatch.setenv("REFLEXIO_POSTGRES_SCHEMA", "selected_namespace")
     _, selected = select(tmp_path)
     assert selected["storage_config"]["schema"] == "selected_namespace"
+
+
+@pytest.mark.parametrize("same_primary", [True, False])
+def test_native_selection_keeps_replica_only_with_its_saved_primary(
+    tmp_path, monkeypatch, same_primary
+):
+    path = stored(tmp_path)
+    document = json.loads(path.read_text())
+    document["storage_config"].update(
+        schema="saved_namespace", read_db_url="postgresql://replica.invalid/saved"
+    )
+    path.write_text(json.dumps(document))
+    if same_primary:
+        monkeypatch.setenv("DATA_DB_URL", "postgresql://former.invalid/old")
+    _, selected = select(tmp_path)
+    target = selected["storage_config"]
+    assert target["schema"] == ("saved_namespace" if same_primary else None)
+    assert target["read_db_url"] == (
+        "postgresql://replica.invalid/saved" if same_primary else None
+    )
+    assert {name: target[name] for name in POLICY} == POLICY
+    assert selected["opaque"] == {"keep": True}
+
+
+@pytest.mark.parametrize(
+    "name", ["REFLEXIO_POSTGRES_SCHEMA", "REFLEXIO_POSTGRES_READ_DB_URL"]
+)
+@pytest.mark.parametrize("existing", [True, False])
+def test_current_target_exports_cannot_redirect_saved_or_fresh_selection(
+    tmp_path, monkeypatch, name, existing
+):
+    from reflexio.config_env import StoredConfigurationError
+
+    path = stored(tmp_path) if existing else tmp_path / "configs" / f"config_{ORG}.json"
+    before = path.read_bytes() if existing else None
+    monkeypatch.setenv(name, "private-different-target")
+    with pytest.raises(StoredConfigurationError, match=name) as failure:
+        select(tmp_path)
+    assert "private-different-target" not in str(failure.value)
+    assert (path.read_bytes() if path.exists() else None) == before
+    assert not (path.parent / ".config-migrations").exists()
+
+
+@pytest.mark.parametrize(
+    "schema,reader", [(None, None), ("tenant_x", "postgresql://replica.invalid/read")]
+)
+def test_matching_current_exports_only_assert_effective_target(
+    tmp_path, monkeypatch, schema, reader
+):
+    path = stored(tmp_path)
+    document = json.loads(path.read_text())
+    document["storage_config"].update(
+        db_url="postgresql://selected.invalid/new", schema=schema, read_db_url=reader
+    )
+    path.write_text(json.dumps(document))
+    monkeypatch.setenv("REFLEXIO_POSTGRES_SCHEMA", schema or "public")
+    monkeypatch.setenv(
+        "REFLEXIO_POSTGRES_READ_DB_URL", reader or "postgresql://selected.invalid/new"
+    )
+    _, selected = select(tmp_path)
+    assert selected["storage_config"]["schema"] == schema
+    assert selected["storage_config"]["read_db_url"] == reader
+    monkeypatch.delenv("REFLEXIO_POSTGRES_SCHEMA")
+    monkeypatch.delenv("REFLEXIO_POSTGRES_READ_DB_URL")
+    assert select(tmp_path)[1]["storage_config"] == selected["storage_config"]
+
+
+def test_predecessor_target_import_is_closed_after_exact_original_backup(
+    tmp_path, monkeypatch
+):
+    from reflexio.config_env import StoredConfigurationError
+
+    path = stored(tmp_path)
+    original = json.loads(path.read_text())
+    original["_reflexio_config_file"]["version"] = 13
+    path.write_text(json.dumps(original))
+    raw = path.read_bytes()
+    monkeypatch.setenv("REFLEXIO_POSTGRES_SCHEMA", "imported_schema")
+    monkeypatch.setenv(
+        "REFLEXIO_POSTGRES_READ_DB_URL", "postgresql://replica.invalid/imported"
+    )
+    _, selected = select(tmp_path)
+    assert selected["storage_config"]["schema"] == "imported_schema"
+    assert (
+        selected["storage_config"]["read_db_url"]
+        == "postgresql://replica.invalid/imported"
+    )
+    assert (
+        path.parent
+        / ".config-migrations"
+        / path.name
+        / f"{hashlib.sha256(raw).hexdigest()}.json"
+    ).read_bytes() == raw
+    published = path.read_bytes()
+    monkeypatch.setenv("REFLEXIO_POSTGRES_READ_DB_URL", "private-other-replica")
+    with pytest.raises(StoredConfigurationError, match="REFLEXIO_POSTGRES_READ_DB_URL"):
+        select(tmp_path)
+    assert path.read_bytes() == published
+
+
+def test_real_generation13_reader_refuses_target_authority_publication(tmp_path):
+    import runpy
+    from pathlib import Path
+
+    from reflexio.config_env import StoredConfigurationError
+
+    previous = runpy.run_path(
+        str(Path(__file__).parents[1] / "fixtures/config_file_v13_reader.txt")
+    )
+    path = stored(tmp_path)
+    before = path.read_bytes()
+    old = previous["LocalConfigFile"](path)
+    with pytest.raises(StoredConfigurationError, match="generation"):
+        old.read_document()
+    with pytest.raises(StoredConfigurationError, match="generation"):
+        old.edit_document(lambda document: document.clear())
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "new_namespace,expected_reader",
+    [("former_namespace", "postgresql://replica.invalid/old"), ("new_namespace", None)],
+)
+def test_predecessor_namespace_retarget_does_not_inherit_unrelated_replica(
+    tmp_path, monkeypatch, new_namespace, expected_reader
+):
+    path = stored(tmp_path)
+    document = json.loads(path.read_text())
+    document["_reflexio_config_file"]["version"] = 13
+    document["storage_config"].update(
+        schema="former_namespace", read_db_url="postgresql://replica.invalid/old"
+    )
+    path.write_text(json.dumps(document))
+    monkeypatch.setenv("DATA_DB_URL", "postgresql://former.invalid/old")
+    monkeypatch.setenv("REFLEXIO_POSTGRES_SCHEMA", new_namespace)
+    _, selected = select(tmp_path)
+    assert selected["storage_config"]["schema"] == new_namespace
+    assert selected["storage_config"]["read_db_url"] == expected_reader
