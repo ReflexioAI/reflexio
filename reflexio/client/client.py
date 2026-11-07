@@ -356,7 +356,8 @@ class ReflexioClient:
 
         ``timeout`` bounds the whole request, matching the blocking transport's
         single deadline: httpx applies it per phase, and ``asyncio.timeout``
-        caps the total. Redirects are never followed.
+        caps the total. Redirects are never followed. Like the former async
+        transport, this path does not inherit proxy or certificate environment.
         """
         url = urljoin(self.base_url, endpoint)
 
@@ -368,7 +369,9 @@ class ReflexioClient:
         timeout = kwargs.pop("timeout", self.timeout)
         async with (
             asyncio.timeout(timeout),
-            httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client,
+            httpx.AsyncClient(
+                timeout=timeout, follow_redirects=False, trust_env=False
+            ) as client,
         ):
             response = await client.request(
                 method, url, headers=request_headers, **kwargs
