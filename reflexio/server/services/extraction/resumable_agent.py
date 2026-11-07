@@ -893,8 +893,9 @@ class ResumableExtractionAgent:
                 child_attempts.extend(attempts)
             # A turn the provider never answered did no work, so it spends no
             # step: otherwise every attempt during an outage burns one and the
-            # window is held once the child's steps run out. Physical dispatch
-            # IDs are still recorded below, so the attempt ledger stays whole.
+            # window is held once the child's steps run out. Answered dispatch
+            # IDs are recorded below; one that failed during an outage already
+            # returned its attempt (``OverflowCoordinator._settle_failure``).
             if not (
                 result.finished_reason == "error"
                 and result.error is not None

@@ -85,7 +85,9 @@ from reflexio.server.llm.image_utils import (
     encode_image_to_base64 as _encode_image_to_base64,
 )
 from reflexio.server.llm.input_budget import (
+    extraction_failure_observer,
     extraction_provider_guard,
+    extraction_request_identity,
     extraction_usage_observer,
     supply_extraction_output_reservation,
 )
@@ -655,6 +657,34 @@ def _is_timeout_error(exc: BaseException) -> bool:
             return True
         current = current.__cause__ or current.__context__
     return False
+
+
+def _reserved_attempt_id(unreserved: dict[str, Any] | None) -> str | None:
+    """The durable attempt the guards just reserved for this dispatch, if any.
+
+    A durable guard publishes a fresh identity per reserved attempt; an
+    unchanged one means nothing was reserved.
+    """
+    reserved = extraction_request_identity.get()
+    if reserved is None or reserved is unreserved:
+        return None
+    attempt_id = reserved.get("attempt_id")
+    return attempt_id if isinstance(attempt_id, str) else None
+
+
+def _report_reserved_failure(attempt_id: str | None, failure: BaseException) -> None:
+    """Let the durable scope settle what a failed reserved dispatch costs."""
+    observer = extraction_failure_observer.get()
+    if attempt_id is None or observer is None:
+        return
+    try:
+        observer(attempt_id, failure)
+    except ProviderRequestGuardError:
+        raise
+    except Exception as exc:
+        raise ProviderRequestGuardError(
+            "Durable extraction attempt settlement failed"
+        ) from exc
 
 
 def is_provider_unavailable_error(exc: BaseException) -> bool:
@@ -1872,6 +1902,8 @@ class TextGenerationMixin:
             # What the provider was actually given once every deadline (walk,
             # caller, search scope) applied; set at dispatch.
             dispatch_allowance: float | None = None
+            # The durable extraction attempt reserved for this dispatch, if any.
+            reserved_attempt_id: str | None = None
             self.logger.info(
                 "event=llm_request_start model=%s timeout=%s has_response_format=%s num_retries=0 hard_timeout=%.3f",
                 turn_params.get("model"),
@@ -1910,6 +1942,7 @@ class TextGenerationMixin:
                                 "LLM completion exceeded its attempt deadline"
                             )
 
+                    unreserved = extraction_request_identity.get()
                     if provider_request_guard is not None:
                         provider_request_guard(
                             turn_params,
@@ -1928,6 +1961,7 @@ class TextGenerationMixin:
                             tuple(ladder),
                             turn_parse_structured_output,
                         )
+                    reserved_attempt_id = _reserved_attempt_id(unreserved)
                     check_turn_deadline()
                     from reflexio.server.llm.compute_admission import (
                         admit_external_compute,
@@ -2091,6 +2125,8 @@ class TextGenerationMixin:
                 failure = LiteLLMClientError(f"API call failed: {e}")
                 # Which breaker decides whether durable work is charged for it.
                 failure.circuit_route = circuit_call.route
+                failure.__cause__ = e  # classified below before it is raised
+                _report_reserved_failure(reserved_attempt_id, failure)
                 raise failure from e
             finally:
                 circuit_call.close()

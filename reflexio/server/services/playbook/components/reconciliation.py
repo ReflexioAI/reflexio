@@ -387,6 +387,12 @@ class Reconciler:
             self.calls = budget["calls"]
 
     def guard(self, *_args: Any) -> None:
+        if self.coordinator is not None and self.source_scope is not None:
+            # A dispatch that failed during a provider outage returned its
+            # attempt to the journal, so the saved count is the current one.
+            budget = self.coordinator.checkpoint.get("audited_consolidation_budget")
+            if isinstance(budget, dict) and budget.get("key") == self.budget_key:
+                self.calls = budget["calls"]
         if self.calls >= self.max_calls:
             raise AuditedConsolidationAbstainedError(
                 "Audited consolidation physical-request allowance exhausted"

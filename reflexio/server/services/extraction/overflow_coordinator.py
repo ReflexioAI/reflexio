@@ -30,11 +30,13 @@ from reflexio.server.llm.input_budget import (
     OutputTruncatedRequestError,
     ProviderInputOverflowError,
     check_request_input_budget,
+    extraction_failure_observer,
     extraction_provider_guard,
     extraction_request_identity,
     extraction_usage_observer,
     extraction_use_model_capacity,
 )
+from reflexio.server.llm.provider_circuit import provider_wait_seconds
 from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_tokens
 from reflexio.server.llm.tools import ToolLoopTrace
 from reflexio.server.services.extraction.input_preparation import (
@@ -982,16 +984,38 @@ class OverflowCoordinator:
             self._advance(**change)
         self._active_attempt.set(None)
 
+    def _settle_failure(self, attempt_id: str, failure: BaseException) -> None:
+        """Release a reserved attempt the provider could not serve during an outage.
+
+        The charging invariant (``provider_circuit``): only a failure while
+        the provider serves other calls spends quota. While the failing route's
+        breaker is open, the dispatch returns its attempt -- to the 128-attempt
+        journal, its package stage and its reconciliation allowance -- so an
+        outage probed any number of times never holds the window. Any other
+        failure stays charged: its usage is unknown.
+        """
+        if provider_wait_seconds(failure) is None:
+            return
+        with self._lock:
+            self._advance(released_attempt_id=attempt_id)
+            if self._active_attempt.get() == attempt_id:
+                self._active_attempt.set(None)
+        stage = self._attempt_stage.get()
+        if stage is not None and attempt_id in stage[2]:
+            stage[2].remove(attempt_id)
+
     @contextmanager
     def provider_scope(self) -> Iterator[None]:
         coordinator_token = current_overflow_coordinator.set(self)
         guard_token = extraction_provider_guard.set(self._guard)
         observer_token = extraction_usage_observer.set(self._observe)
+        failure_token = extraction_failure_observer.set(self._settle_failure)
         identity_token = extraction_request_identity.set(None)
         try:
             yield
         finally:
             extraction_request_identity.reset(identity_token)
+            extraction_failure_observer.reset(failure_token)
             extraction_usage_observer.reset(observer_token)
             extraction_provider_guard.reset(guard_token)
             current_overflow_coordinator.reset(coordinator_token)
