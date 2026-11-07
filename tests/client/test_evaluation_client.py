@@ -26,7 +26,7 @@ def _json_response(payload: dict) -> MagicMock:
     return response
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_regenerate_evaluations_posts_kwargs(mock_session_class) -> None:
     mock_session = MagicMock()
     mock_session_class.return_value = mock_session
@@ -46,7 +46,7 @@ def test_regenerate_evaluations_posts_kwargs(mock_session_class) -> None:
     assert kwargs["json"] == {"evaluation_name": None, "from_ts": 100, "to_ts": 200}
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_regenerate_evaluations_accepts_request_model(mock_session_class) -> None:
     mock_session = MagicMock()
     mock_session_class.return_value = mock_session
@@ -64,7 +64,7 @@ def test_regenerate_evaluations_accepts_request_model(mock_session_class) -> Non
     }
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_get_evaluation_regeneration_status(mock_session_class) -> None:
     mock_session = MagicMock()
     mock_session_class.return_value = mock_session
@@ -95,7 +95,7 @@ def test_get_evaluation_regeneration_status(mock_session_class) -> None:
     assert args[1].endswith("/api/evaluations/regenerate/regen_123")
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_cancel_evaluation_regeneration(mock_session_class) -> None:
     mock_session = MagicMock()
     mock_session_class.return_value = mock_session
@@ -110,7 +110,7 @@ def test_cancel_evaluation_regeneration(mock_session_class) -> None:
     assert args[1].endswith("/api/evaluations/regenerate/regen_123")
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_grade_on_demand_posts_kwargs(mock_session_class) -> None:
     mock_session = MagicMock()
     mock_session_class.return_value = mock_session
@@ -141,7 +141,7 @@ def test_grade_on_demand_posts_kwargs(mock_session_class) -> None:
     }
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_grade_on_demand_accepts_request_dict(mock_session_class) -> None:
     mock_session = MagicMock()
     mock_session_class.return_value = mock_session
@@ -169,7 +169,7 @@ def test_grade_on_demand_accepts_request_dict(mock_session_class) -> None:
     }
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_get_retrieved_learning_evaluation_results_posts_filters(
     mock_session_class,
 ) -> None:
@@ -218,7 +218,7 @@ def test_evaluation_models_export_from_top_level_package() -> None:
     assert TopLevelRegenerateRequest is RegenerateRequest
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_grade_on_demand_waits_as_long_as_the_server(mock_session_class) -> None:
     """The default client must not give up before the server answers.
 

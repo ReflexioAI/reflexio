@@ -4,14 +4,22 @@ import json
 import time
 from types import SimpleNamespace
 
+import httpx
 import pytest
-import requests
 
 from reflexio.cli.commands import agent_playbooks as command
 from reflexio.models.api_schema.aggregation_operations import (
     PlaybookAggregationOperation,
     PlaybookAggregationResult,
 )
+
+
+def status_error(status: int, message: str = "") -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "http://reflexio.test/api/aggregation")
+    response = httpx.Response(status, request=request)
+    return httpx.HTTPStatusError(
+        message or f"HTTP {status}", request=request, response=response
+    )
 
 
 def receipt(status="queued", **changes):
@@ -176,11 +184,7 @@ def test_timeout_preserves_operation_identity_without_resubmitting(
 def test_unsupported_api_is_actionable_and_never_uses_legacy_post(
     runner, app, mock_client, status
 ):
-    response = requests.Response()
-    response.status_code = status
-    mock_client.submit_playbook_aggregation.side_effect = requests.HTTPError(
-        response=response
-    )
+    mock_client.submit_playbook_aggregation.side_effect = status_error(status)
     result = runner.invoke(
         app, ["agent-playbooks", "aggregate", "--agent-version", "v1", "--wait"]
     )
@@ -240,11 +244,9 @@ def test_poll_error_keeps_admitted_operation_id_without_resubmission(
 ):
     mock_client.submit_playbook_aggregation.return_value = receipt()
     if failure == "rate_limit":
-        response = requests.Response()
-        response.status_code = 429
-        error = requests.HTTPError(response=response)
+        error = status_error(429)
     else:
-        error = requests.Timeout("sensitive transport detail")
+        error = httpx.ReadTimeout("sensitive transport detail")
     mock_client.get_playbook_aggregation_operation.side_effect = error
     result = runner.invoke(
         app,
@@ -260,15 +262,13 @@ def test_poll_error_keeps_admitted_operation_id_without_resubmission(
 
 
 @pytest.mark.parametrize(
-    "failure", [requests.ReadTimeout, requests.ConnectionError, 408, 500, 502, 503, 504]
+    "failure", [httpx.ReadTimeout, httpx.ConnectError, 408, 500, 502, 503, 504]
 )
 def test_uncertain_submission_preserves_reusable_request_identity(
     runner, app, mock_client, failure
 ):
     if isinstance(failure, int):
-        response = requests.Response()
-        response.status_code = failure
-        error = requests.HTTPError("sensitive detail", response=response)
+        error = status_error(failure, "sensitive detail")
     else:
         error = failure("sensitive detail")
     mock_client.submit_playbook_aggregation.side_effect = error

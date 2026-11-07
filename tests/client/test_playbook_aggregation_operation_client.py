@@ -37,7 +37,9 @@ def test_admission_json_and_typed_poll_preserve_operation_identity(monkeypatch):
         responses.append(response)
     session = MagicMock()
     session.request.side_effect = responses
-    monkeypatch.setattr("reflexio.client.client.requests.Session", lambda: session)
+    monkeypatch.setattr(
+        "reflexio.client.client.httpx.Client", lambda **_kwargs: session
+    )
     client = ReflexioClient(api_key="test-key", url_endpoint="http://localhost:8000")
 
     admitted = client.submit_playbook_aggregation(

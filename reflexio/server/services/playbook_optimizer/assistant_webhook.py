@@ -27,8 +27,9 @@ import json
 import subprocess
 from typing import Any, Protocol
 
-import requests
+import httpx
 
+from reflexio.http_tls import tls_verify_from_env
 from reflexio.models.api_schema.domain import AgentPlaybook
 
 from .models import ChatMessage
@@ -92,7 +93,8 @@ class WebhookAssistant:
 
     Failures, redirects and malformed output abort the current evaluation.
     A later evaluator call is distinct work, not an exactly-once guarantee.
-    ``timeout_s`` retains requests' connection/read timeout semantics.
+    ``timeout_s`` bounds each phase (connect, write, read, pool), as the
+    former transport bounded connect and each read.
     """
 
     def __init__(self, url: str, auth_header: str | None, timeout_s: int) -> None:
@@ -107,12 +109,13 @@ class WebhookAssistant:
         if self.auth_header:
             headers["Authorization"] = self.auth_header
         try:
-            response = requests.post(
+            response = httpx.post(
                 self.url,
                 json=_build_payload(messages, playbooks),
                 headers=headers,
                 timeout=self.timeout_s,
-                allow_redirects=False,
+                follow_redirects=False,
+                verify=tls_verify_from_env(),
             )
             if not 200 <= response.status_code < 300:
                 raise WebhookFailedError(
@@ -128,7 +131,7 @@ class WebhookAssistant:
             if not isinstance(content, str):
                 raise WebhookFailedError("assistant webhook returned no content")
             return content
-        except requests.RequestException:
+        except (httpx.HTTPError, httpx.InvalidURL):
             # The server may have executed. Do not replay or expose URL/body/auth.
             raise WebhookFailedError("assistant webhook transport failed") from None
 

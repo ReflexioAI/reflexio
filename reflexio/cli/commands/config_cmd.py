@@ -6,9 +6,16 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
+import httpx
 import typer
 
-from reflexio.cli.errors import EXIT_NETWORK, EXIT_VALIDATION, CliError, handle_errors
+from reflexio.cli.errors import (
+    CONNECTION_ERRORS,
+    EXIT_NETWORK,
+    EXIT_VALIDATION,
+    CliError,
+    handle_errors,
+)
 from reflexio.cli.offline import upgrade_file
 from reflexio.cli.output import (
     print_error,
@@ -417,12 +424,10 @@ def _fetch_my_config(client: ReflexioClient) -> MyConfigResponse:
             as "the server doesn't expose this endpoint yet";
             everything else is a generic network error.
     """
-    import requests
-
     try:
         return client.get_my_config()
-    except requests.HTTPError as exc:
-        if exc.response is not None and exc.response.status_code == 404:
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
             raise CliError(
                 error_type="api",
                 message=(
@@ -443,7 +448,7 @@ def _fetch_my_config(client: ReflexioClient) -> MyConfigResponse:
             hint="Confirm REFLEXIO_URL + REFLEXIO_API_KEY, then try again.",
             exit_code=EXIT_NETWORK,
         ) from exc
-    except requests.ConnectionError as exc:
+    except CONNECTION_ERRORS as exc:
         raise CliError(
             error_type="network",
             message=f"Failed to reach {client.base_url}/api/my_config: {exc}",

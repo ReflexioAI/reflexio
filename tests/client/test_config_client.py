@@ -16,7 +16,7 @@ def _json_response(payload: dict) -> MagicMock:
     return response
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_client_get_config_accepts_unknown_overlay(mock_session_class) -> None:
     mock_session = MagicMock()
     mock_session_class.return_value = mock_session
@@ -37,7 +37,7 @@ def test_client_get_config_accepts_unknown_overlay(mock_session_class) -> None:
     assert result.model_dump()["x_extension_config"] == payload["x_extension_config"]
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_client_get_config_types_offline_tuner_overlay(mock_session_class) -> None:
     mock_session = MagicMock()
     mock_session_class.return_value = mock_session
@@ -54,7 +54,7 @@ def test_client_get_config_types_offline_tuner_overlay(mock_session_class) -> No
     assert result.offline_tuner_config.enabled is False
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_client_set_config_does_not_send_response_overlay(mock_session_class) -> None:
     mock_session = MagicMock()
     mock_session_class.return_value = mock_session

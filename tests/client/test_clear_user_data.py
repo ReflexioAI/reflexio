@@ -6,7 +6,7 @@ from reflexio.client import ReflexioClient
 
 
 class TestClearUserData:
-    @patch("reflexio.client.client.requests.Session")
+    @patch("reflexio.client.client.httpx.Client")
     def test_posts_user_id_to_clear_user_data_endpoint(
         self, mock_session_class
     ) -> None:
@@ -46,7 +46,7 @@ class TestClearUserData:
         }
         assert result.message and "userA" in result.message
 
-    @patch("reflexio.client.client.requests.Session")
+    @patch("reflexio.client.client.httpx.Client")
     def test_clear_user_data_invalidates_cache(self, mock_session_class) -> None:
         """clear_user_data must clear the cache so stale per-user reads vanish."""
         mock_session = MagicMock()

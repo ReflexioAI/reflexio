@@ -9,7 +9,6 @@ requires-python = ">=3.12"
 dependencies = [
     # Client deps (lightweight)
     "pydantic>=2.0.0",
-    "requests>=2.25.0",
     "python-dotenv>=1.1.0",
     "pyyaml>=6.0",
     # Server deps
@@ -182,6 +181,7 @@ select = [
     "FLY",    # flynt (string join → f-string)
     "PLR1714",# pylint: repeated-equality-comparison → use `in`
     "PLR1716",# pylint: boolean-chained-comparison → chain
+    "TID251", # flake8-tidy-imports: banned APIs (see banned-api below)
 ]
 ignore = [
     "E501",   # line too long (handled by the formatter)
@@ -211,6 +211,9 @@ ignore = [
 "demo/**" = ["S101", "PTH", "G004", "ANN"]
 "reflexio/server/services/storage/sqlite_storage/**" = ["S608"]
 "reflexio/cli/**" = ["S603", "S607", "S104"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"requests".msg = "Use httpx for HTTP clients (sync and async)."
 
 [tool.ruff.lint.mccabe]
 max-complexity = 20

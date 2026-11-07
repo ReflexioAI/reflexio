@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
-import requests
+import httpx
+import pytest
 
 from reflexio.cli.errors import (
     EXIT_AUTH,
@@ -99,10 +100,18 @@ class TestHandleErrors:
             assert exc.code == EXIT_VALIDATION
         assert raised, "Expected SystemExit"
 
-    def test_catches_connection_error(self) -> None:
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            httpx.ConnectError("refused"),
+            httpx.ConnectTimeout("connect timed out"),
+            httpx.ProxyError("proxy refused"),
+        ],
+    )
+    def test_catches_connection_error(self, failure: httpx.TransportError) -> None:
         @handle_errors
         def boom():
-            raise requests.ConnectionError("refused")
+            raise failure
 
         try:
             boom()
@@ -116,11 +125,13 @@ class TestHandleErrors:
 class TestClassifyHttpError:
     """Tests for _classify_http_error()."""
 
-    def _make_http_error(self, status_code: int) -> requests.HTTPError:
+    def _make_http_error(self, status_code: int) -> httpx.HTTPStatusError:
         response = MagicMock()
         response.status_code = status_code
         response.json.return_value = {"detail": "test detail"}
-        return requests.HTTPError(response=response)
+        return httpx.HTTPStatusError(
+            f"HTTP {status_code}", request=MagicMock(), response=response
+        )
 
     def test_401_maps_to_auth(self) -> None:
         err = _classify_http_error(self._make_http_error(401))
