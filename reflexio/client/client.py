@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, TypeVar, get_args
 from urllib.parse import urljoin
 
-import aiohttp
+import httpx
 import requests
 from pydantic import BaseModel, ConfigDict
 
@@ -352,7 +352,12 @@ class ReflexioClient:
     async def _make_async_request(
         self, method: str, endpoint: str, headers: dict | None = None, **kwargs: Any
     ) -> Any:
-        """Make an async HTTP request with sync-transport safety parity."""
+        """Make an async HTTP request with sync-transport safety parity.
+
+        ``timeout`` bounds the whole request, matching the blocking transport's
+        single deadline: httpx applies it per phase, and ``asyncio.timeout``
+        caps the total. Redirects are never followed.
+        """
         url = urljoin(self.base_url, endpoint)
 
         # Merge auth headers with any provided headers
@@ -360,19 +365,21 @@ class ReflexioClient:
         if headers:
             request_headers.update(headers)
 
-        kwargs.setdefault("timeout", aiohttp.ClientTimeout(total=self.timeout))
-        kwargs.setdefault("allow_redirects", False)
-        async with aiohttp.ClientSession() as async_session:
-            response = await async_session.request(
+        timeout = kwargs.pop("timeout", self.timeout)
+        async with (
+            asyncio.timeout(timeout),
+            httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client,
+        ):
+            response = await client.request(
                 method, url, headers=request_headers, **kwargs
             )
-            if 300 <= response.status < 400:
+            if 300 <= response.status_code < 400:
                 raise ReflexioAPIError(
                     f"Unexpected redirect from {method} {url} "
-                    f"(status {response.status})"
+                    f"(status {response.status_code})"
                 )
             response.raise_for_status()
-            content = await response.read()
+            content = response.content
             if not content:
                 return {}
             content_type = response.headers.get("Content-Type", "").lower()
@@ -380,16 +387,16 @@ class ReflexioClient:
                 body_preview = content.decode(errors="replace")[:200]
                 raise ReflexioAPIError(
                     f"Expected JSON from {method} {url} but got "
-                    f"Content-Type={content_type} (status {response.status}). "
+                    f"Content-Type={content_type} (status {response.status_code}). "
                     f"Body preview: {body_preview!r}. "
                     "Is REFLEXIO_URL pointing at the API host?"
                 )
             try:
-                return await response.json(content_type=None)
-            except (aiohttp.ContentTypeError, ValueError) as exc:
+                return response.json()
+            except ValueError as exc:
                 body_preview = content.decode(errors="replace")[:200]
                 raise ReflexioAPIError(
-                    f"{method} {url} returned status {response.status} but "
+                    f"{method} {url} returned status {response.status_code} but "
                     f"the body is not valid JSON: {exc}. "
                     f"Body preview: {body_preview!r}. "
                     "Is REFLEXIO_URL pointing at the API host?"

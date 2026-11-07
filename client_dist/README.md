@@ -431,6 +431,4 @@ In async contexts (e.g., FastAPI), fire-and-forget uses the existing event loop.
 - Python >= 3.12
 - `pydantic >= 2.0.0`
 - `requests >= 2.25.0`
-- `aiohttp >= 3.12.9`
-- `python-dateutil >= 2.8.0`
-- `python-dotenv >= 0.19.0`
+- `httpx >= 0.28.1`

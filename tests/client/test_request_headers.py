@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import ClassVar
+import asyncio
 from unittest.mock import MagicMock, patch
 
-import aiohttp
+import httpx
 import pytest
 
 from reflexio.client import ReflexioClient
@@ -42,45 +42,66 @@ def test_make_request_does_not_persist_per_call_headers(mock_session_class) -> N
     assert client.session.headers == {"User-Agent": "reflexio-test"}
 
 
+def _patch_async_client(monkeypatch, handler, captured: dict) -> None:
+    real_async_client = httpx.AsyncClient
+
+    def fake_async_client(**kwargs):
+        captured["client_kwargs"] = kwargs
+        return real_async_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", fake_async_client)
+
+
 @pytest.mark.asyncio
-async def test_make_async_request_applies_total_timeout_and_disables_redirects(
+async def test_make_async_request_applies_timeout_and_disables_redirects(
     monkeypatch,
 ) -> None:
-    captured = {}
+    captured: dict = {}
 
-    class FakeResponse:
-        status = 200
-        headers: ClassVar[dict[str, str]] = {"Content-Type": "application/json"}
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(200, json={"success": True})
 
-        def raise_for_status(self):
-            return None
-
-        async def read(self):
-            return b'{"success": true}'
-
-        async def json(self, *, content_type=None):
-            assert content_type is None
-            return {"success": True}
-
-    class FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return None
-
-        async def request(self, method, url, **kwargs):
-            captured.update(method=method, url=url, **kwargs)
-            return FakeResponse()
-
-    monkeypatch.setattr(aiohttp, "ClientSession", FakeSession)
+    _patch_async_client(monkeypatch, handler, captured)
     client = ReflexioClient(
         api_key="test-key", url_endpoint="http://localhost:8000", timeout=7.5
     )
 
-    response = await client._make_async_request("GET", "/api/whoami")  # noqa: SLF001
+    response = await client._make_async_request(  # noqa: SLF001
+        "POST", "/api/whoami", headers={"X-Extra": "1"}, json={"a": 1}
+    )
 
     assert response == {"success": True}
-    assert captured["allow_redirects"] is False
-    assert isinstance(captured["timeout"], aiohttp.ClientTimeout)
-    assert captured["timeout"].total == 7.5
+    assert captured["client_kwargs"] == {"timeout": 7.5, "follow_redirects": False}
+    request = captured["request"]
+    assert request.method == "POST"
+    assert str(request.url) == "http://localhost:8000/api/whoami"
+    assert request.headers["Authorization"] == "Bearer test-key"
+    assert request.headers["X-Extra"] == "1"
+    assert request.content == b'{"a":1}'
+
+
+@pytest.mark.asyncio
+async def test_make_async_request_enforces_total_deadline(monkeypatch) -> None:
+    async def slow_handler(_request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(5)
+        return httpx.Response(200, json={"success": True})
+
+    _patch_async_client(monkeypatch, slow_handler, {})
+    client = ReflexioClient(
+        api_key="test-key", url_endpoint="http://localhost:8000", timeout=0.05
+    )
+
+    with pytest.raises(TimeoutError):
+        await client._make_async_request("GET", "/api/whoami")  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_make_async_request_raises_http_status_error(monkeypatch) -> None:
+    _patch_async_client(
+        monkeypatch, lambda _r: httpx.Response(500, json={"detail": "boom"}), {}
+    )
+    client = ReflexioClient(api_key="test-key", url_endpoint="http://localhost:8000")
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client._make_async_request("GET", "/api/whoami")  # noqa: SLF001

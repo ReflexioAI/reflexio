@@ -407,12 +407,12 @@ uv run pyright                  # Type check
 ```
 
 **TypeScript/JavaScript (docs frontend):**
-- **ESLint** — linting (config in `docs/eslint.config.mjs`)
+- **Biome** — linting and formatting (config in `docs/biome.json`)
 - **tsc** — type checking
 
 ```bash
 cd docs
-npx eslint .                    # Lint
+npm run lint                    # Lint + format check (Biome)
 npx tsc --noEmit                # Type check
 ```
 

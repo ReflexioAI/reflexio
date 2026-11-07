@@ -2,7 +2,7 @@
 
 The other client tests either mock ``requests.Session`` or adapt a Starlette
 ``TestClient`` into it. Neither exercises the asynchronous transport, which
-every ``wait_for_response=False`` call uses (``aiohttp``), and neither sends a
+every ``wait_for_response=False`` call uses (``httpx``), and neither sends a
 real HTTP request through ``requests``. Here the app runs under uvicorn on a
 free loopback port with real SQLite storage, so each call goes through the
 transport, the route and storage, and its effect is checked in storage.
