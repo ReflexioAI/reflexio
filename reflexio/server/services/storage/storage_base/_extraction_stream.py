@@ -2435,13 +2435,16 @@ class ExtractionStreamStore:
         reserve_attempt_stage: str | None = None,
         minimum_remaining_attempts: int = 0,
         observed_attempt: dict[str, Any] | None = None,
+        released_attempt_id: str | None = None,
     ) -> dict[str, Any]:
-        """Atomically advance one scoped coordinator without refunding quota.
+        """Atomically advance one scoped coordinator.
 
         The initial manifest is captured when the existing window agent-run is
         created. Only this method changes its checkpoint/attempt journal. A
         reservation is durable before provider dispatch; a crash leaves its
-        usage unknown and never makes that attempt available again.
+        usage unknown and never makes that attempt available again. The one
+        refund is ``released_attempt_id``: an attempt the provider could not
+        serve during an outage (:func:`_release_unanswered_attempt`).
         """
         with self._stream_sql() as db:
             run_id, snapshot, manifest = self._load_locked_extraction_overflow(
@@ -2452,6 +2455,14 @@ class ExtractionStreamStore:
                 source_digest=source_digest,
                 expected_input_protocol=expected_input_protocol,
             )
+            if released_attempt_id is not None:
+                _release_unanswered_attempt(
+                    manifest,
+                    released_attempt_id,
+                    alone=checkpoint is None
+                    and reserve_attempt_id is None
+                    and observed_attempt is None,
+                )
             attempts = manifest["attempts"]
             if manifest["version"] == 1 and (
                 reserve_attempt_stage is not None or minimum_remaining_attempts != 0
@@ -3452,6 +3463,47 @@ class ExtractionStreamStore:
                     f"DELETE FROM {db.table('learning_work')} WHERE org_id=? AND user_id=?",
                     (self.org_id, user_id),
                 )
+
+
+def _release_unanswered_attempt(
+    manifest: dict[str, Any], attempt_id: str, *, alone: bool
+) -> None:
+    """Return one reserved attempt that the provider never answered.
+
+    Only for a dispatch that failed while its route's breaker was open (the
+    charging invariant in ``provider_circuit``): an outage spends no quota.
+    The attempt leaves the journal with the references its reservation
+    created -- the reconciliation allowance and a profile binding -- so the
+    128-attempt limit, its package stage and that allowance get it back. A
+    receipt that already cites it makes the journal invalid below, so such a
+    release is refused rather than leaving a dangling reference.
+    """
+    from reflexio.server.services.extraction.reconciliation_journal import KEY
+
+    if not alone:
+        raise OverflowCheckpointConflictError(
+            "An attempt release is its own journal change"
+        )
+    matches = [a for a in manifest["attempts"] if a["id"] == attempt_id]
+    if (
+        len(matches) != 1
+        or matches[0]["usage"] is not None
+        or matches[0]["model_provenance"] is not None
+    ):
+        raise OverflowCheckpointConflictError(
+            "Only an unanswered provider attempt can be released"
+        )
+    manifest["attempts"] = [a for a in manifest["attempts"] if a["id"] != attempt_id]
+    checkpoint = manifest["checkpoint"]
+    context = checkpoint.get(KEY)
+    if isinstance(context, dict) and attempt_id in context["attempt_ids"]:
+        context["attempt_ids"].remove(attempt_id)
+        checkpoint["audited_consolidation_budget"]["calls"] = len(
+            context["attempt_ids"]
+        )
+    bindings = checkpoint.get("profile_attempt_bindings")
+    if isinstance(bindings, dict):
+        bindings.pop(attempt_id, None)
 
 
 def _package_attempt_stage(

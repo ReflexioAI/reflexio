@@ -89,8 +89,14 @@ def settle_finalization_failure(
     max_attempts: int,
     last_error: str,
 ) -> AgentRunRecord:
-    """One allowance/deferral rule for initial and resumed publication owners."""
+    """One allowance/deferral rule for initial and resumed publication owners.
+
+    Input contention, unavailable readiness and a provider outage (the charging
+    invariant in ``provider_circuit``) defer without spending an attempt; every
+    other failure is charged against ``max_attempts``.
+    """
     from reflexio.server.llm.compute_admission import ComputeAdmissionError
+    from reflexio.server.llm.provider_circuit import provider_wait_seconds
     from reflexio.server.services.storage.error import (
         ReadinessUnavailableError,
         execution_input_is_busy,
@@ -104,7 +110,10 @@ def settle_finalization_failure(
         # Do not settle or replace a prepared result on input contention.
         entry = None if busy else storage.pending_agent_preparation_attempt(run)
         readiness = isinstance(reason, ReadinessUnavailableError) and entry is None
-        charge = not (busy or readiness)
+        # Preparation calls the model; a route that is down for everyone is
+        # not this run's failure, whether or not preparation had started.
+        outage_wait = None if busy else provider_wait_seconds(reason)
+        charge = not (busy or readiness or outage_wait is not None)
         count = run.finalization_attempts + int(charge)
         now = datetime.now(UTC)
         if busy:
@@ -114,6 +123,9 @@ def settle_finalization_failure(
                 now + timedelta(seconds=30),
                 "ReadinessUnavailableError",
             )
+        elif outage_wait is not None:
+            next_at = now + timedelta(seconds=outage_wait)
+            last_error = "provider_unavailable"
         else:
             next_at = now + timedelta(seconds=min(300, max(1, 2 ** max(0, count - 1))))
         updated = storage.update_agent_run_status(
@@ -131,7 +143,9 @@ def settle_finalization_failure(
         if updated is None:
             raise LeaseLostError("Finalization failure lost its retained execution")
         if entry is not None:
-            storage.settle_agent_preparation_failure(updated, entry.identity)
+            storage.settle_agent_preparation_failure(
+                updated, entry.identity, charged=charge
+            )
         return updated
 
 

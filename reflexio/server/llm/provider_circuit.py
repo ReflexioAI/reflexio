@@ -17,10 +17,24 @@ Only provider-availability failures (timeouts, connection errors, rate limits,
 overload; the caller decides) move the breaker. A malformed or invalid answer
 is still an answer: the provider is up.
 
-Callers holding durable work ask :meth:`ProviderCircuitBreaker.outage_retry_delay`
-when an item fails on a provider error. ``None`` means every breaker is closed,
-so the provider is serving other calls and the item owns its failure. A delay
-means the provider is down: the item waits that long and is not charged.
+**Charging invariant.** A durable item's failure spends one of its retry or
+attempt allowances only when the provider was serving other calls. Every such
+allowance asks :func:`provider_wait_seconds` about the failure: ``None`` means
+the failing route's breaker is closed, so the item owns its failure and is
+charged; a delay means the provider is down for everyone, so the item waits
+that long and is not charged. The allowances that apply it:
+
+- extraction window attempts (``DurableLearningWorker``);
+- resume attempts (``ExtractionResumeWorker``);
+- finalization attempts (``publication.settle_finalization_failure``);
+- the overflow attempt journal, with its package stage caps and
+  reconciliation allowance (``OverflowCoordinator._settle_failure``);
+- agent-success evaluation retries (``generation_service``), deferred tagging
+  passes (``tagging_scheduler``) and offline-tuner rule-evidence attempts
+  (``rule_evidence_runtime``).
+
+The failures that open the breaker happen while it is closed and are charged:
+until then nothing tells an outage from the item's own failure.
 
 State is per process and keyed by route: the model, its endpoint and a one-way
 digest of the credential, so one account's or endpoint's outage never blocks

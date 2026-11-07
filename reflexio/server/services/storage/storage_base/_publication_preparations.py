@@ -201,9 +201,14 @@ class PublicationPreparationStore:
             )
 
     def settle_agent_preparation_failure(
-        self, run: AgentRunRecord, identity: str
+        self, run: AgentRunRecord, identity: str, *, charged: bool = True
     ) -> None:
-        """Remove pending data only after its failure was durably charged in this TX."""
+        """Remove pending data only after its failure was durably settled in this TX.
+
+        ``charged`` is False only for a failure that spends no attempt (a
+        provider outage, ``publication.settle_finalization_failure``); the
+        counter must then still equal its value at entry.
+        """
         from . import BaseStorage
 
         storage = cast(BaseStorage, self)
@@ -223,10 +228,9 @@ class PublicationPreparationStore:
                 f"SELECT r.finalization_attempts FROM {db.table('_agent_runs')} r WHERE r.org_id=? AND r.id=? AND {db.project_filter()}",
                 (storage.org_id, retained.id, current_project_id() or ""),
             )
-            if (
-                entry.identity != identity
-                or counters[0]["finalization_attempts"] != entry.failures_at_entry + 1
-            ):
+            if entry.identity != identity or counters[0][
+                "finalization_attempts"
+            ] != entry.failures_at_entry + int(charged):
                 raise LeaseLostError("Preparation failure charge is not current")
             db.query(
                 f"DELETE FROM {db.table('_agent_output_preparations')} AS r WHERE r.org_id=? AND r.run_id=? AND {db.project_filter()}",

@@ -280,6 +280,16 @@ def _run_uses_strict_playbook_evidence(
     return _run_playbook_contract_selection(request_context, run, expert=expert)[0]
 
 
+def _log_finalization_provider_wait(run: AgentRunRecord, exc: Exception) -> None:
+    # The provider is down for everyone; the run waits uncharged and the
+    # outage itself is reported once by the provider circuit.
+    logger.warning(
+        "event=resumable_extraction_finalization_provider_wait run_id=%s error_type=%s",
+        run.id,
+        type(exc).__name__,
+    )
+
+
 class ExtractionResumeWorker:
     """Execute deferred extraction under admitted user-work ownership."""
 
@@ -838,17 +848,20 @@ class ExtractionResumeWorker:
         except LeaseLostError:
             raise
         except Exception as exc:
-            with error_tags(
-                subsystem="extraction",
-                op="finalize_run",
-                org_id=self.request_context.org_id,
-                run_id=run.id,
-                error_type=type(exc).__name__,
-            ):
-                logger.exception(
-                    "event=resumable_extraction_finalization_failed run_id=%s",
-                    run.id,
-                )
+            if provider_wait_seconds(exc) is not None:
+                _log_finalization_provider_wait(run, exc)
+            else:
+                with error_tags(
+                    subsystem="extraction",
+                    op="finalize_run",
+                    org_id=self.request_context.org_id,
+                    run_id=run.id,
+                    error_type=type(exc).__name__,
+                ):
+                    logger.exception(
+                        "event=resumable_extraction_finalization_failed run_id=%s",
+                        run.id,
+                    )
             return self._settle_finalization_failure(
                 run,
                 exc,
@@ -874,18 +887,21 @@ class ExtractionResumeWorker:
         except LeaseLostError:
             raise
         except Exception as exc:
-            with error_tags(
-                subsystem="extraction",
-                op="finalize_run_retry",
-                org_id=self.request_context.org_id,
-                run_id=run.id,
-                error_type=type(exc).__name__,
-            ):
-                logger.error(
-                    "event=resumable_extraction_finalization_retry_failed run_id=%s error_type=%s",
-                    run.id,
-                    type(exc).__name__,
-                )
+            if provider_wait_seconds(exc) is not None:
+                _log_finalization_provider_wait(run, exc)
+            else:
+                with error_tags(
+                    subsystem="extraction",
+                    op="finalize_run_retry",
+                    org_id=self.request_context.org_id,
+                    run_id=run.id,
+                    error_type=type(exc).__name__,
+                ):
+                    logger.error(
+                        "event=resumable_extraction_finalization_retry_failed run_id=%s error_type=%s",
+                        run.id,
+                        type(exc).__name__,
+                    )
             return self._settle_finalization_failure(
                 run,
                 exc,

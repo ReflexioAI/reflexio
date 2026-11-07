@@ -46,6 +46,12 @@ extraction_usage_observer: ContextVar[ExtractionUsageObserver | None] = ContextV
 extraction_request_identity: ContextVar[dict[str, Any] | None] = ContextVar(
     "extraction_request_identity", default=None
 )
+# Called once when a dispatch whose durable attempt the scoped guard reserved
+# fails, with that attempt's id and the failure. The scope owner decides what
+# the failure costs: an outage costs nothing (``provider_circuit``).
+extraction_failure_observer: ContextVar[Callable[[str, BaseException], None] | None] = (
+    ContextVar("extraction_failure_observer", default=None)
+)
 # Only audited reconciliation opts in around its physical provider calls.
 extraction_use_model_capacity: ContextVar[bool] = ContextVar(
     "extraction_use_model_capacity", default=False
