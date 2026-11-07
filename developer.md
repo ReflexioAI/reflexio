@@ -131,6 +131,14 @@ retain their configured stage allowance. These are cooperative dispatch/result
 checks; they do not forcibly stop synchronous HTTP transport. The separate
 embedding, bulk and reranking stage settings remain supported.
 
+### Python client HTTP transport
+
+The asynchronous client ignores proxy and certificate environment variables,
+preserving its pre-HTTPX routing policy. Requests use the explicit API endpoint,
+reject redirects, and retain authentication and whole-request deadlines. The
+blocking transport retains its existing Requests environment policy; this async
+compatibility repair does not change it.
+
 ### Standalone OSS access
 
 The standalone backend binds `127.0.0.1` by default. With no
