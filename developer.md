@@ -60,12 +60,16 @@ uv run reflexio services start --storage sqlite    # local SQLite (default)
 uv run reflexio services start --storage supabase  # Supabase PostgreSQL
 ```
 
-Repeated remote backend selection preserves the saved `storage_config.schema`
-when `DATA_DB_URL` exactly matches the saved primary DSN. Native PostgreSQL also
-preserves its saved `storage_config.read_db_url`; selecting the backend again is
-not a request to abandon the replica. Selecting a different primary does not
-inherit either binding from the former target. Pool budgets remain independent.
-See generation14 target ownership below for the retired environment overrides.
+Repeated remote backend selection preserves a saved `storage_config.schema` when
+`DATA_DB_URL` exactly matches the saved primary DSN and no nonblank namespace is
+explicitly supplied. This applies across the PostgreSQL adapters. An explicit
+`REFLEXIO_POSTGRES_SCHEMA` still selects the namespace for native PostgreSQL;
+selecting a different primary uses the new target's namespace/default instead of
+inheriting the former database's schema. Native PostgreSQL also retains its saved
+`storage_config.read_db_url` when the primary and effective namespace are unchanged
+and no nonblank replica override is supplied. An explicit namespace retarget does
+not inherit the former namespace's replica. Existing files use the normal locked
+publication/upgrade path; no manual rewrite or new setting is required.
 
 Stop services with `./stop_services.sh`.
 
@@ -1628,32 +1632,6 @@ Use the existing `config local` path and `config upgrade-file` operation to
 prepare that document. Originals are not a lossless image-rollback mechanism
 after later edits; use a corrected current-generation reader for forward repair.
 This local-file transition does not perform enterprise auth-row migration.
-
-### Native target ownership (local file generation14)
-
-The existing `storage_config.schema` and `storage_config.read_db_url` fields own
-the namespace and replica. The primary DSN remains selected through the existing
-`DATA_DB_URL` bootstrap flow; this change does not add a target selector or change
-pool capacity. Set the complete intended target in the canonical document before
-selecting a different primary. `config local` shows the persisted path and values;
-it is an inspection command, not a settings writer.
-
-`REFLEXIO_POSTGRES_SCHEMA` and `REFLEXIO_POSTGRES_READ_DB_URL` no longer select
-values for current or freshly created files. Nonblank obsolete assignments may
-only assert the already-selected effective target. Matching declarations warn
-without populating missing fields; conflicting declarations refuse before any
-configuration publication and do not print DSNs. Blank values mean unset. Use
-canonical document fields for custom namespaces/replicas, then remove the exports.
-
-A version13-or-earlier file's explicit `--storage postgres` preparation may import
-its observed historical target exports once, under the existing file lock, while
-retaining exact original bytes. A historical namespace retarget does not carry
-its predecessor's replica unless a reader was explicitly supplied. Implicit
-preparation and explicit canonical publication do not import environment routing. New files start at generation14,
-so old exports cannot configure a fresh installation. A generation13 reader/writer
-refuses a published generation14 file. Stop old writers before preparation and use
-forward repair with a current reader; an original is not permission to overwrite
-later configuration edits. No server/auth-row schema migration is performed.
 
 ### Maintenance fan-out ownership
 

@@ -7,10 +7,9 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import typer
 
@@ -24,9 +23,6 @@ from reflexio.config_env import (
 from reflexio.config_migration import StoredConfigurationError
 
 from .paths import reflexio_home
-
-if TYPE_CHECKING:
-    from reflexio.models.config_schema import StorageConfigPostgres
 
 logger = logging.getLogger(__name__)
 
@@ -141,62 +137,6 @@ def load_storage_from_config(
     return type_map.get(type(sc))
 
 
-def _select_native_target(
-    selected: StorageConfigPostgres,
-    saved: StorageConfigPostgres | None,
-    environment: Mapping[str, str],
-    generation: int,
-) -> StorageConfigPostgres:
-    """Saved namespace/replica bindings own current native target selection."""
-    from reflexio.config_file import NATIVE_TARGET_AUTHORITY_VERSION
-
-    schema = environment["REFLEXIO_POSTGRES_SCHEMA"]
-    reader = environment["REFLEXIO_POSTGRES_READ_DB_URL"]
-    if generation < NATIVE_TARGET_AUTHORITY_VERSION:
-        updates: dict[str, str] = {}
-        if schema:
-            updates["schema_name"] = schema
-        if reader:
-            updates["read_db_url"] = reader
-        selected = selected.model_copy(update=updates)
-
-    if (
-        saved is not None
-        and selected.db_url == saved.db_url
-        and (selected.schema_name or "public") == (saved.schema_name or "public")
-        and selected.read_db_url is None
-    ):
-        selected = selected.model_copy(update={"read_db_url": saved.read_db_url})
-    if generation < NATIVE_TARGET_AUTHORITY_VERSION:
-        return selected
-
-    for name, supplied, effective, field in (
-        (
-            "REFLEXIO_POSTGRES_SCHEMA",
-            schema,
-            selected.schema_name or "public",
-            "schema",
-        ),
-        (
-            "REFLEXIO_POSTGRES_READ_DB_URL",
-            reader,
-            selected.read_db_url or selected.db_url,
-            "read_db_url",
-        ),
-    ):
-        if supplied and supplied != effective:
-            raise StoredConfigurationError(
-                f"{name} conflicts with canonical storage_config.{field}; "
-                "set the selected target in the canonical local document and remove the obsolete assignment"
-            )
-    if schema or reader:
-        logger.warning(
-            "Obsolete native target assignments no longer select schema or replica; "
-            "remove them after verifying canonical storage_config."
-        )
-    return selected
-
-
 def save_storage_to_config(
     storage_type: str,
     org_id: str | None = None,
@@ -210,8 +150,7 @@ def save_storage_to_config(
     selections retain their historical environment policy once; current files
     own their canonical budgets. Selecting SQLite again preserves its database
     path. Re-selecting either remote adapter for the exact same primary DSN
-    retains its canonical schema and native replica. Only predecessor files
-    import observed namespace/replica exports during explicit preparation.
+    retains its saved schema unless a nonblank namespace is explicitly selected.
     Unrelated raw fields, including extension fields, are preserved.
 
     Args:
@@ -250,7 +189,15 @@ def save_storage_to_config(
                 )
         case "postgres":
             db_url = os.environ.get("DATA_DB_URL", "").strip()
-            postgres_kwargs: dict[str, Any] = {"db_url": db_url}
+            schema = os.environ.get("REFLEXIO_POSTGRES_SCHEMA", "").strip()
+            postgres_kwargs: dict[str, Any] = {
+                "db_url": db_url,
+                "schema": schema or None,
+                "read_db_url": os.environ.get(
+                    "REFLEXIO_POSTGRES_READ_DB_URL", ""
+                ).strip()
+                or None,
+            }
             # Validate the selected old source before creating/preparing a file.
             legacy_pool_fields = asdict(
                 resolve_postgres_pool_defaults(legacy_environment)
@@ -270,10 +217,6 @@ def save_storage_to_config(
 
     from reflexio.config_file import NATIVE_POOL_AUTHORITY_VERSION
 
-    target_environment = {
-        name: os.environ.get(name, "").strip()
-        for name in ("REFLEXIO_POSTGRES_SCHEMA", "REFLEXIO_POSTGRES_READ_DB_URL")
-    }
     storage_obj = LocalFileConfigStorage(org_id, base_dir=base_dir)
 
     def update_storage(document: dict[str, Any], generation: int) -> None:
@@ -292,12 +235,16 @@ def save_storage_to_config(
             # namespace. Do not carry it across an actual primary retarget.
             selected = selected.model_copy(update={"schema_name": existing.schema_name})
         if isinstance(selected, StorageConfigPostgres):
-            selected = _select_native_target(
-                selected,
-                existing if isinstance(existing, StorageConfigPostgres) else None,
-                target_environment,
-                generation,
-            )
+            if (
+                isinstance(existing, StorageConfigPostgres)
+                and selected.db_url == existing.db_url
+                and (selected.schema_name or "public")
+                == (existing.schema_name or "public")
+                and selected.read_db_url is None
+            ):
+                selected = selected.model_copy(
+                    update={"read_db_url": existing.read_db_url}
+                )
             fields = selected.model_dump(mode="json")
             if generation < NATIVE_POOL_AUTHORITY_VERSION:
                 # An old explicit native backend selection reconstructed these
