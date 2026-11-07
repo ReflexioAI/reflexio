@@ -1369,6 +1369,43 @@ def test_native_selection_contract_and_node_witnesses_survive_warm_replay(monkey
     changed_nodes.assert_not_called()
 
 
+@pytest.mark.unit
+def test_witness_binds_only_context_limits_of_the_pinned_ladder(monkeypatch):
+    fake = client(monkeypatch)
+    model = fake.config.model
+
+    def witness(limits: dict[str, int]) -> str:
+        return plan_with_client(
+            [
+                EvidenceSource(
+                    source_id="source",
+                    request_id="request",
+                    interaction_id=1,
+                    field="content",
+                    speaker="User",
+                    source_order=1,
+                    text="approval " + "log " * 1700,
+                )
+            ],
+            scope={"org_id": "org", "project_id": "project", "user_id": "alice"},
+            policy="extraction",
+            budget=CompressionBudget(output_tokens=1024),
+            client=fake,
+            context_limits=limits,
+        ).witness
+
+    baseline = witness({model: 512000, "other/model": 64000})
+    # Entries for models outside the ladder cannot change any request.
+    assert witness({model: 512000}) == baseline
+    assert witness({model: 512000, "other/model": 32000}) == baseline
+    assert witness({model: 512000, f"{model}-mini": 8000}) == baseline
+    # The ladder model's own declarations, plain or endpoint-qualified, do.
+    assert witness({model: 256000, "other/model": 64000}) != baseline
+    assert (
+        witness({model: 512000, f"{model}@https://endpoint.invalid": 9000}) != baseline
+    )
+
+
 def test_salvage_judges_usability_with_its_own_omission_notice(caplog):
     """A group that fits only without the host notice must not end empty."""
     from reflexio.server.services.input_compression import (

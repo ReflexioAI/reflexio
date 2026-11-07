@@ -65,12 +65,17 @@ class ScriptedClient(LiteLLMClient):
         )
         self.calls = []
         self.fail_consumer = False
+        self.selections_before_failure: int | None = None
         self.selected_field: str | None = None
 
     def _completion_with_hard_timeout(self, params, hard_timeout):
         self.calls.append(deepcopy(params))
         data = json.loads(params["messages"][1]["content"])
         if "input_packets" in data:
+            if self.selections_before_failure is not None:
+                if self.selections_before_failure <= 0:
+                    raise RuntimeError("scripted interruption during compression")
+                self.selections_before_failure -= 1
             available = data["input_packets"][0]["evidence"]
             selected = next(
                 (item for item in available if item["field"] == self.selected_field),
@@ -454,3 +459,117 @@ def test_smaller_model_capacity_triggers_compression_instead_of_passthrough(
             <= 8192
             for params in client.calls
         )
+
+
+OLD_REFERENCE_CONTRACT = "evidence-refs-only-v3"
+
+
+def interrupted_under_old_contract(monkeypatch, coordinator, data, refs, client):
+    """Save a plan under an older contract, as a pre-deploy worker would."""
+    with monkeypatch.context() as old_release:
+        old_release.setattr(
+            "reflexio.server.services.input_compression_llm._REFERENCE_CONTRACT",
+            OLD_REFERENCE_CONTRACT,
+        )
+        with pytest.raises(LiteLLMClientError):
+            run(client, coordinator, data, refs)
+    plan = coordinator.checkpoint["reconciliation_context"]["plan"]
+    assert plan is not None
+    return plan
+
+
+def test_resume_replans_a_changed_witness_when_nothing_was_built_from_it(
+    durable_pipeline, monkeypatch, caplog
+):
+    storage, window, token = _overflow_coordinator(durable_pipeline)
+    with owned_user_work_context(storage, window.user_id, token, 300):
+        first = owner(storage, window, token)
+        data, refs = evidence(window.user_id, large=True)
+        client = ScriptedClient()
+        client.selections_before_failure = 0
+        old_plan = interrupted_under_old_contract(
+            monkeypatch, first, data, refs, client
+        )
+        before = first.checkpoint
+        spent = before["reconciliation_context"]["attempt_ids"]
+        assert spent and before["reconciliation_context"]["nodes"] == {}
+        assert "audited_conversation" not in before
+
+        client.selections_before_failure = None
+        resumed = owner(storage, window, token)
+        with caplog.at_level("WARNING"):
+            actor, result = run(client, resumed, data, refs)
+        assert result.decisions
+        context = resumed.checkpoint["reconciliation_context"]
+        assert context["plan"] is not None and context["plan"] != old_plan
+        assert context["plan"]["source_digest"] == old_plan["source_digest"]
+        assert context["nodes"]
+        # Spent attempts stay charged and are never attributed to new selections.
+        assert context["attempt_ids"][: len(spent)] == spent
+        assert all(
+            not set(node["attempt_ids"]) & set(spent)
+            for node in context["nodes"].values()
+        )
+        assert actor.calls == len(context["attempt_ids"]) > len(spent)
+        assert any(
+            "event=consolidation_plan_replanned reason=witness_changed" in message
+            for message in caplog.messages
+        )
+
+
+@pytest.mark.parametrize("artifact", ["nodes", "audited_conversation"])
+def test_changed_witness_fails_closed_once_work_derives_from_the_saved_plan(
+    durable_pipeline, monkeypatch, artifact
+):
+    storage, window, token = _overflow_coordinator(durable_pipeline)
+    with owned_user_work_context(storage, window.user_id, token, 300):
+        first = owner(storage, window, token)
+        client = ScriptedClient()
+        if artifact == "nodes":
+            # One committed selection, then an interruption before the consumer.
+            data, refs = evidence(window.user_id, large=True)
+            client.selections_before_failure = 1
+        else:
+            # Passthrough has no selections; the consumer saw the old view.
+            data, refs = evidence(window.user_id)
+            client.fail_consumer = True
+        old_plan = interrupted_under_old_contract(
+            monkeypatch, first, data, refs, client
+        )
+        before = first.checkpoint
+        assert bool(before["reconciliation_context"]["nodes"]) is (artifact == "nodes")
+        assert ("audited_conversation" in before) is (artifact != "nodes")
+
+        client.selections_before_failure = None
+        client.fail_consumer = False
+        calls = len(client.calls)
+        resumed = owner(storage, window, token)
+        with pytest.raises(InputBudgetConfigurationError, match="plan changed"):
+            run(client, resumed, data, refs)
+        assert len(client.calls) == calls
+        assert resumed.checkpoint == before
+
+        # Storage refuses the same replacement from any writer.
+        altered = deepcopy(before)
+        altered["reconciliation_context"]["plan"] = {**old_plan, "witness": "e" * 64}
+        with pytest.raises(OverflowCheckpointConflictError, match="immutable"):
+            resumed.save_checkpoint(altered)
+        assert owner(storage, window, token).checkpoint == before
+
+
+def test_saved_plan_cannot_be_cleared_even_when_nothing_derives_from_it(
+    durable_pipeline, monkeypatch
+):
+    storage, window, token = _overflow_coordinator(durable_pipeline)
+    with owned_user_work_context(storage, window.user_id, token, 300):
+        coordinator = owner(storage, window, token)
+        data, refs = evidence(window.user_id, large=True)
+        client = ScriptedClient()
+        client.selections_before_failure = 0
+        interrupted_under_old_contract(monkeypatch, coordinator, data, refs, client)
+        before = coordinator.checkpoint
+        altered = deepcopy(before)
+        altered["reconciliation_context"]["plan"] = None
+        with pytest.raises(OverflowCheckpointConflictError, match="immutable"):
+            coordinator.save_checkpoint(altered)
+        assert owner(storage, window, token).checkpoint == before
