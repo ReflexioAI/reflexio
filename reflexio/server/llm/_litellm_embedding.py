@@ -54,6 +54,8 @@ from reflexio.server.llm.providers.embedding_service_provider import (
 )
 
 if TYPE_CHECKING:
+    from litellm.types.utils import EmbeddingResponse
+
     from reflexio.server.llm._litellm_types import LiteLLMConfig
 
 _LOGGER = logging.getLogger(__name__)
@@ -399,20 +401,28 @@ class EmbeddingMixin:
             with provider_slot(params["model"]):
                 admit_external_compute()
                 configure_tokenizer_compute()
-                response = litellm.embedding(
-                    **params,
-                    # LiteLLM's overload says int; its implementation forwards
-                    # fractional seconds unchanged to the provider HTTP client.
-                    timeout=cast(
-                        Any,
-                        remaining_call_time(
-                            search_runtime.remaining(self.config.timeout)
+                # LiteLLM declares ``EmbeddingResponse | Coroutine`` for every
+                # call; without ``aembedding=True`` it returns the response.
+                response = cast(
+                    "EmbeddingResponse",
+                    litellm.embedding(
+                        **params,
+                        # LiteLLM's overload says int; its implementation forwards
+                        # fractional seconds unchanged to the provider HTTP client.
+                        timeout=cast(
+                            Any,
+                            remaining_call_time(
+                                search_runtime.remaining(self.config.timeout)
+                            ),
                         ),
+                        num_retries=0
+                        if model_call_deadline.get() is not None
+                        or (
+                            search_scope is not None
+                            and search_scope.deadline is not None
+                        )
+                        else self.config.max_retries,
                     ),
-                    num_retries=0
-                    if model_call_deadline.get() is not None
-                    or (search_scope is not None and search_scope.deadline is not None)
-                    else self.config.max_retries,
                 )
                 record_compute_result()
             # Response data may not be in order, sort by index to ensure correct ordering

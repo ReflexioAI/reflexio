@@ -1,6 +1,6 @@
 """Transient classification by upstream HTTP status.
 
-LiteLLM 1.103 raises a MiniMax 529 overload as a generic ``APIError`` with
+LiteLLM 1.103-1.105 raises a MiniMax 529 overload as a generic ``APIError`` with
 ``status_code=529`` and a 502 as ``BadGatewayError`` -- neither name is in
 ``_TRANSIENT_LLM_ERROR_NAMES``, so before the status check every MiniMax overload
 logged the request-end failure at ERROR. The status
