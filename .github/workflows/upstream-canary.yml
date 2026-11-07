@@ -130,19 +130,22 @@ jobs:
           ADMITTED: ${{ steps.resolve.outputs.admitted }}
           TESTED: ${{ steps.resolve.outputs.run_tests }}
           OUTCOME: ${{ job.status }}
+          SOURCE: ${{ github.sha }}
         run: |
           mkdir -p "$RUNNER_TEMP/result"
           jq -n --arg package "$PACKAGE" --arg mode "$MODE" --arg locked "$LOCKED" \
             --arg candidate "$CANDIDATE" --arg admitted "$ADMITTED" \
-            --arg tested "$TESTED" --arg outcome "$OUTCOME" \
+            --arg tested "$TESTED" --arg outcome "$OUTCOME" --arg source "$SOURCE" \
             '$ARGS.named' > "$RUNNER_TEMP/result/result.json"
+          # The exact lock the tests ran against; the lock-bump job must match it.
+          if [[ "$MODE" == "in-range" ]]; then cp uv.lock "$RUNNER_TEMP/result/uv.lock"; fi
           cat "$RUNNER_TEMP/result/result.json"
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: canary-${{ matrix.mode }}-${{ matrix.package }}
-          path: ${{ runner.temp }}/result/result.json
+          path: ${{ runner.temp }}/result/
 
   propose:
     needs: canary
@@ -183,12 +186,22 @@ jobs:
               continue
             fi
             branch="upstream-canary/$package"
+            if [[ $(git rev-parse "origin/$BASE") != $(jq -r .source "$result") ]]; then
+              echo "::notice::$package was tested on another revision than $BASE; the next run retries"
+              continue
+            fi
             git checkout -q -B "$branch" "origin/$BASE"
             # Pinned to the tested version, so a release published since the
             # test cannot slip in.
             uv lock --upgrade-package "$package==$candidate"
             if [[ $(uv run --no-project --with packaging python scripts/upstream_canary.py locked "$package") != "$candidate" ]]; then
               echo "::error::$package did not lock to the tested $candidate"
+              exit 1
+            fi
+            # Propose only the environment that was tested. This lock was
+            # resolved here, so it also cannot carry edits made by tested code.
+            if ! cmp -s uv.lock "$(dirname "$result")/uv.lock"; then
+              echo "::error::$package: resolution differs from the tested uv.lock; the next run retries"
               exit 1
             fi
             git diff --quiet -- uv.lock && continue
