@@ -26,6 +26,7 @@ from ._commit_scope import CommitScopeMixin
 from ._extraction_stream import (
     ExtractionStreamStore,
     LeaseLostError,
+    OverflowCheckpointConflictError,
     StreamSQL,
     lock_user_work_row,
     release_unanswered_attempt,
@@ -336,4 +337,5 @@ __all__ = [
     "not_applicable_tool_result",
     "normalize_dedup_text",
     "release_unanswered_attempt",
+    "OverflowCheckpointConflictError",
 ]
