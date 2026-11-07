@@ -74,19 +74,22 @@ class RestStorageReader:
         self.truncated = False
 
     def _http_fetch(self, table: str, params: dict) -> list[dict]:
-        import requests  # noqa: PLC0415 — only needed on the live path
+        import httpx  # noqa: PLC0415 — only needed on the live path
+
+        from reflexio.http_tls import tls_verify_from_env  # noqa: PLC0415
 
         headers = {"apikey": self._key, "Authorization": f"Bearer {self._key}"}
         # Non-public schemas (the shared org_<id> cohort) are selected per-request
         # via Accept-Profile; dedicated refs keep data in public.
         if self._schema and self._schema != "public":
             headers["Accept-Profile"] = self._schema
-        resp = requests.get(
+        resp = httpx.get(
             f"{self._base}/rest/v1/{table}",
             headers=headers,
             params=params,
             timeout=30,
-            allow_redirects=False,  # never forward the service_role key on a 3xx
+            follow_redirects=False,  # never forward the service_role key on a 3xx
+            verify=tls_verify_from_env(),
         )
         if resp.is_redirect:
             raise RuntimeError(

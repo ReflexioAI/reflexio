@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
-import requests
 from dotenv import dotenv_values
 
 from reflexio import InteractionData, ReflexioClient
@@ -215,11 +215,12 @@ def _api_request(
     headers: dict[str, str],
     **kwargs: Any,
 ) -> Any:
-    response = requests.request(
+    response = httpx.request(
         method,
         f"{base_url}{path}",
         headers=headers,
         timeout=60,
+        follow_redirects=True,
         **kwargs,
     )
     response.raise_for_status()
@@ -237,7 +238,7 @@ def _poll_until(
     while time.monotonic() < deadline:
         try:
             last_value = predicate()
-        except requests.RequestException as exc:
+        except httpx.HTTPError as exc:
             last_value = exc
         else:
             if last_value:
@@ -421,9 +422,7 @@ def test_resumable_extraction_resumes_after_human_answer(
 
 
 def test_poll_until_retries_request_exception(monkeypatch):
-    outcomes = iter(
-        [requests.RequestException("transient connection failure"), "ready"]
-    )
+    outcomes = iter([httpx.ConnectError("transient connection failure"), "ready"])
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
     def predicate():

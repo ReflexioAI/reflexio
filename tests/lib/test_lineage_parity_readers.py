@@ -196,14 +196,14 @@ def test_http_fetch_sets_schema_header_and_disables_redirects(monkeypatch):
         captured.update(kwargs)
         return _Resp()
 
-    import requests
+    import httpx
 
-    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(httpx, "get", fake_get)
 
     reader = RestStorageReader(_URL, "svc-key", org_id="7", schema="org_7")
     reader.get_distinct_generated_from_request_ids()
 
     assert captured["url"] == f"{_URL}/rest/v1/profiles"
-    assert captured["allow_redirects"] is False
+    assert captured["follow_redirects"] is False
     assert captured["headers"]["Accept-Profile"] == "org_7"
     assert captured["headers"]["apikey"] == "svc-key"

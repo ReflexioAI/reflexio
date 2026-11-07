@@ -10,7 +10,7 @@ from reflexio.models.api_schema.service_schemas import (
 )
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_publish_interaction_requires_session_id(mock_session_class):
     mock_session = MagicMock()
     mock_session_class.return_value = mock_session
@@ -25,7 +25,7 @@ def test_publish_interaction_requires_session_id(mock_session_class):
     mock_session.request.assert_not_called()
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_publish_interaction_rejects_blank_session_id(mock_session_class):
     mock_session = MagicMock()
     mock_session_class.return_value = mock_session
@@ -41,7 +41,7 @@ def test_publish_interaction_rejects_blank_session_id(mock_session_class):
     mock_session.request.assert_not_called()
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_publish_interaction_surfaces_locally_dropped_field_warnings(
     mock_session_class,
 ):
@@ -71,7 +71,7 @@ def test_publish_interaction_surfaces_locally_dropped_field_warnings(
     assert not any("typo" in warning for warning in result.warnings), result.warnings
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_wire_payload_carries_no_unknown_keys(mock_session_class):
     """Pin the premise the client-side merge depends on.
 
@@ -106,7 +106,7 @@ def test_wire_payload_carries_no_unknown_keys(mock_session_class):
     assert PublishUserInteractionRequest(**sent).payload_warnings() == []
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_publish_interaction_sends_retrieval_experiment_attribution(
     mock_session_class,
 ):

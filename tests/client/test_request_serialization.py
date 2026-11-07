@@ -56,7 +56,7 @@ _TIME_FILTERED_READS = [
 
 
 @pytest.mark.parametrize(("method_name", "payload", "extra"), _TIME_FILTERED_READS)
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_datetime_filters_serialize_to_json(
     mock_session_class, method_name: str, payload: dict, extra: dict
 ) -> None:
@@ -81,7 +81,7 @@ def test_datetime_filters_serialize_to_json(
     assert datetime.fromisoformat(body["end_time"]) == END
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_request_object_path_serializes_too(mock_session_class) -> None:
     """The request-object path must not diverge from the kwargs path.
 

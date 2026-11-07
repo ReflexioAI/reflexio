@@ -32,7 +32,7 @@ def test_client_ignores_legacy_reflexio_api_url(monkeypatch):
 def test_implicit_legacy_target_refused_before_transport(monkeypatch, mode, target):
     monkeypatch.setenv("IS_TEST_ENV", mode)
     monkeypatch.setenv("REFLEXIO_URL", target)
-    with patch("reflexio.client.client.requests.Session") as transport:
+    with patch("reflexio.client.client.httpx.Client") as transport:
         with pytest.raises(ValueError, match="REFLEXIO_URL") as error:
             ReflexioClient()
         transport.assert_not_called()

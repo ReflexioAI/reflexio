@@ -6,7 +6,7 @@ import time
 from typing import TYPE_CHECKING, Annotated
 from uuid import uuid4
 
-import requests
+import httpx
 import typer
 
 from reflexio.cli.errors import (
@@ -438,20 +438,17 @@ def _aggregate_operation(
         operation = client.submit_playbook_aggregation(
             request_id=request_id, agent_version=version
         )
-    except requests.RequestException as exc:
-        status = exc.response.status_code if exc.response is not None else None
+    except httpx.HTTPError as exc:
+        status = (
+            exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+        )
         if status == 404:
             raise CliError(
                 message=f"Durable aggregation could not be admitted (HTTP {status}).",
                 hint="Check server health and durable aggregation support. "
                 f"Request ID: {request_id}",
             ) from exc
-        if (
-            isinstance(exc, requests.HTTPError)
-            and status is not None
-            and status < 500
-            and status != 408
-        ):
+        if status is not None and status < 500 and status != 408:
             raise
         raise CliError(
             message=f"Aggregation admission is uncertain. Request ID: {request_id}",
@@ -495,10 +492,10 @@ def _aggregate_operation(
         time.sleep(min(_AGGREGATION_POLL_SECONDS, remaining))
         try:
             operation = client.get_playbook_aggregation_operation(operation_id)
-        except requests.RequestException as exc:
+        except httpx.HTTPError as exc:
             reason = (
                 f"HTTP {exc.response.status_code}"
-                if exc.response is not None
+                if isinstance(exc, httpx.HTTPStatusError)
                 else type(exc).__name__
             )
             raise CliError(

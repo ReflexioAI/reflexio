@@ -107,7 +107,7 @@ The "assistant backend" is the thing that turns *(messages, playbooks)* into the
                        ┌─────────────────────┴───┐   ┌─────────┴────────────────────────┐
                        │  WebhookAssistant       │   │  LocalScriptAssistant            │
                        │  ───────────────────    │   │  ──────────────────────          │
-                       │  requests.post(url,     │   │  subprocess.run(                 │
+                       │  httpx.post(url,        │   │  subprocess.run(                 │
                        │      json=payload,      │   │      [script_path, *args],       │
                        │      headers={Auth},    │   │      input=json.dumps(payload),  │
                        │      timeout=…)         │   │      capture_output=True,        │

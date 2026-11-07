@@ -6,22 +6,17 @@ import json
 from pathlib import Path
 from typing import Annotated
 
-import requests
+import httpx
 import typer
 
 from reflexio.cli.errors import EXIT_VALIDATION, CliError, handle_errors
 from reflexio.cli.output import render
 from reflexio.cli.state import resolve_api_key, resolve_url
+from reflexio.http_tls import tls_verify_from_env
 
 app = typer.Typer(help="Call any Reflexio API endpoint directly.")
 
 _VALID_METHODS = {"GET", "POST", "DELETE"}
-
-_METHOD_DISPATCH = {
-    "GET": requests.get,
-    "POST": requests.post,
-    "DELETE": requests.delete,
-}
 
 
 @app.callback(invoke_without_command=True)
@@ -67,12 +62,17 @@ def call(
 
     body = _parse_data(data) if data else None
 
-    request_fn = _METHOD_DISPATCH[method_upper]
-    kwargs: dict[str, object] = {"headers": headers}
-    if body is not None:
-        kwargs["json"] = body
-
-    resp = request_fn(f"{url}{path}", **kwargs)  # type: ignore[arg-type]
+    # No deadline and redirects followed, as this raw passthrough always
+    # behaved; a long-running endpoint must not be cut off client-side.
+    resp = httpx.request(
+        method_upper,
+        f"{url}{path}",
+        headers=headers,
+        json=body,
+        timeout=None,  # noqa: S113 -- unbounded, as this command always was
+        follow_redirects=True,
+        verify=tls_verify_from_env(),
+    )
     resp.raise_for_status()
 
     json_mode: bool = state.json_mode

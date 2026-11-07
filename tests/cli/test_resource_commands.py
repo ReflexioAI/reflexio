@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import json
 
+import httpx
 import pytest
-import requests
 
 from reflexio.cli.errors import EXIT_GENERAL, EXIT_VALIDATION
 from reflexio.models.api_schema.domain import (
@@ -753,11 +753,13 @@ class TestAgentPlaybooksCommands:
         self, runner, app, mock_client
     ) -> None:
         """A definite 4xx rejection is reported as such, not as 'uncertain'."""
-        response = requests.Response()
-        response.status_code = 422
-        response.url = "http://reflexio.test/api/aggregation_operations"
-        mock_client.submit_playbook_aggregation.side_effect = requests.HTTPError(
-            "422 Client Error", response=response
+        request = httpx.Request(
+            "POST", "http://reflexio.test/api/aggregation_operations"
+        )
+        mock_client.submit_playbook_aggregation.side_effect = httpx.HTTPStatusError(
+            "422 Client Error",
+            request=request,
+            response=httpx.Response(422, request=request),
         )
         result = runner.invoke(
             app, ["agent-playbooks", "aggregate", "--agent-version", "v1"]

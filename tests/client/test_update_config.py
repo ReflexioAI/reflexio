@@ -15,7 +15,7 @@ from reflexio.client import ReflexioClient
 from reflexio.models.config_schema import Config
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_update_config_skips_client_side_validation(mock_session_class) -> None:
     """A partial dict missing required Config fields must reach the server unchanged.
 
@@ -56,7 +56,7 @@ def test_update_config_skips_client_side_validation(mock_session_class) -> None:
     assert partial == {"window_size": 8}
 
 
-@patch("reflexio.client.client.requests.Session")
+@patch("reflexio.client.client.httpx.Client")
 def test_update_config_passes_nested_object_through(mock_session_class) -> None:
     """Nested top-level dicts (``llm_config``, ``storage_config``) are not deep-merged."""
     mock_session = MagicMock()
