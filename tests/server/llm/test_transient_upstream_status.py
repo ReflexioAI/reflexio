@@ -122,7 +122,7 @@ def test_isolated_worker_error_carries_status_to_parent(monkeypatch) -> None:
     }
 
     with pytest.raises(LiteLLMClientError) as exc_info:
-        client._completion_with_hard_timeout(params, hard_timeout=5.0)
+        client._completion_with_hard_timeout(params, 5.0)
 
     assert exc_info.value.upstream_status_code == 529
     assert _is_expected_transient_llm_error(exc_info.value)

@@ -140,7 +140,8 @@ class TestDuplicateFilterSuppressionIsVisible:
     def test_suffix_reaches_only_the_filtered_handler(self):
         """Other handlers on the logger keep the record as it was logged."""
         console, other = _Collect(), _Collect()
-        console.addFilter(DuplicateFilter(window_seconds=300))
+        filt = DuplicateFilter(window_seconds=300)
+        console.addFilter(filt)
         log = logging.getLogger("test_log_format.suffix_scope")
         log.propagate = False
         log.addHandler(console)
@@ -148,7 +149,7 @@ class TestDuplicateFilterSuppressionIsVisible:
         try:
             log.warning("org %s is wedged", "org_1")
             log.warning("org %s is wedged", "org_2")
-            console.filters[0]._recent.clear()
+            filt._recent.clear()
             log.warning("org %s is wedged", "org_3")
         finally:
             log.removeHandler(console)
