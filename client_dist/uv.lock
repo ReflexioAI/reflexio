@@ -687,7 +687,7 @@ mem0 = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "mem0ai", marker = "extra == 'mem0'", specifier = ">=2.0,<2.1" },
+    { name = "mem0ai", marker = "extra == 'mem0'", specifier = ">=2.0,<2.3" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "requests", specifier = ">=2.25.0" },
 ]
