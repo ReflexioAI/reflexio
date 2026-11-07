@@ -63,4 +63,8 @@ def test_only_the_writing_jobs_hold_write_scopes() -> None:
         "pull-requests": "write",
     }
     assert jobs["report"]["permissions"] == {"issues": "write"}
+    # The writing job resolves the lock but must never run a build backend.
+    for step in jobs["propose"]["steps"]:
+        if "uv lock" in step.get("run", ""):
+            assert step["env"]["UV_NO_BUILD"] == "1"
     assert set(jobs) == {"plan", "canary", "propose", "report"}
