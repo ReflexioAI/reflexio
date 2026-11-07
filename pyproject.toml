@@ -17,12 +17,18 @@ dependencies = [
     # Explicit security floor for FastAPI's parser.
     "starlette>=1.3.1",
     "uvicorn>=0.34.0",
+    # Imported directly for worker-thread limits and offloading.
+    "anyio>=4.12.1",
     "openai>=2.8.0",
+    # Ceiling: LiteLLMClient depends on litellm 1.x response, tool-call and
+    # reasoning shapes. Qualify provider contracts before admitting a 2.x major.
     "litellm>=1.103.1,<2",
     "cryptography>=50.0.1",
     "tenacity>=9.0.0",
     "bcrypt>=4.2.1",
     "hdbscan>=0.8.40",
+    # Agglomerative clustering and cosine distances for playbook aggregation.
+    "scikit-learn>=1.8.0",
     "tiktoken>=0.12.0",
     "slowapi>=0.1.9",
     "cachetools>=6.2.4",
@@ -32,9 +38,14 @@ dependencies = [
     "httpx>=0.28.1",
     "pydantic[email]>=2.13.0",
     "json-repair>=0.60.1",
+    # Ceiling: gepa is pre-1.0 and the optimizer adapter imports its internal
+    # modules (gepa.core.adapter, gepa.core.state), whose layout a 0.x minor
+    # may change. Re-run the optimizer tests before admitting 0.2.
     "gepa>=0.1.1,<0.2",
     # CLI
     "typer>=0.15.0",
+    # The offline dispatcher parses global options with click directly.
+    "click>=8.4.1",
     "rich>=13.0.0",
     # Direct MiniLM ONNX inference; no vector database dependency.
     "onnxruntime>=1.23.2",
@@ -42,6 +53,8 @@ dependencies = [
     "numpy>=1.26.0",
     # Cross-encoder reranker and Nomic local embeddings.
     "sentence-transformers>=3.0",
+    # Imported directly to bound intra-op threads and build reranker heads.
+    "torch>=2.11.0",
     # Native Nomic loading avoids the deprecated remote-code attention API.
     "transformers>=5.6.2",
     # Native KNN search via the sqlite-vec loadable extension. A pure-Python
@@ -52,15 +65,17 @@ dependencies = [
     # Config documents round-trip exact Decimals (use_decimal=True,
     # allow_nan=False in config_document.py); stdlib json cannot write them.
     "simplejson>=4.2.0",
-    "threadpoolctl>=3.6,<4",
+    "threadpoolctl>=3.6",
     "filelock>=3.20.3",
 ]
 
 [project.optional-dependencies]
 notebooks = ["pandas>=3.0.2"]
-# The wrapper is contract-tested against the mem0 2.0 line. Minor releases
-# have shipped breaking API changes, so certify each new line before widening.
-mem0 = ["mem0ai>=2.0,<2.1"]
+# The wrapper is contract-tested against the mem0 2.0, 2.1 and 2.2 lines
+# (scripts/verify_mem0_artifact.py and tests/mem0 against the real package).
+# Minor releases have shipped breaking API changes, so certify each new line
+# before widening.
+mem0 = ["mem0ai>=2.0,<2.3"]
 
 [dependency-groups]
 dev = [
@@ -74,6 +89,8 @@ dev = [
     "pyright>=1.1.400",
     "pytest-cov>=6.0",
     "syrupy>=5.0",
+    # Ceiling: tests/conftest.py imports mutmut 3 internals (mutmut.state,
+    # mutmut.configuration) and reads its mutmut-stats.json evidence.
     "mutmut>=3.8.0,<4",
     "build>=1.0.0",
     "twine>=6.0.0",

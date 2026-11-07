@@ -25,7 +25,7 @@ The wrapper is pass-through by default: construction must not fail when Reflexio
 ## Key Endpoints / Commands / Contracts
 
 
-- Install with `pip install 'reflexio-ai[mem0]'`; the optional extra tracks the certified `mem0ai>=2.0,<2.1` line.
+- Install with `pip install 'reflexio-ai[mem0]'`; the optional extra tracks the certified `mem0ai>=2.0,<2.3` line.
 - `Memory` and `AsyncMemory` local classes are re-exported unchanged from mem0; only hosted `MemoryClient` and `AsyncMemoryClient` are wrapped.
 ## Requirements / Problems to Avoid
 
