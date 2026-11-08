@@ -51,6 +51,7 @@ class CrossEncoderRunner:
         self._model: Any | None = None
         self._model_lock = threading.Lock()
         self._predict_lock = threading.Lock()
+        self._activation_tokenizer: Any | None = None
         self._ready = False
         self._last_error: str | None = None
 
@@ -140,7 +141,10 @@ class CrossEncoderRunner:
             )
             return False
         try:
-            self.score_pairs("warmup", ["warmup"])
+            if self.model_name == MULTILINGUAL_RERANK_MODEL:
+                self.score_user_playbook_activation("warmup", ["warmup"])
+            else:
+                self.score_pairs("warmup", ["warmup"])
         except Exception:  # noqa: BLE001
             _LOGGER.warning(
                 "Cross-encoder unavailable during service prewarm; reranking remains unavailable",
@@ -156,8 +160,9 @@ class CrossEncoderRunner:
         """Score complete C45 pairs; ``None`` preserves an overlength result.
 
         Both tokenizer planning and prediction run under the existing physical
-        model lock. Cloning its tokenizer avoids mutating shared truncation or
-        padding settings used by ordinary reranking.
+        model lock. One owner-local tokenizer preserves complete-source settings
+        without copying its large vocabulary on every request or mutating the
+        tokenizer used by ordinary reranking. Model prewarm initializes it.
         """
         if (
             self.model_name != MULTILINGUAL_RERANK_MODEL
@@ -176,11 +181,14 @@ class CrossEncoderRunner:
             from reflexio.server.llm.rerank.activation import activation_plan
 
             with self._predict_lock:
-                tokenizer = Tokenizer.from_str(
-                    model.tokenizer.backend_tokenizer.to_str()
-                )
-                tokenizer.no_truncation()
-                tokenizer.no_padding()
+                if self._activation_tokenizer is None:
+                    tokenizer = Tokenizer.from_str(
+                        model.tokenizer.backend_tokenizer.to_str()
+                    )
+                    tokenizer.no_truncation()
+                    tokenizer.no_padding()
+                    self._activation_tokenizer = tokenizer
+                tokenizer = self._activation_tokenizer
                 view, indices = activation_plan(query, docs, tokenizer)
                 scores: list[float | None] = [None] * len(docs)
                 if indices:
