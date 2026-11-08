@@ -68,6 +68,7 @@ from reflexio.server.services.retrieval.temporal import (
 from reflexio.server.services.retrieval.user_context_guard import (
     should_suppress_user_context,
 )
+from reflexio.server.services.retrieval.user_selection import select_user_playbooks
 from reflexio.server.services.storage.error import ReadinessUnavailableError
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.tracing import profile_step, set_span_data
@@ -384,6 +385,23 @@ def run_unified_search(
         response = response.model_copy(update={"agent_playbooks": selected_agents})
         selection_span.set_data("input_count", len(native_agents))
         selection_span.set_data("returned_count", len(selected_agents))
+    with profile_step("search.user_selection") as selection_span:
+        native_users = response.user_playbooks
+        selected_users = select_user_playbooks(
+            items=native_users,
+            storage=storage,
+            request=request,
+            org_id=org_id,
+            degraded=response.degraded,
+            created_after=window_start,
+            created_before=window_end,
+            excluded_ids=frozenset(
+                int(key) for kind, key in seen_keys if kind == "user_playbook"
+            ),
+        )
+        response = response.model_copy(update={"user_playbooks": selected_users})
+        selection_span.set_data("input_count", len(native_users))
+        selection_span.set_data("returned_count", len(selected_users))
     # Post-processing may perform a remote lookup. Expired results were never
     # served and must remain available to a retry in the same session.
     search_runtime.checkpoint()

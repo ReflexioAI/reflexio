@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import threading
 from dataclasses import dataclass
@@ -13,6 +14,8 @@ from reflexio.native_compute import (
     configure_tokenizer_compute,
 )
 from reflexio.server.llm.rerank.common import (
+    MULTILINGUAL_RERANK_MODEL,
+    MULTILINGUAL_RERANK_REVISION,
     RERANK_ENABLED_ENV_VAR,
     CrossEncoderUnavailableError,
     reranker_enabled,
@@ -146,6 +149,70 @@ class CrossEncoderRunner:
             return False
         _LOGGER.info("Cross-encoder pre-warmed in shared inference service")
         return True
+
+    def score_user_playbook_activation(
+        self, query: str, docs: list[str]
+    ) -> list[float | None]:
+        """Score complete C45 pairs; ``None`` preserves an overlength result.
+
+        Both tokenizer planning and prediction run under the existing physical
+        model lock. Cloning its tokenizer avoids mutating shared truncation or
+        padding settings used by ordinary reranking.
+        """
+        if (
+            self.model_name != MULTILINGUAL_RERANK_MODEL
+            or self.revision != MULTILINGUAL_RERANK_REVISION
+        ):
+            raise CrossEncoderUnavailableError(
+                "C45 requires its pinned multilingual cross-encoder"
+            )
+        if not docs:
+            return []
+        model = self._get_model()
+        try:
+            from tokenizers import Tokenizer
+            from torch import nn
+
+            from reflexio.server.llm.rerank.activation import activation_plan
+
+            with self._predict_lock:
+                tokenizer = Tokenizer.from_str(
+                    model.tokenizer.backend_tokenizer.to_str()
+                )
+                tokenizer.no_truncation()
+                tokenizer.no_padding()
+                view, indices = activation_plan(query, docs, tokenizer)
+                scores: list[float | None] = [None] * len(docs)
+                if indices:
+                    raw = model.predict(
+                        [(view, docs[index]) for index in indices],
+                        show_progress_bar=False,
+                        activation_fn=nn.Identity(),
+                    )
+                    if len(raw) != len(indices):
+                        raise ValueError("Activation score cardinality differs")
+                    for index, value in zip(indices, raw, strict=True):
+                        score = float(value)
+                        if not math.isfinite(score):
+                            raise ValueError("Activation requires finite raw logits")
+                        scores[index] = score
+        except Exception as exc:
+            message = f"Complete USER-playbook activation failed: {exc}"
+            self._set_readiness(ready=False, error=message)
+            raise CrossEncoderUnavailableError(message) from exc
+        self._set_readiness(ready=True)
+        return scores
+
+
+@dataclass(frozen=True)
+class UserPlaybookActivationWork:
+    """Query-bound activation submitted through the existing inference owner."""
+
+    runner: CrossEncoderRunner
+    query: str
+
+    def __call__(self, documents: list[str]) -> list[float | None]:
+        return self.runner.score_user_playbook_activation(self.query, documents)
 
 
 @dataclass(frozen=True)

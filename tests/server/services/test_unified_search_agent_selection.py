@@ -21,10 +21,59 @@ from reflexio.server.extensions import register_service
 from reflexio.server.services import unified_search_service as service
 from reflexio.server.services.retrieval.agent_selection import AGENT_PLAYBOOK_SELECTOR
 from reflexio.server.services.retrieval.session_dedup import session_seen_cache
+from reflexio.server.services.retrieval.user_selection import USER_PLAYBOOK_SELECTOR
 from reflexio.server.services.storage.error import ReadinessUnavailableError
 from reflexio.server.services.storage.storage_base import BaseStorage
 
 pytestmark = pytest.mark.unit
+
+
+def test_user_selection_precedes_served_state_and_preserves_other_arms(native):
+    class Selector:
+        def select(self, **kwargs):
+            assert kwargs["items"] == [native.users[1]]
+            assert kwargs["excluded_ids"] == frozenset()
+            return []
+
+    register_service(USER_PLAYBOOK_SELECTOR, Selector())
+    result = run(native, session_id="s")
+    assert result.user_playbooks == []
+    assert result.agent_playbooks == native.agents
+    assert result.profiles == native.profiles
+    assert ("user_playbook", "12") not in session_seen_cache.seen("org", "s")
+
+
+@pytest.mark.parametrize("choice", ["reverse", "copy", "duplicate"])
+def test_user_selection_allows_reorder_but_rejects_injection(native, choice):
+    native.storage.get_source_user_playbook_ids_for_agent_playbooks.return_value = {}
+
+    class Selector:
+        def select(self, **kwargs):
+            items = kwargs["items"]
+            if choice == "reverse":
+                return list(reversed(items))
+            if choice == "copy":
+                return [items[0].model_copy()]
+            return [items[0], items[0]]
+
+    register_service(USER_PLAYBOOK_SELECTOR, Selector())
+    if choice == "reverse":
+        assert run(native).user_playbooks == list(reversed(native.users))
+    else:
+        with pytest.raises(ReadinessUnavailableError, match="distinct original"):
+            run(native, session_id="s")
+        assert not session_seen_cache.seen("org", "s")
+
+
+def test_user_selection_refusal_never_commits_session(native):
+    class Selector:
+        def select(self, **_kwargs):
+            raise ReadinessUnavailableError("unavailable")
+
+    register_service(USER_PLAYBOOK_SELECTOR, Selector())
+    with pytest.raises(ReadinessUnavailableError):
+        run(native, session_id="s")
+    assert not session_seen_cache.seen("org", "s")
 
 
 @pytest.fixture
