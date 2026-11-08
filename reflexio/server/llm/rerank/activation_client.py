@@ -84,7 +84,13 @@ def score_user_playbook_activation(
             checkpoint()
             span.set_data("outcome", "success")
             return [float(value) if value is not None else None for value in scores]
-        except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
+        except (
+            httpx.HTTPError,
+            ValueError,
+            TypeError,
+            AttributeError,
+            OverflowError,
+        ) as exc:
             checkpoint()
             span.set_data("outcome", "unavailable")
             raise CrossEncoderUnavailableError(

@@ -166,6 +166,7 @@ def test_query_worker_refuses_activation_without_dispatch():
         {"revision": "wrong", "scores": [1.0]},
         {"revision": MULTILINGUAL_RERANK_REVISION, "scores": []},
         {"revision": MULTILINGUAL_RERANK_REVISION, "scores": [True]},
+        {"revision": MULTILINGUAL_RERANK_REVISION, "scores": [10**400]},
     ],
 )
 def test_client_refuses_wrong_identity_or_invalid_scores(monkeypatch, body):
