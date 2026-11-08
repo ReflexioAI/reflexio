@@ -103,6 +103,31 @@ def test_owner_uses_untruncated_clone_raw_activation_and_preserves_overlength(
     assert backend.truncation["max_length"] == 5
 
 
+def test_prewarm_initializes_one_owner_tokenizer_reused_across_requests(monkeypatch):
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordLevel
+    from tokenizers.pre_tokenizers import Whitespace
+
+    backend = Tokenizer(WordLevel({"[UNK]": 0, "q": 1, "d": 2}, unk_token="[UNK]"))
+    backend.pre_tokenizer = Whitespace()
+    serialized = MagicMock(wraps=backend.to_str)
+    model = SimpleNamespace(
+        tokenizer=SimpleNamespace(backend_tokenizer=SimpleNamespace(to_str=serialized)),
+        predict=MagicMock(return_value=[3.0]),
+    )
+    runner = CrossEncoderRunner(MULTILINGUAL_RERANK_MODEL)
+    monkeypatch.setattr(runner, "_get_model", lambda: model)
+    assert runner.prewarm()
+    serialized.assert_called_once()
+    owner_tokenizer = runner._activation_tokenizer
+    assert owner_tokenizer is not None
+    assert runner.score_user_playbook_activation("q", ["d"]) == [3.0]
+    assert runner.score_user_playbook_activation("q", ["d"]) == [3.0]
+    assert runner._activation_tokenizer is owner_tokenizer
+    serialized.assert_called_once()
+    assert model.predict.call_count == 3
+
+
 def test_endpoint_uses_existing_owner_search_queue_and_returns_revision():
     runner = SimpleNamespace(
         score_user_playbook_activation=MagicMock(return_value=[2.87, None])
