@@ -38,6 +38,8 @@ from reflexio.server.llm.providers.nomic_embedding_provider import (
     is_nomic_model,
 )
 from reflexio.server.llm.rerank.common import (
+    MULTILINGUAL_RERANK_MODEL,
+    MULTILINGUAL_RERANK_REVISION,
     RERANK_MODEL,
     CrossEncoderUnavailableError,
     reranker_enabled,
@@ -45,6 +47,7 @@ from reflexio.server.llm.rerank.common import (
 from reflexio.server.llm.rerank.cross_encoder_model import (
     CrossEncoderRunner,
     RerankWork,
+    UserPlaybookActivationWork,
 )
 from reflexio.server.llm.sentence_encoder import embedding_device
 
@@ -178,6 +181,19 @@ class RerankResponse(BaseModel):
     model: str
 
 
+class UserPlaybookActivationRequest(BaseModel):
+    model: Literal["cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"]
+    query: str
+    documents: list[str] = Field(min_length=1, max_length=5)
+    timeout_ms: int = Field(default=5_000, gt=0, le=600_000)
+
+
+class UserPlaybookActivationResponse(BaseModel):
+    model: str
+    revision: str
+    scores: list[float | None]
+
+
 class RerankHealthResponse(BaseModel):
     status: Literal["ready", "disabled", "unavailable"]
     configured_model: str
@@ -295,6 +311,51 @@ async def _recover_search_reranker(
     except (CrossEncoderUnavailableError, HTTPException, TimeoutError):
         # Readiness stays false unless the runner completes a real probe.
         logger.warning("Search reranker health recovery did not complete")
+
+
+def _install_activation_route(
+    embedding_app: FastAPI,
+    *,
+    runner: CrossEncoderRunner,
+    reranker_model: str,
+    rerank_allowed: bool,
+    inference_submit: InferenceSubmit | None,
+) -> None:
+    @embedding_app.post("/v1/user-playbook-activation")
+    async def create_user_playbook_activation(
+        request: UserPlaybookActivationRequest, http_request: Request
+    ) -> UserPlaybookActivationResponse:
+        if (
+            reranker_model != MULTILINGUAL_RERANK_MODEL
+            or not rerank_allowed
+            or not reranker_enabled()
+        ):
+            raise HTTPException(503, "Pinned USER-playbook activation is unavailable")
+        try:
+            if inference_submit is not None:
+                scores = await _until_disconnected(
+                    http_request,
+                    inference_submit(
+                        UserPlaybookActivationWork(runner, request.query),
+                        request.documents,
+                        "search",
+                        request.timeout_ms,
+                        4,
+                    ),
+                )
+            else:
+                scores = await run_in_threadpool(
+                    runner.score_user_playbook_activation,
+                    request.query,
+                    request.documents,
+                )
+        except CrossEncoderUnavailableError as exc:
+            raise HTTPException(503, str(exc)) from exc
+        return UserPlaybookActivationResponse(
+            model=MULTILINGUAL_RERANK_MODEL,
+            revision=MULTILINGUAL_RERANK_REVISION,
+            scores=scores,
+        )
 
 
 def create_embedding_app(
@@ -528,6 +589,14 @@ def create_embedding_app(
             ],
             model=request.model,
         )
+
+    _install_activation_route(
+        embedding_app,
+        runner=runner,
+        reranker_model=reranker_model,
+        rerank_allowed=rerank_allowed,
+        inference_submit=inference_submit,
+    )
 
     return embedding_app
 
