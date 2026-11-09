@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from reflexio.models.config_schema import LLMConfig
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.extraction.overflow_coordinator import (
     MAX_TRUNCATED_REQUEST_DISPATCHES,
@@ -173,8 +174,25 @@ def _thinking_disabled(params) -> bool:
     return (params.get("extra_body") or {}).get("thinking") == {"type": "disabled"}
 
 
+def _select_minimax_m3(pipeline, monkeypatch) -> None:
+    """Pin the model the thinking-disabled resend applies to.
+
+    Without this the generation model follows whichever provider credential the
+    environment holds, so the resend path runs only where MiniMax is configured.
+    """
+    engine, _worker, _client = pipeline
+    monkeypatch.setenv("MINIMAX_API_KEY", "mm-test-key")
+    configurator = engine.request_context.configurator
+    configurator.set_config(
+        configurator.get_config().model_copy(
+            update={"llm_config": LLMConfig(generation_model_name="minimax/MiniMax-M3")}
+        )
+    )
+
+
 def test_thinking_disabled_resend_shares_the_truncation_budget(pipeline, monkeypatch):
     """The resend is counted: both thinking modes together stay within the cap."""
+    _select_minimax_m3(pipeline, monkeypatch)
     storage, window_id, dispatch = _run(
         pipeline, monkeypatch, _failing_extraction("length", "")
     )
@@ -195,6 +213,7 @@ def test_thinking_disabled_resend_shares_the_truncation_budget(pipeline, monkeyp
 
 def test_thinking_disabled_resend_answer_flows_through(pipeline, monkeypatch, caplog):
     """Thinking exhausts every budget; the direct answer completes the window."""
+    _select_minimax_m3(pipeline, monkeypatch)
     truncate = _failing_extraction("length", "")
 
     def respond(params, hard_timeout):
