@@ -315,7 +315,15 @@ class LocalConfigFile:
         self.path = Path(path)
         # A schema owner validates without mutating the raw document. Local
         # enterprise storage has a different implicit-storage contract.
-        self._validate = validator if validator is not None else _validate_sdk_document
+        self._schema_validator = (
+            validator if validator is not None else _validate_sdk_document
+        )
+
+    def _validate(self, data: dict[str, Any]) -> None:
+        # Physical file invariants belong to this owner even when a caller
+        # supplies a different logical schema validator.
+        _require_prepared_storage_queue(data)
+        self._schema_validator(data)
 
     def _target(self) -> Path:
         for part in (self.path, *self.path.parents):

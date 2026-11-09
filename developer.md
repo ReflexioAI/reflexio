@@ -1621,7 +1621,8 @@ may change deployment binding (DSN/schema/reader DSN), while a current native
 file retains its saved capacities.
 
 File generation14 retires `pool_acquire_timeout` and
-`read_pool_acquire_timeout`. Valid historical phase clocks are validated and
+`read_pool_acquire_timeout`. Physical file guards also apply when an application supplies its own logical
+schema validator, including publication, edits and preparation callbacks. Valid historical phase clocks are validated and
 removed by the existing locked preparation/copy-conversion owner, with exact
 original bytes retained. Current reads and publications reject those fields.
 There is no replacement queue default: enterprise storage uses the remaining

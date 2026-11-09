@@ -1,6 +1,7 @@
 """Retired phase clocks cannot re-enter current storage configuration."""
 
 from copy import deepcopy
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -147,3 +148,58 @@ def test_managed_reference_never_gains_native_queue_fields(tmp_path, backend, fi
         LocalConfigFile(path).prepare()
     assert path.read_bytes() == original
     assert not (tmp_path / ".config-migrations").exists()
+
+
+@pytest.mark.parametrize("field", ["pool_acquire_timeout", "read_pool_acquire_timeout"])
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "publish",
+        "edit_existing",
+        "edit_inject",
+        "prepare_current",
+        "prepare_initial",
+        "prepare_inject",
+    ],
+)
+def test_schema_owner_cannot_publish_a_file_the_reader_refuses(
+    tmp_path, field, operation
+):
+    import json
+
+    from reflexio.config_file import FILE_FORMAT_VERSION, LocalConfigFile
+
+    path = tmp_path / "config.json"
+    owner = LocalConfigFile(path, validator=lambda _document: None)
+    valid: dict[str, Any] = {
+        "storage_config": {"type": "postgres", "db_url": "postgresql://opaque/target"}
+    }
+    invalid = deepcopy(valid)
+    invalid["storage_config"][field] = 7.5
+    version = 13 if operation == "prepare_inject" else FILE_FORMAT_VERSION
+    if operation != "prepare_initial":
+        source = invalid if operation in {"edit_existing", "prepare_current"} else valid
+        path.write_text(
+            json.dumps({**source, "_reflexio_config_file": {"version": version}})
+        )
+    original = path.read_bytes() if path.exists() else None
+    callback_ran = False
+
+    def inject(document, *_version):
+        nonlocal callback_ran
+        callback_ran = True
+        document["storage_config"][field] = 7.5
+
+    with pytest.raises(ValueError):
+        if operation == "publish":
+            owner.publish_document(json.dumps(invalid))
+        elif operation.startswith("edit"):
+            owner.edit_document(inject)
+        elif operation == "prepare_initial":
+            owner.prepare(initial_document=invalid)
+        else:
+            owner.prepare(edit=inject)
+    assert (path.read_bytes() if path.exists() else None) == original
+    assert not (tmp_path / ".config-migrations").exists()
+    if operation in {"edit_existing", "prepare_current"}:
+        assert not callback_ran
