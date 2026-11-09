@@ -137,11 +137,7 @@ def _chain_reads(modules: dict[str, ast.Module], owner: str = _OWNER) -> set[str
                 if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef)
                 else scope
             )
-            if (
-                isinstance(child, ast.Attribute)
-                and child.attr in _CHAIN_ATTRS
-                and isinstance(child.ctx, ast.Load)
-            ):
+            if _reads_chain(child):
                 found.add(f"{module}::{scope}")
             visit(module, child, inner)
 
@@ -149,6 +145,31 @@ def _chain_reads(modules: dict[str, ast.Module], owner: str = _OWNER) -> set[str
         if module != owner and _imports_llm(module, tree):
             visit(module, tree, "<module>")
     return found
+
+
+def _reads_chain(node: ast.AST) -> bool:
+    """``x.__cause__`` (a load) or ``getattr(x, "__cause__", ...)``."""
+    if isinstance(node, ast.Attribute):
+        return node.attr in _CHAIN_ATTRS and isinstance(node.ctx, ast.Load)
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[1].value in _CHAIN_ATTRS
+    )
+
+
+def _calls_a_verdict_reader(tree: ast.Module, readers: frozenset[str]) -> bool:
+    """A call, not an import: importing the verdict and ignoring it is no read."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+            if name in readers:
+                return True
+    return False
 
 
 def _names(tree: ast.Module) -> set[str]:
@@ -170,7 +191,7 @@ def _swallows(
 ) -> set[str]:
     found: set[str] = set()
     for module, tree in modules.items():
-        if _names(tree) & readers:
+        if _calls_a_verdict_reader(tree, readers):
             continue
         for node in ast.walk(tree):
             if not isinstance(node, ast.ExceptHandler) or node.type is None:
@@ -180,8 +201,10 @@ def _swallows(
                 t.id if isinstance(t, ast.Name) else getattr(t, "attr", "")
                 for t in types
             }
-            reraises = any(isinstance(n, ast.Raise) for n in ast.walk(node))
-            if caught & _LLM_ERRORS and not reraises:
+            # Propagates only if every path ends in a raise: the handler's last
+            # statement. A raise on some branch still lets other paths swallow.
+            propagates = isinstance(node.body[-1], ast.Raise)
+            if caught & _LLM_ERRORS and not propagates:
                 found.add(module)
     return found
 
@@ -233,3 +256,38 @@ def test_the_scan_is_not_blind() -> None:
     rule_evidence = "server/services/offline_tuner/open_world/rule_evidence_runtime.py"
     assert rule_evidence not in _swallows(modules)
     assert rule_evidence in _swallows(modules, readers=frozenset())
+
+
+@pytest.mark.parametrize(
+    ("source", "rule"),
+    [
+        ("def f(e):\n    return e.__context__\n", "chain"),
+        ("def f(e):\n    return getattr(e, '__cause__', None)\n", "chain"),
+        (
+            "def f(call, retry):\n"
+            "    try:\n"
+            "        return call()\n"
+            "    except LiteLLMClientError:\n"
+            "        if retry:\n"
+            "            raise\n"
+            "        return None\n",
+            "swallow",
+        ),
+        (
+            "from reflexio.server.llm.failure import classify_llm_failure\n"
+            "def f(call):\n"
+            "    try:\n"
+            "        return call()\n"
+            "    except LiteLLMClientError:\n"
+            "        return None\n",
+            "swallow",
+        ),
+    ],
+    ids=["attribute", "getattr", "raise-on-one-branch", "imported-not-called"],
+)
+def test_the_scan_detects_each_shape(source: str, rule: str) -> None:
+    tree = ast.parse("import reflexio.server.llm\n" + source)
+    if rule == "chain":
+        assert _chain_reads({"server/scratch.py": tree}) == {"server/scratch.py::f"}
+    else:
+        assert _swallows({"server/scratch.py": tree}) == {"server/scratch.py"}
