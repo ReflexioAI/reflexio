@@ -201,6 +201,31 @@ class ProviderCircuitBreaker:
                 + self._jitter() * circuit.open_seconds / 2
             )
 
+    def refusing_model(self, model: str) -> bool:
+        """Whether some route of ``model`` is open and not yet due for its probe.
+
+        For best-effort callers that would rather skip a call than spend their
+        budget on a provider that is down. Unlike the charging decision, this
+        reads every route of the model, not one: such a caller cannot name its
+        route before the client resolves the credential, and skipping costs
+        only the optional result. A probe is never suppressed: while any route
+        of the model is due for one, this returns ``False``, whatever its
+        sibling routes say.
+        """
+        with self._lock:
+            now = self._clock()
+            refusing = False
+            for circuit in self._circuits.values():
+                if circuit.model != model or circuit.open_until is None:
+                    continue
+                if now < circuit.open_until:
+                    refusing = True
+                elif circuit.probe_started is None or (
+                    now - circuit.probe_started >= _PROBE_STALE_SECONDS
+                ):
+                    return False
+            return refusing
+
     def reset(self) -> None:
         """Forget every breaker. Test-only."""
         with self._lock:
