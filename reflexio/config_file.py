@@ -24,7 +24,8 @@ NATIVE_POOL_AUTHORITY_VERSION = 10
 SINGLE_OWNER_EXECUTION_VERSION = 11
 LINEAGE_RETENTION_VERSION = 12
 PENDING_CREATION_VERSION = 13
-FILE_FORMAT_VERSION = PENDING_CREATION_VERSION
+STORAGE_QUEUE_BUDGET_VERSION = 14
+FILE_FORMAT_VERSION = STORAGE_QUEUE_BUDGET_VERSION
 _METADATA_KEY = "_reflexio_config_file"
 
 
@@ -141,6 +142,19 @@ def encode_local_config_document(
         )
         + "\n"
     )
+
+
+def _require_prepared_storage_queue(data: dict[str, Any]) -> None:
+    """Raw runtime file reads never reinterpret retired storage phase clocks."""
+    storage = data.get("storage_config")
+    if isinstance(storage, dict) and {
+        "pool_acquire_timeout",
+        "read_pool_acquire_timeout",
+    }.intersection(storage):
+        raise StoredConfigurationError(
+            "Saved storage queue policy requires file preparation with old "
+            "writers stopped; retired clocks must not be loaded at runtime"
+        )
 
 
 def _sync_directory(directory: Path) -> None:
@@ -260,6 +274,12 @@ def _prepare_document(data: dict[str, Any], version: int) -> dict[str, Any]:
         canonical["lineage_gc"] = canonicalize_lineage_retention_policy(
             canonical["lineage_gc"], historical=True
         )
+    if version < STORAGE_QUEUE_BUDGET_VERSION:
+        storage = canonical.get("storage_config")
+        if isinstance(storage, dict) and storage.get("type") == "postgres":
+            from reflexio.config_migration import retire_storage_queue_policy
+
+            canonical["storage_config"] = retire_storage_queue_policy(storage)
     return _prepare_pending_creation(canonical, version)
 
 
@@ -295,7 +315,15 @@ class LocalConfigFile:
         self.path = Path(path)
         # A schema owner validates without mutating the raw document. Local
         # enterprise storage has a different implicit-storage contract.
-        self._validate = validator if validator is not None else _validate_sdk_document
+        self._schema_validator = (
+            validator if validator is not None else _validate_sdk_document
+        )
+
+    def _validate(self, data: dict[str, Any]) -> None:
+        # Physical file invariants belong to this owner even when a caller
+        # supplies a different logical schema validator.
+        _require_prepared_storage_queue(data)
+        self._schema_validator(data)
 
     def _target(self) -> Path:
         for part in (self.path, *self.path.parents):
@@ -315,6 +343,7 @@ class LocalConfigFile:
         """Read strict runtime policy without transforming or writing it."""
         document, metadata = self._read_snapshot()
         _require_prepared_pending_creation(document, metadata.get("version", 0))
+        _require_prepared_storage_queue(document)
         _reject_ambiguous_output_policy(document, metadata.get("version", 0))
         return document
 

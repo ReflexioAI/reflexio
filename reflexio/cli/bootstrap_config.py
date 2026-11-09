@@ -262,9 +262,7 @@ def save_storage_to_config(
                     legacy_environment,
                     PostgresPoolDefaults(
                         pool_size=current.pool_size,
-                        pool_acquire_timeout=current.pool_acquire_timeout,
                         read_pool_size=current.read_pool_size,
-                        read_pool_acquire_timeout=current.read_pool_acquire_timeout,
                     ),
                 )
                 if any(value.strip() for value in legacy_environment.values()):

@@ -11,7 +11,6 @@ from math import isfinite
 from reflexio.removed_env import reject_removed_env
 
 DEFAULT_STORAGE_POOL_SIZE = 10
-DEFAULT_STORAGE_POOL_ACQUIRE_TIMEOUT = 30.0
 
 
 class StoredConfigurationError(ValueError):
@@ -35,19 +34,6 @@ def _positive_int(env: Mapping[str, str], name: str, default: int) -> int:
     return value
 
 
-def _positive_seconds(env: Mapping[str, str], name: str, default: float) -> float:
-    raw = env.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        value = float(raw)
-    except ValueError:
-        raise ValueError(f"{name} must be finite and positive") from None
-    if not isfinite(value) or value <= 0:
-        raise ValueError(f"{name} must be finite and positive")
-    return value
-
-
 def resolve_storage_pool_size(env: Mapping[str, str]) -> int:
     """Default capacity for shared Supabase SQL pools, not native Postgres."""
     return _positive_int(env, "REFLEXIO_STORAGE_POOL_SIZE", DEFAULT_STORAGE_POOL_SIZE)
@@ -55,22 +41,18 @@ def resolve_storage_pool_size(env: Mapping[str, str]) -> int:
 
 @dataclass(frozen=True)
 class PostgresPoolDefaults:
-    """Native bootstrap fields; an unset reader inherits the writer policy."""
+    """Historical native capacity; an unset reader inherits the writer size."""
 
     pool_size: int
-    pool_acquire_timeout: float
     read_pool_size: int | None
-    read_pool_acquire_timeout: float | None
 
 
-# Frozen generation9 migration data, not a current execution default. Keep this
+# Frozen generation9 capacity data, not a current execution default. Keep this
 # independent of model defaults so a future tuning change cannot rewrite the
-# predecessor's effective policy during a skipped-version upgrade.
+# predecessor's effective capacity during a skipped-version upgrade.
 _LEGACY_NATIVE_POOL_DEFAULTS = PostgresPoolDefaults(
     pool_size=10,
-    pool_acquire_timeout=30.0,
     read_pool_size=None,
-    read_pool_acquire_timeout=None,
 )
 
 
@@ -81,14 +63,23 @@ def resolve_postgres_pool_defaults(env: Mapping[str, str]) -> PostgresPoolDefaul
     changing capacity. Defaults are frozen generation9 data; current execution
     owns its canonical storage_config instead. No process state is read/cached.
     """
+    # These historical inputs no longer select execution. Still refuse invalid
+    # supplied values instead of silently converting a broken predecessor.
+    for name in (
+        "REFLEXIO_POSTGRES_POOL_ACQUIRE_TIMEOUT",
+        "REFLEXIO_POSTGRES_READ_POOL_ACQUIRE_TIMEOUT",
+    ):
+        raw = env.get(name, "").strip()
+        if raw:
+            try:
+                value = float(raw)
+            except ValueError:
+                raise ValueError(f"{name} must be finite and positive") from None
+            if not isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and positive")
     return PostgresPoolDefaults(
         pool_size=_positive_int(
             env, "REFLEXIO_POSTGRES_POOL_SIZE", _LEGACY_NATIVE_POOL_DEFAULTS.pool_size
-        ),
-        pool_acquire_timeout=_positive_seconds(
-            env,
-            "REFLEXIO_POSTGRES_POOL_ACQUIRE_TIMEOUT",
-            _LEGACY_NATIVE_POOL_DEFAULTS.pool_acquire_timeout,
         ),
         read_pool_size=(
             _positive_int(
@@ -97,15 +88,6 @@ def resolve_postgres_pool_defaults(env: Mapping[str, str]) -> PostgresPoolDefaul
                 _LEGACY_NATIVE_POOL_DEFAULTS.pool_size,
             )
             if env.get("REFLEXIO_POSTGRES_READ_POOL_SIZE", "").strip()
-            else None
-        ),
-        read_pool_acquire_timeout=(
-            _positive_seconds(
-                env,
-                "REFLEXIO_POSTGRES_READ_POOL_ACQUIRE_TIMEOUT",
-                _LEGACY_NATIVE_POOL_DEFAULTS.pool_acquire_timeout,
-            )
-            if env.get("REFLEXIO_POSTGRES_READ_POOL_ACQUIRE_TIMEOUT", "").strip()
             else None
         ),
     )
@@ -138,9 +120,9 @@ def reject_postgres_pool_conflicts(
     effective = asdict(selected)
     if effective["read_pool_size"] is None:
         effective["read_pool_size"] = selected.pool_size
-    if effective["read_pool_acquire_timeout"] is None:
-        effective["read_pool_acquire_timeout"] = selected.pool_acquire_timeout
     for name, field in POSTGRES_POOL_ENV_FIELDS.items():
+        if field not in effective:
+            continue  # Validated retired clock, with no current policy to compare.
         if env.get(name, "").strip() and supplied[field] != effective[field]:
             raise ConfigurationMigrationError(
                 "Obsolete native pool assignments conflict with saved storage_config. "

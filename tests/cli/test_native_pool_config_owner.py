@@ -18,9 +18,7 @@ POOL_ENV = {
 }
 POLICY = {
     "pool_size": 3,
-    "pool_acquire_timeout": 7.5,
     "read_pool_size": 2,
-    "read_pool_acquire_timeout": 4.5,
 }
 
 
@@ -123,15 +121,15 @@ def test_legacy_implicit_preparation_does_not_import_env_policy(tmp_path, monkey
 def test_matching_obsolete_assertions_do_not_supply_defaults(tmp_path, monkeypatch):
     stored(
         tmp_path,
-        policy={**POLICY, "read_pool_size": None, "read_pool_acquire_timeout": None},
+        policy={**POLICY, "read_pool_size": None},
     )
     monkeypatch.setenv("REFLEXIO_POSTGRES_READ_POOL_SIZE", "3")
     monkeypatch.setenv("REFLEXIO_POSTGRES_READ_POOL_ACQUIRE_TIMEOUT", "7.5")
     _, document = select(tmp_path)
     assert document["storage_config"]["pool_size"] == 3
-    assert document["storage_config"]["pool_acquire_timeout"] == 7.5
+    assert "pool_acquire_timeout" not in document["storage_config"]
     assert document["storage_config"]["read_pool_size"] is None
-    assert document["storage_config"]["read_pool_acquire_timeout"] is None
+    assert "read_pool_acquire_timeout" not in document["storage_config"]
 
 
 @pytest.mark.parametrize("value", ["99", "invalid", "0"])
@@ -267,9 +265,7 @@ def test_legacy_unset_native_budgets_retain_generation_nine_defaults(tmp_path):
     # These are the frozen predecessor's defaults, not the current model defaults.
     assert {name: document["storage_config"][name] for name in POLICY} == {
         "pool_size": 10,
-        "pool_acquire_timeout": 30.0,
         "read_pool_size": None,
-        "read_pool_acquire_timeout": None,
     }
 
 

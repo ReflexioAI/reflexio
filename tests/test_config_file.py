@@ -833,9 +833,7 @@ def test_preparation_edit_and_generation_publish_together(tmp_path):
         "type": "postgres",
         "db_url": "postgresql://selected.invalid/db",
         "pool_size": 3,
-        "pool_acquire_timeout": 7.5,
         "read_pool_size": 2,
-        "read_pool_acquire_timeout": 4.5,
     }
     observed = []
 

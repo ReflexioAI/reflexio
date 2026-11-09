@@ -31,6 +31,10 @@ def test_explicit_upgrade_preserves_reviewed_policy(case):
         policy := extractor.get("deduplication_config"), dict
     ):
         policy.pop("strategy", None)
+    storage = expected.get("storage_config")
+    if isinstance(storage, dict) and storage.get("type") == "postgres":
+        storage.pop("pool_acquire_timeout", None)
+        storage.pop("read_pool_acquire_timeout", None)
     assert converted == expected
     assert source == case["input"]
     assert validate_stored_config(converted) == validate_stored_config(expected)
