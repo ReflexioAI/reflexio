@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections.abc import Sized
@@ -110,6 +111,87 @@ class UserPlaybookExposureEvent:
     ingested_at: int
     governance_subject_ref: str | None
     playbook_owner_governance_subject_ref: str | None
+
+
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+_SUBJECT_REF = re.compile(r"subref_v1_[0-9a-f]{32}")
+
+
+def _blank(value: str | None) -> bool:
+    # Spaces only, as Postgres ``btrim`` trims: the backends must agree.
+    return not (value or "").strip(" ")
+
+
+def _text_reason(
+    value: str | None, pattern: re.Pattern[str], missing: str, invalid: str
+) -> str | None:
+    if _blank(value):
+        return missing
+    return None if pattern.fullmatch(value or "") else invalid
+
+
+def exposure_event_integrity(
+    event: UserPlaybookExposureEvent,
+) -> tuple[str, tuple[str, ...]]:
+    """Classify one exposure event as ``complete`` or ``incomplete``, with reasons.
+
+    The one definition for storage without generated columns (SQLite). Postgres
+    computes the same answer in the ``integrity_state`` / ``integrity_reasons``
+    generated columns of ``user_playbook_exposure_events``; the shared port
+    contract holds the two equal. Reasons keep the Postgres array order.
+
+    Args:
+        event (UserPlaybookExposureEvent): The event as it will be stored.
+
+    Returns:
+        tuple[str, tuple[str, ...]]: ``("complete", ())`` or
+            ``("incomplete", reasons)`` with at least one reason.
+    """
+    reasons = (
+        "missing_correlation"
+        if _blank(event.request_id) and _blank(event.session_id)
+        else None,
+        "missing_user_id" if _blank(event.user_id) else None,
+        "missing_playbook_owner_user_id"
+        if _blank(event.playbook_owner_user_id)
+        else None,
+        "missing_playbook_id"
+        if event.user_playbook_id is None
+        else "invalid_playbook_id"
+        if event.user_playbook_id <= 0
+        else None,
+        _text_reason(
+            event.served_semantic_digest,
+            _SHA256_HEX,
+            "missing_served_semantic_digest",
+            "invalid_served_semantic_digest",
+        ),
+        _text_reason(
+            event.served_full_version_fingerprint,
+            _SHA256_HEX,
+            "missing_served_full_version_fingerprint",
+            "invalid_served_full_version_fingerprint",
+        ),
+        "missing_exposed_at"
+        if event.exposed_at is None
+        else "invalid_exposed_at"
+        if event.exposed_at < 0
+        else None,
+        _text_reason(
+            event.governance_subject_ref,
+            _SUBJECT_REF,
+            "missing_governance_identity",
+            "invalid_governance_identity",
+        ),
+        _text_reason(
+            event.playbook_owner_governance_subject_ref,
+            _SUBJECT_REF,
+            "missing_playbook_owner_governance_identity",
+            "invalid_playbook_owner_governance_identity",
+        ),
+    )
+    present = tuple(reason for reason in reasons if reason is not None)
+    return ("incomplete" if present else "complete"), present
 
 
 @dataclass(frozen=True)
@@ -480,6 +562,7 @@ __all__ = [
     "batch_is_uncorrelated",
     "reset_uncorrelated_reporting_state",
     "build_user_playbook_exposure_event",
+    "exposure_event_integrity",
     "record_search_exposures",
     "validate_search_exposure_batch",
     "user_playbook_full_version_fingerprint",

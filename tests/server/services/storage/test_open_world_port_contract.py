@@ -2,13 +2,17 @@
 
 Binds the shared contract (``reflexio.test_support.open_world_port_contract``)
 to a fresh SQLite database per test, with the store's clock pinned so every
-case is exact. Also holds the SQLite-only case the contract cannot express on
-a backend whose clock is not injectable: the one-clock-reading rule across
-00:00 UTC.
+case is exact. Also holds the SQLite-only cases: the one-clock-reading rule
+across 00:00 UTC (a backend whose clock is not injectable cannot express it),
+bringing a ledger created without integrity columns forward, and the
+exposure-ledger paths Postgres refuses before reaching (a replay that rewrites
+its references, an ownerless playbook, an event id re-recorded with other
+content).
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -18,7 +22,19 @@ from uuid import uuid4
 
 import pytest
 
+from reflexio.models.api_schema.domain import Interaction, Request, RetrievedLearning
+from reflexio.models.api_schema.service_schemas import DeleteUserInteractionRequest
+from reflexio.server.services.offline_tuner.exposure_receipts import (
+    receipt_project_id,
+)
+from reflexio.server.services.search_exposure import UserPlaybookExposureEvent
+from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.sqlite_storage._open_world import (
+    _INSERT_EXPOSURE_SQL,
+    _exposure_row,
+)
+from reflexio.test_support.open_world_exposure_contract import ExposureRow
 from reflexio.test_support.open_world_port_contract import (
     OpenWorldPortContract,
     ProgressRow,
@@ -111,19 +127,64 @@ class _SQLitePortHarness:
         published: bool = True,
     ) -> None:
         prefix = "publish-v1:" if published else "legacy-search:"
+        self.insert_exposure(
+            UserPlaybookExposureEvent(
+                exposure_event_id=prefix + uuid4().hex,
+                request_id=request_id,
+                session_id=session_id,
+                user_id=user_id,
+                playbook_owner_user_id="owner",
+                user_playbook_id=user_playbook_id,
+                served_semantic_digest=None,
+                served_full_version_fingerprint=None,
+                exposed_at=exposed_at,
+                ingested_at=ingested_at,
+                governance_subject_ref=None,
+                playbook_owner_governance_subject_ref=None,
+            )
+        )
+
+    # -- the exposure half of the harness
+
+    @property
+    def receipt_project_id(self) -> str:
+        return receipt_project_id()
+
+    refuses_unattributable_exposure = False
+
+    def _exposure_rows(self, sql: str, key: str) -> list[ExposureRow]:
+        rows = self._conn.execute(sql, (key,)).fetchall()
+        return [
+            ExposureRow(
+                **{name: row[name] for name in ExposureRow._fields}
+                | {"integrity_reasons": tuple(json.loads(row["integrity_reasons"]))}
+            )
+            for row in rows
+        ]
+
+    def exposure_rows(self, request_id: str) -> list[ExposureRow]:
+        return self._exposure_rows(
+            "SELECT * FROM user_playbook_exposure_events WHERE request_id = ?"
+            " ORDER BY exposure_event_id",
+            request_id,
+        )
+
+    def insert_exposure(self, event: UserPlaybookExposureEvent) -> ExposureRow:
+        self._write(_INSERT_EXPOSURE_SQL, _exposure_row(event))
+        (row,) = self._exposure_rows(
+            "SELECT * FROM user_playbook_exposure_events WHERE exposure_event_id = ?",
+            event.exposure_event_id,
+        )
+        return row
+
+    def block_subject(self, user_id: str) -> None:
         self._write(
-            "INSERT INTO user_playbook_exposure_events (exposure_event_id,"
-            " request_id, session_id, user_id, playbook_owner_user_id,"
-            " user_playbook_id, exposed_at, ingested_at)"
-            " VALUES (?, ?, ?, ?, 'owner', ?, ?, ?)",
+            "INSERT INTO subject_write_barriers (org_id, subject_ref, purge_id,"
+            " status, created_at, updated_at) VALUES (?, ?, ?, 'erasing', 0, 0)",
             (
-                prefix + uuid4().hex,
-                request_id,
-                session_id,
-                user_id,
-                user_playbook_id,
-                exposed_at,
-                ingested_at,
+                self._storage.org_id,
+                self._storage._subject_ref_for_user_id(user_id),  # noqa: SLF001
+                f"purge-{uuid4().hex[:8]}",
             ),
         )
 
@@ -220,3 +281,196 @@ def test_migrate_is_idempotent_and_keeps_progress(
     port_harness.storage.migrate()
 
     assert [row.job_id for row in port_harness.progress_rows(playbook_id)] == [3]
+
+
+#: ``user_playbook_exposure_events`` as it was first created, before the
+#: integrity columns. No released version shipped it; a database created from
+#: that development revision still needs bringing forward.
+_LEDGER_WITHOUT_INTEGRITY = """
+DROP TABLE user_playbook_exposure_events;
+CREATE TABLE user_playbook_exposure_events (
+    exposure_event_id TEXT PRIMARY KEY,
+    request_id TEXT,
+    session_id TEXT,
+    user_id TEXT,
+    playbook_owner_user_id TEXT,
+    user_playbook_id INTEGER,
+    served_semantic_digest TEXT,
+    served_full_version_fingerprint TEXT,
+    exposed_at INTEGER,
+    ingested_at INTEGER NOT NULL,
+    governance_subject_ref TEXT,
+    playbook_owner_governance_subject_ref TEXT
+);
+CREATE INDEX idx_up_exposure_events_playbook_window
+    ON user_playbook_exposure_events(
+        user_playbook_id, COALESCE(exposed_at, ingested_at)
+    );
+CREATE INDEX idx_up_exposure_events_request_id
+    ON user_playbook_exposure_events(request_id);
+INSERT INTO user_playbook_exposure_events VALUES
+    ('publish-v1:kept', 'request', 'session', 'viewer', 'owner', 7,
+     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+     10, 20, 'subref_v1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+     'subref_v1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'),
+    ('publish-v1:partial', 'request', 'session', 'viewer', 'owner', 7,
+     NULL, NULL, NULL, 30, NULL, NULL);
+"""
+
+
+def test_migrate_brings_a_ledger_without_integrity_forward(
+    port_harness: _SQLitePortHarness,
+) -> None:
+    conn = port_harness.storage.conn
+    conn.executescript(_LEDGER_WITHOUT_INTEGRITY)
+
+    port_harness.storage.migrate()
+    port_harness.storage.migrate()
+
+    kept, partial = port_harness.exposure_rows("request")
+    assert (kept.exposure_event_id, kept.ingested_at) == ("publish-v1:kept", 20)
+    assert (kept.integrity_state, kept.integrity_reasons) == ("complete", ())
+    assert (partial.integrity_state, partial.integrity_reasons) == (
+        "incomplete",
+        (
+            "missing_served_semantic_digest",
+            "missing_served_full_version_fingerprint",
+            "missing_exposed_at",
+            "missing_governance_identity",
+            "missing_playbook_owner_governance_identity",
+        ),
+    )
+    indexes = {
+        row[1]
+        for row in conn.execute("PRAGMA index_list(user_playbook_exposure_events)")
+    }
+    assert {
+        "idx_up_exposure_events_playbook_window",
+        "idx_up_exposure_events_request_id",
+    } <= indexes
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO user_playbook_exposure_events (exposure_event_id,"
+            " ingested_at, integrity_state, integrity_reasons)"
+            " VALUES ('publish-v1:incoherent', 0, 'complete', '[\"missing_user_id\"]')"
+        )
+
+
+def test_re_recording_an_event_id_with_other_content_is_refused(
+    port_harness: _SQLitePortHarness,
+) -> None:
+    """A deleted interaction re-published under its id may not rewrite history."""
+    storage = port_harness.storage
+    first = port_harness.seed_playbook()
+    second = port_harness.seed_playbook()
+    storage.conn.execute(
+        "UPDATE user_playbooks SET user_id = 'owner' WHERE user_playbook_id IN (?, ?)",
+        (first, second),
+    )
+    storage.conn.commit()
+    storage.add_request(Request(request_id="request", user_id="viewer", session_id="s"))
+
+    def publish(playbook_id: int) -> None:
+        interaction = Interaction(
+            interaction_id=900,
+            user_id="viewer",
+            request_id="request",
+            role="Assistant",
+            content="synthetic answer",
+            retrieved_learnings=[
+                RetrievedLearning(kind="user_playbook", learning_id=str(playbook_id))
+            ],
+        )
+        storage.add_user_interactions_bulk(
+            "viewer", [interaction], embeddings_prepared=True
+        )
+
+    def forget_interaction() -> None:
+        storage.delete_user_interaction(
+            DeleteUserInteractionRequest(user_id="viewer", interaction_id=900)
+        )
+
+    publish(first)
+    (recorded,) = port_harness.exposure_rows("request")
+    forget_interaction()
+    publish(first)
+    assert port_harness.exposure_rows("request") == [recorded], (
+        "the same content under the same id records nothing"
+    )
+    forget_interaction()
+
+    with pytest.raises(StorageError, match="exposure event conflict"):
+        publish(second)
+
+    assert port_harness.exposure_rows("request") == [recorded]
+    assert storage.get_user_interaction("viewer") == []
+
+
+def test_a_replay_that_rewrites_its_references_records_nothing(
+    port_harness: _SQLitePortHarness,
+) -> None:
+    """Only a new interaction records exposures; SQLite lets a replay rewrite it.
+
+    Postgres refuses such a replay outright, so this case is SQLite's own.
+    """
+    storage = port_harness.storage
+    playbook_id = port_harness.seed_playbook()
+    storage.conn.execute(
+        "UPDATE user_playbooks SET user_id = 'owner' WHERE user_playbook_id = ?",
+        (playbook_id,),
+    )
+    storage.conn.commit()
+    storage.add_request(Request(request_id="request", user_id="viewer", session_id="s"))
+    interaction = Interaction(
+        user_id="viewer",
+        request_id="request",
+        role="Assistant",
+        content="synthetic answer",
+        retrieved_learnings=[
+            RetrievedLearning(kind="user_playbook", learning_id=str(playbook_id))
+        ],
+    )
+    storage.add_user_interactions_bulk(
+        "viewer", [interaction], embeddings_prepared=True
+    )
+    recorded = port_harness.exposure_rows("request")
+    assert len(recorded) == 1
+
+    interaction.retrieved_learnings = [
+        *interaction.retrieved_learnings,
+        RetrievedLearning(kind="user_playbook", learning_id=str(playbook_id)),
+    ]
+    storage.add_user_interactions_bulk(
+        "viewer", [interaction], embeddings_prepared=True
+    )
+
+    assert port_harness.exposure_rows("request") == recorded
+
+
+def test_an_ownerless_playbook_records_no_exposure(
+    port_harness: _SQLitePortHarness,
+) -> None:
+    """Without an owner there is no subject to attribute; Postgres refuses."""
+    storage = port_harness.storage
+    ownerless = port_harness.seed_playbook()
+    storage.add_request(Request(request_id="request", user_id="viewer", session_id="s"))
+
+    storage.add_user_interactions_bulk(
+        "viewer",
+        [
+            Interaction(
+                user_id="viewer",
+                request_id="request",
+                role="Assistant",
+                content="synthetic answer",
+                retrieved_learnings=[
+                    RetrievedLearning(kind="user_playbook", learning_id=str(ownerless))
+                ],
+            )
+        ],
+        embeddings_prepared=True,
+    )
+
+    assert len(storage.get_user_interaction("viewer")) == 1
+    assert port_harness.exposure_rows("request") == []
