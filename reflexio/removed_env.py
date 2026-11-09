@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "TRANSFORMERS_OFFLINE": "HF_HUB_OFFLINE",
     "REFLEXIO_FERNET_KEYS": "FERNET_KEYS",
     "REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS": "REFLEXIO_EMBED_BATCH_SIZE",
     "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOK_SOURCE_USER_PLAYBOOKS": "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOKS",
@@ -64,6 +65,13 @@ def reject_removed_env(
             else f"{name} -> {aliases[name]}"
             for name in obsolete
         )
+        if "TRANSFORMERS_OFFLINE" in obsolete:
+            migration += (
+                "; preserve the effective HF_HUB_OFFLINE policy before removing "
+                "the alias. A nonempty canonical value already took precedence, "
+                "including 0; do not overwrite it with an ignored alias. "
+                "Resolve image defaults and secret bindings explicitly"
+            )
         if "REFLEXIO_FERNET_KEYS" in obsolete:
             migration += (
                 "; preserve all existing configuration and connector decryption "

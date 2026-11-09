@@ -1719,3 +1719,16 @@ untouched original witness. Missing/unknown/mixed encoding, HMAC changes, unknow
 fields and real policy drift remain refusals. This metadata is not org policy.
 Enterprise must adopt the matched canonical-v16 migration and release gates;
 do not perform a pin-only enterprise adoption of this SDK.
+
+### One Hugging Face offline-policy input
+
+Use `HF_HUB_OFFLINE` for Hugging Face model/tokenizer download policy.
+`TRANSFORMERS_OFFLINE` is retired: remove its process and selected-file
+assignments, including blanks. Preserve the effective policy first. In the
+previous runtime, a nonempty `HF_HUB_OFFLINE` took precedence (including `0`);
+do not replace it with an ignored alias. If only the alias was set, account for
+image defaults and secret bindings before choosing the canonical value.
+No value is copied automatically and the default policy is unchanged. Native
+embedding/reranking and input token counting reject obsolete assignments even
+after model initialization. Existing deployed images need their own upgrade;
+installing this SDK does not rewrite their environment.
