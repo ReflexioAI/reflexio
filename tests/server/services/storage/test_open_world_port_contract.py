@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -588,5 +588,28 @@ def test_a_freeze_inside_a_commit_scope_rolls_back_with_it(
     ):
         assert _freeze(port_harness, request, now=now).claim is not None
         raise RuntimeError("abort the scope")
+
+    assert port_harness.optimization_jobs(playbook.user_playbook_id) == []
+
+
+def test_a_caught_freeze_failure_cannot_commit_the_callers_scope(
+    port_harness: _SQLitePortHarness,
+) -> None:
+    """A failed freeze leaves no leased job behind, even if its caller swallows it."""
+    from reflexio.server.services.storage.error import StorageError
+    from reflexio.test_support.open_world_evidence_contract import (
+        _freeze,
+        _frozen_target,
+    )
+
+    playbook, request, now = _frozen_target(port_harness)
+
+    with (
+        pytest.raises(StorageError, match="marked transaction for rollback"),
+        port_harness.storage.commit_scope(),
+        port_harness.fail_artifact_writes(),
+        suppress(Exception),
+    ):
+        _freeze(port_harness, request, now=now)
 
     assert port_harness.optimization_jobs(playbook.user_playbook_id) == []

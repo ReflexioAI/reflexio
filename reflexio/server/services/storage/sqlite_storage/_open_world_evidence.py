@@ -247,6 +247,7 @@ class SQLiteOpenWorldEvidenceMixin:
     _lock: Any
     _scope_depth: int
     _own_transaction: Any
+    commit_scope: Any
     _active_subject_barrier_locked: Any
     _outcome_contract_digest: Any
 
@@ -270,8 +271,8 @@ class SQLiteOpenWorldEvidenceMixin:
         """Validate, lease and persist one exact bundle in one transaction.
 
         The job is created or found, leased and given its bundle artifact in
-        one ``BEGIN IMMEDIATE`` transaction (or in the caller's
-        ``commit_scope``), so a failure leaves none of them behind. A stored
+        one ``commit_scope``, joining the caller's when there is one, so a
+        failure leaves none of them behind. A stored
         artifact is never rewritten: a replay with other bytes refuses. A
         replay while another owner's lease is live returns the stored record
         with ``claim=None``.
@@ -309,53 +310,45 @@ class SQLiteOpenWorldEvidenceMixin:
                 "open-world artifact content/digest mismatch"
             )
 
-        with self._lock:
-            owns_transaction = self._own_transaction()
-            if owns_transaction:
-                self.conn.execute("BEGIN IMMEDIATE")
-            try:
-                self._validate_evidence_target_locked(
-                    job.target_id, expected_fingerprint=target_full_version_fingerprint
+        # A nested scope marks the caller's transaction rollback-only on
+        # failure, so a caught freeze error cannot commit a job without its bundle.
+        with self._lock, self.commit_scope():
+            self._validate_evidence_target_locked(
+                job.target_id, expected_fingerprint=target_full_version_fingerprint
+            )
+            self._validate_evidence_governance_locked(subject_epochs)
+            persisted = self._create_or_get_evidence_job_locked(job)
+            validate_freeze_job_request(persisted, job)
+            artifact = self._evidence_artifact_locked(persisted.job_id)
+            if artifact is not None:
+                validate_artifact_request(
+                    artifact,
+                    content_json=canonical_content,
+                    content_digest=artifact_content_digest,
                 )
-                self._validate_evidence_governance_locked(subject_epochs)
-                persisted = self._create_or_get_evidence_job_locked(job)
-                validate_freeze_job_request(persisted, job)
-                artifact = self._evidence_artifact_locked(persisted.job_id)
-                if artifact is not None:
-                    validate_artifact_request(
-                        artifact,
-                        content_json=canonical_content,
-                        content_digest=artifact_content_digest,
+            claim = self._claim_for_freeze_locked(
+                persisted,
+                artifact_exists=artifact is not None,
+                owner=owner,
+                lease_seconds=lease_seconds,
+                now=now,
+            )
+            if artifact is None:
+                if claim is None:
+                    raise OpenWorldEvidenceLeaseConflictError(
+                        "open-world artifact has no writable lease"
                     )
-                claim = self._claim_for_freeze_locked(
-                    persisted,
-                    artifact_exists=artifact is not None,
-                    owner=owner,
-                    lease_seconds=lease_seconds,
+                artifact = self._insert_evidence_artifact_locked(
+                    persisted.job_id,
+                    content_json=canonical_content,
+                    content_digest=artifact_content_digest,
                     now=now,
                 )
-                if artifact is None:
-                    if claim is None:
-                        raise OpenWorldEvidenceLeaseConflictError(
-                            "open-world artifact has no writable lease"
-                        )
-                    artifact = self._insert_evidence_artifact_locked(
-                        persisted.job_id,
-                        content_json=canonical_content,
-                        content_digest=artifact_content_digest,
-                        now=now,
-                    )
-                current = self._evidence_job_locked(persisted.job_id)
-                if current is None:
-                    raise OptimizationArtifactIntegrityError(
-                        "frozen optimizer job disappeared"
-                    )
-                if owns_transaction:
-                    self.conn.commit()
-            except BaseException:
-                if owns_transaction:
-                    self.conn.rollback()
-                raise
+            current = self._evidence_job_locked(persisted.job_id)
+            if current is None:
+                raise OptimizationArtifactIntegrityError(
+                    "frozen optimizer job disappeared"
+                )
         return OpenWorldEvidenceStorageRecord(
             job=current, artifact=artifact, claim=claim
         )
