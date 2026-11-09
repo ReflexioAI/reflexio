@@ -244,6 +244,16 @@ Keep provisioning at that explicit setup boundary; importing a database or
 validation helper must not initialize an operator's environment. Logging retains
 its own existing profile and file behavior.
 
+### Retired usage-credit rollout selector
+
+`POOLED_CREDITS_ENABLED` is no longer a supported input. The shared removal
+registry rejects it in process settings and raw dotenv files, including blanks,
+before exports or blank pruning. Remove its assignment; do not copy its boolean
+into `BILLING_ENFORCEMENT_MODE`. Preserve the intended `observe`/`active` policy.
+The matching server uses priced plan/cohort funding directly; this diagnostic
+does not change a ledger, rewrite settings or authorise money movement. Adopt
+this shared registry together with that server change when upgrading a server.
+
 ## Package Management
 
 - **Python**: Use `uv` (`uv sync`, `uv add`, `uv run <cmd>`, or activate `.venv`)
