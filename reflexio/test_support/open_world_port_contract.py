@@ -27,10 +27,15 @@ All data is synthetic.
 
 Invariants covered
 ------------------
+I1, I2, I9, I19 and the stored playbook's subject ref (D4) -- freezing
+evidence, in
+:class:`~reflexio.test_support.open_world_evidence_contract.OpenWorldEvidenceContract`.
+
 I10, I11, I12 and I18 (exposure part) -- the published-exposure ledger, in
-:class:`~reflexio.test_support.open_world_exposure_contract.PublishedExposureContract`,
-which :class:`OpenWorldPortContract` inherits so no binding can run one half
-without the other.
+:class:`~reflexio.test_support.open_world_exposure_contract.PublishedExposureContract`.
+
+:class:`OpenWorldPortContract` inherits both, so no binding can run one part
+without the others.
 
 I16 -- sweep progress (``OpenWorldSweepProgressStore``):
 
@@ -72,8 +77,11 @@ from reflexio.server.services.offline_tuner.open_world_records import (
     SweepProgressRecord,
     SweepQueueEntry,
 )
+from reflexio.test_support.open_world_evidence_contract import (
+    EvidenceHarness,
+    OpenWorldEvidenceContract,
+)
 from reflexio.test_support.open_world_exposure_contract import (
-    ExposureHarness,
     PublishedExposureContract,
 )
 
@@ -98,7 +106,7 @@ class ProgressRow(NamedTuple):
     attempt_count: int
 
 
-class PortHarness(ExposureHarness, Protocol):
+class PortHarness(EvidenceHarness, Protocol):
     """What a backend binding supplies: the store and direct-write seeders.
 
     Seeders write the backend's tables directly, bypassing the port, so a test
@@ -230,7 +238,7 @@ def _attempted_at(harness: PortHarness, playbook_id: int) -> int:
     return row.attempted_at
 
 
-class OpenWorldPortContract(PublishedExposureContract):
+class OpenWorldPortContract(OpenWorldEvidenceContract, PublishedExposureContract):
     """The port's behaviour, asserted identically on every backend."""
 
     # ----------------------------------------------------------------- I16

@@ -65,9 +65,10 @@ class BaseStorageCore(ABC):  # noqa: B024
         return vars(self).setdefault("_query_embedding_cache_token", object())
 
     def governance_subject_ref_for_user(self, user_id: str) -> str | None:  # noqa: ARG002
-        """Resolve a trusted owner identity; OSS has no governance subject refs.
+        """Resolve a trusted owner identity; ``None`` for a store keeping no refs.
 
-        Managed storage overrides this using its existing owner/tenant resolver.
+        A store that stamps governance subject refs on its rows (SQLite and the
+        managed backends) overrides this with the same derivation it stores.
         Callers must never infer this identity from a supplied learning row.
         """
         return None

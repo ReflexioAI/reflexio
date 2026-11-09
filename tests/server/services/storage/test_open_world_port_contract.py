@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -29,10 +30,18 @@ from reflexio.server.services.offline_tuner.exposure_receipts import (
 )
 from reflexio.server.services.search_exposure import UserPlaybookExposureEvent
 from reflexio.server.services.storage.error import StorageError
-from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.sqlite_storage import (
+    SQLiteStorage,
+    _open_world_evidence,
+)
 from reflexio.server.services.storage.sqlite_storage._open_world import (
     _INSERT_EXPOSURE_SQL,
     _exposure_row,
+)
+from reflexio.test_support.open_world_evidence_contract import (
+    JobRow,
+    call_once_before,
+    jumping_clock,
 )
 from reflexio.test_support.open_world_exposure_contract import ExposureRow
 from reflexio.test_support.open_world_port_contract import (
@@ -187,6 +196,64 @@ class _SQLitePortHarness:
                 f"purge-{uuid4().hex[:8]}",
             ),
         )
+
+    # -- the evidence half of the harness
+
+    governance_registry = False
+    retakes_stranded_freeze = False
+
+    def register_subject(self, user_id: str, *, epoch: int = 0) -> str:
+        assert epoch == 0, "SQLite holds every subject at epoch 0"
+        return self._storage._subject_ref_for_user_id(user_id)  # noqa: SLF001
+
+    def optimization_jobs(self, target_id: int) -> list[JobRow]:
+        rows = self._conn.execute(
+            "SELECT job_id, status, stage, terminal_outcome"
+            " FROM playbook_optimization_jobs WHERE target_id = ? ORDER BY job_id",
+            (target_id,),
+        ).fetchall()
+        return [JobRow(*tuple(row)) for row in rows]
+
+    @contextmanager
+    def fail_artifact_writes(self) -> Iterator[None]:
+        self._conn.execute(
+            "CREATE TEMP TRIGGER contract_refuse_artifact"
+            " BEFORE INSERT ON playbook_optimization_artifacts"
+            " BEGIN SELECT RAISE(ABORT, 'artifact write refused'); END"
+        )
+        try:
+            yield
+        finally:
+            self._conn.execute("DROP TRIGGER IF EXISTS temp.contract_refuse_artifact")
+
+    @contextmanager
+    def second_storage(self) -> Iterator[SQLiteStorage]:
+        other = SQLiteStorage(
+            org_id=self._storage.org_id, db_path=self._storage.db_path
+        )
+        try:
+            yield other
+        finally:
+            other.conn.close()
+
+    @contextmanager
+    def during_snapshot(self, write: Callable[[], None]) -> Iterator[None]:
+        with call_once_before(
+            _open_world_evidence, "resolve_exposure_correlations", write
+        ):
+            yield
+
+    @contextmanager
+    def source_read_budget(self, limit_bytes: int) -> Iterator[None]:
+        with patch.object(
+            _open_world_evidence, "_SOURCE_READ_BYTES_LIMIT", limit_bytes
+        ):
+            yield
+
+    @contextmanager
+    def source_read_clock_jumps(self) -> Iterator[None]:
+        with jumping_clock(_open_world_evidence):
+            yield
 
     def age_progress(self, user_playbook_id: int, *, seconds: int) -> None:
         self._write(
@@ -474,3 +541,52 @@ def test_an_ownerless_playbook_records_no_exposure(
 
     assert len(storage.get_user_interaction("viewer")) == 1
     assert port_harness.exposure_rows("request") == []
+
+
+def test_migrate_gives_owned_playbooks_their_subject_ref(
+    port_harness: _SQLitePortHarness,
+) -> None:
+    """A playbook stored before its ref was written reads it after migrate (D4)."""
+    storage = port_harness.storage
+    owned = port_harness.seed_playbook()
+    ownerless = port_harness.seed_playbook()
+    storage.conn.execute(
+        "UPDATE user_playbooks SET user_id = 'legacy-owner',"
+        " governance_subject_ref = NULL WHERE user_playbook_id = ?",
+        (owned,),
+    )
+    storage.conn.commit()
+    before = storage.get_user_playbook_by_id(owned)
+    assert before is not None and before.governance_subject_ref is None
+
+    storage.migrate()
+    storage.migrate()
+
+    after = storage.get_user_playbook_by_id(owned)
+    assert after is not None
+    assert after.governance_subject_ref == storage._subject_ref_for_user_id(  # noqa: SLF001
+        "legacy-owner"
+    )
+    unowned = storage.get_user_playbook_by_id(ownerless)
+    assert unowned is not None and unowned.governance_subject_ref is None
+
+
+def test_a_freeze_inside_a_commit_scope_rolls_back_with_it(
+    port_harness: _SQLitePortHarness,
+) -> None:
+    """The freeze joins the caller's transaction instead of committing its own."""
+    from reflexio.test_support.open_world_evidence_contract import (
+        _freeze,
+        _frozen_target,
+    )
+
+    playbook, request, now = _frozen_target(port_harness)
+
+    with (
+        pytest.raises(RuntimeError, match="abort the scope"),
+        port_harness.storage.commit_scope(),
+    ):
+        assert _freeze(port_harness, request, now=now).claim is not None
+        raise RuntimeError("abort the scope")
+
+    assert port_harness.optimization_jobs(playbook.user_playbook_id) == []

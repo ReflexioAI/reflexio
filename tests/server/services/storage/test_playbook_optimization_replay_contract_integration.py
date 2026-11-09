@@ -701,7 +701,6 @@ def test_previous_artifact_schema_is_upgraded_without_losing_constraints(
         store.conn.close()
 
     assert not hasattr(BaseStorage, "load_open_world_evidence_snapshot")
-    assert not hasattr(SQLiteStorage, "load_open_world_evidence_snapshot")
 
 
 def test_optimizer_job_rebuild_preserves_deleted_id_high_water_and_repeats(

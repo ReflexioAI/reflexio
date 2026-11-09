@@ -880,6 +880,8 @@ class UserPlaybookStoreMixin:
                     )
                     upid = cur.lastrowid or 0
                     up.user_playbook_id = upid
+                    # The stored row's ref, so the saved model reads back equal.
+                    up.governance_subject_ref = subject_ref
                     _append_event_stmt(
                         self.conn,
                         org_id=self.org_id,
