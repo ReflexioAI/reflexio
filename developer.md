@@ -1742,7 +1742,7 @@ its existing deferred-scope callback and polling cadence. The slot remains held
 through the existing heartbeat stop and claim finalization sequence, including failures. An
 execution timeout is a run failure, rather than evidence of limiter contention.
 The direct explicit-operation executor also reserves before inspecting its queue,
-so a receipt completed while it waits is not executed from a stale snapshot.
+so a receipt completed concurrently before admission is not executed from a stale snapshot.
 
 Both `REFLEXIO_AGGREGATION_CONCURRENCY_LIMIT` and
 `REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS` retain their current meanings
@@ -1751,6 +1751,15 @@ fences protect logical publication; they do not replace ownership of physical
 work that may still be running after a lease expires. Legacy outbox execution and
 synchronous library reruns remain separate follow-up consumers before any
 queue-wait setting can be retired.
+
+Durable scheduler and direct explicit-operation admission now use
+`try_aggregation_capacity`, an immediate admitted/busy decision with no waiter
+queue. Busy requests keep their durable state and use the existing scope deferral
+and polling cadence. This does **not** retire the timeout setting: synchronous
+HTTP aggregation and user-playbook review calls still use the blocking limiter;
+background apply reviews need a safe accepted-work lifecycle before their wait
+policy can be removed. Synchronous library reruns remain a separate ownership
+follow-up. No wait is replaced with a code-owned constant in this change.
 
 The existing heartbeat stop still uses a five-second bounded join. A blocked
 renewal thread may therefore outlive that stop call; this change holds capacity

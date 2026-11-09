@@ -9,8 +9,8 @@ import pytest
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.operation_limiter import (
-    operation_limit,
     reset_operation_limiters_for_tests,
+    try_aggregation_capacity,
 )
 from reflexio.server.services.playbook import (
     aggregation_operations,
@@ -25,7 +25,9 @@ from reflexio.server.services.storage.storage_base.playbook import (
 @pytest.fixture(autouse=True)
 def capacity(monkeypatch):
     monkeypatch.setenv("REFLEXIO_AGGREGATION_CONCURRENCY_LIMIT", "1")
-    monkeypatch.setenv("REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS", "0.001")
+    monkeypatch.delenv(
+        "REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS", raising=False
+    )
     reset_operation_limiters_for_tests()
     yield
     reset_operation_limiters_for_tests()
@@ -77,7 +79,8 @@ def test_repeated_capacity_pressure_never_spends_a_real_operation_attempt(
     heartbeat = Mock(wraps=aggregation_scheduler.AggregationLeaseHeartbeat)
     monkeypatch.setattr(aggregation_scheduler, "AggregationLeaseHeartbeat", heartbeat)
     observations = []
-    with operation_limit(storage.org_id, "aggregation"):
+    with try_aggregation_capacity(storage.org_id) as admitted:
+        assert admitted
         for _ in range(6):
             aggregation_operations.run_explicit_operation(context, owner="worker")
             current = storage.get_playbook_aggregation_operation(operation.operation_id)
@@ -109,11 +112,8 @@ def test_explicit_permit_is_held_through_finalization_and_released_afterward(
     checked = []
 
     def finalize(*args, **kwargs):
-        with (
-            pytest.raises(TimeoutError),
-            operation_limit(storage.org_id, "aggregation", timeout_seconds=0),
-        ):
-            pytest.fail("finalization lost its physical capacity owner")
+        with try_aggregation_capacity(storage.org_id) as admitted:
+            assert not admitted, "finalization lost its physical capacity owner"
         checked.append(True)
         if finish_fails:
             raise RuntimeError("synthetic finalization failure")
@@ -126,8 +126,8 @@ def test_explicit_permit_is_held_through_finalization_and_released_afterward(
     else:
         assert aggregation_operations.run_explicit_operation(context, owner="worker")
     assert checked == [True]
-    with operation_limit(storage.org_id, "aggregation", timeout_seconds=0):
-        pass
+    with try_aggregation_capacity(storage.org_id) as admitted:
+        assert admitted
 
 
 def test_incremental_busy_path_preserves_unclaimed_work_and_sparse_retry_visibility(
@@ -157,7 +157,8 @@ def test_incremental_busy_path_preserves_unclaimed_work_and_sparse_retry_visibil
     scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
         context_provider=lambda: [], on_scope_deferred=deferred
     )
-    with operation_limit(context.org_id, "aggregation"):
+    with try_aggregation_capacity(context.org_id) as admitted:
+        assert admitted
         scheduler._run_context(context)
     storage.claim_due_playbook_aggregation.assert_not_called()
     storage.get_playbook_aggregation_invalidations.assert_not_called()
@@ -181,11 +182,11 @@ def test_explicit_claim_timeout_is_not_misreported_as_capacity_pressure(
     )
     with pytest.raises(TimeoutError, match="claim timed out"):
         aggregation_operations.run_explicit_operation(context, owner="worker")
-    with operation_limit(storage.org_id, "aggregation", timeout_seconds=0):
-        pass
+    with try_aggregation_capacity(storage.org_id) as admitted:
+        assert admitted
 
 
-def test_explicit_queue_is_read_after_admission_so_a_waited_on_receipt_is_fresh(
+def test_explicit_queue_is_read_after_admission_so_concurrently_completed_receipt_is_fresh(
     storage, monkeypatch
 ):
     operation = storage.submit_playbook_aggregation_operation(
@@ -195,8 +196,9 @@ def test_explicit_queue_is_read_after_admission_so_a_waited_on_receipt_is_fresh(
 
     @contextmanager
     def finish_before_admitting(*args, **kwargs):
-        # Another worker finishes while this caller waits for local capacity.
-        with operation_limit(*args, **kwargs):
+        # Another worker completes before this caller receives admission.
+        with try_aggregation_capacity(*args, **kwargs) as admitted:
+            assert admitted
             claim = storage.claim_due_playbook_aggregation(
                 owner="other", lease_seconds=300, agent_version="v1"
             )
@@ -212,10 +214,10 @@ def test_explicit_queue_is_read_after_admission_so_a_waited_on_receipt_is_fresh(
                 backlog_retry_after_seconds=0,
                 min_interval_seconds=3600,
             )
-            yield
+            yield True
 
     monkeypatch.setattr(
-        aggregation_operations, "operation_limit", finish_before_admitting
+        aggregation_operations, "try_aggregation_capacity", finish_before_admitting
     )
     assert (
         aggregation_operations.run_explicit_operation(
@@ -248,11 +250,8 @@ def test_incremental_execution_timeout_is_a_run_failure_and_keeps_capacity_throu
     finalizations = []
 
     def finalize(*args, **kwargs):
-        with (
-            pytest.raises(TimeoutError),
-            operation_limit(storage.org_id, "aggregation", timeout_seconds=0),
-        ):
-            pytest.fail("capacity released before incremental cleanup")
+        with try_aggregation_capacity(storage.org_id) as admitted:
+            assert not admitted, "capacity released before incremental cleanup"
         finalizations.append(kwargs["success"])
         return finish(*args, **kwargs)
 
@@ -269,8 +268,8 @@ def test_incremental_execution_timeout_is_a_run_failure_and_keeps_capacity_throu
         == f"playbook-aggregation-run:{storage.org_id}:None:v1"
     )
     assert "limiter_saturated" not in caplog.text
-    with operation_limit(storage.org_id, "aggregation", timeout_seconds=0):
-        pass
+    with try_aggregation_capacity(storage.org_id) as admitted:
+        assert admitted
 
 
 def test_capacity_pressure_on_one_org_does_not_stop_another_org(
@@ -280,7 +279,8 @@ def test_capacity_pressure_on_one_org_does_not_stop_another_org(
     stub_execution(monkeypatch)
     try:
         operation = other.submit_playbook_aggregation_operation("other", "v1")
-        with operation_limit(storage.org_id, "aggregation"):
+        with try_aggregation_capacity(storage.org_id) as admitted:
+            assert admitted
             assert aggregation_operations.run_explicit_operation(
                 context_for(other), owner="worker"
             )

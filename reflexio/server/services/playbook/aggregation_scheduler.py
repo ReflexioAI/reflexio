@@ -8,7 +8,6 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable
-from contextlib import ExitStack
 from typing import Any
 
 from reflexio.durable_learning_policy import (
@@ -24,7 +23,7 @@ from reflexio.server.background_work import (
     report_background_success,
 )
 from reflexio.server.extensions import get_service
-from reflexio.server.operation_limiter import operation_limit
+from reflexio.server.operation_limiter import try_aggregation_capacity
 from reflexio.server.scheduling import LeaderGate, ThreadedScheduler
 from reflexio.server.services.playbook.aggregation_prompt_processing import (
     AGGREGATION_PROMPT_PROCESSOR,
@@ -331,10 +330,8 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         if context.storage is None:
             return
         self._active_stage = "admission"
-        with ExitStack() as capacity:
-            try:
-                capacity.enter_context(operation_limit(context.org_id, "aggregation"))
-            except TimeoutError:
+        with try_aggregation_capacity(context.org_id) as admitted:
+            if not admitted:
                 self._defer_scope(context, self._poll_interval_seconds)
                 logger.warning(
                     "event=playbook_aggregation_progress state=deferred org_id=%s "

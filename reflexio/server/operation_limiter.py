@@ -6,7 +6,7 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -412,6 +412,39 @@ def _state_for(org_id: str, operation: OperationName) -> _LimiterState:
             )
             _limiters[key] = state
         return state
+
+
+@contextmanager
+def try_aggregation_capacity(org_id: str) -> Iterator[bool]:
+    """Reserve physical aggregation capacity immediately, or report busy.
+
+    The durable scheduler owns queued work. This interface has no waiter,
+    timeout or attempt side effects; an admitted owner retains its permit until
+    its execution and existing finalization sequence exit.
+    """
+    validate_aggregation_timing_env(os.environ)
+    state = _state_for(org_id, "aggregation")
+    acquired = state.semaphore.acquire(blocking=False)
+    try:
+        with _limiters_lock:
+            if acquired:
+                state.active += 1
+            active = state.active
+            waiting = state.waiting
+        _record_limiter_event(
+            org_id=org_id,
+            operation="aggregation",
+            event_name="limiter_acquired" if acquired else "limiter_busy",
+            outcome="acquired" if acquired else "deferred",
+            wait_ms=0,
+            waiting=waiting,
+            limit=state.limit,
+            active=active,
+        )
+        yield acquired
+    finally:
+        if acquired:
+            _release_operation(state)
 
 
 def _record_limiter_event(

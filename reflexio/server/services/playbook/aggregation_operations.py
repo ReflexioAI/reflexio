@@ -2,7 +2,6 @@
 
 import logging
 from collections.abc import Callable
-from contextlib import ExitStack
 
 from reflexio.lib.generation_client import create_generation_litellm_client
 from reflexio.server.api_endpoints.request_context import RequestContext
@@ -11,7 +10,7 @@ from reflexio.server.background_work import (
     report_background_success,
 )
 from reflexio.server.extensions import get_service
-from reflexio.server.operation_limiter import operation_limit
+from reflexio.server.operation_limiter import try_aggregation_capacity
 from reflexio.server.services.playbook.aggregation_prompt_processing import (
     AGGREGATION_PROMPT_PROCESSOR,
 )
@@ -46,10 +45,8 @@ def run_explicit_operation(
         storage, "supports_durable_playbook_aggregation_operations", False
     ):
         return False
-    with ExitStack() as capacity:
-        try:
-            capacity.enter_context(operation_limit(context.org_id, "aggregation"))
-        except TimeoutError:
+    with try_aggregation_capacity(context.org_id) as admitted:
+        if not admitted:
             return True
         return _run_admitted_operation(
             context,
