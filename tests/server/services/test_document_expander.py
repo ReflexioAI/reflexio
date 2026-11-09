@@ -254,6 +254,29 @@ def test_expansion_resumes_once_the_circuit_is_due_for_its_probe(
     assert expander.expand("backup").expansions == {"backup": ["sync"]}
 
 
+def test_a_route_due_for_its_probe_is_not_held_back_by_a_sibling(
+    clean_circuit, monkeypatch
+):
+    """Another route of the model still open must not starve this one's probe."""
+    from reflexio.server.llm import provider_circuit as circuit_module
+
+    clock = [1000.0]
+    monkeypatch.setattr(circuit_module.provider_circuit, "_clock", lambda: clock[0])
+    expander = _make_expander()
+    as_mock(expander.llm_client.generate_response).return_value = json.dumps(
+        {"backup": ["sync"]}
+    )
+    _open_circuit(MODEL)  # this route: due after FIRST_OPEN_SECONDS
+    clock[0] += circuit_module.FIRST_OPEN_SECONDS / 2
+    sibling = circuit_module.circuit_route({"model": MODEL, "api_key": "other"})
+    for _ in range(circuit_module.OPEN_AFTER_FAILURES):
+        circuit_module.provider_circuit.admit(sibling, model=MODEL).failed()
+    assert expander.expand("backup") == ExpansionResult()
+
+    clock[0] += circuit_module.FIRST_OPEN_SECONDS / 2  # first due, sibling not
+    assert expander.expand("backup").expansions == {"backup": ["sync"]}
+
+
 def test_refused_call_logs_info_not_warning(clean_circuit, caplog):
     """A refusal that races the pre-check is the outage, already reported."""
     from reflexio.server.llm.provider_circuit import (

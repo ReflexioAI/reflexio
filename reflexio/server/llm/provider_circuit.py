@@ -208,17 +208,23 @@ class ProviderCircuitBreaker:
         budget on a provider that is down. Unlike the charging decision, this
         reads every route of the model, not one: such a caller cannot name its
         route before the client resolves the credential, and skipping costs
-        only the optional result. A route's own probe is never suppressed: once
-        its open period ends this returns ``False`` again.
+        only the optional result. A probe is never suppressed: while any route
+        of the model is due for one, this returns ``False``, whatever its
+        sibling routes say.
         """
         with self._lock:
             now = self._clock()
-            return any(
-                circuit.model == model
-                and circuit.open_until is not None
-                and now < circuit.open_until
-                for circuit in self._circuits.values()
-            )
+            refusing = False
+            for circuit in self._circuits.values():
+                if circuit.model != model or circuit.open_until is None:
+                    continue
+                if now < circuit.open_until:
+                    refusing = True
+                elif circuit.probe_started is None or (
+                    now - circuit.probe_started >= _PROBE_STALE_SECONDS
+                ):
+                    return False
+            return refusing
 
     def reset(self) -> None:
         """Forget every breaker. Test-only."""
