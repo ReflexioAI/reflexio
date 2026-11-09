@@ -8,6 +8,8 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import threading
+import weakref
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -185,6 +187,77 @@ def pytest_runtest_teardown(
     stats._stats.clear()
 
 
+# Thread name of every ``DurableLearningScheduler``; the guard's own test starts
+# a real scheduler, so a rename fails there rather than blinding the guard.
+_DURABLE_SCHEDULER_THREAD_NAME = "reflexio-durable-learning-scheduler"
+# A leaked thread is reported against the test that leaked it, not every later one.
+_reported_durable_threads: weakref.WeakSet[threading.Thread] = weakref.WeakSet()
+
+
+def _stop_local_schedulers() -> None:
+    """Stop and join the library schedulers that poll a test's storage.
+
+    Constructing a library engine starts a durable-learning scheduler for its
+    storage directory (and publishing may start an aggregation scheduler).
+    Left running, they poll deleted SQLite directories, log discovery failures
+    into later tests' caplog, and race fixture teardown that closes the
+    storage connection they are reading -- an unlocked ``conn.close()`` during
+    a concurrent query segfaults CPython's sqlite3 and kills the xdist worker.
+    """
+    scheduler_module = sys.modules.get(
+        "reflexio.server.services.playbook.aggregation_scheduler"
+    )
+    if scheduler_module is not None:
+        for scheduler in list(scheduler_module._LOCAL_SCHEDULERS.values()):
+            scheduler.stop(timeout_seconds=5)
+            assert not scheduler.is_running(), (
+                "test-owned aggregation scheduler did not stop"
+            )
+    # Stop outside ``_lock``: the scheduler's discovery callback takes it.
+    durable_module = sys.modules.get("reflexio.server.services.durable_learning.local")
+    if durable_module is not None:
+        with durable_module._lock:
+            durable = list(durable_module._schedulers.values())
+            durable_module._schedulers.clear()
+        for scheduler in durable:
+            scheduler.stop(timeout_seconds=5)
+            assert not scheduler.is_running(), (
+                "test-owned durable learning scheduler did not stop"
+            )
+
+
+def _new_leaked_durable_scheduler_threads() -> list[threading.Thread]:
+    """Return live durable-scheduler threads not yet reported, marking them reported."""
+    leaked = [
+        thread
+        for thread in threading.enumerate()
+        if thread.name == _DURABLE_SCHEDULER_THREAD_NAME
+        and thread.is_alive()
+        and thread not in _reported_durable_threads
+    ]
+    _reported_durable_threads.update(leaked)
+    return leaked
+
+
+@pytest.hookimpl(specname="pytest_runtest_teardown", wrapper=True, tryfirst=True)
+def pytest_runtest_teardown_stops_schedulers() -> Iterator[None]:
+    """Stop local schedulers before any finalizer runs; fail a test that leaks one.
+
+    Root autouse fixtures are set up first and therefore finalized last, so a
+    test fixture that closes its storage connection would otherwise do so while
+    the library scheduler is still reading it.
+    """
+    _stop_local_schedulers()
+    result = yield
+    leaked = _new_leaked_durable_scheduler_threads()
+    if leaked:
+        raise AssertionError(
+            f"{len(leaked)} durable learning scheduler thread(s) still running "
+            "after teardown; stop() the scheduler this test started"
+        )
+    return result
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
     """Scratch exhaustion is infrastructure failure, never a mutation kill."""
@@ -318,31 +391,9 @@ def _reset_runtime_services() -> Iterator[None]:
     run_token_capture.set(None)
     reset_services()
     provider_circuit.reset()
-    # Local schedulers capture a test's context and storage. Stop them before
-    # the next test; otherwise they keep polling deleted SQLite directories
-    # and mutmut records their utility calls against unrelated tests.
-    scheduler_module = sys.modules.get(
-        "reflexio.server.services.playbook.aggregation_scheduler"
-    )
-    if scheduler_module is not None:
-        for scheduler in list(scheduler_module._LOCAL_SCHEDULERS.values()):
-            scheduler.stop(timeout_seconds=5)
-            assert not scheduler.is_running(), (
-                "test-owned aggregation scheduler did not stop"
-            )
-    # Constructing a library engine starts a durable-learning scheduler for its
-    # storage directory; left running it logs discovery failures into later
-    # tests' caplog. Stop outside ``_lock``: the scheduler's callback takes it.
-    durable_module = sys.modules.get("reflexio.server.services.durable_learning.local")
-    if durable_module is not None:
-        with durable_module._lock:
-            durable = list(durable_module._schedulers.values())
-            durable_module._schedulers.clear()
-        for scheduler in durable:
-            scheduler.stop(timeout_seconds=5)
-            assert not scheduler.is_running(), (
-                "test-owned durable learning scheduler did not stop"
-            )
+    # The teardown hook already stopped these before any finalizer ran; this
+    # catches a scheduler a finalizer itself started.
+    _stop_local_schedulers()
     for var in _OSS_TEST_POLLUTING_ENV_VARS:
         os.environ.pop(var, None)
 
