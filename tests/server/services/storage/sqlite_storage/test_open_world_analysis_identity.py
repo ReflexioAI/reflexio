@@ -246,19 +246,24 @@ def test_open_world_analysis_artifact_round_trips(
     )
 
 
-def test_sqlite_does_not_expose_open_world_invocations(
+def test_open_world_invocations_are_a_port_member_not_a_base_one(
     storage: SQLiteStorage,
 ) -> None:
+    """SQLite carries the invocation ledger as ``OpenWorldStoragePort`` members.
+
+    ``BaseStorage`` stays without them: a backend that is not an open-world
+    store is not asked for them.
+    """
     table = storage.conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' "
         "AND name = 'offline_tuner_open_world_invocations'"
     ).fetchone()
 
-    assert table is None
+    assert table is not None
     for method_name in (
         "prepare_open_world_invocation",
         "complete_open_world_invocation",
         "load_open_world_invocation",
     ):
         assert not hasattr(BaseStorage, method_name)
-        assert not hasattr(SQLiteStorage, method_name)
+        assert hasattr(SQLiteStorage, method_name)

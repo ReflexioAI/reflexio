@@ -11,6 +11,7 @@ from ._extraction_stream import SQLiteExtractionStreamMixin, SQLiteStreamSQL
 from ._extras import ExtrasMixin
 from ._lineage import SQLiteLineageMixin
 from ._open_world import SQLiteOpenWorldMixin
+from ._open_world_attempt import SQLiteOpenWorldAttemptMixin
 from ._open_world_evidence import SQLiteOpenWorldEvidenceMixin
 from ._operations import OperationMixin
 from ._requests import RequestMixin
@@ -64,6 +65,7 @@ class SQLiteStorage(
     SQLiteLineageMixin,
     SQLiteOpenWorldMixin,
     SQLiteOpenWorldEvidenceMixin,
+    SQLiteOpenWorldAttemptMixin,
     OperationMixin,
     ExtrasMixin,
     SQLiteStallStateMixin,

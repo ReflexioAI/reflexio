@@ -40,6 +40,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from reflexio.models.api_schema.domain import Interaction
+from reflexio.server.services.offline_tuner.evidence.shared_compaction_checkpoint import (
+    ROW_BYTES,
+)
 from reflexio.server.services.offline_tuner.exposure_receipts import (
     PUBLISHED_EXPOSURE_PREFIX,
     build_published_exposure_events,
@@ -114,6 +117,162 @@ CREATE INDEX IF NOT EXISTS idx_up_exposure_events_request_id
     ON user_playbook_exposure_events(request_id);
 """
 
+
+def _hex64(column: str) -> str:
+    """A CHECK fragment: ``column`` is 64 lowercase hex characters."""
+    return f"(length({column}) = 64 AND {column} NOT GLOB '*[^0-9a-f]*')"
+
+
+# The durable attempt state. Each child row cascades from its optimizer job.
+# The qualification authority is a singleton with no job. The checks restate
+# the PostgreSQL ones, except that no 'confirmation' role is admitted: only the
+# online confirmation analyst writes that role, and SQLite has none.
+_ATTEMPT_DDL = f"""
+CREATE TABLE IF NOT EXISTS offline_tuner_open_world_qualification_authority (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    epoch INTEGER NOT NULL CHECK (epoch > 0),
+    state TEXT NOT NULL,
+    authority_digest TEXT NOT NULL CHECK {_hex64("authority_digest")},
+    discovery_component_identity_digest TEXT,
+    discovery_qualification_suite_digest TEXT,
+    discovery_qualification_result_digest TEXT,
+    held_out_component_identity_digest TEXT,
+    held_out_qualification_suite_digest TEXT,
+    held_out_qualification_result_digest TEXT,
+    candidate_generator_identity_digest TEXT,
+    candidate_generator_authorization_digest TEXT,
+    unavailable_reason TEXT,
+    updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+    method_authority_json TEXT,
+    CHECK (
+        (state = 'active' AND unavailable_reason IS NULL
+         AND {_hex64("discovery_component_identity_digest")}
+         AND {_hex64("discovery_qualification_suite_digest")}
+         AND {_hex64("discovery_qualification_result_digest")}
+         AND {_hex64("candidate_generator_identity_digest")}
+         AND {_hex64("candidate_generator_authorization_digest")}
+         AND method_authority_json IS NOT NULL
+         AND held_out_component_identity_digest IS NULL
+         AND held_out_qualification_suite_digest IS NULL
+         AND held_out_qualification_result_digest IS NULL)
+        OR (state = 'unavailable' AND trim(unavailable_reason) != ''
+         AND discovery_component_identity_digest IS NULL
+         AND discovery_qualification_suite_digest IS NULL
+         AND discovery_qualification_result_digest IS NULL
+         AND held_out_component_identity_digest IS NULL
+         AND held_out_qualification_suite_digest IS NULL
+         AND held_out_qualification_result_digest IS NULL
+         AND candidate_generator_identity_digest IS NULL
+         AND candidate_generator_authorization_digest IS NULL)
+    )
+);
+
+CREATE TABLE IF NOT EXISTS offline_tuner_open_world_attempt_context (
+    job_id INTEGER PRIMARY KEY
+        REFERENCES playbook_optimization_jobs(job_id) ON DELETE CASCADE,
+    bundle_digest TEXT NOT NULL CHECK {_hex64("bundle_digest")},
+    outcome_contract_digest TEXT NOT NULL CHECK {_hex64("outcome_contract_digest")},
+    manifest_json TEXT NOT NULL CHECK (json_type(manifest_json) = 'array'),
+    discovery_component_identity_digest TEXT NOT NULL,
+    discovery_qualification_suite_digest TEXT NOT NULL,
+    discovery_qualification_result_digest TEXT NOT NULL,
+    held_out_component_identity_digest TEXT,
+    held_out_qualification_suite_digest TEXT,
+    held_out_qualification_result_digest TEXT,
+    candidate_generator_identity_digest TEXT NOT NULL,
+    candidate_generator_authorization_digest TEXT NOT NULL,
+    context_json TEXT NOT NULL,
+    context_digest TEXT NOT NULL CHECK {_hex64("context_digest")},
+    created_at INTEGER NOT NULL,
+    qualification_authority_epoch INTEGER NOT NULL
+        CHECK (qualification_authority_epoch > 0),
+    qualification_authority_digest TEXT NOT NULL
+        CHECK {_hex64("qualification_authority_digest")}
+);
+
+CREATE TABLE IF NOT EXISTS offline_tuner_open_world_invocations (
+    analyst_input_identity TEXT PRIMARY KEY
+        CHECK {_hex64("analyst_input_identity")},
+    job_id INTEGER NOT NULL
+        REFERENCES playbook_optimization_jobs(job_id) ON DELETE CASCADE,
+    component_identity_digest TEXT NOT NULL
+        CHECK {_hex64("component_identity_digest")},
+    expected_provider TEXT NOT NULL,
+    expected_model_revision TEXT NOT NULL,
+    input_digest TEXT NOT NULL CHECK {_hex64("input_digest")},
+    component_role TEXT NOT NULL,
+    manifest_role TEXT,
+    user_id TEXT,
+    session_id TEXT,
+    state TEXT NOT NULL DEFAULT 'prepared',
+    output_json TEXT,
+    output_digest TEXT,
+    observed_provider TEXT,
+    observed_model_revision TEXT,
+    called_at INTEGER,
+    latency_ms INTEGER,
+    usage_json TEXT,
+    prepared_at INTEGER NOT NULL,
+    completed_at INTEGER,
+    qualification_result_digest TEXT NOT NULL
+        CHECK {_hex64("qualification_result_digest")},
+    trajectory_digest TEXT,
+    candidate_artifact_digest TEXT,
+    candidate_analyst_input_identity TEXT,
+    CHECK (
+        (component_role IN ('discovery', 'candidate') AND manifest_role IS NULL
+         AND user_id IS NULL AND session_id IS NULL
+         AND trajectory_digest IS NULL AND candidate_artifact_digest IS NULL
+         AND candidate_analyst_input_identity IS NULL)
+        OR (component_role = 'discovery' AND manifest_role = 'discovery'
+         AND user_id IS NOT NULL AND session_id IS NOT NULL
+         AND {_hex64("trajectory_digest")}
+         AND candidate_artifact_digest IS NULL
+         AND candidate_analyst_input_identity IS NULL)
+        OR (component_role = 'held_out'
+         AND manifest_role IN ('held_out', 'safety_only')
+         AND user_id IS NOT NULL AND session_id IS NOT NULL
+         AND {_hex64("trajectory_digest")}
+         AND {_hex64("candidate_artifact_digest")}
+         AND {_hex64("candidate_analyst_input_identity")})
+    ),
+    CHECK (
+        (state = 'prepared' AND output_json IS NULL AND output_digest IS NULL
+         AND observed_provider IS NULL AND observed_model_revision IS NULL
+         AND called_at IS NULL AND latency_ms IS NULL AND usage_json IS NULL
+         AND completed_at IS NULL)
+        OR (state = 'completed' AND output_json IS NOT NULL
+         AND {_hex64("output_digest")}
+         AND observed_provider IS NOT NULL AND observed_model_revision IS NOT NULL
+         AND called_at IS NOT NULL AND latency_ms >= 0 AND completed_at IS NOT NULL)
+    )
+);
+-- One row per question slot of a job: NULLs compare equal, as the PostgreSQL
+-- index's NULLS NOT DISTINCT makes them.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_open_world_invocations_manifest_slot
+    ON offline_tuner_open_world_invocations(
+        job_id, component_role, COALESCE(manifest_role, ''),
+        COALESCE(user_id, ''), COALESCE(session_id, '')
+    );
+CREATE INDEX IF NOT EXISTS idx_open_world_invocations_user
+    ON offline_tuner_open_world_invocations(user_id);
+
+CREATE TABLE IF NOT EXISTS offline_tuner_session_compactions (
+    job_id INTEGER NOT NULL
+        REFERENCES playbook_optimization_jobs(job_id) ON DELETE CASCADE,
+    compaction_identity TEXT NOT NULL CHECK {_hex64("compaction_identity")},
+    batches INTEGER NOT NULL CHECK (batches BETWEEN 1 AND 128),
+    complete INTEGER NOT NULL DEFAULT 0 CHECK (complete IN (0, 1)),
+    content_json TEXT NOT NULL
+        CHECK (length(CAST(content_json AS BLOB)) <= {ROW_BYTES}),
+    content_digest TEXT NOT NULL CHECK {_hex64("content_digest")},
+    PRIMARY KEY (job_id, compaction_identity)
+);
+CREATE INDEX IF NOT EXISTS idx_session_compactions_reuse
+    ON offline_tuner_session_compactions(compaction_identity, job_id DESC)
+    WHERE complete = 1;
+"""
+
 #: Every stored column of an exposure row, in ``UserPlaybookExposureEvent``
 #: field order, then the two integrity columns.
 _EXPOSURE_COLUMNS = (
@@ -163,6 +322,8 @@ def migrate_open_world(conn: sqlite3.Connection) -> None:
     _rebuild_exposure_ledger_without_integrity(conn)
     with conn:
         conn.executescript("BEGIN;\n" + _EXPOSURE_DDL + "\nCOMMIT;")
+    with conn:
+        conn.executescript("BEGIN;\n" + _ATTEMPT_DDL + "\nCOMMIT;")
 
 
 def _rebuild_exposure_ledger_without_integrity(conn: sqlite3.Connection) -> None:

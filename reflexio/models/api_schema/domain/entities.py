@@ -598,9 +598,7 @@ OptimizationTerminalOutcome = Literal[
     # Split out of 'infrastructure_failure', which promises "transient, we will
     # try again" -- the opposite of the true instruction, which is to drain the
     # row (the deploy precondition inherited from tenant 20260903010000) or
-    # terminalize it deliberately. Absent from the SQLite allowlist: SQLite
-    # carries no open-world evidence bundle store, so no bundle can be frozen
-    # there to go stale.
+    # terminalize it deliberately.
     "bundle_schema_unsupported",
     # The two below are admitted AHEAD OF THEIR WRITERS. Both belong to the
     # scheduled-execution project, whose Python lands separately, and both are

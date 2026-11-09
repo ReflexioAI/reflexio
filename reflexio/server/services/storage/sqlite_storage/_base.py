@@ -20,7 +20,7 @@ from collections.abc import Callable, Generator, Mapping, Sequence
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, get_args
 
 from reflexio.models.api_schema.common import BlockingIssue
 from reflexio.models.api_schema.service_schemas import (
@@ -28,6 +28,7 @@ from reflexio.models.api_schema.service_schemas import (
     AgentSuccessEvaluationResult,
     Citation,
     Interaction,
+    OptimizationTerminalOutcome,
     PlaybookStatus,
     ProfileTimeToLive,
     RegularVsShadow,
@@ -106,6 +107,18 @@ _RETIRED_OPTIMIZER_JOB_LITERALS: tuple[str, ...] = (
     "'replay_failed'",
 )
 _RETIRED_ARTIFACT_KIND_LITERALS: tuple[str, ...] = ("'replay_manifest'",)
+#: Every ``OptimizationTerminalOutcome`` as a quoted SQL literal. The job
+#: table's ``terminal_outcome`` CHECK is built from this list, and a table
+#: whose CHECK misses any of them is rebuilt, so a member added to the type
+#: is admitted by the next migrate with no hand-edited literal list.
+_TERMINAL_OUTCOME_LITERALS: tuple[str, ...] = tuple(
+    f"'{outcome}'" for outcome in get_args(OptimizationTerminalOutcome)
+)
+_TERMINAL_OUTCOME_CHECK = (
+    "terminal_outcome TEXT CHECK (terminal_outcome IS NULL OR terminal_outcome IN ("
+    + ", ".join(_TERMINAL_OUTCOME_LITERALS)
+    + "))"
+)
 _SQLITE_INITIALIZATION_LOCK_STRIPES = 64
 _sqlite_initialization_locks = tuple(
     threading.Lock() for _ in range(_SQLITE_INITIALIZATION_LOCK_STRIPES)
@@ -2585,13 +2598,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "'governance_erased'",
             "'discovery_analyzed'",
             "'held_out_analyzed'",
-            "'no_grounded_hypothesis'",
-            "'analyst_unqualified'",
-            "'heldout_evidence_failed'",
-            "'stale_incumbent'",
-            "'governance_invalidated'",
-            "'infrastructure_failure'",
-            "'evidence_view_incomplete'",
+            *_TERMINAL_OUTCOME_LITERALS,
         )
         if all(check in table_sql for check in required_checks) and not any(
             retired in table_sql for retired in _RETIRED_OPTIMIZER_JOB_LITERALS
@@ -2643,26 +2650,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     'abstained',
                     'failed'
                 )),
-                terminal_outcome TEXT CHECK (terminal_outcome IS NULL OR terminal_outcome IN (
-                    'applied',
-                    'insufficient_negative_evidence',
-                    'insufficient_positive_evidence',
-                    'insufficient_coverage',
-                    'deployment_unsupported',
-                    'candidate_regressed',
-                    'candidate_did_not_improve',
-                    'incumbent_changed',
-                    'generation_failed',
-                    'publication_failed',
-                    'governance_erased',
-                    'no_grounded_hypothesis',
-                    'analyst_unqualified',
-                    'heldout_evidence_failed',
-                    'stale_incumbent',
-                    'governance_invalidated',
-                    'infrastructure_failure',
-                    'evidence_view_incomplete'
-                )),
+                __TERMINAL_OUTCOME_CHECK__,
                 expected_population_manifest_digest TEXT,
                 generation_selection_manifest_digest TEXT,
                 replay_manifest_digest TEXT,
@@ -2672,7 +2660,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             )
-            """
+            """.replace("__TERMINAL_OUTCOME_CHECK__", _TERMINAL_OUTCOME_CHECK)
             )
             # Phase 7 review finding P4-2. The pre-existing legacy sweep in
             # _classify_legacy_playbook_optimization_jobs retires every ACTIVE
@@ -3576,6 +3564,13 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 exposure_events_deleted = self._delete_exposure_events_for_user_locked(
                     user_id
                 )
+                # Open-world analyst calls about this user's sessions, as the
+                # PostgreSQL clear deletes them; their jobs stay.
+                self.conn.execute(
+                    "DELETE FROM offline_tuner_open_world_invocations"
+                    " WHERE user_id = ?",
+                    (user_id,),
+                )
                 interactions_cur = self.conn.execute(
                     "DELETE FROM interactions WHERE user_id = ?", (user_id,)
                 )
@@ -3901,26 +3896,7 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_jobs (
         'abstained',
         'failed'
     )),
-    terminal_outcome TEXT CHECK (terminal_outcome IS NULL OR terminal_outcome IN (
-        'applied',
-        'insufficient_negative_evidence',
-        'insufficient_positive_evidence',
-        'insufficient_coverage',
-        'deployment_unsupported',
-        'candidate_regressed',
-        'candidate_did_not_improve',
-        'incumbent_changed',
-        'generation_failed',
-        'publication_failed',
-        'governance_erased',
-        'no_grounded_hypothesis',
-        'analyst_unqualified',
-        'heldout_evidence_failed',
-        'stale_incumbent',
-        'governance_invalidated',
-        'infrastructure_failure',
-        'evidence_view_incomplete'
-    )),
+    __TERMINAL_OUTCOME_CHECK__,
     expected_population_manifest_digest TEXT,
     generation_selection_manifest_digest TEXT,
     replay_manifest_digest TEXT,
@@ -4437,4 +4413,4 @@ CREATE TABLE IF NOT EXISTS lineage_event (
     UNIQUE (org_id, entity_type, entity_id, op, request_id)
 );
 CREATE INDEX IF NOT EXISTS idx_lineage_entity ON lineage_event (entity_type, entity_id);
-"""
+""".replace("__TERMINAL_OUTCOME_CHECK__", _TERMINAL_OUTCOME_CHECK)

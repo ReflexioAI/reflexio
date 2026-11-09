@@ -16,11 +16,6 @@ both to the same answers. What SQLite answers differently, and why:
   epochs. Every subject is at epoch 0 and writable unless an erasure barrier
   (``subject_write_barriers``) holds it. Postgres also refuses a subject its
   registry does not list.
-* **Stranded jobs.** Postgres terminalizes a previous day's abandoned job
-  (``terminal_outcome='abandoned'``) before freezing a new one. SQLite's job
-  table does not admit that outcome yet, so a freeze that finds another
-  identity's active job refuses with ``OptimizationJobIdentityConflictError``,
-  as Postgres does when the abandoned job still holds a live lease.
 * **Outcome contracts.** SQLite stores no contract rows. An outcome's contract
   counts as registered when its stored digest is the one the session-outcome
   writer derives from the outcome's own ``source``.
@@ -39,6 +34,7 @@ exhausting either refuses the snapshot rather than returning a partial source.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from hashlib import sha256
@@ -122,6 +118,8 @@ from .playbook._optimization import (
     _row_to_playbook_optimization_job,
 )
 
+logger = logging.getLogger(__name__)
+
 _EXPOSURE_PAGE_SIZE = 500
 #: Sessions, requests or pairs per ``IN`` / ``VALUES`` list.
 _KEY_CHUNK_SIZE = 500
@@ -136,6 +134,25 @@ _SOURCE_READ_DEADLINE_SECONDS = 30.0
 _RETAINED_SOURCE_BYTES_LIMIT = 64 * 1024 * 1024
 SOURCE_READ_BUDGET_EXCEEDED = "evidence_source_read_budget_exceeded"
 SOURCE_READ_DEADLINE_EXCEEDED = "evidence_source_read_deadline_exceeded"
+
+_ABANDONED_TERMINAL_OUTCOME = "abandoned"
+
+#: Take a job's free lease under a new fence.
+_CLAIM_SQL = """UPDATE playbook_optimization_jobs
+    SET lease_owner = ?, lease_fence = lease_fence + 1,
+        lease_expires_at = ?, status = 'running', updated_at = ?
+    WHERE job_id = ? AND status IN ('pending', 'running')
+      AND lease_owner IS NULL
+    RETURNING job_id, lease_owner, lease_fence, lease_expires_at"""
+
+#: Take a job's expired lease under a new fence.
+_RECLAIM_SQL = """UPDATE playbook_optimization_jobs
+    SET lease_owner = ?, lease_fence = lease_fence + 1,
+        lease_expires_at = ?, status = 'running', updated_at = ?
+    WHERE job_id = ? AND status IN ('pending', 'running')
+      AND lease_owner IS NOT NULL
+      AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+    RETURNING job_id, lease_owner, lease_fence, lease_expires_at"""
 
 _ACTIVE_JOB_SQL = """SELECT * FROM playbook_optimization_jobs
     WHERE optimizer_kind = ? AND {column} = ?
@@ -250,6 +267,7 @@ class SQLiteOpenWorldEvidenceMixin:
     commit_scope: Any
     _active_subject_barrier_locked: Any
     _outcome_contract_digest: Any
+    _advance_playbook_optimization_stage_locked: Any
 
     # ------------------------------------------------------------------
     # OpenWorldBundleStorage
@@ -283,7 +301,7 @@ class SQLiteOpenWorldEvidenceMixin:
             OpenWorldEvidenceGovernanceError: A subject is not at epoch 0 or is
                 under erasure, or the job names another tenant.
             OptimizationJobIdentityConflictError: The target's active job has
-                another immutable identity.
+                another immutable identity and a live lease.
             OpenWorldEvidenceLeaseConflictError: Another owner holds the live
                 lease and no artifact is stored yet.
             OptimizationArtifactIntegrityError: The request does not agree with
@@ -317,7 +335,13 @@ class SQLiteOpenWorldEvidenceMixin:
                 job.target_id, expected_fingerprint=target_full_version_fingerprint
             )
             self._validate_evidence_governance_locked(subject_epochs)
-            persisted = self._create_or_get_evidence_job_locked(job)
+            persisted = self._retake_stranded_job_locked(
+                self._create_or_get_evidence_job_locked(job),
+                request=job,
+                owner=owner,
+                lease_seconds=lease_seconds,
+                now=now,
+            )
             validate_freeze_job_request(persisted, job)
             artifact = self._evidence_artifact_locked(persisted.job_id)
             if artifact is not None:
@@ -632,6 +656,73 @@ class SQLiteOpenWorldEvidenceMixin:
             )
         return job
 
+    def _retake_stranded_job_locked(
+        self,
+        persisted: PlaybookOptimizationJob,
+        *,
+        request: PlaybookOptimizationJob,
+        owner: str,
+        lease_seconds: int,
+        now: int,
+    ) -> PlaybookOptimizationJob:
+        """Terminalize an expired job of another identity, then create anew.
+
+        A worker that dies mid-attempt leaves its job active. The next day's
+        freeze carries new discovery and attempt keys, so the target lookup
+        returns that stranded job and identity validation would refuse it
+        forever. When the stranded lease can be taken -- it is free or has
+        expired -- the job is terminalized as ``failed``/``abandoned`` and
+        the freeze creates its own. A live lease is never taken: the lease
+        predicates refuse it, and the identity conflict stands.
+
+        Returns:
+            PlaybookOptimizationJob: ``persisted`` when its identity agrees,
+            otherwise the newly created job.
+
+        Raises:
+            OptimizationJobIdentityConflictError: The stranded job still holds
+                a live lease, or could not be terminalized.
+        """
+        try:
+            validate_freeze_job_request(persisted, request)
+        except OptimizationJobIdentityConflictError:
+            pass
+        else:
+            return persisted
+        expires_at = now + lease_seconds
+        if persisted.lease_owner is None:
+            row = self.conn.execute(
+                _CLAIM_SQL, (owner, expires_at, now, persisted.job_id)
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                _RECLAIM_SQL, (owner, expires_at, now, persisted.job_id, now)
+            ).fetchone()
+        if row is None:
+            raise OptimizationJobIdentityConflictError(
+                "active target has a different immutable open-world identity "
+                "and its lease could not be retaken"
+            )
+        if not self._advance_playbook_optimization_stage_locked(
+            persisted.job_id,
+            int(row["lease_fence"]),
+            "failed",
+            terminal_outcome=_ABANDONED_TERMINAL_OUTCOME,
+            advanced_at=now,
+        ):
+            raise OptimizationJobIdentityConflictError(
+                "active target has a different immutable open-world identity "
+                "and the abandoned attempt could not be terminalized"
+            )
+        logger.warning(
+            "event=open_world_freeze_retook_stranded_attempt job_id=%s "
+            "target_id=%s terminal_outcome=%s",
+            persisted.job_id,
+            persisted.target_id,
+            _ABANDONED_TERMINAL_OUTCOME,
+        )
+        return self._create_or_get_evidence_job_locked(request)
+
     def _claim_for_freeze_locked(
         self,
         job: PlaybookOptimizationJob,
@@ -648,21 +739,10 @@ class SQLiteOpenWorldEvidenceMixin:
         """
         expires_at = now + lease_seconds
         if job.lease_owner is None:
-            statement = """UPDATE playbook_optimization_jobs
-                SET lease_owner = ?, lease_fence = lease_fence + 1,
-                    lease_expires_at = ?, status = 'running', updated_at = ?
-                WHERE job_id = ? AND status IN ('pending', 'running')
-                  AND lease_owner IS NULL
-                RETURNING job_id, lease_owner, lease_fence, lease_expires_at"""
+            statement = _CLAIM_SQL
             params: tuple[object, ...] = (owner, expires_at, now, job.job_id)
         elif job.lease_expires_at is not None and job.lease_expires_at <= now:
-            statement = """UPDATE playbook_optimization_jobs
-                SET lease_owner = ?, lease_fence = lease_fence + 1,
-                    lease_expires_at = ?, status = 'running', updated_at = ?
-                WHERE job_id = ? AND status IN ('pending', 'running')
-                  AND lease_owner IS NOT NULL
-                  AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
-                RETURNING job_id, lease_owner, lease_fence, lease_expires_at"""
+            statement = _RECLAIM_SQL
             params = (owner, expires_at, now, job.job_id, now)
         elif job.lease_owner == owner:
             statement = """UPDATE playbook_optimization_jobs
