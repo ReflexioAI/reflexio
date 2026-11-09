@@ -12,6 +12,8 @@ from reflexio.server.services.storage.sqlite_storage._open_world_rule_evidence i
     assert_source_span,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def _trajectory(role: str) -> dict:
     return {
