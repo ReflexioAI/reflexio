@@ -380,10 +380,11 @@ of each required speaker is admitted first. Its notice states how many of the
 visible passages it offered. Every path copies original spans only. Unparseable output keeps the client's single
 bounded parse repair; an exhausted repair, refusal, model-route,
 provider-budget and integrity failures remain errors. Host omission notices,
-`provider_reference_recoveries` and the WARNING event
+`provider_reference_recoveries` and the event
 `compression_selection_salvaged reason=<unseen_refs|capacity|rejected>
 fallback=<none|recent_evidence> kept_points=N discarded_groups=N` make this
-partial selection visible. The counter describes new provider work in this
+partial selection visible. The event is INFO for a routine whole-point capacity
+trim (`reason=capacity fallback=none`, points kept) and WARNING otherwise. The counter describes new provider work in this
 operation; cache hits may carry earlier omission notices without a new recovery.
 Settlement semantics are bound by `_REFERENCE_CONTRACT`
 (`evidence-refs-only-v4`), so older cached selections and journal roots fail
