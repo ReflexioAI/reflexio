@@ -35,6 +35,39 @@ OPEN_WORLD_DISCOVERY_MEMO_ARTIFACT_KIND = "open_world_discovery_memo"
 OPEN_WORLD_CANDIDATE_ARTIFACT_KIND = "open_world_candidate"
 OPEN_WORLD_ATTEMPT_DECISION_ARTIFACT_KIND = "open_world_attempt_decision"
 
+#: The terminal outcomes an open-world ``failed`` stage advance accepts: every
+#: attempt failure reason plus ``abandoned``, which the freeze stamps on an
+#: expired job of another identity before retaking its target. Any other
+#: outcome leaves the job untouched and the advance returns ``False``. The
+#: PostgreSQL stage-advance function restates this set as SQL literals; the
+#: shared port contract holds both backends to it.
+OPEN_WORLD_FAILED_TERMINAL_OUTCOMES: frozenset[str] = frozenset(
+    {
+        "infrastructure_failure",
+        "analyst_unqualified",
+        "stale_incumbent",
+        "governance_invalidated",
+        "regeneration_fenced",
+        "invocation_slot_pinned",
+        "bundle_schema_unsupported",
+        "abandoned",
+        "evidence_manifest_conflict",
+    }
+)
+
+#: The terminal outcomes an open-world ``abstained`` stage advance accepts,
+#: under the same contract as :data:`OPEN_WORLD_FAILED_TERMINAL_OUTCOMES`.
+OPEN_WORLD_ABSTAINED_TERMINAL_OUTCOMES: frozenset[str] = frozenset(
+    {
+        "no_grounded_hypothesis",
+        "evidence_view_incomplete",
+        "analyst_unqualified",
+        "heldout_evidence_failed",
+        "stale_incumbent",
+        "governance_invalidated",
+    }
+)
+
 
 class OpenWorldEvidenceTargetStaleError(StorageError, OpenWorldRefusalError):
     """The selected user playbook is no longer the current exact version."""
@@ -441,8 +474,10 @@ class SweepProgressRecord(NamedTuple):
 
 
 __all__ = [
+    "OPEN_WORLD_ABSTAINED_TERMINAL_OUTCOMES",
     "OPEN_WORLD_ATTEMPT_DECISION_ARTIFACT_KIND",
     "OPEN_WORLD_CANDIDATE_ARTIFACT_KIND",
+    "OPEN_WORLD_FAILED_TERMINAL_OUTCOMES",
     "OPEN_WORLD_DISCOVERY_MEMO_ARTIFACT_KIND",
     "OPEN_WORLD_EVIDENCE_ARTIFACT_KIND",
     "OPEN_WORLD_EVIDENCE_OPTIMIZER_KIND",

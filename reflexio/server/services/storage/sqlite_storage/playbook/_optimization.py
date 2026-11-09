@@ -22,6 +22,10 @@ from reflexio.models.api_schema.service_schemas import (
     PlaybookOptimizationEvent,
     PlaybookOptimizationJob,
 )
+from reflexio.server.services.offline_tuner.open_world_records import (
+    OPEN_WORLD_ABSTAINED_TERMINAL_OUTCOMES,
+    OPEN_WORLD_FAILED_TERMINAL_OUTCOMES,
+)
 from reflexio.server.services.playbook.publication import (
     PUBLICATION_PROJECTION_JSON_METADATA_KEY,
     PUBLICATION_PROOF_JSON_METADATA_KEY,
@@ -53,26 +57,65 @@ _ACTIVE_STAGES_BY_OPTIMIZER = {
 }
 _TERMINAL_OUTCOMES_BY_OPTIMIZER = {
     "offline_tuner_open_world": {
-        "failed": {
-            "infrastructure_failure",
-            "analyst_unqualified",
-            "stale_incumbent",
-            "governance_invalidated",
-        },
-        "abstained": {
-            "no_grounded_hypothesis",
-            # The sibling of 'no_grounded_hypothesis': the analyst reached no
-            # hypothesis AND the bundle's skipped-session receipt says the view
-            # it was shown was incomplete. Same arm, same status, opposite
-            # operator instruction -- "show more" rather than "stop tuning".
-            "evidence_view_incomplete",
-            "analyst_unqualified",
-            "heldout_evidence_failed",
-            "stale_incumbent",
-            "governance_invalidated",
-        },
+        "failed": OPEN_WORLD_FAILED_TERMINAL_OUTCOMES,
+        "abstained": OPEN_WORLD_ABSTAINED_TERMINAL_OUTCOMES,
     },
 }
+
+
+#: Tables holding a job's rows without a cascading foreign key to it. Erasing
+#: a job deletes these explicitly; every other child cascades from the job.
+JOB_CHILD_TABLES_DELETED_EXPLICITLY: frozenset[str] = frozenset(
+    {
+        "playbook_optimization_candidates",
+        "playbook_optimization_evaluations",
+        "playbook_optimization_events",
+    }
+)
+
+#: Tables that only reference a job by id and keep their row when it goes,
+#: with the reason. The reference is cleared, never left dangling.
+JOB_REFERENCING_TABLES_KEPT: dict[str, str] = {
+    "open_world_sweep_progress": (
+        "one row per playbook per day records that the tick ran; it holds an "
+        "outcome label and no user content, and the queue reads it"
+    ),
+}
+
+#: Every optimizer job whose stored content names the user, by id or by
+#: governance subject. A job is evidence about each user it names, wherever the
+#: name sits: the target playbook's owner; the subject vector the job froze
+#: (every subject on the evidence it selected); a ``user_id`` anywhere in an
+#: artifact (the frozen bundle names each session's user, and every memo,
+#: candidate and decision is derived from those sessions); an analyst call or
+#: attempt-context manifest entry; or a scenario playbook an evaluation scored.
+_JOBS_NAMING_USER_SQL = """
+SELECT jobs.job_id FROM playbook_optimization_jobs AS jobs
+JOIN user_playbooks AS target
+  ON jobs.target_kind = 'user_playbook'
+ AND target.user_playbook_id = jobs.target_id
+WHERE target.user_id = :user_id
+UNION
+SELECT jobs.job_id FROM playbook_optimization_jobs AS jobs,
+     json_tree(jobs.metadata_json) AS node
+WHERE node.atom = :subject_ref
+UNION
+SELECT artifacts.job_id FROM playbook_optimization_artifacts AS artifacts,
+     json_tree(artifacts.content_json) AS node
+WHERE (node.key = 'user_id' AND node.atom = :user_id)
+   OR node.atom = :subject_ref
+UNION
+SELECT job_id FROM offline_tuner_open_world_invocations WHERE user_id = :user_id
+UNION
+SELECT context.job_id FROM offline_tuner_open_world_attempt_context AS context,
+     json_tree(context.manifest_json) AS node
+WHERE node.key = 'user_id' AND node.atom = :user_id
+UNION
+SELECT evaluations.job_id FROM playbook_optimization_evaluations AS evaluations
+JOIN user_playbooks AS scenario
+  ON scenario.user_playbook_id = evaluations.scenario_user_playbook_id
+WHERE scenario.user_id = :user_id
+"""
 
 
 def _row_to_playbook_optimization_job(row: sqlite3.Row) -> PlaybookOptimizationJob:
@@ -321,6 +364,7 @@ class OptimizationJobStoreMixin:
     _fetchone: Any
     _fetchall: Any
     _own_transaction: Any
+    commit_scope: Any
     get_user_playbook_publication_subject_epochs: Any
 
     # ------------------------------------------------------------------
@@ -775,84 +819,194 @@ class OptimizationJobStoreMixin:
     ) -> bool:
         advanced_at = self._lease_now(now)
         with self._lock:
+            advanced = self._advance_playbook_optimization_stage_locked(
+                job_id,
+                fence,
+                stage,
+                terminal_outcome=terminal_outcome,
+                advanced_at=advanced_at,
+            )
+            if self._own_transaction():
+                self.conn.commit()
+            return advanced
+
+    def _advance_playbook_optimization_stage_locked(
+        self,
+        job_id: int,
+        fence: int,
+        stage: str,
+        *,
+        terminal_outcome: str | None,
+        advanced_at: int,
+    ) -> bool:
+        """Advance one job's stage under the caller's lock and transaction.
+
+        A terminal stage takes only an outcome its optimizer's arm admits; any
+        other request leaves the row untouched and returns ``False``.
+        """
+        row = self.conn.execute(
+            "SELECT optimizer_kind FROM playbook_optimization_jobs WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        optimizer_kind = row["optimizer_kind"]
+        predecessors = _STAGE_PREDECESSORS_BY_OPTIMIZER.get(optimizer_kind, {}).get(
+            stage
+        )
+        terminal_status: str | None = None
+        # The 'applied' stage was reachable only for 'offline_tuner_replay',
+        # whose 'publishing' -> 'applied' predecessor Phase 7 removed. With
+        # no optimizer declaring an 'applied' predecessor the request now
+        # falls through to the "unknown transition" arm below and is
+        # refused -- exactly what the replay-only guard returned.
+        if stage in ("failed", "abstained"):
+            if terminal_outcome not in _TERMINAL_OUTCOMES_BY_OPTIMIZER.get(
+                optimizer_kind, {}
+            ).get(stage, frozenset()):
+                return False
+            terminal_status = "failed" if stage == "failed" else "skipped"
+        elif predecessors is None or terminal_outcome is not None:
+            return False
+        if terminal_status is None:
+            if predecessors is None:
+                return False
+            cur = self.conn.execute(
+                """UPDATE playbook_optimization_jobs
+                   SET stage = ?, updated_at = ?
+                   WHERE job_id = ?
+                     AND status IN ('pending', 'running')
+                     AND optimizer_kind = ?
+                     AND lease_fence = ?
+                     AND lease_expires_at > ?
+                     AND stage IN (?, ?)""",
+                (
+                    stage,
+                    advanced_at,
+                    job_id,
+                    optimizer_kind,
+                    fence,
+                    advanced_at,
+                    *predecessors,
+                ),
+            )
+        else:
+            active_stages = _ACTIVE_STAGES_BY_OPTIMIZER.get(optimizer_kind, ())
+            placeholders = ", ".join("?" for _ in active_stages)
+            cur = self.conn.execute(
+                f"""UPDATE playbook_optimization_jobs
+                   SET stage = ?,
+                       terminal_outcome = ?,
+                       status = ?,
+                       lease_owner = NULL,
+                       lease_expires_at = NULL,
+                       updated_at = ?
+                   WHERE job_id = ?
+                     AND status IN ('pending', 'running')
+                     AND optimizer_kind = ?
+                     AND lease_fence = ?
+                     AND lease_expires_at > ?
+                     AND stage IN ({placeholders})""",  # noqa: S608
+                (
+                    stage,
+                    terminal_outcome,
+                    terminal_status,
+                    advanced_at,
+                    job_id,
+                    optimizer_kind,
+                    fence,
+                    advanced_at,
+                    *active_stages,
+                ),
+            )
+        return cur.rowcount == 1
+
+    def _erase_optimization_jobs_for_user_locked(
+        self, user_id: str, subject_ref: str
+    ) -> int:
+        """Delete every optimizer job whose stored content names the user.
+
+        Runs under the caller's lock and inside its transaction, before the
+        user's playbooks are deleted or purged (ownership is read from them).
+        The whole job goes rather than its user's parts: its bundle, memos,
+        candidate and checkpoints are one derivation over all its sessions, so
+        no remainder of it is evidence about anyone. Children with a cascading
+        key go with the job; the rest are deleted here, and references that
+        outlive it are cleared.
+
+        Returns:
+            int: Jobs deleted.
+        """
+        job_ids = [
+            int(row[0])
+            for row in self.conn.execute(
+                _JOBS_NAMING_USER_SQL,
+                {"user_id": user_id, "subject_ref": subject_ref},
+            ).fetchall()
+        ]
+        for start in range(0, len(job_ids), 500):
+            chunk = job_ids[start : start + 500]
+            placeholders = ", ".join("?" * len(chunk))
+            for table in sorted(JOB_CHILD_TABLES_DELETED_EXPLICITLY):
+                self.conn.execute(
+                    f"DELETE FROM {table} WHERE job_id IN ({placeholders})",  # noqa: S608
+                    chunk,
+                )
+            for table in sorted(JOB_REFERENCING_TABLES_KEPT):
+                self.conn.execute(
+                    f"UPDATE {table} SET job_id = NULL"  # noqa: S608
+                    f" WHERE job_id IN ({placeholders})",
+                    chunk,
+                )
+            self.conn.execute(
+                "DELETE FROM playbook_optimization_jobs"  # noqa: S608
+                f" WHERE job_id IN ({placeholders})",
+                chunk,
+            )
+        return len(job_ids)
+
+    @SQLiteStorageBase.handle_exceptions
+    def merge_playbook_optimization_job_metadata(
+        self, job_id: int, patch: dict[str, Any]
+    ) -> None:
+        """Merge top-level keys into ``metadata_json`` without a lease predicate.
+
+        Shallow: a key present in both takes ``patch``'s value. The read and
+        the write run in one ``BEGIN IMMEDIATE`` transaction, so no concurrent
+        writer can commit between them and lose its keys. No lease fence: the
+        terminal-failure path writes its diagnostic precisely when a long
+        attempt has outrun its lease. Only ``metadata_json`` and
+        ``updated_at`` change, so no lifecycle column moves without its fence.
+
+        Args:
+            job_id (int): Optimizer job to annotate.
+            patch (dict[str, Any]): Keys to merge.
+        """
+        if not patch:
+            return
+        with self._lock, self.commit_scope():
             row = self.conn.execute(
-                "SELECT optimizer_kind FROM playbook_optimization_jobs WHERE job_id = ?",
+                "SELECT metadata_json FROM playbook_optimization_jobs WHERE job_id = ?",
                 (job_id,),
             ).fetchone()
             if row is None:
-                return False
-            optimizer_kind = row["optimizer_kind"]
-            predecessors = _STAGE_PREDECESSORS_BY_OPTIMIZER.get(optimizer_kind, {}).get(
-                stage
+                return
+            try:
+                current = json.loads(row["metadata_json"] or "{}")
+            except json.JSONDecodeError as exc:
+                raise OptimizationArtifactIntegrityError(
+                    "optimizer job metadata is not valid JSON"
+                ) from exc
+            if not isinstance(current, dict):
+                raise OptimizationArtifactIntegrityError(
+                    "optimizer job metadata is not an object"
+                )
+            merged = canonical_json_bytes({**current, **patch}).decode()
+            self.conn.execute(
+                "UPDATE playbook_optimization_jobs SET metadata_json = ?,"
+                " updated_at = ? WHERE job_id = ?",
+                (merged, int(time.time()), job_id),
             )
-            terminal_status: str | None = None
-            # The 'applied' stage was reachable only for 'offline_tuner_replay',
-            # whose 'publishing' -> 'applied' predecessor Phase 7 removed. With
-            # no optimizer declaring an 'applied' predecessor the request now
-            # falls through to the "unknown transition" arm below and is
-            # refused -- exactly what the replay-only guard returned.
-            if stage in ("failed", "abstained"):
-                if terminal_outcome not in _TERMINAL_OUTCOMES_BY_OPTIMIZER.get(
-                    optimizer_kind, {}
-                ).get(stage, set()):
-                    return False
-                terminal_status = "failed" if stage == "failed" else "skipped"
-            elif predecessors is None or terminal_outcome is not None:
-                return False
-            if terminal_status is None:
-                if predecessors is None:
-                    return False
-                cur = self.conn.execute(
-                    """UPDATE playbook_optimization_jobs
-                       SET stage = ?, updated_at = ?
-                       WHERE job_id = ?
-                         AND status IN ('pending', 'running')
-                         AND optimizer_kind = ?
-                         AND lease_fence = ?
-                         AND lease_expires_at > ?
-                         AND stage IN (?, ?)""",
-                    (
-                        stage,
-                        advanced_at,
-                        job_id,
-                        optimizer_kind,
-                        fence,
-                        advanced_at,
-                        *predecessors,
-                    ),
-                )
-            else:
-                active_stages = _ACTIVE_STAGES_BY_OPTIMIZER.get(optimizer_kind, ())
-                placeholders = ", ".join("?" for _ in active_stages)
-                cur = self.conn.execute(
-                    f"""UPDATE playbook_optimization_jobs
-                       SET stage = ?,
-                           terminal_outcome = ?,
-                           status = ?,
-                           lease_owner = NULL,
-                           lease_expires_at = NULL,
-                           updated_at = ?
-                       WHERE job_id = ?
-                         AND status IN ('pending', 'running')
-                         AND optimizer_kind = ?
-                         AND lease_fence = ?
-                         AND lease_expires_at > ?
-                         AND stage IN ({placeholders})""",
-                    (
-                        stage,
-                        terminal_outcome,
-                        terminal_status,
-                        advanced_at,
-                        job_id,
-                        optimizer_kind,
-                        fence,
-                        advanced_at,
-                        *active_stages,
-                    ),
-                )
-            if self._own_transaction():
-                self.conn.commit()
-            return cur.rowcount == 1
 
     @SQLiteStorageBase.handle_exceptions
     def upsert_playbook_optimization_artifact(

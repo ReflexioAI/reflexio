@@ -16,7 +16,9 @@ I1 -- the freeze is atomic and replay-safe: the job is created or found,
 leased and given its bundle together or not at all; a stored bundle is never
 rewritten and other bytes for the same job refuse; a replay under another
 owner's live lease returns the stored record with ``claim=None``; a terminal
-job loads with ``claim=None`` and a new freeze opens a new job.
+job loads with ``claim=None`` and a new freeze opens a new job; an expired job
+of another identity is terminalized as ``abandoned`` and its target retaken,
+while a live one refuses.
 
 I2 -- freeze and load refuse with ``OpenWorldEvidenceTargetStaleError`` when the
 incumbent's current full-version fingerprint is not the frozen one.
@@ -36,10 +38,6 @@ Backend differences, each asserted per backend through a harness flag:
 * ``governance_registry`` -- Postgres keeps a registry of governance subjects
   with erasure epochs and refuses a subject it does not list; SQLite keeps
   none, so every subject is at epoch 0 and only an erasure barrier refuses it.
-* ``retakes_stranded_freeze`` -- Postgres terminalizes an abandoned job whose
-  lease expired (``terminal_outcome='abandoned'``) before freezing another
-  identity on its target; SQLite refuses with
-  ``OptimizationJobIdentityConflictError``.
 
 Not asserted: the deployment lifecycle read is exercised only for a playbook
 the tuner never published (``()`` and ``incumbent_published_at`` ``None`` on
@@ -140,11 +138,6 @@ class EvidenceHarness(ExposureHarness, Protocol):
     @property
     def governance_registry(self) -> bool:
         """True when the store keeps a governance-subject registry with epochs."""
-        ...
-
-    @property
-    def retakes_stranded_freeze(self) -> bool:
-        """True when a freeze terminalizes an expired job of another identity."""
         ...
 
     def register_subject(self, user_id: str, *, epoch: int = 0) -> str:
@@ -588,7 +581,7 @@ class OpenWorldEvidenceContract:
             for row in port_harness.optimization_jobs(playbook.user_playbook_id)
         ] == ["running"]
 
-    def test_an_expired_job_of_another_identity(
+    def test_an_expired_job_of_another_identity_is_abandoned_and_retaken(
         self, port_harness: EvidenceHarness
     ) -> None:
         playbook, request, now = _frozen_target(port_harness)
@@ -602,19 +595,14 @@ class OpenWorldEvidenceContract:
         )
         later = now + _LEASE + 1
 
-        if port_harness.retakes_stranded_freeze:
-            record = _freeze(port_harness, second, owner="worker-b", now=later)
-            assert record.job.job_id != stranded.job.job_id
-            assert port_harness.optimization_jobs(playbook.user_playbook_id) == [
-                JobRow(stranded.job.job_id, "failed", "failed", "abandoned"),
-                JobRow(record.job.job_id, "running", "evidence_frozen", None),
-            ]
-        else:
-            with pytest.raises(OptimizationJobIdentityConflictError):
-                _freeze(port_harness, second, owner="worker-b", now=later)
-            assert port_harness.optimization_jobs(playbook.user_playbook_id) == [
-                JobRow(stranded.job.job_id, "running", "evidence_frozen", None)
-            ]
+        record = _freeze(port_harness, second, owner="worker-b", now=later)
+
+        assert record.job.job_id != stranded.job.job_id
+        assert record.claim is not None and record.claim.fence == 1
+        assert port_harness.optimization_jobs(playbook.user_playbook_id) == [
+            JobRow(stranded.job.job_id, "failed", "failed", "abandoned"),
+            JobRow(record.job.job_id, "running", "evidence_frozen", None),
+        ]
 
     # ------------------------------------------------------------------ I2
 

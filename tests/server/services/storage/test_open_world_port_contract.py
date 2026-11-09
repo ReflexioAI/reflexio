@@ -38,6 +38,7 @@ from reflexio.server.services.storage.sqlite_storage._open_world import (
     _INSERT_EXPOSURE_SQL,
     _exposure_row,
 )
+from reflexio.test_support.open_world_attempt_contract import AttemptRows
 from reflexio.test_support.open_world_evidence_contract import (
     JobRow,
     call_once_before,
@@ -200,7 +201,6 @@ class _SQLitePortHarness:
     # -- the evidence half of the harness
 
     governance_registry = False
-    retakes_stranded_freeze = False
 
     def register_subject(self, user_id: str, *, epoch: int = 0) -> str:
         assert epoch == 0, "SQLite holds every subject at epoch 0"
@@ -254,6 +254,34 @@ class _SQLitePortHarness:
     def source_read_clock_jumps(self) -> Iterator[None]:
         with jumping_clock(_open_world_evidence):
             yield
+
+    # -- the attempt half of the harness
+
+    clear_erases_jobs = True
+
+    def attempt_rows(self, job_id: int) -> AttemptRows:
+        def count(table: str) -> int:
+            (value,) = self._conn.execute(
+                f"SELECT count(*) FROM {table} WHERE job_id = ?",  # noqa: S608
+                (job_id,),
+            ).fetchone()
+            return int(value)
+
+        return AttemptRows(
+            invocations=count("offline_tuner_open_world_invocations"),
+            contexts=count("offline_tuner_open_world_attempt_context"),
+            artifacts=count("playbook_optimization_artifacts"),
+            compactions=count("offline_tuner_session_compactions"),
+        )
+
+    def corrupt_artifact_digest(
+        self, job_id: int, artifact_kind: str, content_digest: str
+    ) -> None:
+        self._write(
+            "UPDATE playbook_optimization_artifacts SET content_digest = ?"
+            " WHERE job_id = ? AND artifact_kind = ?",
+            (content_digest, job_id, artifact_kind),
+        )
 
     def age_progress(self, user_playbook_id: int, *, seconds: int) -> None:
         self._write(
@@ -613,3 +641,169 @@ def test_a_caught_freeze_failure_cannot_commit_the_callers_scope(
         _freeze(port_harness, request, now=now)
 
     assert port_harness.optimization_jobs(playbook.user_playbook_id) == []
+
+
+#: The job table's ``terminal_outcome`` list as the previous release wrote it,
+#: before the CHECK was derived from ``OptimizationTerminalOutcome``.
+_PREVIOUS_TERMINAL_OUTCOMES = (
+    "applied",
+    "insufficient_negative_evidence",
+    "insufficient_positive_evidence",
+    "insufficient_coverage",
+    "deployment_unsupported",
+    "candidate_regressed",
+    "candidate_did_not_improve",
+    "incumbent_changed",
+    "generation_failed",
+    "publication_failed",
+    "governance_erased",
+    "no_grounded_hypothesis",
+    "analyst_unqualified",
+    "heldout_evidence_failed",
+    "stale_incumbent",
+    "governance_invalidated",
+    "infrastructure_failure",
+    "evidence_view_incomplete",
+)
+
+
+def _as_previous_release(conn: sqlite3.Connection) -> None:
+    """Put the open-world schema back as the previous release left it.
+
+    No attempt tables, and a job table whose ``terminal_outcome`` CHECK lists
+    only the outcomes that release knew. Rows are kept.
+    """
+    from reflexio.server.services.storage.sqlite_storage._base import (
+        _TERMINAL_OUTCOME_CHECK,
+    )
+    from reflexio.server.services.storage.sqlite_storage._open_world_attempt import (
+        ATTEMPT_TABLES,
+    )
+
+    (table_sql,) = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'playbook_optimization_jobs'"
+    ).fetchone()
+    previous_check = (
+        "terminal_outcome TEXT CHECK (terminal_outcome IS NULL OR terminal_outcome IN ("
+        + ", ".join(f"'{outcome}'" for outcome in _PREVIOUS_TERMINAL_OUTCOMES)
+        + "))"
+    )
+    assert _TERMINAL_OUTCOME_CHECK in table_sql
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys=OFF")
+    for table in ATTEMPT_TABLES:
+        conn.execute(f"DROP TABLE {table}")
+    conn.execute(
+        table_sql.replace(_TERMINAL_OUTCOME_CHECK, previous_check).replace(
+            "playbook_optimization_jobs", "playbook_optimization_jobs_previous", 1
+        )
+    )
+    conn.execute(
+        "INSERT INTO playbook_optimization_jobs_previous"
+        " SELECT * FROM playbook_optimization_jobs"
+    )
+    conn.execute("DROP TABLE playbook_optimization_jobs")
+    conn.execute(
+        "ALTER TABLE playbook_optimization_jobs_previous"
+        " RENAME TO playbook_optimization_jobs"
+    )
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys=ON")
+
+
+def test_migrate_brings_a_previous_release_database_forward(
+    port_harness: _SQLitePortHarness,
+) -> None:
+    """The attempt tables appear, the outcome CHECK widens, and rows survive."""
+    from reflexio.test_support.open_world_evidence_contract import (
+        _freeze,
+        _frozen_target,
+    )
+
+    storage = port_harness.storage
+    playbook, request, now = _frozen_target(port_harness)
+    record = _freeze(port_harness, request, now=now)
+    assert record.claim is not None
+    _as_previous_release(storage.conn)
+    assert not storage.rule_evidence_method_ready()
+    with pytest.raises(sqlite3.IntegrityError):
+        storage.conn.execute(
+            "UPDATE playbook_optimization_jobs SET terminal_outcome = 'abandoned'"
+        )
+    storage.conn.rollback()
+
+    storage.migrate()
+    storage.migrate()
+
+    assert storage.rule_evidence_method_ready()
+    assert port_harness.optimization_jobs(playbook.user_playbook_id) == [
+        JobRow(record.job.job_id, "running", "evidence_frozen", None)
+    ]
+    identity = "a" * 64
+    storage.session_compaction_checkpoint(
+        job_id=record.job.job_id,
+        identity=identity,
+        fence=record.claim.fence,
+        now=now,
+        receipt={
+            "identity": identity,
+            "batches": 1,
+            "complete": False,
+            "compaction": {
+                "points": [
+                    {
+                        "category": "goal",
+                        "detail": "synthetic",
+                        "source_id": "source-1",
+                        "exact_quote": "synthetic quote",
+                    }
+                ]
+            },
+        },
+    )
+    assert storage.advance_playbook_optimization_stage(
+        record.job.job_id,
+        record.claim.fence,
+        "failed",
+        terminal_outcome="abandoned",
+        now=now,
+    )
+    assert port_harness.optimization_jobs(playbook.user_playbook_id) == [
+        JobRow(record.job.job_id, "failed", "failed", "abandoned")
+    ]
+    storage.conn.execute(
+        "DELETE FROM playbook_optimization_jobs WHERE job_id = ?",
+        (record.job.job_id,),
+    )
+    storage.conn.commit()
+    assert port_harness.attempt_rows(record.job.job_id) == AttemptRows(0, 0, 0, 0), (
+        "child rows cascade from the job"
+    )
+
+
+def test_the_outcome_arms_are_the_attempt_vocabulary() -> None:
+    """The stage-advance arms, against the outcomes the runner can write."""
+    from typing import get_args
+
+    from reflexio.models.api_schema.domain import OptimizationTerminalOutcome
+    from reflexio.server.services.offline_tuner.evidence.open_world_models import (
+        OPEN_WORLD_ABSTAIN_TERMINAL_OUTCOMES,
+    )
+    from reflexio.server.services.offline_tuner.open_world.models import (
+        AttemptTerminalFailureReason,
+    )
+    from reflexio.server.services.offline_tuner.open_world_records import (
+        OPEN_WORLD_ABSTAINED_TERMINAL_OUTCOMES,
+        OPEN_WORLD_FAILED_TERMINAL_OUTCOMES,
+    )
+
+    outcomes = set(get_args(OptimizationTerminalOutcome))
+    assert {
+        *get_args(AttemptTerminalFailureReason),
+        "abandoned",
+    } == OPEN_WORLD_FAILED_TERMINAL_OUTCOMES
+    assert (
+        OPEN_WORLD_ABSTAIN_TERMINAL_OUTCOMES <= OPEN_WORLD_ABSTAINED_TERMINAL_OUTCOMES
+    )
+    assert outcomes >= OPEN_WORLD_FAILED_TERMINAL_OUTCOMES
+    assert outcomes >= OPEN_WORLD_ABSTAINED_TERMINAL_OUTCOMES
