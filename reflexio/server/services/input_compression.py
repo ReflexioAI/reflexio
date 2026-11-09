@@ -19,6 +19,8 @@ from typing import Any, Literal
 import tiktoken
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from reflexio.server.services._compression_token_counts import ExactTokenCounts
+
 VERSION = "source-compression-v6"
 CompressionPolicy = Literal["extraction", "offline_tuning"]
 logger = logging.getLogger(__name__)
@@ -444,7 +446,10 @@ def _evidence_aliases(packets: list[EvidencePacket]) -> dict[str, EvidenceSource
     return {f"e{index}": source for index, source in enumerate(sources.values(), 1)}
 
 
-def _fragments(sources: Sequence[EvidenceSource]) -> list[EvidenceSource]:
+def _fragments(
+    sources: Sequence[EvidenceSource],
+    count_tokens: Callable[[str], int] = compression_tokens,
+) -> list[EvidenceSource]:
     """Retain every character and original offsets, including a giant tool result."""
     result = []
     for source in sources:
@@ -453,7 +458,7 @@ def _fragments(sources: Sequence[EvidenceSource]) -> list[EvidenceSource]:
             low, high, end = start + 1, min(len(source.text), start + 4096), start
             while low <= high:
                 middle = (low + high) // 2
-                if compression_tokens(source.text[start:middle]) <= 512:
+                if count_tokens(source.text[start:middle]) <= 512:
                     end, low = middle, middle + 1
                 else:
                     high = middle - 1
@@ -476,6 +481,7 @@ def _sections(
     fragments: list[EvidenceSource],
     budget: CompressionBudget,
     request_tokens: Callable[[list[EvidencePacket]], int],
+    count_tokens: Callable[[str], int] = compression_tokens,
 ) -> list[EvidencePacket]:
     """Pack actual serialized metadata/text and reject before spending calls."""
     sections: list[EvidencePacket] = []
@@ -483,8 +489,7 @@ def _sections(
 
     def exceeds_capacity(candidate: EvidencePacket) -> bool:
         return (
-            compression_tokens(_json(_packet_payloads([candidate])))
-            > budget.section_tokens
+            count_tokens(_json(_packet_payloads([candidate]))) > budget.section_tokens
             or request_tokens([candidate]) > budget.input_tokens
         )
 
@@ -903,7 +908,10 @@ def plan_compression_input(
             ),
             lambda _check: None,
         )
-    fragments = _fragments(sources)
+    count_tokens = ExactTokenCounts(
+        compression_tokens, pattern=tiktoken.get_encoding("cl100k_base")._pat_str
+    )
+    fragments = _fragments(sources, count_tokens)
     if not fragments or measure_output(EvidencePacket()) > budget.output_tokens:
         raise CompressionError(
             "Source metadata or fixed consumer rendering exceeds the output budget"
@@ -943,7 +951,7 @@ def plan_compression_input(
 
     def request_tokens(packets: list[EvidencePacket], *, final: bool = False) -> int:
         return math.ceil(
-            compression_tokens(
+            count_tokens(
                 _json(
                     {
                         "messages": messages_for(packets, final=final),
@@ -963,7 +971,7 @@ def plan_compression_input(
         raise CompressionError("Fixed compression instructions exceed input budget")
 
     def parent_cost(packet: EvidencePacket) -> int:
-        return compression_tokens(
+        return count_tokens(
             _json(
                 _json(
                     _priced_payloads(
@@ -977,7 +985,7 @@ def plan_compression_input(
             )
         )
 
-    sections = _sections(fragments, budget, request_tokens)
+    sections = _sections(fragments, budget, request_tokens, count_tokens)
     section_digests = tuple(
         _digest(section.model_dump(mode="json")) for section in sections
     )
