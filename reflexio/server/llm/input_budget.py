@@ -2,6 +2,7 @@
 
 import json
 import math
+import os
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from typing import Any, Protocol
@@ -9,6 +10,7 @@ from typing import Any, Protocol
 import litellm
 
 from reflexio.native_compute import configure_tokenizer_compute
+from reflexio.removed_env import reject_removed_env
 from reflexio.server.llm._litellm_types import (
     ModelProvenance,
     ProviderRequestGuard,
@@ -188,6 +190,7 @@ def measure_request_input_tokens(params: Mapping[str, Any]) -> int:
     messages = params.get("messages")
     if not isinstance(messages, list):
         raise InputBudgetConfigurationError("Complete provider messages are required")
+    reject_removed_env(os.environ, canonical="HF_HUB_OFFLINE")
     configure_tokenizer_compute()
     try:
         tokens = litellm.token_counter(

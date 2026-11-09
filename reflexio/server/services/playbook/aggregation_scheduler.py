@@ -23,7 +23,7 @@ from reflexio.server.background_work import (
     report_background_success,
 )
 from reflexio.server.extensions import get_service
-from reflexio.server.operation_limiter import run_with_operation_limit
+from reflexio.server.operation_limiter import try_aggregation_capacity
 from reflexio.server.scheduling import LeaderGate, ThreadedScheduler
 from reflexio.server.services.playbook.aggregation_prompt_processing import (
     AGGREGATION_PROMPT_PROCESSOR,
@@ -311,7 +311,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         return (str(context.org_id), current_project_id())
 
     def _run_context(self, context: RequestContext) -> None:
-        """Run one bounded unit for ``context``.
+        """Reserve capacity, then run one bounded unit for ``context``.
 
         Three units, three streaks. The org unit -- configuration, repair and
         the claim -- reports success here as soon as the claim returns,
@@ -327,6 +327,22 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             _FinalizationReportedError: Finalization failed after being reported
                 under its own scope; the caller backs off without reporting.
         """
+        if context.storage is None:
+            return
+        self._active_stage = "admission"
+        with try_aggregation_capacity(context.org_id) as admitted:
+            if not admitted:
+                self._defer_scope(context, self._poll_interval_seconds)
+                logger.warning(
+                    "event=playbook_aggregation_progress state=deferred org_id=%s "
+                    "reason=limiter_saturated",
+                    context.org_id,
+                )
+                return
+            self._run_admitted_context(context)
+
+    def _run_admitted_context(self, context: RequestContext) -> None:
+        """Own capacity through explicit/incremental claims and finalization."""
         self._active_stage = "configuration"
         storage = context.storage
         playbook_config = getattr(
@@ -336,11 +352,11 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             return
         org_id, project_id = self._repair_scope_key(context)
         from reflexio.server.services.playbook.aggregation_operations import (
-            run_explicit_operation,
+            _run_admitted_operation,
         )
 
         self._active_stage = "explicit_operation"
-        if run_explicit_operation(
+        if _run_admitted_operation(
             context,
             owner=f"explicit:{self._worker_id}",
             project_id=project_id,
@@ -478,12 +494,8 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     claim.agent_version,
                     claim.fence,
                 )
-                result = run_with_operation_limit(
-                    org_id=context.org_id,
-                    operation="aggregation",
-                    fn=lambda: aggregator.run(
-                        PlaybookAggregatorRequest(agent_version=claim.agent_version)
-                    ),
+                result = aggregator.run(
+                    PlaybookAggregatorRequest(agent_version=claim.agent_version)
                 )
                 aggregated = True
             heartbeat.require_live()
@@ -505,13 +517,6 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             # possibly after swallowing the very failure this streak counts.
             if aggregated and _is_unqualified_success(result):
                 report_background_success(run_scope)
-        except TimeoutError:
-            logger.warning(
-                "event=playbook_aggregation_progress state=deferred org_id=%s "
-                "agent_version=%s reason=limiter_saturated",
-                context.org_id,
-                claim.agent_version,
-            )
         except Exception as exc:
             report_background_failure(
                 logger,
