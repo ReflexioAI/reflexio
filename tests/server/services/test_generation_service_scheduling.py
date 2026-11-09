@@ -838,3 +838,57 @@ def test_a_rate_limit_while_the_breaker_is_closed_keeps_the_bounded_retry(
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert len(errors) == 1
     assert "after 4 attempt(s) (transient=True)" in errors[0].getMessage()
+
+
+def test_a_saturated_provider_cap_waits_without_spending_retries(
+    service: GenerationService,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Decision 3A: our own provider cap was full, so nothing was sent.
+
+    Before, the session was charged and logged one ERROR without a re-arm
+    (``transient=False``). Now it waits uncharged, like a breaker refusal.
+    """
+    from reflexio.server.llm._provider_concurrency import ProviderCapSaturatedError
+
+    failures: list[BaseException] = [
+        _extractor_failure(ProviderCapSaturatedError("no permit")) for _ in range(5)
+    ]
+    with caplog.at_level(logging.INFO):
+        scheduler, runner = _run_with_failure(service, monkeypatch, failures)
+
+    assert runner.call_count == 5 + 1
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+    waits = [
+        r
+        for r in _gen_records(caplog, logging.WARNING)
+        if "event=agent_success_provider_wait" in r.getMessage()
+    ]
+    assert len(waits) == 5
+    assert all("attempt=0/3" in r.getMessage() for r in waits)
+    for call in scheduler.schedule.call_args_list[1:]:
+        assert call.kwargs["delay_seconds"] == 0.0
+
+
+def test_an_exhausted_ladder_budget_keeps_the_bounded_retry(
+    service: GenerationService,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The ladder's own wall-clock budget is detail on a ``Terminal`` verdict:
+    it sent nothing, so it is re-armed like a transient failure."""
+    from reflexio.server.llm._litellm_text_generation import (
+        LadderBudgetExhaustedError,
+    )
+
+    failures: list[BaseException] = [
+        _extractor_failure(LadderBudgetExhaustedError("budget")) for _ in range(10)
+    ]
+    with caplog.at_level(logging.INFO):
+        _, runner = _run_with_failure(service, monkeypatch, failures)
+
+    assert runner.call_count == 1 + 3
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1
+    assert "after 4 attempt(s) (transient=True)" in errors[0].getMessage()

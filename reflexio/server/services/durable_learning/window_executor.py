@@ -16,6 +16,7 @@ from reflexio.models.config_schema import (
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.env_utils import env_bool, env_str
 from reflexio.server.llm.compute_admission import compute_attempt_scope
+from reflexio.server.llm.failure import exception_chain
 from reflexio.server.llm.input_budget import (
     InputBudgetConfigurationError,
     ProviderInputOverflowError,
@@ -762,16 +763,12 @@ class WindowExecutor:
                     return compute_source_quoted_plan(coordinator, service, config)
                 return service.compute_generation(request)
         except Exception as exc:
-            current: BaseException | None = exc
-            seen: set[int] = set()
-            while current is not None and id(current) not in seen:
-                if isinstance(current, ProviderInputOverflowError):
-                    coordinator.repartition_rejected_input(current)
+            for link in exception_chain(exc):
+                if isinstance(link, ProviderInputOverflowError):
+                    coordinator.repartition_rejected_input(link)
                     raise OverflowSuspendedError(
                         "Extraction has a frozen smaller source plan"
                     ) from None
-                seen.add(id(current))
-                current = current.__cause__ or current.__context__
             raise
 
     def _finalize_completed_window_execution(

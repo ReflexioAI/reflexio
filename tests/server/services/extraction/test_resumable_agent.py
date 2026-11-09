@@ -1214,3 +1214,50 @@ def test_successive_outputs_of_same_run_have_distinct_publication_identity(
     UUID(second_publication["id"])
     assert set(first_publication["dependency_inputs"]) == {resolved.id}
     assert set(second_publication["dependency_inputs"]) == {answered.id}
+
+
+def test_resume_turn_with_a_saturated_provider_cap_stays_resumable(
+    monkeypatch, storage
+):
+    """Decision 3A: our own provider cap was full, so nothing was sent.
+
+    Before, a resumed run whose turn hit a saturated cap with the breaker
+    closed became terminal FAILED. Now it stays RESUMING, uncharged, for its
+    worker to wait, as during an outage.
+    """
+    from reflexio.server.llm import _litellm_text_generation as ttg
+    from reflexio.server.llm._provider_concurrency import ProviderCapSaturatedError
+
+    monkeypatch.setattr(ttg, "circuit_route", lambda _params: "test-cap-route")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    run = storage.create_agent_run(
+        AgentRunRecord(
+            id="run_cap",
+            binding=_agent_run("run_cap").binding,
+            status=AgentRunStatus.RESUMING,
+            generation_request_snapshot={"request_id": "request_run_cap"},
+            max_steps_remaining=3,
+        )
+    )
+    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
+    agent = ResumableExtractionAgent(client=client, storage=storage, max_steps=8)
+    with patch(
+        "litellm.completion", side_effect=ProviderCapSaturatedError("no permit")
+    ):
+        result = agent.resume(
+            source_inputs=_source_inputs(agent.storage, run),
+            run=run,
+            messages=[{"role": "user", "content": "resume extraction"}],
+            history_inputs=HistoricalInputs(),
+            output_schema=StructuredProfilesOutput,
+            resolved_tool_calls=[],
+        )
+
+    assert result.finished_reason == "error"
+    assert result.error_detail == "transient"  # was "non_transient"
+    assert result.provider_wait is True
+    stored = storage.get_agent_run(run.id)
+    assert stored is not None
+    assert stored.status == AgentRunStatus.RESUMING
+    assert stored.max_steps_remaining == 3

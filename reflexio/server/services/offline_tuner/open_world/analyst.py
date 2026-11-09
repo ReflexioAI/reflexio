@@ -21,6 +21,12 @@ from pydantic import ValidationError
 
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.llm import ProviderRequestGuardError
+from reflexio.server.llm.failure import (
+    OutageWait,
+    Transient,
+    classify_llm_failure,
+    exception_chain,
+)
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMConfig,
@@ -1336,7 +1342,7 @@ def _litellm_transport_identity(client: LiteLLMClient) -> _LiteLLMTransportIdent
 # final-rung exhaustion into `LiteLLMClientError`. That wrap DROPS the typed
 # `upstream_error_type` (`_litellm_text_generation.py`: `wrapped =
 # LiteLLMClientError(f"API call failed: {exc}")`) while preserving `__cause__`,
-# so the detector walks the whole chain instead of inspecting one object.
+# so the detector reads every link of the chain instead of one object.
 _RATE_LIMIT_TRANSPORT_ERROR_NAMES: frozenset[str] = frozenset({"RateLimitError"})
 #: HTTP 429 and the phrase, matched as tokens so a `4290` identifier or a
 #: 429-millisecond latency in a message cannot be read as a status code.
@@ -1395,71 +1401,76 @@ class OpenWorldProviderRateLimitedError(RuntimeError):
     """
 
 
+def _names_a_rate_limit(link: BaseException) -> bool:
+    """Whether one link of an availability failure is a rate limit."""
+    upstream = getattr(link, "upstream_error_type", None)
+    status = getattr(link, "upstream_status_code", None)
+    if status is None:
+        status = getattr(link, "status_code", None)
+    return (
+        type(link).__name__ in _RATE_LIMIT_TRANSPORT_ERROR_NAMES
+        or (isinstance(upstream, str) and upstream in _RATE_LIMIT_TRANSPORT_ERROR_NAMES)
+        or status == 429
+        or bool(_RATE_LIMIT_HTTP_STATUS_PATTERN.search(str(link)))
+    )
+
+
+def _carries_base_resp_limit(link: BaseException) -> bool:
+    raw = getattr(link, "raw_content", None)
+    return bool(_MINIMAX_BASE_RESP_RATE_LIMIT_PATTERN.search(str(link))) or (
+        isinstance(raw, str) and bool(_MINIMAX_BASE_RESP_RATE_LIMIT_PATTERN.search(raw))
+    )
+
+
 def rate_limit_evidence(exc: BaseException) -> str | None:
     """Name the rate-limit shape present in one exception chain, or ``None``.
 
-    Walks ``__cause__`` and ``__context__`` because the fallback ladder
-    re-wraps a final-rung failure into a fresh ``LiteLLMClientError`` and drops
-    the typed ``upstream_error_type`` while keeping the chain intact.
+    Branches on ``classify_llm_failure`` first, then adds the detail the
+    verdict deliberately does not carry (decision 1A). The links come from
+    ``exception_chain``, the verdict's own walk: the fallback ladder re-wraps a
+    final-rung failure into a fresh ``LiteLLMClientError`` and drops the typed
+    ``upstream_error_type`` while keeping the chain intact.
+
+    - An availability verdict (``OutageWait`` / ``Transient``) is a rate limit
+      when the breaker refused the call (``circuit_open``), a MiniMax
+      ``base_resp`` limit is in the chain, or a link is a ``RateLimitError``,
+      an HTTP 429, or names one (``transport``). A timeout or an overload is
+      not a rate limit.
+    - Any other verdict is a rate limit only in the MiniMax application shape:
+      a ``base_resp`` limit inside an otherwise-successful body, which reaches
+      here as a parse failure the verdict cannot see as availability.
 
     ``raw_content`` IS READ. ``StructuredOutputParseError``'s own message is
     deliberately content-free -- "(content omitted from logs)" -- and puts the
-    provider's body on a separate ``raw_content`` attribute.
-
-    MEASURED, and narrower than it first looks: dropping the ``raw_content``
-    arm does NOT make every application-shape body invisible, because the
-    chained pydantic ``ValidationError`` renders the body in its
-    ``input_value=`` fragment and ``str()`` of that still matches. What it does
-    break is every shape that has no ``ValidationError`` beneath it -- an empty
-    completion and a truncated one both raise ``StructuredOutputParseError``
-    directly, with the body on ``raw_content`` and nowhere else. So this arm is
-    the only route for those, and redundant for the rest; the mutant that
-    removes it kills one test rather than three, which is the honest size of
-    what it buys.
-
-    Reading it is not recording it. Nothing here returns, logs or persists any
-    fragment of the body -- only which arm matched -- so the content-free
-    guarantee ``diagnostics.py`` keeps is untouched.
+    provider's body on a separate ``raw_content`` attribute. An empty or
+    truncated completion has no ``ValidationError`` beneath it to render the
+    body into ``str()``, so ``raw_content`` is the only route for those.
+    Reading it is not recording it: nothing here returns, logs or persists any
+    fragment of the body -- only which arm matched.
 
     Args:
         exc (BaseException): Exception raised by the provider call.
 
     Returns:
-        str | None: ``"base_resp"`` when a MiniMax application-level rate-limit
-        status appears inside an otherwise-successful body, ``"transport"`` for
-        an HTTP 429 or a ``RateLimitError`` class, ``"circuit_open"`` when the
-        provider circuit refused the call after repeated such failures, and
-        ``None`` when no shape is present.
+        str | None: ``"circuit_open"``, ``"base_resp"``, ``"transport"``, or
+        ``None`` when no rate-limit shape is present.
     """
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen and len(seen) < 12:
-        seen.add(id(current))
-        # Repeated rate limits open the provider circuit, which then refuses
-        # without sending; the same back-off applies, within the same budget.
-        if isinstance(current, ProviderCircuitOpenError):
-            return "circuit_open"
-        text = str(current)
-        raw = getattr(current, "raw_content", None)
-        # BEFORE the transport arm: a `base_resp` body reaches here wrapped in
-        # a generic parse exhaustion, and the generic text can independently
-        # match the phrase arm below. Checking the specific shape first is what
-        # keeps the reported evidence honest about which one fired.
-        if _MINIMAX_BASE_RESP_RATE_LIMIT_PATTERN.search(text) or (
-            isinstance(raw, str) and _MINIMAX_BASE_RESP_RATE_LIMIT_PATTERN.search(raw)
-        ):
-            return "base_resp"
-        upstream = getattr(current, "upstream_error_type", None)
-        if (
-            type(current).__name__ in _RATE_LIMIT_TRANSPORT_ERROR_NAMES
-            or (
-                isinstance(upstream, str)
-                and upstream in _RATE_LIMIT_TRANSPORT_ERROR_NAMES
-            )
-            or _RATE_LIMIT_HTTP_STATUS_PATTERN.search(text)
-        ):
-            return "transport"
-        current = current.__cause__ or current.__context__
+    links = list(exception_chain(exc))
+    base_resp = any(_carries_base_resp_limit(link) for link in links)
+    # The breaker's state is not evidence of a rate limit; its refusal is.
+    verdict = classify_llm_failure(exc, consult_breaker=False)
+    if not isinstance(verdict, OutageWait | Transient):
+        return "base_resp" if base_resp else None
+    # Repeated rate limits open the provider circuit, which then refuses
+    # without sending; the same back-off applies, within the same budget.
+    if any(isinstance(link, ProviderCircuitOpenError) for link in links):
+        return "circuit_open"
+    # Before the transport arm: a `base_resp` body's generic text can also
+    # match the phrase arm, and the specific shape is the honest evidence.
+    if base_resp:
+        return "base_resp"
+    if any(_names_a_rate_limit(link) for link in links):
+        return "transport"
     return None
 
 

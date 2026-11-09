@@ -29,6 +29,7 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm._provider_concurrency import ProviderCapSaturatedError
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.extraction.input_preparation import SourceSpan
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
@@ -578,9 +579,20 @@ class TestRun:
             ),
             (ExtractionIncompleteError("max_steps", error_detail=None), "ERROR"),
             (TimeoutError("provider hung"), "WARNING"),
+            # Decision 3A: a saturated local provider cap was ERROR; it is an
+            # expected uncharged wait now (OutageWait), so WARNING.
+            (ProviderCapSaturatedError("no permit"), "WARNING"),
             (RuntimeError("boom"), "ERROR"),
         ],
-        ids=["transient", "non_transient", "semantic", "no_detail", "raw", "bug"],
+        ids=[
+            "transient",
+            "non_transient",
+            "semantic",
+            "no_detail",
+            "raw",
+            "cap_saturated",
+            "bug",
+        ],
     )
     def test_extract_failed_log_level_follows_failure_classification(
         self,

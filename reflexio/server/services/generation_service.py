@@ -19,9 +19,14 @@ from reflexio.models.config_schema import Config
 from reflexio.server import publish_timing
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.error_reporting import error_tags
-from reflexio.server.llm.failure import OutageWait, classify_llm_failure
+from reflexio.server.llm.failure import (
+    LLMFailureVerdict,
+    OutageWait,
+    Transient,
+    classify_llm_failure,
+    exception_chain,
+)
 from reflexio.server.llm.litellm_client import LiteLLMClient
-from reflexio.server.llm.tools import describe_tool_loop_error
 from reflexio.server.services.agent_success_evaluation.runner import (
     run_group_evaluation,
 )
@@ -77,29 +82,32 @@ _RETRIABLE_RETRIEVED_STATUSES = frozenset({"failed", "pending"})
 _MAX_GROUP_EVALUATION_RETRIES = 3
 
 
-def _is_transient_evaluation_failure(exc: BaseException) -> bool:
-    """Whether an agent-success judge failure is an expected provider outage.
+def _is_transient_evaluation_failure(
+    verdict: LLMFailureVerdict, exc: BaseException
+) -> bool:
+    """Whether an agent-success judge failure is worth a bounded re-arm.
 
-    Classified by type and status code only (``describe_tool_loop_error``),
-    walking the ``__cause__`` / ``__context__`` chain from the
-    ``ExtractorExecutionError`` wrapper down to the provider error, so a 429
-    rate limit or a 529 overload is transient while a parse / semantic failure
-    or a bug is not.
+    Reads the verdict ``classify_llm_failure`` gave ``exc`` (one walk from the
+    ``ExtractorExecutionError`` wrapper down to the provider error): a 429 rate
+    limit or a 529 overload is ``Transient``, a parse / semantic failure or a
+    bug is not. The detail added here is the ladder's own wall-clock budget
+    running out, which sent nothing and is labelled transient by
+    ``describe_tool_loop_error``.
 
     Args:
+        verdict (LLMFailureVerdict): ``classify_llm_failure(exc)``.
         exc (BaseException): The failure ``run_group_evaluation`` raised.
 
     Returns:
-        bool: True when some link of the chain is a transient LLM failure.
+        bool: True for a transient provider failure or an exhausted ladder budget.
     """
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if describe_tool_loop_error(current)[1] == "transient":
-            return True
-        current = current.__cause__ or current.__context__
-    return False
+    from reflexio.server.llm._litellm_text_generation import (
+        LadderBudgetExhaustedError,
+    )
+
+    return isinstance(verdict, Transient) or any(
+        isinstance(link, LadderBudgetExhaustedError) for link in exception_chain(exc)
+    )
 
 
 # ── Durable-learning same-user guard (F4) ──
@@ -1016,7 +1024,7 @@ class GenerationService:
                             delay_seconds=wait,
                         )
                         return
-                    transient = _is_transient_evaluation_failure(exc)
+                    transient = _is_transient_evaluation_failure(outage, exc)
                     if transient and _attempt < _MAX_GROUP_EVALUATION_RETRIES:
                         logger.warning(
                             "event=agent_success_retry_scheduled session=%s"
