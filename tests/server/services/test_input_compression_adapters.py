@@ -1,6 +1,7 @@
 """Scoped window preparation and real model-wrapper dispatch contracts."""
 
 import json
+import logging
 import re
 from types import SimpleNamespace
 from typing import Any
@@ -507,11 +508,11 @@ def _failures(sink) -> int:
     return len([c for c in sink.record.call_args_list if c.args[0] == "llm.failures"])
 
 
-def _salvage_events(caplog) -> list[str]:
+def _salvage_events(caplog, level: str = "WARNING") -> list[str]:
     return [
         r.getMessage()
         for r in caplog.records
-        if r.levelname == "WARNING"
+        if r.levelname == level
         and r.getMessage().startswith("event=compression_selection_salvaged")
     ]
 
@@ -519,6 +520,9 @@ def _salvage_events(caplog) -> list[str]:
 def test_capacity_violation_keeps_explicit_whole_point_partial_result_without_repair(
     monkeypatch, caplog
 ):
+    caplog.set_level(
+        logging.INFO, logger="reflexio.server.services.input_compression_llm"
+    )
     live_client, requests, sink = _live_client(
         monkeypatch,
         lambda body, _requests: {
@@ -554,7 +558,10 @@ def test_capacity_violation_keeps_explicit_whole_point_partial_result_without_re
     assert result.packet.omission_counts.capacity_points > 0
     assert CAPACITY_OMISSION in result.packet.omissions
     assert result.provider_input_tokens == 100 and result.provider_output_tokens == 20
-    assert _salvage_events(caplog) == [
+    # A routine whole-point capacity trim is recorded in the packet and logged
+    # at INFO; WARNING is kept for salvages that lose or replace evidence.
+    assert _salvage_events(caplog) == []
+    assert _salvage_events(caplog, "INFO") == [
         "event=compression_selection_salvaged reason=capacity fallback=none "
         f"kept_points={len(result.packet.points)} discarded_groups=0"
     ]

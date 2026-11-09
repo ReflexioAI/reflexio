@@ -124,7 +124,13 @@ def _salvage_selection(
         # Accepted, but nothing of this section's evidence survives, so the
         # reply's work is lost: it counts as a terminal failure.
         record_terminal_llm_failure()
-    logger.warning(
+    # Trimming an oversized but valid selection to whole points is the routine
+    # packing outcome (most salvages in production), and the packet already
+    # records the capacity omission. Only a selection that cited unseen
+    # evidence, was rejected, fell back, or kept nothing is worth a WARNING.
+    routine = reason == "capacity" and fallback == "none" and kept_points > 0
+    logger.log(
+        logging.INFO if routine else logging.WARNING,
         "event=compression_selection_salvaged reason=%s fallback=%s "
         "kept_points=%d discarded_groups=%d",
         reason,
