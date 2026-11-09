@@ -2011,9 +2011,8 @@ class TextGenerationMixin:
                 ) and quota_exhausted(e)
                 # Breaker evidence must not depend on the breaker's own state.
                 verdict = classify_llm_failure(e, consult_breaker=False)
-                provider_failed = (
-                    isinstance(verdict, Transient) and not verdict.cap_saturated
-                )
+                # A saturated cap (OutageWait) is fed by its own handler above.
+                provider_failed = isinstance(verdict, Transient)
                 transient = exhausted or provider_failed
                 allowance = (
                     dispatch_allowance

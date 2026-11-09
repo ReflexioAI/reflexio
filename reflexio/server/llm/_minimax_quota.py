@@ -6,6 +6,7 @@ from typing import Any
 import litellm
 
 from reflexio.server.env_utils import env_str
+from reflexio.server.llm.failure import exception_chain
 from reflexio.server.llm.provider_circuit import ProviderCircuitOpenError
 
 
@@ -36,17 +37,13 @@ def quota_exhausted(error: BaseException) -> bool:
     The isolated worker preserves the provider's error as text in
     LiteLLMClientError, so inspect the cause chain as well as typed errors.
     """
-    seen: set[int] = set()
-    current: BaseException | None = error
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(current, ProviderCircuitOpenError):
-            return current.quota_exhausted
-        message = str(current).lower()
-        status = getattr(current, "upstream_status_code", None)
+    for link in exception_chain(error):
+        if isinstance(link, ProviderCircuitOpenError):
+            return link.quota_exhausted
+        message = str(link).lower()
+        status = getattr(link, "upstream_status_code", None)
         if status is None:
-            status = getattr(current, "status_code", None)
+            status = getattr(link, "status_code", None)
         if status == 429 and "(2056)" in message and "usage limit reached" in message:
             return True
-        current = current.__cause__ or current.__context__
     return False

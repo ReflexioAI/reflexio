@@ -32,7 +32,7 @@ class _Answer(BaseModel):
 
 def _is_transient(error: BaseException) -> bool:
     verdict = classify_llm_failure(error, consult_breaker=False)
-    return isinstance(verdict, Transient) and not verdict.cap_saturated
+    return isinstance(verdict, Transient)
 
 
 def _api_error(status: int) -> APIError:

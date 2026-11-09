@@ -40,7 +40,7 @@ CONTRACT_TESTS: dict[str, tuple[str, ...]] = {
         "tests/server/llm/test_model_defaults.py",
         "tests/server/llm/test_llm_mock_collection.py",
         "tests/server/llm/test_llm_mock_patching.py",
-        "tests/server/llm/test_provider_outage_classification_guard.py",
+        "tests/server/llm/test_failure.py",
         "tests/server/llm/test_litellm_error_mapping_integration.py",
     ),
     # The GEPA adapter, optimizer loop and winner publication.

@@ -133,7 +133,20 @@ def _complete(composed: Any) -> Any:
 
 def test_an_http_429_is_detected_as_the_transport_shape() -> None:
     assert rate_limit_evidence(RateLimitError("boom")) == "transport"
-    assert rate_limit_evidence(Exception("provider returned status 429")) == "transport"
+    status_429 = Exception("provider returned an error")
+    status_429.status_code = 429  # type: ignore[attr-defined]
+    assert rate_limit_evidence(status_429) == "transport"
+
+
+def test_rate_limit_detail_is_added_only_on_an_availability_verdict() -> None:
+    """Decision 1A: the verdict decides availability, the text only names it.
+
+    An untyped exception whose message mentions 429 is ``Terminal`` to the
+    verdict, so it is not a rate limit; a timeout is availability but not a
+    rate limit.
+    """
+    assert rate_limit_evidence(Exception("provider returned status 429")) is None
+    assert rate_limit_evidence(TimeoutError("slow")) is None
 
 
 def test_the_upstream_error_type_is_read_when_the_ladder_wraps_it() -> None:

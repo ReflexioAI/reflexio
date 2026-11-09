@@ -30,6 +30,7 @@ from reflexio.server.llm.failure import (
     Transient,
     Truncated,
     classify_llm_failure,
+    exception_chain,
 )
 from reflexio.server.llm.input_budget import (
     OutputTruncatedRequestError,
@@ -103,11 +104,7 @@ SHAPES: list[tuple[str, Callable[[], BaseException], LLMFailureVerdict]] = [
         Terminal(),
     ),
     ("refusal", lambda: ProviderCircuitOpenError("refused"), DOWN),
-    (
-        "cap-saturated",
-        lambda: ProviderCapSaturatedError("no permit"),
-        Transient(timed_out=False, cap_saturated=True),
-    ),
+    ("cap-saturated", lambda: ProviderCapSaturatedError("no permit"), OutageWait(0.0)),
     ("repair-parse", lambda: _repair("parse"), RepairExhausted("parse")),
     ("repair-semantic", lambda: _repair("semantic"), RepairExhausted("semantic")),
     ("repair-refusal", lambda: _repair("refusal"), RepairExhausted("refusal")),
@@ -216,11 +213,11 @@ def test_a_cause_hides_the_context():
         # The repair ladder's final judgement outranks a cut-off it repaired.
         (_repair("semantic"), _parse("length"), RepairExhausted("semantic")),
         (_parse("stop"), OutputTruncatedRequestError("same"), Truncated()),
-        # A transport failure anywhere clears the cap-only flag.
+        # A saturated local cap waits uncharged even beside a transport failure.
         (
             ProviderCapSaturatedError("no permit"),
             TimeoutError("earlier"),
-            Transient(timed_out=True),
+            OutageWait(0.0),
         ),
         # The first repair error in the chain names the kind.
         (_repair("refusal"), _repair("parse"), RepairExhausted("refusal")),
@@ -293,6 +290,31 @@ def test_an_unrouted_failure_never_waits():
     assert classify_llm_failure(TimeoutError("slow")) == Transient(timed_out=True)
 
 
+def test_a_saturated_cap_always_waits_uncharged():
+    """Decision 3A: our own cap was full, so nothing was sent and no attempt is
+    spent, whether or not the route's breaker is open or consulted."""
+    saturated = _explicit(_routed(ProviderCapSaturatedError("no permit")))
+    assert classify_llm_failure(saturated) == OutageWait(0.0)
+    assert classify_llm_failure(saturated, consult_breaker=False) == OutageWait(0.0)
+    assert classify_llm_failure(ProviderCapSaturatedError("unrouted")) == OutageWait(
+        0.0
+    )
+    _open()
+    waited = classify_llm_failure(saturated)
+    assert isinstance(waited, OutageWait) and waited.delay_seconds > 0
+    assert classify_llm_failure(saturated, consult_breaker=False) == OutageWait(0.0)
+
+
+def test_exception_chain_is_the_walk_the_verdict_uses():
+    inner = TimeoutError("slow")
+    outer = _explicit(inner)
+    assert list(exception_chain(outer)) == [outer, inner]
+    assert list(exception_chain(_severed(inner)))[1:] == []
+    assert len(list(exception_chain(_buried(inner, MAX_CHAIN_LINKS + 5)))) == (
+        MAX_CHAIN_LINKS
+    )
+
+
 def test_breaker_evidence_never_reads_the_breaker():
     _open()
     refused = _routed(ProviderCircuitOpenError("refused"))
@@ -362,13 +384,10 @@ def _wrapped(inner: BaseException, *, route: str | None = None) -> BaseException
     [
         (_wrapped(TimeoutError("slow"), route=ROUTE), "transient"),
         (_wrapped(ProviderCircuitOpenError("refused"), route=ROUTE), "transient"),
-        # A saturated local cap sent nothing: not a transport failure, even
-        # while its route's breaker is open.
-        (
-            _wrapped(ProviderCapSaturatedError("no permit"), route=ROUTE),
-            "non_transient",
-        ),
-        (ProviderCapSaturatedError("no permit"), "non_transient"),
+        # Decision 3A: a saturated local cap is an expected wait, labelled
+        # transient like any other availability failure (was non_transient).
+        (_wrapped(ProviderCapSaturatedError("no permit"), route=ROUTE), "transient"),
+        (ProviderCapSaturatedError("no permit"), "transient"),
         (_explicit(_repair("parse")), "non_transient"),
         (_severed(TimeoutError("severed")), "non_transient"),
     ],

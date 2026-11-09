@@ -262,23 +262,24 @@ def describe_tool_loop_error(error: BaseException) -> tuple[str, str]:
         tuple[str, str]: The exception class name, and its detail: the
         ``failure_kind`` of a structured-output repair failure (``parse`` /
         ``semantic`` / ``refusal``), else ``transient`` for a timeout,
-        connection, rate-limit or overload failure (including an exhausted
-        ladder wall-clock budget), else ``non_transient``.
+        connection, rate-limit or overload failure, a saturated local provider
+        cap, or an exhausted ladder wall-clock budget, else ``non_transient``.
     """
     from reflexio.server.llm._litellm_text_generation import (
         LadderBudgetExhaustedError,
     )
     from reflexio.server.llm._litellm_types import StructuredOutputRepairError
-    from reflexio.server.llm.failure import Transient, classify_llm_failure
+    from reflexio.server.llm.failure import OutageWait, Transient, classify_llm_failure
 
     if isinstance(error, StructuredOutputRepairError):
         return type(error).__name__, error.failure_kind
     if isinstance(error, LadderBudgetExhaustedError):
         return type(error).__name__, "transient"
-    # The label describes the failure, not the breaker's current state; a
-    # saturated local cap sent nothing, so it is not a transport failure.
+    # The label describes the failure, not the breaker's current state. Without
+    # the breaker, OutageWait means our own provider cap was full: an expected
+    # wait, like any availability failure.
     verdict = classify_llm_failure(error, consult_breaker=False)
-    if isinstance(verdict, Transient) and not verdict.cap_saturated:
+    if isinstance(verdict, OutageWait | Transient):
         return type(error).__name__, "transient"
     return type(error).__name__, "non_transient"
 

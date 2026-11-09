@@ -3,18 +3,19 @@
 :func:`classify_llm_failure` reads an exception and returns a closed, frozen
 :data:`LLMFailureVerdict`:
 
-- :class:`OutageWait` -- the provider is down for everyone on the route the
-  call failed on (its breaker is open, or the breaker refused the call). Durable
-  work waits ``delay_seconds`` and is not charged (the charging invariant in
-  ``provider_circuit``).
+- :class:`OutageWait` -- the call never reached a provider that could serve
+  it: the route's breaker is open or refused the call, or our own per-provider
+  concurrency cap was full (``ProviderCapSaturatedError``). Durable work waits
+  ``delay_seconds`` and is not charged (the charging invariant in
+  ``provider_circuit``). A saturated cap or a refusal sent nothing, so it waits
+  ``0.0`` unless the route's breaker is open, in which case it waits for the
+  breaker like any other outage.
 - :class:`Transient` -- the provider could not serve this call (timeout,
-  connection error, rate limit, overload, a retry-later HTTP status, a breaker
-  refusal, or a saturated local provider cap), but nothing says it is down for
-  everyone. ``timed_out`` says a timeout was among the evidence: the client
+  connection error, rate limit, overload, a retry-later HTTP status, or a
+  breaker refusal when the breaker is not consulted or the failure carries no
+  route), but nothing says it is down for everyone. ``timed_out`` says a timeout was among the evidence: the client
   counts a timeout as outage evidence only when the call was allowed long
-  enough. ``cap_saturated`` says the only evidence is a saturated local
-  provider cap (``ProviderCapSaturatedError``): no request reached the
-  provider, so it is not a transport failure.
+  enough.
 - :class:`RepairExhausted` -- the structured-output repair ladder ran out
   (``StructuredOutputRepairError``); ``kind`` is its ``failure_kind``.
 - :class:`Truncated` -- the reply was cut off by its output limit
@@ -36,6 +37,13 @@ its ``__context__`` (the exception being handled when it was raised) unless
 ``__suppress_context__`` is true (``raise ... from None`` severs the chain on
 purpose). The walk stops at a repeated exception (cycle-safe) and after
 ``MAX_CHAIN_LINKS`` links.
+
+**Detail belongs to the caller.** The verdict is five answers. A caller that
+needs more (which rate-limit shape, which user message) branches on the verdict
+first and then reads the links it needs from :func:`exception_chain`; it never
+walks ``__cause__``/``__context__`` itself. ``tests/server/llm/
+test_exception_chain_ownership_guard.py`` holds that, with its reasoned
+exceptions.
 """
 
 from __future__ import annotations
@@ -95,7 +103,6 @@ class Transient:
     """The provider could not serve this call; its breaker does not say down."""
 
     timed_out: bool
-    cap_saturated: bool = False
 
 
 @dataclass(frozen=True)
@@ -118,8 +125,11 @@ class Terminal:
 LLMFailureVerdict = OutageWait | Transient | RepairExhausted | Truncated | Terminal
 
 
-def _chain(exc: BaseException) -> Iterator[BaseException]:
-    """Yield ``exc`` and the exceptions it was raised from (module docstring)."""
+def exception_chain(exc: BaseException) -> Iterator[BaseException]:
+    """Yield ``exc`` and the exceptions it was raised from (module docstring).
+
+    The one chain walk. A caller adding detail to a verdict reads links here.
+    """
     seen: set[int] = set()
     current: BaseException | None = exc
     while (
@@ -173,20 +183,23 @@ def classify_llm_failure(
 
     Args:
         exc (BaseException): The failure, as the caller caught it.
-        consult_breaker (bool): Whether an availability failure may become
-            :class:`OutageWait`. The client passes ``False`` when deciding
-            whether a failure is evidence for the breaker, so the breaker never
-            feeds on its own state; every other caller keeps the default.
+        consult_breaker (bool): Whether the breaker's state may turn an
+            availability failure into :class:`OutageWait`. The client passes
+            ``False`` when deciding whether a failure is evidence for the
+            breaker, so the breaker never feeds on its own state; every other
+            caller keeps the default. A saturated local cap is ``OutageWait``
+            either way: it is our own admission state, not the breaker's.
 
     Returns:
-        LLMFailureVerdict: :class:`OutageWait` only when the failure carries
-            its route (``circuit_route``) and that route's breaker is open or
-            refused the call; another route's outage never excuses it.
+        LLMFailureVerdict: :class:`OutageWait` for a saturated local cap, or
+            when the failure carries its route (``circuit_route``) and that
+            route's breaker is open or refused the call; another route's outage
+            never excuses it.
     """
     transport = saturated = timed_out = refused = truncated = False
     route: str | None = None
     repair_kind: str | None = None
-    for link in _chain(exc):
+    for link in exception_chain(exc):
         transport |= _is_transport_failure(link)
         saturated |= isinstance(link, ProviderCapSaturatedError)
         timed_out |= _is_timeout(link)
@@ -198,15 +211,21 @@ def classify_llm_failure(
         if repair_kind is None and isinstance(link, StructuredOutputRepairError):
             repair_kind = link.failure_kind
     if transport or saturated:
+        delay: float | None = None
         if consult_breaker and route is not None:
             delay = _circuit.provider_circuit.outage_retry_delay(route)
             # A refusal sent nothing, so it is never charged, even if the
             # breaker closed since.
             if delay is None and refused:
                 delay = 0.0
-            if delay is not None:
-                return OutageWait(delay)
-        return Transient(timed_out=timed_out, cap_saturated=not transport)
+        # Our own cap was full: nothing was sent and no attempt is spent.
+        # Sustained saturation opens the route's breaker (the client counts it
+        # as a failed call), which then supplies the wait above.
+        if delay is None and saturated:
+            delay = 0.0
+        if delay is not None:
+            return OutageWait(delay)
+        return Transient(timed_out=timed_out)
     if repair_kind is not None:
         return RepairExhausted(repair_kind)
     if truncated:

@@ -23,7 +23,8 @@ allowance asks :func:`reflexio.server.llm.failure.classify_llm_failure` about
 the failure: any verdict but ``OutageWait`` means the failing route's breaker
 is closed (or the failure is not the provider's), so the item owns its failure
 and is charged; ``OutageWait(delay_seconds)`` means the provider is down for
-everyone, so the item waits that long and is not charged. The allowances that
+everyone, or the call was never sent (a refusal, or our own provider cap was
+full), so the item waits that long and is not charged. The allowances that
 apply it:
 
 - extraction window attempts (``DurableLearningWorker``);

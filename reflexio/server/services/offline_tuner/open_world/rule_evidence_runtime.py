@@ -25,7 +25,7 @@ from reflexio.models.api_schema.domain import (
 )
 from reflexio.models.api_schema.service_schemas import OptimizationJobStage
 from reflexio.models.structured_output import StrictStructuredOutput
-from reflexio.server.llm.failure import OutageWait, classify_llm_failure
+from reflexio.server.llm.failure import OutageWait, Transient, classify_llm_failure
 from reflexio.server.llm.litellm_client import (
     LiteLLMClientError,
     StructuredOutputParseError,
@@ -136,13 +136,17 @@ def rejected_model_output(exc: BaseException) -> bool:
     platform fault -- is not the model's answer and stays
     ``infrastructure_failure``.
 
-    The client wraps the final parse failure in a ``LiteLLMClientError``
-    (``raise ... from``), so the parse error is reached through ``__cause__``.
-    ONLY ``__cause__`` is followed, never the implicit ``__context__``: the
-    corrective retry runs inside the first parse error's handler, so a
-    transport failure or timeout on that retry carries the earlier, HANDLED
-    rejection as its context. That rejection did not end the attempt -- the
-    outage did -- and must not relabel it.
+    An availability verdict (``OutageWait`` / ``Transient``) is never the
+    model's answer. On top of that verdict, this is the one named exception to
+    the verdict's chain rule (decision 2A, recorded in
+    ``test_exception_chain_ownership_guard.py``): ONLY ``__cause__`` is
+    followed, never the implicit ``__context__``. The client wraps the final
+    parse failure in a ``LiteLLMClientError`` (``raise ... from``), so the
+    parse error is reached through ``__cause__``; the corrective retry runs
+    inside the first parse error's handler, so a failure on that retry carries
+    the earlier, HANDLED rejection as its context. That rejection did not end
+    the attempt and must not relabel it -- whereas the verdict, which follows
+    the traceback rule, would see it.
 
     Args:
         exc (BaseException): The exception that ended the attempt.
@@ -150,6 +154,10 @@ def rejected_model_output(exc: BaseException) -> bool:
     Returns:
         bool: True when a complete reply was rejected by the schema.
     """
+    if isinstance(
+        classify_llm_failure(exc, consult_breaker=False), OutageWait | Transient
+    ):
+        return False
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
