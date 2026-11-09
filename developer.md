@@ -340,6 +340,24 @@ custom-gateway declaration. Similar URLs and conflicting route aliases remain
 untrusted. This upgrade does not
 activate the separate shared-input compressor/package executor.
 
+## Shared compression token counting
+
+Oversized shared-input compression plans reuse exact cl100k token counts for
+unchanged chunks during fragment, section, request and parent sizing. Each plan
+owns at most 32,768 SHA-256 digest/count entries, with no raw text retained in the
+count cache and no cache shared across plans or tenants. The cache lives only as
+long as its plan; concurrent access is synchronized. Small passthrough inputs do
+not allocate it. Custom consumer renderers and provider admission remain unchanged.
+
+The private helper cuts only at verified cl100k pretokenization boundaries; counts
+of arbitrary text fragments are not additive. If the installed tokenizer pattern
+changes, sizing uses the ordinary full-text counter. This optimization changes no
+prompts, section ceilings, evidence coordinates, model-response cache keys or
+request guards, and needs no configuration switch. It reduces local computation,
+not model tokens or the required evidence. Native unit/adapter and saved-response
+qualification must establish parity before release; benchmark results are local,
+not a promise of online speedup.
+
 ## Supported LLM Providers
 
 | Provider | Env Variable | Model Prefix | Example Usage |

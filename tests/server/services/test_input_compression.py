@@ -1074,3 +1074,86 @@ def test_a_cached_selection_missing_a_required_speaker_is_refused():
             load=cache.get,
             required_speakers=("agent",),
         )
+
+
+@pytest.mark.parametrize("policy", ["extraction", "offline_tuning"])
+def test_count_cache_preserves_plan_requests_results_and_persisted_keys(
+    monkeypatch, policy
+):
+    from reflexio.server.services import input_compression as module
+
+    sources = [source(text='approval required. "中文😀"\n' + "diagnostic " * 1700)]
+    baseline_calls, candidate_calls, saved = [], [], {}
+    original_factory = module.ExactTokenCounts
+    monkeypatch.setattr(
+        module, "ExactTokenCounts", lambda original, **_kwargs: original
+    )
+    baseline_plan = plan(sources, policy=policy)
+
+    def complete(call):
+        baseline_calls.append((call.key, call.messages))
+        return selected(call)
+
+    baseline = baseline_plan.execute(complete=complete, save=saved.__setitem__)
+    monkeypatch.setattr(module, "ExactTokenCounts", original_factory)
+    candidate_plan = plan(sources, policy=policy)
+
+    def candidate_complete(call):
+        candidate_calls.append((call.key, call.messages))
+        return selected(call)
+
+    candidate = candidate_plan.execute(complete=candidate_complete)
+    assert candidate_plan.witness == baseline_plan.witness
+    assert candidate_plan.section_digests == baseline_plan.section_digests
+    assert candidate_plan.section_input_tokens == baseline_plan.section_input_tokens
+    assert candidate_calls == baseline_calls
+    assert candidate.packet == baseline.packet
+    assert candidate.covered_source_ids == baseline.covered_source_ids
+    assert (
+        candidate.calls == baseline.calls
+        and candidate.estimated_input_tokens == baseline.estimated_input_tokens
+    )
+
+    def forbidden(_call):
+        pytest.fail("Count optimization must not invalidate persisted model responses")
+
+    replay = candidate_plan.execute(complete=forbidden, load=saved.get)
+    assert replay.packet == baseline.packet
+    assert replay.calls == 0 and replay.cache_hits == baseline.calls
+
+
+def test_token_count_cache_is_plan_local_and_released_with_plan(monkeypatch):
+    import gc
+    import weakref
+
+    from reflexio.server.services import input_compression as module
+
+    references = []
+    factory = module.ExactTokenCounts
+
+    def tracked(*args, **kwargs):
+        counter = factory(*args, **kwargs)
+        references.append(weakref.ref(counter))
+        return counter
+
+    monkeypatch.setattr(module, "ExactTokenCounts", tracked)
+    originals = [source(text="diagnostic " * 1700)]
+    first = plan(originals)
+    second = plan(originals, scope={**SCOPE, "user_id": "bob"})
+    assert len(references) == 2 and references[0]() is not references[1]()
+    del first
+    gc.collect()
+    assert references[0]() is None and references[1]() is not None
+    del second
+    gc.collect()
+    assert references[1]() is None
+
+
+def test_passthrough_never_allocates_token_count_cache(monkeypatch):
+    from reflexio.server.services import input_compression as module
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("Small passthrough must not allocate a count cache")
+
+    monkeypatch.setattr(module, "ExactTokenCounts", forbidden)
+    assert plan([source()]).passthrough
