@@ -22,9 +22,9 @@ from reflexio.server.llm.compute_admission import (
     compute_attempt_scope,
     retain_compute_result,
 )
+from reflexio.server.llm.failure import OutageWait, classify_llm_failure
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
-from reflexio.server.llm.provider_circuit import provider_wait_seconds
 from reflexio.server.services.extraction.agent_run_records import build_scope_hash
 from reflexio.server.services.extraction.answer_inputs import answer_input_scope
 from reflexio.server.services.extraction.history_inputs import HistoricalInputs
@@ -793,7 +793,8 @@ class ExtractionResumeWorker:
                     next_resume_at=datetime.now(UTC),
                     last_error="ExecutionInputBusyError",
                 )
-            wait = provider_wait_seconds(exc)
+            outage = classify_llm_failure(exc)
+            wait = outage.delay_seconds if isinstance(outage, OutageWait) else None
             if wait is None and isinstance(exc, ResumeProviderWaitError):
                 # The agent already decided; the circuit may have closed since,
                 # in which case the provider is back and the run retries now.
@@ -848,7 +849,7 @@ class ExtractionResumeWorker:
         except LeaseLostError:
             raise
         except Exception as exc:
-            if provider_wait_seconds(exc) is not None:
+            if isinstance(classify_llm_failure(exc), OutageWait):
                 _log_finalization_provider_wait(run, exc)
             else:
                 with error_tags(
@@ -887,7 +888,7 @@ class ExtractionResumeWorker:
         except LeaseLostError:
             raise
         except Exception as exc:
-            if provider_wait_seconds(exc) is not None:
+            if isinstance(classify_llm_failure(exc), OutageWait):
                 _log_finalization_provider_wait(run, exc)
             else:
                 with error_tags(

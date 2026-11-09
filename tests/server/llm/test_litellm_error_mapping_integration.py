@@ -1,6 +1,6 @@
 """The installed LiteLLM maps provider HTTP failures the way the classifier expects.
 
-``_TRANSIENT_LLM_ERROR_NAMES`` and ``_TRANSIENT_UPSTREAM_STATUS_CODES`` match
+``TRANSIENT_ERROR_NAMES`` and ``TRANSIENT_UPSTREAM_STATUS_CODES`` (``failure.py``) match
 LiteLLM exception class names and status codes, and the provider circuit
 breaker trusts that classification. Neither is checked against the installed
 LiteLLM elsewhere: the unit tests build the exceptions by hand. A LiteLLM
@@ -17,10 +17,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from litellm.exceptions import ContextWindowExceededError
 
-from reflexio.server.llm._litellm_text_generation import (
-    is_provider_unavailable_error,
+from reflexio.server.llm.failure import (
+    OutageWait,
+    Transient,
+    classify_llm_failure,
 )
 from reflexio.test_support.llm_mock import unpatched_litellm
+
+
+def _unavailable(error: BaseException) -> bool:
+    return isinstance(classify_llm_failure(error), OutageWait | Transient)
+
 
 _ROUTES = ("minimax/MiniMax-M3", "openai/gpt-4o-mini", "zai/glm-5.3")
 
@@ -102,7 +109,7 @@ def test_http_status_classification(
     stub_base: str, model: str, status: int, unavailable: bool
 ) -> None:
     error = _failure(model, f"{stub_base}/s/{status}/v1")
-    assert is_provider_unavailable_error(error) is unavailable, (
+    assert _unavailable(error) is unavailable, (
         f"{model} HTTP {status} raised {type(error).__name__} "
         f"(status_code={getattr(error, 'status_code', None)})"
     )
@@ -117,11 +124,11 @@ def test_context_overflow_is_typed_and_not_an_outage(
 ) -> None:
     error = _failure(model, f"{stub_base}/s/overflow/v1")
     assert isinstance(error, ContextWindowExceededError)
-    assert not is_provider_unavailable_error(error)
+    assert not _unavailable(error)
 
 
 @pytest.mark.parametrize("model", _ROUTES)
 def test_refused_connection_is_an_outage(model: str) -> None:
     # Port 1 on loopback is never listening: the connection is refused.
     error = _failure(model, "http://127.0.0.1:1/v1")
-    assert is_provider_unavailable_error(error), type(error).__name__
+    assert _unavailable(error), type(error).__name__

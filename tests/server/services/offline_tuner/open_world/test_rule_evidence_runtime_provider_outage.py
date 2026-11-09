@@ -4,7 +4,7 @@ Production (org 133, jobs 4132-4136): compaction ran through a plain client,
 the provider's breaker refused it, and the bare ``ProviderCircuitOpenError``
 reached the runner's failure boundary, which labelled every attempt
 ``terminal_failure_infrastructure_failure`` and spent the playbook's day. The
-boundary now classifies with ``provider_wait_seconds``, the rule durable
+boundary now classifies with ``classify_llm_failure``, the rule durable
 extraction uses, whichever stage the failure came from.
 """
 

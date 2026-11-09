@@ -25,11 +25,11 @@ from reflexio.models.api_schema.domain import (
 )
 from reflexio.models.api_schema.service_schemas import OptimizationJobStage
 from reflexio.models.structured_output import StrictStructuredOutput
+from reflexio.server.llm.failure import OutageWait, classify_llm_failure
 from reflexio.server.llm.litellm_client import (
     LiteLLMClientError,
     StructuredOutputParseError,
 )
-from reflexio.server.llm.provider_circuit import provider_wait_seconds
 from reflexio.server.services.offline_tuner.evidence.manifests import (
     canonical_json_bytes,
 )
@@ -993,10 +993,9 @@ class RuleEvidenceAttemptRunner:
             # a rate limit, or the provider is down for every caller (the
             # durable-extraction classification). A refusal from an open
             # breaker, e.g. during compaction, never reached the provider.
-            rate_limited = (
-                isinstance(exc, OpenWorldProviderRateLimitedError)
-                or provider_wait_seconds(exc) is not None
-            )
+            rate_limited = isinstance(
+                exc, OpenWorldProviderRateLimitedError
+            ) or isinstance(classify_llm_failure(exc), OutageWait)
             if isinstance(exc, OpenWorldRefusalError):
                 reason = cast(
                     AttemptTerminalFailureReason, terminal_reason_for(exc.refusal)

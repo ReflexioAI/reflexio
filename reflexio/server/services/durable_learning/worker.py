@@ -19,7 +19,7 @@ from reflexio.server.background_work import (
     report_background_success,
 )
 from reflexio.server.env_utils import env_str
-from reflexio.server.llm.provider_circuit import provider_wait_seconds
+from reflexio.server.llm.failure import OutageWait, classify_llm_failure
 from reflexio.server.operation_limiter import operation_limit_value
 from reflexio.server.operational_metrics import record_health
 from reflexio.server.services.durable_learning.window_executor import (
@@ -448,10 +448,10 @@ class DurableLearningWorker:
                 )
             record_health("worker.input_budget_failures", reason=reason)
             return "input_budget_failure"
-        wait = provider_wait_seconds(exc)
-        if wait is not None:
+        outage = classify_llm_failure(exc)
+        if isinstance(outage, OutageWait):
             return DurableLearningWorker._wait_for_provider(
-                storage, window, token, exc, wait
+                storage, window, token, exc, outage.delay_seconds
             )
         where = exception_locator(exc)
         logger.warning(

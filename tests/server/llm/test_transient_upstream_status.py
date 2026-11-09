@@ -2,7 +2,7 @@
 
 LiteLLM 1.103-1.105 raises a MiniMax 529 overload as a generic ``APIError`` with
 ``status_code=529`` and a 502 as ``BadGatewayError`` -- neither name is in
-``_TRANSIENT_LLM_ERROR_NAMES``, so before the status check every MiniMax overload
+``TRANSIENT_ERROR_NAMES`` (``failure.py``), so before the status check every MiniMax overload
 logged the request-end failure at ERROR. The status
 must also survive the isolated-worker pickle boundary, where the outer type is
 always ``LiteLLMClientError``.
@@ -17,9 +17,7 @@ from litellm.exceptions import APIError, BadGatewayError
 from pydantic import BaseModel
 
 from reflexio.server.llm._litellm_subprocess import _snapshot_completion_error
-from reflexio.server.llm._litellm_text_generation import (
-    _is_expected_transient_llm_error,
-)
+from reflexio.server.llm.failure import Transient, classify_llm_failure
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
@@ -30,6 +28,11 @@ from reflexio.server.llm.litellm_client import (
 
 class _Answer(BaseModel):
     answer: str
+
+
+def _is_transient(error: BaseException) -> bool:
+    verdict = classify_llm_failure(error, consult_breaker=False)
+    return isinstance(verdict, Transient) and not verdict.cap_saturated
 
 
 def _api_error(status: int) -> APIError:
@@ -43,7 +46,7 @@ def _api_error(status: int) -> APIError:
 
 @pytest.mark.parametrize("status", [408, 429, 502, 503, 504, 529])
 def test_retry_later_status_is_transient(status: int) -> None:
-    assert _is_expected_transient_llm_error(_api_error(status))
+    assert _is_transient(_api_error(status))
 
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 422, 500])
@@ -51,12 +54,12 @@ def test_permanent_or_synthesized_status_is_not_transient(status: int) -> None:
     """4xx other than 408/429 are permanent. 500 on a generic ``APIError`` is
     LiteLLM's own default for a malformed 200 body (``choices: null``), not a
     measured outage; a genuine upstream 500 arrives as ``InternalServerError``."""
-    assert not _is_expected_transient_llm_error(_api_error(status))
+    assert not _is_transient(_api_error(status))
 
 
 def test_bad_gateway_is_transient_by_status() -> None:
     error = BadGatewayError(message="bad gateway", llm_provider="minimax", model="m")
-    assert _is_expected_transient_llm_error(error)
+    assert _is_transient(error)
 
 
 def test_status_is_found_through_the_cause_chain() -> None:
@@ -66,7 +69,7 @@ def test_status_is_found_through_the_cause_chain() -> None:
         except APIError as exc:
             raise LiteLLMClientError("API call failed") from exc
     except LiteLLMClientError as wrapped:
-        assert _is_expected_transient_llm_error(wrapped)
+        assert _is_transient(wrapped)
 
 
 @pytest.mark.parametrize(("status", "transient"), [(529, True), (400, False)])
@@ -76,7 +79,7 @@ def test_isolated_wrapper_status_classifies(status: int, transient: bool) -> Non
         upstream_error_type="APIError",
         upstream_status_code=status,
     )
-    assert _is_expected_transient_llm_error(error) is transient
+    assert _is_transient(error) is transient
 
 
 def test_worker_snapshot_records_status_code() -> None:
@@ -125,7 +128,7 @@ def test_isolated_worker_error_carries_status_to_parent(monkeypatch) -> None:
         client._completion_with_hard_timeout(params, 5.0)
 
     assert exc_info.value.upstream_status_code == 529
-    assert _is_expected_transient_llm_error(exc_info.value)
+    assert _is_transient(exc_info.value)
 
 
 @pytest.mark.parametrize(

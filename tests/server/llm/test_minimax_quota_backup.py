@@ -15,12 +15,12 @@ from reflexio.server.llm._litellm_types import (
 )
 from reflexio.server.llm._minimax_quota import backup_credentials
 from reflexio.server.llm.call_deadline import model_deadline
+from reflexio.server.llm.failure import OutageWait, classify_llm_failure
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.provider_circuit import (
     FIRST_OPEN_SECONDS,
     ProviderCircuitBreaker,
     circuit_route,
-    provider_wait_seconds,
 )
 from reflexio.server.llm.token_accounting import RunTokenCapture, run_token_capture
 from reflexio.server.services.durable_learning.worker import DurableLearningWorker
@@ -161,7 +161,7 @@ def test_both_exhausted_are_bounded_and_leave_durable_work_waiting(
     for _ in range(2):
         with pytest.raises(LiteLLMClientError) as raised:
             configured.generate_chat_response(MESSAGES)
-        assert provider_wait_seconds(raised.value) is not None
+        assert isinstance(classify_llm_failure(raised.value), OutageWait)
     assert sent == [PRIMARY, BACKUP]
 
 

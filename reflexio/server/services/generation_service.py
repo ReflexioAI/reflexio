@@ -19,8 +19,8 @@ from reflexio.models.config_schema import Config
 from reflexio.server import publish_timing
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.error_reporting import error_tags
+from reflexio.server.llm.failure import OutageWait, classify_llm_failure
 from reflexio.server.llm.litellm_client import LiteLLMClient
-from reflexio.server.llm.provider_circuit import provider_wait_seconds
 from reflexio.server.llm.tools import describe_tool_loop_error
 from reflexio.server.services.agent_success_evaluation.runner import (
     run_group_evaluation,
@@ -987,8 +987,9 @@ class GenerationService:
                     # A provider outage (its breaker open) is neither: like
                     # durable extraction, the session waits for the provider
                     # and the attempt is not charged.
-                    wait = provider_wait_seconds(exc)
-                    if wait is not None:
+                    outage = classify_llm_failure(exc)
+                    if isinstance(outage, OutageWait):
+                        wait = outage.delay_seconds
                         logger.warning(
                             "event=agent_success_provider_wait session=%s"
                             " attempt=%d/%d retry_in_seconds=%.0f error_type=%s",

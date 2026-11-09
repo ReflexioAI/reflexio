@@ -267,15 +267,18 @@ def describe_tool_loop_error(error: BaseException) -> tuple[str, str]:
     """
     from reflexio.server.llm._litellm_text_generation import (
         LadderBudgetExhaustedError,
-        _is_expected_transient_llm_error,
     )
     from reflexio.server.llm._litellm_types import StructuredOutputRepairError
+    from reflexio.server.llm.failure import Transient, classify_llm_failure
 
     if isinstance(error, StructuredOutputRepairError):
         return type(error).__name__, error.failure_kind
-    if isinstance(
-        error, LadderBudgetExhaustedError
-    ) or _is_expected_transient_llm_error(error):
+    if isinstance(error, LadderBudgetExhaustedError):
+        return type(error).__name__, "transient"
+    # The label describes the failure, not the breaker's current state; a
+    # saturated local cap sent nothing, so it is not a transport failure.
+    verdict = classify_llm_failure(error, consult_breaker=False)
+    if isinstance(verdict, Transient) and not verdict.cap_saturated:
         return type(error).__name__, "transient"
     return type(error).__name__, "non_transient"
 

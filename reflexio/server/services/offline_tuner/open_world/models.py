@@ -415,8 +415,9 @@ class AttemptTerminalFailure:
     reason: AttemptTerminalFailureReason
     #: Whether the provider RATE-LIMITED this attempt after
     #: ``analyst.py``'s backoff budget was spent, or the attempt failed while
-    #: the provider was unavailable to every caller (``provider_wait_seconds``,
-    #: the classification durable extraction uses; an open breaker included).
+    #: the provider was unavailable to every caller (``OutageWait`` from
+    #: ``classify_llm_failure``, the classification durable extraction uses; an
+    #: open breaker included).
     #:
     #: NOT a terminal outcome, and deliberately not one. A rate limit is the
     #: one failure that says nothing whatever about this playbook -- the

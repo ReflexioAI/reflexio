@@ -30,8 +30,8 @@ from reflexio.server.background_work import (
 )
 from reflexio.server.callback_executor import drain_callbacks, submit_callback
 from reflexio.server.error_reporting import capture_anomaly
+from reflexio.server.llm.failure import OutageWait, classify_llm_failure
 from reflexio.server.llm.litellm_client import LiteLLMClient
-from reflexio.server.llm.provider_circuit import provider_wait_seconds
 from reflexio.server.services.tagging.service import TaggingService
 from reflexio.server.work_scope import (
     WorkScope,
@@ -176,10 +176,11 @@ class TaggingScheduler:
         except Exception as exc:
             # Same classification as durable extraction: while the provider's
             # breaker is open the pass waits for it instead of being dropped.
-            wait = provider_wait_seconds(exc)
-            if wait is None:
+            outage = classify_llm_failure(exc)
+            if not isinstance(outage, OutageWait):
                 logger.exception("Tagging callback failed for key=%s", key)
                 return
+            wait = outage.delay_seconds
             logger.warning(
                 "event=tagging_provider_wait key=%s retry_in_seconds=%.0f error=%s",
                 key,

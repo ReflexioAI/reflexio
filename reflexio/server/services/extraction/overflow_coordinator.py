@@ -23,6 +23,7 @@ from reflexio.server.llm._litellm_types import (
     ModelProvenance,
     ProviderRequestGuardError,
 )
+from reflexio.server.llm.failure import OutageWait, classify_llm_failure
 from reflexio.server.llm.input_budget import (
     ComputationEvidenceChangedError,
     InputBudgetConfigurationError,
@@ -36,7 +37,6 @@ from reflexio.server.llm.input_budget import (
     extraction_usage_observer,
     extraction_use_model_capacity,
 )
-from reflexio.server.llm.provider_circuit import provider_wait_seconds
 from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_tokens
 from reflexio.server.llm.tools import ToolLoopTrace
 from reflexio.server.services.extraction.input_preparation import (
@@ -994,7 +994,7 @@ class OverflowCoordinator:
         outage probed any number of times never holds the window. Any other
         failure stays charged: its usage is unknown.
         """
-        if provider_wait_seconds(failure) is None:
+        if not isinstance(classify_llm_failure(failure), OutageWait):
             return
         with self._lock:
             self._advance(released_attempt_id=attempt_id)
