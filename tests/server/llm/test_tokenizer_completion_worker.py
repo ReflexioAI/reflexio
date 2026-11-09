@@ -77,7 +77,6 @@ def test_actual_completion_worker_without_client_constructor(tmp_path, method):
         OPENAI_API_KEY="sk-test-not-real",
         LITELLM_LOCAL_MODEL_COST_MAP="true",
         HF_HUB_OFFLINE="1",
-        TRANSFORMERS_OFFLINE="1",
     )
     result = subprocess.run(  # noqa: S603 - fixed interpreter, owned fixture
         [sys.executable, str(script), method],
