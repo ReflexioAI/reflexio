@@ -1615,26 +1615,35 @@ file ownership run on supported platforms.
 
 ### Native pool policy ownership (local file generation10)
 
-The four `storage_config` fields own native capacity and acquisition policy:
-`pool_size`, `pool_acquire_timeout`, `read_pool_size`, and
-`read_pool_acquire_timeout`. Unset reader fields inherit the writer. Explicit
-backend selection may change deployment binding (DSN/schema/reader DSN), but a
-current native file retains all four saved fields.
+The canonical `storage_config.pool_size` and `read_pool_size` fields own native
+capacity. An unset reader size inherits the writer. Explicit backend selection
+may change deployment binding (DSN/schema/reader DSN), while a current native
+file retains its saved capacities.
+
+File generation14 retires `pool_acquire_timeout` and
+`read_pool_acquire_timeout`. Valid historical phase clocks are validated and
+removed by the existing locked preparation/copy-conversion owner, with exact
+original bytes retained. Current reads and publications reject those fields.
+There is no replacement queue default: enterprise storage uses the remaining
+whole-borrow expiry for admission, SQL and cleanup. Explicit per-operation bounds
+can shorten it. The independent early queue-abort choice is intentionally gone;
+do not copy its value into the whole-borrow setting.
 
 Generation10 is an authority fence: version9 readers/writers refuse the upgraded
 file. Stop incompatible writers before preparation. The existing file owner
 selects and publishes the policy in the same locked, source-checked operation
 as preparation, preserving exact original bytes. A previous-generation explicit
-`--storage postgres` selects the four historical pool environment values once,
-including their old defaults, because that is what its old writer would have
+`--storage postgres` selects historical pool capacities once,
+including their old capacity defaults, because that is what its old writer would have
 selected. Ordinary implicit preparation preserves the saved policy instead.
 A missing `DATA_DB_URL` does not authorize a native replacement or env import.
 Explicit storage writes also check the backend port when only docs are requested.
 That check retains its documented scope: it is not proof that writers on other
 ports/addresses have stopped.
 
-On a current file, old pool exports only assert matching effective values; they
-never fill missing policy or select capacity. Conflicts/invalid values refuse
+On a current file, old capacity exports only assert matching sizes; valid old
+clock assignments are validated and retired. Exports never fill missing current
+policy or select capacity. Capacity conflicts and invalid history refuse
 before publication. Remove `REFLEXIO_POSTGRES_POOL_SIZE`,
 `REFLEXIO_POSTGRES_POOL_ACQUIRE_TIMEOUT`, `REFLEXIO_POSTGRES_READ_POOL_SIZE`, and
 `REFLEXIO_POSTGRES_READ_POOL_ACQUIRE_TIMEOUT` after verifying the canonical

@@ -30,21 +30,21 @@ def test_old_targets_are_rejected_without_values(name, canonical, legacy):
 @pytest.mark.parametrize(
     "env,expected",
     [
-        ({}, (10, 30.0, None, None)),
-        ({"REFLEXIO_STORAGE_POOL_SIZE": "24"}, (10, 30.0, None, None)),
+        ({}, (10, None)),
+        ({"REFLEXIO_STORAGE_POOL_SIZE": "24"}, (10, None)),
         (
             {
                 "REFLEXIO_POSTGRES_POOL_SIZE": " 3 ",
                 "REFLEXIO_POSTGRES_POOL_ACQUIRE_TIMEOUT": " 0.2 ",
             },
-            (3, 0.2, None, None),
+            (3, None),
         ),
         (
             {
                 "REFLEXIO_POSTGRES_READ_POOL_SIZE": "2",
                 "REFLEXIO_POSTGRES_READ_POOL_ACQUIRE_TIMEOUT": "0.1",
             },
-            (10, 30.0, 2, 0.1),
+            (10, 2),
         ),
         (
             {
@@ -52,7 +52,7 @@ def test_old_targets_are_rejected_without_values(name, canonical, legacy):
                 "REFLEXIO_STORAGE_POOL_SIZE": "24",
                 "REFLEXIO_POSTGRES_READ_POOL_SIZE": " ",
             },
-            (3, 30.0, None, None),
+            (3, None),
         ),
         (
             {
@@ -61,7 +61,7 @@ def test_old_targets_are_rejected_without_values(name, canonical, legacy):
                 "REFLEXIO_POSTGRES_READ_POOL_SIZE": " ",
                 "REFLEXIO_POSTGRES_READ_POOL_ACQUIRE_TIMEOUT": " ",
             },
-            (10, 30.0, None, None),
+            (10, None),
         ),
     ],
 )
@@ -116,12 +116,9 @@ def test_historical_native_defaults_do_not_follow_current_storage_defaults(monke
     import reflexio.config_env as config_env
 
     monkeypatch.setattr(config_env, "DEFAULT_STORAGE_POOL_SIZE", 99)
-    monkeypatch.setattr(config_env, "DEFAULT_STORAGE_POOL_ACQUIRE_TIMEOUT", 123.0)
     assert config_env.resolve_postgres_pool_defaults(
         {}
     ) == config_env.PostgresPoolDefaults(
         pool_size=10,
-        pool_acquire_timeout=30.0,
         read_pool_size=None,
-        read_pool_acquire_timeout=None,
     )

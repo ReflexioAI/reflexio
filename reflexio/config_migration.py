@@ -29,6 +29,31 @@ _LEGACY_STOP_SCORE = TypeAdapter(
 )
 
 
+def retire_storage_queue_policy(storage: dict[str, Any]) -> dict[str, Any]:
+    """Validate historical phase clocks before adopting whole-borrow ownership."""
+    if "managed_by" in storage:
+        # Redacted references never supported native pool policy. Leave invalid
+        # fields intact so normal validation refuses them before publication.
+        return dict(storage)
+    clock = TypeAdapter(Annotated[float, Field(gt=0, allow_inf_nan=False)])
+    for name in ("pool_acquire_timeout", "read_pool_acquire_timeout"):
+        if name not in storage or (
+            name == "read_pool_acquire_timeout" and storage[name] is None
+        ):
+            continue
+        try:
+            clock.validate_python(storage[name])
+        except ValidationError:
+            raise ConfigurationMigrationError(
+                f"Invalid obsolete storage_config.{name}"
+            ) from None
+    return {
+        key: value
+        for key, value in storage.items()
+        if key not in {"pool_acquire_timeout", "read_pool_acquire_timeout"}
+    }
+
+
 def retire_playbook_consolidation_strategy(data: Any) -> Any:
     """Retire a known method selector during an explicit settings upgrade.
 
@@ -684,6 +709,8 @@ def canonicalize_config_document(payload: dict[str, Any]) -> dict[str, Any]:
             if storage["type"] == "supabase":
                 for key in ("url", "key", "read_url", "read_key"):
                     storage.pop(key, None)
+            if storage["type"] == "postgres":
+                storage = retire_storage_queue_policy(storage)
             converted["storage_config"] = storage
         # Runtime validation sees only the converted document. In particular,
         # explicit upgrades must keep working after runtime aliases are removed.
