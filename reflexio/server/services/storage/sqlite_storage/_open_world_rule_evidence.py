@@ -27,6 +27,9 @@ from typing import Any, NoReturn
 from reflexio.server.services.offline_tuner.evidence.manifests import (
     canonical_json_bytes,
 )
+from reflexio.server.services.offline_tuner.evidence.open_world_models import (
+    classify_turn_speaker,
+)
 from reflexio.server.services.offline_tuner.open_world_invocations import (
     OpenWorldRefusal,
 )
@@ -792,15 +795,6 @@ def assert_proposal_context(
 # ---------------------------------------------------------------------------
 
 
-def _speaker(role: object) -> str:
-    normalized = (text(role) or "").strip(" ").lower()
-    if normalized in ("assistant", "agent"):
-        return "agent"
-    if normalized == "user":
-        return "user"
-    return "other"
-
-
 def assert_source_span(span: object, trajectory: object) -> None:
     """``assert_rule_evidence_source_span``: a span projects original evidence."""
     match = _SPAN_PATH.fullmatch(text(get(span, "field_path")) or "")
@@ -817,7 +811,7 @@ def assert_source_span(span: object, trajectory: object) -> None:
     value: str | None
     if field == "content":
         value = text(get(interaction, "content"))
-        speaker = _speaker(get(interaction, "role"))
+        speaker = classify_turn_speaker(get(interaction, "role"))
     else:
         tools = get(interaction, "tools_used")
         if null_or_absent(tools) or tools == []:
