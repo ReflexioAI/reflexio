@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Iterable
+from contextlib import nullcontext
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -155,7 +156,9 @@ def test_scheduler_keeps_pending_on_limiter_deferral(monkeypatch) -> None:
     storage = _claimed_storage()
     context = _context(storage)
     monkeypatch.setattr(
-        aggregation_scheduler, "operation_limit", MagicMock(side_effect=TimeoutError)
+        aggregation_scheduler,
+        "try_aggregation_capacity",
+        MagicMock(return_value=nullcontext(False)),
     )
     deferred = MagicMock()
     scheduler = aggregation_scheduler.PlaybookAggregationScheduler(

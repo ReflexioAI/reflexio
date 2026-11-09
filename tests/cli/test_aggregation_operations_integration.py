@@ -21,7 +21,7 @@ from reflexio.models.config_schema import (
     UserPlaybookExtractorConfig,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.operation_limiter import operation_limit
+from reflexio.server.operation_limiter import try_aggregation_capacity
 from reflexio.server.routes import playbooks
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
 from reflexio.server.services.playbook import aggregation_operations
@@ -83,7 +83,8 @@ def test_cli_waits_for_its_queued_operation_behind_busy_aggregation(
 
     def hold_execution_slot():
         try:
-            with operation_limit(org, "aggregation"):
+            with try_aggregation_capacity(org) as admitted:
+                assert admitted
                 occupied.set()
                 assert release.wait(20)
         except Exception as exc:

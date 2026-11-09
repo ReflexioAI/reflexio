@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 from contextlib import contextmanager
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 from fastapi import status
@@ -431,3 +431,48 @@ def test_aggregation_configured_wait_reaches_semaphore(monkeypatch, wait):
     with pytest.raises(TimeoutError), operation_limit("configured-wait", "aggregation"):
         pytest.fail("busy semaphore admitted work")
     semaphore.acquire.assert_called_once_with(timeout=wait)
+
+
+def test_aggregation_admission_is_nonblocking_and_never_registers_waiters(monkeypatch):
+    state = operation_limiter_module._state_for("queue-free", "aggregation")
+    semaphore = MagicMock()
+    semaphore.acquire.side_effect = [True, False]
+    monkeypatch.setattr(state, "semaphore", semaphore)
+    with operation_limiter_module.try_aggregation_capacity("queue-free") as admitted:
+        assert admitted
+        with operation_limiter_module.try_aggregation_capacity("queue-free") as busy:
+            assert busy is False
+            assert state.active == 1 and state.waiting == 0
+        semaphore.release.assert_not_called()
+    assert semaphore.acquire.call_args_list == [
+        call(blocking=False),
+        call(blocking=False),
+    ]
+    semaphore.release.assert_called_once_with()
+    assert state.active == state.waiting == 0
+
+
+def test_aggregation_capacity_is_released_when_execution_raises():
+    with (
+        pytest.raises(TimeoutError, match="provider"),
+        operation_limiter_module.try_aggregation_capacity("failed") as admitted,
+    ):
+        assert admitted
+        raise TimeoutError("provider")
+    with operation_limiter_module.try_aggregation_capacity("failed") as admitted:
+        assert admitted
+
+
+def test_nonblocking_and_blocking_aggregation_share_physical_capacity():
+    with operation_limiter_module.try_aggregation_capacity("shared") as admitted:
+        assert admitted
+        with (
+            pytest.raises(TimeoutError),
+            operation_limit("shared", "aggregation", timeout_seconds=0),
+        ):
+            pytest.fail("blocking caller bypassed an owned physical slot")
+    with (
+        operation_limit("shared", "aggregation", timeout_seconds=0),
+        operation_limiter_module.try_aggregation_capacity("shared") as admitted,
+    ):
+        assert not admitted
