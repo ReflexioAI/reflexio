@@ -78,6 +78,11 @@ from reflexio.server.llm._provider_concurrency import (
 )
 from reflexio.server.llm.call_deadline import model_call_deadline, remaining_call_time
 from reflexio.server.llm.completion_io import intercept_completion_io
+from reflexio.server.llm.failure import (
+    OutageWait,
+    Transient,
+    classify_llm_failure,
+)
 from reflexio.server.llm.image_utils import (
     SUPPORTED_IMAGE_MIME_TYPES,
     ImageEncodingError,
@@ -99,48 +104,13 @@ from reflexio.server.llm.model_defaults import (
     default_max_tokens_for_model,
     resolve_model_name,
 )
-from reflexio.server.llm.provider_circuit import (
-    ProviderCircuitOpenError,
-    circuit_route,
-    provider_circuit,
-)
+from reflexio.server.llm.provider_circuit import circuit_route, provider_circuit
 from reflexio.server.llm.token_accounting import RunTokenTotals, run_token_capture
 from reflexio.server.operational_metrics import record_health
 
 if TYPE_CHECKING:
     from reflexio.server.llm._litellm_types import LiteLLMConfig
 
-
-# Upstream-provider errors that are EXPECTED and transient. By the time one of
-# these reaches the request handler the fallback ladder is already exhausted,
-# but the caller — not the client — owns fatality, and many callers degrade
-# gracefully (FTS fallback for document expansion, skip-dedup for profile
-# consolidation). Log these at WARNING so a flaky provider (e.g. minimax
-# timeouts / 529 overload) can't flood ERROR-level alerts for handled failures;
-# genuinely-unexpected errors (bugs, auth, malformed structured output) stay
-# ERROR. Classified by exception TYPE NAME to avoid importing the heavy
-# ``litellm``/``openai`` exception hierarchies at module import.
-_TRANSIENT_LLM_ERROR_NAMES: frozenset[str] = frozenset(
-    {
-        "Timeout",
-        "APITimeoutError",
-        "APIConnectionError",
-        "RateLimitError",
-        "InternalServerError",
-        "ServiceUnavailableError",
-    }
-)
-
-# Upstream HTTP statuses that mean "retry later", for provider errors LiteLLM
-# does not map to one of the classes above. LiteLLM 1.103-1.105 raises a MiniMax 529
-# overload as a generic ``APIError(status_code=529)`` and a 502 as
-# ``BadGatewayError``; neither name is listed. 500 is deliberately absent: a
-# genuine upstream 500 already arrives as ``InternalServerError``, while LiteLLM
-# itself raises ``APIError(status_code=500)`` for a malformed 200 body (e.g.
-# MiniMax ``choices: null``) -- a response-shape defect, not a measured outage.
-_TRANSIENT_UPSTREAM_STATUS_CODES: frozenset[int] = frozenset(
-    {408, 429, 502, 503, 504, 529}
-)
 
 # A response of the wrong SHAPE spends one error slot per required field before
 # it names a single unexpected key. Live evidence: an open-world discovery call
@@ -604,60 +574,11 @@ class _StructuredAttempt:
     usage: Any | None = None
 
 
-def _is_expected_transient_llm_error(exc: BaseException) -> bool:
-    """True for expected transient upstream failures (timeout / connection /
-    rate-limit / overload), including our own ``LLMHardTimeoutError`` (a
-    ``TimeoutError`` subclass raised when a provider hang is killed).
-
-    Subprocess-isolated calls cross a pickle boundary, so their concrete
-    provider exception cannot safely be re-raised in the parent. The wrapper
-    retains ``upstream_error_type`` and ``upstream_status_code`` explicitly;
-    checking them here prevents an expected provider outage from being promoted
-    to an application ERROR just because isolation made the outer type
-    ``LiteLLMClientError``. The HTTP status covers provider overloads LiteLLM
-    raises under a generic class name (MiniMax 529 -> ``APIError``).
-    """
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        # A breaker refusal: the provider recently failed this way, nothing sent.
-        if isinstance(current, TimeoutError | ProviderCircuitOpenError):
-            return True
-        if type(current).__name__ in _TRANSIENT_LLM_ERROR_NAMES:
-            return True
-        if getattr(current, "upstream_error_type", None) in _TRANSIENT_LLM_ERROR_NAMES:
-            return True
-        status = getattr(current, "upstream_status_code", None)
-        if status is None:
-            status = getattr(current, "status_code", None)
-        if isinstance(status, int) and status in _TRANSIENT_UPSTREAM_STATUS_CODES:
-            return True
-        current = current.__cause__ or current.__context__
-    return False
-
-
 # A timeout is evidence of a provider outage only when the attempt was given at
 # least this long. Under a shorter caller budget (document expansion allows
 # 25 s and degrades to plain full-text search) it says the provider was slower
 # than that caller allowed, not that it is down for callers that wait longer.
 _OUTAGE_EVIDENCE_MIN_TIMEOUT_SECONDS = 60.0
-_TIMEOUT_ERROR_NAMES: frozenset[str] = frozenset({"Timeout", "APITimeoutError"})
-
-
-def _is_timeout_error(exc: BaseException) -> bool:
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(current, TimeoutError):
-            return True
-        if type(current).__name__ in _TIMEOUT_ERROR_NAMES:
-            return True
-        if getattr(current, "upstream_error_type", None) in _TIMEOUT_ERROR_NAMES:
-            return True
-        current = current.__cause__ or current.__context__
-    return False
 
 
 def _reserved_attempt_id(unreserved: dict[str, Any] | None) -> str | None:
@@ -686,25 +607,6 @@ def _report_reserved_failure(attempt_id: str | None, failure: BaseException) -> 
         raise ProviderRequestGuardError(
             "Durable extraction attempt settlement failed"
         ) from exc
-
-
-def is_provider_unavailable_error(exc: BaseException) -> bool:
-    """The provider could not serve the call: retry later, the item is not at fault.
-
-    The transient upstream failures above plus a saturated local provider cap
-    (``ProviderCapSaturatedError``), which means calls to the provider are
-    backing up. Bad or invalid answers are not included.
-    """
-    if _is_expected_transient_llm_error(exc):
-        return True
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(current, ProviderCapSaturatedError):
-            return True
-        current = current.__cause__ or current.__context__
-    return False
 
 
 def _token_count(value: Any) -> int | None:
@@ -1695,7 +1597,7 @@ class TextGenerationMixin:
             # ``llm.failures`` counts failures a person may need to act on. A
             # provider outage is retried by its caller and reported once, when
             # sustained, by the provider circuit.
-            if is_provider_unavailable_error(error):
+            if isinstance(classify_llm_failure(error), OutageWait | Transient):
                 outcome = "provider_unavailable"
             else:
                 outcome = "failure"
@@ -2107,14 +2009,20 @@ class TextGenerationMixin:
                 exhausted = str(turn_params.get("model", "")).lower().startswith(
                     "minimax/"
                 ) and quota_exhausted(e)
-                transient = exhausted or _is_expected_transient_llm_error(e)
+                # Breaker evidence must not depend on the breaker's own state.
+                verdict = classify_llm_failure(e, consult_breaker=False)
+                provider_failed = (
+                    isinstance(verdict, Transient) and not verdict.cap_saturated
+                )
+                transient = exhausted or provider_failed
                 allowance = (
                     dispatch_allowance
                     if dispatch_allowance is not None
                     else self._coerce_timeout_seconds(turn_params)
                 )
                 if transient and not (
-                    _is_timeout_error(e)
+                    isinstance(verdict, Transient)
+                    and verdict.timed_out
                     and allowance < _OUTAGE_EVIDENCE_MIN_TIMEOUT_SECONDS
                 ):
                     circuit_call.failed(quota_exhausted=exhausted)

@@ -96,7 +96,7 @@ def settle_finalization_failure(
     other failure is charged against ``max_attempts``.
     """
     from reflexio.server.llm.compute_admission import ComputeAdmissionError
-    from reflexio.server.llm.provider_circuit import provider_wait_seconds
+    from reflexio.server.llm.failure import OutageWait, classify_llm_failure
     from reflexio.server.services.storage.error import (
         ReadinessUnavailableError,
         execution_input_is_busy,
@@ -112,7 +112,8 @@ def settle_finalization_failure(
         readiness = isinstance(reason, ReadinessUnavailableError) and entry is None
         # Preparation calls the model; a route that is down for everyone is
         # not this run's failure, whether or not preparation had started.
-        outage_wait = None if busy else provider_wait_seconds(reason)
+        verdict = None if busy else classify_llm_failure(reason)
+        outage_wait = verdict.delay_seconds if isinstance(verdict, OutageWait) else None
         charge = not (busy or readiness or outage_wait is not None)
         count = run.finalization_attempts + int(charge)
         now = datetime.now(UTC)

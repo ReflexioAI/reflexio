@@ -13,6 +13,7 @@ import pytest
 
 from reflexio.server.llm import provider_circuit as circuit_module
 from reflexio.server.llm._litellm_types import LiteLLMClientError
+from reflexio.server.llm.failure import OutageWait, classify_llm_failure
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.provider_circuit import (
     FIRST_OPEN_SECONDS,
@@ -24,7 +25,6 @@ from reflexio.server.llm.provider_circuit import (
     ProviderCircuitOpenError,
     circuit_route,
     provider_circuit,
-    provider_wait_seconds,
 )
 
 MODEL = "test/model"
@@ -155,6 +155,11 @@ def test_waiting_items_spread_over_part_of_the_open_period(clock):
     )
 
 
+def _wait(error: BaseException) -> float | None:
+    verdict = classify_llm_failure(error)
+    return verdict.delay_seconds if isinstance(verdict, OutageWait) else None
+
+
 def _routed(error: BaseException, route: str = ROUTE) -> LiteLLMClientError:
     """The shape a durable worker receives: the client's wrapper, routed."""
     try:
@@ -174,16 +179,16 @@ def _routed(error: BaseException, route: str = ROUTE) -> LiteLLMClientError:
         (_routed(ProviderCircuitOpenError("refused")), False, 0.0),  # never sent
     ],
 )
-def test_provider_wait_seconds(error, outage, expected):
+def test_outage_wait(error, outage, expected):
     if outage:
         for _ in range(OPEN_AFTER_FAILURES):
             provider_circuit.admit(ROUTE, model=MODEL).failed()
     # An unrelated error alone is never a provider wait.
-    assert provider_wait_seconds(RuntimeError("wrapped")) is None
+    assert _wait(RuntimeError("wrapped")) is None
     try:
         raise RuntimeError("extractor failed") from error
     except RuntimeError as wrapped:
-        wait = provider_wait_seconds(wrapped)
+        wait = _wait(wrapped)
     if expected == "wait":
         assert wait is not None and wait > 0
     else:
@@ -202,8 +207,8 @@ def test_routes_of_one_model_do_not_share_an_outage():
     provider_circuit.admit(other, model=MODEL).succeeded()
     provider_circuit.admit(keyed, model=MODEL).succeeded()
     # ... and a failure there is charged although this route is down.
-    assert provider_wait_seconds(_routed(TimeoutError("slow"), other)) is None
-    assert provider_wait_seconds(_routed(TimeoutError("slow"))) is not None
+    assert _wait(_routed(TimeoutError("slow"), other)) is None
+    assert _wait(_routed(TimeoutError("slow"))) is not None
 
 
 def _response() -> MagicMock:
@@ -312,7 +317,7 @@ def test_sustained_provider_cap_saturation_opens_the_breaker(monkeypatch):
             client.generate_chat_response([{"role": "user", "content": "hi"}])
     # The last rung wraps the saturation; durable work finds its route on the cause.
     assert isinstance(raised.value.__cause__, ProviderCapSaturatedError)
-    assert provider_wait_seconds(raised.value) is not None
+    assert _wait(raised.value) is not None
 
 
 def test_a_search_deadline_expiring_is_not_outage_evidence(monkeypatch):

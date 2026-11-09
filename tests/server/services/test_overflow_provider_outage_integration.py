@@ -184,10 +184,8 @@ def test_outage_probes_spend_no_package_stage_attempts(pipeline, monkeypatch):
     the fix the first failed probe spent it, and the next turn held the window
     with ``Package stage attempt budget exhausted``.
     """
-    from reflexio.server.llm.provider_circuit import (
-        OPEN_AFTER_FAILURES,
-        provider_wait_seconds,
-    )
+    from reflexio.server.llm.failure import OutageWait, classify_llm_failure
+    from reflexio.server.llm.provider_circuit import OPEN_AFTER_FAILURES
     from reflexio.server.services.durable_learning.profile_package_executor import (
         ProfilePackageWindowExecutor,
     )
@@ -227,7 +225,7 @@ def test_outage_probes_spend_no_package_stage_attempts(pipeline, monkeypatch):
         clock[0] += MAX_OPEN_SECONDS + 1  # the next call is the breaker's probe
         with pytest.raises(Exception) as failure:
             executor.execute(storage.prepare_extraction("u", token), token)
-        assert provider_wait_seconds(failure.value) is not None
+        assert isinstance(classify_llm_failure(failure.value), OutageWait)
         assert gate_attempts() == 0
 
     down[0] = False

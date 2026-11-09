@@ -1,16 +1,16 @@
 """Every LLM failure classifier consults the one provider-outage rule.
 
-``provider_wait_seconds`` decides whether a failure is a provider outage: the
-provider's breaker is open (or refused the call), so the work waits and is not
-charged. Durable extraction used it; the open-world attempt boundary, the
+``classify_llm_failure`` returns ``OutageWait`` when a failure is a provider
+outage: the provider's breaker is open (or refused the call), so the work waits
+and is not charged. Durable extraction used it; the open-world attempt boundary, the
 agent-success retry and the tagging pass each had their own transient/terminal
 split, and during the 2026-11-06 MiniMax quota outage those ended jobs as
 ``infrastructure_failure`` or spent every bounded retry on refusals that never
 reached the provider.
 
-A module that classifies LLM failures -- it calls one of the transient
-classifiers, names ``ProviderCircuitOpenError``, or catches a client error --
-must consult ``provider_wait_seconds`` or be recorded below with the reason it
+A module that classifies LLM failures -- it calls the verdict or
+``describe_tool_loop_error``, names ``ProviderCircuitOpenError``, or catches a
+client error -- must act on ``OutageWait`` or be recorded below with the reason it
 makes no retry decision of its own. The guard fails on an unrecorded module and
 on an entry that no longer describes one.
 """
@@ -30,39 +30,37 @@ _SOURCE_ROOT = Path(__file__).resolve().parents[3] / "reflexio"
 CLASSIFIER_NAMES = frozenset(
     {
         "describe_tool_loop_error",
-        "is_provider_unavailable_error",
-        "_is_expected_transient_llm_error",
+        "classify_llm_failure",
         "rate_limit_evidence",
         "ProviderCircuitOpenError",
     }
 )
 #: Exceptions whose handler is a classification decision.
 CAUGHT_NAMES = frozenset({"LiteLLMClientError", "ProviderCircuitOpenError"})
-SHARED_RULE = "provider_wait_seconds"
+SHARED_RULE = "OutageWait"
 
 #: Modules that classify LLM failures without deciding retry or terminality.
 EXEMPT: dict[str, str] = {
     "server/llm/_minimax_quota.py": (
         "classifies authenticated quota evidence for a same-request credential "
         "retry inside the client; terminal failures retain their credential "
-        "route and durable owners consult provider_wait_seconds"
+        "route and durable owners act on OutageWait"
     ),
-    "server/llm/_litellm_text_generation.py": (
-        "the client: defines the transient classification and feeds the breaker"
+    "server/llm/provider_circuit.py": (
+        "the breaker: raises ProviderCircuitOpenError; failure.py classifies it"
     ),
-    "server/llm/provider_circuit.py": "defines provider_wait_seconds itself",
     "server/llm/tools.py": (
         "describe_tool_loop_error labels a tool-loop error for logs and the "
         "loop's own result; it schedules nothing"
     ),
     "server/services/offline_tuner/open_world/analyst.py": (
         "in-attempt rate-limit backoff inside one budget; exhaustion and every "
-        "other failure reach rule_evidence_runtime's boundary, which consults "
-        "provider_wait_seconds"
+        "other failure reach rule_evidence_runtime's boundary, which acts on "
+        "OutageWait"
     ),
     "server/services/profile/components/extractor.py": (
         "chooses a log level only; the durable window (durable_learning/"
-        "worker.py) decides the retry with provider_wait_seconds"
+        "worker.py) decides the retry with OutageWait"
     ),
     "server/services/extraction/protected_pass.py": (
         "re-raises the client error (or the capacity error it caused); the "
@@ -113,7 +111,7 @@ def test_every_failure_classifier_consults_the_outage_rule() -> None:
         if not shared and module not in EXEMPT
     )
     assert unrecorded == [], (
-        "These modules classify LLM failures without provider_wait_seconds. "
+        "These modules classify LLM failures without acting on OutageWait. "
         "Defer while the provider is unavailable (see durable_learning/"
         "worker.py), or record in EXEMPT why the module decides no retry: "
         f"{unrecorded}"
@@ -133,5 +131,6 @@ def test_the_scan_sees_the_known_consumers() -> None:
         "server/services/generation_service.py",
         "server/services/offline_tuner/open_world/rule_evidence_runtime.py",
         "server/services/extraction/resumable_agent.py",
+        "server/llm/_litellm_text_generation.py",
     ):
         assert found.get(consumer) is True, consumer

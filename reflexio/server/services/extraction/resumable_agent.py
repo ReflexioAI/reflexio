@@ -15,9 +15,6 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
-from reflexio.server.llm._litellm_text_generation import (
-    is_provider_unavailable_error,
-)
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.compute_admission import (
     compute_attempt_scope,
@@ -25,13 +22,13 @@ from reflexio.server.llm.compute_admission import (
     reserve_compute_attempt,
     retain_compute_result,
 )
+from reflexio.server.llm.failure import OutageWait, Transient, classify_llm_failure
 from reflexio.server.llm.input_budget import (
     InputBudgetConfigurationError,
     InputBudgetExceededError,
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
-from reflexio.server.llm.provider_circuit import provider_wait_seconds
 from reflexio.server.llm.tools import (
     Tool,
     ToolLoopTrace,
@@ -899,7 +896,9 @@ class ResumableExtractionAgent:
             if not (
                 result.finished_reason == "error"
                 and result.error is not None
-                and is_provider_unavailable_error(result.error)
+                and isinstance(
+                    classify_llm_failure(result.error), OutageWait | Transient
+                )
             ):
                 remaining -= 1
             trace.turns.extend(result.trace.turns)
@@ -1208,7 +1207,7 @@ class ResumableExtractionAgent:
         elif (
             run.status == AgentRunStatus.RESUMING
             and result.error is not None
-            and provider_wait_seconds(result.error) is not None
+            and isinstance(classify_llm_failure(result.error), OutageWait)
         ):
             # The provider is down for everyone. A resumed run's FAILED would be
             # terminal, so leave it RESUMING: its worker refunds the attempt and

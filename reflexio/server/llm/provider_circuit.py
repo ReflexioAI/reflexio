@@ -19,10 +19,12 @@ is still an answer: the provider is up.
 
 **Charging invariant.** A durable item's failure spends one of its retry or
 attempt allowances only when the provider was serving other calls. Every such
-allowance asks :func:`provider_wait_seconds` about the failure: ``None`` means
-the failing route's breaker is closed, so the item owns its failure and is
-charged; a delay means the provider is down for everyone, so the item waits
-that long and is not charged. The allowances that apply it:
+allowance asks :func:`reflexio.server.llm.failure.classify_llm_failure` about
+the failure: any verdict but ``OutageWait`` means the failing route's breaker
+is closed (or the failure is not the provider's), so the item owns its failure
+and is charged; ``OutageWait(delay_seconds)`` means the provider is down for
+everyone, so the item waits that long and is not charged. The allowances that
+apply it:
 
 - extraction window attempts (``DurableLearningWorker``);
 - resume attempts (``ExtractionResumeWorker``);
@@ -51,7 +53,7 @@ import logging
 import random
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -301,46 +303,3 @@ class ProviderCircuitBreaker:
 
 
 provider_circuit = ProviderCircuitBreaker()
-
-
-def _chain(exc: BaseException) -> Iterator[BaseException]:
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        yield current
-        current = current.__cause__ or current.__context__
-
-
-def provider_wait_seconds(exc: BaseException) -> float | None:
-    """How long durable work that failed with ``exc`` should wait, uncharged.
-
-    ``None`` means charge the failure as usual: ``exc`` is not a
-    provider-availability failure, it carries no route, or the breaker of the
-    route it failed on is closed (the provider serves other calls there, so
-    this item owns the failure). Another route's outage never excuses it. A
-    breaker refusal is never charged -- no request was sent -- even if the
-    breaker closed since.
-    """
-    from reflexio.server.llm._litellm_text_generation import (
-        is_provider_unavailable_error,
-    )
-
-    if not is_provider_unavailable_error(exc):
-        return None
-    route = next(
-        (
-            route
-            for current in _chain(exc)
-            if isinstance(route := getattr(current, "circuit_route", None), str)
-        ),
-        None,
-    )
-    if route is None:
-        return None
-    delay = provider_circuit.outage_retry_delay(route)
-    if delay is None and any(
-        isinstance(current, ProviderCircuitOpenError) for current in _chain(exc)
-    ):
-        return 0.0
-    return delay
