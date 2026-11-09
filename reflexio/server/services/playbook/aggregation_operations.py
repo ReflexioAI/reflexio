@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Callable
+from contextlib import ExitStack
 
 from reflexio.lib.generation_client import create_generation_litellm_client
 from reflexio.server.api_endpoints.request_context import RequestContext
@@ -34,13 +35,40 @@ def run_explicit_operation(
     on_work_claimed: Callable[[RequestContext], None] | None = None,
     on_claim_completed: Callable[[], None] | None = None,
 ) -> bool:
-    """Return whether explicit work owns this scheduler turn (including contention).
+    """Reserve physical capacity before claiming or spending an operation attempt.
 
-    Notify the scheduler immediately after the claim query returns, including
-    contention, so it can reset its org streak before execution or finalization.
-    A failed claim query does not notify it. Operation and explicit-finalization
-    outcomes retain their independent failure scopes here.
+    Capacity pressure leaves the durable request untouched. Only successful
+    admission proceeds to claim/begin, heartbeat and provider work; the permit
+    remains owned until claim finalization has completed or failed.
     """
+    storage = context.storage
+    if storage is None or not getattr(
+        storage, "supports_durable_playbook_aggregation_operations", False
+    ):
+        return False
+    with ExitStack() as capacity:
+        try:
+            capacity.enter_context(operation_limit(context.org_id, "aggregation"))
+        except TimeoutError:
+            return True
+        return _run_admitted_operation(
+            context,
+            owner=owner,
+            project_id=project_id,
+            on_work_claimed=on_work_claimed,
+            on_claim_completed=on_claim_completed,
+        )
+
+
+def _run_admitted_operation(
+    context: RequestContext,
+    *,
+    owner: str,
+    project_id: str | None,
+    on_work_claimed: Callable[[RequestContext], None] | None,
+    on_claim_completed: Callable[[], None] | None,
+) -> bool:
+    """Execute under the wrapper's capacity owner through finalization."""
     from .aggregation_scheduler import (
         _REPAIR_INTERVAL_SECONDS,
         AGGREGATION_BACKLOG_RETRY_SECONDS,
@@ -91,33 +119,32 @@ def run_explicit_operation(
         operation = storage.begin_playbook_aggregation_operation(
             operation.operation_id, claim
         )
-        with operation_limit(context.org_id, "aggregation"):
-            if exhausted:
-                raise ValueError("attempts_exhausted")
-            config = context.configurator.get_config().user_playbook_extractor_config
-            if (
-                config is None
-                or config.aggregation_config is None
-                or config.aggregation_config.min_cluster_size < 2
-            ):
-                raise ValueError("invalid_aggregation_config")
-            aggregator = PlaybookAggregator(
-                llm_client=create_generation_litellm_client(context),
-                request_context=context,
+        if exhausted:
+            raise ValueError("attempts_exhausted")
+        config = context.configurator.get_config().user_playbook_extractor_config
+        if (
+            config is None
+            or config.aggregation_config is None
+            or config.aggregation_config.min_cluster_size < 2
+        ):
+            raise ValueError("invalid_aggregation_config")
+        aggregator = PlaybookAggregator(
+            llm_client=create_generation_litellm_client(context),
+            request_context=context,
+            agent_version=operation.agent_version,
+            aggregation_claim=claim,
+            explicit_operation_id=operation.operation_id,
+            aggregation_prompt_processor=get_service(AGGREGATION_PROMPT_PROCESSOR),
+        )
+        result = aggregator.run(
+            PlaybookAggregatorRequest(
                 agent_version=operation.agent_version,
-                aggregation_claim=claim,
-                explicit_operation_id=operation.operation_id,
-                aggregation_prompt_processor=get_service(AGGREGATION_PROMPT_PROCESSOR),
+                rerun=True,
+                operation_key=operation.operation_id,
             )
-            result = aggregator.run(
-                PlaybookAggregatorRequest(
-                    agent_version=operation.agent_version,
-                    rerun=True,
-                    operation_key=operation.operation_id,
-                )
-            )
-            if not _is_unqualified_success(result):
-                raise RuntimeError("explicit aggregation returned incomplete work")
+        )
+        if not _is_unqualified_success(result):
+            raise RuntimeError("explicit aggregation returned incomplete work")
         heartbeat.require_live()
         # Early successful no-ops have no output transaction. Complete them under
         # the same fence; output-producing paths already committed the receipt.
