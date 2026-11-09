@@ -497,7 +497,11 @@ class DurableLearningWorker:
         parks work, and a window that fails on its own still does.
         """
         where = exception_locator(exc)
-        logger.warning(
+        # INFO, not WARNING: every waiting window logs this once per retry, so
+        # an outage repeats it thousands of times. The breaker already logs the
+        # outage itself at WARNING (``event=provider_circuit_opened`` /
+        # ``_reopened``).
+        logger.info(
             "Extraction window waiting for provider kind=%s retry_in_seconds=%.0f "
             "error=%s at=%s",
             window.kind,

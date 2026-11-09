@@ -11,10 +11,13 @@ Each semicolon-separated group contains a key term followed by its synonyms.
 import json
 import logging
 import re
+from typing import Any
 
 from pydantic import BaseModel
 
+from reflexio.server.llm.failure import OutageWait, classify_llm_failure
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.llm.provider_circuit import provider_circuit
 from reflexio.server.prompt.prompt_manager import PromptManager
 
 logger = logging.getLogger(__name__)
@@ -77,6 +80,11 @@ class DocumentExpander:
         if len(content) > self.MAX_CONTENT_LENGTH:
             content = content[: self.MAX_CONTENT_LENGTH]
         try:
+            if self._provider_down():
+                # The breaker logged the outage once; a per-document line
+                # would repeat it for every save until the provider is back.
+                logger.debug("Document expansion skipped: provider circuit open")
+                return ExpansionResult()
             expansions = self._extract_expansions(content)
             expanded_text = self._format_expanded_terms(expansions)
             return ExpansionResult(
@@ -84,8 +92,29 @@ class DocumentExpander:
                 expanded_text=expanded_text,
             )
         except Exception as e:
-            logger.warning("Document expansion failed, returning empty: %s", e)
+            if isinstance(classify_llm_failure(e), OutageWait):
+                # Refused without reaching the provider: an outage the breaker
+                # already reported, not a failure of this document.
+                logger.info("Document expansion skipped: %s", type(e).__name__)
+            else:
+                logger.warning("Document expansion failed, returning empty: %s", e)
             return ExpansionResult()
+
+    def _model_kwargs(self) -> dict[str, Any]:
+        return {"model": self.model_name} if self.model_name else {}
+
+    def _provider_down(self) -> bool:
+        """Whether every model this call could use has an open provider circuit.
+
+        Skipping then costs nothing a call would have produced, and spares the
+        save a full ``LLM_TIMEOUT`` against a provider that is down.
+        """
+        ladder = tuple(
+            self.llm_client.get_completion_model_ladder(**self._model_kwargs())
+        )
+        return bool(ladder) and all(
+            provider_circuit.refusing_model(model) for model in ladder
+        )
 
     def _extract_expansions(self, content: str) -> dict[str, list[str]]:
         """Use LLM to extract key terms and their synonyms from document content.
@@ -104,14 +133,11 @@ class DocumentExpander:
             {"content": content},
         )
         logger.debug("Document expansion prompt: %s", prompt)
-        model_kwargs = {}
-        if self.model_name:
-            model_kwargs["model"] = self.model_name
         result = self.llm_client.generate_response(
             prompt,
             timeout=self.LLM_TIMEOUT,
             max_retries=self.LLM_MAX_RETRIES,
-            **model_kwargs,
+            **self._model_kwargs(),
         )
         if isinstance(result, str):
             return self._parse_expansion_json(result)
