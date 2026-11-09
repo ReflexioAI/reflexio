@@ -13,6 +13,7 @@ from reflexio.native_compute import (
     configure_native_compute,
     configure_tokenizer_compute,
 )
+from reflexio.removed_env import reject_removed_env
 from reflexio.server.llm.rerank.common import (
     MULTILINGUAL_RERANK_MODEL,
     MULTILINGUAL_RERANK_REVISION,
@@ -71,6 +72,7 @@ class CrossEncoderRunner:
         self._last_error = error
 
     def _get_model(self) -> Any:
+        reject_removed_env(os.environ, canonical="HF_HUB_OFFLINE")
         if not reranker_enabled():
             raise CrossEncoderUnavailableError(
                 f"Reranker is disabled by {RERANK_ENABLED_ENV_VAR}"

@@ -183,7 +183,6 @@ def _run(tmp_path: Path, mode: str, budget: int, old: str = "true") -> dict:
         OPENAI_API_KEY="sk-test-not-real",
         LITELLM_LOCAL_MODEL_COST_MAP="true",
         HF_HUB_OFFLINE="1",
-        TRANSFORMERS_OFFLINE="1",
     )
     result = subprocess.run(  # noqa: S603 - fixed interpreter and owned source
         [sys.executable, "-c", _PROGRAM, mode],

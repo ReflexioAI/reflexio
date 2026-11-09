@@ -766,3 +766,16 @@ values without an explicit new budget fail before changing libraries. Legacy
 values never select the new budget. See the [upgrade guide](docs/configuration-upgrade.md).
 
 Environment-name upgrades: see the [canonical configuration guide](docs/configuration-upgrade.md) before adopting this version.
+
+### One Hugging Face offline-policy input
+
+Use `HF_HUB_OFFLINE` for Hugging Face model/tokenizer download policy.
+`TRANSFORMERS_OFFLINE` is retired: remove its process and selected-file
+assignments, including blanks. Preserve the effective policy first. In the
+previous runtime, a nonempty `HF_HUB_OFFLINE` took precedence (including `0`);
+do not replace it with an ignored alias. If only the alias was set, account for
+image defaults and secret bindings before choosing the canonical value.
+No value is copied automatically and the default policy is unchanged. Native
+embedding/reranking and input token counting reject obsolete assignments even
+after model initialization. Existing deployed images need their own upgrade;
+installing this SDK does not rewrite their environment.

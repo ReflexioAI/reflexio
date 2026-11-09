@@ -66,6 +66,7 @@ class SentenceEncoder(ABC):
         torch.device(device)
 
     def _load(self) -> Any:
+        reject_removed_env(os.environ, canonical="HF_HUB_OFFLINE")
         device = embedding_device()
         if self._model is not None:
             return self._model

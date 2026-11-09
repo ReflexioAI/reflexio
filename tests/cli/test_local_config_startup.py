@@ -211,7 +211,6 @@ def test_real_server_upgrades_before_serving_and_keeps_owned_dataset(
         OPENAI_API_KEY="synthetic-no-provider-access",
         LITELLM_LOCAL_MODEL_COST_MAP="true",
         HF_HUB_OFFLINE="1",
-        TRANSFORMERS_OFFLINE="1",
         REFLEXIO_EMBEDDING_SERVICE_URL="http://127.0.0.1:9",
     )
     with socket.socket() as probe:
