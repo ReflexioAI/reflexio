@@ -1732,3 +1732,31 @@ No value is copied automatically and the default policy is unchanged. Native
 embedding/reranking and input token counting reject obsolete assignments even
 after model initialization. Existing deployed images need their own upgrade;
 installing this SDK does not rewrite their environment.
+
+### Aggregation admission owns the durable claim
+
+The scheduler reserves the existing per-organization aggregation capacity before
+reading/claiming runnable work, starting its heartbeat, or spending an explicit
+operation attempt. Capacity pressure leaves work queued; sparse discovery uses
+its existing deferred-scope callback and polling cadence. The slot remains held
+through the existing heartbeat stop and claim finalization sequence, including failures. An
+execution timeout is a run failure, rather than evidence of limiter contention.
+The direct explicit-operation executor also reserves before inspecting its queue,
+so a receipt completed while it waits is not executed from a stale snapshot.
+
+Both `REFLEXIO_AGGREGATION_CONCURRENCY_LIMIT` and
+`REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS` retain their current meanings
+and defaults. This architecture prerequisite retires no configuration. Database
+fences protect logical publication; they do not replace ownership of physical
+work that may still be running after a lease expires. Legacy outbox execution and
+synchronous library reruns remain separate follow-up consumers before any
+queue-wait setting can be retired.
+
+The existing heartbeat stop still uses a five-second bounded join. A blocked
+renewal thread may therefore outlive that stop call; this change holds capacity
+through the existing cleanup sequence, not proven heartbeat-thread termination.
+A separate retirement design must bind renewal I/O and actual thread completion
+without replacing the join timeout with another constant or introducing a lock
+inversion. Heartbeat-start failure also retains its prior lease-expiry recovery.
+These inherited lifecycle limits are tracked in the admission decision ledger;
+neither is counted as repaired by this step.

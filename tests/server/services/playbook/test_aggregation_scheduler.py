@@ -80,11 +80,6 @@ def test_scheduler_keeps_invalidation_and_clustering_budgets_separate(
         "reflexio.lib.generation_client.create_generation_litellm_client",
         lambda _context: MagicMock(),
     )
-    monkeypatch.setattr(
-        aggregation_scheduler,
-        "run_with_operation_limit",
-        lambda *, fn, **_kwargs: fn(),
-    )
     caplog.set_level(logging.INFO, logger=aggregation_scheduler.logger.name)
 
     claimed = MagicMock(
@@ -135,7 +130,7 @@ def test_scheduler_drains_invalidation_page_before_llm_work(
     storage.get_playbook_aggregation_backlog.return_value = after
     storage.finish_playbook_aggregation_claim.return_value = True
     run = MagicMock()
-    monkeypatch.setattr(aggregation_scheduler, "run_with_operation_limit", run)
+    monkeypatch.setattr(aggregation_scheduler, "PlaybookAggregator", run)
     caplog.set_level(logging.INFO, logger=aggregation_scheduler.logger.name)
 
     scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
@@ -157,34 +152,19 @@ def test_scheduler_drains_invalidation_page_before_llm_work(
 
 
 def test_scheduler_keeps_pending_on_limiter_deferral(monkeypatch) -> None:
-    claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
-    storage = MagicMock(supports_incremental_playbook_aggregation=True)
-    storage.next_playbook_aggregation_operation.return_value = None
-    storage.repair_playbook_aggregation_pending_state.return_value = []
-    storage.claim_due_playbook_aggregation.return_value = claim
-    storage.get_playbook_aggregation_backlog.return_value = PlaybookAggregationBacklog(
-        1, 0, 0
-    )
-    storage.get_playbook_aggregation_invalidations.return_value = []
-    storage.finish_playbook_aggregation_claim.return_value = True
+    storage = _claimed_storage()
+    context = _context(storage)
     monkeypatch.setattr(
-        "reflexio.lib.generation_client.create_generation_litellm_client",
-        lambda _context: MagicMock(),
+        aggregation_scheduler, "operation_limit", MagicMock(side_effect=TimeoutError)
     )
-    monkeypatch.setattr(
-        aggregation_scheduler,
-        "run_with_operation_limit",
-        lambda **_kwargs: (_ for _ in ()).throw(TimeoutError),
-    )
-
+    deferred = MagicMock()
     scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
-        context_provider=lambda: [], worker_id="worker"
+        context_provider=lambda: [], worker_id="worker", on_scope_deferred=deferred
     )
-    scheduler._run_context(_context(storage))
-
-    assert (
-        storage.finish_playbook_aggregation_claim.call_args.kwargs["success"] is False
-    )
+    scheduler._run_context(context)
+    storage.claim_due_playbook_aggregation.assert_not_called()
+    storage.finish_playbook_aggregation_claim.assert_not_called()
+    deferred.assert_called_once_with(context, scheduler._poll_interval_seconds)
 
 
 def test_scheduler_throttles_idle_repair_scans(monkeypatch) -> None:
@@ -694,11 +674,6 @@ def test_succeeded_log_distinguishes_a_starved_run_from_an_idle_one(
         "reflexio.lib.generation_client.create_generation_litellm_client",
         lambda _context: MagicMock(),
     )
-    monkeypatch.setattr(
-        aggregation_scheduler,
-        "run_with_operation_limit",
-        lambda *, fn, **_kwargs: fn(),
-    )
     caplog.set_level(logging.INFO, logger=aggregation_scheduler.logger.name)
 
     scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
@@ -753,11 +728,6 @@ def test_backlog_failure_finishes_as_failure_and_releases_the_lease(
     monkeypatch.setattr(
         "reflexio.lib.generation_client.create_generation_litellm_client",
         lambda _context: MagicMock(),
-    )
-    monkeypatch.setattr(
-        aggregation_scheduler,
-        "run_with_operation_limit",
-        lambda *, fn, **_kwargs: fn(),
     )
     caplog.set_level(logging.INFO, logger=aggregation_scheduler.logger.name)
 
@@ -1215,8 +1185,7 @@ def test_an_unavailable_inventory_does_not_clear_the_inventory_streak(
 def test_finalization_streak_resets_when_finalization_succeeds_whatever_the_run(
     monkeypatch, transient_failure_classifier
 ) -> None:
-    """Codex round 3: a recovered finalization must reset its own streak even
-    while the run itself keeps being deferred (limiter saturation)."""
+    """Recovered finalization resets its own streak even for incomplete work."""
     from reflexio.server import background_work
 
     clock = [1000.0]
@@ -1225,17 +1194,13 @@ def test_finalization_streak_resets_when_finalization_succeeds_whatever_the_run(
         aggregation_scheduler.AggregationLeaseHeartbeat, "start", lambda _: None
     )
 
-    def saturated(**_kwargs):
-        raise TimeoutError("limiter saturated")
-
-    monkeypatch.setattr(aggregation_scheduler, "run_with_operation_limit", saturated)
     storage = _claimed_storage()
     storage.get_playbook_aggregation_invalidations.return_value = []
     monkeypatch.setattr(
         "reflexio.lib.generation_client.create_generation_litellm_client",
         lambda _context: MagicMock(),
     )
-    monkeypatch.setattr(aggregation_scheduler, "PlaybookAggregator", MagicMock())
+    _run_the_aggregator(monkeypatch, storage, result={"retryable_failures": 1})
     scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
         context_provider=lambda: [_context(storage)]
     )
@@ -1262,17 +1227,8 @@ def test_a_run_with_swallowed_cluster_failures_does_not_end_the_run_streak(
     monkeypatch.setattr(
         aggregation_scheduler.AggregationLeaseHeartbeat, "start", lambda _: None
     )
-    monkeypatch.setattr(
-        aggregation_scheduler,
-        "run_with_operation_limit",
-        lambda **_kwargs: {"retryable_failures": 2},
-    )
-    monkeypatch.setattr(
-        "reflexio.lib.generation_client.create_generation_litellm_client",
-        lambda _context: MagicMock(),
-    )
-    monkeypatch.setattr(aggregation_scheduler, "PlaybookAggregator", MagicMock())
     storage = _claimed_storage()
+    _run_the_aggregator(monkeypatch, storage, result={"retryable_failures": 2})
     storage.get_playbook_aggregation_invalidations.return_value = []
     storage.get_playbook_aggregation_backlog.return_value = PlaybookAggregationBacklog(
         0, 0, 0
@@ -1286,9 +1242,7 @@ def test_a_run_with_swallowed_cluster_failures_does_not_end_the_run_streak(
     scheduler._run_once()
     assert run_scope in background_work._streaks
 
-    monkeypatch.setattr(
-        aggregation_scheduler, "run_with_operation_limit", lambda **_kwargs: {}
-    )
+    _run_the_aggregator(monkeypatch, storage, result={})
     scheduler._run_once()
     assert run_scope not in background_work._streaks
 
@@ -1296,14 +1250,16 @@ def test_a_run_with_swallowed_cluster_failures_does_not_end_the_run_streak(
 def _run_the_aggregator(monkeypatch, storage, *, result) -> None:
     """Route the next claimed pass through the aggregator, not invalidations."""
     storage.get_playbook_aggregation_invalidations.return_value = []
-    monkeypatch.setattr(
-        aggregation_scheduler, "run_with_operation_limit", lambda **_kwargs: result
-    )
+
     monkeypatch.setattr(
         "reflexio.lib.generation_client.create_generation_litellm_client",
         lambda _context: MagicMock(),
     )
-    monkeypatch.setattr(aggregation_scheduler, "PlaybookAggregator", MagicMock())
+    aggregator = MagicMock()
+    aggregator.run.return_value = result
+    monkeypatch.setattr(
+        aggregation_scheduler, "PlaybookAggregator", MagicMock(return_value=aggregator)
+    )
 
 
 def test_invalidation_only_passes_do_not_end_the_run_streak(
