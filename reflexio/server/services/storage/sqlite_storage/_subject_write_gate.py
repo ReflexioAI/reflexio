@@ -52,6 +52,44 @@ def init_subject_write_barrier_table(conn: sqlite3.Connection) -> None:
     _ensure_governance_subject_ref_columns(conn)
 
 
+def backfill_user_playbook_subject_refs(conn: sqlite3.Connection, org_id: str) -> int:
+    """Give every owned user playbook its owner's governance subject ref.
+
+    The save paths write the ref; a row stored before they did carries NULL.
+    The read model maps the column into ``UserPlaybook.governance_subject_ref``,
+    which the full-version fingerprint covers, so a NULL would give the
+    playbook a fingerprint no later save could reproduce. Ownerless rows stay
+    NULL: there is no subject to name. Idempotent.
+
+    Args:
+        conn (sqlite3.Connection): An open SQLite connection.
+        org_id (str): The tenant the subject refs are keyed to.
+
+    Returns:
+        int: Rows updated.
+    """
+    owners = [
+        str(row[0])
+        for row in conn.execute(
+            "SELECT DISTINCT user_id FROM user_playbooks"
+            " WHERE governance_subject_ref IS NULL AND user_id IS NOT NULL"
+            " AND user_id != ''"
+        ).fetchall()
+    ]
+    if not owners:
+        return 0
+    secret = get_governance_ref_secret()
+    updated = 0
+    with conn:
+        for owner in owners:
+            updated += conn.execute(
+                "UPDATE user_playbooks SET governance_subject_ref = ?"
+                " WHERE user_id = ? AND governance_subject_ref IS NULL",
+                (governance_subject_ref(org_id, owner, secret), owner),
+            ).rowcount
+    return updated
+
+
 def _ensure_governance_subject_ref_columns(conn: sqlite3.Connection) -> None:
     for table in (
         "requests",
@@ -91,6 +129,15 @@ class SubjectWriteGateMixin:
             raise SubjectWriteBarrierError(
                 f"subject {subject_ref} is blocked by erasure barrier {row['purge_id']}"
             )
+
+    def governance_subject_ref_for_user(self, user_id: str) -> str:
+        """The trusted owner identity: the ref every SQLite writer stores.
+
+        SQLite stamps it on requests, interactions, outcomes and playbooks and
+        maps it into ``UserPlaybook.governance_subject_ref``, so a caller
+        comparing a row against its owner must get the same derivation here.
+        """
+        return self._subject_ref_for_user_id(user_id)
 
     def _subject_ref_for_user_id(self, user_id: str) -> str:
         return governance_subject_ref(

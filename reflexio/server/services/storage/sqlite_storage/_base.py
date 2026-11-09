@@ -77,7 +77,10 @@ from reflexio.server.site_var.site_var_manager import SiteVarManager
 
 from ._dataset_path import resolve_sqlite_db_path
 from ._stall_state import init_stall_state_table
-from ._subject_write_gate import init_subject_write_barrier_table
+from ._subject_write_gate import (
+    backfill_user_playbook_subject_refs,
+    init_subject_write_barrier_table,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -136,28 +139,32 @@ def _json_loads(text: str | None) -> Any:
     return json.loads(text)
 
 
-def _through_prefix_predicate(req_alias: str) -> str:
+def _through_prefix_predicate(req_alias: str, cutover: str = "?") -> str:
     """SQL fragment: request ``req_alias`` is at or before a cutover request.
 
     The ONE definition of "the prefix through a cutover", shared by every
     SQLite reader that scopes to one (``get_requests_by_session``, the outcome
-    trajectory digest and the outcome prefix precondition), so they cannot
-    disagree about which requests a verdict covered.
+    trajectory digest, the outcome prefix precondition and the open-world
+    evidence snapshot), so they cannot disagree about which requests a verdict
+    covered.
 
     The cutover is looked up by id inside the same user/session and compared on its
     CURRENT row as ``(created_at, request_id)``, so ``request_id`` breaks a
     same-timestamp tie. A cutover that is not in the session matches nothing,
-    which fails closed. The fragment binds exactly one ``?``: the cutover id.
+    which fails closed. With the default ``cutover`` the fragment binds exactly
+    one ``?``, the cutover id; a reader holding the cutover in a column passes
+    that column instead and binds nothing.
 
     Args:
         req_alias (str): Alias (or table name) of the outer ``requests`` row.
+        cutover (str): SQL yielding the cutover's request id; ``?`` by default.
 
     Returns:
         str: A boolean SQL expression.
     """
     return (
         "EXISTS (SELECT 1 FROM requests AS cut"
-        " WHERE cut.request_id = ?"
+        f" WHERE cut.request_id = {cutover}"
         f" AND cut.session_id = {req_alias}.session_id"
         f" AND cut.user_id = {req_alias}.user_id"
         f" AND ({req_alias}.created_at, {req_alias}.request_id)"
@@ -925,6 +932,7 @@ def _row_to_user_playbook(
         reader_angle=d.get("reader_angle"),
         merged_into=d.get("merged_into"),
         superseded_by=d.get("superseded_by"),
+        governance_subject_ref=d.get("governance_subject_ref"),
     )
 
 
@@ -1339,6 +1347,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             init_subject_write_barrier_table(self.conn)
             init_playbook_aggregation_tables(self.conn)
             self.conn.commit()
+            backfill_user_playbook_subject_refs(self.conn, self.org_id)
         self._migrate_session_outcomes_schema()
         if self._has_sqlite_vec:
             self._create_vec_tables()
