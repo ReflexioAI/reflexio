@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "POOLED_CREDITS_ENABLED": "BILLING_ENFORCEMENT_MODE",
     "TRANSFORMERS_OFFLINE": "HF_HUB_OFFLINE",
     "REFLEXIO_FERNET_KEYS": "FERNET_KEYS",
     "REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS": "REFLEXIO_EMBED_BATCH_SIZE",
@@ -65,6 +66,12 @@ def reject_removed_env(
             else f"{name} -> {aliases[name]}"
             for name in obsolete
         )
+        if "POOLED_CREDITS_ENABLED" in obsolete:
+            migration += (
+                "; remove the obsolete pooling assignment; do not copy its boolean value. "
+                "Usage credits follow the plan and customer cohort. Preserve the intended "
+                "BILLING_ENFORCEMENT_MODE (observe or active); no ledger is rewritten"
+            )
         if "TRANSFORMERS_OFFLINE" in obsolete:
             migration += (
                 "; preserve the effective HF_HUB_OFFLINE policy before removing "
