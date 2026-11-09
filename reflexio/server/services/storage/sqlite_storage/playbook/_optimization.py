@@ -63,6 +63,61 @@ _TERMINAL_OUTCOMES_BY_OPTIMIZER = {
 }
 
 
+#: Tables holding a job's rows without a cascading foreign key to it. Erasing
+#: a job deletes these explicitly; every other child cascades from the job.
+JOB_CHILD_TABLES_DELETED_EXPLICITLY: frozenset[str] = frozenset(
+    {
+        "playbook_optimization_candidates",
+        "playbook_optimization_evaluations",
+        "playbook_optimization_events",
+    }
+)
+
+#: Tables that only reference a job by id and keep their row when it goes,
+#: with the reason. The reference is cleared, never left dangling.
+JOB_REFERENCING_TABLES_KEPT: dict[str, str] = {
+    "open_world_sweep_progress": (
+        "one row per playbook per day records that the tick ran; it holds an "
+        "outcome label and no user content, and the queue reads it"
+    ),
+}
+
+#: Every optimizer job whose stored content names the user, by id or by
+#: governance subject. A job is evidence about each user it names, wherever the
+#: name sits: the target playbook's owner; the subject vector the job froze
+#: (every subject on the evidence it selected); a ``user_id`` anywhere in an
+#: artifact (the frozen bundle names each session's user, and every memo,
+#: candidate and decision is derived from those sessions); an analyst call or
+#: attempt-context manifest entry; or a scenario playbook an evaluation scored.
+_JOBS_NAMING_USER_SQL = """
+SELECT jobs.job_id FROM playbook_optimization_jobs AS jobs
+JOIN user_playbooks AS target
+  ON jobs.target_kind = 'user_playbook'
+ AND target.user_playbook_id = jobs.target_id
+WHERE target.user_id = :user_id
+UNION
+SELECT jobs.job_id FROM playbook_optimization_jobs AS jobs,
+     json_tree(jobs.metadata_json) AS node
+WHERE node.atom = :subject_ref
+UNION
+SELECT artifacts.job_id FROM playbook_optimization_artifacts AS artifacts,
+     json_tree(artifacts.content_json) AS node
+WHERE (node.key = 'user_id' AND node.atom = :user_id)
+   OR node.atom = :subject_ref
+UNION
+SELECT job_id FROM offline_tuner_open_world_invocations WHERE user_id = :user_id
+UNION
+SELECT context.job_id FROM offline_tuner_open_world_attempt_context AS context,
+     json_tree(context.manifest_json) AS node
+WHERE node.key = 'user_id' AND node.atom = :user_id
+UNION
+SELECT evaluations.job_id FROM playbook_optimization_evaluations AS evaluations
+JOIN user_playbooks AS scenario
+  ON scenario.user_playbook_id = evaluations.scenario_user_playbook_id
+WHERE scenario.user_id = :user_id
+"""
+
+
 def _row_to_playbook_optimization_job(row: sqlite3.Row) -> PlaybookOptimizationJob:
     return PlaybookOptimizationJob(
         job_id=row["job_id"],
@@ -865,6 +920,50 @@ class OptimizationJobStoreMixin:
                 ),
             )
         return cur.rowcount == 1
+
+    def _erase_optimization_jobs_for_user_locked(
+        self, user_id: str, subject_ref: str
+    ) -> int:
+        """Delete every optimizer job whose stored content names the user.
+
+        Runs under the caller's lock and inside its transaction, before the
+        user's playbooks are deleted or purged (ownership is read from them).
+        The whole job goes rather than its user's parts: its bundle, memos,
+        candidate and checkpoints are one derivation over all its sessions, so
+        no remainder of it is evidence about anyone. Children with a cascading
+        key go with the job; the rest are deleted here, and references that
+        outlive it are cleared.
+
+        Returns:
+            int: Jobs deleted.
+        """
+        job_ids = [
+            int(row[0])
+            for row in self.conn.execute(
+                _JOBS_NAMING_USER_SQL,
+                {"user_id": user_id, "subject_ref": subject_ref},
+            ).fetchall()
+        ]
+        for start in range(0, len(job_ids), 500):
+            chunk = job_ids[start : start + 500]
+            placeholders = ", ".join("?" * len(chunk))
+            for table in sorted(JOB_CHILD_TABLES_DELETED_EXPLICITLY):
+                self.conn.execute(
+                    f"DELETE FROM {table} WHERE job_id IN ({placeholders})",  # noqa: S608
+                    chunk,
+                )
+            for table in sorted(JOB_REFERENCING_TABLES_KEPT):
+                self.conn.execute(
+                    f"UPDATE {table} SET job_id = NULL"  # noqa: S608
+                    f" WHERE job_id IN ({placeholders})",
+                    chunk,
+                )
+            self.conn.execute(
+                "DELETE FROM playbook_optimization_jobs"  # noqa: S608
+                f" WHERE job_id IN ({placeholders})",
+                chunk,
+            )
+        return len(job_ids)
 
     @SQLiteStorageBase.handle_exceptions
     def merge_playbook_optimization_job_metadata(

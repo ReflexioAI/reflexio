@@ -46,7 +46,14 @@ I17 -- a terminal stage advance accepts exactly the outcomes its arm admits
 OUTCOMES``) out of every ``OptimizationTerminalOutcome``, and a job carrying any
 admitted outcome reads back.
 
-Clearing a user deletes the analyst calls about their sessions.
+Clearing a user deletes the analyst calls about their sessions. Backend
+difference, asserted through a harness flag:
+
+* ``clear_erases_jobs`` -- SQLite has no erasure path besides the user clear,
+  so the clear deletes every optimizer job whose stored content names the
+  user, with all its rows. The PostgreSQL clear deletes the user's analyst
+  calls and leaves the job; deleting jobs that hold a subject is that
+  backend's separate governance erasure.
 """
 
 from __future__ import annotations
@@ -169,6 +176,11 @@ class AttemptRows(NamedTuple):
 
 class AttemptHarness(EvidenceHarness, Protocol):
     """The attempt half of the port harness."""
+
+    @property
+    def clear_erases_jobs(self) -> bool:
+        """True when clearing a user deletes every job holding their content."""
+        ...
 
     def attempt_rows(self, job_id: int) -> AttemptRows:
         """Count the job's invocation, context, artifact and checkpoint rows."""
@@ -1240,9 +1252,16 @@ class OpenWorldAttemptContract:
 
         attempt.storage.clear_user_data(attempt.owner)
 
-        assert port_harness.attempt_rows(attempt.job_id).invocations == 1, (
-            "the per-session diagnostics go; the session-less proposal stays"
-        )
+        rows = port_harness.attempt_rows(attempt.job_id)
+        if port_harness.clear_erases_jobs:
+            assert rows == AttemptRows(0, 0, 0, 0), "the whole job is erased"
+            assert (
+                port_harness.optimization_jobs(attempt.incumbent.user_playbook_id) == []
+            )
+        else:
+            assert rows.invocations == 1, (
+                "the per-session diagnostics go; the session-less proposal stays"
+            )
 
 
 __all__ = [

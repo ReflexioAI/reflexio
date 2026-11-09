@@ -1019,6 +1019,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
     _delete_in_chunks: Any
     _delete_source_windows_for_user_playbook_ids: Any
     _subject_ref_for_user_id: Callable[[str], str]
+    # The optimizer-job erasure belongs to OptimizationJobStoreMixin.
+    _erase_optimization_jobs_for_user_locked: Callable[[str, str], int]
     # The exposure-ledger clear belongs to SQLiteOpenWorldMixin.
     _delete_exposure_events_for_user_locked: Callable[[str], int]
     # Raw-answer erasure belongs to SQLitePendingToolCallStoreMixin.
@@ -3425,6 +3427,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         Removes interactions, user playbooks, profiles, requests, raw extraction
         runs and originated pending questions/answers scoped to the user.
         Shared dependent runs retain independent answers and lose stale claims.
+        Every optimizer job whose stored content names the user -- as target
+        owner, as a frozen governance subject, or as the user of an evidence
+        session another user's playbook was tuned on -- is deleted with all of
+        its rows: on SQLite this clear is the erasure.
         Intentionally does NOT touch ``agent_playbooks`` — they are
         the cross-project rollup of skills and have no ``user_id`` column.
 
@@ -3462,9 +3468,11 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         Returns:
             dict[str, int]: Per-entity counts with keys ``session_outcomes``,
                 ``interactions``, ``user_playbooks``, ``profiles``, ``requests``,
-                ``purged_profiles``, ``purged_user_playbooks`` and
+                ``purged_profiles``, ``purged_user_playbooks``,
                 ``user_playbook_exposure_events`` (rows naming the user as
-                viewer or as playbook owner).
+                viewer or as playbook owner) and ``optimization_jobs`` (jobs
+                whose stored content names the user; their artifacts, analyst
+                calls, attempt context and checkpoints go with them).
                 ``profiles`` and ``user_playbooks`` reflect hard-deleted counts;
                 purged rows are counted separately.
         """
@@ -3564,12 +3572,15 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 exposure_events_deleted = self._delete_exposure_events_for_user_locked(
                     user_id
                 )
-                # Open-world analyst calls about this user's sessions, as the
-                # PostgreSQL clear deletes them; their jobs stay.
-                self.conn.execute(
-                    "DELETE FROM offline_tuner_open_world_invocations"
-                    " WHERE user_id = ?",
-                    (user_id,),
+                # Every optimizer job holding this user's content goes, with its
+                # artifacts, analyst calls, attempt context and checkpoints. A
+                # SQLite database has no separate erasure path, so this clear is
+                # the erasure; it runs before the playbooks it reads ownership
+                # from, in the same transaction as every other delete here.
+                optimization_jobs_deleted = (
+                    self._erase_optimization_jobs_for_user_locked(
+                        user_id, self._subject_ref_for_user_id(user_id)
+                    )
                 )
                 interactions_cur = self.conn.execute(
                     "DELETE FROM interactions WHERE user_id = ?", (user_id,)
@@ -3616,6 +3627,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "purged_profiles": len(purge_profile_ids),
             "purged_user_playbooks": len(purge_upb_ids),
             "user_playbook_exposure_events": exposure_events_deleted,
+            "optimization_jobs": optimization_jobs_deleted,
         }
 
 

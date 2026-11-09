@@ -257,6 +257,8 @@ class _SQLitePortHarness:
 
     # -- the attempt half of the harness
 
+    clear_erases_jobs = True
+
     def attempt_rows(self, job_id: int) -> AttemptRows:
         def count(table: str) -> int:
             (value,) = self._conn.execute(
