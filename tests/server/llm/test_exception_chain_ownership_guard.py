@@ -172,6 +172,24 @@ def _calls_a_verdict_reader(tree: ast.Module, readers: frozenset[str]) -> bool:
     return False
 
 
+def _always_raises(handler: ast.ExceptHandler) -> bool:
+    """Every path re-raises: the last statement raises and nothing exits early.
+
+    Conservative: a ``return`` / ``break`` / ``continue`` anywhere in the
+    handler (outside a nested function) counts as a swallowing path.
+    """
+    if not isinstance(handler.body[-1], ast.Raise):
+        return False
+    pending: list[ast.AST] = list(handler.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.Return | ast.Break | ast.Continue):
+            return False
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+            pending.extend(ast.iter_child_nodes(node))
+    return True
+
+
 def _names(tree: ast.Module) -> set[str]:
     names: set[str] = set()
     for node in ast.walk(tree):
@@ -201,9 +219,7 @@ def _swallows(
                 t.id if isinstance(t, ast.Name) else getattr(t, "attr", "")
                 for t in types
             }
-            # Propagates only if every path ends in a raise: the handler's last
-            # statement. A raise on some branch still lets other paths swallow.
-            propagates = isinstance(node.body[-1], ast.Raise)
+            propagates = _always_raises(node)
             if caught & _LLM_ERRORS and not propagates:
                 found.add(module)
     return found
@@ -282,8 +298,24 @@ def test_the_scan_is_not_blind() -> None:
             "        return None\n",
             "swallow",
         ),
+        (
+            "def f(call, retry):\n"
+            "    try:\n"
+            "        return call()\n"
+            "    except LiteLLMClientError:\n"
+            "        if retry:\n"
+            "            return None\n"
+            "        raise\n",
+            "swallow",
+        ),
     ],
-    ids=["attribute", "getattr", "raise-on-one-branch", "imported-not-called"],
+    ids=[
+        "attribute",
+        "getattr",
+        "raise-on-one-branch",
+        "imported-not-called",
+        "early-return-then-raise",
+    ],
 )
 def test_the_scan_detects_each_shape(source: str, rule: str) -> None:
     tree = ast.parse("import reflexio.server.llm\n" + source)
