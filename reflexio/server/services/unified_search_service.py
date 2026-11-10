@@ -42,12 +42,14 @@ from reflexio.models.config_schema import (
     SearchOptions,
 )
 from reflexio.server import search_runtime
+from reflexio.server.llm.embedding_policy import is_multilingual_e5_model
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.rerank.common import reranker_enabled
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.embedding_text import resolve_retrieval_threshold
 from reflexio.server.services.pre_retrieval import QueryReformulator
 from reflexio.server.services.retrieval.agent_selection import select_agent_playbooks
+from reflexio.server.services.retrieval.profile_selection import select_profiles
 from reflexio.server.services.retrieval.recency import (
     RecencyConfig,
     ScoredItem,
@@ -402,6 +404,38 @@ def run_unified_search(
         response = response.model_copy(update={"user_playbooks": selected_users})
         selection_span.set_data("input_count", len(native_users))
         selection_span.set_data("returned_count", len(selected_users))
+    # The qualified source/threshold contract is multilingual E5. Other model
+    # policies retain their existing profile behavior.
+    if response.profiles is not None and is_multilingual_e5_model(
+        storage.embedding_model_name
+    ):
+        with profile_step("search.profile_selection") as selection_span:
+            native_profiles = response.profiles
+            selected_profiles = select_profiles(
+                items=native_profiles,
+                request=request,
+                query=reformulated_query,
+                effective_mode=effective_search_mode,
+                query_embedding=embedding,
+                degraded=response.degraded,
+                floor_on=floor_on,
+                temporal_reorder=temporal_reorder,
+                retrieve=lambda **kwargs: _retrieve_profile_selection(
+                    **kwargs,
+                    request=request,
+                    org_id=org_id,
+                    storage=storage,
+                    embedding=embedding,
+                    seen_keys=seen_keys,
+                    recency_on=recency_on,
+                    recency=recency,
+                    start_time=window_start,
+                    end_time=window_end,
+                ),
+            )
+            response = response.model_copy(update={"profiles": selected_profiles})
+            selection_span.set_data("input_count", len(native_profiles))
+            selection_span.set_data("returned_count", len(selected_profiles))
     # Post-processing may perform a remote lookup. Expired results were never
     # served and must remain available to a retry in the same session.
     search_runtime.checkpoint()
@@ -412,6 +446,52 @@ def run_unified_search(
             lambda: session_seen_cache.record(org_id, session_id, keys),
         )
     return response
+
+
+def _retrieve_profile_selection(
+    *,
+    query: str,
+    top_k: int,
+    search_mode: SearchMode,
+    request: UnifiedSearchRequest,
+    org_id: str,
+    storage: BaseStorage,
+    embedding: list[float] | None,
+    seen_keys: frozenset[EntityKey],
+    recency_on: bool,
+    recency: RecencyConfig | None,
+    start_time: datetime | None,
+    end_time: datetime | None,
+) -> list[UserProfile]:
+    """Keep secondary profile retrieval inside the original native owners."""
+    fetch_k = max(top_k, recency.pool_size if recency_on and recency is not None else 0)
+    if seen_keys:
+        fetch_k += min(len(seen_keys), _SESSION_DEDUP_FETCH_BUMP_CAP)
+    search_runtime.checkpoint()
+    profiles, _, _ = _run_phase_b(
+        request=request.model_copy(update={"entity_types": ["profiles"]}),
+        org_id=org_id,
+        storage=storage,
+        embedding=embedding,
+        query=query,
+        top_k=fetch_k,
+        threshold=0.0,
+        recency_on=recency_on,
+        start_time=start_time,
+        end_time=end_time,
+        search_mode=search_mode,
+        record_request_diagnostics=False,
+    )
+    search_runtime.checkpoint()
+    if profiles is None:
+        raise ReadinessUnavailableError("Secondary profile retrieval failed")
+    if seen_keys:
+        profiles = _drop_seen_items(profiles, "profile", seen_keys)
+    if recency_on and recency is not None:
+        return _apply_combined_score_recency(
+            profiles, entity_type="profiles", top_k=top_k, cfg=recency
+        )
+    return _unwrap_items(profiles)[:top_k]
 
 
 def _run_phase_a(
@@ -526,6 +606,7 @@ def _run_phase_b(
     start_time: datetime | None = None,
     end_time: datetime | None = None,
     search_mode: SearchMode = SearchMode.HYBRID,
+    record_request_diagnostics: bool = True,
 ) -> tuple[
     list[Any] | None,
     list[Any] | None,
@@ -545,6 +626,8 @@ def _run_phase_b(
             (from reformulation temporal signals); forces the per-arm fan-out
             path since the combined single RPC has no time parameters.
         end_time (Optional[datetime]): Query-derived time-window upper bound.
+        record_request_diagnostics: False for a selector lookup; physical spans
+            and counters still record that lookup without replacing primary shape.
         search_mode (SearchMode): The EFFECTIVE search mode for this fan-out —
             equal to ``request.search_mode`` normally, but forced to FTS by the
             caller when embedding generation failed (degrade-to-FTS). Threaded
@@ -567,23 +650,24 @@ def _run_phase_b(
             and become the all-three case.
     """
     scope = search_runtime.current()
-    if scope is not None:
+    if record_request_diagnostics and scope is not None:
         with scope.lock:
             scope.search_mode = search_mode.value
     options = SearchOptions(query_embedding=embedding, search_mode=search_mode)
 
     entity_types = set(request.entity_types or _DEFAULT_ENTITY_TYPES)
-    search_runtime.record_retrieval_shape(
-        query=query,
-        entity_types=entity_types,
-        top_k=top_k,
-        has_user_filter=bool(request.user_id),
-        has_agent_filter=bool(request.agent_version or request.playbook_name),
-        has_tags_filter=bool(request.tags),
-        has_source_filter=bool(request.source),
-        has_time_window=start_time is not None or end_time is not None,
-        recency_on=recency_on,
-    )
+    if record_request_diagnostics:
+        search_runtime.record_retrieval_shape(
+            query=query,
+            entity_types=entity_types,
+            top_k=top_k,
+            has_user_filter=bool(request.user_id),
+            has_agent_filter=bool(request.agent_version or request.playbook_name),
+            has_tags_filter=bool(request.tags),
+            has_source_filter=bool(request.source),
+            has_time_window=start_time is not None or end_time is not None,
+            recency_on=recency_on,
+        )
     allowed_agent_statuses = request.agent_playbook_status_filter
     try:
         with profile_step(
@@ -627,11 +711,12 @@ def _run_phase_b(
                 )
                 if combined is not None:
                     profiles, agent_playbooks, user_playbooks = combined
-                    search_runtime.record_retrieval_results(
-                        profiles=len(profiles),
-                        agent_playbooks=len(agent_playbooks),
-                        user_playbooks=len(user_playbooks),
-                    )
+                    if record_request_diagnostics:
+                        search_runtime.record_retrieval_results(
+                            profiles=len(profiles),
+                            agent_playbooks=len(agent_playbooks),
+                            user_playbooks=len(user_playbooks),
+                        )
                     set_span_data(
                         span,
                         {
@@ -723,11 +808,12 @@ def _run_phase_b(
                 if user_playbooks_future
                 else []
             )
-            search_runtime.record_retrieval_results(
-                profiles=len(profiles) if profiles is not None else None,
-                agent_playbooks=len(agent_playbooks),
-                user_playbooks=len(user_playbooks),
-            )
+            if record_request_diagnostics:
+                search_runtime.record_retrieval_results(
+                    profiles=len(profiles) if profiles is not None else None,
+                    agent_playbooks=len(agent_playbooks),
+                    user_playbooks=len(user_playbooks),
+                )
             set_span_data(
                 span,
                 {

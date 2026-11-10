@@ -1559,3 +1559,52 @@ def test_flat_fields_round_trip(storage):
     assert fb.blocking_issue is not None
     assert fb.blocking_issue.kind == BlockingIssueKind.MISSING_TOOL
     assert fb.blocking_issue.details == "No upload tool available"
+
+
+def test_unicode_profile_or_query_does_not_match_inserted_operator(storage):
+    storage.add_user_profile(
+        "user1",
+        [
+            UserProfile(
+                user_id="user1",
+                profile_id="relevant",
+                content="東京旅行 Python",
+                last_modified_timestamp=1,
+                generated_from_request_id="r",
+                profile_time_to_live=ProfileTimeToLive.INFINITY,
+            ),
+            UserProfile(
+                user_id="user1",
+                profile_id="unrelated",
+                content="tea or coffee",
+                last_modified_timestamp=1,
+                generated_from_request_id="r",
+                profile_time_to_live=ProfileTimeToLive.INFINITY,
+            ),
+        ],
+    )
+    results = storage.search_user_profile(
+        SearchUserProfileRequest(
+            user_id="user1",
+            query="東京旅行 OR python",
+            top_k=20,
+            search_mode=SearchMode.FTS,
+        )
+    )
+    assert [p.profile_id for p in results] == ["relevant"]
+    assert (
+        sqlite_storage_base._unicode_lexical_score(
+            "tea or coffee", "東京旅行 OR python"
+        )
+        == 0
+    )
+    assert '"or"' not in sqlite_storage_base._unicode_lexical_fts_query(
+        "東京旅行 OR python"
+    )
+    # Lowercase words remain source content, consistent with native FTS syntax.
+    assert (
+        sqlite_storage_base._unicode_lexical_score(
+            "tea or coffee", "東京旅行 or python"
+        )
+        > 0
+    )

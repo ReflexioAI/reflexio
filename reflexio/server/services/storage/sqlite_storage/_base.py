@@ -432,7 +432,13 @@ def _unicode_lexical_runs(text: str) -> tuple[str, ...]:
 def _unicode_lexical_terms(query: str) -> tuple[str, ...]:
     """Return bounded Unicode-aware terms used for query coverage scoring."""
     terms: list[str] = []
-    for run in _unicode_lexical_runs(query):
+    # Match native FTS syntax: uppercase reserved operators are not source terms.
+    source_terms = " ".join(
+        token
+        for token in _TOKEN_RE.findall(unicodedata.normalize("NFKC", query))
+        if token not in _FTS5_RESERVED
+    )
+    for run in _unicode_lexical_runs(source_terms):
         if run.isascii() or len(run) == 1:
             terms.append(run)
         else:

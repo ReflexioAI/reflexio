@@ -10,6 +10,8 @@ from reflexio.models.api_schema.service_schemas import (
     PlaybookStatus,
     UserPlaybook,
 )
+from reflexio.models.config_schema import SearchMode
+from reflexio.server import search_runtime
 from reflexio.server.services import unified_search_service as uss
 from reflexio.server.services.pre_retrieval import ReformulationResult
 from reflexio.server.services.storage.storage_base import BaseStorage
@@ -302,5 +304,43 @@ def test_http_search_missing_capability_can_fall_back(monkeypatch, missing_calla
         assert state.counters["retrieval.combined_attempts"] == 1
         assert state.counters["retrieval.compatibility_fallbacks"] == 1
         assert state.counters["retrieval.fanout_attempts"] == 1
+    finally:
+        search_runtime._scope.reset(token)
+
+
+@pytest.mark.parametrize("single_rpc", ["0", "1"])
+def test_profile_secondary_preserves_primary_request_diagnostics(
+    monkeypatch, single_rpc
+):
+    monkeypatch.setenv("REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC", single_rpc)
+    storage = _CombinedStorage()
+    scope = search_runtime.SearchScope()
+    scope.search_mode = "hybrid"
+    primary_shape = {
+        "entity_types": ["profiles", "user_playbooks"],
+        "profiles_count": 5,
+    }
+    scope.retrieval_shape = dict(primary_shape)
+    token = search_runtime._scope.set(scope)
+    try:
+        result = uss._retrieve_profile_selection(
+            query="python OR payments",
+            top_k=20,
+            search_mode=SearchMode.FTS,
+            request=UnifiedSearchRequest(query="Python payments", user_id="u"),
+            org_id="o",
+            storage=cast(BaseStorage, storage),
+            embedding=[0.1, 0.2],
+            seen_keys=frozenset(),
+            recency_on=False,
+            recency=None,
+            start_time=None,
+            end_time=None,
+        )
+        assert result == []
+        assert scope.search_mode == "hybrid"
+        assert scope.retrieval_shape == primary_shape
+        assert storage.combined_calls or storage.fanout_calls
+        assert scope.counters  # Physical retrieval still records its own work.
     finally:
         search_runtime._scope.reset(token)
