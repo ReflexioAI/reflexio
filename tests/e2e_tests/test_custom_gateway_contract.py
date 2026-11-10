@@ -37,8 +37,9 @@ def test_custom_gateway_keeps_nested_model_id_and_bearer_key(
     monkeypatch.delenv("REFLEXIO_BLOCK_PRIVATE_URLS", raising=False)
     # Keep inherited observability settings from sending this local probe to
     # a remote telemetry service. Completion transport itself stays real.
+    # (litellm >= 1.105.7, the declared floor, has no ``litellm.telemetry``
+    # flag to switch off; callbacks below are the remaining reporting path.)
     monkeypatch.delenv("BRAINTRUST_API_KEY", raising=False)
-    monkeypatch.setattr(litellm, "telemetry", False)
     for callback_list in (
         "callbacks",
         "success_callback",
