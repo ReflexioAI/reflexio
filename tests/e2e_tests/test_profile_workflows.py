@@ -22,7 +22,10 @@ from reflexio.models.api_schema.service_schemas import (
     UserProfile,
 )
 from reflexio.models.config_schema import SINGLETON_USER_PLAYBOOK_NAME
-from reflexio.test_support.llm_credentials import real_generation_provider
+from reflexio.test_support.llm_credentials import (
+    UNQUALIFIED_SELECTION_NOTE,
+    real_generation_provider,
+)
 from reflexio.test_support.llm_mock import assert_litellm_unpatched
 from tests.e2e_tests.conftest import scenario_batch_to_interactions
 from tests.server.test_utils import (
@@ -1357,7 +1360,10 @@ def _assert_contradiction_resolved(
 @pytest.mark.requires_credentials
 @pytest.mark.skipif(
     not real_generation_provider(_DEDUP_CAPABLE),
-    reason=f"No real API key for a dedup-validated provider ({sorted(_DEDUP_CAPABLE)})",
+    reason=(
+        f"No real API key for a dedup-validated provider ({sorted(_DEDUP_CAPABLE)})"
+        + UNQUALIFIED_SELECTION_NOTE
+    ),
 )
 @pytest.mark.parametrize("scenario_name", ["diet_reversal", "location_move"])
 def test_profile_dedup_resolves_contradiction(

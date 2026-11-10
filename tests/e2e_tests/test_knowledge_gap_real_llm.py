@@ -20,7 +20,10 @@ from reflexio.lib.reflexio_lib import Reflexio
 from reflexio.models.api_schema.retriever_schema import GetUserPlaybooksRequest
 from reflexio.models.api_schema.service_schemas import InteractionData, UserPlaybook
 from reflexio.models.config_schema import SINGLETON_USER_PLAYBOOK_NAME
-from reflexio.test_support.llm_credentials import real_generation_provider
+from reflexio.test_support.llm_credentials import (
+    UNQUALIFIED_SELECTION_NOTE,
+    real_generation_provider,
+)
 from reflexio.test_support.llm_mock import assert_litellm_unpatched
 from tests.server.test_utils import skip_low_priority
 
@@ -35,7 +38,10 @@ pytestmark = [
     pytest.mark.requires_credentials,
     pytest.mark.skipif(
         not real_generation_provider(),
-        reason="No real API key for a generation-capable provider",
+        reason=(
+            "No real API key for a generation-capable provider"
+            + UNQUALIFIED_SELECTION_NOTE
+        ),
     ),
 ]
 
