@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "REFLEXIO_INSTANCE_ID": "",
     "REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS": "",
     "REFLEXIO_LEARNING_ALARM_SUPPRESS_SECONDS": "",
     "POOLED_CREDITS_ENABLED": "BILLING_ENFORCEMENT_MODE",
@@ -68,6 +69,13 @@ def reject_removed_env(
             else f"{name} -> {aliases[name]}"
             for name in obsolete
         )
+        if "REFLEXIO_INSTANCE_ID" in obsolete:
+            migration += (
+                "; WAL directories now own their persisted replica identity. "
+                "Before removing the binding, point REFLEXIO_USAGE_WAL_PATH at the "
+                "existing resolved WAL leaf; preserve its files and instance_id. "
+                "Do not move or reinitialize pending usage"
+            )
         if "REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS" in obsolete:
             migration += (
                 "; LLM attempts now use one accepted-work deadline, including startup. "
