@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
 import threading
 import time
 import uuid
@@ -33,6 +34,7 @@ from reflexio.server.llm.input_budget import (
     check_request_input_budget,
     extraction_failure_observer,
     extraction_provider_guard,
+    extraction_reasoning_exhaustion,
     extraction_request_identity,
     extraction_usage_observer,
     extraction_use_model_capacity,
@@ -67,6 +69,9 @@ if TYPE_CHECKING:
     )
 
 
+logger = logging.getLogger(__name__)
+
+
 class OverflowSuspendedError(ProviderRequestGuardError):
     """Saved work needs another worker turn, without completing the window."""
 
@@ -92,9 +97,14 @@ def legacy_observed_usage(payload: dict[str, Any] | None) -> dict[str, int] | No
 # same request often finishes on a later dispatch (each further one succeeded
 # about a fifth of the time in production), so a few are worth spending before
 # the window is held instead of exhausting the rest of its attempt budget.
-# The fingerprint omits ``extra_body``, so the client's thinking-disabled resend
-# of a reasoning-exhausted request counts against the SAME budget: the two
-# thinking modes together spend at most this many truncated dispatches.
+# The fingerprint includes the thinking mode, so the client's thinking-disabled
+# resend of a reasoning-exhausted request is a DIFFERENT request with its own
+# budget. It does not inherit the thinking-on count: its outcome is not
+# predicted by those truncations, and inheriting them would let a window be
+# held before the one request that frees the budget was ever sent. The
+# thinking-on request is not resent once recorded as reasoning-exhausted
+# (``reasoning_exhausted_requests``), so a request spends at most this many
+# truncated dispatches per thinking mode, and the 128-attempt journal bounds all.
 MAX_TRUNCATED_REQUEST_DISPATCHES = 4
 
 
@@ -750,7 +760,53 @@ class OverflowCoordinator:
             request["response_format"], "model_json_schema"
         ):
             request["response_format"] = request["response_format"].model_json_schema()
+        # Present only when the request chooses a thinking mode, so a default
+        # request keeps the fingerprint its saved truncation count is keyed by.
+        extra_body = params.get("extra_body")
+        thinking = (
+            extra_body.get("thinking") if isinstance(extra_body, Mapping) else None
+        )
+        if thinking is None:
+            thinking = params.get("thinking")
+        if thinking is not None:
+            request["thinking"] = thinking
         return self.candidate_key(request)
+
+    def record_reasoning_exhausted(self) -> None:
+        """Durably mark the last admitted request as reasoning-exhausted.
+
+        Written before the client's thinking-disabled resend reaches this
+        guard, so a turn that suspends first still resumes with the resend.
+        """
+        fingerprint = (extraction_request_identity.get() or {}).get(
+            "request_fingerprint"
+        )
+        if not isinstance(fingerprint, str):
+            return
+        with self._lock:
+            checkpoint = self.checkpoint
+            exhausted = checkpoint.setdefault("reasoning_exhausted_requests", [])
+            if fingerprint in exhausted:
+                return
+            exhausted.append(fingerprint)
+            self.save_checkpoint(checkpoint)
+
+    def reasoning_exhausted(self, params: Mapping[str, Any]) -> bool:
+        """Whether ``params`` should go out with thinking disabled from the start.
+
+        True for a request recorded as reasoning-exhausted, and for one already
+        truncated to ``MAX_TRUNCATED_REQUEST_DISPATCHES`` (a window held before
+        the record existed): the guard would refuse it thinking-on, and its
+        thinking-disabled form has not been tried.
+        """
+        fingerprint = self._request_fingerprint(dict(params))
+        with self._lock:  # read-only: no copy of the whole checkpoint per call
+            checkpoint = self._manifest.get("checkpoint", {})
+            return (
+                fingerprint in checkpoint.get("reasoning_exhausted_requests", [])
+                or checkpoint.get("truncated_requests", {}).get(fingerprint, 0)
+                >= MAX_TRUNCATED_REQUEST_DISPATCHES
+            )
 
     def _guard(
         self,
@@ -781,7 +837,19 @@ class OverflowCoordinator:
             )
         # Don't start a call that can outlive this turn. Each fallback/repair
         # reaches this boundary again, so a late rung yields without dispatch.
-        if hard_timeout <= 0 or hard_timeout + 5 > self._deadline - time.monotonic():
+        remaining = self._deadline - time.monotonic()
+        if hard_timeout <= 0 or hard_timeout + 5 > remaining:
+            logger.warning(
+                "event=extraction_turn_suspended reason=turn_budget kind=%s "
+                "window_id=%s model=%s request_fingerprint=%s "
+                "hard_timeout_seconds=%.1f turn_seconds_left=%.1f",
+                self.window.kind,
+                self.window.window_id,
+                params.get("model"),
+                fingerprint,
+                hard_timeout,
+                remaining,
+            )
             raise OverflowSuspendedError("Extraction turn needs continuation")
         attempt_id = uuid.uuid4().hex
         reservation: dict[str, Any] = {"reserve_attempt_id": attempt_id}
@@ -1010,11 +1078,13 @@ class OverflowCoordinator:
         guard_token = extraction_provider_guard.set(self._guard)
         observer_token = extraction_usage_observer.set(self._observe)
         failure_token = extraction_failure_observer.set(self._settle_failure)
+        exhaustion_token = extraction_reasoning_exhaustion.set(self)
         identity_token = extraction_request_identity.set(None)
         try:
             yield
         finally:
             extraction_request_identity.reset(identity_token)
+            extraction_reasoning_exhaustion.reset(exhaustion_token)
             extraction_failure_observer.reset(failure_token)
             extraction_usage_observer.reset(observer_token)
             extraction_provider_guard.reset(guard_token)

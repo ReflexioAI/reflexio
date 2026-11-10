@@ -91,6 +91,7 @@ from reflexio.server.llm.image_utils import (
 from reflexio.server.llm.input_budget import (
     extraction_failure_observer,
     extraction_provider_guard,
+    extraction_reasoning_exhaustion,
     extraction_request_identity,
     extraction_usage_observer,
     supply_extraction_output_reservation,
@@ -2204,6 +2205,18 @@ class TextGenerationMixin:
             params, rf, parse_so, hard_timeout = _prepare_turn(
                 rung_messages, rung_kwargs
             )
+            schema_name = getattr(rf, "__name__", "structured output")
+            if _known_reasoning_exhausted(params):
+                retried = _retry_without_thinking(
+                    rung_messages=rung_messages,
+                    rung_kwargs=rung_kwargs,
+                    params=params,
+                    exc=None,
+                    schema_name=schema_name,
+                    validated=False,
+                )
+                if retried is not None:
+                    return retried
             try:
                 return _finish(
                     _call_and_parse(
@@ -2211,6 +2224,20 @@ class TextGenerationMixin:
                     )
                 )
             except StructuredOutputParseError as exc:
+                if exc.failure_kind == "reasoning_exhausted":
+                    # The plain path's one retry, sent thinking-off: an
+                    # identical re-issue at the same cap reasons the budget
+                    # away again.
+                    retried = _retry_without_thinking(
+                        rung_messages=rung_messages,
+                        rung_kwargs=rung_kwargs,
+                        params=params,
+                        exc=exc,
+                        schema_name=schema_name,
+                        validated=False,
+                    )
+                    if retried is not None:
+                        return retried
                 if not exc.validation_errors:
                     # Empty and truncated bodies carry no validation errors:
                     # nothing written can be corrected, so re-issue instead.
@@ -2260,7 +2287,6 @@ class TextGenerationMixin:
                             detect_refusal=False,
                         )
                     )
-                schema_name = getattr(rf, "__name__", "structured output")
                 # The errors go into the retry prompt verbatim, back to the
                 # provider that produced them. This LOG line reaches external
                 # telemetry via the logging bridge, and an ``extra_forbidden``
@@ -2309,28 +2335,53 @@ class TextGenerationMixin:
                     )
                 )
 
+        def _known_reasoning_exhausted(params: dict[str, Any]) -> bool:
+            """Whether an earlier turn found ``params`` reasoning-exhausted.
+
+            Only a scoped extraction keeps that durable journal; any other
+            caller always sends its request as built.
+            """
+            journal = extraction_reasoning_exhaustion.get()
+            return (
+                journal is not None
+                and reasoning_exhausted_retry_extra_body(params) is not None
+                and journal.reasoning_exhausted(params)
+            )
+
         def _retry_without_thinking(
             *,
             rung_messages: list[dict[str, Any]],
             rung_kwargs: dict[str, Any],
             params: dict[str, Any],
-            exc: StructuredOutputParseError,
+            exc: StructuredOutputParseError | None,
             schema_name: str,
+            validated: bool = True,
         ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse] | None:
             """Resend a reasoning-exhausted request ONCE with thinking disabled.
 
-            Replaces the same-cap repair turn for this one failure kind: a
-            body cut off by the output limit after hidden reasoning spent the
-            budget (blank, or a barely started answer), and echoing it back at
-            the same cap does not change that. Returns None when the route cannot
-            disable thinking (``reasoning_exhausted_retry_extra_body``), so the
-            caller keeps its existing repair turn. Otherwise this IS the
-            rung's one extra turn: a valid answer returns, and any failure
-            raises the rung's repair-exhausted error with no further call.
+            Replaces the same-cap repair turn (or the plain path's identical
+            re-issue) for this one failure kind: a body cut off by the output
+            limit after hidden reasoning spent the budget (blank, or a barely
+            started answer), and echoing it back at the same cap does not
+            change that. Returns None when the route cannot disable thinking
+            (``reasoning_exhausted_retry_extra_body``), so the caller keeps its
+            existing retry. Otherwise this IS the rung's one extra turn: a valid
+            answer returns, and any failure raises the rung's error with no
+            further call -- ``_repair_error`` when ``validated``, the resend's
+            own parse error on the plain path.
+
+            ``exc`` is the first attempt's failure; it is first recorded in the
+            scoped extraction's journal, durably, so a turn that ends before
+            this resend is dispatched resumes with it. ``exc=None`` means the
+            journal already holds that record and the thinking-on request is
+            not sent again.
             """
             retry_body = reasoning_exhausted_retry_extra_body(params)
             if retry_body is None:
                 return None
+            journal = extraction_reasoning_exhaustion.get()
+            if exc is not None and journal is not None:
+                journal.record_reasoning_exhausted()
             # Re-keyed: the resend is a different request, and a provider
             # honouring attempt 1's key could replay the empty answer.
             retry_params, retry_rf, retry_parse, retry_timeout = _prepare_turn(
@@ -2338,16 +2389,31 @@ class TextGenerationMixin:
                 {**_corrective_kwargs(rung_kwargs), "extra_body": retry_body},
             )
             model = str(retry_params.get("model"))
-            diagnostics = f" first_attempt {exc.log_fields()}"
+            diagnostics = (
+                f" first_attempt {exc.log_fields()}"
+                if exc is not None
+                else " first_attempt=skipped_recorded_exhaustion"
+            )
             try:
                 attempt = _call_and_parse(
                     retry_params,
                     retry_rf,
                     retry_parse,
                     retry_timeout,
-                    detect_refusal=True,
+                    detect_refusal=validated,
                 )
             except StructuredOutputParseError as retry_exc:
+                if not validated:
+                    self.logger.warning(
+                        "event=llm_reasoning_exhausted_retry model=%s schema=%s "
+                        "thinking=disabled outcome=%s%s retry %s",
+                        model,
+                        schema_name,
+                        retry_exc.failure_kind,
+                        diagnostics,
+                        retry_exc.log_fields(),
+                    )
+                    raise
                 attempt = _StructuredAttempt(
                     value="",
                     raw_content=retry_exc.raw_content,
@@ -2380,7 +2446,10 @@ class TextGenerationMixin:
                 )
                 raise
             else:
-                valid, errors, failure_kind = _validate_attempt(attempt)
+                # The plain path has no validator: a body that parsed is valid.
+                valid, errors, failure_kind = (
+                    _validate_attempt(attempt) if validated else (True, (), "")
+                )
                 if valid:
                     self.logger.warning(
                         "event=llm_reasoning_exhausted_retry model=%s schema=%s "
@@ -2428,6 +2497,16 @@ class TextGenerationMixin:
                 rung_messages, rung_kwargs
             )
             schema_name = getattr(rf, "__name__", "structured output")
+            if _known_reasoning_exhausted(params):
+                retried = _retry_without_thinking(
+                    rung_messages=rung_messages,
+                    rung_kwargs=rung_kwargs,
+                    params=params,
+                    exc=None,
+                    schema_name=schema_name,
+                )
+                if retried is not None:
+                    return retried
             latest_parsed_output: BaseModel | None
             first_parsed_provenance: ModelProvenance | None = None
             try:

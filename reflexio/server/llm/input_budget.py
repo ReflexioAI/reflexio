@@ -54,6 +54,27 @@ extraction_request_identity: ContextVar[dict[str, Any] | None] = ContextVar(
 extraction_failure_observer: ContextVar[Callable[[str, BaseException], None] | None] = (
     ContextVar("extraction_failure_observer", default=None)
 )
+
+
+class ReasoningExhaustionJournal(Protocol):
+    """Durable memory of requests whose hidden reasoning spent the output limit.
+
+    ``record_reasoning_exhausted`` marks the request the scoped guard last admitted (the one whose
+    reply was just classified ``reasoning_exhausted``); ``reasoning_exhausted`` answers
+    whether freshly built ``params`` are such a request. The client then sends
+    that request with thinking disabled from its first dispatch, so a turn that
+    ends before the in-turn resend cannot make the next turn repeat the
+    thinking-on request that already exhausted its budget.
+    """
+
+    def record_reasoning_exhausted(self) -> None: ...
+
+    def reasoning_exhausted(self, params: Mapping[str, Any]) -> bool: ...
+
+
+extraction_reasoning_exhaustion: ContextVar[ReasoningExhaustionJournal | None] = (
+    ContextVar("extraction_reasoning_exhaustion", default=None)
+)
 # Only audited reconciliation opts in around its physical provider calls.
 extraction_use_model_capacity: ContextVar[bool] = ContextVar(
     "extraction_use_model_capacity", default=False

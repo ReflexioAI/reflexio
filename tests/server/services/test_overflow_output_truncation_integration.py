@@ -1,6 +1,9 @@
 """A request cut off by its output limit is not resent unchanged until quota runs out."""
 
 import json
+import logging
+import re
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -94,8 +97,15 @@ def _request_counts(dispatch) -> dict[str, int]:
     for call in dispatch.call_args_list:
         params = call.args[0]
         if _extraction_request(params):
+            # The thinking mode is part of a request's identity: the
+            # thinking-disabled resend has its own truncation budget.
             key = json.dumps(
-                [params.get("model"), params.get("messages"), params.get("max_tokens")],
+                [
+                    params.get("model"),
+                    params.get("messages"),
+                    params.get("max_tokens"),
+                    _thinking_disabled(params),
+                ],
                 sort_keys=True,
                 default=str,
             )
@@ -118,9 +128,9 @@ def test_truncated_request_is_held_after_bounded_dispatches(
     # not the remaining 128-attempt budget.
     assert len(manifest["attempts"]) == sum(counts.values())
     assert len(manifest["attempts"]) <= MAX_TRUNCATED_REQUEST_DISPATCHES * len(counts)
-    assert set(checkpoint["truncated_requests"].values()) == {
+    assert max(checkpoint["truncated_requests"].values()) == (
         MAX_TRUNCATED_REQUEST_DISPATCHES
-    }
+    )
     assert cursor["retry_at"] == float("inf")
     assert cursor["last_error"] == "input_budget_exceeded"
     assert storage.extraction_status("u", "truncated") == {
@@ -163,7 +173,9 @@ def test_request_that_finishes_after_transient_truncation_is_learned(
         return _respond(params, hard_timeout)
 
     storage, window_id, dispatch = _run(pipeline, monkeypatch, respond)
-    assert max(_request_counts(dispatch).values()) == MAX_TRUNCATED_REQUEST_DISPATCHES
+    # Thinking modes combined: on a route that can disable thinking, the
+    # later dispatches are the thinking-disabled form of the same request.
+    assert max(sent.values()) == MAX_TRUNCATED_REQUEST_DISPATCHES
     assert MAX_TRUNCATED_REQUEST_DISPATCHES > 2
     assert storage.extraction_status("u", "truncated")["status"] == "done"
     assert storage.count_all_profiles() > 0
@@ -190,25 +202,33 @@ def _select_minimax_m3(pipeline, monkeypatch) -> None:
     )
 
 
-def test_thinking_disabled_resend_shares_the_truncation_budget(pipeline, monkeypatch):
-    """The resend is counted: both thinking modes together stay within the cap."""
+def test_thinking_disabled_resend_has_its_own_truncation_budget(pipeline, monkeypatch):
+    """Thinking-on is sent once; the thinking-disabled form spends its own cap.
+
+    The window is held only after the thinking-disabled request itself was
+    truncated ``MAX_TRUNCATED_REQUEST_DISPATCHES`` times, never because the
+    thinking-on dispatches used up a shared count first.
+    """
     _select_minimax_m3(pipeline, monkeypatch)
     storage, window_id, dispatch = _run(
         pipeline, monkeypatch, _failing_extraction("length", "")
     )
-    _cursor, _run_row, checkpoint = _state(storage, window_id)
+    cursor, _run_row, checkpoint = _state(storage, window_id)
     extraction = [
         call.args[0]
         for call in dispatch.call_args_list
         if _extraction_request(call.args[0])
     ]
+    thinking_on = [params for params in extraction if not _thinking_disabled(params)]
     resends = [params for params in extraction if _thinking_disabled(params)]
-    assert resends
-    assert len(resends) < len(extraction)
-    assert max(_request_counts(dispatch).values()) == MAX_TRUNCATED_REQUEST_DISPATCHES
-    assert set(checkpoint["truncated_requests"].values()) == {
-        MAX_TRUNCATED_REQUEST_DISPATCHES
-    }
+    assert len(thinking_on) == 1
+    assert len(resends) == MAX_TRUNCATED_REQUEST_DISPATCHES
+    assert sorted(checkpoint["truncated_requests"].values()) == [
+        1,
+        MAX_TRUNCATED_REQUEST_DISPATCHES,
+    ]
+    assert len(checkpoint["reasoning_exhausted_requests"]) == 1
+    assert cursor["last_error"] == "input_budget_exceeded"
 
 
 def test_thinking_disabled_resend_answer_flows_through(pipeline, monkeypatch, caplog):
@@ -235,3 +255,54 @@ def test_thinking_disabled_resend_answer_flows_through(pipeline, monkeypatch, ca
     assert "OutputTruncatedRequestError" not in caplog.text
     assert "outcome=succeeded" in caplog.text
     assert "event=llm_structured_repair_attempted" not in caplog.text
+
+
+def test_turn_suspended_before_resend_resumes_thinking_disabled(
+    pipeline, monkeypatch, caplog
+):
+    """A turn the truncated call used up resumes with the thinking-disabled form.
+
+    Production shape: one 8,192-token reasoning call spends most of the 240s
+    turn, so the guard suspends the turn before the in-turn resend is sent.
+    Without the durable record the next turn re-sent the thinking-on request,
+    each counting toward the truncation cap, until the window was held without
+    a thinking-disabled request ever reaching the provider.
+    """
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        current_overflow_coordinator,
+    )
+
+    _select_minimax_m3(pipeline, monkeypatch)
+    truncate = _failing_extraction("length", "")
+
+    def respond(params, hard_timeout):
+        if _extraction_request(params) and not _thinking_disabled(params):
+            coordinator = current_overflow_coordinator.get()
+            assert coordinator is not None
+            coordinator._deadline = time.monotonic()  # the call used the turn
+            return truncate(params, hard_timeout)
+        return _respond(params, hard_timeout)
+
+    with caplog.at_level(logging.WARNING):
+        storage, _window_id, dispatch = _run(pipeline, monkeypatch, respond)
+    extraction = [
+        call.args[0]
+        for call in dispatch.call_args_list
+        if _extraction_request(call.args[0])
+    ]
+    thinking_on = [params for params in extraction if not _thinking_disabled(params)]
+    assert len(thinking_on) == 1
+    assert len(extraction) > len(thinking_on)
+    assert storage.extraction_status("u", "truncated")["status"] == "done"
+    assert storage.count_all_profiles() > 0
+    assert "OutputTruncatedRequestError" not in caplog.text
+    suspended = [
+        record
+        for record in caplog.records
+        if "event=extraction_turn_suspended " in record.getMessage()
+    ]
+    assert suspended
+    assert all(record.levelno == logging.WARNING for record in suspended)
+    assert "reason=turn_budget" in suspended[0].getMessage()
+    assert re.search(r"request_fingerprint=[0-9a-f]{64} ", suspended[0].getMessage())
+    assert "first_attempt=skipped_recorded_exhaustion" in caplog.text
