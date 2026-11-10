@@ -49,6 +49,7 @@ from reflexio.server.auth import (
     default_get_org_id,
 )
 from reflexio.server.cache import reflexio_cache
+from reflexio.server.offloop_body import off_loop_body
 from reflexio.server.rate_limit import limiter
 from reflexio.server.services.operation_state_utils import OperationStateManager
 
@@ -64,8 +65,8 @@ router = APIRouter()
 @limiter.limit("60/minute")  # Rate limit for write operations
 def add_user_profile_endpoint(
     request: Request,
-    payload: AddUserProfileRequest,
     org_id: str = Depends(default_get_org_id),
+    payload: AddUserProfileRequest = off_loop_body(AddUserProfileRequest),
 ) -> AddUserProfileResponse:
     """Add user profile directly to storage, bypassing inference.
 

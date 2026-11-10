@@ -44,6 +44,7 @@ from reflexio.server.auth import (
     default_get_org_id,
 )
 from reflexio.server.cache import reflexio_cache
+from reflexio.server.offloop_body import off_loop_body
 from reflexio.server.rate_limit import limiter
 from reflexio.server.services.agent_success_evaluation.regen_jobs import (
     REGEN_JOBS,
@@ -287,8 +288,8 @@ def get_retrieved_learning_evaluation_results(
     response_model_exclude_none=True,
 )
 def get_evaluation_overview(
-    request: GetEvaluationOverviewRequest,
     org_id: str = Depends(default_get_org_id),
+    request: GetEvaluationOverviewRequest = off_loop_body(GetEvaluationOverviewRequest),
 ) -> GetEvaluationOverviewResponse:
     """Return the redesigned /evaluations page payload.
 

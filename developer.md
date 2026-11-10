@@ -705,6 +705,12 @@ construction and other middleware/framework work remain in the remainder.
 `body_received_ms` (with `body_bytes`) is the part of `before_handler_ms` until
 the app holds the complete request body, mostly client upload;
 `body_to_handler_ms` is the rest: JSON parsing, validation and dependencies.
+The publish body (and every body whose model has a top-level list of models)
+is declared with `off_loop_body(Model)`, so its model validation runs in a
+worker thread rather than on the event loop that also serves `/health/live`;
+the OpenAPI schema and 422 bodies are unchanged. Loop stalls are visible as the
+`event_loop.lag` gauge (worst lag per minute, milliseconds) and a WARNING
+`event=event_loop_lag` line for any stall of 1 s or more.
 
 A publish whose `request_id` is already committed is answered before embedding
 preparation: `replay_check` is the existence read every non-receipt publish

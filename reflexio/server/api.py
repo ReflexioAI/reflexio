@@ -22,6 +22,8 @@ from reflexio.native_compute import configure_tokenizer_compute
 block_implicit_dotenv_walkup()
 configure_tokenizer_compute()
 
+import asyncio
+import contextlib
 import inspect
 import logging
 import math
@@ -54,6 +56,7 @@ from reflexio.server.auth import (
     default_get_org_id,
 )
 from reflexio.server.env_utils import env_str
+from reflexio.server.event_loop_lag import monitor_event_loop_lag
 from reflexio.server.middleware import (
     BodySizeLimitMiddleware,
     BotProtectionMiddleware,
@@ -483,6 +486,9 @@ def create_app(  # noqa: C901
         durable_learning_scheduler = None
         aggregation_scheduler = None
         started_caps: list = []
+        lag_monitor = asyncio.create_task(
+            monitor_event_loop_lag(), name="event_loop_lag_monitor"
+        )
         if capabilities is None:
             from reflexio.server.usage_metrics import (
                 configure_usage_event_recorder,
@@ -563,6 +569,9 @@ def create_app(  # noqa: C901
             )
 
             stop_search_metering_worker(timeout=5.0)
+            lag_monitor.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await lag_monitor
             if capabilities is None:
                 from reflexio.server.usage_metrics import (
                     configure_usage_event_recorder,

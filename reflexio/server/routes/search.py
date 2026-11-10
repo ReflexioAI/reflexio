@@ -45,6 +45,7 @@ from reflexio.server.auth import (
 from reflexio.server.cache import reflexio_cache
 from reflexio.server.extensions import get_service
 from reflexio.server.llm.rerank.common import CrossEncoderUnavailableError
+from reflexio.server.offloop_body import off_loop_body
 from reflexio.server.rate_limit import limiter
 from reflexio.server.routes._common import _run_limited_api
 from reflexio.server.routes._metering import _stamp_search_dependencies_done
@@ -417,11 +418,11 @@ def search_agent_playbooks_endpoint(
 @limiter.limit("120/minute")
 def unified_search_endpoint(
     request: Request,
-    payload: UnifiedSearchRequest,
     org_id: str = Depends(default_get_org_id),
     caller_type: str = Depends(default_get_caller_type),
     _gate: None = Depends(default_billing_gate("application")),  # noqa: B008
     _deps_done: None = Depends(_stamp_search_dependencies_done),
+    payload: UnifiedSearchRequest = off_loop_body(UnifiedSearchRequest),
 ) -> UnifiedSearchViewResponse:
     """Search across all entity types (profiles, agent playbooks, user playbooks).
 

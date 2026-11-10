@@ -131,7 +131,11 @@ FULL_ROUTES = [
         None,
         (),
         "publish_user_interaction",
-        ("default_get_org_id", "default_billing_gate.<locals>._noop"),
+        (
+            "default_get_org_id",
+            "default_billing_gate.<locals>._noop",
+            "_dependency.<locals>.validated_body",
+        ),
     ),
     (
         "/api/finalize_session",
@@ -176,7 +180,7 @@ FULL_ROUTES = [
         None,
         (),
         "add_user_playbook_endpoint",
-        ("default_get_org_id",),
+        ("default_get_org_id", "_dependency.<locals>.validated_body"),
     ),
     (
         "/api/playbook_aggregation_operations",
@@ -203,7 +207,7 @@ FULL_ROUTES = [
         None,
         (),
         "add_agent_playbook_endpoint",
-        ("default_get_org_id",),
+        ("default_get_org_id", "_dependency.<locals>.validated_body"),
     ),
     (
         "/api/add_user_profile",
@@ -212,7 +216,7 @@ FULL_ROUTES = [
         None,
         (),
         "add_user_profile_endpoint",
-        ("default_get_org_id",),
+        ("default_get_org_id", "_dependency.<locals>.validated_body"),
     ),
     (
         "/api/search_profiles",
@@ -292,6 +296,7 @@ FULL_ROUTES = [
             "default_get_caller_type",
             "default_billing_gate.<locals>._noop",
             "_stamp_search_dependencies_done",
+            "_dependency.<locals>.validated_body",
         ),
     ),
     (
@@ -755,7 +760,7 @@ FULL_ROUTES = [
         None,
         (),
         "get_evaluation_overview",
-        ("default_get_org_id",),
+        ("default_get_org_id", "_dependency.<locals>.validated_body"),
     ),
     (
         "/api/evaluations/regenerate",
