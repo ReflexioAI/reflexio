@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from reflexio.server import search_runtime
 from reflexio.server.llm import _litellm_text_generation as generation
 from reflexio.server.llm import call_deadline
+from reflexio.server.llm._litellm_text_generation import _run_isolated_completion
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.token_accounting import RunTokenCapture, run_token_capture
 
@@ -61,8 +62,7 @@ def completion(monkeypatch):
         lambda: SimpleNamespace(Queue=lambda **_: result_queue, Process=process),
     )
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o", max_retries=0, timeout=1))
-    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
-    monkeypatch.setattr(client, "_hard_timeout_grace_seconds", lambda: 0)
+    monkeypatch.setattr(client, "_run_completion", _run_isolated_completion)
     usage = Mock(wraps=client._log_token_usage)
     monkeypatch.setattr(client, "_log_token_usage", usage)
     capture = RunTokenCapture()
@@ -270,3 +270,33 @@ def test_child_startup_expiry_prevents_provider_dispatch(monkeypatch):
     status, error = result_queue.put.call_args.args[0]
     assert status == "error"
     assert error.type_name == "LLMHardTimeoutError"
+
+
+def test_child_startup_reduces_provider_io_without_a_second_budget(monkeypatch):
+    from reflexio.server.llm import _litellm_subprocess as worker_module
+
+    clock = SimpleNamespace(now=100.0)
+
+    def startup():
+        clock.now += 2.25
+
+    monkeypatch.setattr(worker_module, "_reset_llm_client_state_after_fork", startup)
+    monkeypatch.setattr(worker_module, "_register_local_cli_providers", lambda: None)
+    monkeypatch.setattr(
+        worker_module, "time", SimpleNamespace(monotonic=lambda: clock.now)
+    )
+    native = Mock()
+    monkeypatch.setattr(worker_module, "native_cli_worker", native)
+    response = litellm.ModelResponse(
+        model="gpt-4o",
+        choices=[{"message": {"role": "assistant", "content": "received"}}],
+    )
+    provider = Mock(return_value=response)
+    monkeypatch.setattr(worker_module, "model_completion", provider)
+    results = Mock()
+    original = {"model": "gpt-4o", "timeout": 10}
+    worker_module._litellm_completion_worker(original, results, 103.0)
+    assert provider.call_args.args[0]["timeout"] == pytest.approx(0.75)
+    assert original["timeout"] == 10
+    native.assert_called_once_with(None, results, 103.0)
+    assert results.put.call_args.args[0][0] == "ok"

@@ -85,3 +85,42 @@ assert 'litellm' not in sys.modules
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_live_scope_before_transport_import_keeps_real_dispatch(tmp_path: Path) -> None:
+    result = subprocess.run(  # noqa: S603 — fixed interpreter and repository-owned program
+        [
+            sys.executable,
+            "-c",
+            """
+import sys
+from types import SimpleNamespace
+from reflexio.test_support import llm_mock
+config = SimpleNamespace(args=['tests/server/llm'], option=SimpleNamespace(collectonly=False))
+llm_mock.configure_llm_mock(config)
+assert 'reflexio.server.llm._litellm_text_generation' not in sys.modules
+with llm_mock.unpatched_litellm():
+    from reflexio.server.llm import _litellm_text_generation as generation
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+    client = LiteLLMClient(LiteLLMConfig(model='gpt-4o'))
+    assert client._run_completion is generation._run_isolated_completion
+    with llm_mock.unpatched_litellm():
+        assert client._run_completion is generation._run_isolated_completion
+    assert client._run_completion is generation._run_isolated_completion
+assert client._run_completion is llm_mock.inline_test_completion
+llm_mock.cleanup_llm_mock(config)
+assert client._run_completion is generation._run_isolated_completion
+""",
+        ],
+        env=dict(
+            os.environ,
+            PYTHON_DOTENV_DISABLED="1",
+            REFLEXIO_LOG_DIR=str(tmp_path / "logs"),
+            LOCAL_STORAGE_PATH=str(tmp_path / "storage"),
+        ),
+        text=True,
+        capture_output=True,
+        timeout=25,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

@@ -298,6 +298,8 @@ def _is_e2e_test_run(config: Any) -> bool:
 
 # One active session patch and at most one pending import notification.
 _litellm_patcher = None
+_completion_transport_patcher = None
+_completion_transport_hook_pending = False
 _litellm_mock_requested = False
 _litellm_hook_pending = False
 _litellm_mock_lock = RLock()
@@ -313,7 +315,7 @@ if hasattr(os, "register_at_fork"):
 
 
 def _activate_litellm_mock(module: Any) -> None:
-    global _litellm_patcher, _litellm_hook_pending
+    global _litellm_patcher, _litellm_hook_pending, _completion_transport_hook_pending
     _litellm_hook_pending = False
     # An already-present module may still be initializing on another thread.
     # Match patch's normal import barrier before touching its attributes.
@@ -325,6 +327,52 @@ def _activate_litellm_mock(module: Any) -> None:
             module, "completion", side_effect=_mock_completion
         )
         _litellm_patcher.start()
+        if (
+            _completion_transport_patcher is None
+            and not _completion_transport_hook_pending
+        ):
+            from wrapt import register_post_import_hook
+
+            _completion_transport_hook_pending = True
+            register_post_import_hook(
+                _activate_completion_transport,
+                "reflexio.server.llm._litellm_text_generation",
+            )
+
+
+def inline_test_completion(params: dict[str, Any], _deadline: float) -> Any:
+    """Explicit unit-test transport; production always owns an isolated worker."""
+    from litellm.exceptions import ContextWindowExceededError
+
+    from reflexio.server.llm._model_compat import model_completion
+    from reflexio.server.llm.input_budget import (
+        ProviderInputOverflowError,
+        extraction_provider_guard,
+        extraction_request_identity,
+    )
+
+    try:
+        return model_completion(params)
+    except ContextWindowExceededError:
+        if extraction_provider_guard.get() is not None:
+            raise ProviderInputOverflowError(
+                extraction_request_identity.get()
+            ) from None
+        raise
+
+
+def _activate_completion_transport(module: Any) -> None:
+    global _completion_transport_patcher, _completion_transport_hook_pending
+    _completion_transport_hook_pending = False
+    with _litellm_mock_lock:
+        if not _litellm_mock_requested or _completion_transport_patcher is not None:
+            return
+        _completion_transport_patcher = patch.object(
+            module.TextGenerationMixin,
+            "_run_completion",
+            staticmethod(inline_test_completion),
+        )
+        _completion_transport_patcher.start()
 
 
 def configure_llm_mock(config: Any) -> None:
@@ -349,13 +397,16 @@ def configure_llm_mock(config: Any) -> None:
 
 def cleanup_llm_mock(config: Any) -> None:  # noqa: ARG001
     """Disarm a deferred mock or restore an installed one."""
-    global _litellm_patcher, _litellm_mock_requested
+    global _litellm_patcher, _litellm_mock_requested, _completion_transport_patcher
     requested = _litellm_mock_requested
     _litellm_mock_requested = False
     if requested and not _litellm_hook_pending and "litellm" in sys.modules:
         # A post-import callback finishes under that module's import lock.
         import_module("litellm")
     with _litellm_mock_lock:
+        if _completion_transport_patcher is not None:
+            _completion_transport_patcher.stop()
+            _completion_transport_patcher = None
         if _litellm_patcher is not None:
             _litellm_patcher.stop()
             _litellm_patcher = None
@@ -396,19 +447,35 @@ def unpatched_litellm() -> Iterator[None]:
         None: A context in which ``litellm.completion`` is the real function
             and ``MOCK_LLM_RESPONSE`` is unset.
     """
-    if _litellm_mock_requested:
+    global _litellm_mock_requested
+    requested = _litellm_mock_requested
+    if requested:
         import_module("litellm")
-    patcher = _litellm_patcher
+    patcher = _litellm_patcher if requested else None
     previous_flag = os.environ.get("MOCK_LLM_RESPONSE")
 
+    transport = _completion_transport_patcher if requested else None
+    # Pending module hooks must not install an inline adapter inside this scope.
+    _litellm_mock_requested = False
+    if transport is not None:
+        transport.stop()
     if patcher is not None:
         patcher.stop()
     os.environ.pop("MOCK_LLM_RESPONSE", None)
     try:
         yield
     finally:
+        _litellm_mock_requested = requested
         if patcher is not None:
             patcher.start()
+        if transport is not None:
+            transport.start()
+        elif (
+            requested and "reflexio.server.llm._litellm_text_generation" in sys.modules
+        ):
+            _activate_completion_transport(
+                sys.modules["reflexio.server.llm._litellm_text_generation"]
+            )
         if previous_flag is None:
             os.environ.pop("MOCK_LLM_RESPONSE", None)
         else:
@@ -469,11 +536,16 @@ def patched_litellm() -> Iterator[None]:
     """
     os.environ["MOCK_LLM_RESPONSE"] = "true"
     patcher = patch("litellm.completion", side_effect=_mock_completion)
+    from reflexio.server.llm._litellm_text_generation import TextGenerationMixin
+
     patcher.start()
-    try:
-        yield
-    finally:
-        patcher.stop()
+    with patch.object(
+        TextGenerationMixin, "_run_completion", staticmethod(inline_test_completion)
+    ):
+        try:
+            yield
+        finally:
+            patcher.stop()
         # Leave MOCK_LLM_RESPONSE as-is — tests that read it should not
         # depend on its lifetime being tied to a single context block.
 

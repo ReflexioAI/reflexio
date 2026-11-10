@@ -76,7 +76,7 @@ def _freeze(
         "helper",
         "config",
         "seed",
-        "grace",
+        "completion_transport",
         "prompt_version",
         "native_launch",
         "native_retirement",
@@ -92,7 +92,6 @@ def test_pairwise_judge_rejects_frozen_plan_drift_before_provider_execution(
     monkeypatch, tmp_path, drift
 ):
     monkeypatch.setenv("REFLEXIO_LLM_SEED", "42")
-    monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
     prompt_manager = PromptManager()
     client = LiteLLMClient(LiteLLMConfig(model="azure/judge-deployment"))
     provider = Mock()
@@ -147,8 +146,8 @@ def test_pairwise_judge_rejects_frozen_plan_drift_before_provider_execution(
         client.config.top_p = 0.25
     elif drift == "seed":
         monkeypatch.setenv("REFLEXIO_LLM_SEED", "43")
-    elif drift == "grace":
-        monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "6")
+    elif drift == "completion_transport":
+        monkeypatch.setattr(client, "_run_completion", Mock())
     else:
         prompt_manager.version_override = {PLAYBOOK_OPTIMIZER_JUDGE_PROMPT_ID: "1.1.0"}
 
@@ -171,7 +170,6 @@ def test_pairwise_judge_provider_params_match_frozen_sanitized_plan(monkeypatch)
         ),
     )
     monkeypatch.setenv("REFLEXIO_LLM_SEED", "47")
-    monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "7")
     endpoint = "https://example.com:4443/"
     secret = "azure-secret"
     client = LiteLLMClient(

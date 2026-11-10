@@ -380,10 +380,16 @@ def _litellm_completion_worker(
     _reset_llm_client_state_after_fork()
     _register_local_cli_providers()
     try:
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise LLMHardTimeoutError(
                 "LLM request deadline expired during child startup"
             )
+        # Child startup spends the same accepted-work budget as provider IO.
+        params = {
+            **params,
+            "timeout": min(float(params.get("timeout", remaining)), remaining),
+        }
         native_cli_worker(native_context, result_queue, deadline)
         result_queue.put(("ok", _picklable_completion_result(model_completion(params))))
     except BaseException as exc:

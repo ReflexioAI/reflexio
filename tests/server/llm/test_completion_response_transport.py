@@ -98,7 +98,8 @@ def test_deferred_provider_models_serialize_in_parent_after_real_worker() -> Non
 
         litellm.completion = completion
         client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
-        client._should_process_isolate_completion = lambda *_: True
+        from reflexio.server.llm._litellm_text_generation import _run_isolated_completion
+        client._run_completion = _run_isolated_completion
         response = client._completion_with_hard_timeout(
             {"model": "gpt-4o", "timeout": 5}, 20
         )

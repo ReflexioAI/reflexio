@@ -7,6 +7,7 @@ before pytest starts. Never run this file as part of an ordinary offline gate.
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+from reflexio.server.llm._litellm_text_generation import _run_isolated_completion
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import Tool, ToolRegistry, run_tool_loop
@@ -53,7 +54,7 @@ def client(request, monkeypatch):
     result = LiteLLMClient(
         LiteLLMConfig(model=model, max_tokens=4096, timeout=60, fallback_models=[])
     )
-    assert result._should_process_isolate_completion(60, 5)
+    assert result._run_completion is _run_isolated_completion
     # Limit thinking on models that document effort. The legacy baselines keep
     # their existing behavior, and the runtime provider defaults stay intact.
     if model not in {"minimax/MiniMax-M3", "zai/glm-5.2"}:

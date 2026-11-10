@@ -42,6 +42,7 @@ from reflexio.models.config_schema import (
 from reflexio.models.structured_output import find_schema_keyword
 from reflexio.server import error_reporting
 from reflexio.server.llm._litellm_subprocess import _snapshot_completion_response
+from reflexio.server.llm._litellm_text_generation import _run_isolated_completion
 from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.llm._provider_concurrency import ProviderCapSaturatedError
 from reflexio.server.llm.litellm_client import (
@@ -4184,8 +4185,8 @@ class TestLitellmIntegration:
         assert "fallbacks" not in captured
 
     def test_completion_has_client_side_hard_timeout(self, monkeypatch):
-        monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "0")
         client = LiteLLMClient(LiteLLMConfig(model="x", timeout=cast(Any, 0.01)))
+        monkeypatch.setattr(client, "_run_completion", _run_isolated_completion)
 
         def _slow(**_params):
             time.sleep(1)
@@ -4235,7 +4236,6 @@ class TestLitellmIntegration:
         the child's queue-feeder thread would block on the full pipe, the child
         could not exit, and a finished-but-large result would trip a *false*
         hard timeout. The queue must be drained before join."""
-        monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "0")
         client = LiteLLMClient(LiteLLMConfig(model="x"))
 
         big = "x" * (2 * 1024 * 1024)  # 2 MB, far exceeds the ~64KB pipe buffer
@@ -4256,7 +4256,7 @@ class TestLitellmIntegration:
         params = {"model": "x", "messages": self._messages(), "timeout": 0.5}
         # Force the subprocess path (a monkeypatched completion is not module
         # "litellm", so isolation falls to the short-timeout branch).
-        assert client._should_process_isolate_completion(0.5, 0.0)
+        monkeypatch.setattr(client, "_run_completion", _run_isolated_completion)
 
         start = time.perf_counter()
         payload = client._completion_with_hard_timeout(params, 10.0)
@@ -4316,9 +4316,7 @@ class TestLitellmIntegration:
         process_context.Queue.return_value = result_queue
         process_context.Process.return_value = process
         monkeypatch.setattr(multiprocessing, "get_context", lambda: process_context)
-        monkeypatch.setattr(
-            client, "_should_process_isolate_completion", lambda *_args: True
-        )
+        monkeypatch.setattr(client, "_run_completion", _run_isolated_completion)
         params = {
             "model": "gpt-5-mini",
             "messages": self._messages(),
@@ -4356,7 +4354,6 @@ class TestLitellmIntegration:
         ladder-wide ``(1 + len(fallbacks)) * per_attempt``). num_retries is 0 and
         no ``fallbacks`` kwarg is delegated — the walk advances between rungs.
         """
-        monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
         client = LiteLLMClient(
             LiteLLMConfig(
                 model="minimax/MiniMax-M3",
@@ -4377,21 +4374,20 @@ class TestLitellmIntegration:
         client.generate_chat_response(self._messages())
 
         # The primary rung uses its configured timeout for a SINGLE
-        # attempt plus one grace buffer — it does NOT scale with fallback count.
+        # attempt — it does NOT scale with fallback count.
         assert captured["timeout"] == configured_timeout
         assert captured["num_retries"] == 0
         assert captured["fallbacks"] is None
-        assert captured["hard_timeout"] == pytest.approx(configured_timeout + 5)
+        assert captured["hard_timeout"] == pytest.approx(configured_timeout)
 
     @pytest.mark.parametrize("fallback_models", [[], ["a"], ["a", "b"]])
     def test_hard_timeout_does_not_scale_with_rung_count(
         self, monkeypatch, fallback_models
     ):
         """The per-rung hard timeout is constant regardless of how many fallbacks
-        follow — each rung is bounded to its own single attempt + one grace. A
+        follow — each rung is bounded to its own single attempt. A
         hung primary is abandoned after one attempt-worth of time, then the walk
         advances (the PYTHON-FASTAPI-62 fix, now client-owned)."""
-        monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
         client = LiteLLMClient(
             LiteLLMConfig(model="x", timeout=30, fallback_models=fallback_models)
         )
@@ -4404,9 +4400,9 @@ class TestLitellmIntegration:
         monkeypatch.setattr(client, "_completion_with_hard_timeout", _capture)
         client.generate_chat_response(self._messages())
 
-        # Only the primary rung runs (it succeeds); its bound is 30 + 5 grace,
+        # Only the primary rung runs (it succeeds); its bound is 30 seconds,
         # independent of the fallback count.
-        assert captured["hard_timeout"] == pytest.approx(30 + 5)
+        assert captured["hard_timeout"] == pytest.approx(30)
 
     def test_fallback_response_returned_when_primary_fails(self, monkeypatch):
         """End-to-end: when the primary fails and a fallback is configured, the
@@ -4426,20 +4422,6 @@ class TestLitellmIntegration:
         monkeypatch.setattr("litellm.completion", _fake)
         result = client.generate_chat_response(self._messages())
         assert result == "from-fallback"
-
-    def test_invalid_hard_timeout_grace_env_falls_back(self, monkeypatch, caplog):
-        from reflexio.server.llm._litellm_text_generation import _parse_grace_seconds
-
-        _parse_grace_seconds.cache_clear()
-        monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "not-a-float")
-        client = LiteLLMClient(LiteLLMConfig(model="x"))
-
-        assert client._hard_timeout_grace_seconds() == 5.0
-        assert "Invalid REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS" in caplog.text
-        # Once per distinct bad value, not once per call.
-        caplog.clear()
-        assert client._hard_timeout_grace_seconds() == 5.0
-        assert "Invalid REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS" not in caplog.text
 
     def test_parse_failure_triggers_one_explicit_retry(self, monkeypatch):
         """Pre-refactor parse-retry preserved: when client-side Pydantic
@@ -5354,9 +5336,7 @@ def test_completion_startup_and_final_queue_read_share_absolute_budget(
 
     context.Queue.return_value.get.side_effect = empty_result
     monkeypatch.setattr(multiprocessing, "get_context", lambda: context)
-    monkeypatch.setattr(
-        client, "_should_process_isolate_completion", lambda *_args: True
-    )
+    monkeypatch.setattr(client, "_run_completion", _run_isolated_completion)
     scope = (
         None
         if scope_kind == "unscoped"

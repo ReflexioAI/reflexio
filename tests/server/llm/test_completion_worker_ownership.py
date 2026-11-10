@@ -12,6 +12,7 @@ import pytest
 from reflexio.server.llm import _litellm_text_generation as generation
 from reflexio.server.llm import _provider_concurrency as admission
 from reflexio.server.llm import call_deadline
+from reflexio.server.llm._litellm_text_generation import _run_isolated_completion
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 
 
@@ -86,7 +87,7 @@ def test_live_worker_retains_permit_after_caller_finishes(
     )
     monkeypatch.setattr(generation.multiprocessing, "get_context", lambda: context)
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
-    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
+    monkeypatch.setattr(client, "_run_completion", _run_isolated_completion)
     try:
         with admission.provider_slot("gpt-4o"):
             if outcome == "success":
@@ -127,7 +128,7 @@ def test_start_failure_closes_unstarted_worker_and_queue(monkeypatch, provider_p
     )
     monkeypatch.setattr(generation.multiprocessing, "get_context", lambda: context)
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
-    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
+    monkeypatch.setattr(client, "_run_completion", _run_isolated_completion)
     with (
         pytest.raises(RuntimeError, match="synthetic start failure"),
         admission.provider_slot("gpt-4o"),
@@ -169,7 +170,7 @@ def test_rejected_late_public_result_keeps_live_worker_permit(
     )
     monkeypatch.setattr(generation.multiprocessing, "get_context", lambda: context)
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
-    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
+    monkeypatch.setattr(client, "_run_completion", _run_isolated_completion)
     try:
         with (
             call_deadline.model_deadline(1000.03),
@@ -232,7 +233,7 @@ def test_actual_lingering_worker_is_reaped_without_blocking_caller(
     monkeypatch.setattr(generation.multiprocessing, "get_context", lambda: context)
     monkeypatch.setattr(generation, "_litellm_completion_worker", _publish_then_linger)
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
-    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
+    monkeypatch.setattr(client, "_run_completion", _run_isolated_completion)
     started = time.monotonic()
     with admission.provider_slot("gpt-4o"):
         result = client._completion_with_hard_timeout({"model": "gpt-4o"}, 30)
@@ -271,7 +272,7 @@ def test_reaper_releases_permit_when_exit_status_was_collected_elsewhere(
     thread_errors = []
     monkeypatch.setattr(threading, "excepthook", thread_errors.append)
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
-    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
+    monkeypatch.setattr(client, "_run_completion", _run_isolated_completion)
     try:
         with admission.provider_slot("gpt-4o"):
             assert client._completion_with_hard_timeout({"model": "gpt-4o"}, 30) == (
