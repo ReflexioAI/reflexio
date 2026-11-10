@@ -17,6 +17,7 @@ from litellm.exceptions import APIError, BadGatewayError
 from pydantic import BaseModel
 
 from reflexio.server.llm._litellm_subprocess import _snapshot_completion_error
+from reflexio.server.llm._litellm_text_generation import _run_isolated_completion
 from reflexio.server.llm.failure import Transient, classify_llm_failure
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
@@ -115,9 +116,7 @@ def test_isolated_worker_error_carries_status_to_parent(monkeypatch) -> None:
     process_context.Queue.return_value = result_queue
     process_context.Process.return_value = process
     monkeypatch.setattr(multiprocessing, "get_context", lambda: process_context)
-    monkeypatch.setattr(
-        client, "_should_process_isolate_completion", lambda *_args: True
-    )
+    monkeypatch.setattr(client, "_run_completion", _run_isolated_completion)
     params = {
         "model": "minimax/MiniMax-M3",
         "messages": [{"role": "user", "content": "hi"}],

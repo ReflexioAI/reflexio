@@ -555,7 +555,7 @@ def test_gepa_user_authority_freezes_generation_ladder_and_retry_contract(tmp_pa
         "resolved_model_ladder"
     ]
     assert all(rung["timeout_seconds"] == "120.0" for rung in generation["rungs"])
-    assert all(rung["hard_timeout_seconds"] == "125.0" for rung in generation["rungs"])
+    assert all(rung["hard_timeout_seconds"] == "120.0" for rung in generation["rungs"])
     assert generation["rungs"][0]["temperature"] == "1.0"
     assert generation["rungs"][1]["max_tokens"] == 8192
     assert generation["rungs"][0]["structured_output_strategy"]

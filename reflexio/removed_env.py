@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS": "",
     "REFLEXIO_LEARNING_ALARM_SUPPRESS_SECONDS": "",
     "POOLED_CREDITS_ENABLED": "BILLING_ENFORCEMENT_MODE",
     "TRANSFORMERS_OFFLINE": "HF_HUB_OFFLINE",
@@ -67,6 +68,12 @@ def reject_removed_env(
             else f"{name} -> {aliases[name]}"
             for name in obsolete
         )
+        if "REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS" in obsolete:
+            migration += (
+                "; LLM attempts now use one accepted-work deadline, including startup. "
+                "Remove the grace assignment and configure the intended request timeout directly; "
+                "worker retirement does not extend result acceptance"
+            )
         if "REFLEXIO_LEARNING_ALARM_SUPPRESS_SECONDS" in obsolete:
             migration += (
                 "; discovery notifications now follow failure episodes and current health. "

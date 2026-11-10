@@ -4,6 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from reflexio.server.llm._litellm_text_generation import _run_isolated_completion
 from reflexio.server.llm.input_budget import (
     InputBudgetConfigurationError,
     InputBudgetExceededError,
@@ -232,7 +233,7 @@ def test_isolated_capacity_classifier_does_not_guess_from_code_or_message(
 
     monkeypatch.setattr(module, "_litellm_completion_worker", reject_worker)
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
-    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
+    monkeypatch.setattr(client, "_run_completion", _run_isolated_completion)
     guard_token = extraction_provider_guard.set(Mock())
     identity = {
         "attempt_id": "reserved",

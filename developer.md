@@ -1843,3 +1843,17 @@ notification, and publishes current blocking health on observation opportunities
 Unknown reads do not prove recovery. `REFLEXIO_LEARNING_QUEUE_AGE_ALARM_SECONDS`
 continues to select the independent backlog-age threshold. The shared raw dotenv
 loader rejects obsolete assignments before exporting any file values.
+
+### LLM attempt deadlines
+
+A request timeout bounds accepted work for one physical attempt, including child
+startup. Enclosing model/search/walk deadlines may shorten it; provider IO uses
+the remaining allowance after startup. Cleanup retains provider capacity until
+physical worker retirement without extending result acceptance. Remove obsolete
+`REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS` assignments, including blanks, and set
+the intended request timeout directly. There is no implicit padding or automatic
+numeric migration. Available late responses are accounted before rejection;
+unreceived provider usage cannot be inferred. Frozen optimizer plans from older
+execution implementations remain historical and fail drift checks rather than
+being rewritten. Unit-test inline transport is selected explicitly by test support;
+production dispatch always isolates physical calls.

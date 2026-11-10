@@ -41,10 +41,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-import litellm
-from litellm.exceptions import ContextWindowExceededError
 from pydantic import BaseModel
 
+from reflexio.removed_env import reject_removed_env
 from reflexio.server import search_runtime
 from reflexio.server.error_reporting import set_error_tags
 from reflexio.server.llm._litellm_subprocess import (
@@ -68,7 +67,6 @@ from reflexio.server.llm._minimax_quota import backup_credentials, quota_exhaust
 from reflexio.server.llm._model_compat import (
     apply_model_request_policy,
     ensure_model_capabilities,
-    model_completion,
     reasoning_exhausted_retry_extra_body,
 )
 from reflexio.server.llm._native_cli import NATIVE_CLI_REQUEST, NativeCLIOwner
@@ -185,17 +183,6 @@ def _parse_seed(raw: str, default: int) -> int:
             default,
         )
         return default
-
-
-@functools.lru_cache(maxsize=16)
-def _parse_grace_seconds(raw: str) -> float:
-    try:
-        return max(0.0, float(raw))
-    except ValueError:
-        logging.getLogger(__name__).warning(
-            "Invalid REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS=%r; using 5", raw
-        )
-        return 5.0
 
 
 def _bounded_repair_errors(errors: Sequence[str]) -> tuple[str, ...]:
@@ -673,6 +660,85 @@ def record_terminal_llm_failure() -> None:
     record_health("llm.failures")
 
 
+def _run_isolated_completion(params: dict[str, Any], deadline: float) -> Any:
+    """Own physical execution until receipt or the single attempt deadline."""
+    provider_timeout = params.get("timeout")
+    hard_timeout = deadline - time.monotonic()
+    process_context = multiprocessing.get_context()
+    native_owner = NativeCLIOwner(deadline)
+    process, result_queue = native_owner.create_worker(
+        process_context, _litellm_completion_worker, params
+    )
+    try:
+        if time.monotonic() >= deadline:
+            raise LLMHardTimeoutError("LLM request deadline expired before startup")
+        process.start()
+        native_owner.worker_started()
+        # Drain the result queue BEFORE joining the child. A large completion
+        # payload overflows the OS pipe buffer, so the child's queue-feeder
+        # thread blocks on ``put`` until a reader drains it — and the child
+        # cannot exit while that thread is blocked. Joining first would then
+        # deadlock the parent against a child that finished but is wedged on a
+        # full pipe, tripping a *false* hard timeout (a large-but-successful
+        # result reported as a wall-clock kill). Reading here unblocks the
+        # feeder so the child can exit. The read is bounded by the same
+        # ``hard_timeout`` budget the join used to enforce.
+        # Startup spends this same budget. An already available response
+        # may be drained after expiry so the caller can record its usage;
+        # public acceptance below rejects the late output after accounting.
+        result: tuple[str, Any] | None = None
+        while result is None:
+            remaining = deadline - time.monotonic()
+            try:
+                result = result_queue.get(timeout=max(0.0, min(0.1, remaining)))
+            except queue.Empty as exc:
+                if remaining <= 0:
+                    # True wall-clock timeout: the child ran past the hard
+                    # bound without producing a result. Kill it (if still
+                    # alive) and surface the timeout; a child that exited
+                    # without a result is a distinct failure.
+                    if process.is_alive():
+                        raise LLMHardTimeoutError(
+                            f"LLM request exceeded hard timeout of {hard_timeout:.3f}s "
+                            f"(provider timeout={provider_timeout!r})"
+                        ) from exc
+                    raise LiteLLMClientError(
+                        "LLM request process exited without returning a result "
+                        f"(exitcode={process.exitcode})"
+                    ) from exc
+                if not process.is_alive():
+                    # The child exited before the deadline. Give the queue one
+                    # last read in case the feeder flushed the payload just
+                    # before exit; otherwise it died without a result.
+                    try:
+                        queue_timeout = max(0.0, min(1.0, deadline - time.monotonic()))
+                        result = result_queue.get(timeout=queue_timeout)
+                    except queue.Empty as exc2:
+                        raise LiteLLMClientError(
+                            "LLM request process exited without returning a result "
+                            f"(exitcode={process.exitcode})"
+                        ) from exc2
+
+            if result is not None and result[0] == NATIVE_CLI_REQUEST:
+                native_owner.dispatch(result[1])
+                result = None
+
+        # The loop only exits with a drained result (every no-result path
+        # above raises); the assert makes that invariant explicit for pyright.
+        assert result is not None  # noqa: S101
+        status, payload = result
+        if status == "ok":
+            return payload
+        if status != "error":
+            raise LiteLLMClientError("Unknown isolated completion result kind")
+        _raise_completion_error(payload)
+    finally:
+        try:
+            native_owner.close()
+        finally:
+            retire_completion_worker(process, result_queue, native_owner)
+
+
 class TextGenerationMixin:
     """Chat/response generation, completion-param build, hard-timeout, cost, multimodal.
 
@@ -682,6 +748,8 @@ class TextGenerationMixin:
     foreign-member types without introducing shared class-level mutable state —
     NEVER assign the annotation-only members here.
     """
+
+    _run_completion = staticmethod(_run_isolated_completion)
 
     SUPPORTED_IMAGE_FORMATS: set[str] = set(SUPPORTED_IMAGE_MIME_TYPES.keys())
 
@@ -1267,6 +1335,7 @@ class TextGenerationMixin:
         """
         from reflexio.server import search_runtime
 
+        reject_removed_env(os.environ, {"REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS": ""})
         started = time.monotonic()
         hard_timeout = remaining_call_time(hard_timeout)
         search_scope = search_runtime.current()
@@ -1278,13 +1347,6 @@ class TextGenerationMixin:
                     self._coerce_timeout_seconds(params)
                 ),
             }
-        provider_timeout = params.get("timeout", self.config.timeout)
-        # timeout_seconds + grace_seconds below only classify test doubles in
-        # _should_process_isolate_completion (real litellm vs a monkeypatched
-        # closure) — they do NOT size the kill bound, which is the caller's
-        # ladder-wide ``hard_timeout``.
-        timeout_seconds = self._coerce_timeout_seconds(params)
-        grace_seconds = self._hard_timeout_grace_seconds()
         deadline = started + hard_timeout
         if search_scope is not None and search_scope.deadline is not None:
             deadline = min(deadline, search_scope.deadline)
@@ -1294,115 +1356,7 @@ class TextGenerationMixin:
         if time.monotonic() >= deadline:
             raise LLMHardTimeoutError("LLM request deadline expired before dispatch")
 
-        if not self._should_process_isolate_completion(timeout_seconds, grace_seconds):
-            try:
-                return model_completion(params)
-            except ContextWindowExceededError:
-                if extraction_provider_guard.get() is not None:
-                    from reflexio.server.llm.input_budget import (
-                        ProviderInputOverflowError,
-                        extraction_request_identity,
-                    )
-
-                    raise ProviderInputOverflowError(
-                        extraction_request_identity.get()
-                    ) from None
-                raise
-
-        process_context = multiprocessing.get_context()
-        native_owner = NativeCLIOwner(deadline)
-        process, result_queue = native_owner.create_worker(
-            process_context, _litellm_completion_worker, params
-        )
-        try:
-            if time.monotonic() >= deadline:
-                raise LLMHardTimeoutError("LLM request deadline expired before startup")
-            process.start()
-            native_owner.worker_started()
-            # Drain the result queue BEFORE joining the child. A large completion
-            # payload overflows the OS pipe buffer, so the child's queue-feeder
-            # thread blocks on ``put`` until a reader drains it — and the child
-            # cannot exit while that thread is blocked. Joining first would then
-            # deadlock the parent against a child that finished but is wedged on a
-            # full pipe, tripping a *false* hard timeout (a large-but-successful
-            # result reported as a wall-clock kill). Reading here unblocks the
-            # feeder so the child can exit. The read is bounded by the same
-            # ``hard_timeout`` budget the join used to enforce.
-            # Startup spends this same budget. An already available response
-            # may be drained after expiry so the caller can record its usage;
-            # public acceptance below rejects the late output after accounting.
-            result: tuple[str, Any] | None = None
-            while result is None:
-                remaining = deadline - time.monotonic()
-                try:
-                    result = result_queue.get(timeout=max(0.0, min(0.1, remaining)))
-                except queue.Empty as exc:
-                    if remaining <= 0:
-                        # True wall-clock timeout: the child ran past the hard
-                        # bound without producing a result. Kill it (if still
-                        # alive) and surface the timeout; a child that exited
-                        # without a result is a distinct failure.
-                        if process.is_alive():
-                            raise LLMHardTimeoutError(
-                                f"LLM request exceeded hard timeout of {hard_timeout:.3f}s "
-                                f"(provider timeout={provider_timeout!r})"
-                            ) from exc
-                        raise LiteLLMClientError(
-                            "LLM request process exited without returning a result "
-                            f"(exitcode={process.exitcode})"
-                        ) from exc
-                    if not process.is_alive():
-                        # The child exited before the deadline. Give the queue one
-                        # last read in case the feeder flushed the payload just
-                        # before exit; otherwise it died without a result.
-                        try:
-                            queue_timeout = max(
-                                0.0, min(1.0, deadline - time.monotonic())
-                            )
-                            result = result_queue.get(timeout=queue_timeout)
-                        except queue.Empty as exc2:
-                            raise LiteLLMClientError(
-                                "LLM request process exited without returning a result "
-                                f"(exitcode={process.exitcode})"
-                            ) from exc2
-
-                if result is not None and result[0] == NATIVE_CLI_REQUEST:
-                    native_owner.dispatch(result[1])
-                    result = None
-
-            # The loop only exits with a drained result (every no-result path
-            # above raises); the assert makes that invariant explicit for pyright.
-            assert result is not None  # noqa: S101
-            status, payload = result
-            if status == "ok":
-                return payload
-            if status != "error":
-                raise LiteLLMClientError("Unknown isolated completion result kind")
-            _raise_completion_error(payload)
-        finally:
-            try:
-                native_owner.close()
-            finally:
-                retire_completion_worker(process, result_queue, native_owner)
-
-    def _hard_timeout_grace_seconds(self) -> float:
-        raw = os.environ.get("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5") or "5"
-        return _parse_grace_seconds(raw)
-
-    def _should_process_isolate_completion(
-        self, timeout_seconds: float, grace_seconds: float
-    ) -> bool:
-        """Use process isolation for real LiteLLM calls while preserving test doubles.
-
-        Unit tests often monkeypatch ``litellm.completion`` with local closures
-        that capture params in parent memory. Those closures cannot be observed
-        through a subprocess, so only real LiteLLM functions and explicit short
-        timeout tests go through the process path.
-        """
-        completion_module = getattr(litellm.completion, "__module__", "")
-        if completion_module.startswith("litellm"):
-            return True
-        return timeout_seconds + grace_seconds < 1.0
+        return self._run_completion(params, deadline)
 
     def _log_token_usage(self, params: dict[str, Any], response: Any) -> None:
         """Log token usage with cache statistics and cost from an LLM response.
@@ -1653,6 +1607,7 @@ class TextGenerationMixin:
             StructuredOutputRepairError: If the final rung's validator/repair
                 budget is exhausted (typed so callers can keep the latest parse).
         """
+        reject_removed_env(os.environ, {"REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS": ""})
         structured_output_validator: StructuredOutputValidator | None = kwargs.pop(
             "structured_output_validator", None
         )
@@ -1713,12 +1668,11 @@ class TextGenerationMixin:
                 )
             if hard_timeout <= remaining:
                 return turn_params, hard_timeout
-            grace = self._hard_timeout_grace_seconds()
             clamped = {
                 **turn_params,
                 "timeout": min(
                     self._coerce_timeout_seconds(turn_params),
-                    remaining - grace if remaining > grace else remaining,
+                    remaining,
                 ),
             }
             return clamped, remaining
@@ -1729,7 +1683,7 @@ class TextGenerationMixin:
             """Build single-rung completion params (never any ``fallbacks``).
 
             ``num_retries`` is forced to 0 and the hard (wall-clock) timeout is
-            sized to a SINGLE attempt on this rung plus one grace buffer — the
+            sized to a SINGLE attempt on this rung — the
             walk, not litellm, owns advancing to the next rung.
 
             Every mutable value is DETACHED from the caller's objects before
@@ -1752,7 +1706,6 @@ class TextGenerationMixin:
             params["num_retries"] = 0
             params.pop("fallbacks", None)  # owned walk: never delegate to litellm
             per_attempt = self._coerce_timeout_seconds(params)
-            grace = self._hard_timeout_grace_seconds()
             remaining = walk_deadline - time.monotonic()
             if remaining <= 0:
                 # LiteLLMClientError propagates out of the rung to the walker,
@@ -1761,14 +1714,8 @@ class TextGenerationMixin:
                     f"LLM ladder budget exhausted ({walk_bound}): "
                     f"{remaining:.1f}s left, not attempting {params.get('model')}"
                 )
-            if per_attempt + grace > remaining:
-                # Clamp the provider timeout and the kill bound together, so the
-                # provider gives up before the subprocess is killed.
-                per_attempt = min(
-                    per_attempt, remaining - grace if remaining > grace else remaining
-                )
-                params["timeout"] = per_attempt
-            hard_timeout = min(per_attempt + grace, remaining)
+            hard_timeout = min(per_attempt, remaining)
+            params["timeout"] = hard_timeout
             return params, response_format, parse_structured_output, hard_timeout
 
         def _is_refusal(response: Any, message: Any) -> bool:

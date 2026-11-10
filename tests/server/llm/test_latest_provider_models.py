@@ -14,6 +14,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from reflexio.server.llm._litellm_subprocess import _picklable_completion_result
+from reflexio.server.llm._litellm_text_generation import _run_isolated_completion
 from reflexio.server.llm._litellm_types import StructuredOutputRepairError
 from reflexio.server.llm._model_compat import (
     ANTHROPIC_MODELS,
@@ -31,6 +32,7 @@ from reflexio.server.llm.litellm_client import (
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import Tool, ToolRegistry, run_tool_loop
 from reflexio.test_support.llm_mock import (
+    inline_test_completion,
     litellm_is_patched,
     patched_litellm,
     unpatched_litellm,
@@ -346,9 +348,6 @@ def transport(monkeypatch):
         return httpx.Response(status, json=payload, request=request)
 
     monkeypatch.setattr(httpx.Client, "send", send)
-    monkeypatch.setattr(
-        LiteLLMClient, "_should_process_isolate_completion", lambda *_a: False
-    )
     with unpatched_litellm(), monkeypatch.context() as completion_patch:
         # An enterprise + OSS selection can install nested session patchers.
         # Bind the exported real entry point explicitly so this test cannot
@@ -356,6 +355,9 @@ def transport(monkeypatch):
         from litellm.main import completion
 
         completion_patch.setattr(litellm, "completion", completion)
+        completion_patch.setattr(
+            LiteLLMClient, "_run_completion", staticmethod(inline_test_completion)
+        )
         yield requests, responses
     assert not responses, "The expected provider exchange did not complete"
 
@@ -843,7 +845,7 @@ def test_secondary_tool_loop_through_actual_subprocess(model, monkeypatch):
         lambda *_a, **_k: model,
     )
     monkeypatch.setattr(
-        LiteLLMClient, "_should_process_isolate_completion", lambda *_: True
+        LiteLLMClient, "_run_completion", staticmethod(_run_isolated_completion)
     )
     calls = []
     registry = ToolRegistry()

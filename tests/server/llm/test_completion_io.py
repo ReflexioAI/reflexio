@@ -8,14 +8,15 @@ import pytest
 
 from reflexio.server.llm.completion_io import completion_io_scope
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.test_support.llm_mock import inline_test_completion
 
 
 @pytest.fixture
 def physical_completion(monkeypatch):
-    from reflexio.server.llm import _litellm_text_generation as generation
+    from reflexio.server.llm import _model_compat as generation
 
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o", timeout=10))
-    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: False)
+    monkeypatch.setattr(client, "_run_completion", inline_test_completion)
     dispatch = Mock(return_value=object())
     monkeypatch.setattr(generation, "model_completion", dispatch)
     return client, dispatch

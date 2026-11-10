@@ -13,6 +13,7 @@ import pytest
 from reflexio.server.llm import _litellm_subprocess as worker_module
 from reflexio.server.llm import _litellm_text_generation as generation
 from reflexio.server.llm import _provider_concurrency as admission
+from reflexio.server.llm._litellm_text_generation import _run_isolated_completion
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.providers import claude_code_provider
 
@@ -57,7 +58,7 @@ def test_native_cli_is_parent_owned_and_reaped_after_worker_expiry(
     monkeypatch.setattr(generation.multiprocessing, "get_context", lambda: context)
     monkeypatch.setattr(generation, "_litellm_completion_worker", _synthetic_worker)
     client = LiteLLMClient(LiteLLMConfig(model="openai/gpt-4o"))
-    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
+    monkeypatch.setattr(client, "_run_completion", _run_isolated_completion)
     semaphore = threading.BoundedSemaphore(1)
     released = threading.Event()
     original_release = semaphore.release
@@ -151,7 +152,7 @@ def _broker_client(monkeypatch, method):
     monkeypatch.setattr(generation.multiprocessing, "get_context", lambda: context)
     monkeypatch.setattr(generation, "_litellm_completion_worker", _broker_worker)
     client = LiteLLMClient(LiteLLMConfig(model="openai/gpt-4o"))
-    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
+    monkeypatch.setattr(client, "_run_completion", _run_isolated_completion)
     return client
 
 
@@ -726,7 +727,7 @@ def test_native_owner_preserves_programmatic_sdk_state_and_local_schema(monkeypa
 
     monkeypatch.setattr(worker_module, "model_completion", completion)
     client = LiteLLMClient(LiteLLMConfig(model="openai/gpt-4o"))
-    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
+    monkeypatch.setattr(client, "_run_completion", _run_isolated_completion)
     result = client._completion_with_hard_timeout(
         {"model": "programmatic/example", "response_format": LocalSchema}, 25
     )
@@ -770,7 +771,7 @@ def test_cancellation_marker_failure_still_retires_live_sdk_worker(monkeypatch):
 
     monkeypatch.setattr(Path, "touch", fail_marker)
     client = LiteLLMClient(LiteLLMConfig(model="openai/gpt-4o"))
-    monkeypatch.setattr(client, "_should_process_isolate_completion", lambda *_: True)
+    monkeypatch.setattr(client, "_run_completion", _run_isolated_completion)
     owners = set(native._live_owners)
     try:
         with pytest.raises(Exception, match="hard timeout|timed out"):
