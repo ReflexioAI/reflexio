@@ -211,6 +211,8 @@ class _HttpScope:
     handler_finished: float | None = None
     handler_ms: int | None = None
     wait_for_response: bool = False
+    body_received: float | None = None
+    body_bytes: int = 0
     phases: dict[str, int] = field(default_factory=dict)
 
 
@@ -590,6 +592,17 @@ class PublishHttpTimingMiddleware:
         status = 0
         response_complete = False
 
+        async def timed_receive() -> Message:
+            # Passes every message through unchanged; only notes when the app
+            # has the whole body, which splits `before_handler_ms` into upload
+            # and parse/validation/dependencies.
+            message = await receive()
+            if message["type"] == "http.request" and timing.body_received is None:
+                timing.body_bytes += len(message.get("body", b""))
+                if not message.get("more_body", False):
+                    timing.body_received = time.perf_counter()
+            return message
+
         async def timed_send(message: Message) -> None:
             nonlocal status, response_complete
             if message["type"] == "http.response.start":
@@ -602,7 +615,7 @@ class PublishHttpTimingMiddleware:
                 _emit_http(timing, status=status, response_complete=True)
 
         try:
-            await self.app(scope, receive, timed_send)
+            await self.app(scope, timed_receive, timed_send)
         finally:
             if not response_complete:
                 _emit_http(timing, status=status, response_complete=False)
@@ -637,6 +650,16 @@ def _emit_http(scope: _HttpScope, *, status: int, response_complete: bool) -> No
         fields["before_handler_ms"] = int(
             (scope.handler_started - scope.started) * 1000
         )
+    if scope.body_received is not None:
+        # From HTTP entry until the app holds the complete body: mostly the
+        # client's upload. What remains of `before_handler_ms` after it is
+        # JSON parsing, request validation and dependencies.
+        fields["body_received_ms"] = int((scope.body_received - scope.started) * 1000)
+        fields["body_bytes"] = scope.body_bytes
+        if scope.handler_started is not None:
+            fields["body_to_handler_ms"] = int(
+                (scope.handler_started - scope.body_received) * 1000
+            )
     if (
         handler_completed
         and handler_finished is not None

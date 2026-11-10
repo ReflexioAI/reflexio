@@ -251,6 +251,7 @@ def test_learning_stall_path_calls_post_publish_helper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     storage = MagicMock(name="storage")
+    storage.get_request.return_value = None
     storage.add_request_if_absent.return_value = True
     storage.get_stall_state.return_value = SimpleNamespace(
         stalled=True,

@@ -392,9 +392,9 @@ class GenerationService:
             )
 
             # An external receipt is replayed before any embedding work. An
-            # ordinary publish takes no preflight read: the unique request key
-            # in the admission transaction arbitrates, and a taken id is
-            # replayed or refused after that rollback (below).
+            # ordinary publish is checked just before embedding preparation
+            # (below); the unique request key in the admission transaction
+            # still arbitrates a concurrent duplicate after rollback.
             if admission_participant is not None:
                 replay = self._replay_existing_request(
                     admission_participant,
@@ -455,16 +455,15 @@ class GenerationService:
             # locked FIRST and its sequence allocation commits with every input.
             check_admission_deadline()
             publish_timing.record("n_interactions", len(new_interactions))
-            with publish_timing.phase("embeddings"):
-                replay = self._prepare_or_replay_publish(
-                    storage,
-                    admission_participant,
-                    new_request,
-                    new_interactions,
-                    agent_version_stated=agent_version_stated,
-                )
-                if replay is not None:
-                    return replay
+            replay = self._prepare_or_replay_publish(
+                storage,
+                admission_participant,
+                new_request,
+                new_interactions,
+                agent_version_stated=agent_version_stated,
+            )
+            if replay is not None:
+                return replay
             check_admission_deadline()
             from reflexio.server.services.storage.error import PostCommitStorageError
 
@@ -611,16 +610,35 @@ class GenerationService:
         *,
         agent_version_stated: bool,
     ) -> GenerationServiceResult | None:
-        """Prepare new vectors, or recover a committed replay while unready."""
+        """Answer a committed retry, or prepare new vectors for admission.
+
+        A client that missed the acknowledgement resends the same request_id.
+        One indexed read answers that retry before embedding preparation and
+        an admission transaction that would only roll back. A miss leaves no
+        state behind; the unique request key still decides a concurrent
+        duplicate. An external participant already replayed its receipt.
+        """
         from reflexio.server.services.storage.error import ReadinessUnavailableError
 
+        if participant is None:
+            with publish_timing.phase("replay_check"):
+                committed = storage.get_request(new_request.request_id) is not None
+            if committed:
+                replay = self._replay_existing_request(
+                    None,
+                    new_request,
+                    new_interactions,
+                    agent_version_stated=agent_version_stated,
+                )
+                if replay is not None:
+                    return replay
         try:
-            storage.prepare_interaction_embeddings(new_interactions)
+            with publish_timing.phase("embeddings"):
+                storage.prepare_interaction_embeddings(new_interactions)
         except ReadinessUnavailableError:
-            # Ordinary retries discover committed duplicates after preparation.
-            # During a readiness refusal, use the same fenced replay check:
-            # committed work needs no new vector admission. Successful first
-            # attempts still pay no extra replay read.
+            # A duplicate may have committed since the check above. During a
+            # readiness refusal, use the same fenced replay check: committed
+            # work needs no new vector admission.
             replay = self._replay_existing_request(
                 participant,
                 new_request,
@@ -781,6 +799,10 @@ class GenerationService:
         request and its interactions must equal this publish exactly
         (``_is_same_publish``); a match returns the original identifiers with
         ``replayed=True``. Anything else raises PublishRequestIdConflictError.
+
+        ``replay_ms`` covers the whole answer, including writer-scope entry
+        and commit; ``replay_read_ms`` and ``replay_compare_ms`` split the
+        work inside it, so the remainder is scope overhead.
         """
         request_id, user_id = new_request.request_id, new_request.user_id
         storage = self.storage
@@ -792,32 +814,37 @@ class GenerationService:
 
         # Read through the writer scope, but create/lock a work row only for a
         # replay; ordinary misses must leave no state behind before admission.
-        with storage.commit_scope():
-            existing = storage.get_request(request_id)
-            if existing is None:
-                return None
-            if participant is not None:
-                storage.lock_extraction_stream(user_id)
-                check_admission_deadline()
-                receipt = participant.claim(request_id, user_id)
-                if receipt is None:
-                    raise PublishRequestIdConflictError(request_id)
-                return GenerationServiceResult(
-                    request_id=receipt.request_id,
-                    interaction_ids=list(receipt.interaction_ids),
-                    replayed=True,
+        with publish_timing.phase("replay"):
+            with storage.commit_scope():
+                with publish_timing.phase("replay_read"):
+                    existing = storage.get_request(request_id)
+                if existing is None:
+                    return None
+                if participant is not None:
+                    storage.lock_extraction_stream(user_id)
+                    check_admission_deadline()
+                    receipt = participant.claim(request_id, user_id)
+                    if receipt is None:
+                        raise PublishRequestIdConflictError(request_id)
+                    return GenerationServiceResult(
+                        request_id=receipt.request_id,
+                        interaction_ids=list(receipt.interaction_ids),
+                        replayed=True,
+                    )
+                with publish_timing.phase("replay_read"):
+                    stored = sorted(
+                        storage.get_interactions_by_request_ids([request_id]),
+                        key=lambda interaction: interaction.interaction_id,
+                    )
+            with publish_timing.phase("replay_compare"):
+                same = _is_same_publish(
+                    existing,
+                    stored,
+                    new_request,
+                    new_interactions,
+                    agent_version_stated=agent_version_stated,
                 )
-            stored = sorted(
-                storage.get_interactions_by_request_ids([request_id]),
-                key=lambda interaction: interaction.interaction_id,
-            )
-        if not _is_same_publish(
-            existing,
-            stored,
-            new_request,
-            new_interactions,
-            agent_version_stated=agent_version_stated,
-        ):
+        if not same:
             raise PublishRequestIdConflictError(request_id)
         return GenerationServiceResult(
             request_id=existing.request_id,

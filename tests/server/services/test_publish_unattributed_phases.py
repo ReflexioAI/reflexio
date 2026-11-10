@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import tempfile
 import time
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -102,34 +102,42 @@ def test_the_coverage_reads_are_attributed_to_their_own_phase() -> None:
     )
 
 
-def test_publish_checks_duplicates_only_in_the_atomic_insert() -> None:
-    """No preflight read; the measured insertion arbitrates duplicate IDs."""
+def test_publish_checks_for_a_committed_retry_once_before_preparation() -> None:
+    """One existence read per publish; a committed retry skips admission."""
     with tempfile.TemporaryDirectory() as temp_dir:
         reflexio = _reflexio(temp_dir)
         storage = reflexio._get_storage()
         assert storage is not None
+        storage_cls = type(storage)
+        reads = Mock(wraps=storage.get_request)
         with (
-            patch.object(
-                type(storage),
-                "get_request",
-                side_effect=AssertionError("duplicate read"),
-            ),
+            patch.object(storage, "get_request", reads),
             publish_timing.collect(),
         ):
             response = reflexio.publish_interaction(
                 _publish_request(), defer_learning=True
             )
             snap = publish_timing.snapshot()
-        duplicate = reflexio.publish_interaction(
-            _publish_request(), defer_learning=True
-        )
+        assert reads.call_count == 1
+        with (
+            patch.object(
+                storage_cls,
+                "add_request_if_absent",
+                side_effect=AssertionError("retry reached admission"),
+            ),
+            publish_timing.collect(),
+        ):
+            duplicate = reflexio.publish_interaction(
+                _publish_request(), defer_learning=True
+            )
+            retry_snap = publish_timing.snapshot()
     assert response.success, response.message
-    # The identical retry is answered after the insert's arbitration.
     assert duplicate.success and duplicate.replayed
     assert duplicate.request_id == response.request_id
-    assert snap is not None
-    assert "add_request_ms" in snap
-    assert "dup_check_ms" not in snap
+    assert snap is not None and retry_snap is not None
+    assert "replay_check_ms" in snap and "add_request_ms" in snap
+    assert "replay_ms" not in snap and "dup_check_ms" not in snap
+    assert "replay_ms" in retry_snap and "embeddings_ms" not in retry_snap
 
 
 def test_the_new_phases_all_appear_on_an_ordinary_publish() -> None:
