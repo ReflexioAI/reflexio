@@ -46,7 +46,10 @@ from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook.components.reviewer import (
     PlaybookCandidateReviewer,
 )
-from reflexio.test_support.llm_credentials import real_generation_provider
+from reflexio.test_support.llm_credentials import (
+    UNQUALIFIED_SELECTION_NOTE,
+    real_generation_provider,
+)
 from reflexio.test_support.llm_mock import assert_litellm_unpatched
 from tests.server.test_utils import skip_low_priority
 
@@ -71,7 +74,7 @@ pytestmark = [
         not real_generation_provider(_REVIEWER_CAPABLE),
         reason=(
             "no real key for a reviewer-capable provider "
-            "(openai/anthropic/minimax) is set"
+            "(openai/anthropic/minimax) is set" + UNQUALIFIED_SELECTION_NOTE
         ),
     ),
 ]

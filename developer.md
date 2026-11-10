@@ -430,24 +430,31 @@ are supplied only for the explicitly qualified IDs, without fabricated pricing
 or persistent overrides of subsequently downloaded metadata.
 
 MiniMax `minimax/MiniMax-M3.1-Flash-Preview` and Z.ai `zai/glm-5.3`,
-`zai/glm-5.3-flash`, and `zai/glm-5.3-flashx` are also qualified. Their tests
+`zai/glm-5.3-flash`, and `zai/glm-5.3-flashx` are also supported. Their tests
 cover prompt-schema output, explicit reasoning-effort forwarding, rejection of
 disabled thinking, and real subprocess tool exchanges against a local HTTP
 server. These providers retain sampling settings and existing defaults.
 FlashX routes to the general API and requires a corresponding key; the other
 GLM models retain the existing coding-plan endpoint.
 
-Live subscription smoke tests are opt-in, capped at 4096 output tokens per call
-and two tool-loop steps, with no fallback ladder. Load `MINIMAX_API_KEY` and
-`ZAI_API_KEY` into the process before running:
+Z.ai models, including the `zai/glm-5.2` default, are supported through these
+offline adapter tests but are not live-qualified: Reflexio holds no Z.ai
+subscription, so no test calls the Z.ai API. Users who supply their own
+`ZAI_API_KEY` remain supported. A live test whose model comes from
+`resolve_model_name` skips when that resolution would select Z.ai
+(`NOT_LIVE_QUALIFIED_PROVIDERS` in `reflexio/test_support/llm_credentials.py`).
+
+Live MiniMax subscription smoke tests are opt-in, capped at 4096 output tokens
+per call and two tool-loop steps, with no fallback ladder. Load
+`MINIMAX_API_KEY` into the process before running:
 
 ```bash
 RUN_LOW_PRIORITY=1 uv run pytest tests/e2e_tests/test_latest_secondary_providers_real_llm.py -q -o addopts= -rs
 ```
 
-This file checks MiniMax M3/M3.1 Preview and GLM 5.2/5.3/5.3 Flash text, JSON,
-and tool calls with `assert_litellm_unpatched()` and actual process isolation.
-The tests intentionally consume provider quota; normal offline suites skip them.
+This file checks MiniMax M3 and M3.1 Preview text, JSON, and tool calls with
+`assert_litellm_unpatched()` and actual process isolation. The tests
+intentionally consume provider quota; normal offline suites skip them.
 
 ## Modifying API Schemas
 
