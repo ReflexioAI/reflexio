@@ -1,4 +1,5 @@
-from collections.abc import Callable
+import json
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from hashlib import sha256
 from itertools import combinations
@@ -259,6 +260,61 @@ def test_canonical_trajectory_bytes_ignores_mapping_insertion_order() -> None:
     second = {"session": "s1", "messages": [{"role": "user", "content": "hello"}]}
 
     assert canonical_trajectory_bytes(first) == canonical_trajectory_bytes(second)
+
+
+def test_trajectory_string_reuse_preserves_scalar_types_and_unicode() -> None:
+    assert (
+        canonical_trajectory_bytes(
+            ["1", "1", True, 1, 1.0, -0.0, 0.0, "é", "e\u0301", "é"]
+        )
+        == '["1","1",true,1,1.0,-0.0,0.0,"é","e\u0301","é"]'.encode()
+    )
+
+
+def test_trajectory_string_cache_is_bounded_and_excludes_large_or_custom_strings() -> (
+    None
+):
+    class CustomString(str):
+        pass
+
+    large = "é" * 129
+    payload = [large, CustomString("custom"), *(str(i) for i in range(700))]
+    strings: dict[str, str] = {}
+    encoded = session_outcome_identity._canonical_trajectory_json(
+        payload, strings=strings
+    ).encode()
+
+    assert (
+        encoded
+        == json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+    )
+    assert strings and len(strings) <= 256
+    assert all(type(key) is str and len(key) <= 128 for key in strings)
+    assert large not in strings and "custom" not in strings
+
+
+def test_repeated_custom_strings_still_run_their_validation() -> None:
+    class ChangingString(str):
+        calls = 0
+
+        def __iter__(self) -> Iterator[str]:
+            self.calls += 1
+            return iter("\ud800") if self.calls == 2 else super().__iter__()
+
+    value = ChangingString("repeated")
+    with pytest.raises(ValueError, match="RFC 8785 strings cannot contain surrogate"):
+        canonical_trajectory_bytes([value, value])
+
+
+@pytest.mark.parametrize("invalid", ["\ud800", "x" * 128 + "\udfff"])
+def test_trajectory_validation_continues_after_the_string_cache_is_full(
+    invalid: str,
+) -> None:
+    with pytest.raises(
+        ValueError, match="RFC 8785 strings cannot contain surrogate"
+    ) as error:
+        canonical_trajectory_bytes([*(str(i) for i in range(700)), invalid])
+    assert type(error.value) is ValueError
 
 
 @pytest.mark.parametrize(
