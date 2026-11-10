@@ -12,6 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from reflexio import defaults
 from reflexio.lib.reflexio_lib import Reflexio
 from reflexio.models.api_schema.service_schemas import (
     InteractionData,
@@ -250,17 +251,17 @@ def test_retry_omitting_agent_version_replays_after_default_changes(
 ):
     """An omitted agent_version is the server's choice, not the caller's.
 
-    The server resolves it from its configuration, which a restart can change
-    between the attempt and its retry. The retry is still the same publish.
+    A software release may change the omitted-label sentinel between an attempt
+    and its retry. Persisted request attribution must still win on replay.
     """
     svc = _service(tmp_path, worker_id)
     store = svc.storage
     assert isinstance(store, SQLiteStorage)
-    monkeypatch.setenv("REFLEXIO_AGENT_VERSION", "before-restart")
+    monkeypatch.setattr(defaults, "DEFAULT_AGENT_VERSION", "before-restart")
     first = svc.run(_request(), defer_learning=True)
     rows = _counts(store)
 
-    monkeypatch.setenv("REFLEXIO_AGENT_VERSION", "after-restart")
+    monkeypatch.setattr(defaults, "DEFAULT_AGENT_VERSION", "after-restart")
     replay = svc.run(_request(), defer_learning=True)
 
     assert replay.replayed
@@ -397,3 +398,31 @@ def test_large_exact_retry_skips_embeddings_and_admission(
         svc.run(_large_tools_request(marker="OUT"), defer_learning=True)
     prepare.assert_not_called()
     insert.assert_not_called()
+
+
+def test_shared_process_preserves_each_callers_agent_identity(tmp_path, worker_id):
+    svc = _service(tmp_path, worker_id)
+    store = svc.storage
+    assert isinstance(store, SQLiteStorage)
+    for version in ("agent-one", "agent-two"):
+        request = _request().model_copy(
+            update={"request_id": version, "agent_version": version}
+        )
+        result = svc.run(request, defer_learning=True)
+        assert not result.replayed
+        assert store.get_request(version).agent_version == version
+    assert _counts(store)[0] == 2
+
+
+def test_retired_host_identity_refuses_before_persistence(
+    tmp_path, worker_id, monkeypatch
+):
+    svc = _service(tmp_path, worker_id)
+    store = svc.storage
+    assert isinstance(store, SQLiteStorage)
+    before = _counts(store)
+    monkeypatch.setenv("REFLEXIO_AGENT_VERSION", "private-server-agent")
+    with pytest.raises(ValueError, match="REFLEXIO_AGENT_VERSION") as error:
+        svc.run(_request(), defer_learning=True)
+    assert "private-server-agent" not in str(error.value)
+    assert _counts(store) == before

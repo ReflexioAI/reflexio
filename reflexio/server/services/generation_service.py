@@ -330,7 +330,7 @@ class GenerationService:
             return result
 
         publish_start = time.perf_counter()
-        # Resolve agent_version: explicit > env var > default. Resolved here
+        # Resolve caller attribution, or the historical omitted-label sentinel here
         # (before the try) so success and failure telemetry share the same value.
         agent_version = resolve_agent_version(
             publish_user_interaction_request.agent_version

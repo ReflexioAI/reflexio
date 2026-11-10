@@ -411,6 +411,15 @@ existing extractor stack; HTTP waiting does not own an extraction slot.
 
 Called by API endpoints via `Reflexio`
 
+Agent attribution belongs to the request, not the host process. The shared
+`reflexio.defaults.resolve_agent_version` keeps an explicit caller label or the
+historical `agent-v0` sentinel when publishing omits one. CLI filtering and
+regeneration still require explicit targets. `REFLEXIO_AGENT_VERSION` is retired
+and rejected, including blank assignments; use the existing `agent_version`
+request/SDK-call field or CLI `--agent-version` and remove the assignment.
+Committed requests retain their original identity on replay even after a
+software default changes; explicit conflicting retry labels remain conflicts.
+
 **Profile Timeout Troubleshooting**:
 
 - Inspect `services/profile/components/extractor.py` and `llm/litellm_client.py` for generation and provider timeout handling.
