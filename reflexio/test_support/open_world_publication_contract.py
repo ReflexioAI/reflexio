@@ -627,15 +627,20 @@ class OpenWorldPublicationContract:
             == lineage
         )
 
+    @pytest.mark.parametrize(
+        ("owner", "fence_step"),
+        [("worker-b", 0), (None, 1), ("worker-b", 1)],
+        ids=["owner", "fence", "owner-and-fence"],
+    )
     def test_a_retry_under_another_claim_is_refused(
-        self, port_harness: PublicationHarness
+        self, port_harness: PublicationHarness, owner: str | None, fence_step: int
     ) -> None:
         attempt = _accepted(port_harness)
         publish(attempt)
         other = OptimizationJobClaim(
             job_id=attempt.job_id,
-            owner="worker-b",
-            fence=attempt.claim.fence + 1,
+            owner=owner or attempt.claim.owner,
+            fence=attempt.claim.fence + fence_step,
             expires_at=attempt.claim.expires_at,
         )
 
