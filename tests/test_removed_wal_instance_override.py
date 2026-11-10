@@ -28,3 +28,25 @@ def test_raw_file_refuses_wal_instance_override_before_export(
     assert "existing resolved WAL leaf" in str(error.value)
     assert "REFLEXIO_INSTANCE_ID" not in os.environ
     assert "WAL_UPGRADE_MARKER" not in os.environ
+
+
+@pytest.mark.parametrize("mode", ["platform", "self_host"])
+def test_mode_refusal_precedes_home_exports_and_blank_pruning(
+    monkeypatch, tmp_path, mode
+):
+    monkeypatch.chdir(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(env_loader, "_USER_ENV_DIR", home)
+    monkeypatch.setattr(env_loader, "_loaded_env_path", None)
+    monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
+    monkeypatch.delenv("REFLEXIO_INSTANCE_ID", raising=False)
+    monkeypatch.delenv("WAL_HOME_MARKER", raising=False)
+    monkeypatch.setenv("WAL_EXISTING_BLANK", "")
+    (home / f".env.{mode}").write_text("WAL_HOME_MARKER=new\nWAL_EXISTING_BLANK=\n")
+    (tmp_path / f".env.{mode}").write_text("REFLEXIO_INSTANCE_ID=\n")
+    before = dict(os.environ)
+    with pytest.raises(ValueError, match="REFLEXIO_INSTANCE_ID"):
+        env_loader.load_existing_reflexio_env_for_mode(cli_mode=mode)
+    assert dict(os.environ) == before
+    assert env_loader._loaded_env_path is None
