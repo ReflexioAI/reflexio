@@ -13,6 +13,7 @@ from ._lineage import SQLiteLineageMixin
 from ._open_world import SQLiteOpenWorldMixin
 from ._open_world_attempt import SQLiteOpenWorldAttemptMixin
 from ._open_world_evidence import SQLiteOpenWorldEvidenceMixin
+from ._open_world_publication import SQLiteOpenWorldPublicationMixin
 from ._operations import OperationMixin
 from ._requests import RequestMixin
 from ._session_outcomes import SessionOutcomeStoreMixin
@@ -66,6 +67,7 @@ class SQLiteStorage(
     SQLiteOpenWorldMixin,
     SQLiteOpenWorldEvidenceMixin,
     SQLiteOpenWorldAttemptMixin,
+    SQLiteOpenWorldPublicationMixin,
     OperationMixin,
     ExtrasMixin,
     SQLiteStallStateMixin,

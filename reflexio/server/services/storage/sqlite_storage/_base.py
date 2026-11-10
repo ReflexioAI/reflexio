@@ -119,6 +119,69 @@ _TERMINAL_OUTCOME_CHECK = (
     + ", ".join(_TERMINAL_OUTCOME_LITERALS)
     + "))"
 )
+#: The columns an open-world provisional publication adds to its staging row.
+#: NULL on a GEPA row. No CHECK couples them to ``optimizer_kind``: an upgraded
+#: database gains them by ``ALTER TABLE ADD COLUMN``, which cannot add one, and
+#: the single provisional writer validates them before it writes.
+PROVISIONAL_STAGING_COLUMNS: dict[str, str] = {
+    "incumbent_full_version_fingerprint": "TEXT",
+    "incumbent_snapshot_json": "TEXT",
+    "evidence_bundle_digest": "TEXT",
+    "candidate_digest": "TEXT",
+    "qualification_authority_epoch": "INTEGER",
+    "qualification_authority_digest": "TEXT",
+    "discovery_component_identity_digest": "TEXT",
+    "discovery_qualification_suite_digest": "TEXT",
+    "discovery_qualification_result_digest": "TEXT",
+    "held_out_component_identity_digest": "TEXT",
+    "held_out_qualification_suite_digest": "TEXT",
+    "held_out_qualification_result_digest": "TEXT",
+    "candidate_generator_identity_digest": "TEXT",
+    "candidate_generator_authorization_digest": "TEXT",
+}
+
+#: The publication result row. GEPA writes ``applied`` or ``incumbent_changed``;
+#: an open-world provisional commit writes ``provisional`` with its lifecycle,
+#: observation deadline and the claim identity a lost-response retry is matched
+#: against. One spelling: the fresh schema and the upgrade rebuild both use it.
+PUBLICATION_RESULTS_DDL = """CREATE TABLE IF NOT EXISTS user_playbook_publication_results (
+    optimizer_kind TEXT NOT NULL,
+    job_id INTEGER NOT NULL,
+    outcome TEXT NOT NULL
+        CHECK (outcome IN ('applied', 'incumbent_changed', 'provisional')),
+    successor_user_playbook_id INTEGER,
+    staging_digest TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    deployment_lifecycle_id INTEGER,
+    observation_deadline INTEGER,
+    retry_attempt_key TEXT,
+    retry_claim_owner TEXT,
+    retry_worker_fence INTEGER,
+    retry_qualification_authority_epoch INTEGER,
+    retry_qualification_authority_digest TEXT,
+    retry_attempt_context_digest TEXT,
+    CHECK (
+        (optimizer_kind = 'offline_tuner_open_world' AND outcome = 'provisional'
+         AND successor_user_playbook_id IS NOT NULL
+         AND deployment_lifecycle_id IS NOT NULL
+         AND observation_deadline > 0
+         AND trim(retry_attempt_key) != '' AND trim(retry_claim_owner) != ''
+         AND retry_worker_fence > 0
+         AND retry_qualification_authority_epoch > 0
+         AND length(retry_qualification_authority_digest) = 64
+         AND length(retry_attempt_context_digest) = 64)
+        OR (outcome != 'provisional'
+         AND deployment_lifecycle_id IS NULL AND observation_deadline IS NULL
+         AND retry_attempt_key IS NULL AND retry_claim_owner IS NULL
+         AND retry_worker_fence IS NULL
+         AND retry_qualification_authority_epoch IS NULL
+         AND retry_qualification_authority_digest IS NULL
+         AND retry_attempt_context_digest IS NULL)
+    ),
+    PRIMARY KEY (optimizer_kind, job_id),
+    FOREIGN KEY (job_id) REFERENCES playbook_optimization_jobs(job_id)
+        ON DELETE CASCADE
+);"""
 _SQLITE_INITIALIZATION_LOCK_STRIPES = 64
 _sqlite_initialization_locks = tuple(
     threading.Lock() for _ in range(_SQLITE_INITIALIZATION_LOCK_STRIPES)
@@ -1405,6 +1468,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_playbook_diagnosis()
         self._migrate_playbook_optimization_candidate_metadata()
         self._migrate_user_playbook_publication_staging_columns()
+        self._migrate_user_playbook_publication_results_shape()
         self._classify_legacy_playbook_optimization_jobs()
         self._enforce_playbook_optimization_job_constraints()
         self._enforce_playbook_optimization_artifact_constraints()
@@ -2372,7 +2436,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self.conn.commit()
 
     def _migrate_user_playbook_publication_staging_columns(self) -> None:
-        """Add frozen incumbent CAS fields to legacy publication staging."""
+        """Add the frozen incumbent CAS and provisional fields to legacy staging."""
         existing_cols = {
             row["name"]
             for row in self.conn.execute(
@@ -2385,6 +2449,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "incumbent_content_digest": "TEXT",
             "incumbent_trigger": "TEXT",
             "incumbent_semantic_digest": "TEXT",
+            **PROVISIONAL_STAGING_COLUMNS,
         }
         for column, definition in columns.items():
             if column not in existing_cols:
@@ -2393,6 +2458,45 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     f"ADD COLUMN {column} {definition}"  # noqa: S608
                 )
         self.conn.commit()
+
+    def _migrate_user_playbook_publication_results_shape(self) -> None:
+        """Rebuild a result table created before provisional publication.
+
+        Its ``outcome`` CHECK admits only the GEPA outcomes and it lacks the
+        lifecycle and retry-identity columns. SQLite cannot widen a CHECK in
+        place, so the table is recreated from ``PUBLICATION_RESULTS_DDL`` and
+        every row copied; a GEPA row is valid under the new CHECK unchanged.
+        A no-op when the table is absent or already current.
+        """
+        with self._lock:
+            columns = [
+                row["name"]
+                for row in self.conn.execute(
+                    "PRAGMA table_info(user_playbook_publication_results)"
+                ).fetchall()
+            ]
+            if not columns or "deployment_lifecycle_id" in columns:
+                return
+            kept = ", ".join(columns)
+            self.conn.commit()
+            self.conn.execute("PRAGMA foreign_keys=OFF")
+            try:
+                with self.conn:
+                    self.conn.execute("BEGIN")
+                    self.conn.execute(
+                        "ALTER TABLE user_playbook_publication_results"
+                        " RENAME TO user_playbook_publication_results_previous"
+                    )
+                    self.conn.execute(PUBLICATION_RESULTS_DDL)
+                    self.conn.execute(
+                        f"INSERT INTO user_playbook_publication_results ({kept})"  # noqa: S608
+                        f" SELECT {kept} FROM user_playbook_publication_results_previous"
+                    )
+                    self.conn.execute(
+                        "DROP TABLE user_playbook_publication_results_previous"
+                    )
+            finally:
+                self.conn.execute("PRAGMA foreign_keys=ON")
 
     def _classify_legacy_playbook_optimization_jobs(self) -> None:
         """Classify legacy optimizer history without choosing ambiguous rule order."""
@@ -3641,7 +3745,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
 # DDL — table and FTS definitions
 # ---------------------------------------------------------------------------
 
-_DDL = """
+_DDL = (
+    """
 CREATE TABLE IF NOT EXISTS profiles (
     profile_id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -4086,22 +4191,13 @@ CREATE TABLE IF NOT EXISTS user_playbook_publication_staging (
     request_id TEXT NOT NULL,
     staging_digest TEXT NOT NULL,
     created_at INTEGER NOT NULL,
+    __PROVISIONAL_STAGING_COLUMNS__,
     PRIMARY KEY (optimizer_kind, job_id),
     FOREIGN KEY (job_id) REFERENCES playbook_optimization_jobs(job_id)
         ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS user_playbook_publication_results (
-    optimizer_kind TEXT NOT NULL,
-    job_id INTEGER NOT NULL,
-    outcome TEXT NOT NULL CHECK (outcome IN ('applied', 'incumbent_changed')),
-    successor_user_playbook_id INTEGER,
-    staging_digest TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    PRIMARY KEY (optimizer_kind, job_id),
-    FOREIGN KEY (job_id) REFERENCES playbook_optimization_jobs(job_id)
-        ON DELETE CASCADE
-);
+__PUBLICATION_RESULTS_DDL__
 
 CREATE TABLE IF NOT EXISTS _operation_state (
     service_name TEXT PRIMARY KEY,
@@ -4432,3 +4528,12 @@ CREATE TABLE IF NOT EXISTS lineage_event (
 );
 CREATE INDEX IF NOT EXISTS idx_lineage_entity ON lineage_event (entity_type, entity_id);
 """.replace("__TERMINAL_OUTCOME_CHECK__", _TERMINAL_OUTCOME_CHECK)
+    .replace(
+        "__PROVISIONAL_STAGING_COLUMNS__",
+        ",\n    ".join(
+            f"{name} {definition}"
+            for name, definition in PROVISIONAL_STAGING_COLUMNS.items()
+        ),
+    )
+    .replace("__PUBLICATION_RESULTS_DDL__", PUBLICATION_RESULTS_DDL)
+)

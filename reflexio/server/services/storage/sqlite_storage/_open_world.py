@@ -67,6 +67,7 @@ from reflexio.server.services.search_exposure import (
 from reflexio.server.services.storage.error import StorageError
 
 from ._base import SQLiteStorageBase
+from ._open_world_publication import migrate_open_world_publication
 
 _SECONDS_PER_DAY = 86_400
 
@@ -324,6 +325,7 @@ def migrate_open_world(conn: sqlite3.Connection) -> None:
         conn.executescript("BEGIN;\n" + _EXPOSURE_DDL + "\nCOMMIT;")
     with conn:
         conn.executescript("BEGIN;\n" + _ATTEMPT_DDL + "\nCOMMIT;")
+    migrate_open_world_publication(conn)
 
 
 def _rebuild_exposure_ledger_without_integrity(conn: sqlite3.Connection) -> None:

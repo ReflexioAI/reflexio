@@ -17,6 +17,7 @@ import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
@@ -28,6 +29,7 @@ from reflexio.models.api_schema.service_schemas import DeleteUserInteractionRequ
 from reflexio.server.services.offline_tuner.exposure_receipts import (
     receipt_project_id,
 )
+from reflexio.server.services.playbook.publication import canonical_json_bytes
 from reflexio.server.services.search_exposure import UserPlaybookExposureEvent
 from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.sqlite_storage import (
@@ -49,6 +51,10 @@ from reflexio.test_support.open_world_port_contract import (
     OpenWorldPortContract,
     ProgressRow,
 )
+from reflexio.test_support.open_world_publication_contract import (
+    LifecycleRow,
+    PublicationRows,
+)
 
 #: A synthetic midday instant, far from either day boundary.
 _PINNED_NOW = int(datetime(2026, 6, 15, 12, 0, tzinfo=UTC).timestamp())
@@ -61,6 +67,7 @@ class _SQLitePortHarness:
         self._storage = storage
         self.clock_value: float = _PINNED_NOW
         storage._sweep_progress_clock = lambda: self.clock_value  # noqa: SLF001
+        storage._publication_clock = lambda: self.clock_value  # noqa: SLF001
 
     @property
     def storage(self) -> SQLiteStorage:
@@ -281,6 +288,99 @@ class _SQLitePortHarness:
             "UPDATE playbook_optimization_artifacts SET content_digest = ?"
             " WHERE job_id = ? AND artifact_kind = ?",
             (content_digest, job_id, artifact_kind),
+        )
+
+    # -- the publication half of the harness
+
+    def publication_rows(self, job_id: int) -> PublicationRows:
+        def count(sql: str) -> int:
+            (value,) = self._conn.execute(sql, (job_id,)).fetchone()
+            return int(value)
+
+        return PublicationRows(
+            claims=count(
+                "SELECT count(*) FROM user_playbook_publication_claims WHERE job_id = ?"
+            ),
+            consumed_claims=count(
+                "SELECT count(*) FROM user_playbook_publication_claims"
+                " WHERE job_id = ? AND consumed = 1"
+            ),
+            staging=count(
+                "SELECT count(*) FROM user_playbook_publication_staging"
+                " WHERE job_id = ?"
+            ),
+            results=count(
+                "SELECT count(*) FROM user_playbook_publication_results"
+                " WHERE job_id = ?"
+            ),
+            lifecycles=count(
+                "SELECT count(*) FROM user_playbook_deployment_lifecycles"
+                " WHERE job_id = ?"
+            ),
+            publication_events=count(
+                "SELECT count(*) FROM playbook_optimization_events"
+                " WHERE job_id = ? AND event_type = 'provisional_publication'"
+            ),
+        )
+
+    def lifecycle(self, job_id: int) -> LifecycleRow | None:
+        row = self._conn.execute(
+            "SELECT state, predecessor_id, successor_id, published_at,"
+            " observation_deadline, terminal_reason, terminal_at,"
+            " aggregation_obligation FROM user_playbook_deployment_lifecycles"
+            " WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        return None if row is None else LifecycleRow(*tuple(row))
+
+    def lineage_ops(self, request_id: str) -> list[tuple[str, str]]:
+        rows = self._conn.execute(
+            "SELECT entity_id, op FROM lineage_event WHERE request_id = ?",
+            (request_id,),
+        ).fetchall()
+        return sorted((str(row[0]), str(row[1])) for row in rows)
+
+    def playbook_ids(self, user_id: str) -> list[int]:
+        rows = self._conn.execute(
+            "SELECT user_playbook_id FROM user_playbooks WHERE user_id = ?"
+            " ORDER BY user_playbook_id",
+            (user_id,),
+        ).fetchall()
+        return [int(row[0]) for row in rows]
+
+    def drift_playbook(self, user_playbook_id: int, *, column: str) -> None:
+        assert column in {"content", "rationale"}
+        self._write(
+            f"UPDATE user_playbooks SET {column} = COALESCE({column}, '')"  # noqa: S608
+            " || ' (edited)' WHERE user_playbook_id = ?",
+            (user_playbook_id,),
+        )
+
+    @contextmanager
+    def fail_result_writes(self) -> Iterator[None]:
+        self._conn.execute(
+            "CREATE TEMP TRIGGER contract_refuse_result"
+            " BEFORE INSERT ON user_playbook_publication_results"
+            " BEGIN SELECT RAISE(ABORT, 'publication result write refused'); END"
+        )
+        try:
+            yield
+        finally:
+            self._conn.execute("DROP TRIGGER IF EXISTS temp.contract_refuse_result")
+
+    def rewrite_attempt_context(self, job_id: int) -> None:
+        (context_json,) = self._conn.execute(
+            "SELECT context_json FROM offline_tuner_open_world_attempt_context"
+            " WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        rewritten = canonical_json_bytes(
+            {**json.loads(context_json), "contract_probe": True}
+        ).decode()
+        self._write(
+            "UPDATE offline_tuner_open_world_attempt_context"
+            " SET context_json = ?, context_digest = ? WHERE job_id = ?",
+            (rewritten, sha256(rewritten.encode()).hexdigest(), job_id),
         )
 
     def age_progress(self, user_playbook_id: int, *, seconds: int) -> None:
@@ -807,3 +907,112 @@ def test_the_outcome_arms_are_the_attempt_vocabulary() -> None:
     )
     assert outcomes >= OPEN_WORLD_FAILED_TERMINAL_OUTCOMES
     assert outcomes >= OPEN_WORLD_ABSTAINED_TERMINAL_OUTCOMES
+
+
+#: ``user_playbook_publication_results`` as the release before provisional
+#: publication created it: GEPA outcomes only, no lifecycle or retry columns.
+_RESULTS_BEFORE_PROVISIONAL = """
+CREATE TABLE user_playbook_publication_results (
+    optimizer_kind TEXT NOT NULL,
+    job_id INTEGER NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('applied', 'incumbent_changed')),
+    successor_user_playbook_id INTEGER,
+    staging_digest TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (optimizer_kind, job_id),
+    FOREIGN KEY (job_id) REFERENCES playbook_optimization_jobs(job_id)
+        ON DELETE CASCADE
+)
+"""
+
+
+def _as_release_before_provisional(conn: sqlite3.Connection, job_id: int) -> None:
+    """Put the publication schema back as the release before P7 left it.
+
+    No lifecycle table, staging without the provisional columns, and a result
+    table whose CHECK admits only GEPA outcomes, holding one GEPA row.
+    """
+    from reflexio.server.services.storage.sqlite_storage._base import (
+        PROVISIONAL_STAGING_COLUMNS,
+    )
+
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("DROP TABLE user_playbook_deployment_lifecycles")
+    for column in PROVISIONAL_STAGING_COLUMNS:
+        conn.execute(
+            f"ALTER TABLE user_playbook_publication_staging DROP COLUMN {column}"
+        )
+    conn.execute("DROP TABLE user_playbook_publication_results")
+    conn.execute(_RESULTS_BEFORE_PROVISIONAL)
+    conn.execute(
+        "INSERT INTO user_playbook_publication_results VALUES"
+        " ('gepa', ?, 'applied', 99, ?, 1)",
+        (job_id, "c" * 64),
+    )
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> list[tuple[object, ...]]:
+    return [tuple(row)[1:] for row in conn.execute(f"PRAGMA table_info('{table}')")]
+
+
+def test_migrate_brings_the_release_before_provisional_publication_forward(
+    port_harness: _SQLitePortHarness,
+    tmp_path: Path,
+) -> None:
+    """The lifecycle table appears, staging and results gain their columns,
+    the result CHECK admits ``provisional``, a GEPA row survives, and the
+    upgraded schema is the fresh one: an attempt then publishes."""
+    from reflexio.test_support.open_world_attempt_contract import _accepted
+    from reflexio.test_support.open_world_publication_contract import publish
+
+    storage = port_harness.storage
+    conn = storage.conn
+    attempt = _accepted(port_harness)
+    _as_release_before_provisional(conn, attempt.job_id)
+    assert (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'user_playbook_deployment_lifecycles'"
+        ).fetchone()
+        is None
+    )
+
+    storage.migrate()
+    storage.migrate()
+
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        fresh = SQLiteStorage(org_id="contract_test", db_path=str(tmp_path / "f.db"))
+    try:
+        for table in (
+            "user_playbook_publication_staging",
+            "user_playbook_publication_results",
+            "user_playbook_deployment_lifecycles",
+        ):
+            assert _columns(conn, table) == _columns(fresh.conn, table), table
+        assert (
+            conn.execute(
+                "SELECT sql FROM sqlite_master"
+                " WHERE name = 'user_playbook_publication_results'"
+            ).fetchone()[0]
+            == fresh.conn.execute(
+                "SELECT sql FROM sqlite_master"
+                " WHERE name = 'user_playbook_publication_results'"
+            ).fetchone()[0]
+        )
+    finally:
+        fresh.conn.close()
+    assert [
+        tuple(row)
+        for row in conn.execute(
+            "SELECT optimizer_kind, outcome, successor_user_playbook_id"
+            " FROM user_playbook_publication_results WHERE job_id = ?",
+            (attempt.job_id,),
+        )
+    ] == [("gepa", "applied", 99)]
+
+    result = publish(attempt)
+
+    assert result.outcome == "provisional"
+    assert port_harness.publication_rows(attempt.job_id).lifecycles == 1
