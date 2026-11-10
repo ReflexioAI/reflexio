@@ -72,6 +72,7 @@ from reflexio.server.auth import (
     default_get_org_id,
 )
 from reflexio.server.cache import reflexio_cache
+from reflexio.server.offloop_body import off_loop_body
 from reflexio.server.rate_limit import limiter
 from reflexio.server.routes._common import _run_limited_api
 from reflexio.server.services.operation_state_utils import OperationStateManager
@@ -155,8 +156,8 @@ def review_user_playbooks_endpoint(
 @limiter.limit("60/minute")  # Rate limit for write operations
 def add_user_playbook_endpoint(
     request: Request,
-    payload: AddUserPlaybookRequest,
     org_id: str = Depends(default_get_org_id),
+    payload: AddUserPlaybookRequest = off_loop_body(AddUserPlaybookRequest),
 ) -> AddUserPlaybookResponse:
     """Add user playbook directly to storage.
 
@@ -179,8 +180,8 @@ def add_user_playbook_endpoint(
 @limiter.limit("60/minute")  # Rate limit for write operations
 def add_agent_playbook_endpoint(
     request: Request,
-    payload: AddAgentPlaybookRequest,
     org_id: str = Depends(default_get_org_id),
+    payload: AddAgentPlaybookRequest = off_loop_body(AddAgentPlaybookRequest),
 ) -> AddAgentPlaybookResponse:
     """Add agent playbook directly to storage.
 
