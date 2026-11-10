@@ -778,6 +778,26 @@ the scheduler emits it on pre-claim failures and when skipping existing backoff.
 The provider should retain the scope until that remaining delay expires.
 
 
+### Profile search selection
+
+Multilingual E5 unified search uses Profile Fusion V2 for user-scoped hybrid
+requests with the default five-result limit (including null, which resolves to
+five), no explicit threshold, and no relevance-floor or temporal-reordering
+intervention. A full native five performs one profile-only FTS retrieval, using
+unique non-stop query words of length at least three joined by OR, in source
+order up to 2,000 characters. From a secondary pool larger than five, the first
+two identities outside the native top three precede that protected native prefix.
+Sparse nonempty results instead append unseen identities from one relaxed hybrid
+retrieval. Empty results and unqualified caller/model policies retain their
+existing behavior. No extra query embedding or selection model is created.
+
+`retrieval.profile_selection` owns this policy; unified search keeps retrieval,
+recency, time/scope filters, session exclusions and accepted-response recording.
+Secondary retrieval uses the original storage/executor and request deadline.
+Failure or expiry refuses the search before served-state recording. Existing
+agent and user playbook selection remain independent. The selected method is
+one production path, without an experiment flag or a second engine.
+
 ### Search request deadlines
 
 The HTTP search work budget is `REFLEXIO_SEARCH_TIMEOUT_SECONDS` for unified

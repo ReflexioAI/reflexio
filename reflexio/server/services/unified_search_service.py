@@ -42,12 +42,14 @@ from reflexio.models.config_schema import (
     SearchOptions,
 )
 from reflexio.server import search_runtime
+from reflexio.server.llm.embedding_policy import is_multilingual_e5_model
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.rerank.common import reranker_enabled
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.embedding_text import resolve_retrieval_threshold
 from reflexio.server.services.pre_retrieval import QueryReformulator
 from reflexio.server.services.retrieval.agent_selection import select_agent_playbooks
+from reflexio.server.services.retrieval.profile_selection import select_profiles
 from reflexio.server.services.retrieval.recency import (
     RecencyConfig,
     ScoredItem,
@@ -402,6 +404,38 @@ def run_unified_search(
         response = response.model_copy(update={"user_playbooks": selected_users})
         selection_span.set_data("input_count", len(native_users))
         selection_span.set_data("returned_count", len(selected_users))
+    # The qualified source/threshold contract is multilingual E5. Other model
+    # policies retain their existing profile behavior.
+    if response.profiles is not None and is_multilingual_e5_model(
+        storage.embedding_model_name
+    ):
+        with profile_step("search.profile_selection") as selection_span:
+            native_profiles = response.profiles
+            selected_profiles = select_profiles(
+                items=native_profiles,
+                request=request,
+                query=reformulated_query,
+                effective_mode=effective_search_mode,
+                query_embedding=embedding,
+                degraded=response.degraded,
+                floor_on=floor_on,
+                temporal_reorder=temporal_reorder,
+                retrieve=lambda **kwargs: _retrieve_profile_selection(
+                    **kwargs,
+                    request=request,
+                    org_id=org_id,
+                    storage=storage,
+                    embedding=embedding,
+                    seen_keys=seen_keys,
+                    recency_on=recency_on,
+                    recency=recency,
+                    start_time=window_start,
+                    end_time=window_end,
+                ),
+            )
+            response = response.model_copy(update={"profiles": selected_profiles})
+            selection_span.set_data("input_count", len(native_profiles))
+            selection_span.set_data("returned_count", len(selected_profiles))
     # Post-processing may perform a remote lookup. Expired results were never
     # served and must remain available to a retry in the same session.
     search_runtime.checkpoint()
@@ -412,6 +446,51 @@ def run_unified_search(
             lambda: session_seen_cache.record(org_id, session_id, keys),
         )
     return response
+
+
+def _retrieve_profile_selection(
+    *,
+    query: str,
+    top_k: int,
+    search_mode: SearchMode,
+    request: UnifiedSearchRequest,
+    org_id: str,
+    storage: BaseStorage,
+    embedding: list[float] | None,
+    seen_keys: frozenset[EntityKey],
+    recency_on: bool,
+    recency: RecencyConfig | None,
+    start_time: datetime | None,
+    end_time: datetime | None,
+) -> list[UserProfile]:
+    """Keep secondary profile retrieval inside the original native owners."""
+    fetch_k = max(top_k, recency.pool_size if recency_on and recency is not None else 0)
+    if seen_keys:
+        fetch_k += min(len(seen_keys), _SESSION_DEDUP_FETCH_BUMP_CAP)
+    search_runtime.checkpoint()
+    profiles, _, _ = _run_phase_b(
+        request=request.model_copy(update={"entity_types": ["profiles"]}),
+        org_id=org_id,
+        storage=storage,
+        embedding=embedding,
+        query=query,
+        top_k=fetch_k,
+        threshold=0.0,
+        recency_on=recency_on,
+        start_time=start_time,
+        end_time=end_time,
+        search_mode=search_mode,
+    )
+    search_runtime.checkpoint()
+    if profiles is None:
+        raise ReadinessUnavailableError("Secondary profile retrieval failed")
+    if seen_keys:
+        profiles = _drop_seen_items(profiles, "profile", seen_keys)
+    if recency_on and recency is not None:
+        return _apply_combined_score_recency(
+            profiles, entity_type="profiles", top_k=top_k, cfg=recency
+        )
+    return _unwrap_items(profiles)[:top_k]
 
 
 def _run_phase_a(
