@@ -97,6 +97,66 @@ def test_actual_mutation_workspace_collects_repository_script_tests(
     )
 
 
+def test_actual_mutation_workspace_collects_the_whole_selection(tmp_path, monkeypatch):
+    """Every module the engine selects must import inside the relocated copy.
+
+    The engine copies only ``also_copy`` (plus tests and lock files) into
+    ``mutants/``, so a test that reads another repository file at import time
+    fails the baseline there and the weekly run measures nothing. Collect the
+    engine's own selection, with its own options, in that layout. Reads made
+    only while a test runs are outside this check.
+    """
+    from mutmut.configuration import config, reset_config
+    from mutmut.utils.file_utils import copy_also_copy_files
+
+    root = Path(__file__).resolve().parents[2]
+    monkeypatch.chdir(root)
+    reset_config()
+    try:
+        settings = config()
+        for relative in sorted({*settings.also_copy, *settings.source_paths}):
+            source = root / relative
+            destination = tmp_path / relative
+            if not source.exists() or destination.exists():
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_dir():
+                shutil.copytree(source, destination)
+            else:
+                shutil.copy2(source, destination)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        copy_also_copy_files()
+        arguments = [
+            *settings.pytest_add_cli_args,
+            *settings.pytest_add_cli_args_test_selection,
+        ]
+    finally:
+        reset_config()
+    child_env = os.environ.copy()
+    for key in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTHONPATH", "MUTANT_UNDER_TEST"):
+        child_env.pop(key, None)
+    child = (
+        "import json, os, sys\nfrom pathlib import Path\n"
+        "original = Path(sys.argv[1]).resolve()\n"
+        "sys.path[:] = [p for p in sys.path if Path(p or os.getcwd()).resolve() != original]\n"
+        "from mutmut.utils.file_utils import setup_source_paths\n"
+        "setup_source_paths()\nos.chdir('mutants')\n"
+        "import pytest\n"
+        "raise SystemExit(pytest.main([*json.loads(sys.argv[2]), "
+        "'--collect-only', '-q', '-p', 'no:cacheprovider']))\n"
+    )
+    result = subprocess.run(  # noqa: S603 - fixed isolated pytest collection
+        [sys.executable, "-c", child, str(root), json.dumps(arguments)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env=child_env,
+    )
+    assert result.returncode == 0, (result.stdout + result.stderr)[-4000:]
+
+
 @pytest.mark.parametrize("cost", ["call", "fixtures"])
 @pytest.mark.parametrize("hash_seed", [0, 6])
 @pytest.mark.parametrize("malformed", [False, True], ids=["measured", "huge-int"])

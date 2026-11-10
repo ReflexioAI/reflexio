@@ -872,8 +872,11 @@ Results are in `mutants/mutmut-cicd-stats.json`. The old `--paths-to-mutate`
 option and `html` command are unsupported. The former feedback utility target
 was removed because that source module no longer exists. `also_copy` supplies
 the remaining package so selected mutated modules can import their dependencies,
-plus the skill bundles, method documentation and committed `.env.example`
-template used during test collection and CLI contract checks. Actual `.env`
+plus the skill bundles, method documentation, committed `.env.example`
+template and `.github/workflows/` (the upstream canary's contract test reads
+its workflow) used during test collection and CLI contract checks.
+`test_actual_mutation_workspace_collects_the_whole_selection` fails when a
+selected test module cannot import inside that relocated copy. Actual `.env`
 files and developer credentials are not copied into mutation workspaces.
 
 Mutation workers exit via `os._exit`. The mutation-only pytest hooks therefore
