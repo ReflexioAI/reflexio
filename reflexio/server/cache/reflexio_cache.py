@@ -27,7 +27,10 @@ logger = logging.getLogger(__name__)
 # pages) plus request-path headroom — at 100, scheduler sweeps on a
 # 100+-org fleet would continuously evict warm request-path entries.
 REFLEXIO_CACHE_MAX_SIZE = positive_int_env("REFLEXIO_CACHE_MAX_SIZE", 512, logger)
-REFLEXIO_CACHE_TTL_SECONDS = 3600  # 1 hour safety net
+# Instances also capture process/file-backed model and prompt defaults that do
+# not yet carry a shared revision. Retain their existing turnover bound; this
+# clock never certifies a failed or unsupported organization revision.
+REFLEXIO_CACHE_TTL_SECONDS = 3600
 
 # Type alias for cache key: (org_id, storage_base_dir)
 CacheKey = tuple[str, str | None]
@@ -59,10 +62,9 @@ class _CacheEntry:
         reflexio (Reflexio): The cached Reflexio instance.
         cached_version (tuple[str, Any] | None): The version stamp
             captured at load time. ``None`` means "no probe available";
-            entries with ``None`` are never auto-evicted (they fall
-            through to the TTL safety net). Probe failures during
-            construction prevent the instance from being cached, so a later
-            successful construction can restore version-based eviction.
+            only a proven revision is shared across requests. Unsupported or
+            failed construction-time probes keep the instance uncached, so
+            subsequent requests load current policy again.
     """
 
     reflexio: Reflexio
@@ -114,10 +116,9 @@ def _construction_guard(cache_key: CacheKey) -> Iterator[None]:
 def _probe_version_safe(reflexio: Reflexio) -> _ProbeResult:
     """Probe the current config version, distinguishing failure from "no probe".
 
-    A failing probe must never break a cache hit, but it also must not
-    be conflated with a backend that legitimately can't probe (which
-    returns ``None``). Conflating the two would let a single transient
-    failure permanently disable auto-eviction for the entry.
+    A failure or unsupported probe cannot certify a warm entry as fresh.
+    Both cause a fresh load; the distinct failure sentinel retains accurate
+    diagnostics and keeps failed construction-time probes out of the cache.
 
     Args:
         reflexio (Reflexio): The cached Reflexio instance to probe.
@@ -135,7 +136,7 @@ def _probe_version_safe(reflexio: Reflexio) -> _ProbeResult:
         )
     except Exception as exc:  # noqa: BLE001 - intentional broad catch
         logger.warning(
-            "Failed to probe config version for org %s: %s — keeping entry warm",
+            "Failed to probe config version for org %s: %s — refreshing before reuse",
             reflexio.org_id,
             exc,
         )
@@ -161,9 +162,9 @@ def prefetch_config_version(org_id: str) -> Future[Any] | None:
 
 
 def _entry_is_fresh(entry: _CacheEntry) -> bool:
-    """Probe a cached entry, retaining its stamp across transient failures."""
+    """Reuse an entry only when its captured revision is still proven current."""
     if entry.cached_version is None:
-        return True
+        return False
     with profile_step("reflexio.cache.version_probe", cache_state="hit") as span:
         current_version = _probe_version_safe(entry.reflexio)
         span.set_data("probe_failed", current_version is _PROBE_FAILED)
@@ -171,7 +172,7 @@ def _entry_is_fresh(entry: _CacheEntry) -> bool:
             "probe_supported",
             current_version is not None and current_version is not _PROBE_FAILED,
         )
-    return current_version is _PROBE_FAILED or current_version == entry.cached_version
+    return current_version == entry.cached_version
 
 
 def get_reflexio(org_id: str, storage_base_dir: str | None = None) -> Reflexio:
@@ -249,18 +250,15 @@ def get_reflexio(org_id: str, storage_base_dir: str | None = None) -> Reflexio:
                 new_version is not None and new_version is not _PROBE_FAILED,
             )
 
-        # Construction-time probe failure: serve this request from the
-        # newly-built instance but DON'T cache it. Caching with
-        # ``cached_version=None`` would conflate the entry with a
-        # legitimately-unprobeable backend and permanently disable
-        # auto-eviction. Skipping the cache means the next request pays a
-        # construction cost, but version-based eviction is preserved as
-        # soon as the backend recovers.
-        if new_version is _PROBE_FAILED:
-            logger.warning(
-                "Constructed uncached Reflexio instance for org %s because config version probe failed",
-                org_id,
-            )
+        # A revision that cannot be established never authorizes cross-request
+        # reuse. Returning the newly loaded instance still supports adapters
+        # without revision probes; a later request loads their policy again.
+        if new_version is None or new_version is _PROBE_FAILED:
+            if new_version is _PROBE_FAILED:
+                logger.warning(
+                    "Constructed uncached Reflexio instance for org %s because config version probe failed",
+                    org_id,
+                )
             return reflexio
 
         new_entry = _CacheEntry(
@@ -338,7 +336,7 @@ def get_cache_stats() -> dict:
     """Get cache statistics for monitoring.
 
     Returns:
-        dict: Cache statistics including current size, max size, and TTL
+        dict: Current size, capacity, and the independent instance turnover bound.
     """
     with _reflexio_cache_lock:
         return {

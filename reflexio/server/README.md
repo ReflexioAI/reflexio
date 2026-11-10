@@ -102,7 +102,7 @@ Compose the shared HTTP API, resolve request dependencies, and coordinate durabl
 
 | File | Purpose |
 |------|---------|
-| `reflexio_cache.py` | TTL-cached Reflexio instances (1 hour TTL, max 100 orgs) |
+| `reflexio_cache.py` | Revision-validated instances with retained 1-hour turnover and configurable capacity (default512); [freshness contract](cache/README.md) |
 
 **Key Functions**:
 
@@ -116,6 +116,10 @@ existing deadline and stop waiting on disconnect. The
 `reflexio.cache.construction_wait` timing phase distinguishes that wait from
 construction performed by the request itself. Non-search callers and cache
 invalidation retain their existing construction fencing.
+
+Failed hit probes trigger a fresh load; unsupported revisions remain uncached.
+A failed refresh propagates rather than serving old policy. The independent
+turnover bound is not a substitute for proving configuration freshness.
 
 **Pattern**: **ALWAYS use `get_reflexio()`** instead of `Reflexio()` directly in API endpoints
 
