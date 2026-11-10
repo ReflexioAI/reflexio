@@ -176,6 +176,16 @@ def _env_search_paths() -> list[Path]:
     ]
 
 
+def _dotenv_disabled() -> bool:
+    return os.environ.get("PYTHON_DOTENV_DISABLED", "").casefold() in {
+        "1",
+        "true",
+        "t",
+        "yes",
+        "y",
+    }
+
+
 def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> None:
     """Load a .env file, treating blank assignments (``KEY=``) as unset.
 
@@ -199,13 +209,7 @@ def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> Non
     reject_removed_env(os.environ)
     # Preserve python-dotenv's existing opt-out: disabled files cannot supply
     # configuration, so neither validate nor prune their unrelated assignments.
-    if os.environ.get("PYTHON_DOTENV_DISABLED", "").casefold() in {
-        "1",
-        "true",
-        "t",
-        "yes",
-        "y",
-    }:
+    if _dotenv_disabled():
         return
     # Resolve the original source, including references to derived names, but
     # never publish those outputs even transiently during an override reload.
@@ -377,6 +381,13 @@ def _load_existing_mode_paths(mode: str) -> Path | None:
     # Optional gitignored home secrets, loaded first so committed presets and
     # process env both still win where they define the same keys.
     home_secrets = _USER_ENV_DIR / f".env.{mode}"
+    # Check every selected source before home values can be exported or blank
+    # process values pruned. Names do not require interpolation; publishing below
+    # still resolves references in the existing home-then-project order.
+    if not _dotenv_disabled():
+        for source in (home_secrets, Path(f".env.{mode}")):
+            if source.exists():
+                reject_removed_env(DotEnv(source, interpolate=False).dict())
     if home_secrets.exists():
         _load_dotenv_pruned(home_secrets, override=False)
 
