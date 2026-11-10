@@ -198,6 +198,19 @@ spent. Truncation by a reasoning model is often transient, so a request that
 finishes within those dispatches proceeds normally. A re-armed window is held again unless the request changed (model, output
 cap or input).
 
+The fingerprint includes the request's thinking mode when it sets one, so the
+client's thinking-disabled resend of a reasoning-exhausted reply is a separate
+request with its own count. When a reply is classified `reasoning_exhausted`,
+the checkpoint records that request (`reasoning_exhausted_requests`) before the
+resend is dispatched. Any later dispatch of it -- including the next turn after
+the turn budget suspended this one before the resend -- goes out thinking-off
+from the start, on routes that can disable thinking
+(`reasoning_exhausted_retry_extra_body`). A request already truncated to the cap
+before that record existed is treated the same way, so re-arming such a window
+sends its thinking-off form instead of holding it again. A turn suspended by its
+budget logs `event=extraction_turn_suspended` at WARNING with the request
+fingerprint.
+
 ### Resume discovery
 
 

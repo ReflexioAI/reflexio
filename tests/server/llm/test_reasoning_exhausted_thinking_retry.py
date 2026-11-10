@@ -19,6 +19,7 @@ from reflexio.server.llm._model_compat import (
 )
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
+    LiteLLMClientError,
     LiteLLMConfig,
     StructuredOutputRepairError,
 )
@@ -72,9 +73,13 @@ def _run(
     model: str,
     responses: list[tuple[str, str] | tuple[str, str, int]],
     caplog: pytest.LogCaptureFixture,
+    validator: Any = _validator,
     **kwargs: Any,
 ) -> tuple[list[dict[str, Any]], Any]:
-    """Serve ``responses`` in order; return the sent params and the result/error."""
+    """Serve ``responses`` in order; return the sent params and the result/error.
+
+    ``validator=None`` serves the plain (no-validator) rung.
+    """
     calls: list[dict[str, Any]] = []
 
     def fake_completion(**params: Any) -> MagicMock:
@@ -91,12 +96,16 @@ def _run(
             outcome: Any = client.generate_chat_response_with_provenance(
                 [{"role": "user", "content": "extract"}],
                 response_format=Answer,
-                structured_output_validator=_validator,
                 max_tokens=8192,
                 fallback_models=[],
+                **(
+                    {"structured_output_validator": validator}
+                    if validator is not None
+                    else {}
+                ),
                 **kwargs,
             )
-        except StructuredOutputRepairError as exc:
+        except LiteLLMClientError as exc:
             outcome = exc
     return calls, outcome
 
@@ -271,3 +280,48 @@ def test_pinned_profile_contract_admits_only_the_derived_resend():
     assert not _is_thinking_disabled_retry(
         LiteLLMClient, flash, _contract({**flash, "extra_body": DISABLED})
     )
+
+
+@pytest.mark.parametrize(
+    "first", [EXHAUSTED, CUT_AFTER_REASONING], ids=["blank", "cut"]
+)
+def test_plain_path_resends_without_thinking(caplog, first):
+    """The no-validator rung's one retry is the thinking-disabled resend.
+
+    It used to re-issue the request byte-identically, thinking on, at the
+    same cap -- the reply that had just reasoned the whole budget away.
+    """
+    calls, result = _run(M3, [first, (VALID, "stop")], caplog, validator=None)
+
+    assert len(calls) == 2
+    assert calls[0].get("extra_body") is None
+    assert calls[1]["extra_body"] == DISABLED
+    assert calls[1]["messages"] == calls[0]["messages"]
+    assert result.value == Answer(answer="ok", score=42)
+    assert result.thinking_disabled is True
+    assert not _events(caplog, "llm_parse_retry")
+    (line,) = _events(caplog, "llm_reasoning_exhausted_retry")
+    assert "thinking=disabled outcome=succeeded" in line
+
+
+def test_plain_path_failed_resend_makes_no_further_call(caplog):
+    calls, result = _run(M3, [EXHAUSTED, ("not json", "stop")], caplog, validator=None)
+
+    assert len(calls) == 2
+    assert calls[1]["extra_body"] == DISABLED
+    assert isinstance(result, LiteLLMClientError)
+    (line,) = _events(caplog, "llm_reasoning_exhausted_retry")
+    assert "thinking=disabled outcome=parse" in line
+
+
+def test_plain_path_keeps_identical_reissue_where_thinking_stays_on(caplog):
+    calls, result = _run(
+        MINIMAX_PREVIEW_MODEL, [EXHAUSTED, (VALID, "stop")], caplog, validator=None
+    )
+
+    assert len(calls) == 2
+    assert all(call.get("extra_body") is None for call in calls)
+    assert result.thinking_disabled is False
+    (line,) = _events(caplog, "llm_parse_retry")
+    assert "failure_kind=reasoning_exhausted" in line
+    assert not _events(caplog, "llm_reasoning_exhausted_retry")
