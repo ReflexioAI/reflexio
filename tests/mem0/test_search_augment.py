@@ -202,3 +202,19 @@ def test_get_all_is_not_augmented(wrapped_cls, reflexio_mock):
     assert result is client.get_all_result
     assert "reflexio" not in result
     reflexio_mock.search.assert_not_called()
+
+
+@pytest.mark.parametrize("value", ["", "private-ambient-agent"])
+def test_identity_preparation_failure_keeps_mem0_search_and_error_envelope(
+    wrapped_cls, reflexio_mock, monkeypatch, caplog, value
+):
+    client = _client(wrapped_cls, reflexio_mock)
+    monkeypatch.setenv("REFLEXIO_AGENT_VERSION", value)
+    result = client.search("hello", filters={"user_id": "u1"}, include_reflexio=True)
+    assert result["results"] is client.search_result["results"]
+    assert result["reflexio"]["status"] == "error"
+    assert result["reflexio"]["reason"] == "request_failed"
+    assert "reflexio" not in client.search_result
+    reflexio_mock.search.assert_not_called()
+    assert "Best-effort Reflexio search failed" in caplog.text
+    assert "private-ambient-agent" not in caplog.text
