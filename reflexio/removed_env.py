@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "REFLEXIO_LEARNING_ALARM_SUPPRESS_SECONDS": "",
     "POOLED_CREDITS_ENABLED": "BILLING_ENFORCEMENT_MODE",
     "TRANSFORMERS_OFFLINE": "HF_HUB_OFFLINE",
     "REFLEXIO_FERNET_KEYS": "FERNET_KEYS",
@@ -62,10 +63,16 @@ def reject_removed_env(
         source_cap = "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOK_SOURCE_USER_PLAYBOOKS"
         migration = "; ".join(
             f"{name} (remove assignment)"
-            if name == source_cap
+            if name == source_cap or not aliases[name]
             else f"{name} -> {aliases[name]}"
             for name in obsolete
         )
+        if "REFLEXIO_LEARNING_ALARM_SUPPRESS_SECONDS" in obsolete:
+            migration += (
+                "; discovery notifications now follow failure episodes and current health. "
+                "Remove the suppression assignment; do not copy its duration. "
+                "The queue-age alert threshold remains independent"
+            )
         if "POOLED_CREDITS_ENABLED" in obsolete:
             migration += (
                 "; remove the obsolete pooling assignment; do not copy its boolean value. "

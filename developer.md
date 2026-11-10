@@ -1807,3 +1807,13 @@ without replacing the join timeout with another constant or introducing a lock
 inversion. Heartbeat-start failure also retains its prior lease-expiry recovery.
 These inherited lifecycle limits are tracked in the admission decision ledger;
 neither is counted as repaired by this step.
+
+### Discovery notification upgrade
+
+`REFLEXIO_LEARNING_ALARM_SUPPRESS_SECONDS` is retired. Remove explicit assignments,
+including blanks, before upgrading; do not copy the duration to another setting.
+Discovery now notifies once per observed failure episode, retries an unacknowledged
+notification, and publishes current blocking health on observation opportunities.
+Unknown reads do not prove recovery. `REFLEXIO_LEARNING_QUEUE_AGE_ALARM_SECONDS`
+continues to select the independent backlog-age threshold. The shared raw dotenv
+loader rejects obsolete assignments before exporting any file values.
