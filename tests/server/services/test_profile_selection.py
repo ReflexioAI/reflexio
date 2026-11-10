@@ -14,6 +14,8 @@ from reflexio.server.services.retrieval.profile_selection import (
 )
 from reflexio.server.services.storage.error import ReadinessUnavailableError
 
+pytestmark = pytest.mark.unit
+
 
 def profile(key):
     return UserProfile(

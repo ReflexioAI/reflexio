@@ -480,6 +480,7 @@ def _retrieve_profile_selection(
         start_time=start_time,
         end_time=end_time,
         search_mode=search_mode,
+        record_request_diagnostics=False,
     )
     search_runtime.checkpoint()
     if profiles is None:
@@ -605,6 +606,7 @@ def _run_phase_b(
     start_time: datetime | None = None,
     end_time: datetime | None = None,
     search_mode: SearchMode = SearchMode.HYBRID,
+    record_request_diagnostics: bool = True,
 ) -> tuple[
     list[Any] | None,
     list[Any] | None,
@@ -624,6 +626,8 @@ def _run_phase_b(
             (from reformulation temporal signals); forces the per-arm fan-out
             path since the combined single RPC has no time parameters.
         end_time (Optional[datetime]): Query-derived time-window upper bound.
+        record_request_diagnostics: False for a selector lookup; physical spans
+            and counters still record that lookup without replacing primary shape.
         search_mode (SearchMode): The EFFECTIVE search mode for this fan-out —
             equal to ``request.search_mode`` normally, but forced to FTS by the
             caller when embedding generation failed (degrade-to-FTS). Threaded
@@ -646,23 +650,24 @@ def _run_phase_b(
             and become the all-three case.
     """
     scope = search_runtime.current()
-    if scope is not None:
+    if record_request_diagnostics and scope is not None:
         with scope.lock:
             scope.search_mode = search_mode.value
     options = SearchOptions(query_embedding=embedding, search_mode=search_mode)
 
     entity_types = set(request.entity_types or _DEFAULT_ENTITY_TYPES)
-    search_runtime.record_retrieval_shape(
-        query=query,
-        entity_types=entity_types,
-        top_k=top_k,
-        has_user_filter=bool(request.user_id),
-        has_agent_filter=bool(request.agent_version or request.playbook_name),
-        has_tags_filter=bool(request.tags),
-        has_source_filter=bool(request.source),
-        has_time_window=start_time is not None or end_time is not None,
-        recency_on=recency_on,
-    )
+    if record_request_diagnostics:
+        search_runtime.record_retrieval_shape(
+            query=query,
+            entity_types=entity_types,
+            top_k=top_k,
+            has_user_filter=bool(request.user_id),
+            has_agent_filter=bool(request.agent_version or request.playbook_name),
+            has_tags_filter=bool(request.tags),
+            has_source_filter=bool(request.source),
+            has_time_window=start_time is not None or end_time is not None,
+            recency_on=recency_on,
+        )
     allowed_agent_statuses = request.agent_playbook_status_filter
     try:
         with profile_step(
@@ -706,11 +711,12 @@ def _run_phase_b(
                 )
                 if combined is not None:
                     profiles, agent_playbooks, user_playbooks = combined
-                    search_runtime.record_retrieval_results(
-                        profiles=len(profiles),
-                        agent_playbooks=len(agent_playbooks),
-                        user_playbooks=len(user_playbooks),
-                    )
+                    if record_request_diagnostics:
+                        search_runtime.record_retrieval_results(
+                            profiles=len(profiles),
+                            agent_playbooks=len(agent_playbooks),
+                            user_playbooks=len(user_playbooks),
+                        )
                     set_span_data(
                         span,
                         {
@@ -802,11 +808,12 @@ def _run_phase_b(
                 if user_playbooks_future
                 else []
             )
-            search_runtime.record_retrieval_results(
-                profiles=len(profiles) if profiles is not None else None,
-                agent_playbooks=len(agent_playbooks),
-                user_playbooks=len(user_playbooks),
-            )
+            if record_request_diagnostics:
+                search_runtime.record_retrieval_results(
+                    profiles=len(profiles) if profiles is not None else None,
+                    agent_playbooks=len(agent_playbooks),
+                    user_playbooks=len(user_playbooks),
+                )
             set_span_data(
                 span,
                 {

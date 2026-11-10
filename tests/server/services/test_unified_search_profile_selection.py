@@ -21,6 +21,8 @@ from reflexio.server.services.storage.error import ReadinessUnavailableError
 from reflexio.server.services.storage.storage_base import BaseStorage
 from tests.server.services.test_profile_selection import profile
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def native(monkeypatch):
