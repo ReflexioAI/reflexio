@@ -24,6 +24,8 @@ __all__ = [
 ]
 
 MAX_CANONICAL_TRAJECTORY_JSON_DEPTH = 100
+_MAX_CACHED_TRAJECTORY_STRINGS = 256
+_MAX_CACHED_TRAJECTORY_STRING_LENGTH = 128
 OUTCOME_SCHEMA_VERSION = 1
 OUTCOME_FINALIZATION_RULE = "first_write"
 OUTCOME_ALLOWED_VALUES = ("success", "failure", "unknown")
@@ -206,7 +208,22 @@ def outcome_contract_digest(
     return sha256(canonical_json_bytes(payload)).hexdigest()
 
 
-def _canonical_trajectory_json(value: object, *, depth: int = 0) -> str:
+def _trajectory_scalar_json(value: object, strings: dict[str, str]) -> str:
+    """Reuse short, ordinary strings only within the current serialization."""
+    if type(value) is not str or len(value) > _MAX_CACHED_TRAJECTORY_STRING_LENGTH:
+        return canonical_json_bytes(value).decode()
+    encoded = strings.get(value)
+    if encoded is not None:
+        return encoded
+    encoded = canonical_json_bytes(value).decode()
+    if len(strings) < _MAX_CACHED_TRAJECTORY_STRINGS:
+        strings[value] = encoded
+    return encoded
+
+
+def _canonical_trajectory_json(
+    value: object, *, strings: dict[str, str], depth: int = 0
+) -> str:
     """Encode trajectory JSON deterministically within a bounded nesting depth."""
     if (
         isinstance(value, tuple | list | Mapping)
@@ -219,7 +236,8 @@ def _canonical_trajectory_json(value: object, *, depth: int = 0) -> str:
         return (
             "["
             + ",".join(
-                _canonical_trajectory_json(item, depth=depth + 1) for item in value
+                _canonical_trajectory_json(item, strings=strings, depth=depth + 1)
+                for item in value
             )
             + "]"
         )
@@ -230,22 +248,22 @@ def _canonical_trajectory_json(value: object, *, depth: int = 0) -> str:
         return (
             "{"
             + ",".join(
-                f"{canonical_json_bytes(key).decode()}:"
-                f"{_canonical_trajectory_json(value[key], depth=depth + 1)}"
+                f"{_trajectory_scalar_json(key, strings)}:"
+                f"{_canonical_trajectory_json(value[key], strings=strings, depth=depth + 1)}"
                 for key in keys
             )
             + "}"
         )
-    return canonical_json_bytes(value).decode()
+    return _trajectory_scalar_json(value, strings)
 
 
 def canonical_trajectory_bytes(trajectory: object) -> bytes:
     """Encode a finalized session trajectory to its canonical UTF-8 bytes."""
-    return _canonical_trajectory_json(trajectory).encode("utf-8")
+    return _canonical_trajectory_json(trajectory, strings={}).encode("utf-8")
 
 
 def _canonical_trajectory_bytes_at_depth(value: object, *, depth: int) -> bytes:
-    return _canonical_trajectory_json(value, depth=depth).encode("utf-8")
+    return _canonical_trajectory_json(value, strings={}, depth=depth).encode("utf-8")
 
 
 class CanonicalTrajectoryDigestAccumulator:

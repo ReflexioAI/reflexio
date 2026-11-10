@@ -1203,6 +1203,12 @@ before public timestamps are converted to whole seconds. The internal
 `OutcomePrefixPrecondition.verdict_settled_at` accepts fractional epoch seconds;
 public outcome timestamps keep their existing integer representation.
 
+Canonical trajectory encoding reuses successful encodings of short built-in
+strings within one serialization: at most 256 entries of at most 128 code points.
+Each materialized or streaming encoding call owns a fresh cache. Large strings
+and string subclasses retain the existing uncached path; canonical bytes,
+digests, UTF-16 key ordering, validation and depth limits remain unchanged.
+
 
 ### Inference endpoint and process ownership
 

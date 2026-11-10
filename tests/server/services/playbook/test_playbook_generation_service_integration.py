@@ -44,7 +44,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
 from reflexio.server.services.playbook.service import (
     PlaybookGenerationService,
 )
-from tests.server.test_utils import skip_in_precommit, skip_low_priority
+from tests.server.test_utils import skip_in_precommit
 
 
 def create_request_interaction_data_model(
@@ -362,7 +362,6 @@ def test_playbook_generation_with_storage(
 
 
 @skip_in_precommit
-@skip_low_priority
 def test_playbook_generation_with_empty_interactions(
     playbook_generation_service, mock_request_context
 ):
@@ -388,7 +387,6 @@ def test_playbook_generation_with_empty_interactions(
 
 
 @skip_in_precommit
-@skip_low_priority
 def test_playbook_generation_with_no_playbook_config(
     playbook_generation_service, mock_request_context, test_interactions
 ):
@@ -427,7 +425,6 @@ def test_playbook_generation_with_no_playbook_config(
 
 
 @skip_in_precommit
-@skip_low_priority
 def test_playbook_generation_with_should_not_generate(
     playbook_generation_service,
     mock_request_context,
@@ -436,6 +433,11 @@ def test_playbook_generation_with_should_not_generate(
 ):
     """Test playbook generation when should_generate_playbook returns false."""
     _setup_mock_chat_completion(playbook_generation_service, should_generate=False)
+
+    # Exercise the automatic judge; manual runs deliberately bypass it.
+    root_config = mock_request_context.configurator.get_config.return_value
+    root_config.skip_should_run_check = False
+    root_config.stride_size = 1
 
     # Create request interaction data model
     request_interaction_data_model = create_request_interaction_data_model(
@@ -455,11 +457,14 @@ def test_playbook_generation_with_should_not_generate(
         request_id="test_request_1",
         agent_version="test_agent_1",
         user_id="test_user_123",
-        auto_run=False,  # Skip stride check for testing
+        auto_run=True,
     )
 
     # Run playbook generation
     playbook_generation_service.run(request)
+
+    playbook_generation_service.client.generate_chat_response.assert_called_once()
+    playbook_generation_service.client.generate_chat_response_with_provenance.assert_not_called()
 
     # Verify storage was not called
     mock_request_context.storage.save_user_playbooks.assert_not_called()
