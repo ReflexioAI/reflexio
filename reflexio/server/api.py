@@ -486,9 +486,6 @@ def create_app(  # noqa: C901
         durable_learning_scheduler = None
         aggregation_scheduler = None
         started_caps: list = []
-        lag_monitor = asyncio.create_task(
-            monitor_event_loop_lag(), name="event_loop_lag_monitor"
-        )
         if capabilities is None:
             from reflexio.server.usage_metrics import (
                 configure_usage_event_recorder,
@@ -496,6 +493,9 @@ def create_app(  # noqa: C901
             )
 
             configure_usage_event_recorder(exempt_usage_event_recorder)
+        lag_monitor = asyncio.create_task(
+            monitor_event_loop_lag(), name="event_loop_lag_monitor"
+        )
         try:
             if mounts_data_plane:
                 log_publish_hardware_capacity()
@@ -562,6 +562,10 @@ def create_app(  # noqa: C901
             start_search_metering_worker()
             yield
         finally:
+            # First, so no later shutdown failure can leave it running.
+            lag_monitor.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await lag_monitor
             # Drain search metering while enterprise tracing and usage recorders
             # are still installed. Capability shutdown clears both hooks.
             from reflexio.server.services.search_metering_worker import (
@@ -569,9 +573,6 @@ def create_app(  # noqa: C901
             )
 
             stop_search_metering_worker(timeout=5.0)
-            lag_monitor.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await lag_monitor
             if capabilities is None:
                 from reflexio.server.usage_metrics import (
                     configure_usage_event_recorder,
