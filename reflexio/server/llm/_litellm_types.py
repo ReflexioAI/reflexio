@@ -266,18 +266,32 @@ class StructuredOutputParseError(Exception):
 
     @property
     def failure_kind(self) -> Literal["reasoning_exhausted", "empty", "parse"]:
-        """Classify the failure for logging, never from content.
+        """Classify the failure from finish reason and token counts, never content.
 
-        ``reasoning_exhausted`` is a blank body cut off by the output limit
-        (a reasoning model spent its whole budget on hidden reasoning);
-        ``empty`` is any other blank body; ``parse`` is a body that was written
-        but did not parse or validate.
+        ``reasoning_exhausted`` is a body cut off by the output limit after
+        hidden reasoning spent the budget: either nothing was written, or
+        reasoning took most of the output tokens and the answer had barely
+        started (MiniMax-M3 in production: 7,913-8,183 of 8,192 tokens were
+        reasoning, ~540 characters of JSON). Disabling thinking frees that
+        budget; a same-cap repair turn does not. ``empty`` is any other blank
+        body; ``parse`` is a body that was written but did not parse or
+        validate, including an answer the limit cut off by its own length.
         """
-        if not self.empty_response:
-            return "parse"
-        if self.finish_reason == "length":
+        if self.finish_reason == "length" and (
+            self.empty_response or self._reasoning_spent_most_of_output()
+        ):
             return "reasoning_exhausted"
-        return "empty"
+        return "empty" if self.empty_response else "parse"
+
+    def _reasoning_spent_most_of_output(self) -> bool:
+        """Whether reasoning tokens are more than half of the completion."""
+        reasoning, completion = self.reasoning_tokens, self.completion_tokens
+        return (
+            reasoning is not None
+            and completion is not None
+            and completion > 0
+            and 2 * reasoning > completion
+        )
 
     def log_fields(self) -> str:
         """Render the content-free response diagnostics as ``key=value`` fields.

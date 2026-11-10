@@ -1,8 +1,9 @@
-"""A reasoning-exhausted empty answer is resent once with thinking disabled.
+"""A reasoning-exhausted answer is resent once with thinking disabled.
 
-MiniMax counts thinking tokens toward ``max_tokens``; an empty body cut off by
-the limit is resent ONCE with ``thinking: disabled`` instead of the same-cap
-repair turn, and only on routes that accept disabling thinking.
+MiniMax counts thinking tokens toward ``max_tokens``; a body cut off by the
+limit after reasoning spent the budget (blank, or a barely started answer) is
+resent ONCE with ``thinking: disabled`` instead of the same-cap repair turn,
+and only on routes that accept disabling thinking.
 """
 
 import logging
@@ -29,6 +30,9 @@ from reflexio.server.services.extraction.profile_package_preparation import (
 M3 = "minimax/MiniMax-M3"
 VALID = '{"answer": "ok", "score": 42}'
 EXHAUSTED = ("\n\n", "length")
+# The production shape that parked windows: reasoning took nearly the whole
+# 8,192-token budget and the JSON answer was cut off after a few characters.
+CUT_AFTER_REASONING = ('{"answer": "o', "length")
 DISABLED = {"thinking": {"type": "disabled"}}
 
 
@@ -42,7 +46,9 @@ def _validator(output: BaseModel) -> list[str]:
     return [] if output.score == 42 else [f"score must be 42, got {output.score}"]
 
 
-def _response(content: str, finish_reason: str) -> MagicMock:
+def _response(
+    content: str, finish_reason: str, reasoning_tokens: int = 8191
+) -> MagicMock:
     choice = MagicMock()
     choice.message.content = content
     choice.message.tool_calls = None
@@ -55,7 +61,7 @@ def _response(content: str, finish_reason: str) -> MagicMock:
     resp.model = "served-model"
     resp.stop_reason = None
     resp.usage = MagicMock(prompt_tokens=10, completion_tokens=8192, total_tokens=1)
-    resp.usage.completion_tokens_details = MagicMock(reasoning_tokens=8191)
+    resp.usage.completion_tokens_details = MagicMock(reasoning_tokens=reasoning_tokens)
     resp.usage.prompt_tokens_details = None
     resp.usage.cache_creation_input_tokens = None
     resp.usage.cache_read_input_tokens = None
@@ -64,7 +70,7 @@ def _response(content: str, finish_reason: str) -> MagicMock:
 
 def _run(
     model: str,
-    responses: list[tuple[str, str]],
+    responses: list[tuple[str, str] | tuple[str, str, int]],
     caplog: pytest.LogCaptureFixture,
     **kwargs: Any,
 ) -> tuple[list[dict[str, Any]], Any]:
@@ -73,7 +79,8 @@ def _run(
 
     def fake_completion(**params: Any) -> MagicMock:
         calls.append(params)
-        return _response(*responses[len(calls) - 1])
+        content, finish_reason, *reasoning_tokens = responses[len(calls) - 1]
+        return _response(content, finish_reason, *reasoning_tokens)
 
     client = LiteLLMClient(LiteLLMConfig(model=model, fallback_models=[]))
     with (
@@ -120,6 +127,43 @@ def test_exhausted_answer_is_resent_once_without_thinking(caplog):
         and "event=llm_reasoning_exhausted_retry " in r.getMessage()
         for r in caplog.records
     )
+
+
+def test_answer_cut_off_after_reasoning_is_resent_without_thinking(caplog):
+    """A partial answer behind a spent reasoning budget is not repaired at the cap.
+
+    Before the fix this was classified ``parse`` and sent to the same-cap
+    repair turn with thinking on, which truncated again; four such
+    dispatches of the same request parked the extraction window.
+    """
+    calls, result = _run(M3, [CUT_AFTER_REASONING, (VALID, "stop")], caplog)
+
+    assert len(calls) == 2
+    assert calls[0].get("extra_body") is None
+    assert calls[1]["extra_body"] == DISABLED
+    assert calls[1]["messages"] == calls[0]["messages"]
+    assert result.value == Answer(answer="ok", score=42)
+    assert result.thinking_disabled is True
+    assert not _events(caplog, "llm_structured_repair_attempted")
+    (line,) = _events(caplog, "llm_reasoning_exhausted_retry")
+    assert "thinking=disabled outcome=succeeded" in line
+
+
+@pytest.mark.parametrize("reasoning_tokens", [0, 4096], ids=["none", "half"])
+def test_answer_cut_off_by_its_own_length_still_repairs(caplog, reasoning_tokens):
+    """Disabling thinking frees nothing when the answer itself used the budget."""
+    calls, result = _run(
+        M3,
+        [('{"answer": "o', "length", reasoning_tokens), (VALID, "stop")],
+        caplog,
+    )
+
+    assert len(calls) == 2
+    assert all(call.get("extra_body") is None for call in calls)
+    assert result.thinking_disabled is False
+    (line,) = _events(caplog, "llm_structured_repair_attempted")
+    assert "failure_kind=parse" in line
+    assert not _events(caplog, "llm_reasoning_exhausted_retry")
 
 
 def test_caller_extra_body_is_kept_beside_disabled_thinking(caplog):

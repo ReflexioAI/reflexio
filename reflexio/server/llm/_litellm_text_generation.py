@@ -2372,10 +2372,10 @@ class TextGenerationMixin:
         ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse] | None:
             """Resend a reasoning-exhausted request ONCE with thinking disabled.
 
-            Replaces the same-cap repair turn for this one failure kind: an
-            empty body cut off by the output limit means hidden reasoning spent
-            the whole budget, and echoing "(empty response ...)" back at the
-            same cap does not change that. Returns None when the route cannot
+            Replaces the same-cap repair turn for this one failure kind: a
+            body cut off by the output limit after hidden reasoning spent the
+            budget (blank, or a barely started answer), and echoing it back at
+            the same cap does not change that. Returns None when the route cannot
             disable thinking (``reasoning_exhausted_retry_extra_body``), so the
             caller keeps its existing repair turn. Otherwise this IS the
             rung's one extra turn: a valid answer returns, and any failure
