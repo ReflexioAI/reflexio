@@ -146,7 +146,7 @@ def test_opaque_cli_provider_retains_its_existing_extraction_adapter(
 @pytest.mark.parametrize(
     "provider,model",
     [
-        ("xai", "xai/grok-3-mini"),
+        ("xai", "xai/grok-4.3"),
         ("moonshot", "moonshot/moonshot-v1-8k"),
         ("zai", "zai/glm-5.2"),
     ],
