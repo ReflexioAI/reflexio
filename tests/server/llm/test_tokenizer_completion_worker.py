@@ -13,13 +13,18 @@ _SOURCE = r"""
 import multiprocessing, os, sys, time
 from reflexio.native_compute import configure_tokenizer_compute
 
-def execute(queue):
+def execute(queue, method):
     import litellm
     from reflexio.server.llm._litellm_subprocess import _litellm_completion_worker
     os.environ["REFLEXIO_NATIVE_COMPUTE_THREADS"] = "3"
+    # A forked pool stays serial. A spawned child owns a cold pool only while
+    # nothing has imported tokenizers yet (litellm>=1.108.4 imports it lazily);
+    # a pool of unknown provenance stays serial.
+    serial = method == "fork" or "tokenizers" in sys.modules
     def synthetic(**kwargs):
         assert os.environ["RAYON_NUM_THREADS"] == "3"
-        assert os.environ["TOKENIZERS_PARALLELISM"] == "false"
+        expected = "false" if serial else None
+        assert os.environ.get("TOKENIZERS_PARALLELISM") == expected
         return {"synthetic": True}
     litellm.completion = synthetic
     _litellm_completion_worker(
@@ -36,7 +41,7 @@ if __name__ == "__main__":
     configure_tokenizer_compute()
     context = multiprocessing.get_context(sys.argv[1])
     queue = context.Queue()
-    process = context.Process(target=execute, args=(queue,))
+    process = context.Process(target=execute, args=(queue, sys.argv[1]))
     try:
         process.start()
         packet = queue.get(timeout=12)

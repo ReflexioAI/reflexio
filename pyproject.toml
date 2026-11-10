@@ -24,12 +24,11 @@ dependencies = [
     # claude-smart, through it) from an untested major. Widen once the weekly
     # upstream-canary workflow passes its next-major check for 2.x. Its
     # in-range check proposes lock bumps within the ceiling.
-    # Exclusions: 1.106.0-1.108.2 import the proxy-only `mcp` package for
-    # every completion that passes `tools`, so tool calls fail with
-    # ModuleNotFoundError on a base install (BerriAI/litellm#46045, fixed on
-    # main by #45961, which no 1.106/1.108 release carries; 1.109.0rc1
-    # passes). Drop them if a 1.108.x patch ships the fix.
-    "litellm>=1.105.7,!=1.106.*,!=1.107.*,!=1.108.*,<2",
+    # Floor: 1.106.0-1.108.3 import the proxy-only `mcp` package for every
+    # completion that passes `tools`, so tool calls fail with
+    # ModuleNotFoundError on a base install (BerriAI/litellm#46045, fixed by
+    # #45961). 1.108.4 is the first stable release that carries the fix.
+    "litellm>=1.108.4,<2",
     "cryptography>=50.0.1",
     "tenacity>=9.0.0",
     "bcrypt>=4.2.1",
