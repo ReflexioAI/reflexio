@@ -38,7 +38,10 @@ stage-advance outcome check, in
 I10, I11, I12 and I18 (exposure part) -- the published-exposure ledger, in
 :class:`~reflexio.test_support.open_world_exposure_contract.PublishedExposureContract`.
 
-:class:`OpenWorldPortContract` inherits all three, so no binding can run one
+I14 and I15 -- provisional publication, in
+:class:`~reflexio.test_support.open_world_publication_contract.OpenWorldPublicationContract`.
+
+:class:`OpenWorldPortContract` inherits all four, so no binding can run one
 part without the others.
 
 I16 -- sweep progress (``OpenWorldSweepProgressStore``):
@@ -82,7 +85,6 @@ from reflexio.server.services.offline_tuner.open_world_records import (
     SweepQueueEntry,
 )
 from reflexio.test_support.open_world_attempt_contract import (
-    AttemptHarness,
     OpenWorldAttemptContract,
 )
 from reflexio.test_support.open_world_evidence_contract import (
@@ -90,6 +92,10 @@ from reflexio.test_support.open_world_evidence_contract import (
 )
 from reflexio.test_support.open_world_exposure_contract import (
     PublishedExposureContract,
+)
+from reflexio.test_support.open_world_publication_contract import (
+    OpenWorldPublicationContract,
+    PublicationHarness,
 )
 
 _DAY = 86_400
@@ -113,7 +119,7 @@ class ProgressRow(NamedTuple):
     attempt_count: int
 
 
-class PortHarness(AttemptHarness, Protocol):
+class PortHarness(PublicationHarness, Protocol):
     """What a backend binding supplies: the store and direct-write seeders.
 
     Seeders write the backend's tables directly, bypassing the port, so a test
@@ -246,7 +252,10 @@ def _attempted_at(harness: PortHarness, playbook_id: int) -> int:
 
 
 class OpenWorldPortContract(
-    OpenWorldEvidenceContract, OpenWorldAttemptContract, PublishedExposureContract
+    OpenWorldEvidenceContract,
+    OpenWorldAttemptContract,
+    PublishedExposureContract,
+    OpenWorldPublicationContract,
 ):
     """The port's behaviour, asserted identically on every backend."""
 

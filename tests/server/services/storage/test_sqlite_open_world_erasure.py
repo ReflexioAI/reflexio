@@ -68,6 +68,7 @@ from reflexio.test_support.open_world_attempt_contract import (
     _rolling,
 )
 from reflexio.test_support.open_world_exposure_contract import _owned_playbook, _uid
+from reflexio.test_support.open_world_publication_contract import publish
 from reflexio.test_support.open_world_rule_evidence import (
     evidence_digest,
     evidence_event,
@@ -322,3 +323,172 @@ def test_a_clear_failure_leaves_nothing_half_erased(
 
     assert attempt.job_id in _jobs(storage.conn)
     assert harness.attempt_rows(attempt.job_id).artifacts == 4
+
+
+# ---------------------------------------------------------------------------
+# A published attempt
+# ---------------------------------------------------------------------------
+
+#: Tables a provisional commit writes that hold no ``job_id`` and are not the
+#: user's own playbooks, with what a clear does to them and why.
+_PUBLICATION_TABLES_KEPT_ON_CLEAR: dict[str, str] = {
+    "lineage_event": (
+        "the supersede and revise events name playbook ids and the job's "
+        "request id, never user content; a purged playbook keeps its lineage "
+        "chain under the existing purge rules"
+    ),
+    "playbook_aggregation_invalidation": (
+        "the lineage writer queues the supersede for the aggregator by agent "
+        "version and playbook id, as it does for every status change; the "
+        "aggregator drains it, and it holds no user content"
+    ),
+}
+
+
+def _row_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for (table,) in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'"
+        " AND name NOT LIKE 'sqlite_%'"
+    ).fetchall():
+        try:
+            (counts[table],) = conn.execute(
+                f'SELECT count(*) FROM "{table}"'  # noqa: S608
+            ).fetchone()
+        except sqlite3.OperationalError:
+            continue
+    return counts
+
+
+def _cascading_job_tables(conn: sqlite3.Connection) -> set[str]:
+    return {
+        table
+        for (table,) in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+        if any(
+            row[2] == "playbook_optimization_jobs" and row[6] == "CASCADE"
+            for row in conn.execute(f"PRAGMA foreign_key_list('{table}')")
+        )
+    }
+
+
+def test_every_table_a_publication_writes_is_covered_by_the_clear(
+    harness: _SQLitePortHarness,
+) -> None:
+    """Derived from what one real commit writes, not from a list of its tables.
+
+    Each table either cascades from the job, is deleted with it explicitly, is
+    the user's own playbooks and their search indexes (erased by the user
+    rules), or is kept with a recorded reason.
+    """
+    conn = harness.storage.conn
+    attempt = _accepted(harness)
+    before = _row_counts(conn)
+
+    publish(attempt)
+
+    written = {
+        table for table, count in _row_counts(conn).items() if count > before[table]
+    }
+    covered = (
+        _cascading_job_tables(conn)
+        | JOB_CHILD_TABLES_DELETED_EXPLICITLY
+        | _PUBLICATION_TABLES_KEPT_ON_CLEAR.keys()
+        | {table for table in written if table.startswith("user_playbooks")}
+    )
+    assert {
+        "user_playbooks",
+        "user_playbook_deployment_lifecycles",
+        "user_playbook_publication_results",
+        "playbook_optimization_events",
+        "lineage_event",
+    } <= written
+    assert written - covered == set()
+
+
+def test_clearing_the_owner_erases_a_published_attempt(
+    harness: _SQLitePortHarness,
+) -> None:
+    """The job and every publication row go; the two versions are purged.
+
+    The incumbent is a superseded tombstone and the successor is what it
+    points to, so both are content-purged under the lineage rules: their
+    bodies are blanked and the chain between them is kept. No lifecycle or
+    result is left naming either.
+    """
+    storage = harness.storage
+    conn = storage.conn
+    attempt = _accepted(harness)
+    revised = attempt.payload("open_world_candidate")["payload"]["revised_content"]
+    result = publish(attempt)
+    successor_id = result.successor_user_playbook_id
+    assert successor_id is not None
+    incumbent_id = attempt.incumbent.user_playbook_id
+    control = _accepted(harness)
+    control_result = publish(control)
+    assert "user_playbook_publication_staging" not in _tables_mentioning(
+        conn, attempt.owner
+    ), "staging, which holds the incumbent snapshot, is gone after the commit"
+
+    counts = storage.clear_user_data(attempt.owner)
+
+    assert counts["optimization_jobs"] == 1
+    assert _tables_mentioning(conn, attempt.owner) == set()
+    assert harness.publication_rows(attempt.job_id) == (0, 0, 0, 0, 0, 0)
+    named = (incumbent_id, successor_id)
+    assert storage.list_playbook_deployment_lifecycles(user_playbook_ids=named) == ()
+    placeholders = ", ".join("?" * len(named))
+    assert (
+        conn.execute(
+            "SELECT count(*) FROM user_playbook_publication_results"  # noqa: S608
+            f" WHERE successor_user_playbook_id IN ({placeholders})",
+            named,
+        ).fetchone()[0]
+        == 0
+    )
+    rows = {
+        row["user_playbook_id"]: row
+        for row in conn.execute(
+            "SELECT user_playbook_id, content, user_id, superseded_by"  # noqa: S608
+            f" FROM user_playbooks WHERE user_playbook_id IN ({placeholders})",
+            named,
+        ).fetchall()
+    }
+    assert set(rows) == set(named), "both versions are purged, not deleted"
+    assert all(row["content"] == "" and row["user_id"] is None for row in rows.values())
+    assert rows[incumbent_id]["superseded_by"] == successor_id
+    assert counts["purged_user_playbooks"] == 2
+    # The control attempt published the same synthetic text; only its rows
+    # may still hold it.
+    assert {
+        row[0]
+        for row in conn.execute(
+            "SELECT user_playbook_id FROM user_playbooks WHERE content = ?",
+            (revised,),
+        )
+    } == {control_result.successor_user_playbook_id}
+    assert (
+        len(
+            storage.list_playbook_deployment_lifecycles(
+                user_playbook_ids=(control.incumbent.user_playbook_id,)
+            )
+        )
+        == 1
+    ), "another owner's publication survives"
+
+
+def test_clearing_another_user_keeps_a_publication(
+    harness: _SQLitePortHarness,
+) -> None:
+    storage = harness.storage
+    attempt = _accepted(harness)
+    result = publish(attempt)
+
+    storage.clear_user_data(_uid("unrelated"))
+
+    assert harness.publication_rows(attempt.job_id).lifecycles == 1
+    assert (
+        storage.load_user_playbook_provisional_publication_result(attempt.job_id)
+        == result
+    )

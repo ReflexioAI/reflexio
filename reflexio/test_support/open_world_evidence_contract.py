@@ -39,10 +39,11 @@ Backend differences, each asserted per backend through a harness flag:
   with erasure epochs and refuses a subject it does not list; SQLite keeps
   none, so every subject is at epoch 0 and only an erasure barrier refuses it.
 
-Not asserted: the deployment lifecycle read is exercised only for a playbook
-the tuner never published (``()`` and ``incumbent_published_at`` ``None`` on
-both). Only the open-world provisional commit writes a lifecycle, and SQLite
-has no such commit yet.
+The deployment lifecycle read is exercised here only for a playbook the tuner
+never published (``()`` and ``incumbent_published_at`` ``None`` on both); only
+the provisional commit writes a lifecycle, and
+:class:`~reflexio.test_support.open_world_publication_contract.OpenWorldPublicationContract`
+asserts the read after one.
 """
 
 from __future__ import annotations

@@ -22,8 +22,8 @@ both to the same answers. What SQLite answers differently, and why:
 * **Session-only exposures.** SQLite has no retrieval log, so an exposure with
   a session but no request never binds to a request; it stays
   ``session_only``. The SQLite publish path never writes one.
-* **Deployment lifecycles.** Only an open-world provisional commit writes a
-  lifecycle. SQLite has no such commit yet, so the read is always empty.
+* **Deployment lifecycles.** Only the open-world provisional commit
+  (``_open_world_publication``) writes a lifecycle.
 
 The snapshot is one read transaction under WAL: rows a second connection
 commits after the first read are invisible to the rest of it. Source rows are
@@ -86,9 +86,6 @@ from reflexio.server.services.offline_tuner.open_world_freeze_validation import 
     validate_freeze_job_request,
     validate_subject_epoch_shape,
 )
-from reflexio.server.services.offline_tuner.open_world_port import (
-    PublishedLifecycle,
-)
 from reflexio.server.services.offline_tuner.open_world_records import (
     OPEN_WORLD_EVIDENCE_ARTIFACT_KIND,
     OPEN_WORLD_EVIDENCE_OPTIMIZER_KIND,
@@ -111,6 +108,7 @@ from ._base import (
     _row_to_user_playbook,
     _through_prefix_predicate,
 )
+from ._open_world_publication import DeploymentLifecycleRow, lifecycle_row
 from .playbook._optimization import (
     _JOB_INSERT_SQL,
     _job_insert_values,
@@ -450,17 +448,26 @@ class SQLiteOpenWorldEvidenceMixin:
 
     def list_playbook_deployment_lifecycles(
         self, *, user_playbook_ids: Sequence[int]
-    ) -> tuple[PublishedLifecycle, ...]:
-        """Lifecycles touching these playbooks: none on SQLite yet.
+    ) -> tuple[DeploymentLifecycleRow, ...]:
+        """Every lifecycle naming one of these playbooks, at either end.
 
-        A deployment lifecycle is written only by the open-world provisional
-        commit, which SQLite does not have yet. Every SQLite playbook is
-        therefore one the tuner never published, and ``incumbent_published_at``
-        reads ``None`` for it -- the answer Postgres gives a playbook no
-        lifecycle names.
+        Written by the open-world provisional commit. Ascending by
+        ``(published_at, deployment_lifecycle_id)``, as PostgreSQL returns
+        them; a playbook the tuner never published appears in none.
         """
-        del user_playbook_ids
-        return ()
+        ids = [int(value) for value in user_playbook_ids]
+        if not ids:
+            return ()
+        placeholders = ", ".join("?" * len(ids))
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM user_playbook_deployment_lifecycles"  # noqa: S608
+                f" WHERE successor_id IN ({placeholders})"
+                f" OR predecessor_id IN ({placeholders})"
+                " ORDER BY published_at, deployment_lifecycle_id",
+                (*ids, *ids),
+            ).fetchall()
+        return tuple(lifecycle_row(row) for row in rows)
 
     def load_open_world_evidence_snapshot(
         self,
