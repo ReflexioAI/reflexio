@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "REFLEXIO_AGENT_VERSION": "",
     "REFLEXIO_INSTANCE_ID": "",
     "REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS": "",
     "REFLEXIO_LEARNING_ALARM_SUPPRESS_SECONDS": "",
@@ -75,6 +76,14 @@ def reject_removed_env(
                 "Before removing the binding, point REFLEXIO_USAGE_WAL_PATH at the "
                 "existing resolved WAL leaf; preserve its files and instance_id. "
                 "Do not move or reinitialize pending usage"
+            )
+        if "REFLEXIO_AGENT_VERSION" in obsolete:
+            migration += (
+                "; agent identity belongs to the caller: use explicit agent_version "
+                "in SDK calls or --agent-version in the CLI, then remove the "
+                "process assignment. Omitted publish identity keeps agent-v0; "
+                "filter/regeneration commands require an explicit target. "
+                "No stored request identity is rewritten"
             )
         if "REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS" in obsolete:
             migration += (

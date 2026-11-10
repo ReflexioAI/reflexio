@@ -30,5 +30,5 @@ The wrapper is pass-through by default: construction must not fail when Reflexio
 ## Requirements / Problems to Avoid
 
 
-- **Do not let Reflexio publish/search side effects break mem0 compatibility**: log or annotate failures while preserving mem0 return values unless the caller opted into a Reflexio-specific operation.
+- **Do not let Reflexio publish/search side effects break mem0 compatibility**: log or annotate failures while preserving mem0 return values unless the caller opted into a Reflexio-specific operation. Identity/message preparation is part of that best-effort operation: failures skip the mirror after a successful mem0 add, or return the existing error envelope for opted-in search, without substituting an identity. Diagnostics expose neither input values nor exception text. Primary mem0 errors, namespace collisions and cancellation keep their existing behavior.
 - Keep the `reflexio` search-result namespace reserved and raise `ReflexioNamespaceCollisionError` when an opted-in mem0 result already owns that key.

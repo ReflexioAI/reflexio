@@ -95,3 +95,38 @@ async def test_async_wrapper_yields_while_reflexio_search_waits(
         mark_heartbeat(),
     )
     assert heartbeat is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["", "private-ambient-agent"])
+async def test_async_identity_preparation_failure_preserves_successful_mem0_add(
+    async_wrapped_cls, reflexio_mock, monkeypatch, caplog, value
+):
+    client = async_wrapped_cls(api_key="mk", reflexio_client=reflexio_mock)
+    monkeypatch.setenv("REFLEXIO_AGENT_VERSION", value)
+    result = await client.add("hello", user_id="u1")
+    assert result is client.add_result
+    assert len(client.calls) == 1
+    assert client.calls[0][0] == "add"
+    reflexio_mock.publish_interaction_async.assert_not_awaited()
+    assert "Best-effort Reflexio publish failed" in caplog.text
+    assert "private-ambient-agent" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["", "private-ambient-agent"])
+async def test_async_identity_preparation_failure_keeps_mem0_search_and_error_envelope(
+    async_wrapped_cls, reflexio_mock, monkeypatch, caplog, value
+):
+    client = async_wrapped_cls(api_key="mk", reflexio_client=reflexio_mock)
+    monkeypatch.setenv("REFLEXIO_AGENT_VERSION", value)
+    result = await client.search(
+        "hello", filters={"user_id": "u1"}, include_reflexio=True
+    )
+    assert result["results"] is client.search_result["results"]
+    assert result["reflexio"]["status"] == "error"
+    assert result["reflexio"]["reason"] == "request_failed"
+    assert "reflexio" not in client.search_result
+    reflexio_mock.search_async.assert_not_awaited()
+    assert "Best-effort Reflexio search failed" in caplog.text
+    assert "private-ambient-agent" not in caplog.text
