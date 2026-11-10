@@ -696,6 +696,14 @@ contains the `evaluation_config` child timer, which must not be added again when
 calculating unattributed time. Configuration freshness is unchanged. Enterprise HTTP `auth_binding` and
 `billing_gate` timers are subsets of `before_handler_ms`: billing dependency
 construction and other middleware/framework work remain in the remainder.
+`body_received_ms` (with `body_bytes`) is the part of `before_handler_ms` until
+the app holds the complete request body, mostly client upload;
+`body_to_handler_ms` is the rest: JSON parsing, validation and dependencies.
+
+A publish whose `request_id` is already committed is answered before embedding
+preparation: `replay_check` is the existence read every non-receipt publish
+makes, and `replay` covers the answer, with `replay_read` (the stored request
+and interactions) and `replay_compare` (the exact-retry check) inside it.
 
 Each app composer installs the pure-ASGI timing middleware outermost. Enterprise's
 outer instance owns collection, including limited-key rejection, while the

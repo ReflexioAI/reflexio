@@ -398,3 +398,43 @@ def test_cancellation_resets_scope_and_marks_incomplete(caplog):
     http = records(caplog, "publish_http_timing")
     assert len(http) == 2 and len({r["timing_id"] for r in http}) == 2
     assert all(r["response_complete"] == "0" and r["status_code"] == "0" for r in http)
+
+
+def test_body_receipt_splits_before_handler(monkeypatch, caplog):
+    """Upload time and parse/dependency time are separate HTTP fields."""
+    clock = [0.0]
+    monkeypatch.setattr(
+        timing,
+        "time",
+        SimpleNamespace(perf_counter=lambda: clock[0], monotonic=lambda: clock[0]),
+    )
+    chunks = iter(
+        [
+            (1.0, {"type": "http.request", "body": b"abc", "more_body": True}),
+            (4.0, {"type": "http.request", "body": b"defg", "more_body": False}),
+            (9.0, {"type": "http.disconnect"}),
+        ]
+    )
+
+    async def chunked_receive():
+        at, message = next(chunks)
+        clock[0] = at
+        return message
+
+    async def app(_scope, receive_, send):
+        while (await receive_()).get("more_body", False):
+            pass
+        clock[0] = 6
+        timing.handler_started(org_id="org", request_id="req", wait_for_response=False)
+        await receive_()  # A later disconnect poll must not move the mark.
+        await respond(send)
+
+    async def send(_message):
+        return None
+
+    asyncio.run(timing.PublishHttpTimingMiddleware(app)(scope(), chunked_receive, send))
+    (http,) = records(caplog, "publish_http_timing")
+    assert http["before_handler_ms"] == "6000"
+    assert http["body_received_ms"] == "4000"
+    assert http["body_to_handler_ms"] == "2000"
+    assert http["body_bytes"] == "7"

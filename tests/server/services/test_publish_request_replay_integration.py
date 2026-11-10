@@ -320,3 +320,80 @@ def test_two_workers_racing_the_insert_admit_once(tmp_path, worker_id, monkeypat
     store = services[0].storage
     assert isinstance(store, SQLiteStorage)
     assert _counts(store) == (1, 2)
+
+
+def _large_tools_request(*, marker: str = "out") -> PublishUserInteractionRequest:
+    """Six turns, four carrying ~450 KB of ``tools_used`` like the prod retry."""
+    from reflexio.models.api_schema.common import ToolUsed
+
+    def tools(index: int) -> list[ToolUsed]:
+        return [
+            ToolUsed(
+                tool_name=f"tool-{index}",
+                tool_data={"input": {"q": index}, "output": marker * 150_000},
+                status="success",
+            )
+        ]
+
+    return PublishUserInteractionRequest(
+        request_id="caller-id",
+        user_id="u1",
+        session_id="s1",
+        interaction_data_list=[
+            InteractionData(
+                role="Agent" if index % 2 else "User",
+                content=f"turn {index}",
+                created_at=1_700_000_000,
+                tools_used=tools(index) if index < 4 else [],
+            )
+            for index in range(6)
+        ],
+    )
+
+
+def test_large_exact_retry_skips_embeddings_and_admission(
+    tmp_path, monkeypatch, worker_id
+):
+    """A committed request is answered before embedding preparation.
+
+    Prod: every retry of a 2.2 MB publish prepared embeddings, failed the
+    unique insert and rolled back before replaying (~11s handler per attempt).
+    The replay must read the stored rows once, prepare nothing and open no
+    admission transaction.
+    """
+    from reflexio.server import publish_timing
+
+    monkeypatch.setenv(publish_timing.ENV_MIN_MS, "0")
+    svc = _service(tmp_path, worker_id)
+    store = svc.storage
+    assert isinstance(store, SQLiteStorage)
+    first = svc.run(_large_tools_request(), defer_learning=True)
+    rows = _counts(store)
+
+    prepare = Mock(side_effect=AssertionError("replay prepared embeddings"))
+    insert = Mock(side_effect=AssertionError("replay opened admission"))
+    reads = Mock(wraps=store.get_interactions_by_request_ids)
+    monkeypatch.setattr(store, "prepare_interaction_embeddings", prepare)
+    monkeypatch.setattr(store, "add_request_if_absent", insert)
+    monkeypatch.setattr(store, "get_interactions_by_request_ids", reads)
+    with publish_timing.collect():
+        replay = svc.run(_large_tools_request(), defer_learning=True)
+        phases = publish_timing.snapshot()
+
+    assert replay.replayed and replay.interaction_ids == first.interaction_ids
+    assert _counts(store) == rows
+    reads.assert_called_once_with(["caller-id"])
+    assert phases is not None
+    assert {
+        "replay_check_ms",
+        "replay_ms",
+        "replay_read_ms",
+        "replay_compare_ms",
+    } <= phases.keys()
+    assert "embeddings_ms" not in phases and "commit_scope_ms" not in phases
+
+    # A changed tools_used payload under the same id is still refused early.
+    with pytest.raises(PublishRequestIdConflictError):
+        svc.run(_large_tools_request(marker="OUT"), defer_learning=True)
+    prepare.assert_not_called()
+    insert.assert_not_called()
