@@ -28,8 +28,7 @@ from reflexio.server.services.service_utils import (
     PromptConfig,
     construct_messages_from_interactions,
     extract_interactions_from_request_interaction_data_models,
-    format_interactions_to_history_string,
-    visible_interaction_evidence_texts,
+    render_interaction,
 )
 
 logger = logging.getLogger(__name__)
@@ -674,6 +673,7 @@ def build_playbook_prompt_context(
     evidence_sources: dict[str, PlaybookEvidenceSource] = {}
     evidence_units: dict[str, PlaybookEvidenceUnit] = {}
     ref_by_object_id: dict[int, str] = {}
+    source_by_object_id: dict[int, str] = {}
     turn_number = 0
     for _, request_models in ordered_sessions:
         for request_model in request_models:
@@ -682,25 +682,33 @@ def build_playbook_prompt_context(
                 key=lambda item: (item.created_at, item.interaction_id),
             ):
                 turn_number += 1
-                turn_ref = f"T{turn_number}"
-                ref_by_object_id[id(interaction)] = turn_ref
-                source = PlaybookEvidenceSource(
-                    interaction_id=interaction.interaction_id,
-                    request_id=interaction.request_id,
-                    evidence_texts=visible_interaction_evidence_texts(interaction),
-                    role=interaction.role,
-                    request_source=request_model.request.source or "",
+                ref_by_object_id[id(interaction)] = f"T{turn_number}"
+                source_by_object_id[id(interaction)] = (
+                    request_model.request.source or ""
                 )
-                evidence_sources[turn_ref] = source
-                evidence_units[turn_ref] = PlaybookEvidenceUnit(
-                    evidence_ref=turn_ref,
-                    turn_ref=turn_ref,
-                    source_span="\n\n".join(source.evidence_texts),
-                    interaction_id=interaction.interaction_id,
-                    request_id=interaction.request_id,
-                    role=interaction.role,
-                    request_source=request_model.request.source or "",
-                )
+
+    def remember_evidence(interaction: Interaction, texts: tuple[str, ...]) -> None:
+        turn_ref = ref_by_object_id[id(interaction)]
+        previous = evidence_sources.get(turn_ref)
+        if previous is not None:
+            texts = tuple(dict.fromkeys((*previous.evidence_texts, *texts)))
+        source = PlaybookEvidenceSource(
+            interaction_id=interaction.interaction_id,
+            request_id=interaction.request_id,
+            evidence_texts=texts,
+            role=interaction.role,
+            request_source=source_by_object_id[id(interaction)],
+        )
+        evidence_sources[turn_ref] = source
+        evidence_units[turn_ref] = PlaybookEvidenceUnit(
+            evidence_ref=turn_ref,
+            turn_ref=turn_ref,
+            source_span="\n\n".join(texts),
+            interaction_id=interaction.interaction_id,
+            request_id=interaction.request_id,
+            role=interaction.role,
+            request_source=source.request_source,
+        )
 
     if expert:
         flat = [
@@ -725,11 +733,15 @@ def build_playbook_prompt_context(
                         f"[{ref_by_object_id[id(preceding)]}] " if label_turns else ""
                     )
                     parts.append(f"{prefix}User Question: ```{preceding.content}```")
+                    remember_evidence(preceding, (preceding.content,))
                     break
             turn_ref = ref_by_object_id[id(interaction)]
             prefix = f"[{turn_ref}] " if label_turns else ""
             parts.append(f"{prefix}Agent Response: ```{interaction.content}```")
             parts.append(f"{prefix}Expert Response: ```{interaction.expert_content}```")
+            remember_evidence(
+                interaction, (interaction.content, interaction.expert_content)
+            )
             pairs.append("\n".join(parts))
         return PlaybookPromptContext(
             text="\n\n".join(pairs),
@@ -764,9 +776,10 @@ def build_playbook_prompt_context(
                 key=lambda item: (item.created_at, item.interaction_id),
             ):
                 turn_ref = ref_by_object_id[id(interaction)]
-                rendered = format_interactions_to_history_string([interaction])
+                view = render_interaction(interaction)
+                remember_evidence(interaction, view.evidence_texts)
                 turn_prefix = f"[{turn_ref}] " if label_turns else ""
-                lines.extend(f"{turn_prefix}{line}" for line in rendered.splitlines())
+                lines.extend(f"{turn_prefix}{line}" for line in view.text.splitlines())
         rendered_sessions.append("\n".join(lines))
     return PlaybookPromptContext(
         text="\n\n".join(rendered_sessions),

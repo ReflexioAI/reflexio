@@ -1109,3 +1109,14 @@ The old default seed was 42 even when the environment setting was absent.
 Prepared optimizer publications retain their original proof and request history
 and recover without rebuilding a model request. Searches interrupted by process
 replacement retain the existing best-effort callback lifecycle.
+
+
+### Interaction rendering and evidence
+
+Ordinary interaction rendering returns prompt text and the source segments
+visible in that text together. The playbook context uses this view once per
+turn, so a changing per-turn budget cannot disagree with its evidence map.
+Expert comparison provenance includes only the preceding user question and
+the complete agent/expert fields actually shown. Ordinary views exclude the
+unshown expert field. Prepared overflow presentations keep their own exact
+source spans and bypass ordinary rendering as before.

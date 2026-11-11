@@ -74,7 +74,7 @@ def test_invalid_token_budget_warns_once_and_keeps_default(monkeypatch, caplog):
 # ---------------------------------------------------------------------------
 
 
-def test_evidence_of_a_contentless_expert_turn_is_only_the_expert_text():
+def test_ordinary_evidence_excludes_an_unshown_contentless_expert_turn():
     interaction = Interaction(
         interaction_id=1,
         user_id="u",
@@ -83,9 +83,8 @@ def test_evidence_of_a_contentless_expert_turn_is_only_the_expert_text():
         content="",
         expert_content="Run the staging rehearsal first.",
     )
-    assert visible_interaction_evidence_texts(interaction) == (
-        "Run the staging rehearsal first.",
-    )
+    assert service_utils.format_interactions_to_history_string([interaction]) == ""
+    assert visible_interaction_evidence_texts(interaction) == ()
 
 
 def test_session_header_omits_date_when_timestamp_is_out_of_range():
