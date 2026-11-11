@@ -504,6 +504,7 @@ def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
     from reflexio.housekeeping_policy import strip_legacy_housekeeping_fields
     from reflexio.pending_tool_policy import (
         strip_legacy_pending_tool_timing,
+        strip_retired_pending_dedup_duration,
         strip_retired_pending_followup_warning,
     )
 
@@ -566,8 +567,12 @@ def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
         }
     if "pending_tool_call_config" in payload:
         payload["pending_tool_call_config"] = canonicalize_pending_creation_policy(
-            strip_retired_pending_followup_warning(
-                strip_legacy_pending_tool_timing(payload["pending_tool_call_config"])
+            strip_retired_pending_dedup_duration(
+                strip_retired_pending_followup_warning(
+                    strip_legacy_pending_tool_timing(
+                        payload["pending_tool_call_config"]
+                    )
+                )
             )
         )
     if "playbook_optimizer_config" in payload:
