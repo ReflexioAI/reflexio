@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS": "",
     "REFLEXIO_LLM_SEED": "",
     "REFLEXIO_AGENT_VERSION": "",
     "REFLEXIO_INSTANCE_ID": "",
@@ -43,6 +44,15 @@ REMOVED_ENV_ALIASES = {
     "BILLING_METERING_SWEEP_INTERVAL_SECONDS": "BILLING_METERING_MAINTENANCE_INTERVAL_SECONDS",
     "BILLING_PERIOD_CLOSE_ENABLED": "BILLING_PERIOD_CLOSE_INTERVAL_SECONDS",
     "PERIOD_CLOSE_INTERVAL_SECONDS": "BILLING_PERIOD_CLOSE_INTERVAL_SECONDS",
+}
+
+
+_REMOVED_ENV_GUIDANCE = {
+    "REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS": (
+        "; complete interaction evidence now uses model-owned request capacity. "
+        "Remove the old per-turn slicing assignment; preserve existing model, "
+        "context declaration and output policy. No stored source is rewritten"
+    ),
 }
 
 
@@ -95,6 +105,7 @@ def reject_removed_env(
                 "filter/regeneration commands require an explicit target. "
                 "No stored request identity is rewritten"
             )
+        migration += "".join(_REMOVED_ENV_GUIDANCE.get(name, "") for name in obsolete)
         if "REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS" in obsolete:
             migration += (
                 "; LLM attempts now use one accepted-work deadline, including startup. "

@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.env_utils import env_bool
+from reflexio.server.llm.input_budget import model_input_budget
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.extractor_config_utils import get_extractor_name
 from reflexio.server.services.extractor_interaction_utils import (
@@ -212,10 +213,11 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
                 [{"role": "user", "content": prompt}],
             )
 
-            content = self.client.generate_chat_response(
-                messages=[{"role": "user", "content": prompt}],
-                model=should_run_model,
-            )
+            with model_input_budget():
+                content = self.client.generate_chat_response(
+                    messages=[{"role": "user", "content": prompt}],
+                    model=should_run_model,
+                )
             log_model_response(
                 logger,
                 f"Consolidated {self._get_service_name()} should_run response",

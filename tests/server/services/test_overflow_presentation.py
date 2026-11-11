@@ -81,10 +81,10 @@ def test_profile_and_playbook_prepared_prompts_keep_late_correction_and_source_l
         )
     assert current_overflow_presentation.get() is None
     assert sessions[0].model_dump(mode="json") == before
-    # The regular formatter keeps its existing bounded presentation.
+    # Outside the prepared chunk, the regular view preserves complete evidence.
     assert (
         "Do not deploy before the production check."
-        not in build_playbook_prompt_context(sessions).text
+        in build_playbook_prompt_context(sessions).text
     )
 
 
