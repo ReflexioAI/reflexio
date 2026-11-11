@@ -3114,12 +3114,10 @@ class TestTemperatureRestriction:
         assert call_kwargs["temperature"] == 1.0
 
     @patch("reflexio.server.llm.litellm_client.litellm.completion")
-    def test_non_restricted_model_default_injects_seed_only(
+    def test_non_restricted_model_omits_seed_and_preserves_temperature(
         self, mock_completion, monkeypatch
     ):
-        """Default behavior: seed=42 is injected, but caller-configured
-        temperature flows through unchanged (the temperature override is
-        opt-in via an explicit REFLEXIO_LLM_SEED env var)."""
+        """Omitted seed preserves the configured request temperature."""
         monkeypatch.delenv("REFLEXIO_LLM_SEED", raising=False)
         mock_completion.return_value = _make_completion_response("ok")
         config = LiteLLMConfig(model="gpt-4o", temperature=0.3)
@@ -3128,7 +3126,7 @@ class TestTemperatureRestriction:
         client.generate_response("hi")
 
         call_kwargs = mock_completion.call_args.kwargs
-        assert call_kwargs["seed"] == 42
+        assert "seed" not in call_kwargs
         assert call_kwargs["drop_params"] is True
         assert call_kwargs["temperature"] == 0.3
 
@@ -3145,37 +3143,23 @@ class TestTemperatureRestriction:
         assert litellm.drop_params is False
 
     @patch("reflexio.server.llm.litellm_client.litellm.completion")
-    def test_explicit_seed_env_forces_temperature_zero(
-        self, mock_completion, monkeypatch
-    ):
-        """Explicit REFLEXIO_LLM_SEED opt-in: seed is injected AND temperature
-        is forced to 0.0 on non-restricted models for reproducible sampling."""
-        monkeypatch.setenv("REFLEXIO_LLM_SEED", "7")
+    def test_explicit_request_seed_preserves_temperature(self, mock_completion):
         mock_completion.return_value = _make_completion_response("ok")
-        config = LiteLLMConfig(model="gpt-4o", temperature=0.3)
-        client = LiteLLMClient(config)
-
-        client.generate_response("hi")
-
+        client = LiteLLMClient(LiteLLMConfig(model="gpt-4o", temperature=0.3))
+        client.generate_response("hi", seed=7)
         call_kwargs = mock_completion.call_args.kwargs
         assert call_kwargs["seed"] == 7
-        assert call_kwargs["temperature"] == 0.0
+        assert call_kwargs["temperature"] == 0.3
 
-    @patch("reflexio.server.llm.litellm_client.litellm.completion")
-    def test_invalid_seed_env_falls_back_to_default(self, mock_completion, monkeypatch):
-        """A non-integer REFLEXIO_LLM_SEED falls back to seed=42 so the
-        'always inject a seed' contract holds; the temperature override still
-        fires because the operator explicitly opted into determinism."""
-        monkeypatch.setenv("REFLEXIO_LLM_SEED", "not-an-int")
-        mock_completion.return_value = _make_completion_response("ok")
-        config = LiteLLMConfig(model="gpt-4o", temperature=0.3)
-        client = LiteLLMClient(config)
-
-        client.generate_response("hi")
-
-        call_kwargs = mock_completion.call_args.kwargs
-        assert call_kwargs["seed"] == 42
-        assert call_kwargs["temperature"] == 0.0
+    @pytest.mark.parametrize("value", ["", "42", "7", "private-invalid-value"])
+    def test_obsolete_seed_env_is_refused_before_provider(self, monkeypatch, value):
+        monkeypatch.setenv("REFLEXIO_LLM_SEED", value)
+        client = LiteLLMClient(LiteLLMConfig(model="gpt-4o", temperature=0.3))
+        with pytest.raises(
+            ValueError, match="sampling belongs to the request"
+        ) as error:
+            client._build_completion_params([{"role": "user", "content": "hi"}])
+        assert "private-invalid-value" not in str(error.value)
 
 
 # ===================================================================

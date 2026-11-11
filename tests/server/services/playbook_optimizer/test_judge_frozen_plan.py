@@ -75,7 +75,7 @@ def _freeze(
         "instance_method",
         "helper",
         "config",
-        "seed",
+        "temperature",
         "completion_transport",
         "prompt_version",
         "native_launch",
@@ -91,7 +91,6 @@ def _freeze(
 def test_pairwise_judge_rejects_frozen_plan_drift_before_provider_execution(
     monkeypatch, tmp_path, drift
 ):
-    monkeypatch.setenv("REFLEXIO_LLM_SEED", "42")
     prompt_manager = PromptManager()
     client = LiteLLMClient(LiteLLMConfig(model="azure/judge-deployment"))
     provider = Mock()
@@ -144,8 +143,8 @@ def test_pairwise_judge_rejects_frozen_plan_drift_before_provider_execution(
         monkeypatch.setattr(generation.NativeCLIOwner, "_run", Mock())
     elif drift == "config":
         client.config.top_p = 0.25
-    elif drift == "seed":
-        monkeypatch.setenv("REFLEXIO_LLM_SEED", "43")
+    elif drift == "temperature":
+        client.config.temperature = 0.25
     elif drift == "completion_transport":
         monkeypatch.setattr(client, "_run_completion", Mock())
     else:
@@ -169,7 +168,6 @@ def test_pairwise_judge_provider_params_match_frozen_sanitized_plan(monkeypatch)
             time=time.time,
         ),
     )
-    monkeypatch.setenv("REFLEXIO_LLM_SEED", "47")
     endpoint = "https://example.com:4443/"
     secret = "azure-secret"
     client = LiteLLMClient(
@@ -247,7 +245,7 @@ def test_pairwise_judge_provider_params_match_frozen_sanitized_plan(monkeypatch)
     assert sanitize(captured["params"]) == rung["provider_params"]
     assert captured["hard_timeout"] == float(rung["hard_timeout_seconds"])
     serialized = json.dumps(frozen_plan, sort_keys=True)
-    assert rung["provider_params"]["seed"] == 47
+    assert "seed" not in rung["provider_params"]
     assert secret not in serialized
     assert endpoint not in serialized
 
@@ -255,7 +253,6 @@ def test_pairwise_judge_provider_params_match_frozen_sanitized_plan(monkeypatch)
 def test_pairwise_judge_rejects_drift_during_prompt_render_before_provider(
     monkeypatch,
 ):
-    monkeypatch.setenv("REFLEXIO_LLM_SEED", "42")
     prompt_manager = PromptManager()
     client = LiteLLMClient(LiteLLMConfig(model="azure/judge-deployment"))
     provider = Mock()

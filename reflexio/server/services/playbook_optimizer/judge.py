@@ -173,7 +173,7 @@ def _pairwise_judge_rung(
         "temperature": _decimal_string(provider_params["temperature"]),
         "top_p": _decimal_string(provider_params.get("top_p", 1.0)),
         "max_tokens": provider_params.get("max_tokens"),
-        "seed": provider_params["seed"],
+        "seed": provider_params.get("seed"),
         "timeout_seconds": _decimal_string(timeout_seconds),
         "hard_timeout_seconds": _decimal_string(timeout_seconds),
         "provider_kind": client._provider_for_model(resolved_model) or "unconfigured",
