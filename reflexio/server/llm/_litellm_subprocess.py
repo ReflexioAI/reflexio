@@ -17,6 +17,11 @@ re-exported by import binding from the facade — they must be the SAME class/ob
 the worker constructs and tests ``isinstance``-check. Bodies moved VERBATIM.
 """
 
+# Complete provider initialization before importing the third-party library.
+import reflexio._provider_bootstrap  # noqa: F401
+
+# isort: split
+
 import logging
 import multiprocessing
 import pickle

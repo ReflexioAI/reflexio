@@ -6,6 +6,11 @@ using LiteLLM. It maintains the same interface as the existing LLMClient for eas
 CompletionResult and ModelProvenance expose the provenance-bearing return contract.
 """
 
+# Complete provider initialization before importing the third-party library.
+import reflexio._provider_bootstrap  # noqa: F401
+
+# isort: split
+
 import hashlib
 import json
 import logging
