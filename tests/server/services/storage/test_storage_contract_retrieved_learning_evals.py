@@ -742,7 +742,7 @@ def test_diagnosis_round_trips_and_legacy_rows_remain_readable(storage):
     )
     assert saved.diagnosis is None
     assert not saved.diagnosis_evidence_complete
-    # A pre-diagnosis v2 terminal result remains reusable without re-evaluation.
+    # Prior v2 clipped-evidence results require evaluation by the complete-input recipe.
     state_key = build_retrieved_learning_state_key(USER, SESSION)
     state = storage.get_operation_state(state_key)["operation_state"]
     state["evaluation_version"] = 2
@@ -751,5 +751,5 @@ def test_diagnosis_round_trips_and_legacy_rows_remain_readable(storage):
         storage.get_matching_retrieved_learning_terminal_state(
             USER, SESSION, session_fingerprint(snapshot)
         )
-        is not None
+        is None
     )
