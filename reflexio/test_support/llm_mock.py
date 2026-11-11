@@ -383,8 +383,14 @@ def configure_llm_mock(config: Any) -> None:
         return
     os.environ["MOCK_LLM_RESPONSE"] = "true"
     _litellm_mock_requested = True
-    if not getattr(getattr(config, "option", None), "collectonly", False):
-        # Executing tests retain the existing eager module-initialization context.
+    option = getattr(config, "option", None)
+    distributed_controller = (
+        not hasattr(config, "workerinput")
+        and getattr(option, "dist", "no") != "no"
+        and bool(getattr(option, "numprocesses", None) or getattr(option, "tx", None))
+    )
+    if not getattr(option, "collectonly", False) and not distributed_controller:
+        # Executing workers and serial tests retain eager initialization.
         import_module("reflexio.provider_bootstrap")
         module = import_module("litellm")
         _activate_litellm_mock(module)
