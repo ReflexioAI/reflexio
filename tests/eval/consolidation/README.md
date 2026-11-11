@@ -31,7 +31,9 @@ A live evaluation can construct a provider with:
 
 ```python
 provider = make_consolidation_decision_provider(llm_client=real_client)
-results = run_eval(cases=load_illustrative_cases(), decision_provider=provider, llm_client=judge)
+results = run_eval(
+    cases=load_illustrative_cases(), decision_provider=provider, llm_client=judge
+)
 ```
 
 For manual paid prompt comparisons, supply directories containing all three

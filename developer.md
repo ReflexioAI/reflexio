@@ -226,6 +226,7 @@ curl http://localhost:$BACKEND_PORT/...
 Or with the Python client:
 ```python
 from reflexio import ReflexioClient
+
 client = ReflexioClient(url_endpoint=f"http://localhost:{BACKEND_PORT}")
 ```
 
@@ -1460,9 +1461,7 @@ keys = APIKeyConfig(
 client = LiteLLMClient(
     LiteLLMConfig(model="openai/orcarouter/auto", api_key_config=keys)
 )
-response = client.generate_chat_response(
-    [{"role": "user", "content": "Hello"}]
-)
+response = client.generate_chat_response([{"role": "user", "content": "Hello"}])
 ```
 
 For Reflexio's backend, store this `keys` object in the existing

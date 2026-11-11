@@ -327,9 +327,15 @@ response = client.generate_response("Hello")  # Returns str
 
 # Structured output with Pydantic model
 from pydantic import BaseModel
+
+
 class Answer(BaseModel):
     result: int
-response = client.generate_response("What is 2+2?", response_format=Answer)  # Returns Answer instance
+
+
+response = client.generate_response(
+    "What is 2+2?", response_format=Answer
+)  # Returns Answer instance
 ```
 
 **Rules**:

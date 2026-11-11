@@ -205,9 +205,7 @@ workflow. See the [CLI reference](reflexio/cli/README.md) for all input modes
 ```python
 import reflexio
 
-client = reflexio.ReflexioClient(
-    url_endpoint="http://localhost:8061/"
-)
+client = reflexio.ReflexioClient(url_endpoint="http://localhost:8061/")
 
 # A conversation is a session. Bind it once, then every call you make
 # through `session` carries it — so the searches that fed the agent and
@@ -220,9 +218,12 @@ session = client.for_session("deploy-demo-1")
 session.publish_interaction(
     user_id="alice",
     interactions=[
-        {"role": "user",      "content": "Deploy the new service."},
+        {"role": "user", "content": "Deploy the new service."},
         {"role": "assistant", "content": "Starting deployment to us-east-1..."},
-        {"role": "user",      "content": "Wait — we never deploy production to us-east-1. Always use us-west-2."},
+        {
+            "role": "user",
+            "content": "Wait — we never deploy production to us-east-1. Always use us-west-2.",
+        },
         {"role": "assistant", "content": "Understood. Switching to us-west-2."},
     ],
 )
@@ -367,9 +368,7 @@ pip install reflexio-ai
 ```python
 import reflexio
 
-client = reflexio.ReflexioClient(
-    url_endpoint="http://localhost:8061/"
-)
+client = reflexio.ReflexioClient(url_endpoint="http://localhost:8061/")
 
 # Bind the conversation's session id once. Recommended: it keeps the
 # searches that retrieve context and the turns you publish correlated,
@@ -383,10 +382,10 @@ context = session.search(query="deployment region preference", user_id="user-123
 session.publish_interaction(
     user_id="user-123",
     interactions=[
-        {"role": "user",      "content": "..."},
+        {"role": "user", "content": "..."},
         {"role": "assistant", "content": "..."},
     ],
-    agent_version="v1",       # optional: track agent versions
+    agent_version="v1",  # optional: track agent versions
 )
 
 # Search profiles
@@ -403,10 +402,12 @@ playbooks = client.get_agent_playbooks(agent_version="v1")
 
 ```python
 # Apply a targeted configuration change without resending the full Config.
-client.update_config({
-    "window_size": 20,
-    "stride_size": 10,
-})
+client.update_config(
+    {
+        "window_size": 20,
+        "stride_size": 10,
+    }
+)
 ```
 
 Use `set_config()` only when replacing the complete configuration, including
@@ -431,6 +432,7 @@ pip install 'reflexio-ai[mem0]'
 ```python
 # Before
 from mem0 import MemoryClient
+
 # After
 from reflexio.mem0 import MemoryClient
 
@@ -588,8 +590,9 @@ expired records. Window completion timestamps are recorded inside the fenced
 commit transaction and survive acknowledgement; older receipts stay unknown.
 
 ```python
-client.publish_interaction(user_id="u", session_id="s", interactions=messages,
-                           session_finished=True)
+client.publish_interaction(
+    user_id="u", session_id="s", interactions=messages, session_finished=True
+)
 # Or signal completion after messages were already saved:
 client.finalize_session(user_id="u", session_id="s")
 ```

@@ -33,7 +33,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from hashlib import sha256
-from typing import Any
+from typing import Any, NoReturn
 
 from pydantic import ValidationError
 
@@ -107,7 +107,7 @@ _INVOCATION_IDENTITY_FIELDS = (
 )
 
 
-def _refuse(refusal: OpenWorldRefusal, message: str) -> Any:
+def _refuse(refusal: OpenWorldRefusal, message: str) -> NoReturn:
     rule.refuse(refusal, message)
 
 
@@ -1584,7 +1584,8 @@ class SQLiteOpenWorldAttemptMixin:
             ).fetchone()
             method = None if authority is None else authority["method_authority_json"]
             if (
-                method is None
+                authority is None
+                or method is None
                 or rule.json_digest(json.loads(method)) != authority["authority_digest"]
                 or rule.text(rule.get(json.loads(method), "policy_id"))
                 != RULE_EVIDENCE_POLICY_ID

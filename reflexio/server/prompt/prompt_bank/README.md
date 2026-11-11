@@ -68,8 +68,7 @@ Your prompt content with {var1} and {var2} placeholders.
 ```python
 # Access via request_context
 rendered = request_context.prompt_manager.render_prompt(
-    "profile_update_main",
-    {"variable1": "value1", "variable2": "value2"}
+    "profile_update_main", {"variable1": "value1", "variable2": "value2"}
 )
 ```
 
