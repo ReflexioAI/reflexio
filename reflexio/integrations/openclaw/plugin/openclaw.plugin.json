@@ -28,13 +28,6 @@
             "default": 3,
             "description": "Requested results per search arm."
           },
-          "min_prompt_length": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991,
-            "default": 5,
-            "description": "Minimum trimmed prompt length before retrieval; zero admits every nonempty prompt."
-          },
           "timeout_ms": {
             "type": "integer",
             "minimum": 1,
