@@ -818,6 +818,24 @@ Failure or expiry refuses the search before served-state recording. Existing
 agent and user playbook selection remain independent. The selected method is
 one production path, without an experiment flag or a second engine.
 
+### Joint playbook selection
+
+A deployment may install `JOINT_PLAYBOOK_SELECTOR` for unified `/api/search`.
+Native retrieval keeps its existing scope and filters, then supplies up to twenty
+candidates per playbook type after native temporal ordering. The provider receives
+the same resolved standalone query used by native retrieval. The selected provider orders or removes those
+original objects. It returns up to five agent playbooks, suppresses their source
+user playbooks, then returns up to five remaining user playbooks. A smaller
+caller `top_k` is respected. Profile retrieval and Profile Fusion retain their
+existing limits and policy. Other search endpoints keep their existing behavior.
+
+The joint provider replaces the per-type selectors on this path. A provider
+failure raises `ReadinessUnavailableError`, which the API reports as unavailable.
+An accepted selection may legitimately return empty lists. Joint selection also
+refuses unavailable source linkage before accepting the result. Session dedup records
+only the final response after acceptance. A deployment without the joint provider
+uses the existing native/per-type selection path.
+
 ### Search request deadlines
 
 The HTTP search work budget is `REFLEXIO_SEARCH_TIMEOUT_SECONDS` for unified
