@@ -342,6 +342,7 @@ def _activate_litellm_mock(module: Any) -> None:
 
 def inline_test_completion(params: dict[str, Any], _deadline: float) -> Any:
     """Explicit unit-test transport; production always owns an isolated worker."""
+    import_module("reflexio._provider_bootstrap")
     from litellm.exceptions import ContextWindowExceededError
 
     from reflexio.server.llm._model_compat import model_completion
@@ -419,6 +420,7 @@ def litellm_is_patched() -> bool:
     Returns:
         bool: True when a patcher has replaced ``litellm.completion``.
     """
+    import_module("reflexio._provider_bootstrap")
     import litellm
 
     return isinstance(litellm.completion, NonCallableMock | MagicMock)
@@ -451,6 +453,7 @@ def unpatched_litellm() -> Iterator[None]:
     global _litellm_mock_requested
     requested = _litellm_mock_requested
     if requested:
+        import_module("reflexio._provider_bootstrap")
         import_module("litellm")
     patcher = _litellm_patcher if requested else None
     previous_flag = os.environ.get("MOCK_LLM_RESPONSE")
