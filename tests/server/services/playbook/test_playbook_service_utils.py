@@ -1241,3 +1241,38 @@ def test_prompt_and_evidence_capture_one_turn_budget(monkeypatch):
     assert content not in context.text
     for segment in context.evidence_sources["T1"].evidence_texts:
         assert segment in context.text
+
+
+def test_repeated_expert_question_keeps_every_displayed_source_segment():
+    context = _evidence_context(
+        [
+            Interaction(
+                interaction_id=1,
+                request_id="evidence-request",
+                user_id="user",
+                role="user",
+                content="Visible question.",
+                expert_content="Visible correction to the question.",
+                created_at=1,
+            ),
+            Interaction(
+                interaction_id=2,
+                request_id="evidence-request",
+                user_id="user",
+                role="assistant",
+                content="Visible agent response.",
+                expert_content="Visible corrected response.",
+                created_at=2,
+            ),
+        ],
+        expert=True,
+    )
+    assert context.text.count("Visible question.") == 2
+    assert "Visible correction to the question." in context.text
+    assert context.evidence_sources["T1"].evidence_texts == (
+        "Visible question.",
+        "Visible correction to the question.",
+    )
+    assert context.evidence_units["T1"].source_span == (
+        "Visible question.\n\nVisible correction to the question."
+    )

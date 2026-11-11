@@ -689,6 +689,9 @@ def build_playbook_prompt_context(
 
     def remember_evidence(interaction: Interaction, texts: tuple[str, ...]) -> None:
         turn_ref = ref_by_object_id[id(interaction)]
+        previous = evidence_sources.get(turn_ref)
+        if previous is not None:
+            texts = tuple(dict.fromkeys((*previous.evidence_texts, *texts)))
         source = PlaybookEvidenceSource(
             interaction_id=interaction.interaction_id,
             request_id=interaction.request_id,
