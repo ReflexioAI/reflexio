@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
 
+from reflexio.server import search_runtime
 from reflexio.server.extensions import ServiceKey, get_service
 from reflexio.server.services.storage.error import ReadinessUnavailableError
 
@@ -58,9 +59,15 @@ def select_playbooks(
 ) -> tuple[list[AgentPlaybook], list[UserPlaybook]]:
     """Enforce native identity at the shared selection boundary."""
     originals = (tuple(agent_playbooks), tuple(user_playbooks))
+    search_runtime.increment(
+        "search.playbooks.selector_input_agents", len(originals[0])
+    )
+    search_runtime.increment("search.playbooks.selector_input_users", len(originals[1]))
     if any(len(items) > PLAYBOOK_CANDIDATE_LIMIT for items in originals):
         raise ReadinessUnavailableError("Playbook candidate limit exceeded")
     if not any(originals):
+        search_runtime.increment("search.playbooks.selected_agents", 0)
+        search_runtime.increment("search.playbooks.selected_users", 0)
         return [], []
     original_identifiers = [
         (item, attribute, getattr(item, attribute))
@@ -98,4 +105,6 @@ def select_playbooks(
             raise ReadinessUnavailableError(
                 "Playbook selection requires distinct original items"
             )
+    search_runtime.increment("search.playbooks.selected_agents", len(selected[0]))
+    search_runtime.increment("search.playbooks.selected_users", len(selected[1]))
     return selected

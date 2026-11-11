@@ -63,7 +63,10 @@ from reflexio.server.services.retrieval.recency import (
     decay_for_item,
     multiplicative_factor,
 )
-from reflexio.server.services.retrieval.relevance_floor import apply_relevance_floors
+from reflexio.server.services.retrieval.relevance_floor import (
+    RelevanceFloorResult,
+    apply_relevance_floors,
+)
 from reflexio.server.services.retrieval.session_dedup import (
     EntityKey,
     session_seen_cache,
@@ -190,6 +193,12 @@ def run_unified_search(
     floor_cfg = retrieval_floor or RetrievalFloorConfig()
     floor_on = floor_cfg.candidate_pool_size > 0 and reranker_enabled()
     recency_on = bool(recency and recency.enabled)
+    _validate_joint_floor_policy(
+        request,
+        floor_cfg,
+        joint_selection=joint_selector is not None,
+        floor_on=floor_on,
+    )
 
     # --- Phase A: query reformulation (+ temporal signals) + embedding ---
     reformulation, embedding, embedding_failed = _run_phase_a(
@@ -204,6 +213,9 @@ def run_unified_search(
         search_mode=request.search_mode,
     )
     reformulated_query = reformulation.standalone_query
+    search_runtime.increment(
+        "search.query_reformulated", int(reformulated_query != request.query)
+    )
 
     # Degrade-to-FTS: when embedding GENERATION failed (distinct from the
     # benign None cases), force the effective mode to FTS for the entire
@@ -318,6 +330,11 @@ def run_unified_search(
         )
         profiles = []
 
+    search_runtime.increment(
+        "search.playbooks.native_agents", len(agent_playbooks or [])
+    )
+    search_runtime.increment("search.playbooks.native_users", len(user_playbooks or []))
+
     if seen_keys:
         # Drop before the floors so seen items spend no cross-encoder budget.
         profiles = _drop_seen_items(profiles or [], "profile", seen_keys)
@@ -338,6 +355,7 @@ def run_unified_search(
             cfg=floor_cfg,
             recency=recency if recency_on else None,
             playbook_top_k=playbook_cap,
+            joint_playbook_selection=joint_selector is not None,
         )
     elif recency_on and recency is not None:
         profiles = _apply_combined_score_recency(
@@ -1026,6 +1044,26 @@ def _run_phase_b_single_rpc(
     return profiles, deduped, user_playbooks
 
 
+def _validate_joint_floor_policy(
+    request: UnifiedSearchRequest,
+    cfg: RetrievalFloorConfig,
+    *,
+    joint_selection: bool,
+    floor_on: bool,
+) -> None:
+    if not joint_selection or cfg.candidate_pool_size == 0 or floor_on:
+        return
+    requested = set(request.entity_types or _DEFAULT_ENTITY_TYPES)
+    if any(
+        arm in requested and getattr(cfg, name) is not None
+        for arm, name in (
+            ("agent_playbooks", "agent_playbook_floor"),
+            ("user_playbooks", "user_playbook_floor"),
+        )
+    ):
+        raise ReadinessUnavailableError("Explicit playbook floor requires reranking")
+
+
 def _apply_floors(
     query: str,
     profiles: list[UserProfile],
@@ -1035,19 +1073,43 @@ def _apply_floors(
     cfg: RetrievalFloorConfig,
     recency: RecencyConfig | None = None,
     playbook_top_k: int | None = None,
+    joint_playbook_selection: bool = False,
 ) -> tuple[list[UserProfile], list[AgentPlaybook], list[UserPlaybook]]:
     """Apply the per-arm relevance floor with one batched cross-encoder call."""
     playbook_top_k = top_k if playbook_top_k is None else playbook_top_k
-    floored_profiles, floored_agent, floored_user = apply_relevance_floors(
+    arms = [
+        ("profiles", profiles, cfg.profile_floor),
+        ("agent_playbooks", agent_playbooks, cfg.agent_playbook_floor),
+        ("user_playbooks", user_playbooks, cfg.user_playbook_floor),
+    ]
+    # A joint selector owns default playbook semantics. Explicit numeric Content
+    # floors remain independent organization restrictions, including zero.
+    required = [
+        arm
+        for arm in arms
+        if not (joint_playbook_selection and arm[0] != "profiles" and arm[2] is None)
+    ]
+    evaluated = apply_relevance_floors(
         query,
-        [
-            ("profiles", profiles, cfg.profile_floor),
-            ("agent_playbooks", agent_playbooks, cfg.agent_playbook_floor),
-            ("user_playbooks", user_playbooks, cfg.user_playbook_floor),
-        ],
+        required,
         top_k,
         content_of=lambda item: _unwrap_item(item).content,
     )
+    results = {arm[0]: result for arm, result in zip(required, evaluated, strict=True)}
+    for name, items, floor in arms:
+        if name not in results:
+            results[name] = RelevanceFloorResult(list(items), None)
+        elif (
+            joint_playbook_selection
+            and name != "profiles"
+            and floor is not None
+            and items
+            and results[name].scores is None
+        ):
+            raise ReadinessUnavailableError(
+                "Explicit playbook floor could not be enforced"
+            )
+    floored_profiles, floored_agent, floored_user = [results[arm[0]] for arm in arms]
     return (
         _finalize_floor_arm(
             floored_profiles, entity_type="profiles", top_k=top_k, recency=recency
@@ -1170,6 +1232,7 @@ def _suppress_source_user_playbooks(
 ) -> list[UserPlaybook]:
     """Drop user playbooks already represented by returned agent playbooks."""
     if not agent_playbooks or not user_playbooks:
+        search_runtime.increment("search.playbooks.suppressed_source_users", 0)
         return user_playbooks
 
     source_user_playbook_ids: set[int] = set()
@@ -1211,6 +1274,7 @@ def _suppress_source_user_playbooks(
                 )
 
     if not source_user_playbook_ids:
+        search_runtime.increment("search.playbooks.suppressed_source_users", 0)
         return user_playbooks
 
     filtered = [
@@ -1220,6 +1284,7 @@ def _suppress_source_user_playbooks(
         not in source_user_playbook_ids
     ]
     suppressed_count = len(user_playbooks) - len(filtered)
+    search_runtime.increment("search.playbooks.suppressed_source_users", suppressed_count)
     if suppressed_count:
         with profile_step(
             "search.suppress_source_user_playbooks",
