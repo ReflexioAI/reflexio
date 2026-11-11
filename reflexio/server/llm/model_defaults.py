@@ -130,22 +130,27 @@ def detect_available_providers(
         if os.environ.get(env_var):
             available.add(provider)
 
-    # Authenticated CLI providers retain their explicit opt-ins. The local
-    # embedder advertises dependencies only; model selection owns execution.
-    from reflexio.server.llm.providers.claude_code_provider import (
-        is_claude_code_available,
-    )
+    # Disabled CLI adapters cannot contribute a provider; avoid importing
+    # their execution libraries just to rediscover the explicit opt-out.
+    from reflexio.server.env_utils import env_truthy
     from reflexio.server.llm.providers.local_embedding_provider import (
         is_local_embedder_available,
     )
-    from reflexio.server.llm.providers.openclaw_provider import (
-        is_openclaw_available,
-    )
 
-    if is_claude_code_available():
-        available.add(_CLAUDE_CODE_PROVIDER)
-    if is_openclaw_available():
-        available.add(_OPENCLAW_PROVIDER)
+    if env_truthy(os.environ.get(_CLAUDE_CODE_ENABLE_ENV, "")):
+        from reflexio.server.llm.providers.claude_code_provider import (
+            is_claude_code_available,
+        )
+
+        if is_claude_code_available():
+            available.add(_CLAUDE_CODE_PROVIDER)
+    if env_truthy(os.environ.get("OPENCLAW_SMART_USE_LOCAL_CLI", "")):
+        from reflexio.server.llm.providers.openclaw_provider import (
+            is_openclaw_available,
+        )
+
+        if is_openclaw_available():
+            available.add(_OPENCLAW_PROVIDER)
     if is_local_embedder_available():
         available.add(_LOCAL_EMBEDDING_PROVIDER)
 

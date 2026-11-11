@@ -187,3 +187,70 @@ else:
         tmp_path,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "role", ["controller", "worker", "scheduler-only", "transport-controller"]
+)
+def test_distributed_controller_defers_mock_but_executors_remain_eager(role, tmp_path):
+    result = run_probe(
+        _ORDER_GUARD
+        + """
+from types import SimpleNamespace
+from unittest.mock import Mock
+from reflexio.test_support.llm_mock import configure_llm_mock, cleanup_llm_mock
+role = ROLE
+controller = role in ("controller", "transport-controller")
+config = SimpleNamespace(args=[], option=SimpleNamespace(
+    collectonly=False,
+    dist="load",
+    numprocesses=2 if role in ("controller", "worker") else 0,
+    tx=["popen"] if role != "scheduler-only" else [],
+))
+if role == "worker":
+    config.workerinput = {}
+configure_llm_mock(config)
+assert ("litellm" in sys.modules) == (not controller)
+from reflexio.server.llm import litellm_client
+import litellm
+assert isinstance(litellm.completion, Mock)
+cleanup_llm_mock(config)
+assert not isinstance(litellm.completion, Mock)
+""".replace("ROLE", repr(role)),
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_keyless_provider_floor_does_not_import_disabled_cli_adapters(tmp_path):
+    result = run_probe(
+        """
+import os
+import sys
+from reflexio.server.llm.model_defaults import provider_env_vars
+from reflexio.test_support.llm_credentials import ensure_provider_credential
+for name in provider_env_vars():
+    os.environ.pop(name, None)
+os.environ.pop("CLAUDE_SMART_USE_LOCAL_CLI", None)
+os.environ.pop("OPENCLAW_SMART_USE_LOCAL_CLI", None)
+ensure_provider_credential()
+assert os.environ["OPENAI_API_KEY"] == "sk-placeholder-mock"
+assert "reflexio.server.llm.providers.claude_code_provider" not in sys.modules
+assert "reflexio.server.llm.providers.openclaw_provider" not in sys.modules
+assert "litellm" not in sys.modules
+assert "openai" not in sys.modules
+""",
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_llm_fixture_definitions_do_not_load_provider_runtime(tmp_path):
+    fixture_path = Path(__file__).with_name("conftest.py").resolve()
+    result = run_probe(
+        "import runpy, sys\n"
+        + f"runpy.run_path({str(fixture_path)!r})\n"
+        + "assert 'litellm' not in sys.modules\nassert 'openai' not in sys.modules\n",
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

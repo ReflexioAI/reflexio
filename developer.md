@@ -1914,3 +1914,10 @@ ahead of the dependency, including in consumers outside the LLM package.
 The eager test mock enters the same bootstrap; collection-only mocking retains
 its post-import activation. Fresh-process tests cover ordering, concurrent first
 imports and completion restoration.
+
+Provider discovery skips importing a CLI execution adapter when its existing
+opt-in is disabled. This retains enabled-provider availability checks and
+priority. Distributed pytest controllers use the collection-only deferred mock
+hook; executing workers and serial runs still initialize mocks eagerly. Keep
+fixture imports used only in annotations under `TYPE_CHECKING`, so controller
+configuration does not load execution code through those definitions.
