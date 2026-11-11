@@ -493,3 +493,38 @@ def test_contended_provider_records_queue_before_execution(monkeypatch):
         "retirement",
     }
     assert sem.acquire(blocking=False)
+
+
+def test_named_http_transport_shares_provider_capacity(monkeypatch):
+    monkeypatch.setattr(pc, "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(pc, "_per_provider_cap", {})
+    monkeypatch.setattr(pc, "_semaphores", {})
+    monkeypatch.setattr(pc, "_provider_key", lambda _: "typesafe")
+    with (
+        pc.named_provider_slot("typesafe"),
+        pytest.raises(pc.ProviderCapSaturatedError),
+        pc.provider_slot("registered-model", max_wait=0.001),
+    ):
+        pytest.fail("another transport bypassed Typesafe capacity")
+    with (
+        pc.provider_slot("registered-model"),
+        pytest.raises(pc.ProviderCapSaturatedError),
+        pc.named_provider_slot("typesafe", max_wait=0.001),
+    ):
+        pytest.fail("named transport bypassed existing capacity")
+    assert pc._get_semaphore("typesafe")._value == 1
+
+
+def test_named_transport_retains_capacity_until_work_retires(monkeypatch):
+    monkeypatch.setattr(pc, "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(pc, "_per_provider_cap", {})
+    monkeypatch.setattr(pc, "_semaphores", {})
+    with pc.named_provider_slot("typesafe"):
+        release = pc.retain_current_provider_slot()
+    with (
+        pytest.raises(pc.ProviderCapSaturatedError),
+        pc.named_provider_slot("typesafe", max_wait=0.001),
+    ):
+        pytest.fail("retiring work lost its permit")
+    release()
+    assert pc._get_semaphore("typesafe")._value == 1

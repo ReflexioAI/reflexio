@@ -49,6 +49,12 @@ from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.embedding_text import resolve_retrieval_threshold
 from reflexio.server.services.pre_retrieval import QueryReformulator
 from reflexio.server.services.retrieval.agent_selection import select_agent_playbooks
+from reflexio.server.services.retrieval.playbook_selection import (
+    PLAYBOOK_CANDIDATE_LIMIT,
+    PLAYBOOK_RESULT_LIMIT,
+    joint_playbook_selector,
+    select_playbooks,
+)
 from reflexio.server.services.retrieval.profile_selection import select_profiles
 from reflexio.server.services.retrieval.recency import (
     RecencyConfig,
@@ -175,6 +181,7 @@ def run_unified_search(
         )
 
     top_k = request.top_k if request.top_k is not None else 5
+    joint_selector = joint_playbook_selector(request)
     threshold = resolve_retrieval_threshold(
         request.threshold,
         model_name=storage.embedding_model_name,
@@ -241,13 +248,26 @@ def run_unified_search(
     seen_keys = (
         session_seen_cache.seen(org_id, session_id) if session_id else frozenset()
     )
-    if seen_keys:
-        fetch_k += min(len(seen_keys), _SESSION_DEDUP_FETCH_BUMP_CAP)
+    session_fetch_bump = min(len(seen_keys), _SESSION_DEDUP_FETCH_BUMP_CAP)
+    fetch_k += session_fetch_bump
 
     # Temporal ordering must see the full admitted working pool, including
     # configured rerank/recency candidates and session backfill. Cutting to the
     # default temporal floor here would discard fresh candidates already fetched.
     result_cap = fetch_k if temporal_reorder else top_k
+    # Preserve every admitted temporal candidate until freshness/recency has
+    # ordered the working pool. The joint selector's twenty-item limit applies
+    # only after that native post-processing.
+    playbook_cap = (
+        max(PLAYBOOK_CANDIDATE_LIMIT, result_cap)
+        if joint_selector is not None
+        else result_cap
+    )
+    playbook_fetch_k = (
+        max(fetch_k, PLAYBOOK_CANDIDATE_LIMIT + session_fetch_bump)
+        if joint_selector is not None
+        else fetch_k
+    )
 
     # --- Phase B: parallel searches across all entity types ---
     profiles, agent_playbooks, user_playbooks = _run_phase_b(
@@ -257,6 +277,7 @@ def run_unified_search(
         embedding=embedding,
         query=reformulated_query,
         top_k=fetch_k,
+        playbook_top_k=playbook_fetch_k,
         threshold=threshold,
         recency_on=recency_on,
         start_time=window_start,
@@ -316,6 +337,7 @@ def run_unified_search(
             top_k=result_cap,
             cfg=floor_cfg,
             recency=recency if recency_on else None,
+            playbook_top_k=playbook_cap,
         )
     elif recency_on and recency is not None:
         profiles = _apply_combined_score_recency(
@@ -324,19 +346,19 @@ def run_unified_search(
         agent_playbooks = _apply_combined_score_recency(
             agent_playbooks or [],
             entity_type="agent_playbooks",
-            top_k=result_cap,
+            top_k=playbook_cap,
             cfg=recency,
         )
         user_playbooks = _apply_combined_score_recency(
             user_playbooks or [],
             entity_type="user_playbooks",
-            top_k=result_cap,
+            top_k=playbook_cap,
             cfg=recency,
         )
     else:
         profiles = _unwrap_items(profiles or [])[:result_cap]
-        agent_playbooks = _unwrap_items(agent_playbooks or [])[:result_cap]
-        user_playbooks = _unwrap_items(user_playbooks or [])[:result_cap]
+        agent_playbooks = _unwrap_items(agent_playbooks or [])[:playbook_cap]
+        user_playbooks = _unwrap_items(user_playbooks or [])[:playbook_cap]
 
     # --- Temporal post-processing from query-derived signals ---
     if temporal_reorder:
@@ -347,16 +369,39 @@ def run_unified_search(
             arms = [sort_by_recency(arm) for arm in arms]
         # Final cut to top_k only after the temporal pass, so items promoted
         # from the wider pool can take the top slots.
-        profiles, agent_playbooks, user_playbooks = (arm[:top_k] for arm in arms)
+        temporal_playbook_cap = top_k if joint_selector is None else playbook_cap
+        profiles = arms[0][:top_k]
+        agent_playbooks = arms[1][:temporal_playbook_cap]
+        user_playbooks = arms[2][:temporal_playbook_cap]
 
     # Reranking can fail open after consuming the request budget. Do not enter
     # a fresh storage lookup after that; transport guards are the final barrier.
     search_runtime.checkpoint()
-    user_playbooks = _suppress_source_user_playbooks(
-        storage=storage,
-        agent_playbooks=agent_playbooks or [],
-        user_playbooks=user_playbooks or [],
-    )
+    if joint_selector is not None:
+        with profile_step("search.playbook_selection"):
+            agent_playbooks, user_playbooks = select_playbooks(
+                provider=joint_selector,
+                agent_playbooks=(agent_playbooks or [])[:PLAYBOOK_CANDIDATE_LIMIT],
+                user_playbooks=(user_playbooks or [])[:PLAYBOOK_CANDIDATE_LIMIT],
+                request=request.model_copy(update={"query": reformulated_query}),
+                org_id=org_id,
+                storage=storage,
+                degraded=embedding_failed or profiles_degraded,
+            )
+        search_runtime.checkpoint()
+        agent_playbooks = agent_playbooks[: min(top_k, PLAYBOOK_RESULT_LIMIT)]
+        user_playbooks = _suppress_source_user_playbooks(
+            storage=storage,
+            agent_playbooks=agent_playbooks,
+            user_playbooks=user_playbooks,
+            strict=True,
+        )[: min(top_k, PLAYBOOK_RESULT_LIMIT)]
+    else:
+        user_playbooks = _suppress_source_user_playbooks(
+            storage=storage,
+            agent_playbooks=agent_playbooks or [],
+            user_playbooks=user_playbooks or [],
+        )
 
     response = UnifiedSearchResponse(
         success=True,
@@ -374,36 +419,37 @@ def run_unified_search(
     # provider refusal propagates; failed selection cannot serve native agents
     # as a successful substitute or consume their session-dedup identities.
     search_runtime.checkpoint()
-    with profile_step("search.agent_selection") as selection_span:
-        native_agents = response.agent_playbooks
-        selected_agents = select_agent_playbooks(
-            items=native_agents,
-            query_embedding=embedding,
-            storage=storage,
-            request=request,
-            org_id=org_id,
-            degraded=response.degraded,
-        )
-        response = response.model_copy(update={"agent_playbooks": selected_agents})
-        selection_span.set_data("input_count", len(native_agents))
-        selection_span.set_data("returned_count", len(selected_agents))
-    with profile_step("search.user_selection") as selection_span:
-        native_users = response.user_playbooks
-        selected_users = select_user_playbooks(
-            items=native_users,
-            storage=storage,
-            request=request,
-            org_id=org_id,
-            degraded=response.degraded,
-            created_after=window_start,
-            created_before=window_end,
-            excluded_ids=frozenset(
-                int(key) for kind, key in seen_keys if kind == "user_playbook"
-            ),
-        )
-        response = response.model_copy(update={"user_playbooks": selected_users})
-        selection_span.set_data("input_count", len(native_users))
-        selection_span.set_data("returned_count", len(selected_users))
+    if joint_selector is None:
+        with profile_step("search.agent_selection") as selection_span:
+            native_agents = response.agent_playbooks
+            selected_agents = select_agent_playbooks(
+                items=native_agents,
+                query_embedding=embedding,
+                storage=storage,
+                request=request,
+                org_id=org_id,
+                degraded=response.degraded,
+            )
+            response = response.model_copy(update={"agent_playbooks": selected_agents})
+            selection_span.set_data("input_count", len(native_agents))
+            selection_span.set_data("returned_count", len(selected_agents))
+        with profile_step("search.user_selection") as selection_span:
+            native_users = response.user_playbooks
+            selected_users = select_user_playbooks(
+                items=native_users,
+                storage=storage,
+                request=request,
+                org_id=org_id,
+                degraded=response.degraded,
+                created_after=window_start,
+                created_before=window_end,
+                excluded_ids=frozenset(
+                    int(key) for kind, key in seen_keys if kind == "user_playbook"
+                ),
+            )
+            response = response.model_copy(update={"user_playbooks": selected_users})
+            selection_span.set_data("input_count", len(native_users))
+            selection_span.set_data("returned_count", len(selected_users))
     # The qualified source/threshold contract is multilingual E5. Other model
     # policies retain their existing profile behavior.
     if response.profiles is not None and is_multilingual_e5_model(
@@ -607,6 +653,7 @@ def _run_phase_b(
     end_time: datetime | None = None,
     search_mode: SearchMode = SearchMode.HYBRID,
     record_request_diagnostics: bool = True,
+    playbook_top_k: int | None = None,
 ) -> tuple[
     list[Any] | None,
     list[Any] | None,
@@ -669,6 +716,7 @@ def _run_phase_b(
             recency_on=recency_on,
         )
     allowed_agent_statuses = request.agent_playbook_status_filter
+    playbook_top_k = top_k if playbook_top_k is None else playbook_top_k
     try:
         with profile_step(
             "search.phase_b",
@@ -690,6 +738,7 @@ def _run_phase_b(
             has_time_window = start_time is not None or end_time is not None
             if (
                 not has_time_window
+                and (playbook_top_k == top_k or recency_on)
                 and _unified_single_rpc_enabled()
                 and (
                     getattr(storage, "supports_unified_hybrid_search", False)
@@ -703,6 +752,7 @@ def _run_phase_b(
                     embedding=embedding,
                     query=query,
                     top_k=top_k,
+                    playbook_top_k=playbook_top_k,
                     threshold=threshold,
                     entity_types=entity_types,
                     allowed_agent_statuses=allowed_agent_statuses,
@@ -754,7 +804,7 @@ def _run_phase_b(
                     _search_agent_playbooks_via_storage,
                     storage,
                     query,
-                    top_k,
+                    playbook_top_k,
                     threshold,
                     request.agent_version,
                     request.playbook_name,
@@ -778,7 +828,7 @@ def _run_phase_b(
                     tags=request.tags,
                     status_filter=None,
                     threshold=threshold,
-                    top_k=top_k,
+                    top_k=playbook_top_k,
                     search_mode=search_mode,
                     start_time=start_time,
                     end_time=end_time,
@@ -863,6 +913,7 @@ def _run_phase_b_single_rpc(
     allowed_agent_statuses: list[PlaybookStatus] | None,
     recency_on: bool = False,
     search_mode: SearchMode = SearchMode.HYBRID,
+    playbook_top_k: int | None = None,
 ) -> tuple[list[Any], list[Any], list[Any]] | None:
     """Run all Phase B arms through one combined storage round trip.
 
@@ -877,6 +928,38 @@ def _run_phase_b_single_rpc(
         is not yet migrated on this deployment). Timeouts propagate like the
         fan-out path so a hung database is not retried.
     """
+    # Keep the original profile RRF population when playbooks need a wider
+    # scored pool. A larger common SQL match count can change profile ranking
+    # before any application-level slice, so each count uses its native RPC.
+    if playbook_top_k is not None and playbook_top_k != top_k:
+        if "profiles" not in entity_types:
+            top_k = playbook_top_k
+        else:
+            common: dict[str, Any] = {
+                "request": request,
+                "storage": storage,
+                "embedding": embedding,
+                "query": query,
+                "threshold": threshold,
+                "allowed_agent_statuses": allowed_agent_statuses,
+                "recency_on": recency_on,
+                "search_mode": search_mode,
+            }
+            profiles = _run_phase_b_single_rpc(
+                **common, top_k=top_k, entity_types={"profiles"}
+            )
+            if profiles is None:
+                return None
+            search_runtime.checkpoint()
+            playbooks = _run_phase_b_single_rpc(
+                **common,
+                top_k=playbook_top_k,
+                entity_types=entity_types - {"profiles"},
+            )
+            if playbooks is None:
+                return None
+            return profiles[0], playbooks[1], playbooks[2]
+
     statuses = (
         list(allowed_agent_statuses)
         if allowed_agent_statuses
@@ -951,8 +1034,10 @@ def _apply_floors(
     top_k: int,
     cfg: RetrievalFloorConfig,
     recency: RecencyConfig | None = None,
+    playbook_top_k: int | None = None,
 ) -> tuple[list[UserProfile], list[AgentPlaybook], list[UserPlaybook]]:
     """Apply the per-arm relevance floor with one batched cross-encoder call."""
+    playbook_top_k = top_k if playbook_top_k is None else playbook_top_k
     floored_profiles, floored_agent, floored_user = apply_relevance_floors(
         query,
         [
@@ -970,13 +1055,13 @@ def _apply_floors(
         _finalize_floor_arm(
             floored_agent,
             entity_type="agent_playbooks",
-            top_k=top_k,
+            top_k=playbook_top_k,
             recency=recency,
         ),
         _finalize_floor_arm(
             floored_user,
             entity_type="user_playbooks",
-            top_k=top_k,
+            top_k=playbook_top_k,
             recency=recency,
         ),
     )
@@ -1081,6 +1166,7 @@ def _suppress_source_user_playbooks(
     storage: BaseStorage,
     agent_playbooks: list[AgentPlaybook],
     user_playbooks: list[UserPlaybook],
+    strict: bool = False,
 ) -> list[UserPlaybook]:
     """Drop user playbooks already represented by returned agent playbooks."""
     if not agent_playbooks or not user_playbooks:
@@ -1101,21 +1187,28 @@ def _suppress_source_user_playbooks(
         lookup = getattr(
             storage, "get_source_user_playbook_ids_for_agent_playbooks", None
         )
+        if strict and not callable(lookup):
+            raise ReadinessUnavailableError("Playbook source linkage is unavailable")
         if callable(lookup):
             try:
                 source_ids_by_agent = cast(
                     dict[int, list[int]], lookup(agent_ids_needing_lookup)
                 )
-            except Exception:
-                logger.warning(
-                    "Failed to resolve source user playbooks for unified search suppression",
-                    exc_info=True,
-                )
-            else:
                 for source_ids in source_ids_by_agent.values():
                     source_user_playbook_ids.update(
                         int(source_id) for source_id in source_ids
                     )
+            except search_runtime.SearchDeadlineError:
+                raise
+            except Exception as exc:
+                if strict:
+                    raise ReadinessUnavailableError(
+                        "Playbook source linkage is unavailable"
+                    ) from exc
+                logger.warning(
+                    "Failed to resolve source user playbooks for unified search suppression",
+                    exc_info=True,
+                )
 
     if not source_user_playbook_ids:
         return user_playbooks
