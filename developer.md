@@ -824,7 +824,8 @@ A deployment may install `JOINT_PLAYBOOK_SELECTOR` for unified `/api/search`.
 Native retrieval keeps its existing scope and filters, then supplies up to twenty
 candidates per playbook type after native temporal ordering. The provider receives
 the same resolved standalone query used by native retrieval. The selected provider
-orders or removes those original objects. Unified search finalization caps the
+orders or removes those original objects while preserving their native
+identifiers. Unified search finalization caps the
 selected agents at five, suppresses their source user playbooks, then caps the
 remaining users at five. Finalization respects a smaller caller `top_k`. Profile retrieval and Profile Fusion retain their
 existing limits and policy. When a mixed request needs scored recency retrieval

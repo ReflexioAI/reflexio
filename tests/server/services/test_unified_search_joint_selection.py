@@ -579,3 +579,35 @@ def test_lineage_lookup_preserves_deadline_and_never_accepts_session(native, joi
     finally:
         search_runtime._scope.reset(token)
     assert not session_seen_cache.seen("org", "source-deadline")
+
+
+@pytest.mark.parametrize("arm", ["agent_playbooks", "user_playbooks"])
+@pytest.mark.parametrize("returned", [True, False])
+def test_joint_rejects_original_identifier_mutation_before_lineage_or_session(
+    native, arm, returned
+):
+    attribute = "agent_playbook_id" if arm == "agent_playbooks" else "user_playbook_id"
+
+    def select(**kwargs):
+        setattr(kwargs[arm][0], attribute, 999)
+        agents, users = kwargs["agent_playbooks"], kwargs["user_playbooks"]
+        if not returned:
+            return agents[1:], users[1:]
+        return agents, users
+
+    register_service(JOINT_PLAYBOOK_SELECTOR, SimpleNamespace(select=select))
+    with pytest.raises(ReadinessUnavailableError, match="identifier"):
+        run(native, session_id="mutated-id")
+    native.storage.get_source_user_playbook_ids_for_agent_playbooks.assert_not_called()
+    assert not session_seen_cache.seen("org", "mutated-id")
+
+
+def test_joint_rejects_bool_identifier_equal_to_original_integer(native):
+    def select(**kwargs):
+        kwargs["agent_playbooks"][0].agent_playbook_id = True
+        return kwargs["agent_playbooks"], kwargs["user_playbooks"]
+
+    register_service(JOINT_PLAYBOOK_SELECTOR, SimpleNamespace(select=select))
+    with pytest.raises(ReadinessUnavailableError, match="identifier"):
+        run(native, session_id="bool-id")
+    assert not session_seen_cache.seen("org", "bool-id")

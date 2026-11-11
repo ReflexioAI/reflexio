@@ -62,6 +62,13 @@ def select_playbooks(
         raise ReadinessUnavailableError("Playbook candidate limit exceeded")
     if not any(originals):
         return [], []
+    original_identifiers = [
+        (item, attribute, getattr(item, attribute))
+        for items, attribute in zip(
+            originals, ("agent_playbook_id", "user_playbook_id"), strict=True
+        )
+        for item in items
+    ]
     selected = provider.select(
         agent_playbooks=list(originals[0]),
         user_playbooks=list(originals[1]),
@@ -70,6 +77,15 @@ def select_playbooks(
         storage=storage,
         degraded=degraded,
     )
+    for item, attribute, original_identifier in original_identifiers:
+        identifier = getattr(item, attribute, None)
+        if (
+            type(identifier) is not type(original_identifier)
+            or identifier != original_identifier
+        ):
+            raise ReadinessUnavailableError(
+                "Playbook selection changed a native identifier"
+            )
     if not isinstance(selected, tuple) or len(selected) != 2:
         raise ReadinessUnavailableError("Playbook selection requires two result lists")
     for items, native in zip(selected, originals, strict=True):
