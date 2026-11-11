@@ -1132,3 +1132,112 @@ class TestConsolidationSearchKeys:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def _evidence_context(interactions, *, expert=False):
+    request = Request(
+        request_id="evidence-request",
+        user_id="user",
+        source="test",
+        agent_version="v1",
+        session_id="session",
+    )
+    return build_playbook_prompt_context(
+        [
+            RequestInteractionDataModel(
+                session_id="session",
+                request=request,
+                interactions=interactions,
+            )
+        ],
+        expert=expert,
+        label_turns=True,
+    )
+
+
+def test_ordinary_evidence_omits_unshown_expert_content():
+    context = _evidence_context(
+        [
+            Interaction(
+                interaction_id=1,
+                request_id="evidence-request",
+                user_id="user",
+                role="assistant",
+                content="Visible reply.",
+                expert_content="Unshown expert correction.",
+            ),
+        ]
+    )
+    assert "Unshown expert correction." not in context.text
+    assert context.evidence_sources["T1"].evidence_texts == ("Visible reply.",)
+
+
+def test_expert_evidence_matches_complete_comparison_fields(monkeypatch):
+    monkeypatch.setenv("REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS", "4")
+    content = "start " * 20 + "VISIBLE_MIDDLE" + " end" * 20
+    context = _evidence_context(
+        [
+            Interaction(
+                interaction_id=1,
+                request_id="evidence-request",
+                user_id="user",
+                role="assistant",
+                content="Unshown old reply.",
+                created_at=1,
+            ),
+            Interaction(
+                interaction_id=2,
+                request_id="evidence-request",
+                user_id="user",
+                role="user",
+                content=content,
+                created_at=2,
+            ),
+            Interaction(
+                interaction_id=3,
+                request_id="evidence-request",
+                user_id="user",
+                role="assistant",
+                content=content,
+                expert_content="Full correction.",
+                created_at=3,
+                user_action=UserActionType.CLICK,
+                user_action_description="Unshown action.",
+            ),
+        ],
+        expert=True,
+    )
+    assert content in context.text
+    assert set(context.evidence_sources) == {"T2", "T3"}
+    assert context.evidence_sources["T2"].evidence_texts == (content,)
+    assert context.evidence_sources["T3"].evidence_texts == (
+        content,
+        "Full correction.",
+    )
+
+
+def test_prompt_and_evidence_capture_one_turn_budget(monkeypatch):
+    from unittest.mock import Mock
+
+    from reflexio.server.services import service_utils
+
+    resolve = Mock(side_effect=[4, 1000])
+    monkeypatch.setattr(
+        service_utils, "_resolve_max_interaction_content_tokens", resolve
+    )
+    content = "start " * 20 + "MIDDLE" + " end" * 20
+    context = _evidence_context(
+        [
+            Interaction(
+                interaction_id=1,
+                request_id="evidence-request",
+                user_id="user",
+                role="user",
+                content=content,
+            ),
+        ]
+    )
+    resolve.assert_called_once_with()
+    assert content not in context.text
+    for segment in context.evidence_sources["T1"].evidence_texts:
+        assert segment in context.text

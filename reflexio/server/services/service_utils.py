@@ -314,61 +314,53 @@ def format_interactions_to_history_string(interactions: list[Interaction]) -> st
         user: I love sushi
         user: click menu item
     """
-    max_content_tokens = _resolve_max_interaction_content_tokens()
-    formatted_interactions = []
+    parts = []
     for interaction in interactions:
-        # Add text content with tools_used prefix if present
-        if interaction.content:
-            content = slice_content_by_tokens(interaction.content, max_content_tokens)
-            if interaction.tools_used:
-                tool_prefix = " ".join(
-                    f"[used tool: {t.tool_name}({json.dumps(t.tool_data)})]"
-                    for t in interaction.tools_used
-                )
-                formatted_interactions.append(
-                    f"{interaction.role}: ```{tool_prefix} {content}```"
-                )
-            else:
-                formatted_interactions.append(f"{interaction.role}: ```{content}```")
+        view = render_interaction(interaction)
+        if view.text:
+            parts.append(view.text)
+    return "\n".join(parts)
 
-        # Add user action
-        if interaction.user_action != UserActionType.NONE:
-            formatted_interactions.append(
-                f"{interaction.role}: ```{interaction.user_action.value} {interaction.user_action_description}```"
-            )
 
-    return "\n".join(formatted_interactions)
+@dataclass(frozen=True)
+class RenderedInteraction:
+    """One prompt view and the original text segments visible in that view."""
+
+    text: str
+    evidence_texts: tuple[str, ...]
+
+
+def render_interaction(interaction: Interaction) -> RenderedInteraction:
+    """Render ordinary turn text and evidence under one captured allocation."""
+    lines: list[str] = []
+    evidence: list[str] = []
+    if interaction.content:
+        content = slice_content_by_tokens(
+            interaction.content, _resolve_max_interaction_content_tokens()
+        )
+        tool_prefixes = [
+            f"[used tool: {tool.tool_name}({json.dumps(tool.tool_data)})]"
+            for tool in interaction.tools_used or []
+        ]
+        evidence.extend(tool_prefixes)
+        evidence.extend(
+            segment for segment in content.split(_CONTENT_TRUNCATION_MARKER) if segment
+        )
+        prefix = " ".join(tool_prefixes)
+        shown_content = f"{prefix} {content}" if prefix else content
+        lines.append(f"{interaction.role}: ```{shown_content}```")
+    if interaction.user_action != UserActionType.NONE:
+        action = (
+            f"{interaction.user_action.value} {interaction.user_action_description}"
+        )
+        lines.append(f"{interaction.role}: ```{action}```")
+        evidence.append(action.strip())
+    return RenderedInteraction("\n".join(lines), tuple(evidence))
 
 
 def visible_interaction_evidence_texts(interaction: Interaction) -> tuple[str, ...]:
-    """Return the source-backed pieces of a turn that its prompt rendering exposes.
-
-    The text uses the same content budget as ``format_interactions_to_history_string``.
-    A truncated head and tail are separate values so the synthetic truncation marker
-    is never persisted as evidence. Models cite only the turn id; code retains these
-    bounded values for reviewer context and provenance metadata.
-    """
-    values: list[str] = []
-    if interaction.content:
-        values.extend(
-            f"[used tool: {tool.tool_name}({json.dumps(tool.tool_data)})]"
-            for tool in interaction.tools_used
-        )
-        visible_content = slice_content_by_tokens(
-            interaction.content, _resolve_max_interaction_content_tokens()
-        )
-        values.extend(
-            segment
-            for segment in visible_content.split(_CONTENT_TRUNCATION_MARKER)
-            if segment
-        )
-    if interaction.expert_content:
-        values.append(interaction.expert_content)
-    if interaction.user_action != UserActionType.NONE:
-        values.append(
-            f"{interaction.user_action.value} {interaction.user_action_description}".strip()
-        )
-    return tuple(values)
+    """Return the original source segments of the ordinary prompt view."""
+    return render_interaction(interaction).evidence_texts
 
 
 def format_sessions_to_history_string(
