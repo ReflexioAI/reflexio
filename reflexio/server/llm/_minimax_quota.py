@@ -15,6 +15,11 @@ from reflexio.server.llm.failure import exception_chain
 from reflexio.server.llm.provider_circuit import ProviderCircuitOpenError
 
 
+def implicit_api_base() -> str | None:
+    """Resolve LiteLLM's implicit MiniMax override in transport precedence."""
+    return litellm.api_base or env_str("MINIMAX_API_BASE", "") or None
+
+
 def backup_credentials(params: Mapping[str, Any]) -> tuple[str, str] | None:
     """Only the environment-owned primary may spend the environment backup."""
     if not str(params.get("model", "")).lower().startswith("minimax/"):
@@ -23,8 +28,7 @@ def backup_credentials(params: Mapping[str, Any]) -> tuple[str, str] | None:
     if (
         params.get("api_base")
         or params.get("base_url")
-        or env_str("MINIMAX_API_BASE", "")
-        or litellm.api_base
+        or implicit_api_base()
         or params.get("custom_llm_provider") not in (None, "minimax")
     ):
         return None
