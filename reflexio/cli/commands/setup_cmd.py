@@ -695,6 +695,14 @@ def _install_openclaw_integration(
     # Running `reflexio setup openclaw` is the operator's consent to the
     # plugin's capabilities; --force replaces an earlier install in place.
     previous = _openclaw_existing_config(cli, f"{entry}.config")
+    search = previous.get("search")
+    if isinstance(search, dict) and "min_prompt_length" in search:
+        typer.echo(
+            "Error: search.min_prompt_length is retired; remove it to retrieve "
+            "for every nonempty user prompt. Search deadlines and result limits "
+            "remain configurable. Existing settings have not been changed."
+        )
+        raise typer.Exit(1)
     properties = json.loads(
         (_OPENCLAW_PLUGIN_DIR / "openclaw.plugin.json").read_text()
     )["configSchema"]["properties"]

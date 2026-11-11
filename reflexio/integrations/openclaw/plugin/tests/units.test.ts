@@ -226,14 +226,13 @@ describe("installation policy ownership", () => {
   it("retains independent search and publication choices", async () => {
     const settings = resolveSettings(
       {
-        search: { top_k: 7, min_prompt_length: 1, timeout_ms: 1700 },
+        search: { top_k: 7, timeout_ms: 1700 },
         publish: { max_content_length: 23 },
       },
       {},
     );
     expect(settings).toMatchObject({
       topK: 7,
-      minPromptLength: 1,
       searchTimeoutMs: 1700,
       maxContentLength: 23,
     });
@@ -294,4 +293,14 @@ it("rejects policies that cannot fit backend field limits", () => {
   expect(resolveSettings({ search: { top_k: 100 } }, {}).topK).toBe(100);
   expect(() => resolveSettings({ search: { top_k: 101 } }, {})).toThrow("search.top_k");
   expect(() => resolveSettings({ publish: { max_content_length: 1_000_000 } }, {})).toThrow("publish.max_content_length");
+});
+
+
+it.each([0, 1, 5, 100, "private-value"])("refuses retired prompt-length policy %s instead of silently adopting it", (value) => {
+  expect(() => resolveSettings({ search: { min_prompt_length: value } }, {})).toThrow("search.min_prompt_length is retired");
+  try {
+    resolveSettings({ search: { min_prompt_length: value } }, {});
+  } catch (error) {
+    expect(String(error)).not.toContain("private-value");
+  }
 });

@@ -734,7 +734,7 @@ class TestOpenclawSetup:
         env_path.write_text("")
         calls = self._fake_openclaw(monkeypatch, {"status": "loaded", "hookCount": 3})
         previous = {
-            "search": {"top_k": 7, "timeout_ms": 5000, "min_prompt_length": 0},
+            "search": {"top_k": 7, "timeout_ms": 5000},
             "publish": {"max_content_length": 4000, "batch_size": 10},
             "server": {"enabled": True},
         }

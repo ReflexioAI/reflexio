@@ -30,13 +30,26 @@ The native plugin retains these existing configuration names:
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `search.top_k` | 3 | Result count per search arm, from 1 through the API maximum of 100. |
-| `search.min_prompt_length` | 5 | Minimum trimmed prompt length; zero admits every nonempty prompt. |
 | `search.timeout_ms` | 3000 | Positive search deadline, with an additional second reserved by the host hook. |
 | `publish.max_content_length` | 10000 | Positive maximum redacted characters retained per published message; a truncation marker may follow. |
 
+Every nonempty current user message is sent to Reflexio search. The plugin
+normalizes the same user text and preserves scope/privacy controls; it does not
+use a character-count heuristic to decide relevance. This admits short names,
+identifiers and non-English requests, and can also add lookups for brief
+acknowledgments. Search deadlines and result-count limits remain configurable.
+Empty messages, unsupported run scopes and incognito sessions still skip lookup.
+
+Version 0.3 removes `search.min_prompt_length`. If your OpenClaw configuration
+explicitly sets it (including zero or the former default), remove that property
+under `plugins.entries.reflexio-openclaw-smart.config.search` before upgrading.
+Its presence is refused rather than silently changing a custom policy. Removing
+it explicitly adopts retrieval for every nonempty user message; no replacement
+threshold or alias is introduced. The default was not written by first-party setup.
+
 Set them under `plugins.entries.reflexio-openclaw-smart.config`, alongside
 `url` and `apiKey`. Malformed numeric policy fails before hook registration.
-Prompt and content limits count complete Unicode code points. Custom content
+Content limits count complete Unicode code points. Custom content
 limits do not truncate the local text used to resolve citations.
 The older manifest advertised a 5000ms search default but its Python hook did
 not consume these fields. Select 5000ms explicitly if desired; the native
