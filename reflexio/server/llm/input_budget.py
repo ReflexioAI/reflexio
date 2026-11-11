@@ -8,7 +8,8 @@ import reflexio.provider_bootstrap  # noqa: F401
 import json
 import math
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Protocol
 
@@ -16,6 +17,7 @@ import litellm
 
 from reflexio.native_compute import configure_tokenizer_compute
 from reflexio.removed_env import reject_removed_env
+from reflexio.server.env_utils import env_str
 from reflexio.server.llm._litellm_types import (
     ModelProvenance,
     ProviderRequestGuard,
@@ -29,6 +31,52 @@ from reflexio.server.llm.token_accounting import RunTokenTotals
 extraction_provider_guard: ContextVar[ProviderRequestGuard | None] = ContextVar(
     "extraction_provider_guard", default=None
 )
+
+
+# Complete-request capacity for consumers that previously clipped their own text.
+# Unlike the durable extraction guard, this scope does not reserve attempts.
+_model_capacity_limits: ContextVar[dict[str, int] | None] = ContextVar(
+    "model_capacity_limits", default=None
+)
+
+
+@contextmanager
+def model_input_budget() -> Iterator[None]:
+    """Admit native requests by their complete model capacity, without slicing.
+
+    Host CLI transports own opaque model selection and cannot honor an output
+    cap. They retain that transport contract; no native-capacity proof is claimed.
+    Every native fallback and corrective repair is checked independently.
+    """
+    limits = declared_context_limits(env_str("REFLEXIO_LLM_CONTEXT_LIMITS_JSON", "{}"))
+    token = _model_capacity_limits.set(limits)
+    try:
+        yield
+    finally:
+        _model_capacity_limits.reset(token)
+
+
+def _native_capacity_limits(params: Mapping[str, Any]) -> dict[str, int] | None:
+    limits = _model_capacity_limits.get()
+    if limits is None or params["model"].partition("/")[0] in {
+        "claude-code",
+        "openclaw",
+    }:
+        return None
+    return limits
+
+
+def prepare_model_input_budget(params: dict[str, Any]) -> None:
+    """Reserve native output before the builder normalizes model parameters."""
+    if _native_capacity_limits(params) is not None:
+        reserve_model_output_tokens(params)
+
+
+def check_model_input_budget(params: dict[str, Any]) -> None:
+    """Check the final physical request, including schema, tools and repairs."""
+    limits = _native_capacity_limits(params)
+    if limits is not None:
+        check_request_input_budget(params, context_limits=limits, prompt_target=None)
 
 
 class ExtractionUsageObserver(Protocol):
@@ -163,7 +211,7 @@ def _is_custom_endpoint(params: Mapping[str, Any]) -> bool:
     )
 
 
-def supply_extraction_output_reservation(params: dict[str, Any]) -> None:
+def reserve_model_output_tokens(params: dict[str, Any]) -> None:
     """Bound uncapped native requests without replacing configured output caps.
 
     Reserve and request the advertised native output maximum. Custom endpoints
@@ -226,6 +274,10 @@ def measure_request_input_tokens(params: Mapping[str, Any]) -> int:
             tool_choice=params.get("tool_choice"),
         )
         response_format = params.get("response_format")
+        # Native Claude normalization moves the schema to this GA field.
+        # Count the actual built form, not only the OpenAI-style spelling.
+        if not response_format and isinstance(params.get("output_config"), Mapping):
+            response_format = params["output_config"].get("format")
         if response_format:
             if hasattr(response_format, "model_json_schema"):
                 response_format = response_format.model_json_schema()

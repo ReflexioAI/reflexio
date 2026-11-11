@@ -61,10 +61,10 @@ An unacknowledged publication remains queued for a later event with its original
 request identity, rather than spinning through configurable retries or releasing
 later turns out of order.
 
-Setup preserves the four supported policies and removes obsolete fields when
+Setup preserves the three supported policies and removes obsolete fields when
 reinstalling. For a manual upgrade, remove the obsolete
 `publish.batch_size`, `publish.max_retries`, `server` and `extraction` plugin
-settings and the separate `reflexio-embedded` plugin entry. The four policy fields
+settings and the separate `reflexio-embedded` plugin entry. The three policy fields
 above keep their existing spelling. Extraction model selection belongs to the
 backend's configured model (`openclaw/<model>`), not this transport plugin.
 Keep an operator copy of the old configuration before removing retired fields.
