@@ -1929,3 +1929,33 @@ priority. Distributed pytest controllers use the collection-only deferred mock
 hook; executing workers and serial runs still initialize mocks eagerly. Keep
 fixture imports used only in annotations under `TYPE_CHECKING`, so controller
 configuration does not load execution code through those definitions.
+
+### Retrieved-learning judge input admission
+
+The relevance and impact judges render the complete available bounded snapshot
+and attached learning bodies, without independent 8,000-token transcript or
+256-token body cuts. The snapshot's storage truncation flag still prevents
+claiming complete evidence when the loaded source projection was incomplete.
+Per-session candidate and per-call work bounds remain unchanged.
+
+The shared completion client owns native model input admission. It reserves the
+effective output budget before normalizing parameters, then counts the complete
+physical request (templates, schemas, tools and corrective messages) before every
+attempt, including fallback models. Existing explicit output caps are preserved;
+native defaults use advertised model headroom. Custom gateways need their actual
+`REFLEXIO_LLM_CONTEXT_LIMITS_JSON` declaration and positive tenant
+`llm_config.generation_max_output_tokens`. Unknown or excessive native input
+fails before provider dispatch instead of discarding evidence. Failed/degraded
+judges retain the runner's existing fenced publication behavior. More source
+text can increase input usage or expose a capacity failure previously hidden by
+clipping; this is not a model-quality or deployment qualification claim.
+
+Opaque host CLI providers retain their own capacity handling; they do not honor
+native output caps and no native-capacity guarantee is claimed for them. Their
+renderer likewise receives the complete available projection.
+
+Evaluation recipe version 3 invalidates version-2 terminal reuse on normal
+triggers; it does not rewrite old rows or force a fleet sweep. Generation and
+snapshot fencing remain authoritative, and a failed refresh preserves prior
+results. The separate per-turn extraction/evaluation formatting setting remains
+supported for other consumers pending their own complete-request audit.

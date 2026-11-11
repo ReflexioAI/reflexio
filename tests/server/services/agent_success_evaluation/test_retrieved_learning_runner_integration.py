@@ -264,3 +264,46 @@ def test_session_without_attachments_is_not_applicable(
     assert storage.get_matching_retrieved_learning_terminal_state(
         USER, SESSION, outcome.retrieved_learning_fingerprint or ""
     )
+
+
+def test_v2_refresh_capacity_failure_preserves_previous_sqlite_results(
+    storage, monkeypatch
+):
+    from unittest.mock import Mock
+
+    from reflexio.server.llm import input_budget
+    from reflexio.server.services.storage.storage_base.retrieved_learning_state import (
+        build_retrieved_learning_state_key,
+    )
+
+    profile, _, _ = _seed_learnings(storage)
+    _seed_session(
+        storage, refs=[RetrievedLearning(kind="profile", learning_id=profile)]
+    )
+    assert _run(storage).retrieved_learning_status == "complete"
+    previous_ids = {
+        row.result_id
+        for row in storage.get_retrieved_learning_evaluation_results(session_id=SESSION)
+    }
+    key = build_retrieved_learning_state_key(USER, SESSION)
+    old = storage.get_operation_state(key)["operation_state"]
+    old["evaluation_version"] = 2
+    storage.update_operation_state(key, old)
+    monkeypatch.setattr(
+        input_budget.litellm, "token_counter", Mock(return_value=1_000_000)
+    )
+    monkeypatch.setattr(
+        input_budget.litellm,
+        "get_model_info",
+        Mock(return_value={"max_input_tokens": 1000, "max_output_tokens": 200}),
+    )
+    dispatch = Mock()
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
+    outcome = _run(storage)
+    assert outcome.retrieved_learning_status == "failed"
+    dispatch.assert_not_called()
+    assert {
+        row.result_id
+        for row in storage.get_retrieved_learning_evaluation_results(session_id=SESSION)
+    } == previous_ids
+    assert storage.get_operation_state(key)["operation_state"]["status"] == "failed"

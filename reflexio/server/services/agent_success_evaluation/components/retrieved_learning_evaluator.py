@@ -26,6 +26,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from reflexio.models.api_schema.domain import RetrievedLearningEvaluationResult
 from reflexio.models.api_schema.playbook_diagnosis import PlaybookDiagnosis
 from reflexio.models.structured_output import StrictStructuredOutput
+from reflexio.server.llm._litellm_types import ProviderRequestGuardError
+from reflexio.server.llm.input_budget import model_input_budget
 from reflexio.server.llm.litellm_client import LiteLLMClientError
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.playbook.publication import (
@@ -34,7 +36,6 @@ from reflexio.server.services.playbook.publication import (
 from reflexio.server.services.service_utils import (
     log_llm_messages,
     log_model_response,
-    slice_content_by_tokens,
 )
 from reflexio.server.services.storage.storage_base.retrieved_learning_state import (
     CANONICAL_RETRIEVED_KINDS,
@@ -51,11 +52,9 @@ logger = logging.getLogger(__name__)
 RETRIEVED_LEARNING_RELEVANCE_PROMPT_ID = "retrieved_learning_relevance"
 RETRIEVED_LEARNING_IMPACT_PROMPT_ID = "retrieved_learning_impact"
 
-# Bounded-input constants (code constants by design — no env knobs).
+# Work bounds are distinct from the effective model input capacity.
 MAX_CANONICAL_CANDIDATES = 1_000
 CANDIDATES_PER_CHUNK = 25
-LEARNING_BODY_TOKEN_LIMIT = 256
-TRANSCRIPT_TOKEN_LIMIT = 8_000
 
 
 class RetrievedLearningRelevanceVerdict(StrictStructuredOutput):
@@ -255,11 +254,8 @@ class RetrievedLearningEvaluator:
                 diagnostics=diagnostics,
             )
 
-        transcript = self._format_transcript(snapshot)
-        complete_transcript = (
-            not snapshot.transcript_truncated
-            and transcript == self._raw_transcript(snapshot)
-        )
+        transcript = self._raw_transcript(snapshot)
+        complete_transcript = not snapshot.transcript_truncated
         interaction_ids = {item.interaction_id for item in snapshot.interactions}
         relevance: dict[str, RetrievedLearningRelevanceVerdict] = {}
         impact: dict[str, RetrievedLearningImpactVerdict] = {}
@@ -321,17 +317,6 @@ class RetrievedLearningEvaluator:
                     category="unknown",
                     reason="Diagnosis cited interactions outside the evaluated session.",
                 )
-            complete_evidence = (
-                complete_transcript
-                and slice_content_by_tokens(
-                    candidate.content, LEARNING_BODY_TOKEN_LIMIT
-                )
-                == candidate.content
-                and slice_content_by_tokens(
-                    candidate.trigger, LEARNING_BODY_TOKEN_LIMIT
-                )
-                == candidate.trigger
-            )
             rows.append(
                 RetrievedLearningEvaluationResult(
                     user_id=user_id,
@@ -353,7 +338,7 @@ class RetrievedLearningEvaluator:
                     ),
                     diagnosis=diagnosis,
                     evaluated_playbook_digest=candidate.evaluated_digest,
-                    diagnosis_evidence_complete=complete_evidence,
+                    diagnosis_evidence_complete=complete_transcript,
                     created_at=created_at,
                 )
             )
@@ -497,12 +482,6 @@ class RetrievedLearningEvaluator:
     # ===============================
 
     @staticmethod
-    def _format_transcript(snapshot: BoundedRetrievedLearningSnapshot) -> str:
-        return slice_content_by_tokens(
-            RetrievedLearningEvaluator._raw_transcript(snapshot), TRANSCRIPT_TOKEN_LIMIT
-        )
-
-    @staticmethod
     def _raw_transcript(snapshot: BoundedRetrievedLearningSnapshot) -> str:
         lines = [
             f"[interaction_id={interaction.interaction_id}] "
@@ -522,12 +501,8 @@ class RetrievedLearningEvaluator:
                     "target_interaction_id": c.interaction_id,
                     "kind": c.kind,
                     "title": c.title,
-                    "content": slice_content_by_tokens(
-                        c.content, LEARNING_BODY_TOKEN_LIMIT
-                    ),
-                    "trigger": slice_content_by_tokens(
-                        c.trigger, LEARNING_BODY_TOKEN_LIMIT
-                    ),
+                    "content": c.content,
+                    "trigger": c.trigger,
                 }
                 for c in chunk
             ],
@@ -579,13 +554,14 @@ class RetrievedLearningEvaluator:
 
         log_llm_messages(logger, f"Retrieved-learning judge {prompt_id}", messages)
         try:
-            response = self.client.generate_chat_response(
-                messages=messages,
-                model=self.model_name,
-                response_format=output_model,
-                structured_output_validator=_validate_output,
-            )
-        except LiteLLMClientError as exc:
+            with model_input_budget():
+                response = self.client.generate_chat_response(
+                    messages=messages,
+                    model=self.model_name,
+                    response_format=output_model,
+                    structured_output_validator=_validate_output,
+                )
+        except (LiteLLMClientError, ProviderRequestGuardError) as exc:
             # Covers StructuredOutputRepairError (repair exhausted) and
             # transport failures alike; the client already logged specifics,
             # this adds the prompt context it doesn't have.

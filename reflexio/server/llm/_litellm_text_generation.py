@@ -88,12 +88,14 @@ from reflexio.server.llm.image_utils import (
     encode_image_to_base64 as _encode_image_to_base64,
 )
 from reflexio.server.llm.input_budget import (
+    check_model_input_budget,
     extraction_failure_observer,
     extraction_provider_guard,
     extraction_reasoning_exhaustion,
     extraction_request_identity,
     extraction_usage_observer,
-    supply_extraction_output_reservation,
+    prepare_model_input_budget,
+    reserve_model_output_tokens,
 )
 from reflexio.server.llm.llm_utils import is_pydantic_model
 from reflexio.server.llm.model_defaults import (
@@ -1122,7 +1124,8 @@ class TextGenerationMixin:
         # Apply only to scoped extraction, after endpoint/caller resolution.
         # Every fallback rung is rebuilt independently and reserves its own cap.
         if extraction_provider_guard.get() is not None:
-            supply_extraction_output_reservation(params)
+            reserve_model_output_tokens(params)
+        prepare_model_input_budget(params)
         # Apply after caller overrides.
         apply_model_request_policy(params)
 
@@ -1765,6 +1768,7 @@ class TextGenerationMixin:
                                 "LLM completion exceeded its attempt deadline"
                             )
 
+                    check_model_input_budget(turn_params)
                     unreserved = extraction_request_identity.get()
                     if provider_request_guard is not None:
                         provider_request_guard(
