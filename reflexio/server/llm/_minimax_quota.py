@@ -1,5 +1,10 @@
 """Platform MiniMax credential failover; never changes a model or endpoint."""
 
+# Complete provider initialization before importing the third-party library.
+import reflexio._provider_bootstrap  # noqa: F401
+
+# isort: split
+
 from collections.abc import Mapping
 from typing import Any
 

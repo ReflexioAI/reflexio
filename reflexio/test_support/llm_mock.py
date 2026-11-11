@@ -384,6 +384,7 @@ def configure_llm_mock(config: Any) -> None:
     _litellm_mock_requested = True
     if not getattr(getattr(config, "option", None), "collectonly", False):
         # Executing tests retain the existing eager module-initialization context.
+        import_module("reflexio._provider_bootstrap")
         module = import_module("litellm")
         _activate_litellm_mock(module)
         return

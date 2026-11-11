@@ -23,6 +23,11 @@ Bodies moved VERBATIM; only the ``self``-typing (per-mixin TYPE_CHECKING stubs o
 foreign members, Tier-1b idiom) is added.
 """
 
+# Complete provider initialization before importing the third-party library.
+import reflexio._provider_bootstrap  # noqa: F401
+
+# isort: split
+
 import logging
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal, cast

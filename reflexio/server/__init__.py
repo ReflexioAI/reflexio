@@ -8,12 +8,6 @@ from dataclasses import dataclass
 
 import colorlog
 
-# Eagerly import openai modules to prevent deadlocks when LiteLLM
-# lazily imports them from multiple threads simultaneously.
-# See: https://github.com/BerriAI/litellm/issues/4075
-import openai  # noqa: F401
-import openai.resources  # noqa: F401
-
 from reflexio.cli.env_loader import load_existing_reflexio_env
 from reflexio.cli.paths import reflexio_home
 from reflexio.durable_learning_policy import (

@@ -18,6 +18,11 @@ Bodies moved VERBATIM; only the ``self``-typing (per-mixin TYPE_CHECKING stub of
 so this module moves BEFORE ``_litellm_text_generation``.
 """
 
+# Complete provider initialization before importing the third-party library.
+import reflexio._provider_bootstrap  # noqa: F401
+
+# isort: split
+
 import json
 import logging
 import re
