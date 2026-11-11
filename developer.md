@@ -1959,3 +1959,9 @@ triggers; it does not rewrite old rows or force a fleet sweep. Generation and
 snapshot fencing remain authoritative, and a failed refresh preserves prior
 results. The separate per-turn extraction/evaluation formatting setting remains
 supported for other consumers pending their own complete-request audit.
+
+Refresh startup advances its generation without changing the recipe version of
+previously published results. An interrupted version-3 refresh therefore cannot
+make version-2 rows satisfy current freshness checks; atomic replacement publishes
+the new terminal certificate. Native provider defaults remain availability policy,
+not an explicit tenant output cap for a custom endpoint.

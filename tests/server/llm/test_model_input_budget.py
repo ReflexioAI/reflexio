@@ -115,13 +115,19 @@ def test_opaque_host_retains_its_own_capacity_owner(transport, monkeypatch, prov
 
 
 @pytest.mark.parametrize("cap", [None, 20])
+@pytest.mark.parametrize(
+    "model", ["gpt-4o", "minimax/MiniMax-M3", "zai/glm-5.3-flashx"]
+)
 def test_custom_endpoint_requires_its_own_declaration_and_output_policy(
-    transport, monkeypatch, cap
+    transport, monkeypatch, cap, model
 ):
     client, dispatch, _ = transport
     client.config.max_tokens = cap
+    import json
+
     monkeypatch.setenv(
-        "REFLEXIO_LLM_CONTEXT_LIMITS_JSON", '{"gpt-4o@https://custom.invalid": 1000}'
+        "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
+        json.dumps({f"{model}@https://custom.invalid": 100_000}),
     )
     if cap is None:
         with (
@@ -133,6 +139,7 @@ def test_custom_endpoint_requires_its_own_declaration_and_output_policy(
             client.generate_chat_response(
                 [{"role": "user", "content": "evidence"}],
                 api_base="https://custom.invalid",
+                model=model,
             )
         dispatch.assert_not_called()
     else:
@@ -141,6 +148,7 @@ def test_custom_endpoint_requires_its_own_declaration_and_output_policy(
                 client.generate_chat_response(
                     [{"role": "user", "content": "evidence"}],
                     api_base="https://custom.invalid",
+                    model=model,
                 )
                 == "ok"
             )
@@ -233,3 +241,27 @@ def test_schema_and_tools_are_included_in_complete_request_admission(transport, 
     dispatch.assert_not_called()
     assert counter.call_args_list[0].kwargs["tools"] == tools
     assert any("text" in call.kwargs for call in counter.call_args_list)
+
+
+@pytest.mark.parametrize("model", ["minimax/MiniMax-M3", "zai/glm-5.3-flashx"])
+def test_native_provider_output_default_is_preserved(transport, monkeypatch, model):
+    from reflexio.server.llm.model_defaults import default_completion_api_base
+
+    client, dispatch, _ = transport
+    client.config.max_tokens = None
+    monkeypatch.setattr(
+        input_budget.litellm,
+        "get_model_info",
+        Mock(return_value={"max_input_tokens": 100_000, "max_output_tokens": 10_000}),
+    )
+    overrides = {"model": model}
+    if route := default_completion_api_base(model):
+        overrides["api_base"] = route
+    with input_budget.model_input_budget():
+        assert (
+            client.generate_chat_response(
+                [{"role": "user", "content": "evidence"}], **overrides
+            )
+            == "ok"
+        )
+    assert dispatch.call_args.args[0]["max_tokens"] == 8192

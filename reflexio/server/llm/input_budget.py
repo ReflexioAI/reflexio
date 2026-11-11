@@ -66,9 +66,15 @@ def _native_capacity_limits(params: Mapping[str, Any]) -> dict[str, int] | None:
     return limits
 
 
-def prepare_model_input_budget(params: dict[str, Any]) -> None:
-    """Reserve native output before the builder normalizes model parameters."""
+def prepare_model_input_budget(
+    params: dict[str, Any], *, explicit_output_policy: bool
+) -> None:
+    """Reserve native output without treating provider defaults as tenant policy."""
     if _native_capacity_limits(params) is not None:
+        if _is_custom_endpoint(params) and not explicit_output_policy:
+            raise InputBudgetConfigurationError(
+                "Custom endpoint requires an explicit output reservation"
+            )
         reserve_model_output_tokens(params)
 
 
