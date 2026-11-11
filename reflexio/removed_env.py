@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "REFLEXIO_LLM_SEED": "",
     "REFLEXIO_AGENT_VERSION": "",
     "REFLEXIO_INSTANCE_ID": "",
     "REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS": "",
@@ -65,9 +66,18 @@ def reject_removed_env(
     if obsolete:
         source_cap = "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOK_SOURCE_USER_PLAYBOOKS"
         migration = "; ".join(
-            f"{name} (remove assignment)"
-            if name == source_cap or not aliases[name]
-            else f"{name} -> {aliases[name]}"
+            (
+                f"{name}: remove the process assignment; sampling belongs to the "
+                "request. Pass seed explicitly when needed and temperature=0 "
+                "to retain the former temperature override. Model restrictions "
+                "still apply; existing evaluation records are preserved"
+            )
+            if name == "REFLEXIO_LLM_SEED"
+            else (
+                f"{name} (remove assignment)"
+                if name == source_cap or not aliases[name]
+                else f"{name} -> {aliases[name]}"
+            )
             for name in obsolete
         )
         if "REFLEXIO_INSTANCE_ID" in obsolete:

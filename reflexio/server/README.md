@@ -1096,3 +1096,16 @@ and monitoring together, using the selected image's historical/current contract.
 Monitoring and supervisors should consume the resolved launch plan rather than
 parse a second API-query toggle or infer ownership from a localhost URL. See
 `developer.md` for the image/configuration upgrade contract.
+
+
+### Request sampling
+
+Generation forwards an explicit request seed when supplied and otherwise omits
+it. Request and client temperature are resolved independently before the normal
+model restrictions apply. `REFLEXIO_LLM_SEED` is retired. Remove the old process
+or file assignment before upgrading. To retain its previous behavior on a
+sampling-capable model, pass the intended seed and `temperature=0` explicitly.
+The old default seed was 42 even when the environment setting was absent.
+Prepared optimizer publications retain their original proof and request history
+and recover without rebuilding a model request. Searches interrupted by process
+replacement retain the existing best-effort callback lifecycle.

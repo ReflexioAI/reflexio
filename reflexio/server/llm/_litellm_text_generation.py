@@ -28,7 +28,6 @@ Bodies moved VERBATIM from the former monolithic ``litellm_client.py``.
 """
 
 import base64
-import functools
 import hashlib
 import logging
 import multiprocessing
@@ -167,23 +166,6 @@ class LadderBudgetExhaustedError(LiteLLMClientError):
     but its own type so ``_call_and_parse`` re-raises it untouched instead of
     logging it as a failed provider request -- nothing was sent.
     """
-
-
-# Config values read per call but only worth reporting once. The env is still
-# re-read every call (tests and operators change it at runtime); the PARSE is
-# cached by the raw string, so an invalid value warns once per distinct value
-# rather than on every LLM request.
-@functools.lru_cache(maxsize=16)
-def _parse_seed(raw: str, default: int) -> int:
-    try:
-        return int(raw)
-    except ValueError:
-        logging.getLogger(__name__).warning(
-            "REFLEXIO_LLM_SEED=%r is not an int; falling back to default seed=%d",
-            raw,
-            default,
-        )
-        return default
 
 
 def _bounded_repair_errors(errors: Sequence[str]) -> tuple[str, ...]:
@@ -1062,28 +1044,18 @@ class TextGenerationMixin:
             if m != actual_model and not m.startswith("local/")
         ]
 
+        from reflexio.removed_env import reject_removed_env
+
+        reject_removed_env(os.environ, {"REFLEXIO_LLM_SEED": ""})
         temperature = kwargs.pop("temperature", self.config.temperature)
         if self._is_temperature_restricted_model(actual_model):
             params["temperature"] = 1.0
         else:
             params["temperature"] = temperature
 
-        # Determinism knob: `seed` is always injected (defaulting to 42) on
-        # providers that honor it, since seed alone is cheap and harmless.
-        # The companion temperature=0 override is opt-in via an explicit
-        # REFLEXIO_LLM_SEED env var so that caller-configured temperature
-        # flows through by default — silently clobbering a user's configured
-        # temperature was surprising. Current-gen reasoning models (gpt-5-*)
-        # ignore both knobs; the seed is best-effort.
-        default_seed = 42
-        seed_explicit = "REFLEXIO_LLM_SEED" in os.environ
-        seed_raw = os.environ.get("REFLEXIO_LLM_SEED", str(default_seed))
-        params["seed"] = _parse_seed(seed_raw, default_seed)
-        # Keep seed best-effort without mutating LiteLLM's process-wide
-        # drop_params setting. Providers that do not support seed can ignore it.
+        # Sampling belongs to the request. Explicit seed kwargs are forwarded
+        # below, independently of the configured or request temperature.
         params["drop_params"] = True
-        if seed_explicit and not self._is_temperature_restricted_model(actual_model):
-            params["temperature"] = 0.0
 
         max_tokens = kwargs.pop("max_tokens", self.config.max_tokens)
         # An opaque gateway cannot inherit a native provider output/cost policy.
@@ -1151,7 +1123,7 @@ class TextGenerationMixin:
         # Every fallback rung is rebuilt independently and reserves its own cap.
         if extraction_provider_guard.get() is not None:
             supply_extraction_output_reservation(params)
-        # Apply after caller overrides and the seed temperature override.
+        # Apply after caller overrides.
         apply_model_request_policy(params)
 
         return (
