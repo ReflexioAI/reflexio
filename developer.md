@@ -827,7 +827,11 @@ the same resolved standalone query used by native retrieval. The selected provid
 original objects. It returns up to five agent playbooks, suppresses their source
 user playbooks, then returns up to five remaining user playbooks. A smaller
 caller `top_k` is respected. Profile retrieval and Profile Fusion retain their
-existing limits and policy. Other search endpoints keep their existing behavior.
+existing limits and policy. When a mixed request needs scored recency retrieval
+and different profile/playbook pool sizes, two bounded scored storage calls
+preserve each arm's original SQL candidate population. This adds a storage round
+trip that staging latency qualification measures. Other search endpoints keep
+their existing behavior.
 
 The joint provider replaces the per-type selectors on this path. A provider
 failure raises `ReadinessUnavailableError`, which the API reports as unavailable.

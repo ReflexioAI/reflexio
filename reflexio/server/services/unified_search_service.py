@@ -248,8 +248,8 @@ def run_unified_search(
     seen_keys = (
         session_seen_cache.seen(org_id, session_id) if session_id else frozenset()
     )
-    if seen_keys:
-        fetch_k += min(len(seen_keys), _SESSION_DEDUP_FETCH_BUMP_CAP)
+    session_fetch_bump = min(len(seen_keys), _SESSION_DEDUP_FETCH_BUMP_CAP)
+    fetch_k += session_fetch_bump
 
     # Temporal ordering must see the full admitted working pool, including
     # configured rerank/recency candidates and session backfill. Cutting to the
@@ -263,7 +263,11 @@ def run_unified_search(
         if joint_selector is not None
         else result_cap
     )
-    playbook_fetch_k = max(fetch_k, playbook_cap)
+    playbook_fetch_k = (
+        max(fetch_k, PLAYBOOK_CANDIDATE_LIMIT + session_fetch_bump)
+        if joint_selector is not None
+        else fetch_k
+    )
 
     # --- Phase B: parallel searches across all entity types ---
     profiles, agent_playbooks, user_playbooks = _run_phase_b(
@@ -734,7 +738,7 @@ def _run_phase_b(
             has_time_window = start_time is not None or end_time is not None
             if (
                 not has_time_window
-                and playbook_top_k == top_k
+                and (playbook_top_k == top_k or recency_on)
                 and _unified_single_rpc_enabled()
                 and (
                     getattr(storage, "supports_unified_hybrid_search", False)
@@ -748,6 +752,7 @@ def _run_phase_b(
                     embedding=embedding,
                     query=query,
                     top_k=top_k,
+                    playbook_top_k=playbook_top_k,
                     threshold=threshold,
                     entity_types=entity_types,
                     allowed_agent_statuses=allowed_agent_statuses,
@@ -908,6 +913,7 @@ def _run_phase_b_single_rpc(
     allowed_agent_statuses: list[PlaybookStatus] | None,
     recency_on: bool = False,
     search_mode: SearchMode = SearchMode.HYBRID,
+    playbook_top_k: int | None = None,
 ) -> tuple[list[Any], list[Any], list[Any]] | None:
     """Run all Phase B arms through one combined storage round trip.
 
@@ -922,6 +928,38 @@ def _run_phase_b_single_rpc(
         is not yet migrated on this deployment). Timeouts propagate like the
         fan-out path so a hung database is not retried.
     """
+    # Keep the original profile RRF population when playbooks need a wider
+    # scored pool. A larger common SQL match count can change profile ranking
+    # before any application-level slice, so each count uses its native RPC.
+    if playbook_top_k is not None and playbook_top_k != top_k:
+        if "profiles" not in entity_types:
+            top_k = playbook_top_k
+        else:
+            common: dict[str, Any] = {
+                "request": request,
+                "storage": storage,
+                "embedding": embedding,
+                "query": query,
+                "threshold": threshold,
+                "allowed_agent_statuses": allowed_agent_statuses,
+                "recency_on": recency_on,
+                "search_mode": search_mode,
+            }
+            profiles = _run_phase_b_single_rpc(
+                **common, top_k=top_k, entity_types={"profiles"}
+            )
+            if profiles is None:
+                return None
+            search_runtime.checkpoint()
+            playbooks = _run_phase_b_single_rpc(
+                **common,
+                top_k=playbook_top_k,
+                entity_types=entity_types - {"profiles"},
+            )
+            if playbooks is None:
+                return None
+            return profiles[0], playbooks[1], playbooks[2]
+
     statuses = (
         list(allowed_agent_statuses)
         if allowed_agent_statuses

@@ -433,3 +433,125 @@ def test_joint_decides_the_resolved_task_used_for_native_retrieval(native, monke
     assert judged.user_id == "u" and judged.agent_version == "v1"
     assert judged.tags == ["release"]
     assert original.query == "deploy it now"
+
+
+def test_joint_session_backfill_is_added_after_twenty_candidate_floor(
+    native, monkeypatch
+):
+    from reflexio.server.services import unified_search_service as service
+
+    agents = [
+        AgentPlaybook(agent_playbook_id=i, agent_version="v1", content=str(i))
+        for i in range(1, 24)
+    ]
+    session_seen_cache.record(
+        "org", "backfill", [("agent_playbook", str(i)) for i in range(1, 4)]
+    )
+    seen_calls = []
+
+    def retrieve(**kw):
+        seen_calls.append(kw)
+        return native.profiles, agents[: kw["playbook_top_k"]], []
+
+    monkeypatch.setattr(service, "_run_phase_b", retrieve)
+    provider = Mock()
+    provider.select.side_effect = lambda **kw: (
+        [item for item in kw["agent_playbooks"] if item.agent_playbook_id == 21],
+        [],
+    )
+    register_service(JOINT_PLAYBOOK_SELECTOR, provider)
+    result = run(native, session_id="backfill")
+    assert seen_calls[0]["top_k"] == 6
+    assert seen_calls[0]["playbook_top_k"] == 23
+    received = provider.select.call_args.kwargs["agent_playbooks"]
+    assert [item.agent_playbook_id for item in received] == list(range(4, 24))
+    assert [item.agent_playbook_id for item in result.agent_playbooks] == [21]
+
+
+def test_joint_widening_retains_scored_profile_population_and_recency(
+    native, monkeypatch
+):
+    import time
+
+    from reflexio.models.api_schema.retriever_schema import UnifiedSearchRequest
+    from reflexio.server.services import unified_search_service as service
+    from reflexio.server.services.retrieval.recency import RecencyConfig, ScoredItem
+
+    now = int(time.time())
+    profiles = [
+        native.profiles[0].model_copy(
+            update={
+                "profile_id": str(i),
+                "last_modified_timestamp": now - (0 if i in {2, 11} else 30 * 86400),
+                "expiration_timestamp": now + 86400,
+            }
+        )
+        for i in range(1, 21)
+    ]
+    agents = [
+        AgentPlaybook(
+            agent_playbook_id=i, agent_version="v1", content=str(i), created_at=now
+        )
+        for i in range(1, 21)
+    ]
+    storage = native.storage
+    storage.embedding_model_name = "local/minilm-l6-v2"
+    storage.supports_unified_hybrid_search = True
+    calls = []
+
+    def scored(**kw):
+        calls.append(kw)
+        profile_scores = [1.0, 0.99] + [0.5] * 8 + [10.0] + [0.5] * 9
+        return (
+            [
+                ScoredItem(item, score)
+                for item, score in zip(
+                    profiles[: kw["top_k"]], profile_scores[: kw["top_k"]], strict=True
+                )
+            ]
+            if kw["include_profiles"]
+            else [],
+            [ScoredItem(item, 1.0) for item in agents[: kw["top_k"]]]
+            if kw["include_agent_playbooks"]
+            else [],
+            [],
+        )
+
+    storage.unified_hybrid_search_scored = scored
+    monkeypatch.setattr(service, "_run_phase_b", run_phase_b)
+    monkeypatch.setattr(service, "_unified_single_rpc_enabled", lambda: True)
+    config = RecencyConfig(pool_size=10, max_penalty_frac=0.8)
+
+    def search(entity_types):
+        return service.run_unified_search(
+            request=UnifiedSearchRequest(
+                query="q", user_id="u", top_k=5, entity_types=entity_types
+            ),
+            org_id="org",
+            storage=storage,
+            llm_client=Mock(),
+            prompt_manager=Mock(),
+            recency=config,
+        )
+
+    baseline = search(["profiles", "agent_playbooks"])
+    assert (
+        baseline.profiles[0].profile_id == "2"
+    )  # Recency promotes the fresh second row.
+    provider = Mock()
+    provider.select.side_effect = lambda **kw: (kw["agent_playbooks"], [])
+    register_service(JOINT_PLAYBOOK_SELECTOR, provider)
+    installed = search(["profiles", "agent_playbooks"])
+    assert [row.profile_id for row in installed.profiles] == [
+        row.profile_id for row in baseline.profiles
+    ]
+    assert "11" not in [row.profile_id for row in installed.profiles]
+    assert [call["top_k"] for call in calls] == [10, 10, 20]
+    assert calls[1]["include_profiles"] and not calls[1]["include_agent_playbooks"]
+    assert not calls[2]["include_profiles"] and calls[2]["include_agent_playbooks"]
+    assert len(provider.select.call_args.kwargs["agent_playbooks"]) == 20
+    profile_only = search(["profiles"])
+    assert [row.profile_id for row in profile_only.profiles] == [
+        row.profile_id for row in baseline.profiles
+    ]
+    assert len(calls) == 4 and calls[-1]["top_k"] == 10
