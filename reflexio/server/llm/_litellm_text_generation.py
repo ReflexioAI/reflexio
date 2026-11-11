@@ -1060,6 +1060,9 @@ class TextGenerationMixin:
         params["drop_params"] = True
 
         max_tokens = kwargs.pop("max_tokens", self.config.max_tokens)
+        explicit_output_policy = (
+            max_tokens is not None or kwargs.get("max_completion_tokens") is not None
+        )
         # An opaque gateway cannot inherit a native provider output/cost policy.
         custom_extraction = extraction_provider_guard.get() is not None and (
             (self.config.api_key_config and self.config.api_key_config.custom_endpoint)
@@ -1125,7 +1128,9 @@ class TextGenerationMixin:
         # Every fallback rung is rebuilt independently and reserves its own cap.
         if extraction_provider_guard.get() is not None:
             reserve_model_output_tokens(params)
-        prepare_model_input_budget(params)
+        prepare_model_input_budget(
+            params, explicit_output_policy=explicit_output_policy
+        )
         # Apply after caller overrides.
         apply_model_request_policy(params)
 

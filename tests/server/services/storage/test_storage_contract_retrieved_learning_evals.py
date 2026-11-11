@@ -753,3 +753,66 @@ def test_diagnosis_round_trips_and_legacy_rows_remain_readable(storage):
         )
         is None
     )
+
+
+def test_interrupted_recipe_refresh_does_not_certify_prior_results(storage):
+    _seed_eligible_learnings(storage)
+    _seed_session(
+        storage, refs=[RetrievedLearning(kind="profile", learning_id="prof-1")]
+    )
+    fingerprint = session_fingerprint(
+        storage.load_bounded_retrieved_learning_snapshot(USER, SESSION)
+    )
+    old_generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
+    storage.replace_retrieved_learning_evaluation_results(
+        USER,
+        SESSION,
+        old_generation,
+        fingerprint,
+        "complete",
+        {},
+        [_result(storage, "profile", "prof-1")],
+    )
+    prior_ids = {
+        row.result_id
+        for row in storage.get_retrieved_learning_evaluation_results(
+            user_id=USER, session_id=SESSION
+        )
+    }
+    key = build_retrieved_learning_state_key(USER, SESSION)
+    state = storage.get_operation_state(key)["operation_state"]
+    state["evaluation_version"] = 2
+    storage.update_operation_state(key, state)
+    generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
+    # No finish/replace: this is the durable state left by an interrupted worker.
+    assert generation == old_generation + 1
+    assert (
+        storage.get_operation_state(key)["operation_state"]["evaluation_version"] == 2
+    )
+    assert (
+        storage.get_matching_retrieved_learning_terminal_state(
+            USER, SESSION, fingerprint
+        )
+        is None
+    )
+    assert {
+        row.result_id
+        for row in storage.get_retrieved_learning_evaluation_results(
+            user_id=USER, session_id=SESSION
+        )
+    } == prior_ids
+    storage.replace_retrieved_learning_evaluation_results(
+        USER,
+        SESSION,
+        generation,
+        fingerprint,
+        "complete",
+        {},
+        [_result(storage, "profile", "prof-1")],
+    )
+    assert (
+        storage.get_matching_retrieved_learning_terminal_state(
+            USER, SESSION, fingerprint
+        )
+        is not None
+    )
