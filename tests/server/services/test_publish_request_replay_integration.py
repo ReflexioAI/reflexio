@@ -88,6 +88,11 @@ def test_identical_retry_replays_original_ids_without_new_rows(
     monkeypatch.setattr(
         "reflexio.server.services.generation_service.record_usage_event", metered
     )
+    metered_batch = Mock()
+    monkeypatch.setattr(
+        "reflexio.server.services.generation_service.record_usage_event_batch",
+        metered_batch,
+    )
     # A retry whose client re-stamped created_at is still the same publish.
     replay = svc.run(_request(created_at=1_700_000_999), defer_learning=True)
 
@@ -96,6 +101,11 @@ def test_identical_retry_replays_original_ids_without_new_rows(
     assert replay.interaction_ids == first.interaction_ids
     assert _counts(store) == rows
     events = [c.kwargs["event_name"] for c in metered.call_args_list]
+    events += [
+        event.event_name
+        for call in metered_batch.call_args_list
+        for event in call.args[0]
+    ]
     assert "publish_request_succeeded" not in events
     assert "publish_request_failed" not in events
 

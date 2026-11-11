@@ -1,3 +1,4 @@
+import dataclasses
 import datetime
 import tempfile
 from datetime import UTC
@@ -195,6 +196,12 @@ def test_defer_learning_persists_and_enqueues_without_inline_extractors(
             patch(
                 "reflexio.server.services.generation_service.record_usage_event",
                 side_effect=lambda **kwargs: usage_events.append(kwargs),
+            ),
+            patch(
+                "reflexio.server.services.generation_service.record_usage_event_batch",
+                side_effect=lambda events: usage_events.extend(
+                    dataclasses.asdict(event) for event in events
+                ),
             ),
         ):
             result = generation_service.run(request, defer_learning=True)

@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,33 @@ class UsageEventDeliveryError(RuntimeError):
 
 
 UsageEventRecorder = Callable[[UsageEvent], UsageEventDeliveryStatus | None]
+
+
+@runtime_checkable
+class UsageEventBatchRecorder(Protocol):
+    """A recorder that can also deliver several events in one durable write.
+
+    Optional. :func:`record_usage_event_batch` uses ``record_batch`` when the
+    configured recorder has it and otherwise delivers event by event, so a
+    plain callable recorder keeps working unchanged.
+    """
+
+    def __call__(self, event: UsageEvent) -> UsageEventDeliveryStatus | None: ...
+
+    def record_batch(
+        self, events: Sequence[UsageEvent]
+    ) -> Sequence[UsageEventDeliveryStatus | None]:
+        """Deliver ``events`` and return one status per event, in input order."""
+        ...
+
+
+_ACCEPTED_STATUSES = frozenset(
+    {
+        UsageEventDeliveryStatus.APPENDED,
+        UsageEventDeliveryStatus.DUPLICATE,
+        UsageEventDeliveryStatus.EXEMPT,
+    }
+)
 
 _recorder: UsageEventRecorder | None = None
 
@@ -252,6 +279,13 @@ def record_usage_event_strict(
             created_at=time.time() if created_at is None else created_at,
         )
     )
+    return _accepted_status(delivery_outcome)
+
+
+def _accepted_status(
+    delivery_outcome: UsageEventDeliveryStatus | None,
+) -> UsageEventDeliveryStatus:
+    """Return the status when it proves durable acceptance, else raise."""
     status = (
         UsageEventDeliveryStatus.UNKNOWN
         if delivery_outcome is None
@@ -261,10 +295,60 @@ def record_usage_event_strict(
         raise TypeError(
             f"usage event recorder returned an invalid delivery status: {status!r}"
         )
-    if status not in {
-        UsageEventDeliveryStatus.APPENDED,
-        UsageEventDeliveryStatus.DUPLICATE,
-        UsageEventDeliveryStatus.EXEMPT,
-    }:
+    if status not in _ACCEPTED_STATUSES:
         raise UsageEventDeliveryError(status)
     return status
+
+
+def _warn_unaccepted(delivery_outcome: UsageEventDeliveryStatus | None) -> None:
+    """Apply :func:`record_usage_event`'s fail-open reporting to one status."""
+    try:
+        _accepted_status(delivery_outcome)
+    except UsageEventDeliveryError as exc:
+        if exc.status is not UsageEventDeliveryStatus.UNKNOWN:
+            logger.warning("Usage metrics recorder failed: %s", exc)
+    except TypeError:
+        logger.warning("Usage metrics recorder failed", exc_info=True)
+
+
+def record_usage_event_batch(events: Sequence[UsageEvent]) -> None:
+    """Record several events with :func:`record_usage_event`'s fail-open contract.
+
+    A recorder implementing :class:`UsageEventBatchRecorder` receives the
+    whole sequence in one ``record_batch`` call, so a durable recorder can
+    write it in one transaction instead of one per event. Any other recorder
+    receives the events one at a time, exactly as separate
+    :func:`record_usage_event` calls would deliver them.
+
+    Callers build complete :class:`UsageEvent` values, including ``org_id`` as
+    a string. Like :func:`record_usage_event`, this never raises.
+
+    Args:
+        events: Events to deliver, in emission order.
+    """
+    if not events:
+        return
+    recorder = _recorder
+    if recorder is None:
+        return
+    if not isinstance(recorder, UsageEventBatchRecorder):
+        for event in events:
+            try:
+                _warn_unaccepted(recorder(event))
+            except Exception:  # noqa: BLE001
+                logger.warning("Usage metrics recorder failed", exc_info=True)
+        return
+    try:
+        statuses = list(recorder.record_batch(events))
+    except Exception:  # noqa: BLE001
+        logger.warning("Usage metrics recorder failed", exc_info=True)
+        return
+    if len(statuses) != len(events):
+        logger.warning(
+            "Usage metrics batch recorder returned %d statuses for %d events",
+            len(statuses),
+            len(events),
+        )
+        return
+    for status in statuses:
+        _warn_unaccepted(status)
