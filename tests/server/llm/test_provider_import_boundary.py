@@ -118,7 +118,7 @@ def test_preload_oracle_refuses_a_missing_bootstrap(tmp_path):
         _ORDER_GUARD
         + """
 from types import ModuleType
-sys.modules["reflexio._provider_bootstrap"] = ModuleType("reflexio._provider_bootstrap")
+sys.modules["reflexio.provider_bootstrap"] = ModuleType("reflexio.provider_bootstrap")
 import reflexio.server.llm.litellm_client
 """,
         tmp_path,
@@ -142,7 +142,7 @@ def test_direct_module_litellm_imports_follow_bootstrap():
                 names = [node.module or ""]
             else:
                 continue
-            if "reflexio._provider_bootstrap" in names:
+            if "reflexio.provider_bootstrap" in names:
                 guarded = True
             if any(name == "litellm" or name.startswith("litellm.") for name in names):
                 found.append(path.relative_to(source_root).as_posix())
@@ -152,3 +152,38 @@ def test_direct_module_litellm_imports_follow_bootstrap():
     assert not missing, (
         f"preload provider resources before importing LiteLLM: {missing}"
     )
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "mock.litellm_is_patched()",
+        "mock.inline_test_completion({}, 0)",
+        "mock.configure_llm_mock(SimpleNamespace(args=[], option=SimpleNamespace(collectonly=True))); mock.unpatched_litellm().__enter__()",
+    ],
+)
+def test_mock_helpers_preload_on_first_provider_touch(statement, tmp_path):
+    result = run_probe(
+        _ORDER_GUARD
+        + """
+from types import SimpleNamespace
+from reflexio.test_support import llm_mock as mock
+assert "openai" not in sys.modules
+class FirstImportReached(Exception):
+    pass
+class StopBeforeProviderCall(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "litellm":
+            assert "openai.resources" in sys.modules, "provider resources were not preloaded"
+            raise FirstImportReached()
+sys.meta_path.insert(0, StopBeforeProviderCall())
+try:
+    exec(STATEMENT)
+except FirstImportReached:
+    pass
+else:
+    raise AssertionError("the helper did not reach its first provider import")
+""".replace("STATEMENT", repr(statement)),
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
