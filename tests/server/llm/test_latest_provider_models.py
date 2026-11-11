@@ -77,9 +77,12 @@ def test_offline_model_capabilities_and_sampling(model, prefixed, monkeypatch):
     provider = "openai" if model in OPENAI_MODELS else "anthropic"
     routed = f"{provider}/{model}" if prefixed else model
     client = LiteLLMClient(LiteLLMConfig(model=routed, temperature=0.3, top_p=0.8))
-    monkeypatch.setenv("REFLEXIO_LLM_SEED", "7")
     params = client._build_completion_params(
-        [{"role": "user", "content": "hello"}], temperature=0.2, top_p=0.5, top_k=4
+        [{"role": "user", "content": "hello"}],
+        temperature=0.2,
+        top_p=0.5,
+        top_k=4,
+        seed=7,
     )[0]
     assert client._supports_response_schema(routed)
     assert litellm.supports_function_calling(model=routed)
@@ -87,7 +90,7 @@ def test_offline_model_capabilities_and_sampling(model, prefixed, monkeypatch):
     if model in OPENAI_MODELS | ANTHROPIC_MODELS:
         assert not {"temperature", "top_p", "top_k"}.intersection(params)
     else:
-        assert params["temperature"] == 0.0
+        assert params["temperature"] == 0.2
         assert params["top_p"] == 0.5
 
 
