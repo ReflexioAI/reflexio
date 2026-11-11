@@ -1147,3 +1147,32 @@ def test_frozen_pending_policy_cannot_hide_non_timing_or_invalid_changes(mutatio
         pending_tool_policy_snapshot(config, frozen)
     assert "PRIVATE_INVALID_TIMING" not in str(failure.value)
     assert frozen == before
+
+
+def test_retired_pending_dedup_duration_preserves_frozen_witness():
+    from reflexio.server.services.extraction.profile_package_preparation import (
+        pending_tool_policy_snapshot,
+    )
+
+    saved = {
+        "pending_ttl_seconds": 37,
+        "dedup_cache_seconds": 12,
+        "tool_overrides": {"ask_human": {"dedup_cache_seconds": 4}},
+    }
+    config = PendingToolCallConfig.model_validate(saved)
+    current = pending_tool_policy_snapshot(config)
+    frozen = copy.deepcopy(current)
+    frozen["dedup_cache_seconds"] = 12
+    frozen["tool_overrides"]["ask_human"]["dedup_cache_seconds"] = 4
+    original = copy.deepcopy(frozen)
+
+    assert "dedup_cache_seconds" not in config.model_dump()
+    assert "dedup_cache_seconds" not in config.tool_overrides["ask_human"].model_dump()
+    assert (
+        pending_tool_policy_snapshot(
+            PendingToolCallConfig(pending_ttl_seconds=37), frozen
+        )
+        == original
+    )
+    assert frozen == original
+    assert saved["tool_overrides"]["ask_human"] == {"dedup_cache_seconds": 4}

@@ -23,6 +23,7 @@ from reflexio.config_env import (
 from reflexio.housekeeping_policy import strip_legacy_housekeeping_fields
 from reflexio.pending_tool_policy import (
     RETIRED_PENDING_TOOL_TIMING_FIELDS,
+    strip_retired_pending_dedup_duration,
     strip_retired_pending_followup_warning,
 )
 
@@ -809,7 +810,6 @@ class EffectivePendingToolCallConfig:
     """Resolved pending-tool-call settings after applying tool overrides."""
 
     pending_ttl_seconds: int
-    dedup_cache_seconds: int
     prior_answer_valid_seconds: int
     similarity_threshold: float
 
@@ -818,7 +818,6 @@ class PendingToolCallToolOverrideConfig(BaseModel):
     """Optional per-tool pending-call limits."""
 
     pending_ttl_seconds: int | None = Field(default=None, gt=0)
-    dedup_cache_seconds: int | None = Field(default=None, gt=0)
     prior_answer_valid_seconds: int | None = Field(default=None, gt=0)
     similarity_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
 
@@ -831,7 +830,6 @@ class PendingToolCallConfig(BaseModel):
         ge=0,
         description="Lifetime of new pending calls; zero disables their creation.",
     )
-    dedup_cache_seconds: int = Field(default=300, gt=0)
     prior_answer_valid_seconds: int = Field(default=2_592_000, gt=0)
     similarity_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
     max_resume_attempts: int = Field(default=3, ge=0)
@@ -844,9 +842,11 @@ class PendingToolCallConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def discard_retired_execution_policy(cls, data: Any) -> Any:
-        return strip_retired_pending_followup_warning(
-            _reject_obsolete_fields(
-                data, (*RETIRED_PENDING_TOOL_TIMING_FIELDS, "enabled")
+        return strip_retired_pending_dedup_duration(
+            strip_retired_pending_followup_warning(
+                _reject_obsolete_fields(
+                    data, (*RETIRED_PENDING_TOOL_TIMING_FIELDS, "enabled")
+                )
             )
         )
 
@@ -872,7 +872,6 @@ class PendingToolCallConfig(BaseModel):
 
         return EffectivePendingToolCallConfig(
             pending_ttl_seconds=self.creation_lifetime_seconds(tool_name),
-            dedup_cache_seconds=_value("dedup_cache_seconds"),
             prior_answer_valid_seconds=_value("prior_answer_valid_seconds"),
             similarity_threshold=_value("similarity_threshold"),
         )

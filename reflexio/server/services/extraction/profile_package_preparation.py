@@ -21,6 +21,7 @@ from reflexio.models.config_schema import PendingToolCallConfig, ProfileExtracto
 from reflexio.pending_tool_policy import (
     comparable_pending_creation_snapshot,
     strip_legacy_pending_tool_timing,
+    strip_retired_pending_dedup_duration,
     strip_retired_pending_followup_warning,
 )
 from reflexio.server.llm._litellm_text_generation import (
@@ -242,7 +243,7 @@ def pending_tool_policy_snapshot(
     """Validate live policy while retaining an admitted contract's original snapshot.
 
     Only validated historical creation encoding, retired timing and the
-    observational warning may differ.
+    observational warning or retired dedup duration may differ.
     Secret rotation, real policy changes and unknown fields remain strict; no model round-trip may
     discard witness data. The caller verifies the parent/preparation contract.
     """
@@ -253,17 +254,36 @@ def pending_tool_policy_snapshot(
     }
     if frozen is None:
         return current
+
+    def comparable(snapshot: dict[str, Any]) -> dict[str, Any]:
+        normalized = comparable_pending_creation_snapshot(
+            strip_legacy_pending_tool_timing(
+                strip_retired_pending_dedup_duration(
+                    strip_retired_pending_followup_warning(snapshot)
+                )
+            )
+        )
+        overrides = normalized.get("tool_overrides")
+        if isinstance(overrides, dict):
+            optional_fields = {
+                "pending_ttl_seconds",
+                "prior_answer_valid_seconds",
+                "similarity_threshold",
+            }
+            normalized["tool_overrides"] = {
+                name: override
+                for name, override in overrides.items()
+                if not isinstance(override, dict)
+                or any(
+                    key not in optional_fields or value is not None
+                    for key, value in override.items()
+                )
+            }
+        return normalized
+
     try:
-        actual = comparable_pending_creation_snapshot(
-            strip_legacy_pending_tool_timing(
-                strip_retired_pending_followup_warning(current)
-            )
-        )
-        expected = comparable_pending_creation_snapshot(
-            strip_legacy_pending_tool_timing(
-                strip_retired_pending_followup_warning(frozen)
-            )
-        )
+        actual = comparable(current)
+        expected = comparable(frozen)
     except ConfigurationMigrationError:
         raise InputBudgetConfigurationError(
             "Frozen profile pending tool policy is invalid"

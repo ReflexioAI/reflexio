@@ -45,7 +45,6 @@ class AsyncRequestSpec:
     answer_format: str | None = None
     args: dict[str, Any] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
-    cache_until_seconds: int = 300
     valid_until_seconds: int = 2_592_000
 
 

@@ -306,6 +306,47 @@ def test_attach_pending_info_request_returns_resolved_result_without_dependency(
     assert storage.list_run_tool_dependencies("run_1") == []
 
 
+def test_admission_clock_is_observed_after_question_embedding(storage, monkeypatch):
+    from reflexio.server.services.extraction import pending_tool_call_dispatch
+
+    start = datetime.now(UTC)
+    current = start
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            assert tz == UTC
+            return current
+
+    def embed(_question, **_kwargs):
+        nonlocal current
+        current = start + timedelta(seconds=2)
+
+    question = "Which environment?"
+    storage.create_agent_run(_agent_run("old_run"))
+    storage.create_agent_run(_agent_run("new_run"))
+    tool = create_ask_human_tool()
+    monkeypatch.setattr(pending_tool_call_dispatch, "datetime", Clock)
+    first = _handle(
+        tool,
+        AskHumanArgs(question=question),
+        _tool_context(
+            storage,
+            run_id="old_run",
+            config=PendingToolCallConfig(pending_ttl_seconds=1),
+        ),
+    )
+    assert isinstance(first, AsyncAccepted)
+    monkeypatch.setattr(storage, "_get_embedding", embed)
+    second = _handle(
+        tool,
+        AskHumanArgs(question=question),
+        _tool_context(storage, run_id="new_run"),
+    )
+    assert isinstance(second, AsyncAccepted)
+    assert second.pending_tool_call_id != first.pending_tool_call_id
+
+
 @pytest.mark.parametrize("tool_name", ["ask_human", "attach_pending_info_request"])
 def test_direct_handler_opt_out_refuses_before_storage_or_dispatch(storage, tool_name):
     from unittest.mock import MagicMock
@@ -355,6 +396,7 @@ def test_creation_persists_exact_selected_lifetime(storage, base, override, expe
     assert isinstance(outcome, AsyncAccepted)
     pending = storage.get_pending_tool_call(outcome.pending_tool_call_id)
     assert pending is not None and pending.expires_at is not None
+    assert pending.cache_until == pending.expires_at
     assert (
         before + timedelta(seconds=expected)
         <= pending.expires_at
@@ -368,8 +410,8 @@ def test_creation_persists_exact_selected_lifetime(storage, base, override, expe
         (-1, 300, True),
         (0, 300, True),
         (1, 300, False),
-        (300, 0, True),
-        (300, -1, True),
+        (300, 0, False),
+        (300, -1, False),
     ],
 )
 def test_dedup_respects_request_lifetime_before_expiry_sweep(
