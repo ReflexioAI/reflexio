@@ -62,7 +62,11 @@ from reflexio.server.llm._litellm_types import (
     ToolCallingChatResponse,
     completion_metadata,
 )
-from reflexio.server.llm._minimax_quota import backup_credentials, quota_exhausted
+from reflexio.server.llm._minimax_quota import (
+    backup_credentials,
+    implicit_api_base,
+    quota_exhausted,
+)
 from reflexio.server.llm._model_compat import (
     apply_model_request_policy,
     ensure_model_capabilities,
@@ -1028,6 +1032,24 @@ class TextGenerationMixin:
         )
         ensure_model_capabilities(actual_model)
 
+        if actual_model != self.config.model:
+            api_key, api_base, api_version = self._resolve_api_key(actual_model)
+        else:
+            api_key, api_base, api_version = (
+                self._api_key,
+                self._api_base,
+                self._api_version,
+            )
+        # LiteLLM otherwise resolves these inside the child, after admission.
+        # Freeze the effective override per attempt without replacing native
+        # defaults or changing caller > configured > global > environment order.
+        if (
+            actual_model.lower().startswith("minimax/")
+            and not (api_base or kwargs.get("api_base") or kwargs.get("base_url"))
+            and (implicit_base := implicit_api_base())
+        ):
+            kwargs["api_base"] = implicit_base
+
         params: dict[str, Any] = {
             "model": actual_model,
             "messages": messages,
@@ -1094,14 +1116,6 @@ class TextGenerationMixin:
         if tool_choice is not None:
             params["tool_choice"] = tool_choice
 
-        if actual_model != self.config.model:
-            api_key, api_base, api_version = self._resolve_api_key(actual_model)
-        else:
-            api_key, api_base, api_version = (
-                self._api_key,
-                self._api_base,
-                self._api_version,
-            )
         if api_key:
             params["api_key"] = api_key
         if api_base:

@@ -1990,3 +1990,15 @@ More complete evidence may increase usage or cause capacity refusal. Host CLI
 capacity remains delegated to its host. Explicit offline retrospective-judge
 slicing still uses the standalone slicing utility, independently of ordinary
 evidence rendering. Historical storage projections retain their existing limits.
+
+### MiniMax endpoint authority
+
+The shared completion builder resolves existing MiniMax endpoint overrides before
+output/input admission and provider-circuit selection. Request overrides take
+precedence over configured endpoints, then `litellm.api_base`, then nonblank
+`MINIMAX_API_BASE`. The resolved override travels with each physical attempt, so
+spawn/fork workers cannot select a different ambient route after admission.
+Absent overrides retain LiteLLM's native default and existing MiniMax backup-key
+eligibility. Overridden routes retain their backup-key exclusion and require
+endpoint-specific context declarations and explicit output caps when using
+scoped native input admission. No endpoint choice or configuration knob retires.
