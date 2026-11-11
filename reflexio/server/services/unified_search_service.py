@@ -1284,7 +1284,9 @@ def _suppress_source_user_playbooks(
         not in source_user_playbook_ids
     ]
     suppressed_count = len(user_playbooks) - len(filtered)
-    search_runtime.increment("search.playbooks.suppressed_source_users", suppressed_count)
+    search_runtime.increment(
+        "search.playbooks.suppressed_source_users", suppressed_count
+    )
     if suppressed_count:
         with profile_step(
             "search.suppress_source_user_playbooks",
