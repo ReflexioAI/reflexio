@@ -8,7 +8,9 @@ interval and records how much later than requested it woke up:
 
 - ``event_loop.lag`` gauge (milliseconds): the worst lag in each reporting
   window, through :func:`record_health`, so a sink sees one point per window
-  rather than one per sample.
+  rather than one per sample. The same window also closes the ``gc.pause.max``
+  gauge from :mod:`reflexio.server.gc_pause`, so a lag can be read against the
+  longest garbage-collector pause that overlapped it.
 - A WARNING ``event=event_loop_lag`` line for any single sample at or above
   :data:`WARN_AFTER_SECONDS`. The ALB liveness probe times out after 5 seconds,
   so a 1-second stall is an early signal, not yet an outage.
@@ -19,6 +21,7 @@ import logging
 import time
 from collections.abc import Callable
 
+from reflexio.server.gc_pause import take_worst_gc_pause_ms
 from reflexio.server.operational_metrics import record_health
 
 __all__ = [
@@ -68,5 +71,10 @@ async def monitor_event_loop_lag(
             record_health(
                 "event_loop.lag", worst * 1000, kind="gauge", unit="millisecond"
             )
+            gc_pause_ms = take_worst_gc_pause_ms()
+            if gc_pause_ms is not None:
+                record_health(
+                    "gc.pause.max", gc_pause_ms, kind="gauge", unit="millisecond"
+                )
             window_started = woke
             worst = 0.0
