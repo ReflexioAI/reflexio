@@ -6,10 +6,50 @@ still sharing ``~/.reflexio/data``.
 """
 
 import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
 
 from reflexio.cli import env_loader
 
 _ENV = "REFLEXIO_ENV_FILE"
+
+
+@pytest.mark.parametrize("setup", [False, True])
+def test_fresh_defaults_never_emit_removed_assignments(tmp_path, setup):
+    target = tmp_path / "home/.reflexio/.env"
+    code = """
+import os
+from pathlib import Path
+from reflexio.cli.env_loader import load_existing_reflexio_env, load_reflexio_env
+from reflexio.removed_env import reject_removed_env
+setup = SETUP
+loaded = load_reflexio_env() if setup else load_existing_reflexio_env()
+assert (loaded is not None) == setup
+assert Path(os.environ["REFLEXIO_ENV_FILE"]).exists() == setup
+reject_removed_env(os.environ)
+import reflexio.server
+print("fresh defaults loaded")
+""".replace("SETUP", repr(setup))
+    result = subprocess.run(  # noqa: S603 -- fixed interpreter/probe and boolean fixture
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": str(tmp_path / "home"),
+            "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+            "REFLEXIO_ENV_FILE": str(target),
+            "LITELLM_LOCAL_MODEL_COST_MAP": "true",
+            "REFLEXIO_NATIVE_COMPUTE_THREADS": "1",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "fresh defaults loaded" in result.stdout
 
 
 def test_user_env_file_defaults_when_unset(monkeypatch):
