@@ -67,7 +67,7 @@ def reject_removed_env(
         source_cap = "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOK_SOURCE_USER_PLAYBOOKS"
         migration = "; ".join(
             (
-                f"{name}: remove the process assignment; sampling belongs to the "
+                f"{name} (remove assignment): sampling belongs to the "
                 "request. Pass seed explicitly when needed and temperature=0 "
                 "to retain the former temperature override. Model restrictions "
                 "still apply; existing evaluation records are preserved"
