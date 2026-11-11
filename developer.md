@@ -1907,8 +1907,8 @@ production dispatch always isolates physical calls.
 ### Provider import initialization
 
 Database and environment helpers can import the server package without loading
-provider clients. Module-level LiteLLM consumers first import the private
-`reflexio._provider_bootstrap` module. Its single import lock completes the OpenAI
+provider clients. Module-level LiteLLM consumers first import the shared
+`reflexio.provider_bootstrap` module. Its single import lock completes the OpenAI
 resource preload before another thread enters LiteLLM. Keep that explicit import
 ahead of the dependency, including in consumers outside the LLM package.
 The eager test mock enters the same bootstrap; collection-only mocking retains

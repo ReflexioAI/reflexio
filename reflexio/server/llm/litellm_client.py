@@ -7,7 +7,7 @@ CompletionResult and ModelProvenance expose the provenance-bearing return contra
 """
 
 # Complete provider initialization before importing the third-party library.
-import reflexio._provider_bootstrap  # noqa: F401
+import reflexio.provider_bootstrap  # noqa: F401
 
 # isort: split
 

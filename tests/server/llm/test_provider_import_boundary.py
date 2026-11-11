@@ -118,7 +118,7 @@ def test_preload_oracle_refuses_a_missing_bootstrap(tmp_path):
         _ORDER_GUARD
         + """
 from types import ModuleType
-sys.modules["reflexio._provider_bootstrap"] = ModuleType("reflexio._provider_bootstrap")
+sys.modules["reflexio.provider_bootstrap"] = ModuleType("reflexio.provider_bootstrap")
 import reflexio.server.llm.litellm_client
 """,
         tmp_path,
@@ -142,7 +142,7 @@ def test_direct_module_litellm_imports_follow_bootstrap():
                 names = [node.module or ""]
             else:
                 continue
-            if "reflexio._provider_bootstrap" in names:
+            if "reflexio.provider_bootstrap" in names:
                 guarded = True
             if any(name == "litellm" or name.startswith("litellm.") for name in names):
                 found.append(path.relative_to(source_root).as_posix())
