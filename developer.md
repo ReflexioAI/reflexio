@@ -1957,11 +1957,36 @@ renderer likewise receives the complete available projection.
 Evaluation recipe version 3 invalidates version-2 terminal reuse on normal
 triggers; it does not rewrite old rows or force a fleet sweep. Generation and
 snapshot fencing remain authoritative, and a failed refresh preserves prior
-results. The separate per-turn extraction/evaluation formatting setting remains
-supported for other consumers pending their own complete-request audit.
+results. The ordinary extraction/evaluation consumers now share complete-request
+admission as described below.
 
 Refresh startup advances its generation without changing the recipe version of
 previously published results. An interrupted version-3 refresh therefore cannot
 make version-2 rows satisfy current freshness checks; atomic replacement publishes
 the new terminal certificate. Native provider defaults remain availability policy,
 not an explicit tenant output cap for a custom endpoint.
+
+### Complete ordinary interaction evidence
+
+Ordinary profile/playbook prompts and agent-success evaluation preserve all
+available interaction content and exact source evidence, including middle text
+and literal truncation-marker strings. The independent per-turn512-token and
+agent-success64,000-token cuts are removed. Direct extraction (initial and
+pending-tool resume), ordinary pre-extraction gates and agent-success requests
+use the existing native complete-request capacity owner. Durable overflow keeps
+its own prepared-source, attempt, compression and publication controls; completed
+journals are not rewritten or replayed to apply this change.
+
+`REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS` is retired. Remove its assignment from
+the selected environment file and process exports, including empty or nonpositive
+assignments. Startup and direct rendering reject it without copying its value
+into another policy. Preserve existing model choices, output caps and actual
+custom-gateway context declarations. No local or customer environment is rewritten.
+The former per-turn limit never covered templates, tool data or schema overhead;
+capacity now applies to the complete native request. Unknown or excessive native
+input fails before dispatch; direct pre-extraction gate failures retain their
+existing proceed-to-extractor policy, and the extractor admits its own request.
+More complete evidence may increase usage or cause capacity refusal. Host CLI
+capacity remains delegated to its host. Explicit offline retrospective-judge
+slicing still uses the standalone slicing utility, independently of ordinary
+evidence rendering. Historical storage projections retain their existing limits.

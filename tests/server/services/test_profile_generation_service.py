@@ -1205,6 +1205,63 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
         get_grouped_mock.assert_not_called()
 
 
+def test_should_run_capacity_refusal_preserves_direct_gate_failure_policy(
+    monkeypatch, tmp_path, tool_call_completion
+):
+    from reflexio.server.llm import input_budget
+
+    monkeypatch.setattr(input_budget.litellm, "token_counter", lambda **_: 2000)
+    monkeypatch.setattr(
+        input_budget.litellm,
+        "get_model_info",
+        lambda *_: {"max_input_tokens": 1000, "max_output_tokens": 20},
+    )
+    client = LiteLLMClient(
+        LiteLLMConfig(model="gpt-4o", max_tokens=20, fallback_models=[])
+    )
+    service = ProfileGenerationService(
+        llm_client=client,
+        request_context=RequestContext(
+            org_id="gate-capacity", storage_base_dir=str(tmp_path)
+        ),
+    )
+    service.service_config = service._load_generation_service_config(
+        ProfileGenerationRequest(user_id="user", request_id="request", auto_run=True)
+    )
+    work = ProfileExtractorConfig(extraction_definition_prompt="preferences")
+    group = RequestInteractionDataModel(
+        session_id="session",
+        request=Request(request_id="request", user_id="user", session_id="session"),
+        interactions=[
+            Interaction(
+                request_id="request",
+                user_id="user",
+                role="user",
+                content="full evidence",
+            )
+        ],
+    )
+    _, make_stop = tool_call_completion
+    with (
+        patch.object(
+            service,
+            "_collect_scoped_interactions_for_precheck",
+            return_value=([group], work),
+        ),
+        patch(
+            "reflexio.server.services.base_generation_service._cheap_should_run_reject",
+            return_value=None,
+        ),
+        patch.object(service, "_resolve_should_run_model", return_value="gpt-4o"),
+        patch.object(
+            client, "_completion_with_hard_timeout", return_value=make_stop("false")
+        ) as dispatch,
+    ):
+        # Existing direct-call failure policy proceeds to the separately admitted extractor.
+        assert service._should_run_before_extraction(work) is True
+    dispatch.assert_not_called()
+
+
 def test_should_run_before_extraction_includes_extractor_definition_and_override():
     """Per-extractor pre-check prompt must include the extractor's definition AND override.
 

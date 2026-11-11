@@ -26,6 +26,7 @@ from reflexio.server.llm.failure import OutageWait, Transient, classify_llm_fail
 from reflexio.server.llm.input_budget import (
     InputBudgetConfigurationError,
     InputBudgetExceededError,
+    model_input_budget,
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
@@ -1084,18 +1085,19 @@ class ResumableExtractionAgent:
         extra_tool_context = bind_pending_tool_execution(
             extra_tool_context, storage=self.storage, run=run
         )
-        result = run_tool_loop(
-            client=self.client,
-            messages=messages,
-            registry=registry,
-            model_role=self.model_role,
-            max_steps=max_steps,
-            ctx=extra_tool_context,
-            response_format=output_schema,
-            structured_output_validator=structured_output_validator,
-            tool_choice="auto",
-            log_label=log_label,
-        )
+        with model_input_budget():
+            result = run_tool_loop(
+                client=self.client,
+                messages=messages,
+                registry=registry,
+                model_role=self.model_role,
+                max_steps=max_steps,
+                ctx=extra_tool_context,
+                response_format=output_schema,
+                structured_output_validator=structured_output_validator,
+                tool_choice="auto",
+                log_label=log_label,
+            )
         record_compute_result()
 
         output = result.structured_output

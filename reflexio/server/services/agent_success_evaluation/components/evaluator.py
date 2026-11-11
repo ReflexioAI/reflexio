@@ -13,6 +13,7 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.models.config_schema import AgentSuccessConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm.input_budget import model_input_budget
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_constants import (
@@ -212,11 +213,12 @@ class AgentSuccessEvaluator:
         log_llm_messages(logger, "Agent success evaluation", messages_dict)
 
         # Use Pydantic model for structured output
-        evaluation_response = self.client.generate_chat_response(
-            messages=messages_dict,
-            model=self.default_evaluate_model_name,
-            response_format=AgentSuccessEvaluationOutput,
-        )
+        with model_input_budget():
+            evaluation_response = self.client.generate_chat_response(
+                messages=messages_dict,
+                model=self.default_evaluate_model_name,
+                response_format=AgentSuccessEvaluationOutput,
+            )
         if not evaluation_response:
             logger.info(
                 "No evaluation can be generated for session %s",

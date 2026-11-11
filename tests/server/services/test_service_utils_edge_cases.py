@@ -1,7 +1,6 @@
 """Edge cases of service_utils image encoding, budgets, history and log rendering."""
 
 import base64
-import logging
 import sys
 from types import SimpleNamespace
 
@@ -13,7 +12,6 @@ from reflexio.server.services import service_utils
 from reflexio.server.services.service_utils import (
     _format_response_for_logging,
     _image_data_url_from_encoding,
-    _resolve_max_interaction_content_tokens,
     format_messages_for_logging,
     format_sessions_to_history_string,
     visible_interaction_evidence_texts,
@@ -48,25 +46,6 @@ def test_existing_data_url_is_returned_unchanged():
 def test_non_base64_image_encoding_is_rejected():
     with pytest.raises(ValueError, match="must be valid base64 image data"):
         _image_data_url_from_encoding("!!!!not-base64!!!!")
-
-
-# ---------------------------------------------------------------------------
-# _resolve_max_interaction_content_tokens
-# ---------------------------------------------------------------------------
-
-
-def test_invalid_token_budget_warns_once_and_keeps_default(monkeypatch, caplog):
-    monkeypatch.setattr(service_utils, "_INVALID_MAX_TOKENS_WARNED", False)
-    monkeypatch.setenv("REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS", "lots")
-
-    with caplog.at_level(logging.WARNING, logger=service_utils.__name__):
-        first = _resolve_max_interaction_content_tokens()
-        second = _resolve_max_interaction_content_tokens()
-
-    default = service_utils.DEFAULT_MAX_INTERACTION_CONTENT_TOKENS
-    assert first == second == default
-    warnings = [r for r in caplog.records if "REFLEXIO_MAX_INTERACTION" in r.message]
-    assert len(warnings) == 1
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ from reflexio.models.api_schema.service_schemas import (
     Interaction,
     UserActionType,
 )
+from reflexio.removed_env import reject_removed_env
 from reflexio.server import LLM_PROMPT_LEVEL
 from reflexio.server.prompt.prompt_manager import PromptManager
 
@@ -28,11 +29,6 @@ logger = logging.getLogger(__name__)
 # Already registered in server/__init__.py; import the numeric constant only.
 MODEL_RESPONSE_LEVEL = 25
 
-# Per-interaction content token budget when formatting interactions into an
-# extraction/evaluation prompt. Read from REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS;
-# a value <= 0 disables slicing. See _resolve_max_interaction_content_tokens.
-DEFAULT_MAX_INTERACTION_CONTENT_TOKENS = 512
-_MAX_INTERACTION_CONTENT_TOKENS_ENV = "REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS"
 # Inserted between the head and tail of a sliced interaction so the LLM can see
 # that the middle of the content was elided.
 _CONTENT_TRUNCATION_MARKER = " …[truncated] "
@@ -41,8 +37,6 @@ _CONTENT_TRUNCATION_MARKER = " …[truncated] "
 # good-enough proxy for budgeting prompt content (mirrors the embedding path).
 _CONTENT_ENCODING_NAME = "cl100k_base"
 _content_token_encoding: tiktoken.Encoding | None = None
-# Guards against logging the same malformed env value on every call.
-_INVALID_MAX_TOKENS_WARNED = False
 
 
 def _image_mime_type_from_bytes(image_bytes: bytes) -> str | None:
@@ -82,33 +76,6 @@ def _get_content_token_encoding() -> tiktoken.Encoding:
     if _content_token_encoding is None:
         _content_token_encoding = tiktoken.get_encoding(_CONTENT_ENCODING_NAME)
     return _content_token_encoding
-
-
-def _resolve_max_interaction_content_tokens() -> int | None:
-    """Resolve the per-interaction content token budget from the environment.
-
-    Returns:
-        int | None: The positive token budget, or None when slicing is
-            disabled (env value <= 0). Unset or malformed values fall back to
-            ``DEFAULT_MAX_INTERACTION_CONTENT_TOKENS``.
-    """
-    global _INVALID_MAX_TOKENS_WARNED
-    raw = os.getenv(_MAX_INTERACTION_CONTENT_TOKENS_ENV, "").strip()
-    if not raw:
-        return DEFAULT_MAX_INTERACTION_CONTENT_TOKENS
-    try:
-        value = int(raw)
-    except ValueError:
-        if not _INVALID_MAX_TOKENS_WARNED:
-            logger.warning(
-                "Invalid %s=%r; falling back to default %d",
-                _MAX_INTERACTION_CONTENT_TOKENS_ENV,
-                raw,
-                DEFAULT_MAX_INTERACTION_CONTENT_TOKENS,
-            )
-            _INVALID_MAX_TOKENS_WARNED = True
-        return DEFAULT_MAX_INTERACTION_CONTENT_TOKENS
-    return value if value > 0 else None
 
 
 def slice_content_by_tokens(content: str, max_tokens: int | None) -> str:
@@ -331,21 +298,18 @@ class RenderedInteraction:
 
 
 def render_interaction(interaction: Interaction) -> RenderedInteraction:
-    """Render ordinary turn text and evidence under one captured allocation."""
+    """Render complete ordinary turn text and its identical original evidence."""
+    reject_removed_env(os.environ, {"REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS": ""})
     lines: list[str] = []
     evidence: list[str] = []
     if interaction.content:
-        content = slice_content_by_tokens(
-            interaction.content, _resolve_max_interaction_content_tokens()
-        )
+        content = interaction.content
         tool_prefixes = [
             f"[used tool: {tool.tool_name}({json.dumps(tool.tool_data)})]"
             for tool in interaction.tools_used or []
         ]
         evidence.extend(tool_prefixes)
-        evidence.extend(
-            segment for segment in content.split(_CONTENT_TRUNCATION_MARKER) if segment
-        )
+        evidence.append(content)
         prefix = " ".join(tool_prefixes)
         shown_content = f"{prefix} {content}" if prefix else content
         lines.append(f"{interaction.role}: ```{shown_content}```")

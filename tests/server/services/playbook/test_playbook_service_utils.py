@@ -1172,8 +1172,7 @@ def test_ordinary_evidence_omits_unshown_expert_content():
     assert context.evidence_sources["T1"].evidence_texts == ("Visible reply.",)
 
 
-def test_expert_evidence_matches_complete_comparison_fields(monkeypatch):
-    monkeypatch.setenv("REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS", "4")
+def test_expert_evidence_matches_complete_comparison_fields():
     content = "start " * 20 + "VISIBLE_MIDDLE" + " end" * 20
     context = _evidence_context(
         [
@@ -1216,16 +1215,8 @@ def test_expert_evidence_matches_complete_comparison_fields(monkeypatch):
     )
 
 
-def test_prompt_and_evidence_capture_one_turn_budget(monkeypatch):
-    from unittest.mock import Mock
-
-    from reflexio.server.services import service_utils
-
-    resolve = Mock(side_effect=[4, 1000])
-    monkeypatch.setattr(
-        service_utils, "_resolve_max_interaction_content_tokens", resolve
-    )
-    content = "start " * 20 + "MIDDLE" + " end" * 20
+def test_prompt_and_evidence_preserve_complete_turn():
+    content = "start " * 1000 + "MIDDLE …[truncated]" + " end" * 1000
     context = _evidence_context(
         [
             Interaction(
@@ -1234,13 +1225,11 @@ def test_prompt_and_evidence_capture_one_turn_budget(monkeypatch):
                 user_id="user",
                 role="user",
                 content=content,
-            ),
+            )
         ]
     )
-    resolve.assert_called_once_with()
-    assert content not in context.text
-    for segment in context.evidence_sources["T1"].evidence_texts:
-        assert segment in context.text
+    assert content in context.text
+    assert context.evidence_sources["T1"].evidence_texts == (content,)
 
 
 def test_repeated_expert_question_keeps_every_displayed_source_segment():

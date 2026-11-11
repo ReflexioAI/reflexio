@@ -183,6 +183,61 @@ def test_playbook_pending_info_tools_still_include_ask_human():
     ]
 
 
+@pytest.mark.parametrize("resume", [False, True])
+def test_direct_native_extraction_refuses_capacity_before_publication(
+    monkeypatch, storage, tool_call_completion, resume
+):
+    from reflexio.server.llm import input_budget
+
+    monkeypatch.setattr(input_budget.litellm, "token_counter", lambda **_: 2000)
+    monkeypatch.setattr(
+        input_budget.litellm,
+        "get_model_info",
+        lambda *_: {"max_input_tokens": 1000, "max_output_tokens": 20},
+    )
+    client = LiteLLMClient(
+        LiteLLMConfig(model="gpt-4o", max_tokens=20, fallback_models=[])
+    )
+    _, make_stop = tool_call_completion
+    response = make_stop('{"profiles": []}')
+    agent = ResumableExtractionAgent(client=client, storage=storage)
+    run = _agent_run(f"capacity-{resume}")
+    source = _source_inputs(storage, run)
+    with (
+        patch.object(
+            client, "_completion_with_hard_timeout", return_value=response
+        ) as dispatch,
+        pytest.raises(input_budget.InputBudgetExceededError),
+    ):
+        if resume:
+            ready = storage.create_agent_run(
+                replace(run, status=AgentRunStatus.RESUME_READY)
+            )
+            with user_extraction_lease(storage, "user_1", max_wait_seconds=0):
+                claimed = _adopt_continuation(storage, ready)
+                agent.resume(
+                    run=claimed,
+                    source_inputs=source,
+                    messages=[{"role": "user", "content": "full resumed evidence"}],
+                    history_inputs=HistoricalInputs(),
+                    output_schema=StructuredProfilesOutput,
+                    resolved_tool_calls=[],
+                )
+        else:
+            agent.start(
+                run=run,
+                source_inputs=source,
+                messages=[{"role": "user", "content": "full initial evidence"}],
+                history_inputs=HistoricalInputs(),
+                output_schema=StructuredProfilesOutput,
+            )
+    dispatch.assert_not_called()
+    stored = storage.get_agent_run(run.id)
+    assert stored is not None
+    assert stored.committed_output is None
+    assert stored.status != AgentRunStatus.AGENT_COMPLETED
+
+
 def test_resumable_agent_finishes_profile_output(
     monkeypatch,
     storage,
