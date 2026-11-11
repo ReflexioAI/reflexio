@@ -1198,6 +1198,8 @@ def _suppress_source_user_playbooks(
                     source_user_playbook_ids.update(
                         int(source_id) for source_id in source_ids
                     )
+            except search_runtime.SearchDeadlineError:
+                raise
             except Exception as exc:
                 if strict:
                     raise ReadinessUnavailableError(

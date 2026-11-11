@@ -555,3 +555,27 @@ def test_joint_widening_retains_scored_profile_population_and_recency(
         row.profile_id for row in baseline.profiles
     ]
     assert len(calls) == 4 and calls[-1]["top_k"] == 10
+
+
+@pytest.mark.parametrize("joint", [False, True])
+def test_lineage_lookup_preserves_deadline_and_never_accepts_session(native, joint):
+    import time
+
+    if joint:
+        provider = Mock()
+        provider.select.return_value = (native.agents, native.users)
+        register_service(JOINT_PLAYBOOK_SELECTOR, provider)
+    deadline = search_runtime.SearchDeadlineError("source lookup expired")
+    native.storage.get_source_user_playbook_ids_for_agent_playbooks.side_effect = (
+        deadline
+    )
+    scope = search_runtime.SearchScope(deadline=time.monotonic() + 1)
+    token = search_runtime._scope.set(scope)
+    try:
+        with pytest.raises(search_runtime.SearchDeadlineError) as raised:
+            run(native, session_id="source-deadline")
+        assert raised.value is deadline
+        assert scope.success_callbacks == []
+    finally:
+        search_runtime._scope.reset(token)
+    assert not session_seen_cache.seen("org", "source-deadline")

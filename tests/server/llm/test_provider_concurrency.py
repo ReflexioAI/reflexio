@@ -500,18 +500,18 @@ def test_named_http_transport_shares_provider_capacity(monkeypatch):
     monkeypatch.setattr(pc, "_per_provider_cap", {})
     monkeypatch.setattr(pc, "_semaphores", {})
     monkeypatch.setattr(pc, "_provider_key", lambda _: "typesafe")
-    with pc.named_provider_slot("typesafe"):
-        with (
-            pytest.raises(pc.ProviderCapSaturatedError),
-            pc.provider_slot("registered-model", max_wait=0.001),
-        ):
-            pytest.fail("another transport bypassed Typesafe capacity")
+    with (
+        pc.named_provider_slot("typesafe"),
+        pytest.raises(pc.ProviderCapSaturatedError),
+        pc.provider_slot("registered-model", max_wait=0.001),
+    ):
+        pytest.fail("another transport bypassed Typesafe capacity")
     with (
         pc.provider_slot("registered-model"),
         pytest.raises(pc.ProviderCapSaturatedError),
+        pc.named_provider_slot("typesafe", max_wait=0.001),
     ):
-        with pc.named_provider_slot("typesafe", max_wait=0.001):
-            pytest.fail("named transport bypassed existing capacity")
+        pytest.fail("named transport bypassed existing capacity")
     assert pc._get_semaphore("typesafe")._value == 1
 
 
