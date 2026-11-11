@@ -57,6 +57,11 @@ from reflexio.server.auth import (
 )
 from reflexio.server.env_utils import env_str
 from reflexio.server.event_loop_lag import monitor_event_loop_lag
+from reflexio.server.gc_pause import (
+    freeze_startup_heap,
+    install_gc_pause_monitor,
+    uninstall_gc_pause_monitor,
+)
 from reflexio.server.middleware import (
     BodySizeLimitMiddleware,
     BotProtectionMiddleware,
@@ -493,6 +498,13 @@ def create_app(  # noqa: C901
             )
 
             configure_usage_event_recorder(exempt_usage_event_recorder)
+        # Imports and app construction are complete, and nothing below has
+        # started a thread or a forked LLM worker yet (the schedulers, capability
+        # startup and served requests all come later). Freezing here leaves
+        # every startup object out of later full collections and out of the
+        # pages a forked child would dirty by collecting.
+        install_gc_pause_monitor()
+        freeze_startup_heap()
         lag_monitor = asyncio.create_task(
             monitor_event_loop_lag(), name="event_loop_lag_monitor"
         )
@@ -566,6 +578,7 @@ def create_app(  # noqa: C901
             lag_monitor.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await lag_monitor
+            uninstall_gc_pause_monitor()
             # Drain search metering while enterprise tracing and usage recorders
             # are still installed. Capability shutdown clears both hooks.
             from reflexio.server.services.search_metering_worker import (

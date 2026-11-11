@@ -710,7 +710,15 @@ is declared with `off_loop_body(Model)`, so its model validation runs in a
 worker thread rather than on the event loop that also serves `/health/live`;
 the OpenAPI schema and 422 bodies are unchanged. Loop stalls are visible as the
 `event_loop.lag` gauge (worst lag per minute, milliseconds) and a WARNING
-`event=event_loop_lag` line for any stall of 1 s or more.
+`event=event_loop_lag` line for any stall of 1 s or more. Garbage-collector
+pauses, which hold the GIL and so stall every thread at once, are reported
+beside it: a `gc.pause.max` gauge (longest collection in the same window,
+milliseconds) and a WARNING `event=gc_pause` line (generation, duration,
+collected and uncollectable counts) for any collection of 100 ms or more. The
+app lifespan calls `gc.freeze()` once per process, after imports and app
+construction and before any scheduler thread, capability startup or forked LLM
+worker, so startup objects leave later full collections and forked children do
+not dirty their pages by collecting them. Collection thresholds are unchanged.
 
 A publish whose `request_id` is already committed is answered before embedding
 preparation: `replay_check` is the existence read every non-receipt publish
