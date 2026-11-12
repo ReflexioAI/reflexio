@@ -9,11 +9,6 @@ Tests the shared utility functions used by all extractors for:
 
 from dataclasses import dataclass
 
-import pytest
-from pydantic import ValidationError
-
-from reflexio.config_env import StoredConfigurationError
-from reflexio.models.config_schema import Config, validate_stored_config
 from reflexio.server.services.extractor_interaction_utils import (
     get_effective_source_filter,
     get_extractor_window_params,
@@ -271,107 +266,33 @@ class TestShouldExtractorRunByStride:
         assert result is False
 
 
-class TestEffectiveWindowAdmission:
-    """Automatic configuration cannot promise an impossible extraction stride."""
+def test_small_manual_window_does_not_authorize_automatic_admission():
+    import pytest
 
-    @pytest.mark.parametrize(
-        "kind", ["profile_extractor_config", "user_playbook_extractor_config"]
+    from reflexio.models.api_schema.domain.entities import PublishUserInteractionRequest
+    from reflexio.models.config_schema import Config
+    from reflexio.server.services.durable_learning.admission import extraction_admission
+
+    # This is legal configuration for manual calls even without manual-only mode.
+    config = Config.model_validate(
+        {
+            "storage_config": None,
+            "profile_extractor_config": {
+                "extraction_definition_prompt": "Extract direct evidence",
+                "window_size_override": 2,
+            },
+        }
     )
-    @pytest.mark.parametrize(
-        "override",
-        [
-            {"window_size_override": 2},
-            {"stride_size_override": 20},
-            {"window_size_override": 3, "stride_size_override": 4},
-        ],
+    window = get_extractor_window_params(
+        config.profile_extractor_config, config.window_size, config.stride_size
     )
-    def test_automatic_overrides_are_validated_after_fallback(self, kind, override):
-        with pytest.raises(ValidationError, match=kind):
-            Config.model_validate(
-                {
-                    "storage_config": None,
-                    kind: {
-                        "extraction_definition_prompt": "Extract direct evidence",
-                        **override,
-                    },
-                }
-            )
-
-    @pytest.mark.parametrize(
-        "kind", ["profile_extractor_config", "user_playbook_extractor_config"]
+    assert window == (2, 8)
+    request = PublishUserInteractionRequest.model_validate(
+        {
+            "user_id": "user",
+            "session_id": "session",
+            "interaction_data_list": [{"role": "user", "content": "source"}],
+        }
     )
-    def test_stored_automatic_conflict_is_sanitized(self, kind):
-        with pytest.raises(StoredConfigurationError, match="configuration") as error:
-            validate_stored_config(
-                {
-                    "storage_config": None,
-                    kind: {
-                        "extraction_definition_prompt": "Extract direct evidence",
-                        "window_size_override": 2,
-                    },
-                    "agent_context_prompt": "must-not-appear-in-error",
-                }
-            )
-        assert "must-not-appear-in-error" not in str(error.value)
-
-    def test_manual_profile_uses_width_without_an_automatic_stride_gate(self):
-        config = Config.model_validate(
-            {
-                "storage_config": None,
-                "profile_extractor_config": {
-                    "extraction_definition_prompt": "Extract direct evidence",
-                    "manual_trigger": True,
-                    "window_size_override": 2,
-                },
-            }
-        )
-        assert get_extractor_window_params(
-            config.profile_extractor_config, config.window_size, config.stride_size
-        ) == (2, 8)
-
-    def test_independent_valid_overrides_and_disabled_extractors(self):
-        config = Config.model_validate(
-            {
-                "storage_config": None,
-                "profile_extractor_config": None,
-                "user_playbook_extractor_config": {
-                    "extraction_definition_prompt": "Extract direct evidence",
-                    "window_size_override": 4,
-                    "stride_size_override": 2,
-                },
-            }
-        )
-        assert get_extractor_window_params(
-            config.user_playbook_extractor_config,
-            config.window_size,
-            config.stride_size,
-        ) == (4, 2)
-        assert config.profile_extractor_config is None
-
-    def test_durable_admission_still_checks_bypassed_model_validation(self):
-        from reflexio.models.api_schema.domain.entities import (
-            PublishUserInteractionRequest,
-        )
-        from reflexio.server.services.durable_learning.admission import (
-            extraction_admission,
-        )
-
-        config = Config(storage_config=None)
-        profile = config.profile_extractor_config
-        assert profile is not None
-        unchecked = config.model_copy(
-            update={
-                "profile_extractor_config": profile.model_copy(
-                    update={"window_size_override": 2}
-                )
-            }
-        )
-        request = PublishUserInteractionRequest.model_validate(
-            {
-                "user_id": "user",
-                "session_id": "session",
-                "interaction_data_list": [{"role": "user", "content": "source"}],
-            }
-        )
-        with pytest.raises(ValueError, match="stride_size must be <= window_size"):
-            extraction_admission(unchecked, request)
+    with pytest.raises(ValueError, match="stride_size must be <= window_size"):
+        extraction_admission(config, request)

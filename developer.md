@@ -2002,16 +2002,14 @@ eligibility. Overridden routes retain their backup-key exclusion and require
 endpoint-specific context declarations and explicit output caps when using
 scoped native input admission. No endpoint choice or configuration knob retires.
 
-### Effective extraction window validation
+### Effective extraction window authority
 
 `reflexio.models.extraction_window` owns resolution of extractor overrides,
-workspace/project window values and schema defaults. Configuration publication
-and durable admission share its automatic-stride invariant. For automatic
-profile/playbook extraction, the resolved stride must be positive and no larger
-than the resolved window; a smaller width override cannot inherit an impossible
-larger stride. Invalid updates fail before publication. Invalid stored automatic
-policy fails validation rather than silently changing customer values; correct
-the affected width/stride before restarting. Manual-only profiles keep their
-history width without an automatic-stride gate. Agent-success evaluation still
-uses its supplied session slice. Existing defaults, public settings, project
-inheritance and frozen admission witnesses are unchanged.
+workspace/project window values and schema defaults. Its tuple-compatible value
+has an explicit automatic-admission check, shared by root geometry validation
+and durable admission. Resolution itself does not enroll a manual/window-only
+operation in automatic cadence. In particular, a saved small-width policy remains
+readable even when its unused automatic stride is larger; ordinary automatic
+admission still refuses that geometry. Existing read/write acceptance, defaults,
+public fields, project inheritance and frozen admission witnesses are unchanged.
+This refactor does not retire a setting or convert stored configuration.

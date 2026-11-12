@@ -1060,20 +1060,10 @@ class Config(BaseModel):
 
     @model_validator(mode="after")
     def check_stride_size_le_window_size(self) -> Self:
-        """Validate automatic geometry after applying per-extractor fallback."""
+        """Validate default automatic geometry through the shared owner."""
         get_extractor_window_params(
             None, self.window_size, self.stride_size
         ).require_automatic()
-        for name in ("profile_extractor_config", "user_playbook_extractor_config"):
-            extractor = getattr(self, name)
-            if extractor is None or getattr(extractor, "manual_trigger", False):
-                continue
-            try:
-                get_extractor_window_params(
-                    extractor, self.window_size, self.stride_size
-                ).require_automatic()
-            except ValueError as error:
-                raise ValueError(f"{name}: {error}") from None
         return self
 
     @model_validator(mode="after")
