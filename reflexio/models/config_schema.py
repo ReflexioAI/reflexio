@@ -617,6 +617,9 @@ class RetrievalFloorConfig(BaseModel):
     Floors are raw, model-specific cross-encoder logits, not probabilities. ``None``
     selects the calibrated default for the reranker discovered from the inference
     service. Numeric values are exact organization overrides, including ``0.0``.
+    A deployment-owned joint playbook selector replaces nullable playbook floors;
+    explicit numeric floors remain restrictions and refuse when unenforceable.
+    Profile floors and zero-pool disabling retain their existing behavior.
     """
 
     candidate_pool_size: int = Field(

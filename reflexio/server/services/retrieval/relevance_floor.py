@@ -15,6 +15,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from reflexio.server import search_runtime
 from reflexio.server.llm.rerank.common import resolve_retrieval_floor
 from reflexio.server.llm.rerank.cross_encoder_reranker import (
     CrossEncoderUnavailableError,
@@ -152,6 +153,7 @@ def apply_relevance_floors(
             ]
         except CrossEncoderUnavailableError as exc:
             span.set_data("available", False)
+            search_runtime.increment("search.content_floor.unavailable")
             if exc.report_failure:
                 logger.warning(
                     "event=relevance_floor_unavailable arms=%s items=%d (returning unfiltered pool)",
@@ -171,6 +173,13 @@ def apply_relevance_floors(
             offset += len(items)
             survivors = _floor_and_sort(items, arm_scores, floor)
             dropped = len(items) - len(survivors)
+            search_runtime.increment(
+                f"search.content_floor.{name}.evaluated", len(items)
+            )
+            search_runtime.increment(
+                f"search.content_floor.{name}.kept", len(survivors)
+            )
+            search_runtime.increment(f"search.content_floor.{name}.dropped", dropped)
             span.set_data(f"kept_{name}", len(survivors))
             span.set_data(f"dropped_{name}", dropped)
             if dropped:

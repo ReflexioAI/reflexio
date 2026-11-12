@@ -59,6 +59,167 @@ def test_joint_selection_precedes_lineage_and_skips_retired_selectors(native):
     assert ("agent_playbook", "1") not in seen
 
 
+def _run_with_floor(native, monkeypatch, floor, *, joint=True):
+    from reflexio.models.api_schema.retriever_schema import UnifiedSearchRequest
+    from reflexio.models.config_schema import RetrievalFloorConfig
+    from reflexio.server.services import unified_search_service as service
+
+    provider = Mock()
+    provider.select.side_effect = lambda **kw: (
+        kw["agent_playbooks"],
+        kw["user_playbooks"],
+    )
+    if joint:
+        register_service(JOINT_PLAYBOOK_SELECTOR, provider)
+    native.storage.get_source_user_playbook_ids_for_agent_playbooks.return_value = {}
+    result = service.run_unified_search(
+        request=UnifiedSearchRequest(query="q", user_id="u", top_k=5),
+        org_id="org",
+        storage=native.storage,
+        llm_client=Mock(),
+        prompt_manager=Mock(),
+        retrieval_floor=RetrievalFloorConfig(candidate_pool_size=30, **floor),
+    )
+    return result, provider
+
+
+def test_joint_owns_nullable_playbook_floors_but_preserves_profile_floor(
+    native, monkeypatch
+):
+    from reflexio.server.llm.rerank.common import MULTILINGUAL_RERANK_MODEL
+    from reflexio.server.services.retrieval import relevance_floor
+
+    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "true")
+    scored = []
+
+    def score(query, contents):
+        scored.extend(contents)
+        return MULTILINGUAL_RERANK_MODEL, [-100.0] * len(contents)
+
+    monkeypatch.setattr(relevance_floor, "score_pairs_with_model", score)
+    result, provider = _run_with_floor(native, monkeypatch, {})
+    assert (
+        result.profiles == []
+    )  # The unchanged calibrated profile floor still applies.
+    assert result.agent_playbooks == native.agents
+    assert result.user_playbooks == native.users
+    assert scored == [row.content for row in native.profiles]
+    assert provider.select.call_args.kwargs["user_playbooks"] == native.users
+
+
+@pytest.mark.parametrize("arm", ["agent", "user"])
+@pytest.mark.parametrize("floor", [-5.0, 0.0, 5.0])
+def test_joint_preserves_exact_numeric_playbook_floor(native, monkeypatch, arm, floor):
+    from reflexio.server.llm.rerank.common import MULTILINGUAL_RERANK_MODEL
+    from reflexio.server.services.retrieval import relevance_floor
+
+    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "true")
+    restricted = native.agents if arm == "agent" else native.users
+    other = native.users if arm == "agent" else native.agents
+    scores = {row.content: floor + 1 for row in restricted}
+    scores[restricted[0].content] = floor - 1
+
+    def score(query, contents):
+        assert not any(row.content in contents for row in other)
+        return MULTILINGUAL_RERANK_MODEL, [
+            scores.get(content, 100.0) for content in contents
+        ]
+
+    monkeypatch.setattr(relevance_floor, "score_pairs_with_model", score)
+    result, _ = _run_with_floor(native, monkeypatch, {arm + "_playbook_floor": floor})
+    assert getattr(result, arm + "_playbooks") == restricted[1:]
+    assert (
+        getattr(result, ("user" if arm == "agent" else "agent") + "_playbooks") == other
+    )
+    assert result.profiles == native.profiles
+
+
+@pytest.mark.parametrize("arm", ["agent", "user"])
+@pytest.mark.parametrize("unavailable", ["disabled", "transport"])
+def test_joint_refuses_unenforceable_numeric_floor(
+    native, monkeypatch, arm, unavailable
+):
+    from reflexio.server.llm.rerank.common import CrossEncoderUnavailableError
+    from reflexio.server.services.retrieval import relevance_floor
+
+    monkeypatch.setenv(
+        "REFLEXIO_RERANK_ENABLED", "false" if unavailable == "disabled" else "true"
+    )
+
+    def fail(*_args):
+        raise CrossEncoderUnavailableError("fixture unavailable")
+
+    monkeypatch.setattr(relevance_floor, "score_pairs_with_model", fail)
+    with pytest.raises(ReadinessUnavailableError, match="[Ff]loor"):
+        _run_with_floor(native, monkeypatch, {arm + "_playbook_floor": 0.0})
+
+
+def test_bare_oss_keeps_calibrated_nullable_playbook_floors(native, monkeypatch):
+    from reflexio.server.llm.rerank.common import MULTILINGUAL_RERANK_MODEL
+    from reflexio.server.services.retrieval import relevance_floor
+
+    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "true")
+    monkeypatch.setattr(
+        relevance_floor,
+        "score_pairs_with_model",
+        lambda _q, contents: (MULTILINGUAL_RERANK_MODEL, [-100.0] * len(contents)),
+    )
+    result, provider = _run_with_floor(native, monkeypatch, {}, joint=False)
+    assert result.profiles == result.agent_playbooks == result.user_playbooks == []
+    provider.select.assert_not_called()
+
+
+def test_joint_stage_counts_distinguish_floor_evaluation_from_bypass(
+    native, monkeypatch
+):
+    from reflexio.server import search_runtime
+    from reflexio.server.llm.rerank.common import MULTILINGUAL_RERANK_MODEL
+    from reflexio.server.services.retrieval import relevance_floor
+
+    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "true")
+    monkeypatch.setattr(
+        relevance_floor,
+        "score_pairs_with_model",
+        lambda _q, contents: (MULTILINGUAL_RERANK_MODEL, [-100.0] * len(contents)),
+    )
+    scope = search_runtime.SearchScope()
+    token = search_runtime._scope.set(scope)
+    try:
+        _run_with_floor(native, monkeypatch, {})
+    finally:
+        search_runtime._scope.reset(token)
+    assert scope.counters["search.playbooks.native_users"] == 2
+    assert scope.counters["search.playbooks.selector_input_users"] == 2
+    assert scope.counters["search.playbooks.selected_users"] == 2
+    assert scope.counters["search.playbooks.suppressed_source_users"] == 0
+    assert scope.counters["search.query_reformulated"] == 0
+    assert scope.counters["search.content_floor.profiles.evaluated"] == 1
+    assert scope.counters["search.content_floor.profiles.dropped"] == 1
+    assert "search.content_floor.user_playbooks.evaluated" not in scope.counters
+
+
+def test_zero_pool_keeps_explicit_floor_policy_disabled(native, monkeypatch):
+    from reflexio.models.api_schema.retriever_schema import UnifiedSearchRequest
+    from reflexio.models.config_schema import RetrievalFloorConfig
+    from reflexio.server.services import unified_search_service as service
+
+    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "false")
+    provider = Mock()
+    provider.select.side_effect = lambda **kw: ([], kw["user_playbooks"])
+    register_service(JOINT_PLAYBOOK_SELECTOR, provider)
+    result = service.run_unified_search(
+        request=UnifiedSearchRequest(query="q", user_id="u"),
+        org_id="org",
+        storage=native.storage,
+        llm_client=Mock(),
+        prompt_manager=Mock(),
+        retrieval_floor=RetrievalFloorConfig(
+            candidate_pool_size=0, user_playbook_floor=1000
+        ),
+    )
+    assert result.user_playbooks == native.users
+
+
 def test_joint_sees_twenty_and_can_promote_last_native_result(native):
     native.agents[:] = [
         AgentPlaybook(agent_playbook_id=i, agent_version="v1", content=str(i))
