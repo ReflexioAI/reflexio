@@ -39,11 +39,11 @@ def extraction_admission(
         if not eligible:
             admission[kind] = {"eligible": False}
             continue
-        width, stride = get_extractor_window_params(
+        window = get_extractor_window_params(
             extractor, config.window_size, config.stride_size
         )
-        if not 1 <= stride <= width:
-            raise ValueError("Extraction requires 1 <= stride_size <= window_size")
+        window.require_automatic()
+        width, stride = window
         admission[kind] = {
             "eligible": eligible,
             "window_size": width,

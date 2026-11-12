@@ -109,3 +109,34 @@ def test_llm_config_persists_pre_retrieval_model_name(temp_dir, test_org_id):
 
 if __name__ == "__main__":
     pytest.main(["-v", __file__, "-k", "test_init_creates_config_file"])
+
+
+def test_manual_window_round_trip_does_not_acquire_automatic_stride_gate(
+    configurator, temp_dir, test_org_id
+):
+    from reflexio.server.services.extractor_interaction_utils import (
+        get_extractor_window_params,
+    )
+
+    config = configurator.get_config()
+    profile = config.profile_extractor_config
+    assert profile is not None
+    # Manual API calls do not require manual_trigger=True. Preserve that policy.
+    patch = {
+        **profile.model_dump(),
+        "window_size_override": 2,
+        "stride_size_override": None,
+        "manual_trigger": False,
+    }
+    configurator.set_config(
+        configurator.prepare_config_patch({"profile_extractor_config": patch})
+    )
+    reloaded = DefaultConfigurator(org_id=test_org_id, base_dir=temp_dir).get_config()
+    window = get_extractor_window_params(
+        reloaded.profile_extractor_config, reloaded.window_size, reloaded.stride_size
+    )
+    assert window == (2, 8)
+    assert reloaded.profile_extractor_config is not None
+    assert reloaded.profile_extractor_config.manual_trigger is False
+    with pytest.raises(ValueError, match="stride_size must be <= window_size"):
+        window.require_automatic()

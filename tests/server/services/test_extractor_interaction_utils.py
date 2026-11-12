@@ -264,3 +264,35 @@ class TestShouldExtractorRunByStride:
         )
         # No interactions means nothing to process - always skip
         assert result is False
+
+
+def test_small_manual_window_does_not_authorize_automatic_admission():
+    import pytest
+
+    from reflexio.models.api_schema.domain.entities import PublishUserInteractionRequest
+    from reflexio.models.config_schema import Config
+    from reflexio.server.services.durable_learning.admission import extraction_admission
+
+    # This is legal configuration for manual calls even without manual-only mode.
+    config = Config.model_validate(
+        {
+            "storage_config": None,
+            "profile_extractor_config": {
+                "extraction_definition_prompt": "Extract direct evidence",
+                "window_size_override": 2,
+            },
+        }
+    )
+    window = get_extractor_window_params(
+        config.profile_extractor_config, config.window_size, config.stride_size
+    )
+    assert window == (2, 8)
+    request = PublishUserInteractionRequest.model_validate(
+        {
+            "user_id": "user",
+            "session_id": "session",
+            "interaction_data_list": [{"role": "user", "content": "source"}],
+        }
+    )
+    with pytest.raises(ValueError, match="stride_size must be <= window_size"):
+        extraction_admission(config, request)

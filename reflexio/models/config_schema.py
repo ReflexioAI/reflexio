@@ -32,6 +32,11 @@ from .api_schema.validators import (
     SafeHttpUrl,
     SanitizedNonEmptyStr,
 )
+from .extraction_window import (
+    DEFAULT_STRIDE_SIZE,
+    DEFAULT_WINDOW_SIZE,
+    get_extractor_window_params,
+)
 
 DEFAULT_MAX_MERGE_INVOCATIONS = 5
 _SchedulerThreshold = Annotated[int, Field(ge=1)]
@@ -52,10 +57,6 @@ _DEFAULT_OPTIMIZER_SCHEDULING_POLICY = OptimizerSchedulingPolicy()
 # Embedding vector dimensions. Changing this requires a DB migration and re-embedding,
 # so it is intentionally a constant rather than a configurable setting.
 EMBEDDING_DIMENSIONS = 512
-
-# Default sliding window parameters for extraction
-DEFAULT_WINDOW_SIZE = 10
-DEFAULT_STRIDE_SIZE = 8
 
 
 def _reject_obsolete_fields(data: Any, fields: tuple[str, ...]) -> Any:
@@ -1059,9 +1060,10 @@ class Config(BaseModel):
 
     @model_validator(mode="after")
     def check_stride_size_le_window_size(self) -> Self:
-        """Validate that stride_size <= window_size."""
-        if self.stride_size > self.window_size:
-            raise ValueError("stride_size must be <= window_size")
+        """Validate default automatic geometry through the shared owner."""
+        get_extractor_window_params(
+            None, self.window_size, self.stride_size
+        ).require_automatic()
         return self
 
     @model_validator(mode="after")

@@ -2001,3 +2001,15 @@ Absent overrides retain LiteLLM's native default and existing MiniMax backup-key
 eligibility. Overridden routes retain their backup-key exclusion and require
 endpoint-specific context declarations and explicit output caps when using
 scoped native input admission. No endpoint choice or configuration knob retires.
+
+### Effective extraction window authority
+
+`reflexio.models.extraction_window` owns resolution of extractor overrides,
+workspace/project window values and schema defaults. Its tuple-compatible value
+has an explicit automatic-admission check, shared by root geometry validation
+and durable admission. Resolution itself does not enroll a manual/window-only
+operation in automatic cadence. In particular, a saved small-width policy remains
+readable even when its unused automatic stride is larger; ordinary automatic
+admission still refuses that geometry. Existing read/write acceptance, defaults,
+public fields, project inheritance and frozen admission witnesses are unchanged.
+This refactor does not retire a setting or convert stored configuration.
