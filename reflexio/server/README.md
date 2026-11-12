@@ -1117,6 +1117,8 @@ Ordinary interaction rendering returns prompt text and the source segments
 visible in that text together. The playbook context uses this view once per
 turn, so a changing per-turn budget cannot disagree with its evidence map.
 Expert comparison provenance includes only the preceding user question and
-the complete agent/expert fields actually shown. Ordinary views exclude the
-unshown expert field. Prepared overflow presentations keep their own exact
+the complete agent/expert fields actually shown. Ordinary extraction views
+exclude the unshown expert field. Audited reconciliation renders every turn
+with its expert correction shown and bound as evidence, because it audits
+expert-derived candidates. Prepared overflow presentations keep their own exact
 source spans and bypass ordinary rendering as before.
