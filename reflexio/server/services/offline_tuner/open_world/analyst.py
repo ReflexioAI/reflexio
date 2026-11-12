@@ -1577,6 +1577,10 @@ class _LiteLLMOpenWorldModelClient:
     def _generation_options(
         self, response_format: type[StrictStructuredOutput], idempotency_key: str
     ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        from reflexio.server.services.playbook.rule_evidence.trigger_maintenance import (
+            TriggerBatch,
+            TriggerGate,
+        )
         from reflexio.server.services.playbook.rule_evidence.wire import (
             BoundedTargetDiagnostic,
             GlobalRuleAudit,
@@ -1590,6 +1594,9 @@ class _LiteLLMOpenWorldModelClient:
             profile = generation_profile(
                 output_kind(response_format), provider=self._transport.provider
             )
+            settings.update(profile)
+        elif response_format in (TriggerGate, TriggerBatch):
+            profile = generation_profile("tune", provider=self._transport.provider)
             settings.update(profile)
         options = {
             "response_format": response_format,

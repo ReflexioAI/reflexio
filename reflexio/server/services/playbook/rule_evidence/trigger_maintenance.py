@@ -11,6 +11,7 @@ from typing import Literal, cast
 from pydantic import Field
 
 from reflexio.server.services.playbook.publication import canonical_json_bytes
+from reflexio.server.services.playbook.revision import FinalPlaybookRevision
 
 from . import PAYLOAD_PROXY_TOKEN_LIMIT, Invoke, request_input_tokens
 from .models import EvidenceModel, Text
@@ -79,20 +80,6 @@ class BuiltTrigger(EvidenceModel):
 class TriggerBatch(EvidenceModel):
     # Keep the studied batch wire format, but native maintenance uses one source.
     revisions: list[BuiltTrigger] = Field(min_length=1, max_length=4)
-
-
-class FinalPlaybookRevision(EvidenceModel):
-    """Both final fields are required; null Trigger never means 'unspecified'."""
-
-    revised_content: Text
-    revised_trigger: str | None
-
-    def changes(self, frame: TriggerSourceFrame) -> bool:
-        """A no-op requires exact equality of BOTH incumbent fields."""
-        return (self.revised_content, self.revised_trigger) != (
-            frame.original_content,
-            frame.original_trigger,
-        )
 
 
 class TriggerMaintenanceResult(EvidenceModel):

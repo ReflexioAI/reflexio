@@ -33,6 +33,8 @@ OPEN_WORLD_EVIDENCE_ARTIFACT_KIND = "open_world_evidence_bundle"
 OPEN_WORLD_EVIDENCE_OPTIMIZER_KIND = "offline_tuner_open_world"
 OPEN_WORLD_DISCOVERY_MEMO_ARTIFACT_KIND = "open_world_discovery_memo"
 OPEN_WORLD_CANDIDATE_ARTIFACT_KIND = "open_world_candidate"
+OPEN_WORLD_CONTENT_RESULT_ARTIFACT_KIND = "open_world_content_result"
+OPEN_WORLD_TRIGGER_RESULT_ARTIFACT_KIND = "open_world_trigger_result"
 OPEN_WORLD_ATTEMPT_DECISION_ARTIFACT_KIND = "open_world_attempt_decision"
 
 #: The terminal outcomes an open-world ``failed`` stage advance accepts: every
@@ -221,7 +223,14 @@ class OpenWorldInvocationRow:
     state: Literal["prepared", "completed"]
     component_identity_digest: str
     input_digest: str
-    component_role: Literal["discovery", "candidate", "held_out"]
+    component_role: Literal[
+        "discovery",
+        "candidate",
+        "held_out",
+        "confirmation",
+        "trigger_gate",
+        "trigger_builder",
+    ]
     manifest_role: Literal["held_out", "safety_only"] | None
     user_id: str | None
     session_id: str | None
