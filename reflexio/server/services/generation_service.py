@@ -52,7 +52,11 @@ from reflexio.server.services.shadow_comparison.worker import (
     ShadowComparisonJob,
     enqueue_shadow_comparison,
 )
-from reflexio.server.usage_metrics import record_usage_event
+from reflexio.server.usage_metrics import (
+    UsageEvent,
+    record_usage_event,
+    record_usage_event_batch,
+)
 from reflexio.server.work_scope import current_project_id
 
 if TYPE_CHECKING:
@@ -891,25 +895,34 @@ class GenerationService:
         downstream dedup can key on the interaction id. The summed
         ``count_value`` across the emitted events equals the old aggregate
         count, so totals are unchanged.
+
+        The events are delivered as ONE batch: a durable recorder writes them in
+        one transaction rather than one per interaction, which is one metrics
+        round trip set per publish instead of N (issue #2731). Each event keeps
+        its own key, so per-interaction dedup is unchanged.
         """
-        for interaction in interactions:
-            record_usage_event(
-                org_id=self.org_id,
-                user_id=user_id,
-                request_id=request_id,
-                session_id=session_id,
-                source=source,
-                agent_version=agent_version,
-                backend=backend,
-                event_name="publish_request_succeeded",
-                event_category="publish",
-                outcome="success",
-                count_value=1,
-                event_key=f"pub:{interaction.interaction_id}",
-                entity_id=str(interaction.interaction_id),
-                duration_ms=duration_ms,
-                metadata=metadata,
-            )
+        record_usage_event_batch(
+            [
+                UsageEvent(
+                    org_id=str(self.org_id),
+                    user_id=user_id,
+                    request_id=request_id,
+                    session_id=session_id,
+                    source=source,
+                    agent_version=agent_version,
+                    backend=backend,
+                    event_name="publish_request_succeeded",
+                    event_category="publish",
+                    outcome="success",
+                    count_value=1,
+                    event_key=f"pub:{interaction.interaction_id}",
+                    entity_id=str(interaction.interaction_id),
+                    duration_ms=duration_ms,
+                    metadata=metadata,
+                )
+                for interaction in interactions
+            ]
+        )
 
     def _schedule_post_publish_evaluations(
         self,
