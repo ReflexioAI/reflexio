@@ -494,6 +494,7 @@ def test_unexpected_launch_owner_exit_retains_admission_and_scratch(
                 task.exit_confirmed = True
                 owner._finish(counter, task)
     assert released.wait(5)
+    assert owner is not None
     end = time.monotonic() + 5
     while Path(owner.context.directory).exists() and time.monotonic() < end:
         time.sleep(0.01)

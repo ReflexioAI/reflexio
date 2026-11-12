@@ -52,7 +52,10 @@ npm --prefix docs install                    # Install docs frontend dependencie
 **Testing:**
 ```python
 import reflexio
-client = reflexio.ReflexioClient(api_key="your-api-key", url_endpoint="http://127.0.0.1:8061/")
+
+client = reflexio.ReflexioClient(
+    api_key="your-api-key", url_endpoint="http://127.0.0.1:8061/"
+)
 ```
 See `notebooks/00_quickstart.ipynb` and the Testing section of [developer.md](../../developer.md)
 

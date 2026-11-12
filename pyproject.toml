@@ -51,8 +51,6 @@ dependencies = [
     "gepa>=0.1.1,<0.2",
     # CLI
     "typer>=0.15.0",
-    # The offline dispatcher parses global options with click directly.
-    "click>=8.4.1",
     "rich>=13.0.0",
     # Direct MiniLM ONNX inference; no vector database dependency.
     "onnxruntime>=1.23.2",

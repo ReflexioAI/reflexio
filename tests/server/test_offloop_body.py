@@ -18,7 +18,7 @@ import json
 import threading
 import types
 import typing
-from typing import Any
+from typing import Any, cast
 
 import anyio
 import httpx
@@ -62,7 +62,7 @@ def _off_loop_model(route: APIRoute) -> type[BaseModel] | None:
         for body_param in dependency.body_params:
             model = body_param.field_info.annotation
             if dependency.call is _dependency(model):
-                return model
+                return cast(type[BaseModel], model)
     return None
 
 

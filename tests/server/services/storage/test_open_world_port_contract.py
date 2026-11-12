@@ -19,6 +19,7 @@ from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -173,8 +174,13 @@ class _SQLitePortHarness:
         rows = self._conn.execute(sql, (key,)).fetchall()
         return [
             ExposureRow(
-                **{name: row[name] for name in ExposureRow._fields}
-                | {"integrity_reasons": tuple(json.loads(row["integrity_reasons"]))}
+                **cast(
+                    dict[str, Any],
+                    {name: row[name] for name in ExposureRow._fields}
+                    | {
+                        "integrity_reasons": tuple(json.loads(row["integrity_reasons"]))
+                    },
+                )
             )
             for row in rows
         ]

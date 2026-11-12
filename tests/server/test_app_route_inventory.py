@@ -1096,7 +1096,7 @@ def _route_inventory(app: FastAPI) -> list[tuple]:
     return [
         (
             route.path,
-            tuple(sorted(route.methods)),
+            tuple(sorted(route.methods or ())),
             route.response_model.__name__ if route.response_model else None,
             route.status_code,
             tuple(route.tags),
@@ -1164,7 +1164,7 @@ def test_no_duplicate_path_method(build) -> None:
     dups: list[tuple[str, str]] = []
     for route in app.routes:
         if isinstance(route, APIRoute):
-            for method in route.methods:
+            for method in route.methods or ():
                 key = (route.path, method)
                 if key in seen:
                     dups.append(key)
@@ -1191,7 +1191,7 @@ def test_no_overlapping_path_templates(build) -> None:
     for route in app.routes:
         if isinstance(route, APIRoute):
             normalized = _PARAM.sub("{}", route.path)
-            for method in route.methods:
+            for method in route.methods or ():
                 by_shape.setdefault((normalized, method), set()).add(route.path)
     overlaps = {k: v for k, v in by_shape.items() if len(v) > 1}
     assert not overlaps, f"overlapping path templates: {overlaps}"

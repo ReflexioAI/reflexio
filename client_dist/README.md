@@ -75,7 +75,7 @@ context = session.search(query="how do I reset my password?", user_id="user-123"
 session.publish_interaction(
     user_id="user-123",
     interactions=[
-        {"role": "user",      "content": "How do I reset my password?"},
+        {"role": "user", "content": "How do I reset my password?"},
         {"role": "assistant", "content": "Go to Settings > Security > Reset Password."},
     ],
     source="support-bot",
@@ -117,7 +117,7 @@ session = client.for_session("session-abc")
 response = session.publish_interaction(
     user_id="user-123",
     interactions=[
-        {"role": "user",      "content": "How do I reset my password?"},
+        {"role": "user", "content": "How do I reset my password?"},
         {"role": "assistant", "content": "Go to Settings > Security > Reset Password."},
     ],
     source="support-bot",
@@ -128,7 +128,7 @@ response = session.publish_interaction(
 response = session.publish_interaction(
     user_id="user-123",
     interactions=[
-        {"role": "user",      "content": "Thanks, that worked!"},
+        {"role": "user", "content": "Thanks, that worked!"},
         {"role": "assistant", "content": "Glad I could help!"},
     ],
     agent_version="v2.1",
@@ -154,6 +154,7 @@ profiles = client.get_profiles(user_id="user-123")
 
 # Filter by status
 from reflexio import Status
+
 profiles = client.get_profiles(user_id="user-123", status_filter=[Status.CURRENT])
 
 # Get all profiles across all users
@@ -223,14 +224,16 @@ playbooks = client.get_user_playbooks(playbook_name="usability", limit=50)
 results = session.search_user_playbooks(query="slow response", agent_version="v2.1")
 
 # Add a user playbook directly
-client.add_user_playbook(user_playbooks=[
-    UserPlaybook(
-        agent_version="v2.1",
-        request_id="req-001",
-        content="User found the response helpful",
-        playbook_name="satisfaction",
-    )
-])
+client.add_user_playbook(
+    user_playbooks=[
+        UserPlaybook(
+            agent_version="v2.1",
+            request_id="req-001",
+            content="User found the response helpful",
+            playbook_name="satisfaction",
+        )
+    ]
+)
 
 # Rerun playbook generation
 client.rerun_playbook_generation(
@@ -255,15 +258,17 @@ agent_playbooks = client.get_agent_playbooks(
 results = client.search_agent_playbooks(query="response quality", agent_version="v2.1")
 
 # Add an agent playbook directly
-client.add_agent_playbooks(agent_playbooks=[
-    AgentPlaybook(
-        agent_version="v2.1",
-        content="Users prefer concise answers",
-        playbook_status=PlaybookStatus.APPROVED,
-        playbook_metadata="Aggregated from 15 user playbooks",
-        playbook_name="style",
-    )
-])
+client.add_agent_playbooks(
+    agent_playbooks=[
+        AgentPlaybook(
+            agent_version="v2.1",
+            content="Users prefer concise answers",
+            playbook_status=PlaybookStatus.APPROVED,
+            playbook_metadata="Aggregated from 15 user playbooks",
+            playbook_name="style",
+        )
+    ]
+)
 
 # Run playbook aggregation
 client.run_playbook_aggregation(
@@ -295,8 +300,8 @@ results = session.search(
 )
 
 print(results.profiles)
-print(results.feedbacks)       # agent playbooks
-print(results.raw_feedbacks)   # user playbooks
+print(results.feedbacks)  # agent playbooks
+print(results.raw_feedbacks)  # user playbooks
 ```
 
 ## Evaluation
@@ -319,10 +324,12 @@ config = client.get_config()
 print(config)
 
 # Update config
-client.set_config(Config(
-    profile_extractor_config=[...],
-    playbook_config=[...],
-))
+client.set_config(
+    Config(
+        profile_extractor_config=[...],
+        playbook_config=[...],
+    )
+)
 ```
 
 ## Bulk Delete Operations
