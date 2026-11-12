@@ -109,3 +109,30 @@ def test_llm_config_persists_pre_retrieval_model_name(temp_dir, test_org_id):
 
 if __name__ == "__main__":
     pytest.main(["-v", __file__, "-k", "test_init_creates_config_file"])
+
+
+def test_invalid_automatic_window_patch_preserves_local_policy(
+    configurator, temp_dir, test_org_id
+):
+    from pydantic import ValidationError
+
+    config = configurator.get_config()
+    profile = config.profile_extractor_config
+    assert profile is not None
+    patch = profile.model_dump()
+    patch.update(window_size_override=6, stride_size_override=3)
+    configurator.set_config(
+        configurator.prepare_config_patch({"profile_extractor_config": patch})
+    )
+    path = Path(temp_dir) / "configs" / f"config_{test_org_id}.json"
+    before = path.read_bytes()
+    served = configurator.get_config().model_dump()
+    with pytest.raises(ValidationError, match="profile_extractor_config"):
+        configurator.prepare_config_patch(
+            {
+                "stride_size": 8,
+                "profile_extractor_config": {**patch, "stride_size_override": None},
+            }
+        )
+    assert path.read_bytes() == before
+    assert configurator.get_config().model_dump() == served

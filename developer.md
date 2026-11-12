@@ -2001,3 +2001,17 @@ Absent overrides retain LiteLLM's native default and existing MiniMax backup-key
 eligibility. Overridden routes retain their backup-key exclusion and require
 endpoint-specific context declarations and explicit output caps when using
 scoped native input admission. No endpoint choice or configuration knob retires.
+
+### Effective extraction window validation
+
+`reflexio.models.extraction_window` owns resolution of extractor overrides,
+workspace/project window values and schema defaults. Configuration publication
+and durable admission share its automatic-stride invariant. For automatic
+profile/playbook extraction, the resolved stride must be positive and no larger
+than the resolved window; a smaller width override cannot inherit an impossible
+larger stride. Invalid updates fail before publication. Invalid stored automatic
+policy fails validation rather than silently changing customer values; correct
+the affected width/stride before restarting. Manual-only profiles keep their
+history width without an automatic-stride gate. Agent-success evaluation still
+uses its supplied session slice. Existing defaults, public settings, project
+inheritance and frozen admission witnesses are unchanged.
