@@ -2578,8 +2578,8 @@ def test_normal_finalization_uses_actual_committed_output_witness(
 
     decode = ExtractionResumeWorker._items_from_committed_output
 
-    def inspect_decode(current_worker, run):
-        items, pending, provenance = decode(current_worker, run)
+    def inspect_decode(current_worker, run, **kwargs):
+        items, pending, provenance = decode(current_worker, run, **kwargs)
         observed.update(
             run=run, contents=[item.content for item in items], provenance=provenance
         )

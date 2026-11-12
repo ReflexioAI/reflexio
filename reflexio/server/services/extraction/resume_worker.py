@@ -1222,17 +1222,13 @@ class ExtractionResumeWorker:
     def _items_from_committed_output(
         self,
         run: AgentRunRecord,
+        *,
+        request_interaction_data_models: list[RequestInteractionDataModel],
     ) -> tuple[list[Any], list[str], ModelProvenance | None]:
         if run.committed_output is None:
             raise ResumeWorkerError(
                 f"Run {run.id} cannot retry finalization without committed output"
             )
-        request_interaction_data_models = _request_interaction_models_from_ids(
-            self.storage,
-            run.binding.source_interaction_ids,
-            fallback_source=run.binding.source,
-            fallback_agent_version=run.binding.agent_version,
-        )
         extractor_config = _select_current_extractor_config(self.request_context, run)
         output, model_provenance = decode_committed_output(run.committed_output)
         if run.binding.extractor_kind == "profile":
@@ -1395,7 +1391,20 @@ class ExtractionResumeWorker:
                 raise ResumeWorkerError("Unsupported publication extractor")
             if saved is not None:
                 return PreparedPublication(service, saved.write_plan, saved.bookmark)
-            items, _, provenance = self._items_from_committed_output(run)
+            source_groups = _request_interaction_models_from_ids(
+                self.storage,
+                run.binding.source_interaction_ids,
+                fallback_source=run.binding.source,
+                fallback_agent_version=run.binding.agent_version,
+            )
+            items, _, provenance = self._items_from_committed_output(
+                run, request_interaction_data_models=source_groups
+            )
+            if isinstance(service, ProfileGenerationService):
+                # NEW consolidation needs the original run's authenticated
+                # source, just as ordinary extraction does. Cached preparation
+                # above reuses its resolved plan without reconstructing source.
+                service.service_config.window_interactions = source_groups
             if provenance is not None:
                 service._last_model_provenance = provenance
             from reflexio.server.services.extraction.publication_receipts import (

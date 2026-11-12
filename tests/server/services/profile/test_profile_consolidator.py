@@ -2,11 +2,11 @@
 Unit tests for ProfileConsolidator.
 
 Tests the consolidator's responsibilities for:
-- Pydantic output schema validation
-- Profile deduplication with LLM and hybrid search
-- Profile formatting for prompts
-- Building deduplicated results
-- Merging custom features
+- Internal compiler schema and reference validation
+- Native owner-scoped retrieval, pending previews and readiness refusal
+- Source-bound operation wire and coherent replacement/forget behavior
+- Repair exhaustion without unchecked proposal publication
+- Provenance, optional search metadata and native metadata primitives
 """
 
 import uuid
@@ -41,7 +41,6 @@ from reflexio.server.services.profile.components.consolidator import (
     ProfileDeletionDirective,
     ProfileDuplicateGroup,
     _dedup_failure_kind,
-    _format_profile_timestamp,
     validate_profile_dedup_output,
 )
 
@@ -60,6 +59,7 @@ def test_readiness_refusal_never_consolidates_incomplete_history(
     else:
         storage.search_user_profile.side_effect = [[], error]
     consolidator = ProfileConsolidator(mock_request_context, mock_llm_client)
+    consolidator.review_window = _review_window()
     candidates = [
         UserProfile(
             profile_id=str(i),
@@ -76,118 +76,34 @@ def test_readiness_refusal_never_consolidates_incomplete_history(
     mock_llm_client.generate_chat_response_with_provenance.assert_not_called()
 
 
-@pytest.mark.parametrize("group_kind", ["new", "mixed", "existing"])
-@pytest.mark.parametrize("same_angle", [False, True])
-def test_merged_profiles_preserve_all_canonical_evidence_and_perspectives(
-    mock_request_context, mock_llm_client, group_kind, same_angle
-):
-    first = UserProfile(
-        profile_id="first",
-        user_id="u",
-        content="Concise answers",
-        last_modified_timestamp=100,
-        generated_from_request_id="one",
-        source_span='Keep answers short. "Exact quote" \\ path',
-        notes="First original caveat",
-        reader_angle="preferences",
-        source_interaction_ids=[1, 2],
-        custom_features={"topic": "answers"},
-    )
-    second = first.model_copy(
-        update={
-            "profile_id": "second",
-            "source_span": "Include examples while staying brief.",
-            "notes": "Second original caveat",
-            "reader_angle": "preferences" if same_angle else "communication",
-            "source_interaction_ids": [2, 3],
-            "custom_features": {"format": "examples"},
-        }
-    )
-    assert first.source_span is not None and second.source_span is not None
-    assert first.notes is not None and second.notes is not None
-    if group_kind == "new":
-        new, existing, labels = [first, second], [], ["NEW-0", "NEW-1"]
-    elif group_kind == "mixed":
-        new, existing, labels = [first], [second], ["NEW-0", "EXISTING-0"]
-    else:
-        new, existing, labels = [], [first, second], ["EXISTING-0", "EXISTING-1"]
-    consolidator = ProfileConsolidator(
-        request_context=mock_request_context, llm_client=mock_llm_client
-    )
-    output = ProfileDeduplicationOutput(
-        duplicate_groups=[
-            ProfileDuplicateGroup(
-                item_ids=labels,
-                merged_content="Concise answers with examples",
-                merged_time_to_live="infinity",
-            )
-        ]
-    )
-    merged = consolidator._build_deduplicated_results(
-        new_profiles=new,
-        existing_profiles=existing,
-        dedup_output=output,
-        user_id="u",
-        request_id="merge",
-    )[0][0]
-    assert merged.source_span is not None and merged.notes is not None
-    assert merged.source_span.startswith(
-        "Original source evidence values (separate excerpts):"
-    )
-    assert (
-        first.source_span in merged.source_span
-        and second.source_span in merged.source_span
-    )
-    assert first.notes in merged.notes and second.notes in merged.notes
-    assert merged.source_interaction_ids == [1, 2, 3]
-    assert merged.reader_angle == ("preferences" if same_angle else None)
-    if not same_angle:
-        assert "preferences" in merged.notes and "communication" in merged.notes
-    expected_customs = (
-        first.custom_features
-        if group_kind == "mixed"
-        else {"topic": "answers", "format": "examples"}
-    )
-    assert merged.custom_features == expected_customs
-    # Repeated merges preserve complete values without repeatedly JSON-escaping
-    # a prior collection or losing perspectives of consumed NEW-only members.
-    initial_length = len(merged.source_span)
-    for index in range(4):
-        extra = first.model_copy(update={"profile_id": f"extra-{index}"})
-        previous = merged
-        merged = consolidator._build_deduplicated_results(
-            new_profiles=[extra],
-            existing_profiles=[previous],
-            dedup_output=ProfileDeduplicationOutput(
-                duplicate_groups=[
-                    ProfileDuplicateGroup(
-                        item_ids=["EXISTING-0", "NEW-0"],
-                        merged_content="Concise answers",
-                        merged_time_to_live="infinity",
-                    )
-                ]
-            ),
-            user_id="u",
-            request_id=f"merge-{index}",
-        )[0][0]
-        assert merged.source_span is not None and merged.notes is not None
-        assert previous.source_span is not None
-        assert previous.source_span in merged.source_span
-        assert (
-            first.source_span in merged.source_span
-            and second.source_span in merged.source_span
-        )
-        assert len(merged.source_span) - initial_length <= (index + 1) * (
-            len(first.source_span) + 120
-        )
-        if not same_angle:
-            assert merged.reader_angle is None
-            assert "communication" in merged.notes
-
-
 # ===============================
 # Fixtures
 # ===============================
+
+
+@pytest.mark.parametrize("has_source", [False, True])
+def test_native_mock_bypass_preserves_profiles_without_planner(
+    monkeypatch,
+    mock_request_context,
+    mock_llm_client,
+    mock_site_var_manager,
+    has_source,
+):
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "true")
+    consolidator = ProfileConsolidator(mock_request_context, mock_llm_client)
+    if has_source:
+        consolidator.review_window = _review_window()
+    profile = UserProfile(
+        profile_id="mock-profile",
+        user_id="u",
+        content="Prefers concise answers",
+        last_modified_timestamp=100,
+        generated_from_request_id="request",
+    )
+    assert consolidator.deduplicate([profile], "u", "request") == ([profile], [], [])
+    mock_llm_client.generate_chat_response_with_provenance.assert_not_called()
+    mock_request_context.storage.search_user_profile.assert_not_called()
+    assert consolidator.model_provenance is None
 
 
 @pytest.fixture
@@ -214,6 +130,7 @@ def mock_request_context():
     context = MagicMock(
         spec_set=["prompt_manager", "storage", "configurator", "org_id"]
     )
+    context.org_id = "org-test"
     context.prompt_manager = MagicMock()
     context.prompt_manager.render_prompt.return_value = "test prompt"
     context.storage = MagicMock()
@@ -467,162 +384,6 @@ class TestProfileConsolidatorInit:
 # ===============================
 
 
-class TestFormatProfilesForPrompt:
-    """Tests for profile formatting for LLM prompt."""
-
-    def test_format_profiles_basic(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        sample_profiles,
-    ):
-        """Test that profiles are formatted correctly with NEW prefix."""
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        result = deduplicator._format_items_for_prompt(sample_profiles)
-
-        assert "[NEW-0]" in result
-        assert "[NEW-1]" in result
-        assert "[NEW-2]" in result
-        assert "User prefers dark mode for coding" in result
-        assert "User likes dark theme in their IDE" in result
-        assert "one_month" in result
-        assert "one_week" in result
-        assert "extractor_a" in result
-        assert "extractor_b" in result
-
-    def test_format_profiles_uses_ttl_value(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
-    ):
-        """Test formatting shows TTL value from profile."""
-        timestamp = int(datetime.now(UTC).timestamp())
-        profiles = [
-            UserProfile(
-                profile_id="1",
-                user_id="user",
-                content="test content",
-                last_modified_timestamp=timestamp,
-                generated_from_request_id="req",
-                profile_time_to_live=ProfileTimeToLive.ONE_QUARTER,
-            )
-        ]
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        result = deduplicator._format_items_for_prompt(profiles)
-        assert "TTL: one_quarter" in result
-
-    def test_format_profiles_with_missing_source(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
-    ):
-        """Test formatting with profiles that have no source."""
-        timestamp = int(datetime.now(UTC).timestamp())
-        profiles = [
-            UserProfile(
-                profile_id="1",
-                user_id="user",
-                content="test content",
-                last_modified_timestamp=timestamp,
-                generated_from_request_id="req",
-                source=None,
-            )
-        ]
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        result = deduplicator._format_items_for_prompt(profiles)
-        assert "Source: unknown" in result
-
-    def test_format_existing_profiles(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        sample_profiles,
-    ):
-        """Test that existing profiles are formatted with EXISTING prefix."""
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        result = deduplicator._format_profiles_with_prefix(sample_profiles, "EXISTING")
-        assert "[EXISTING-0]" in result
-        assert "[EXISTING-1]" in result
-
-    def test_format_empty_profiles(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
-    ):
-        """Test formatting empty profile list returns (None)."""
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        result = deduplicator._format_profiles_with_prefix([], "NEW")
-        assert result == "(None)"
-
-    def test_format_profiles_includes_last_modified_utc(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
-    ):
-        """Test that formatted profiles include the last-modified timestamp in UTC."""
-        # 1704067200 == 2024-01-01 00:00:00 UTC
-        profiles = [
-            UserProfile(
-                profile_id="1",
-                user_id="user",
-                content="test content",
-                last_modified_timestamp=1704067200,
-                generated_from_request_id="req",
-                profile_time_to_live=ProfileTimeToLive.ONE_MONTH,
-                source="extractor_a",
-            )
-        ]
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        result = deduplicator._format_profiles_with_prefix(profiles, "NEW")
-        assert "Last Modified: 2024-01-01 00:00 UTC" in result
-
-    def test_format_profiles_timestamp_fallback_on_invalid(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
-    ):
-        """Test formatting degrades gracefully when the timestamp is out of range."""
-        # Absurdly large value that overflows datetime.fromtimestamp on every
-        # supported platform, but is still a valid ``int`` for the Pydantic
-        # model field.
-        profiles = [
-            UserProfile(
-                profile_id="1",
-                user_id="user",
-                content="test content",
-                last_modified_timestamp=99999999999999999,
-                generated_from_request_id="req",
-                profile_time_to_live=ProfileTimeToLive.ONE_MONTH,
-                source="extractor_a",
-            )
-        ]
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        # Must not raise.
-        result = deduplicator._format_profiles_with_prefix(profiles, "NEW")
-        assert "Last Modified: unknown" in result
-
-    def test_format_profile_timestamp_helper_happy_path(self):
-        """The helper formats a valid timestamp identically to the old inline call."""
-        assert _format_profile_timestamp(1704067200) == "2024-01-01 00:00 UTC"
-
-    def test_format_profile_timestamp_helper_fallback(self):
-        """The helper returns the sentinel when the timestamp is out of range."""
-        assert _format_profile_timestamp(99999999999999999) == "unknown"
-
-
 # ===============================
 # Test: Merge Custom Features
 # ===============================
@@ -727,832 +488,14 @@ class TestMergeCustomFeatures:
 # ===============================
 
 
-class TestBuildDeduplicatedResults:
-    """Tests for building deduplicated profile results."""
-
-    def test_build_deduplicated_results_merges_duplicates(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        sample_profiles,
-    ):
-        """Test that duplicates are merged into a single profile."""
-        dedup_output = ProfileDeduplicationOutput(
-            duplicate_groups=[
-                ProfileDuplicateGroup(
-                    item_ids=["NEW-0", "NEW-1"],
-                    merged_content="User prefers dark mode in their IDE",
-                    merged_time_to_live="one_month",
-                )
-            ],
-            unique_ids=["NEW-2"],
-        )
-
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        result_profiles, delete_ids, superseded = (
-            deduplicator._build_deduplicated_results(
-                new_profiles=sample_profiles,
-                existing_profiles=[],
-                dedup_output=dedup_output,
-                user_id="test_user",
-                request_id="test_request",
-            )
-        )
-
-        assert len(result_profiles) == 2  # 1 merged + 1 unique
-        assert len(delete_ids) == 0
-        assert len(superseded) == 0
-
-        # Find the merged profile
-        merged_profile = next(
-            (
-                p
-                for p in result_profiles
-                if p.content == "User prefers dark mode in their IDE"
-            ),
-            None,
-        )
-        assert merged_profile is not None
-        assert uuid.UUID(merged_profile.profile_id).version == 4
-        assert str(uuid.UUID(merged_profile.profile_id)) == merged_profile.profile_id
-        assert merged_profile.profile_time_to_live == ProfileTimeToLive.ONE_MONTH
-
-    @pytest.mark.parametrize(
-        ("item_ids", "expected_source_ids"),
-        [
-            (["NEW-0", "NEW-1"], [101, 102, 103]),
-            (["EXISTING-0", "EXISTING-1"], [102, 201, 202, 203]),
-            (["NEW-0", "EXISTING-0"], [101, 102, 201]),
-            (["EXISTING-0", "NEW-0"], [102, 201, 101]),
-        ],
-        ids=["new-only", "existing-only", "mixed", "mixed-reversed"],
-    )
-    def test_merged_profile_preserves_source_interaction_ids(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        sample_profiles,
-        item_ids,
-        expected_source_ids,
-    ):
-        """Merged profiles retain the ordered union of member provenance."""
-        sample_profiles[0].source_interaction_ids = [101, 102]
-        sample_profiles[1].source_interaction_ids = [102, 103]
-        existing_profiles = [
-            UserProfile(
-                profile_id="existing-0",
-                user_id="test_user",
-                content="Existing profile zero",
-                last_modified_timestamp=int(datetime.now(UTC).timestamp()),
-                generated_from_request_id="existing-request",
-                source_interaction_ids=[102, 201],
-            ),
-            UserProfile(
-                profile_id="existing-1",
-                user_id="test_user",
-                content="Existing profile one",
-                last_modified_timestamp=int(datetime.now(UTC).timestamp()),
-                generated_from_request_id="existing-request",
-                source_interaction_ids=[201, 202, 203],
-            ),
-        ]
-        dedup_output = ProfileDeduplicationOutput(
-            duplicate_groups=[
-                ProfileDuplicateGroup(
-                    item_ids=item_ids,
-                    merged_content="Merged profile",
-                    merged_time_to_live="one_month",
-                )
-            ],
-        )
-
-        result_profiles, _, _ = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )._build_deduplicated_results(
-            new_profiles=sample_profiles,
-            existing_profiles=existing_profiles,
-            dedup_output=dedup_output,
-            user_id="test_user",
-            request_id="test_request",
-        )
-
-        merged_profile = next(
-            profile
-            for profile in result_profiles
-            if profile.content == "Merged profile"
-        )
-        assert merged_profile.source_interaction_ids == expected_source_ids
-
-    def test_build_deduplicated_results_preserves_unique(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        sample_profiles,
-    ):
-        """Test that unique profiles are preserved."""
-        dedup_output = ProfileDeduplicationOutput(
-            duplicate_groups=[],
-            unique_ids=["NEW-0", "NEW-1", "NEW-2"],
-        )
-
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        result_profiles, delete_ids, superseded = (
-            deduplicator._build_deduplicated_results(
-                new_profiles=sample_profiles,
-                existing_profiles=[],
-                dedup_output=dedup_output,
-                user_id="test_user",
-                request_id="test_request",
-            )
-        )
-
-        assert len(result_profiles) == 3
-
-    def test_build_deduplicated_results_handles_invalid_ttl(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        sample_profiles,
-    ):
-        """Test that invalid TTL from LLM falls back to template TTL."""
-        dedup_output = ProfileDeduplicationOutput(
-            duplicate_groups=[
-                ProfileDuplicateGroup(
-                    item_ids=["NEW-0", "NEW-1"],
-                    merged_content="merged content",
-                    merged_time_to_live="invalid_ttl",
-                )
-            ],
-            unique_ids=["NEW-2"],
-        )
-
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        result_profiles, _, _ = deduplicator._build_deduplicated_results(
-            new_profiles=sample_profiles,
-            existing_profiles=[],
-            dedup_output=dedup_output,
-            user_id="test_user",
-            request_id="test_request",
-        )
-
-        merged_profile = next(
-            (p for p in result_profiles if p.content == "merged content"),
-            None,
-        )
-        assert merged_profile is not None
-        # Should fall back to template profile's TTL (first profile in group)
-        assert merged_profile.profile_time_to_live == ProfileTimeToLive.ONE_MONTH
-
-    def test_build_deduplicated_results_handles_unmentioned_profiles(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        sample_profiles,
-    ):
-        """Test that profiles not mentioned by LLM are added as-is."""
-        # LLM only mentions indices 0 and 1, not 2
-        dedup_output = ProfileDeduplicationOutput(
-            duplicate_groups=[
-                ProfileDuplicateGroup(
-                    item_ids=["NEW-0", "NEW-1"],
-                    merged_content="merged",
-                    merged_time_to_live="one_week",
-                )
-            ],
-            unique_ids=[],  # LLM forgot to mention index 2
-        )
-
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        result_profiles, _, _ = deduplicator._build_deduplicated_results(
-            new_profiles=sample_profiles,
-            existing_profiles=[],
-            dedup_output=dedup_output,
-            user_id="test_user",
-            request_id="test_request",
-        )
-
-        # Should still include all profiles (1 merged + 1 unmentioned)
-        assert len(result_profiles) == 2
-
-    def test_build_deduplicated_results_collects_existing_to_delete(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        sample_profiles,
-    ):
-        """Test that existing profiles marked for deletion are collected."""
-        timestamp = int(datetime.now(UTC).timestamp())
-        existing_profile = UserProfile(
-            profile_id="existing_1",
-            user_id="test_user",
-            content="Old dark mode preference",
-            last_modified_timestamp=timestamp,
-            generated_from_request_id="old_req",
-        )
-
-        dedup_output = ProfileDeduplicationOutput(
-            duplicate_groups=[
-                ProfileDuplicateGroup(
-                    item_ids=["NEW-0", "EXISTING-0"],
-                    merged_content="User prefers dark mode (updated)",
-                    merged_time_to_live="one_month",
-                )
-            ],
-            unique_ids=["NEW-1", "NEW-2"],
-        )
-
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        result_profiles, delete_ids, superseded = (
-            deduplicator._build_deduplicated_results(
-                new_profiles=sample_profiles,
-                existing_profiles=[existing_profile],
-                dedup_output=dedup_output,
-                user_id="test_user",
-                request_id="test_request",
-            )
-        )
-
-        assert len(delete_ids) == 1
-        assert delete_ids[0] == "existing_1"
-        assert len(superseded) == 1
-        assert superseded[0].profile_id == "existing_1"
-
-    def test_build_deduplicated_results_handles_deletion_directive(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        sample_profiles,
-    ):
-        """A deletion directive erases the EXISTING profile without writing a replacement.
-
-        This is the core bug fix: "forget that I am interested in X" used to
-        produce a merged "Previously interested in X, but requested removal"
-        profile. With the deletion channel, the NEW directive is consumed and
-        the EXISTING profile is deleted outright.
-        """
-        timestamp = int(datetime.now(UTC).timestamp())
-        existing_profile = UserProfile(
-            profile_id="existing_old_interest",
-            user_id="test_user",
-            content="User is interested in self-improving agents",
-            last_modified_timestamp=timestamp,
-            generated_from_request_id="old_req",
-        )
-
-        dedup_output = ProfileDeduplicationOutput(
-            duplicate_groups=[],
-            unique_ids=["NEW-1", "NEW-2"],
-            deletions=[
-                ProfileDeletionDirective(
-                    new_id="NEW-0",
-                    existing_ids=["EXISTING-0"],
-                    reasoning=(
-                        "NEW-0 is a meta-request to forget EXISTING-0; "
-                        "not a fact about the user."
-                    ),
-                )
-            ],
-        )
-
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        result_profiles, delete_ids, superseded = (
-            deduplicator._build_deduplicated_results(
-                new_profiles=sample_profiles,
-                existing_profiles=[existing_profile],
-                dedup_output=dedup_output,
-                user_id="test_user",
-                request_id="test_request",
-            )
-        )
-
-        # EXISTING profile is marked for deletion.
-        assert delete_ids == ["existing_old_interest"]
-        assert len(superseded) == 1
-        assert superseded[0].profile_id == "existing_old_interest"
-
-        # NEW-0 (the directive) was consumed — not re-added by the safety fallback.
-        assert all(p.content != sample_profiles[0].content for p in result_profiles), (
-            "Deletion directive NEW profile should not appear in result_profiles"
-        )
-
-        # Only NEW-1 and NEW-2 (the unrelated unique profiles) remain.
-        assert len(result_profiles) == 2
-        assert {p.content for p in result_profiles} == {
-            sample_profiles[1].content,
-            sample_profiles[2].content,
-        }
-
-    def test_build_deduplicated_results_deletion_directive_no_match(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        sample_profiles,
-    ):
-        """A deletion directive with empty existing_ids still consumes the NEW.
-
-        If the LLM emits a deletion directive but matches no EXISTING profile,
-        the NEW profile must still be suppressed — a meta-statement like
-        "Requested removal of X" is not a fact worth storing on its own.
-        """
-        dedup_output = ProfileDeduplicationOutput(
-            duplicate_groups=[],
-            unique_ids=["NEW-1", "NEW-2"],
-            deletions=[
-                ProfileDeletionDirective(
-                    new_id="NEW-0",
-                    existing_ids=[],
-                    reasoning="No matching existing profile found.",
-                )
-            ],
-        )
-
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        result_profiles, delete_ids, superseded = (
-            deduplicator._build_deduplicated_results(
-                new_profiles=sample_profiles,
-                existing_profiles=[],
-                dedup_output=dedup_output,
-                user_id="test_user",
-                request_id="test_request",
-            )
-        )
-
-        assert delete_ids == []
-        assert superseded == []
-        # NEW-0 must not survive into result_profiles.
-        assert all(p.content != sample_profiles[0].content for p in result_profiles)
-        assert len(result_profiles) == 2
-
-
 # ===============================
 # Test: Deduplicate Main Method
 # ===============================
 
 
-class TestDeduplicate:
-    """Tests for the main deduplicate() method."""
-
-    def test_deduplicate_returns_original_when_empty(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-    ):
-        """Test that empty input returns empty output."""
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        profiles, delete_ids, superseded = deduplicator.deduplicate(
-            new_profiles=[],
-            user_id="test_user",
-            request_id="test_request",
-        )
-
-        assert profiles == []
-        assert delete_ids == []
-        assert superseded == []
-
-    def test_deduplicate_returns_original_when_no_duplicates_found(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        sample_profiles,
-    ):
-        """Test that original profiles are returned when LLM finds no duplicates."""
-        mock_llm_client.generate_chat_response.return_value = (
-            ProfileDeduplicationOutput(
-                duplicate_groups=[],
-                unique_ids=["NEW-0", "NEW-1", "NEW-2"],
-            )
-        )
-
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        profiles, delete_ids, superseded = deduplicator.deduplicate(
-            new_profiles=sample_profiles,
-            user_id="test_user",
-            request_id="test_request",
-        )
-
-        assert profiles == sample_profiles
-        assert delete_ids == []
-        assert superseded == []
-
-    def test_deduplicate_returns_original_when_llm_fails(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        sample_profiles,
-    ):
-        """Test that original profiles are returned when LLM call fails."""
-        mock_llm_client.generate_chat_response.side_effect = Exception("LLM Error")
-
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        profiles, delete_ids, superseded = deduplicator.deduplicate(
-            new_profiles=sample_profiles,
-            user_id="test_user",
-            request_id="test_request",
-        )
-
-        assert profiles == sample_profiles
-        assert delete_ids == []
-        assert superseded == []
-
-    def test_deduplicate_merges_duplicates(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        sample_profiles,
-    ):
-        """Test that duplicates are properly merged."""
-        mock_llm_client.generate_chat_response.return_value = (
-            ProfileDeduplicationOutput(
-                duplicate_groups=[
-                    ProfileDuplicateGroup(
-                        item_ids=["NEW-0", "NEW-1"],
-                        merged_content="User prefers dark mode",
-                        merged_time_to_live="one_month",
-                    )
-                ],
-                unique_ids=["NEW-2"],
-            )
-        )
-
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        profiles, delete_ids, superseded = deduplicator.deduplicate(
-            new_profiles=sample_profiles,
-            user_id="test_user",
-            request_id="test_request",
-        )
-
-        # Should have 2 profiles: 1 merged + 1 unique
-        assert len(profiles) == 2
-        assert len(delete_ids) == 0
-
-    def test_deduplicate_with_existing_profiles_to_delete(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        sample_profiles,
-    ):
-        """Test deduplication that supersedes existing profiles."""
-        timestamp = int(datetime.now(UTC).timestamp())
-        existing_profile = UserProfile(
-            profile_id="existing_1",
-            user_id="test_user",
-            content="Old dark mode preference",
-            last_modified_timestamp=timestamp,
-            generated_from_request_id="old_req",
-        )
-
-        # Mock storage to return existing profile via hybrid search
-        mock_request_context.storage.search_user_profile.return_value = [
-            existing_profile
-        ]
-
-        mock_llm_client.generate_chat_response.return_value = (
-            ProfileDeduplicationOutput(
-                duplicate_groups=[
-                    ProfileDuplicateGroup(
-                        item_ids=["NEW-0", "EXISTING-0"],
-                        merged_content="User prefers dark mode (updated)",
-                        merged_time_to_live="one_month",
-                    )
-                ],
-                unique_ids=["NEW-1", "NEW-2"],
-            )
-        )
-
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        profiles, delete_ids, superseded = deduplicator.deduplicate(
-            new_profiles=sample_profiles,
-            user_id="test_user",
-            request_id="test_request",
-        )
-
-        assert len(profiles) == 3  # 1 merged + 2 unique
-        assert len(delete_ids) == 1
-        assert delete_ids[0] == "existing_1"
-        assert len(superseded) == 1
-
-    def test_deduplicate_applies_deletions_when_no_duplicate_groups(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        sample_profiles,
-    ):
-        """A deletion-only LLM response must still erase the EXISTING profile.
-
-        Regression guard: the public `deduplicate()` used to short-circuit when
-        `duplicate_groups` was empty, which silently dropped deletion directives
-        and returned the 'Requested removal of ...' NEW profile as a new fact —
-        the exact zombie-profile failure the deletion channel was meant to fix.
-        """
-        timestamp = int(datetime.now(UTC).timestamp())
-        existing_profile = UserProfile(
-            profile_id="existing_forgettable",
-            user_id="test_user",
-            content="User is interested in self-improving agents",
-            last_modified_timestamp=timestamp,
-            generated_from_request_id="old_req",
-        )
-        directive_profile = UserProfile(
-            profile_id=str(uuid.uuid4()),
-            user_id="test_user",
-            content=(
-                "Requested removal of interest in self-improving agents "
-                "from stored profiles"
-            ),
-            last_modified_timestamp=timestamp,
-            generated_from_request_id="req_directive",
-            profile_time_to_live=ProfileTimeToLive.ONE_DAY,
-            source="extractor_a",
-        )
-
-        mock_request_context.storage.search_user_profile.return_value = [
-            existing_profile
-        ]
-        mock_llm_client.generate_chat_response.return_value = (
-            ProfileDeduplicationOutput(
-                duplicate_groups=[],
-                unique_ids=[],
-                deletions=[
-                    ProfileDeletionDirective(
-                        new_id="NEW-0",
-                        existing_ids=["EXISTING-0"],
-                        reasoning="Meta-request to forget EXISTING-0.",
-                    )
-                ],
-            )
-        )
-
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        profiles, delete_ids, superseded = deduplicator.deduplicate(
-            new_profiles=[directive_profile],
-            user_id="test_user",
-            request_id="test_request",
-        )
-
-        assert delete_ids == ["existing_forgettable"]
-        assert len(superseded) == 1
-        assert superseded[0].profile_id == "existing_forgettable"
-        # The directive must be consumed — not leak back as a stored fact.
-        assert profiles == []
-
-    def test_deduplicate_strips_markers_on_llm_exception(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-    ):
-        """When the LLM call raises, fallback must strip canonical deletion markers.
-
-        Regression guard: if the LLM fails, returning `new_profiles` verbatim
-        would persist "Requested removal of …" markers as regular facts — the
-        exact zombie-profile outcome the deletion-directive channel was built
-        to prevent. The fallback must suppress markers while preserving
-        ordinary profiles.
-        """
-        timestamp = int(datetime.now(UTC).timestamp())
-        ordinary = UserProfile(
-            profile_id=str(uuid.uuid4()),
-            user_id="test_user",
-            content="User prefers dark mode",
-            last_modified_timestamp=timestamp,
-            generated_from_request_id="req_ok",
-            profile_time_to_live=ProfileTimeToLive.ONE_MONTH,
-            source="extractor_a",
-        )
-        marker = UserProfile(
-            profile_id=str(uuid.uuid4()),
-            user_id="test_user",
-            content=(
-                "Requested removal of interest in self-improving agents "
-                "from stored profiles"
-            ),
-            last_modified_timestamp=timestamp,
-            generated_from_request_id="req_forget",
-            profile_time_to_live=ProfileTimeToLive.ONE_DAY,
-            source="extractor_a",
-        )
-
-        mock_request_context.storage.search_user_profile.return_value = []
-        mock_llm_client.generate_chat_response.side_effect = RuntimeError(
-            "LLM unavailable"
-        )
-
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        profiles, delete_ids, superseded = deduplicator.deduplicate(
-            new_profiles=[ordinary, marker],
-            user_id="test_user",
-            request_id="test_request",
-        )
-
-        assert delete_ids == []
-        assert superseded == []
-        assert [p.profile_id for p in profiles] == [ordinary.profile_id]
-
-    def test_deduplicate_strips_markers_on_empty_output(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-    ):
-        """Empty dedup output (no groups, no deletions) still strips markers.
-
-        If the LLM returns nothing to act on but a marker profile is present in
-        `new_profiles`, the fallback must drop the marker rather than persist
-        it as a fact.
-        """
-        timestamp = int(datetime.now(UTC).timestamp())
-        ordinary = UserProfile(
-            profile_id=str(uuid.uuid4()),
-            user_id="test_user",
-            content="User prefers dark mode",
-            last_modified_timestamp=timestamp,
-            generated_from_request_id="req_ok",
-            profile_time_to_live=ProfileTimeToLive.ONE_MONTH,
-            source="extractor_a",
-        )
-        marker = UserProfile(
-            profile_id=str(uuid.uuid4()),
-            user_id="test_user",
-            content="Requested removal of preference for tabs over spaces",
-            last_modified_timestamp=timestamp,
-            generated_from_request_id="req_forget",
-            profile_time_to_live=ProfileTimeToLive.ONE_DAY,
-            source="extractor_a",
-        )
-
-        mock_request_context.storage.search_user_profile.return_value = []
-        mock_llm_client.generate_chat_response.return_value = (
-            ProfileDeduplicationOutput(
-                duplicate_groups=[],
-                unique_ids=[],
-                deletions=[],
-            )
-        )
-
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        profiles, delete_ids, superseded = deduplicator.deduplicate(
-            new_profiles=[ordinary, marker],
-            user_id="test_user",
-            request_id="test_request",
-        )
-
-        assert delete_ids == []
-        assert superseded == []
-        assert [p.profile_id for p in profiles] == [ordinary.profile_id]
-
-
 # ===============================
 # Test: Integration
 # ===============================
-
-
-class TestIntegration:
-    """Integration tests for the complete deduplication flow."""
-
-    def test_full_deduplication_flow(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-    ):
-        """Test a complete deduplication flow with realistic data."""
-        timestamp = int(datetime.now(UTC).timestamp())
-
-        # Create profiles from different extractors with duplicates
-        new_profiles = [
-            UserProfile(
-                profile_id="p1",
-                user_id="user",
-                content="User works in finance industry",
-                last_modified_timestamp=timestamp,
-                generated_from_request_id="req1",
-                profile_time_to_live=ProfileTimeToLive.ONE_YEAR,
-                source="industry_extractor",
-                custom_features={"sector": "finance"},
-            ),
-            UserProfile(
-                profile_id="p2",
-                user_id="user",
-                content="User is in the financial services sector",
-                last_modified_timestamp=timestamp,
-                generated_from_request_id="req2",
-                profile_time_to_live=ProfileTimeToLive.ONE_MONTH,
-                source="job_extractor",
-                custom_features={"job_type": "analyst"},
-            ),
-            UserProfile(
-                profile_id="p3",
-                user_id="user",
-                content="User prefers Python programming",
-                last_modified_timestamp=timestamp,
-                generated_from_request_id="req3",
-                profile_time_to_live=ProfileTimeToLive.INFINITY,
-                source="tech_extractor",
-            ),
-        ]
-
-        mock_llm_client.generate_chat_response.return_value = (
-            ProfileDeduplicationOutput(
-                duplicate_groups=[
-                    ProfileDuplicateGroup(
-                        item_ids=["NEW-0", "NEW-1"],
-                        merged_content="User works in the financial services industry",
-                        merged_time_to_live="one_year",
-                    )
-                ],
-                unique_ids=["NEW-2"],
-            )
-        )
-
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        result_profiles, delete_ids, superseded = deduplicator.deduplicate(
-            new_profiles=new_profiles,
-            user_id="user",
-            request_id="test_request",
-        )
-
-        # Verify structure
-        assert len(result_profiles) == 2
-        assert len(delete_ids) == 0
-
-        # Find merged profile
-        merged = next(
-            (p for p in result_profiles if "financial services industry" in p.content),
-            None,
-        )
-        assert merged is not None
-        assert merged.user_id == "user"
-        assert merged.profile_time_to_live == ProfileTimeToLive.ONE_YEAR
-        # Custom features should be merged
-        assert merged.custom_features == {"sector": "finance", "job_type": "analyst"}
-
-        # Find unique profile
-        unique = next((p for p in result_profiles if "Python" in p.content), None)
-        assert unique is not None
-        assert unique.content == "User prefers Python programming"
 
 
 # ===============================
@@ -1711,182 +654,6 @@ def _make_existing(content: str, profile_id: str) -> UserProfile:
     )
 
 
-class TestSupersedeAlwaysHasReplacement:
-    """
-    Contract tests for the core dedup invariant: a duplicate group either
-    writes a merged replacement profile or marks nothing for deletion.
-
-    Regression guard for the bug where a group's EXISTING members were queued
-    for supersede (and its NEW members marked handled) *before* the merge
-    template was resolved, so an unresolvable group deleted stored profiles
-    with no replacement written and stranded the NEW facts too.
-    """
-
-    @pytest.fixture
-    def existing_profiles(self):
-        return [
-            _make_existing("User uses dark theme in the IDE", "p-existing-0"),
-            _make_existing("User codes in Python daily", "p-existing-1"),
-        ]
-
-    @staticmethod
-    def _consolidator(mock_request_context, mock_llm_client):
-        return ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-
-    @pytest.mark.parametrize(
-        ("item_ids", "expect_supersede"),
-        [
-            # EXISTING-only group: legal per the prompt ("ANY mix of NEW and
-            # EXISTING"). Collapses into a merged replacement.
-            (["EXISTING-0", "EXISTING-1"], True),
-            # Out-of-range NEW falls back to the EXISTING member as template.
-            (["NEW-7", "EXISTING-0"], True),
-            # Nothing resolvable: must not supersede anything.
-            (["NEW-7", "EXISTING-9"], False),
-            (["garbage", "also-bad"], False),
-            # Mixed group: unchanged behavior.
-            (["NEW-0", "EXISTING-0"], True),
-        ],
-    )
-    def test_group_never_supersedes_without_writing_a_replacement(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        sample_profiles,
-        existing_profiles,
-        item_ids,
-        expect_supersede,
-    ):
-        dedup_output = ProfileDeduplicationOutput(
-            duplicate_groups=[
-                ProfileDuplicateGroup(
-                    item_ids=item_ids,
-                    merged_content="MERGED",
-                    merged_time_to_live="one_month",
-                )
-            ],
-        )
-
-        result_profiles, delete_ids, superseded = self._consolidator(
-            mock_request_context, mock_llm_client
-        )._build_deduplicated_results(
-            new_profiles=sample_profiles,
-            existing_profiles=existing_profiles,
-            dedup_output=dedup_output,
-            user_id="test_user",
-            request_id="test_request",
-        )
-
-        merged = [p for p in result_profiles if p.content == "MERGED"]
-
-        # The invariant: superseding anything requires a written replacement.
-        if delete_ids:
-            assert merged, (
-                f"group {item_ids} superseded {delete_ids} without writing a "
-                "replacement profile"
-            )
-        assert len(delete_ids) == len(superseded)
-        assert bool(delete_ids) is expect_supersede
-
-        # No NEW profile may be silently dropped, whatever happened to the group.
-        assert len(result_profiles) >= len(sample_profiles) - len(item_ids)
-        for idx, profile in enumerate(sample_profiles):
-            consumed_by_group = f"NEW-{idx}" in item_ids
-            if not consumed_by_group:
-                assert profile in result_profiles, (
-                    f"NEW-{idx} was not part of group {item_ids} but went missing"
-                )
-
-    def test_existing_only_group_carries_metadata_into_the_merge(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        existing_profiles,
-    ):
-        """An EXISTING-only merge must not drop custom_features/extractor_names."""
-        existing_profiles[0].custom_features = {"theme": "dark"}
-        existing_profiles[0].extractor_names = ["extractor_a"]
-        existing_profiles[1].extractor_names = ["extractor_b"]
-
-        dedup_output = ProfileDeduplicationOutput(
-            duplicate_groups=[
-                ProfileDuplicateGroup(
-                    item_ids=["EXISTING-0", "EXISTING-1"],
-                    merged_content="MERGED",
-                    merged_time_to_live="one_year",
-                )
-            ],
-        )
-
-        result_profiles, delete_ids, _ = self._consolidator(
-            mock_request_context, mock_llm_client
-        )._build_deduplicated_results(
-            new_profiles=[],
-            existing_profiles=existing_profiles,
-            dedup_output=dedup_output,
-            user_id="test_user",
-            request_id="test_request",
-        )
-
-        assert len(result_profiles) == 1
-        merged = result_profiles[0]
-        assert merged.content == "MERGED"
-        assert merged.custom_features == {"theme": "dark"}
-        assert merged.extractor_names == ["extractor_a", "extractor_b"]
-        assert merged.profile_time_to_live == ProfileTimeToLive.ONE_YEAR
-        # Both originals superseded, one replacement written.
-        assert set(delete_ids) == {"p-existing-0", "p-existing-1"}
-
-    def test_deletion_directives_still_supersede_without_replacement(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        existing_profiles,
-    ):
-        """
-        The invariant is scoped to duplicate_groups. A deletion directive is
-        an intentional erase-with-no-replacement and must stay that way.
-        """
-        directive = UserProfile(
-            profile_id=str(uuid.uuid4()),
-            user_id="test_user",
-            content="Requested removal of dark theme preference",
-            last_modified_timestamp=int(datetime.now(UTC).timestamp()),
-            generated_from_request_id="req_1",
-            profile_time_to_live=ProfileTimeToLive.ONE_MONTH,
-            source="extractor_a",
-        )
-        dedup_output = ProfileDeduplicationOutput(
-            deletions=[
-                ProfileDeletionDirective(
-                    new_id="NEW-0",
-                    existing_ids=["EXISTING-0"],
-                    reasoning="meta-request to forget",
-                )
-            ],
-        )
-
-        result_profiles, delete_ids, superseded = self._consolidator(
-            mock_request_context, mock_llm_client
-        )._build_deduplicated_results(
-            new_profiles=[directive],
-            existing_profiles=existing_profiles,
-            dedup_output=dedup_output,
-            user_id="test_user",
-            request_id="test_request",
-        )
-
-        assert delete_ids == ["p-existing-0"]
-        assert len(superseded) == 1
-        assert result_profiles == []
-
-
 # ===============================
 # Test: Dedup output validator (repair-ladder feedback)
 # ===============================
@@ -1989,98 +756,6 @@ class TestValidateProfileDedupOutput:
 # ===============================
 
 
-class TestDedupFailureHandling:
-    """Tests for the observability and degradation behavior of deduplicate()."""
-
-    @pytest.fixture
-    def consolidator(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
-    ):
-        mock_request_context.org_id = "org-test"
-        return ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-
-    def test_validator_is_passed_to_the_client(self, consolidator, sample_profiles):
-        """The dedup call must opt into the corrective repair ladder."""
-        consolidator.client.generate_chat_response.return_value = (
-            ProfileDeduplicationOutput(unique_ids=["NEW-0", "NEW-1", "NEW-2"])
-        )
-        consolidator.deduplicate(sample_profiles, "test_user", "req-1")
-
-        kwargs = consolidator.client.generate_chat_response.call_args.kwargs
-        assert callable(kwargs["structured_output_validator"])
-
-    def test_total_failure_is_reported_and_degrades_to_undeduped(
-        self, consolidator, sample_profiles
-    ):
-        consolidator.client.generate_chat_response.side_effect = LiteLLMClientError(
-            "Connection timed out after 120.0 seconds"
-        )
-
-        with patch(
-            "reflexio.server.services.profile.components.consolidator.capture_anomaly"
-        ) as mock_capture:
-            profiles, delete_ids, superseded = consolidator.deduplicate(
-                sample_profiles, "test_user", "req-1"
-            )
-
-        assert len(profiles) == len(sample_profiles)
-        assert delete_ids == []
-        assert superseded == []
-        mock_capture.assert_called_once()
-        assert mock_capture.call_args.args[0] == "profile.dedup.failed"
-        assert mock_capture.call_args.kwargs["failure_kind"] == "timeout"
-        assert mock_capture.call_args.kwargs["new_profile_count"] == 3
-
-    def test_exhausted_ladder_degrades_to_first_parsed_attempt(
-        self, consolidator, sample_profiles
-    ):
-        """
-        When the ladder exhausts but an attempt parsed, that attempt is used
-        rather than throwing away all dedup work.
-        """
-        partial = ProfileDeduplicationOutput(
-            duplicate_groups=[
-                ProfileDuplicateGroup(
-                    item_ids=["NEW-0", "NEW-1"],
-                    merged_content="MERGED",
-                    merged_time_to_live="one_month",
-                )
-            ],
-            # NEW-2 deliberately uncovered — the semantic error the validator
-            # rejected this attempt for.
-        )
-
-        def _call(**kwargs):
-            kwargs["structured_output_validator"](partial)
-            raise StructuredOutputRepairError(
-                "Structured output repair exhausted",
-                failure_kind="semantic",
-                model="minimax/MiniMax-M3",
-            )
-
-        consolidator.client.generate_chat_response.side_effect = _call
-
-        with patch(
-            "reflexio.server.services.profile.components.consolidator.capture_anomaly"
-        ) as mock_capture:
-            profiles, _, _ = consolidator.deduplicate(
-                sample_profiles, "test_user", "req-1"
-            )
-
-        # The merge was applied, and the uncovered NEW-2 still survived via the
-        # safety fallback — nothing was lost.
-        contents = {p.content for p in profiles}
-        assert "MERGED" in contents
-        assert sample_profiles[2].content in contents
-        assert (
-            mock_capture.call_args.args[0] == "profile.dedup.degraded_to_first_attempt"
-        )
-        assert mock_capture.call_args.kwargs["failure_kind"] == "repair_semantic"
-
-
 class TestDedupFailureKind:
     """Tests for the anomaly failure-class tag."""
 
@@ -2101,5 +776,291 @@ class TestDedupFailureKind:
         assert _dedup_failure_kind(ValueError("boom")) == "ValueError"
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+# Selected operation compiler behavior replaces tests for the retired merge actor.
+# These fixtures are code-owned source conversations; no customer or model data.
+def _review_window(text="I prefer dark mode. I use Python."):
+    return [
+        {
+            "session_id": "session",
+            "request_id": "request",
+            "source": "chat",
+            "interactions": [{"interaction_id": 1, "role": "user", "content": text}],
+        }
+    ]
+
+
+@pytest.fixture
+def selected(mock_request_context, mock_llm_client, mock_site_var_manager):
+    consolidator = ProfileConsolidator(mock_request_context, mock_llm_client)
+    consolidator.review_window = _review_window()
+    return consolidator
+
+
+def _claim(identity="fresh", text="User prefers dark mode.", owner="owner"):
+    return UserProfile(
+        profile_id=identity,
+        user_id=owner,
+        content=text,
+        last_modified_timestamp=100,
+        generated_from_request_id="request",
+        source_span="I prefer dark mode.",
+        source_interaction_ids=[1],
+        profile_time_to_live=ProfileTimeToLive.ONE_MONTH,
+        expiration_timestamp=2592100,
+    )
+
+
+def _operation_reply(client, make_groups, *, raise_after_validation=False):
+    """Exercise the actual emitted schema and validation seam without a provider."""
+    import json
+
+    def respond(**kwargs):
+        prompt = kwargs["messages"][0]["content"]
+        payload = json.loads(prompt.rsplit("\n\n", 1)[1])
+        output = kwargs["response_format"].model_validate(
+            {
+                "snapshot": payload["snapshot"],
+                "groups": make_groups(payload),
+            }
+        )
+        errors = kwargs["structured_output_validator"](output)
+        if errors or raise_after_validation:
+            raise StructuredOutputRepairError(
+                "Structured output repair exhausted",
+                failure_kind="semantic",
+                model="provider-free-test",
+            )
+        return output
+
+    client.generate_chat_response.side_effect = respond
+
+
+def _assert_group(
+    payload, *, new_id="NEW-0", content="User prefers dark mode.", replaces=None
+):
+    excerpt = payload["original_window"][0]["interactions"][0]["content"]["excerpts"][0]
+    clause = {
+        "action": "assert",
+        "source_new_id": new_id,
+        "content": content,
+        "evidence": [{"excerpt_id": excerpt["excerpt_id"], "stance": "assertion"}],
+    }
+    if replaces is not None:
+        clause["replaces"] = replaces
+    return {"new_ids": [new_id], "writes": [{"clauses": [clause]}]}
+
+
+def _all_of(row):
+    return {"row_id": row["id"], "start_token": 0, "end_token": row["token_count"]}
+
+
+def test_selected_empty_input_calls_no_model_or_storage(selected):
+    assert selected.deduplicate([], "owner", "request") == ([], [], [])
+    selected.client.generate_chat_response.assert_not_called()
+    selected.request_context.storage.search_user_profile.assert_not_called()
+
+
+def test_selected_wire_authors_fresh_fact_and_optional_metadata(selected):
+    def groups(payload):
+        group = _assert_group(payload)
+        group["writes"][0]["search_terms"] = ["dark mode", "IDE"]
+        return [group]
+
+    _operation_reply(selected.client, groups)
+    rows, retired, superseded = selected.deduplicate([_claim()], "owner", "request")
+    assert [row.content for row in rows] == ["User prefers dark mode."]
+    assert rows[0].expanded_terms == "dark mode, IDE"
+    assert rows[0].source_interaction_ids == [1]
+    assert rows[0].user_id == "owner"
+    assert retired == superseded == []
+    assert selected.lineage_sources_by_profile_id[rows[0].profile_id] == []
+    selected.request_context.prompt_manager.render_prompt.assert_not_called()
+    selected.client.generate_chat_response.assert_called_once()
+
+
+def test_invalid_optional_metadata_does_not_reject_core_fact(selected):
+    def groups(payload):
+        group = _assert_group(payload)
+        group["writes"][0]["search_terms"] = {"invalid": "object"}
+        return [group]
+
+    _operation_reply(selected.client, groups)
+    rows, retired, _ = selected.deduplicate([_claim()], "owner", "request")
+    assert [row.content for row in rows] == ["User prefers dark mode."]
+    assert rows[0].expanded_terms is None
+    assert retired == []
+
+
+def test_selected_correction_compiles_replacement_before_retirement(selected):
+    old = _claim("old", "User prefers light mode.")
+    selected.request_context.storage.search_user_profile.return_value = [old]
+    _operation_reply(
+        selected.client,
+        lambda payload: [
+            _assert_group(
+                payload,
+                replaces=[_all_of(payload["EXISTING"][0])],
+            )
+        ],
+    )
+    rows, retired, superseded = selected.deduplicate([_claim()], "owner", "request")
+    assert [row.content for row in rows] == ["User prefers dark mode."]
+    assert retired == ["old"]
+    assert superseded == [old]
+    assert old.content == "User prefers light mode."
+    assert selected.lineage_sources_by_profile_id[rows[0].profile_id] == ["old"]
+
+
+def test_selected_foreign_owner_cannot_be_retired(selected):
+    old = _claim("foreign", "User prefers light mode.", owner="another-user")
+    selected.request_context.storage.search_user_profile.return_value = [old]
+    _operation_reply(
+        selected.client,
+        lambda payload: [
+            _assert_group(
+                payload,
+                replaces=[_all_of(payload["EXISTING"][0])],
+            )
+        ],
+    )
+    assert selected.deduplicate([_claim()], "owner", "request") == ([], [], [])
+    assert old.user_id == "another-user"
+    assert old.content == "User prefers light mode."
+
+
+def test_selected_explicit_forget_consumes_marker_without_replacement(selected):
+    selected.review_window = _review_window("Forget my dark mode preference.")
+    old = _claim("old")
+    selected.request_context.storage.search_user_profile.return_value = [old]
+
+    def groups(payload):
+        excerpt = payload["original_window"][0]["interactions"][0]["content"][
+            "excerpts"
+        ][0]
+        return [
+            {
+                "new_ids": ["NEW-0"],
+                "writes": [],
+                "forget": [
+                    {
+                        "source_new_id": "NEW-0",
+                        "targets": [_all_of(payload["EXISTING"][0])],
+                        "evidence": [
+                            {
+                                "excerpt_id": excerpt["excerpt_id"],
+                                "stance": "forget_instruction",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+
+    _operation_reply(selected.client, groups)
+    marker = _claim(text="Requested removal of dark mode preference")
+    marker.source_span = "Forget my dark mode preference."
+    assert selected.deduplicate([marker], "owner", "request") == ([], ["old"], [old])
+
+
+@pytest.mark.parametrize("failure", ["timeout", "unexpected_type", "legacy_wire"])
+def test_selected_unusable_planner_never_publishes_unreviewed_facts(selected, failure):
+    old = _claim("old", "User prefers light mode.")
+    selected.request_context.storage.search_user_profile.return_value = [old]
+    if failure == "timeout":
+        selected.client.generate_chat_response.side_effect = LiteLLMClientError(
+            "Connection timed out"
+        )
+    else:
+        selected.client.generate_chat_response.return_value = (
+            "invalid"
+            if failure == "unexpected_type"
+            else ProfileDeduplicationOutput(unique_ids=["NEW-0"])
+        )
+    assert selected.deduplicate([_claim()], "owner", "request") == ([], [], [])
+    assert old.content == "User prefers light mode."
+    assert "planner_no_usable_output" in selected.enrichment_diagnostics[0]
+
+
+def test_selected_timeout_reports_failure_class(selected):
+    selected.client.generate_chat_response.side_effect = LiteLLMClientError(
+        "Connection timed out"
+    )
+    with patch(
+        "reflexio.server.services.profile.components.consolidator.capture_anomaly"
+    ) as capture:
+        assert selected.deduplicate([_claim()], "owner", "request") == ([], [], [])
+    capture.assert_called_once()
+    assert capture.call_args.args[0] == "profile.dedup.failed"
+    assert capture.call_args.kwargs["failure_kind"] == "timeout"
+
+
+def test_selected_missing_new_coverage_rejects_entire_wire_without_fallback(selected):
+    claims = [_claim(), _claim("other", "User uses Python.")]
+    claims[1].source_span = "I use Python."
+    _operation_reply(selected.client, lambda payload: [_assert_group(payload)])
+    rows, retired, _ = selected.deduplicate(claims, "owner", "request")
+    assert rows == []
+    assert retired == []
+    assert selected.client.generate_chat_response.call_args.kwargs[
+        "structured_output_validator"
+    ]
+
+
+@pytest.mark.parametrize("same_angle", [False, True])
+def test_native_provenance_primitive_preserves_separate_quotes_and_perspectives(
+    same_angle,
+):
+    from reflexio.server.services.profile.components.consolidator import (
+        _merged_provenance,
+    )
+
+    first, second = _claim(), _claim("second")
+    first.source_span = 'Keep answers short. "Exact quote" \\ path'
+    second.source_span = "Include examples while staying brief."
+    first.notes, second.notes = "First caveat", "Second caveat"
+    first.reader_angle = "preferences"
+    second.reader_angle = "preferences" if same_angle else "communication"
+    span, notes, angle = _merged_provenance([first, second])
+    assert span is not None and notes is not None
+    assert span.startswith("Original source evidence values (separate excerpts):")
+    assert first.source_span in span and second.source_span in span
+    assert first.notes in notes and second.notes in notes
+    assert angle == ("preferences" if same_angle else None)
+    if not same_angle:
+        assert "preferences" in notes and "communication" in notes
+
+
+def test_selected_profile_prompt_uses_authentic_json_metadata(selected):
+    import json
+
+    row = _claim()
+    row.source = "user_chat"
+    formatted = json.loads(selected._format_profiles_with_prefix([row], "EXISTING"))
+    assert formatted[0]["id"] == "EXISTING-0"
+    assert formatted[0]["modified"] == row.last_modified_timestamp
+    assert formatted[0]["expires"] == row.expiration_timestamp
+    assert formatted[0]["ttl"] == "one_month"
+    assert formatted[0]["source"] == "user_chat"
+    assert json.loads(selected._format_profiles_with_prefix([], "EXISTING")) == []
+
+
+def test_selected_exhausted_repair_salvages_validated_first_group(selected):
+    _operation_reply(
+        selected.client,
+        lambda payload: [_assert_group(payload)],
+        raise_after_validation=True,
+    )
+    rows, retired, superseded = selected.deduplicate([_claim()], "owner", "request")
+    assert [row.content for row in rows] == ["User prefers dark mode."]
+    assert retired == superseded == []
+
+
+def test_retired_base_cannot_execute_as_an_alternative_engine():
+    import inspect
+
+    from reflexio.server.services.profile.components.consolidator import (
+        _ProfileConsolidatorBase,
+    )
+
+    assert inspect.isabstract(_ProfileConsolidatorBase)
+    assert not inspect.isabstract(ProfileConsolidator)

@@ -1,0 +1,64 @@
+{
+  "new": {
+    "content": "Requested removal of Cedar Studio.",
+    "custom_features": null,
+    "embedding": [],
+    "expanded_terms": null,
+    "expiration_timestamp": 0,
+    "extractor_names": null,
+    "generated_from_request_id": "review-request",
+    "last_modified_timestamp": 100,
+    "merged_into": null,
+    "notes": null,
+    "profile_id": "new-claim",
+    "profile_time_to_live": "infinity",
+    "reader_angle": null,
+    "source": null,
+    "source_interaction_ids": [],
+    "source_span": "Please forget Cedar Studio. Keep that I paint Saturdays.",
+    "status": null,
+    "superseded_by": null,
+    "tags": null,
+    "user_id": "owner"
+  },
+  "old": {
+    "content": "User paints Saturdays at Cedar Studio.",
+    "custom_features": null,
+    "embedding": [],
+    "expanded_terms": null,
+    "expiration_timestamp": 0,
+    "extractor_names": null,
+    "generated_from_request_id": "old-request",
+    "last_modified_timestamp": 90,
+    "merged_into": null,
+    "notes": null,
+    "profile_id": "old-row",
+    "profile_time_to_live": "infinity",
+    "reader_angle": null,
+    "source": null,
+    "source_interaction_ids": [],
+    "source_span": null,
+    "status": null,
+    "superseded_by": null,
+    "tags": null,
+    "user_id": "owner"
+  },
+  "prompt": "Author useful, self-contained memory UNITS from original_window and fallible NEW\nproposals.\nReturn the declared snapshot/groups schema. Existing memory is prior context, not fresh fact\nevidence.\nEach NEW belongs exactly once in groups.new_ids, including redundant proposals. A group\nmay address multiple overlapping proposals with ONE supported change; do not repeat the edit.\nUse an empty writes/forget group to reject unsupported, redundant or already represented NEWs.\n\nEach unit's clauses are in final reading order; code joins them with spaces. Combine only\nrelated owner/entity/context details with compatible retention. A singleton is lawful.\nCARRY selects exact unchanged old text by target. ASSERT writes a supported new/corrected\nclaim once, with source_new_id and original excerpt evidence; replaces selects only the old\ntext it actually corrects. Code derives replacement evidence, old literals and destination\nindexes; do NOT supply those separately. FORGET selects old text only for actual explicit\nforget authority, with source evidence. Updating a draft/task field is a scoped correction,\nnot automatically a request to erase unrelated real-world knowledge. Conditions, negation,\nrelationships, uncertainty and the distinction between user facts and fictional/draft content\nmatter.\n\nTargets use shown token_positions keys: start inclusive, end exclusive; end may equal token_count.\nNever use character offsets or invent row/NEW/excerpt IDs. Omit unchanged rows entirely.\nFor EACH touched old row, explicitly cover ALL non-whitespace old text with carry,\nassert.replaces or forget targets exactly once, in any authored order. No automatic residual\nis published. Preserve unaffected context in coherent carry clauses. Never target a partial\nphrase for replacement with an entire restated fact unless all its old meaning is accounted for.\nCode proves exact geometry, never semantic support; the unchanged substantive compiler still runs.\n\nEvidence uses actual excerpt_id and stance: assertion, endorsement, current_reaffirmation,\nretention_instruction, forget_instruction, historical_quote or draft. ASSERT/replacement needs\nuser assertion/endorsement/current_reaffirmation supporting the entire claim. FORGET needs\nuser forget_instruction. Assistant drafts need actual claim-specific user endorsement;\nendorsing fictional tone does not endorse fictional biography. Retention evidence alone is\nnot factual evidence; cite both stances when a source supplies both kinds of authority.\n\nexplicit_retention is usually null: preserve existing old constraints and use existing estimated\nlifetime for new facts. NEW.ttl, event dates and generic remember are NOT user storage instructions.\nOnly actual specified duration/deadline permits {source_new_id,rule,boundary,evidence}.\nrule uses one_day/one_week/one_month/one_quarter/one_year/infinity or whole-second timezone-bearing\nRFC3339 deadline; boundary stop_at means absent AT deadline, through means visible AT it.\nNo silent ingestion-time anchoring, extended unrelated expiry or unbounded duplicate of a\nrenewed fact.\nA factual confirmation with a new supported as-of date can require ASSERT/replaces;\nCARRY plus explicit_retention changes lifetime only and preserves the old factual confirmation.\nAn event date passing does not establish attendance/cancellation. Preserve relevant historical\ncontext.\nOptional unit search_terms never supplies evidence; invalid metadata cannot invalidate a lawful\ncore write.\n\nChoose the semantic operation before translating it into fields. A NEW describing a\nuser command is a proposal for an ACTION, not a factual assertion to copy into storage.\nFor a field-removal command, writes contain only surviving supported memory. Put removal\nin the GROUP'S forget list, never in writes[].clauses: that union permits carry/assert only.\nA carry-only unit is lawful; it needs no new assertion or renewed factual support.\nRemoving a trailing field may also remove its connector (such as \"along\") so the carried\nresidual is meaningful. Select the complete surviving phrase, not a dangling prefix.\n\nGeneric partial-forget illustration, not an instruction about any actual input:\nold EXISTING-0 is exactly \"Cycles on Sundays along River Road.\" with token positions\n0:Cycles 1:on 2:Sundays 3:along 4:River 5:Road.; actual user source asks to forget only\nthe route. NEW-0 describes that request. Using the ACTUAL snapshot and ACTUAL source ID,\nthe group shape is:\n{\"new_ids\":[\"NEW-0\"],\"writes\":[{\"clauses\":[{\"action\":\"carry\",\"target\":\n{\"row_id\":\"EXISTING-0\",\"start_token\":0,\"end_token\":3}}]}],\"forget\":[{\n\"source_new_id\":\"NEW-0\",\"targets\":[{\"row_id\":\"EXISTING-0\",\"start_token\":3,\n\"end_token\":6}],\"evidence\":[{\"excerpt_id\":\"ACTUAL_SOURCE_ID\",\n\"stance\":\"forget_instruction\"}]}]}\nCode carries \"Cycles on Sundays\" with its old factual origin/retention, retires the old\nrow, and forgets only \"along River Road.\" There is NO assert clause saying that a route\nwas removed. Do not copy illustration IDs or positions onto different actual text.\nIf a source instead corrects ONE preference in a multi-preference row, preserve the other\npreference explicitly; a whole-row replaces target is not authority to lose its unrelated\nmeaning. Choose self-contained carry plus corrected assertion, or a fully supported\nrestatement that preserves both meanings. These are model semantic duties, not facts\nproved by geometry or a valid stance label.\n\nRepair codes: operation_incumbent_multiple_groups means put all targets for that row in one\ngroup; operation_overlapping_targets means remove duplicate edits/redundant proposed changes;\noperation_new_coverage means account for every NEW exactly once;\noperation_new_reference_outside_group\nmeans include that actual NEW in the group; operation_target_outside_snapshot means use valid shown\nrow/token keys; operation_snapshot_mismatch means copy the exact current snapshot.\noperation_incomplete_row_coverage means cover every unaffected old span explicitly with CARRY;\noperation_unit_clause_limit means split the unit: stored clause boundaries can expand a carry\nselection into several independently attributed clauses (maximum twelve per unit).\n\n\nMake each stored profile self-contained: repeat the supported owner, object or\ncategory, shared conditions, uncertainty and meaningful time needed to understand\nit without neighboring profiles. Resolve a source's \"these\" or \"that\" only from\nits actual antecedent; never broaden a category-specific preference into a general\none. This applies to residual/carry text too: splitting must conserve its scope.\n\nChoose a useful coherent unit rather than mechanically making every attribute a\nseparate profile. Related supported details about the SAME entity, event, task or\npreference may share one concise profile when their context and valid-time are\ncompatible and their retention authority agrees. Preserve the associations that\nmake those details useful\ntogether. Separate unrelated topics and facts with different owners, time, factual\norigin or retention constraints unless separately attributed clauses in a coherent\nunit preserve each origin and have compatible storage lifetimes. Later changes\nmust preserve unaffected clauses through the existing complete partition rules.\nGroup isolation protects genuinely independent proposals; it does not require\nfragmenting one coherent source-supported proposal into disconnected attributes.\n\nA future intention is a source-reported plan, not a permanently pending event.\nPreserve the source-grounded date/relative-time and uncertainty. If a later source\nsays that the planned date has passed and the outcome is unknown, update that\nframing: it is no longer \"not yet attended\" or a currently upcoming commitment.\nThis is a meaningful correction, not a repetition to discard. Do not infer actual\nattendance, completion, cancellation or a new date. Do not turn an event date into\na storage deadline, or use ingestion time to invent a factual calendar anchor.\nForgetting instructions are actions, never new biographical facts or factual\n\"removed/absent\" marker profiles. All existing evidence and action guards apply.\n\n{\"original_window\": [{\"session_id\": \"fidelity-session\", \"request_id\": \"source-request\", \"source\": \"chat\", \"interactions\": [{\"interaction_id\": 1, \"created_at\": 100, \"role\": \"user\", \"content\": {\"excerpts\": [{\"excerpt_id\": \"E-f7d25a6b551f2bb815cfe5242f60f0dcdd1bba97ee3b8c8883c338af781091b0-0\", \"offset\": 0, \"text\": \"Please forget Cedar Studio. Keep that I paint Saturdays.\"}]}, \"user_action_description\": null, \"tools_used\": []}]}], \"NEW\": [{\"id\": \"NEW-0\", \"content\": \"Requested removal of Cedar Studio.\", \"source_span\": \"Please forget Cedar Studio. Keep that I paint Saturdays.\", \"notes\": null, \"modified\": 100, \"expires\": 0, \"ttl\": \"infinity\", \"source\": null, \"source_interaction_ids\": [], \"lifetime\": {}, \"clauses\": null, \"source_bindings\": {\"matches\": [{\"session_id\": \"fidelity-session\", \"interaction_id\": 1, \"role\": \"user\", \"field\": \"content\", \"start\": 0, \"end\": 56}], \"context_policy\": \"complete_original_window_fallback\"}}], \"EXISTING\": [{\"id\": \"EXISTING-0\", \"content\": \"User paints Saturdays at Cedar Studio.\", \"source_span\": null, \"notes\": null, \"modified\": 90, \"expires\": 0, \"ttl\": \"infinity\", \"source\": null, \"source_interaction_ids\": [], \"lifetime\": {}, \"clauses\": null, \"token_positions\": {\"0\": \"User\", \"1\": \"paints\", \"2\": \"Saturdays\", \"3\": \"at\", \"4\": \"Cedar\", \"5\": \"Studio.\"}, \"token_count\": 6}], \"snapshot\": \"c0a1a05166c2459aaa25e19228375d7330f2b426c960047b4f0390711afff73b\"}",
+  "source": [
+    {
+      "session_id": "fidelity-session",
+      "request_id": "source-request",
+      "source": "chat",
+      "interactions": [
+        {
+          "interaction_id": 1,
+          "created_at": 100,
+          "role": "user",
+          "content": "Please forget Cedar Studio. Keep that I paint Saturdays.",
+          "user_action_description": null,
+          "tools_used": []
+        }
+      ]
+    }
+  ]
+}

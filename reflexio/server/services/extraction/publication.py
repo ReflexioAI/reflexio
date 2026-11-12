@@ -175,6 +175,8 @@ class PreparedPublication:
         ]
 
     def dispatch(self) -> None:
+        if isinstance(self.write_plan, ProfileWritePlan):
+            self.service._dispatch_profile_deadlines()
         if isinstance(self.write_plan, PlaybookWritePlan):
             self.service._dispatch_playbook_schedulers(self.write_plan)
 

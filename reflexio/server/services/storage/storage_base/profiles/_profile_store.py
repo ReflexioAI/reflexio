@@ -102,7 +102,9 @@ class ProfileStoreMixin:
         raise NotImplementedError
 
     @abstractmethod
-    def precompute_profile_embeddings(self, profiles: list[UserProfile]) -> None:
+    def precompute_profile_embeddings(
+        self, profiles: list[UserProfile], *, expand_documents: bool = True
+    ) -> None:
         """Populate ``.embedding`` (and ``.expanded_terms`` when document
         expansion is enabled) on each profile in place, issuing NO DB write.
 
@@ -110,6 +112,10 @@ class ProfileStoreMixin:
         outside the writer transaction, then pass ``skip_embedding=True`` to
         :meth:`add_user_profile` so the fenced persist writes the pre-computed
         vector without re-embedding.
+
+        ``expand_documents=False`` preserves caller-supplied optional terms and
+        skips the separate expansion request. It still computes native embeddings;
+        the default retains expansion policy for other storage callers.
         """
         raise NotImplementedError
 

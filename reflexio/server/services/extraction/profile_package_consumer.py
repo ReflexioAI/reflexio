@@ -176,6 +176,17 @@ def consume_profile_package(
     Human answers remain complete and every resumed model turn keeps its quota.
     """
     _validate_parent(preparation, coordinator)
+    from typing import cast
+
+    from reflexio.server.services.profile.learning.client_policy import ComponentClient
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        StructuredProfilesOutput,
+    )
+
+    client = cast(
+        "LiteLLMClient",
+        ComponentClient(client, "native_profile_extraction", StructuredProfilesOutput),
+    )
     tools, tool_context = _pending_tools(preparation, coordinator, pending_tool_config)
     package = compress_source_package(
         preparation.compression, coordinator, cache_only=cache_only

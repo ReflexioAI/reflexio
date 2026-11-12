@@ -43,6 +43,11 @@ strings before deleting old import paths in the same PR.
 | `playbook/` | `PlaybookGenerationService` | `aggregation_trigger.py` durably signals work; `aggregation_scheduler.py` claims fenced bounded units; `components/aggregator.py` performs same-version centroid matching and residual clustering — see [README](playbook/README.md) |
 | `agent_success_evaluation/` | `AgentSuccessEvaluationService` | `service.py` (session-level service), `runner.py` (`run_group_evaluation`), `scheduler.py` (`GroupEvaluationScheduler`, 10-min defer), `regen_jobs.py`, `components/evaluator.py` |
 
+The maintained profile method is documented in [profile learning](profile/learning/README.md):
+conversation-only proposals, source-bound operations and native fenced publication.
+That directory owns the method, while shared storage, lease and scheduler owners
+retain their runtime responsibilities.
+
 ### Durable and Async Extraction
 
 

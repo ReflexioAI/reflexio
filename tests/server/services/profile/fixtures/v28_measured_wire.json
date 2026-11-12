@@ -1,0 +1,316 @@
+{
+  "extractor_guidance": [
+    "Extract useful directly supported facts/preferences/constraints/plans from the original\nconversation, preserving who, relationship, context, negation, uncertainty and time.\nAssistant suggestions, drafting instructions, quotes and hypothetical examples are\nnot endorsed user biography. Do not require a special memory request for useful facts.\nWrite independently changing facts separately. A repetition is not a renewal. Include\napplicable correction and retention instructions in the verbatim source_span, not\nonly the fact: e.g. an explicitly changed plan to remember for one day has one_day\nTTL even if its subject concerns a longer event. Choose the stated retention period;\notherwise use appropriate native TTL. Preserve explicit forgetting as native\n'Requested removal of ...' directives; do not turn them into biographical assertions.",
+    "Ground temporal claims in the conversation itself. An interaction created_at can\nbe its receipt or processing clock; it is not necessarily the date the user spoke\nor the date a fact became valid. Never invent a calendar date from that metadata.\nPreserve relative wording and uncertainty when an authentic calendar anchor is\nabsent. A fact concerning 'this week' does not request one_week retention: fact\nvalidity and how long memory should be retained are different instructions.",
+    "This call also decides admission: return profiles null or [] when no useful supported\nmemory exists. Return source_span as a short exact literal excerpt from the original\nsource for every proposal. Preserve actual task framing and all contrary corrections,\nforgetting and retention instructions. Full original source remains authoritative;\na span is a locator, not proof of entailment. Useful implicit goals are allowed when\nscoped to the actual user/task; a draft medical biography is never a diagnosis.\n\nMake each stored profile self-contained: repeat the supported owner, object or\ncategory, shared conditions, uncertainty and meaningful time needed to understand\nit without neighboring profiles. Resolve a source's \"these\" or \"that\" only from\nits actual antecedent; never broaden a category-specific preference into a general\none. This applies to residual/carry text too: splitting must conserve its scope.\n\nChoose a useful coherent unit rather than mechanically making every attribute a\nseparate profile. Related supported details about the SAME entity, event, task or\npreference may share one concise profile when their context and valid-time are\ncompatible and their retention authority agrees. Preserve the associations that\nmake those details useful\ntogether. Separate unrelated topics and facts with different owners, time, factual\norigin or retention constraints unless separately attributed clauses in a coherent\nunit preserve each origin and have compatible storage lifetimes. Later changes\nmust preserve unaffected clauses through the existing complete partition rules.\nGroup isolation protects genuinely independent proposals; it does not require\nfragmenting one coherent source-supported proposal into disconnected attributes.\n\nA future intention is a source-reported plan, not a permanently pending event.\nPreserve the source-grounded date/relative-time and uncertainty. If a later source\nsays that the planned date has passed and the outcome is unknown, update that\nframing: it is no longer \"not yet attended\" or a currently upcoming commitment.\nThis is a meaningful correction, not a repetition to discard. Do not infer actual\nattendance, completion, cancellation or a new date. Do not turn an event date into\na storage deadline, or use ingestion time to invent a factual calendar anchor.\nForgetting instructions are actions, never new biographical facts or factual\n\"removed/absent\" marker profiles. All existing evidence and action guards apply."
+  ],
+  "planner_content_guidance": "Make each stored profile self-contained: repeat the supported owner, object or\ncategory, shared conditions, uncertainty and meaningful time needed to understand\nit without neighboring profiles. Resolve a source's \"these\" or \"that\" only from\nits actual antecedent; never broaden a category-specific preference into a general\none. This applies to residual/carry text too: splitting must conserve its scope.\n\nChoose a useful coherent unit rather than mechanically making every attribute a\nseparate profile. Related supported details about the SAME entity, event, task or\npreference may share one concise profile when their context and valid-time are\ncompatible and their retention authority agrees. Preserve the associations that\nmake those details useful\ntogether. Separate unrelated topics and facts with different owners, time, factual\norigin or retention constraints unless separately attributed clauses in a coherent\nunit preserve each origin and have compatible storage lifetimes. Later changes\nmust preserve unaffected clauses through the existing complete partition rules.\nGroup isolation protects genuinely independent proposals; it does not require\nfragmenting one coherent source-supported proposal into disconnected attributes.\n\nA future intention is a source-reported plan, not a permanently pending event.\nPreserve the source-grounded date/relative-time and uncertainty. If a later source\nsays that the planned date has passed and the outcome is unknown, update that\nframing: it is no longer \"not yet attended\" or a currently upcoming commitment.\nThis is a meaningful correction, not a repetition to discard. Do not infer actual\nattendance, completion, cancellation or a new date. Do not turn an event date into\na storage deadline, or use ingestion time to invent a factual calendar anchor.\nForgetting instructions are actions, never new biographical facts or factual\n\"removed/absent\" marker profiles. All existing evidence and action guards apply.",
+  "schema": {
+    "$defs": {
+      "Assert": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "assert",
+            "title": "Action",
+            "type": "string"
+          },
+          "content": {
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "minItems": 1,
+            "title": "Evidence",
+            "type": "array"
+          },
+          "explicit_retention": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Retention"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Usually null: estimated NEW.ttl and event dates are not user storage instructions."
+          },
+          "replaces": {
+            "items": {
+              "$ref": "#/$defs/Target"
+            },
+            "title": "Replaces",
+            "type": "array"
+          },
+          "source_new_id": {
+            "pattern": "^NEW-(?:0|[1-9][0-9]*)$",
+            "title": "Source New Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "source_new_id",
+          "content",
+          "evidence"
+        ],
+        "title": "Assert",
+        "type": "object"
+      },
+      "Carry": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "carry",
+            "title": "Action",
+            "type": "string"
+          },
+          "explicit_retention": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Retention"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Null preserves old retention. Only a user-specified duration/deadline permits a change."
+          },
+          "target": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "action",
+          "target"
+        ],
+        "title": "Carry",
+        "type": "object"
+      },
+      "Evidence": {
+        "additionalProperties": false,
+        "properties": {
+          "excerpt_id": {
+            "title": "Excerpt Id",
+            "type": "string"
+          },
+          "stance": {
+            "enum": [
+              "assertion",
+              "endorsement",
+              "current_reaffirmation",
+              "retention_instruction",
+              "forget_instruction",
+              "historical_quote",
+              "draft"
+            ],
+            "title": "Stance",
+            "type": "string"
+          }
+        },
+        "required": [
+          "excerpt_id",
+          "stance"
+        ],
+        "title": "Evidence",
+        "type": "object"
+      },
+      "Forget": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence": {
+            "items": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "minItems": 1,
+            "title": "Evidence",
+            "type": "array"
+          },
+          "source_new_id": {
+            "pattern": "^NEW-(?:0|[1-9][0-9]*)$",
+            "title": "Source New Id",
+            "type": "string"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/$defs/Target"
+            },
+            "minItems": 1,
+            "title": "Targets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "source_new_id",
+          "targets",
+          "evidence"
+        ],
+        "title": "Forget",
+        "type": "object"
+      },
+      "Group": {
+        "additionalProperties": false,
+        "properties": {
+          "forget": {
+            "items": {
+              "$ref": "#/$defs/Forget"
+            },
+            "title": "Forget",
+            "type": "array"
+          },
+          "new_ids": {
+            "items": {
+              "pattern": "^NEW-(?:0|[1-9][0-9]*)$",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "New Ids",
+            "type": "array"
+          },
+          "writes": {
+            "items": {
+              "$ref": "#/$defs/Unit"
+            },
+            "title": "Writes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "new_ids",
+          "writes"
+        ],
+        "title": "Group",
+        "type": "object"
+      },
+      "Retention": {
+        "additionalProperties": false,
+        "properties": {
+          "boundary": {
+            "enum": [
+              "stop_at",
+              "through"
+            ],
+            "title": "Boundary",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "minItems": 1,
+            "title": "Evidence",
+            "type": "array"
+          },
+          "rule": {
+            "title": "Rule",
+            "type": "string"
+          },
+          "source_new_id": {
+            "pattern": "^NEW-(?:0|[1-9][0-9]*)$",
+            "title": "Source New Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_new_id",
+          "rule",
+          "boundary",
+          "evidence"
+        ],
+        "title": "Retention",
+        "type": "object"
+      },
+      "Target": {
+        "additionalProperties": false,
+        "properties": {
+          "end_token": {
+            "description": "Shown token index, exclusive; may equal token_count.",
+            "minimum": 1,
+            "title": "End Token",
+            "type": "integer"
+          },
+          "row_id": {
+            "title": "Row Id",
+            "type": "string"
+          },
+          "start_token": {
+            "description": "Shown token index, inclusive.",
+            "minimum": 0,
+            "title": "Start Token",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "row_id",
+          "start_token",
+          "end_token"
+        ],
+        "title": "Target",
+        "type": "object"
+      },
+      "Unit": {
+        "additionalProperties": false,
+        "properties": {
+          "clauses": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "assert": "#/$defs/Assert",
+                  "carry": "#/$defs/Carry"
+                },
+                "propertyName": "action"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/Carry"
+                },
+                {
+                  "$ref": "#/$defs/Assert"
+                }
+              ]
+            },
+            "maxItems": 12,
+            "minItems": 1,
+            "title": "Clauses",
+            "type": "array"
+          },
+          "search_terms": {
+            "default": null,
+            "title": "Search Terms"
+          }
+        },
+        "required": [
+          "clauses"
+        ],
+        "title": "Unit",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "groups": {
+        "items": {
+          "$ref": "#/$defs/Group"
+        },
+        "title": "Groups",
+        "type": "array"
+      },
+      "snapshot": {
+        "title": "Snapshot",
+        "type": "string"
+      }
+    },
+    "required": [
+      "snapshot",
+      "groups"
+    ],
+    "title": "OperationOutput",
+    "type": "object"
+  }
+}

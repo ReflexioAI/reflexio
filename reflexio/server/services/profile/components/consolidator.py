@@ -1,19 +1,18 @@
 """
-Profile consolidation service that merges duplicate profiles from multiple extractors
-and against existing profiles in the database using hybrid search and LLM.
+Native profile retrieval and compilation primitives for the selected operation author.
 """
 
 import logging
+from abc import abstractmethod
 from collections import Counter
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from reflexio.models.api_schema.retriever_schema import SearchUserProfileRequest
 from reflexio.models.api_schema.service_schemas import Status, UserProfile
-from reflexio.models.profile_id import new_profile_id
+from reflexio.models.profile_id import new_profile_id as new_profile_id
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.env_utils import env_bool
@@ -27,21 +26,17 @@ from reflexio.server.llm.litellm_client import (
 from reflexio.server.services.deduplication_utils import (
     EXTRACTION_CONTROL_ERRORS,
     BaseDeduplicator,
-    format_dedup_timestamp,
     parse_item_id,
     resolve_dedup_query_embeddings,
 )
 from reflexio.server.services.profile.profile_generation_service_utils import (
-    ProfileTimeToLive,
-    calculate_expiration_timestamp,
+    ProfileTimeToLive as ProfileTimeToLive,
+)
+from reflexio.server.services.profile.profile_generation_service_utils import (
+    calculate_expiration_timestamp as calculate_expiration_timestamp,
 )
 
 logger = logging.getLogger(__name__)
-
-
-# Backward-compat alias — existing unit tests import this name from this
-# module. Delegates to the shared helper in deduplication_utils.
-_format_profile_timestamp = format_dedup_timestamp
 
 
 # Canonical prefix emitted by the extractor for forget/delete requests. The
@@ -349,15 +344,14 @@ def validate_profile_dedup_output(
     return errors
 
 
-class ProfileConsolidator(BaseDeduplicator):
+class _ProfileConsolidatorBase(BaseDeduplicator):
     """
-    Consolidates new profiles against each other and against existing profiles
-    in the database using hybrid search (vector + FTS) and LLM-based merging.
+    Native retrieval, repair, provenance and mutation primitives.
 
-    Follows the same pattern as PlaybookConsolidator.
+    The selected operation compiler supplies the only prompt, wire schema and
+    result builder. This base intentionally cannot execute the retired merge
+    model; internal schema types remain the compiler representation.
     """
-
-    DEDUPLICATION_PROMPT_ID = "profile_deduplication"
 
     def __init__(
         self,
@@ -384,81 +378,33 @@ class ProfileConsolidator(BaseDeduplicator):
         self.lineage_sources_by_profile_id: dict[str, list[str]] = {}
         self.consolidated_output_indices: set[int] = set()
 
-    def _get_prompt_id(self) -> str:
-        """Get the prompt ID for profile deduplication."""
-        return self.DEDUPLICATION_PROMPT_ID
-
-    def _get_item_count_key(self) -> str:
-        """Get the key name for item count in prompt variables."""
-        return "new_profile_count"
-
-    def _get_items_key(self) -> str:
-        """Get the key name for items in prompt variables."""
-        return "new_profiles"
-
+    @abstractmethod
     def _get_output_schema_class(self) -> type[BaseModel]:
-        """Get the profile-specific output schema with NEW/EXISTING format."""
-        return ProfileDeduplicationOutput
+        """Return the selected operation actor's schema."""
+        raise NotImplementedError
 
-    def _format_items_for_prompt(self, profiles: list[UserProfile]) -> str:
-        """
-        Format profiles list for LLM prompt with NEW-N prefix.
-
-        Args:
-            profiles: List of profiles
-
-        Returns:
-            Formatted string representation
-        """
-        return self._format_profiles_with_prefix(profiles, "NEW")
-
-    def _format_profiles_with_prefix(
-        self, profiles: list[UserProfile], prefix: str
-    ) -> str:
-        """
-        Format profiles with a given prefix (NEW or EXISTING).
-
-        Args:
-            profiles: List of profiles to format
-            prefix: Prefix string for indices
-
-        Returns:
-            Formatted string
-        """
-        if not profiles:
-            return "(None)"
-        lines = []
-        for idx, profile in enumerate(profiles):
-            ttl = (
-                profile.profile_time_to_live.value
-                if profile.profile_time_to_live
-                else "unknown"
-            )
-            source = profile.source or "unknown"
-            modified_date = _format_profile_timestamp(profile.last_modified_timestamp)
-            lines.append(
-                f'[{prefix}-{idx}] Content: "{profile.content}" | TTL: {ttl} | Source: {source} | Last Modified: {modified_date}'
-            )
-        return "\n".join(lines)
-
-    def _format_new_and_existing_for_prompt(
+    @abstractmethod
+    def _render_dedup_prompt(
         self,
         new_profiles: list[UserProfile],
         existing_profiles: list[UserProfile],
-    ) -> tuple[str, str]:
-        """
-        Format new and existing profiles for the deduplication prompt.
+        *,
+        template_identity: Mapping[str, str] | None = None,
+    ) -> str:
+        """Render the selected operation actor's source-bound inputs."""
+        raise NotImplementedError
 
-        Args:
-            new_profiles: New profiles to deduplicate
-            existing_profiles: Existing profiles from the database
-
-        Returns:
-            Tuple of (new_profiles_text, existing_profiles_text)
-        """
-        new_text = self._format_profiles_with_prefix(new_profiles, "NEW")
-        existing_text = self._format_profiles_with_prefix(existing_profiles, "EXISTING")
-        return new_text, existing_text
+    @abstractmethod
+    def _build_deduplicated_results(
+        self,
+        new_profiles: list[UserProfile],
+        existing_profiles: list[UserProfile],
+        dedup_output: ProfileDeduplicationOutput,
+        user_id: str,
+        request_id: str,
+    ) -> tuple[list[UserProfile], list[str], list[UserProfile]]:
+        """Compile the selected operation decision before any retirement."""
+        raise NotImplementedError
 
     def _retrieve_existing_profiles(
         self,
@@ -547,37 +493,13 @@ class ProfileConsolidator(BaseDeduplicator):
         )
         return existing_profiles
 
-    def _render_dedup_prompt(
-        self,
-        new_profiles: list[UserProfile],
-        existing_profiles: list[UserProfile],
-        *,
-        template_identity: Mapping[str, str] | None = None,
-    ) -> str:
-        """Render native inputs, optionally using one frozen template identity."""
-        new_text, existing_text = self._format_new_and_existing_for_prompt(
-            new_profiles, existing_profiles
-        )
-        variables = {
-            "new_profile_count": len(new_profiles),
-            "new_profiles": new_text,
-            "existing_profile_count": len(existing_profiles),
-            "existing_profiles": existing_text,
-        }
-        manager = self.request_context.prompt_manager
-        if template_identity is not None:
-            return manager.render_prompt_from_identity(
-                self._get_prompt_id(), variables, template_identity
-            )
-        return manager.render_prompt(self._get_prompt_id(), variables)
-
     def _call_native_dedup(
         self,
         messages: list[dict[str, Any]],
         output_schema: type[BaseModel],
         validator: Callable[[BaseModel], list[str]],
     ) -> CompletionResult[Any]:
-        """Keep the existing native request and fallback behavior in one seam."""
+        """Keep native provider repair, provenance and admission in one seam."""
         return self.client.generate_chat_response_with_provenance(
             messages=messages,
             model=self.model_name,
@@ -691,18 +613,16 @@ class ProfileConsolidator(BaseDeduplicator):
             # barriers, not transient errors eligible for best-effort output.
             raise
         except Exception as e:
-            # Graceful degradation: dedup is best-effort — on any failure
-            # (commonly a transient minimax timeout/overload) keep the profiles
-            # un-deduped rather than failing the caller. WARNING, not ERROR, so a
-            # flaky provider doesn't flood error alerts for a handled fallback.
+            # The selected compiler withholds unreviewed NEW proposals when no
+            # usable output exists. Existing rows remain untouched. Preserve
+            # native anomaly classification and the first parsed repair witness.
             logger.warning(
-                "Failed to identify duplicates (%s); keeping profiles un-deduped",
+                "Profile operation planning failed (%s); compiling only usable output",
                 str(e),
             )
             if first_parsed_output is None:
-                # Nothing usable came back at all. Tag the failure so the rate of
-                # un-deduped writes is measurable — this path silently persists
-                # duplicates and drops any pending forget request.
+                # Nothing usable came back. The selected wrapper discards this
+                # provisional result and records that proposals were withheld.
                 capture_anomaly(
                     "profile.dedup.failed",
                     org_id=self.request_context.org_id,
@@ -712,16 +632,10 @@ class ProfileConsolidator(BaseDeduplicator):
                     existing_profile_count=len(existing_profiles),
                 )
                 return _strip_deletion_markers(new_profiles), [], []
-            # The ladder exhausted, but an earlier attempt parsed. Prefer it over
-            # discarding the dedup entirely. It may still carry the semantic
-            # errors the validator rejected it for (out-of-range ids, NEW
-            # profiles referenced zero or twice), which is safe only because
-            # _build_deduplicated_results defends against exactly those: it
-            # drops out-of-range indices, skips a group it cannot resolve
-            # without marking anything, and re-adds any unreferenced NEW
-            # profile via the safety fallback.
-            # Ladder walk stamps first_parsed_provenance across all rungs so this
-            # matches first_parsed_output from the shared validator closure.
+            # Preserve the first parsed repair witness. The selected compiler
+            # revalidates complete change groups before publishing; invalid
+            # groups and uncovered NEW proposals cannot become unchecked writes.
+            # Repair provenance identifies the actual retained witness.
             self.model_provenance = getattr(e, "first_parsed_provenance", None)
             logger.warning(
                 "Falling back to the first parsed deduplication attempt after "
@@ -754,222 +668,6 @@ class ProfileConsolidator(BaseDeduplicator):
             user_id=user_id,
             request_id=request_id,
         )
-
-    def _build_deduplicated_results(
-        self,
-        new_profiles: list[UserProfile],
-        existing_profiles: list[UserProfile],
-        dedup_output: ProfileDeduplicationOutput,
-        user_id: str,
-        request_id: str,
-    ) -> tuple[list[UserProfile], list[str], list[UserProfile]]:
-        """
-        Build the deduplicated profile list from LLM output.
-
-        Args:
-            new_profiles: Flattened list of new profiles
-            existing_profiles: List of existing profiles from DB
-            dedup_output: LLM deduplication output
-            user_id: User ID
-            request_id: Request ID
-
-        Returns:
-            Tuple of (profiles ready to save, existing profile IDs to delete, superseded existing profiles)
-        """
-        handled_new_indices: set[int] = set()
-        result_profiles: list[UserProfile] = []
-        existing_ids_to_delete: list[str] = []
-        seen_delete_ids: set[str] = set()
-        superseded_profiles: list[UserProfile] = []
-
-        now_ts = int(datetime.now(UTC).timestamp())
-
-        # Process deletion directives first. A directive is a NEW profile that
-        # is a meta-request to forget an EXISTING profile. Both the NEW and the
-        # matched EXISTING profile(s) are removed with no merged replacement.
-        self._apply_deletion_directives(
-            dedup_output.deletions,
-            new_profiles=new_profiles,
-            existing_profiles=existing_profiles,
-            handled_new_indices=handled_new_indices,
-            existing_ids_to_delete=existing_ids_to_delete,
-            seen_delete_ids=seen_delete_ids,
-            superseded_profiles=superseded_profiles,
-        )
-
-        # Process duplicate groups
-        for group in dedup_output.duplicate_groups:
-            group_new_indices: list[int] = []
-            group_existing_indices: list[int] = []
-            group_profiles_in_item_order: list[UserProfile] = []
-
-            for item_id in group.item_ids:
-                parsed = parse_item_id(item_id)
-                if parsed is None:
-                    continue
-                prefix, idx = parsed
-                if prefix == "NEW":
-                    group_new_indices.append(idx)
-                    if 0 <= idx < len(new_profiles):
-                        group_profiles_in_item_order.append(new_profiles[idx])
-                elif prefix == "EXISTING":
-                    group_existing_indices.append(idx)
-                    if 0 <= idx < len(existing_profiles):
-                        group_profiles_in_item_order.append(existing_profiles[idx])
-
-            # Reject groups that overlap with profiles already consumed by a
-            # deletion directive. Merging such a group would write a
-            # replacement profile containing content the user asked to forget.
-            conflicting_new = [i for i in group_new_indices if i in handled_new_indices]
-            conflicting_existing = [
-                i
-                for i in group_existing_indices
-                if 0 <= i < len(existing_profiles)
-                and existing_profiles[i].profile_id
-                and existing_profiles[i].profile_id in seen_delete_ids
-            ]
-            if conflicting_new or conflicting_existing:
-                logger.warning(
-                    "Skipping duplicate group %s: overlaps with deletion "
-                    "directives (NEW indices=%s, EXISTING indices=%s)",
-                    group.item_ids,
-                    conflicting_new,
-                    conflicting_existing,
-                )
-                continue
-
-            # Resolve the merge template BEFORE marking anything. A group either
-            # writes a merged replacement profile or touches nothing at all:
-            # marking first and bailing on a missing template supersedes the
-            # EXISTING rows with no replacement written, and strands the NEW
-            # facts too (handled_new_indices suppresses the safety fallback
-            # below), so both sides of the group are lost.
-            group_new_profiles = [
-                new_profiles[i] for i in group_new_indices if 0 <= i < len(new_profiles)
-            ]
-            group_existing_profiles = [
-                existing_profiles[i]
-                for i in group_existing_indices
-                if 0 <= i < len(existing_profiles)
-            ]
-
-            # Prefer a NEW member so a merge carrying freshly extracted facts
-            # inherits their metadata. An EXISTING-only group is legal per the
-            # prompt ("a duplicate group can contain ANY mix of NEW and
-            # EXISTING items"), and collapsing it is how duplicates that
-            # accumulated in the DB during past dedup failures get cleaned up.
-            template_profile: UserProfile | None = next(
-                iter(group_new_profiles or group_existing_profiles), None
-            )
-
-            if template_profile is None:
-                # Every id in the group was unparseable or out of range.
-                logger.warning(
-                    "Skipping duplicate group %s: no in-range NEW or EXISTING "
-                    "member to use as a merge template",
-                    group.item_ids,
-                )
-                capture_anomaly(
-                    "profile.dedup.group_unresolvable",
-                    org_id=self.request_context.org_id,
-                    user_id=user_id,
-                )
-                continue
-
-            # Past this point the group is committed to producing a merged
-            # profile, so it is safe to consume its members.
-            for idx in group_new_indices:
-                handled_new_indices.add(idx)
-
-            # Collect existing profile IDs to delete and their profiles for changelog (deduplicated)
-            for eidx in group_existing_indices:
-                self._mark_existing_for_deletion(
-                    f"EXISTING-{eidx}",
-                    existing_profiles,
-                    existing_ids_to_delete,
-                    seen_delete_ids,
-                    superseded_profiles,
-                )
-
-            # Merge metadata from the NEW members, falling back to the EXISTING
-            # members for an EXISTING-only group so custom_features and
-            # extractor_names are carried into the merged profile rather than
-            # dropped. Mixed groups keep their previous NEW-only behavior.
-            metadata_sources = group_new_profiles or group_existing_profiles
-            merged_custom_features = self._merge_custom_features(metadata_sources)
-            merged_extractor_names = self._merge_extractor_names(metadata_sources)
-            merged_source_interaction_ids = list(
-                dict.fromkeys(
-                    source_id
-                    for profile in group_profiles_in_item_order
-                    for source_id in profile.source_interaction_ids
-                )
-            )
-            merged_source_span, merged_notes, reader_angle = _merged_provenance(
-                group_profiles_in_item_order
-            )
-
-            # Determine TTL
-            try:
-                ttl = ProfileTimeToLive(group.merged_time_to_live)
-            except ValueError:
-                ttl = template_profile.profile_time_to_live
-                logger.warning(
-                    "Invalid TTL '%s' from LLM, using template TTL '%s'",
-                    group.merged_time_to_live,
-                    ttl.value,
-                )
-
-            merged_profile = UserProfile(
-                profile_id=new_profile_id(),
-                user_id=user_id,
-                content=group.merged_content,
-                last_modified_timestamp=now_ts,
-                generated_from_request_id=request_id,
-                profile_time_to_live=ttl,
-                expiration_timestamp=calculate_expiration_timestamp(now_ts, ttl),
-                custom_features=merged_custom_features,
-                source=template_profile.source,
-                status=template_profile.status,
-                extractor_names=merged_extractor_names,
-                source_interaction_ids=merged_source_interaction_ids,
-                source_span=merged_source_span,
-                notes=merged_notes,
-                reader_angle=reader_angle,
-            )
-            self.consolidated_output_indices.add(len(result_profiles))
-            result_profiles.append(merged_profile)
-            self.lineage_sources_by_profile_id[merged_profile.profile_id] = [
-                str(existing_profiles[eidx].profile_id)
-                for eidx in group_existing_indices
-                if 0 <= eidx < len(existing_profiles)
-                and existing_profiles[eidx].profile_id
-            ]
-
-        # Add unique NEW profiles
-        for uid in dedup_output.unique_ids:
-            parsed = parse_item_id(uid)
-            if parsed is None:
-                continue
-            prefix, idx = parsed
-            if (
-                prefix == "NEW"
-                and idx not in handled_new_indices
-                and 0 <= idx < len(new_profiles)
-            ):
-                result_profiles.append(new_profiles[idx])
-                handled_new_indices.add(idx)
-
-        # Safety fallback: add any NEW profiles not mentioned by LLM
-        for idx, profile in enumerate(new_profiles):
-            if idx not in handled_new_indices:
-                logger.warning(
-                    "New profile at index %d was not handled by LLM, adding as-is",
-                    idx,
-                )
-                result_profiles.append(profile)
-
-        return result_profiles, existing_ids_to_delete, superseded_profiles
 
     def _apply_deletion_directives(
         self,
@@ -1091,3 +789,9 @@ class ProfileConsolidator(BaseDeduplicator):
                         seen.add(name)
                         merged.append(name)
         return merged or None
+
+
+# One active profile decision method; no baseline selector or failure fallback.
+from reflexio.server.services.profile.learning.compiler import make_consolidator
+
+ProfileConsolidator = make_consolidator(_ProfileConsolidatorBase)

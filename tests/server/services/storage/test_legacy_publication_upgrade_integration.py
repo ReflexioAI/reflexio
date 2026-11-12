@@ -1,10 +1,10 @@
-"""Original-v1 persisted protocols survive current config/schema/worker cutover."""
+"""Completed v1 publication drains; incompatible active instruction witnesses hold."""
 
 import copy
 import json
 import sqlite3
 import time
-from types import MappingProxyType, SimpleNamespace
+from types import MappingProxyType
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -84,7 +84,9 @@ def _row(conn):
         "completed_erased_acked",
     ],
 )
-def test_current_owner_upgrades_and_drains_original_v1(tmp_path, monkeypatch, phase):
+def test_completed_original_v1_drains_and_incompatible_running_witness_is_held(
+    tmp_path, monkeypatch, phase
+):
     target = restore_legacy_publication_fixture(phase, tmp_path / "predecessor.sqlite")
     with sqlite3.connect(target) as destination:
         before = _row(destination)
@@ -119,42 +121,10 @@ def test_current_owner_upgrades_and_drains_original_v1(tmp_path, monkeypatch, ph
     calls = []
 
     def respond(params, hard_timeout):
-        del hard_timeout
+        del params, hard_timeout
         calls.append(1)
-        schema = getattr(params.get("response_format"), "__name__", "") or json.dumps(
-            params.get("response_format"), default=str
-        )
-        content = {
-            "profiles": [
-                {
-                    "content": "The user prefers concise answers.",
-                    "time_to_live": "infinity",
-                    "source_span": "I prefer concise answers with details 0",
-                }
-            ]
-        }
-        if "ProfileDeduplicationOutput" in schema or any(
-            "unique_ids" in str(m.get("content", "")) for m in params["messages"]
-        ):
-            content = {"duplicate_groups": [], "unique_ids": ["NEW-0"], "deletions": []}
-        return SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(
-                        content=json.dumps(content), tool_calls=None, refusal=None
-                    ),
-                    finish_reason="stop",
-                )
-            ],
-            usage=SimpleNamespace(
-                prompt_tokens=100,
-                completion_tokens=20,
-                total_tokens=120,
-                cache_read_input_tokens=0,
-                cache_creation_input_tokens=0,
-            ),
-            model="minimax/MiniMax-M3",
-            _hidden_params={"custom_llm_provider": "minimax"},
+        raise AssertionError(
+            "Legacy publication cannot reroll extraction or author output"
         )
 
     monkeypatch.setattr(
@@ -209,6 +179,36 @@ def test_current_owner_upgrades_and_drains_original_v1(tmp_path, monkeypatch, ph
     try:
         worker = DurableLearningWorker(lambda _: engine.request_context)
         worker.drain_org("stream-test", 3, 300)
+        if phase == "running":
+            # This captured continuation witnesses the predecessor extraction
+            # instructions. The selected source-only instructions are different:
+            # hold its work instead of relabeling its checkpoint or rerolling it.
+            status = storage.extraction_status("u", "original-v1")
+            assert status == {
+                "status": "failed",
+                "reason": "input_budget_configuration_error",
+            }
+            held = storage.get_agent_run(before["id"])
+            assert held.status != AgentRunStatus.FINALIZED
+            assert held.generation_request_snapshot["overflow"] == before_manifest
+            assert held.committed_output is None
+            assert storage.count_all_profiles() == 0
+            assert accepted == {} and attempts == [] and calls == []
+            worker.drain_org("stream-test", 2, 300)
+            assert storage.get_agent_run(held.id) == held
+            assert accepted == {} and attempts == [] and calls == []
+            with sqlite3.connect(target) as conn:
+                assert (
+                    list(conn.execute("SELECT * FROM _agent_run_finalization_receipts"))
+                    == original_receipts
+                )
+                assert (
+                    conn.execute(
+                        "SELECT count(*) FROM _agent_output_receipts"
+                    ).fetchone()[0]
+                    == 0
+                )
+            return
         if phase != "completed_erased_acked":
             assert (
                 storage.extraction_status(

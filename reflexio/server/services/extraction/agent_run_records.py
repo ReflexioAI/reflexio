@@ -36,7 +36,7 @@ def _jsonable(value: Any) -> Any:
 
 # Runtime-only service-config fields that are never persisted in
 # ``service_config_snapshot``. Nothing reads them back from a stored row:
-# ``window_interactions`` duplicates the source rows (authoritative, and
+# ``window_interactions`` and ``review_interactions`` duplicate the source rows (authoritative, and
 # witnessed by ``generation_request_snapshot["source_interaction_digests"]``),
 # ``existing_data`` copies every existing profile of the user, and
 # ``frozen_extractor_config`` repeats ``generation_request_snapshot
@@ -44,7 +44,12 @@ def _jsonable(value: Any) -> Any:
 # Rows written before this exclusion keep their content; recovery fingerprints
 # hash whatever a row stores, so both shapes stay verifiable.
 UNPERSISTED_SERVICE_CONFIG_FIELDS = frozenset(
-    {"window_interactions", "existing_data", "frozen_extractor_config"}
+    {
+        "window_interactions",
+        "review_interactions",
+        "existing_data",
+        "frozen_extractor_config",
+    }
 )
 
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
 
@@ -110,6 +110,9 @@ class PackageProfileConsolidator(ProfileConsolidator):
             ):
                 raise InputBudgetConfigurationError("Frozen historical profile changed")
         self._validate_old()
+        # Cached retrieval bypasses the compiler's retrieval hook. Restore the
+        # same incumbent state used to validate a newly retrieved operation plan.
+        self._existing_atoms = old
         return old
 
     def _render_dedup_prompt(
@@ -135,7 +138,7 @@ class PackageProfileConsolidator(ProfileConsolidator):
         validator: Callable[[BaseModel], list[str]],
     ) -> CompletionResult[Any]:
         key = self.coordinator.step_key(
-            "profile-package-dedup-v1",
+            "profile-package-dedup-v2-operations",
             {"contract": self.preparation.contract_digest, "messages": messages},
         )
         self._validate_old()
@@ -165,7 +168,7 @@ class PackageProfileConsolidator(ProfileConsolidator):
                     else None
                 )
                 output = (
-                    ProfileDeduplicationOutput.model_validate(saved["output"])
+                    output_schema.model_validate(saved["output"])
                     if saved["output"] is not None
                     else None
                 )
@@ -246,7 +249,7 @@ class PackageProfileConsolidator(ProfileConsolidator):
             "key": key,
             "attempt_ids": list(attempts),
             "disposition": disposition,
-            "output": output.model_dump(mode="json") if output is not None else None,
+            "output": cast(Any, output).operation_wire if output is not None else None,
             "provenance": asdict(provenance) if provenance is not None else None,
         }
         self.coordinator.save_checkpoint(checkpoint)

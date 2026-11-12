@@ -1180,7 +1180,7 @@ def test_publication_preparation_uses_private_retained_output_not_mutable_caller
     decode = ExtractionResumeWorker._items_from_committed_output
     mutations = []
 
-    def mutate_caller_then_decode(active_worker, frame):
+    def mutate_caller_then_decode(active_worker, frame, **kwargs):
         original = active_worker._active_claim
         assert original is not None and original.committed_output is not None
         field = "profiles" if kind == "profile" else "playbooks"
@@ -1188,7 +1188,7 @@ def test_publication_preparation_uses_private_retained_output_not_mutable_caller
             "An unchecked caller replaced the result."
         )
         mutations.append(1)
-        return decode(active_worker, frame)
+        return decode(active_worker, frame, **kwargs)
 
     monkeypatch.setattr(
         ExtractionResumeWorker,
