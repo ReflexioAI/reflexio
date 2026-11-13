@@ -225,8 +225,8 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
     "openai": ProviderDefaults(
         generation="gpt-5.5",
         evaluation="gpt-5.4-mini",
-        should_run="gpt-5-nano",
-        pre_retrieval="gpt-5-nano",
+        should_run="gpt-5.6-luna",
+        pre_retrieval="gpt-5.6-luna",
         embedding="text-embedding-3-small",
         extraction_agent="gpt-5.5",
     ),
@@ -246,10 +246,10 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         embedding="gemini/gemini-embedding-001",
     ),
     "deepseek": ProviderDefaults(
-        generation="deepseek/deepseek-chat",
-        evaluation="deepseek/deepseek-chat",
-        should_run="deepseek/deepseek-chat",
-        pre_retrieval="deepseek/deepseek-chat",
+        generation="deepseek/deepseek-flash",
+        evaluation="deepseek/deepseek-flash",
+        should_run="deepseek/deepseek-flash",
+        pre_retrieval="deepseek/deepseek-flash",
         embedding=None,
     ),
     "openrouter": ProviderDefaults(
@@ -275,15 +275,15 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
     "dashscope": ProviderDefaults(
         generation="dashscope/qwen-plus",
         evaluation="dashscope/qwen-plus",
-        should_run="dashscope/qwen-turbo",
-        pre_retrieval="dashscope/qwen-turbo",
+        should_run="dashscope/qwen3.8-flash",
+        pre_retrieval="dashscope/qwen3.8-flash",
         embedding=None,
     ),
     "xai": ProviderDefaults(
-        generation="xai/grok-3-mini",
-        evaluation="xai/grok-3-mini",
-        should_run="xai/grok-3-mini",
-        pre_retrieval="xai/grok-3-mini",
+        generation="xai/grok-4.3",
+        evaluation="xai/grok-4.3",
+        should_run="xai/grok-4.3",
+        pre_retrieval="xai/grok-4.3",
         embedding=None,
     ),
     "moonshot": ProviderDefaults(

@@ -2923,7 +2923,7 @@ class TextGenerationMixin:
             True if the model has temperature restrictions.
         """
         model_lower = model.lower()
-        # Strip provider routing prefixes (e.g., "openrouter/openai/gpt-5-nano" -> "gpt-5-nano")
+        # Strip provider routing prefixes (e.g., "openrouter/openai/gpt-5.6-luna" -> "gpt-5.6-luna")
         model_name = model_lower.rsplit("/", 1)[-1]
         # Check if model starts with any of the restricted model prefixes
         return any(

@@ -13,7 +13,7 @@ from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 
 @pytest.mark.parametrize(
     "model",
-    ["xai/grok-3-mini", "moonshot/moonshot-v1-8k", "zai/glm-5.2", "zai/glm-5.3-flashx"],
+    ["xai/grok-4.3", "moonshot/moonshot-v1-8k", "zai/glm-5.2", "zai/glm-5.3-flashx"],
 )
 def test_native_default_route_admits_positive_input_without_operator_override(
     monkeypatch, model
@@ -55,7 +55,7 @@ def test_physical_headroom_does_not_bypass_oversized_input_or_explicit_caps(
     reserve = Mock()
     guard = extraction_request_guard(context_limits={}, reserve_attempt=reserve)
     client = LiteLLMClient(
-        LiteLLMConfig(model="xai/grok-3-mini", max_tokens=cap, fallback_models=[])
+        LiteLLMConfig(model="xai/grok-4.3", max_tokens=cap, fallback_models=[])
     )
     token = extraction_provider_guard.set(guard)
     try:

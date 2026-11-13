@@ -46,7 +46,7 @@ _PROVIDERS: dict[str, dict[str, str]] = {
     },
     "deepseek": {
         "env_var": "DEEPSEEK_API_KEY",
-        "model": "deepseek-chat",
+        "model": "deepseek-flash",
         "display": "DeepSeek",
     },
     "openrouter": {
@@ -64,7 +64,7 @@ _PROVIDERS: dict[str, dict[str, str]] = {
         "model": "qwen-plus",
         "display": "DashScope",
     },
-    "xai": {"env_var": "XAI_API_KEY", "model": "grok-3-mini", "display": "xAI"},
+    "xai": {"env_var": "XAI_API_KEY", "model": "grok-4.3", "display": "xAI"},
     "moonshot": {
         "env_var": "MOONSHOT_API_KEY",
         "model": "moonshot-v1-8k",
