@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "REFLEXIO_EMBEDDING_REGENERATION_BATCH_SIZE": "regeneration request batch_size",
     "REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS": "",
     "REFLEXIO_LLM_SEED": "",
     "REFLEXIO_AGENT_VERSION": "",
@@ -48,6 +49,11 @@ REMOVED_ENV_ALIASES = {
 
 
 _REMOVED_ENV_GUIDANCE = {
+    "REFLEXIO_EMBEDDING_REGENERATION_BATCH_SIZE": (
+        "; preserve the intended size in the existing regeneration request "
+        "batch_size field before removing this assignment. The request owns "
+        "job paging; existing jobs retain their stored batch size"
+    ),
     "REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS": (
         "; complete interaction evidence now uses model-owned request capacity. "
         "Remove the old per-turn slicing assignment; preserve existing model, "

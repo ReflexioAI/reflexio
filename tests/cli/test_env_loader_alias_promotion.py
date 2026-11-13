@@ -102,3 +102,14 @@ def test_statement_timeout_retirement_explains_the_policy_change():
     assert "do not automatically copy the old value" in message
     assert "REFLEXIO_DB_LEASE_TIMEOUT_SECONDS" in message
     assert "private-value" not in message
+
+
+@pytest.mark.parametrize("value", ["", " ", "private-batch-value"])
+def test_regeneration_batch_upgrade_names_existing_job_option(value):
+    with pytest.raises(
+        ValueError, match="REFLEXIO_EMBEDDING_REGENERATION_BATCH_SIZE"
+    ) as error:
+        reject_removed_env({"REFLEXIO_EMBEDDING_REGENERATION_BATCH_SIZE": value})
+    assert "batch_size" in str(error.value)
+    assert "existing jobs" in str(error.value)
+    assert "private-batch-value" not in str(error.value)

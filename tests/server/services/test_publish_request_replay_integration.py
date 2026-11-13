@@ -410,6 +410,70 @@ def test_large_exact_retry_skips_embeddings_and_admission(
     insert.assert_not_called()
 
 
+def _many_tools_request(
+    *, changed: dict[str, object] | None = None
+) -> PublishUserInteractionRequest:
+    """Fourteen turns of many small tool calls, the shape of the prod retry.
+
+    The 6.6 MB production retry carried 12,945 tool calls of ~500 bytes each,
+    not a few large outputs; per-entry costs dominate that shape. ``changed``
+    overrides one field of a single tool call in the middle of the payload.
+    """
+    from reflexio.models.api_schema.common import ToolUsed
+
+    def tool(turn: int, index: int) -> ToolUsed:
+        fields: dict = {
+            "tool_name": "Bash",
+            "tool_data": {"input": {"command": f"ls {turn}/{index}"}, "output": "x"},
+            "status": "success",
+        }
+        if changed is not None and (turn, index) == (7, 100):
+            fields.update(changed)
+        return ToolUsed(**fields)
+
+    return PublishUserInteractionRequest(
+        request_id="caller-id",
+        user_id="u1",
+        session_id="s1",
+        interaction_data_list=[
+            InteractionData(
+                role="Agent" if turn % 2 else "User",
+                content=f"turn {turn}",
+                created_at=1_700_000_000,
+                tools_used=[tool(turn, index) for index in range(200)],
+            )
+            for turn in range(14)
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"tool_data": {"input": {"command": "ls 7/100"}, "output": "y"}},
+        {"tool_name": "Read"},
+        {"status": "error"},
+    ],
+    ids=["tool_data", "tool_name", "status"],
+)
+def test_many_tool_call_retry_replays_and_any_changed_tool_conflicts(
+    tmp_path, worker_id, changed
+):
+    """The decision is unchanged at prod shape: exact replays, any edit refuses."""
+    svc = _service(tmp_path, worker_id)
+    store = svc.storage
+    assert isinstance(store, SQLiteStorage)
+    first = svc.run(_many_tools_request(), defer_learning=True)
+    rows = _counts(store)
+
+    replay = svc.run(_many_tools_request(), defer_learning=True)
+    assert replay.replayed and replay.interaction_ids == first.interaction_ids
+
+    with pytest.raises(PublishRequestIdConflictError):
+        svc.run(_many_tools_request(changed=changed), defer_learning=True)
+    assert _counts(store) == rows
+
+
 def test_shared_process_preserves_each_callers_agent_identity(tmp_path, worker_id):
     svc = _service(tmp_path, worker_id)
     store = svc.storage
