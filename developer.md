@@ -495,6 +495,11 @@ and client. Fixture patches restore dependency overrides and request state even
 on failure; closing the client preserves the suites' existing no-lifespan behavior.
 Tests that exercise app construction or startup configuration need their own app.
 
+The background-failure pairing guard reuses one complete AST traversal per scan.
+Alias, call, stray-reference and decoded-string checks retain the full source;
+enclosing-function ownership is built only when a scoped reporting call needs it.
+The independent token inventory remains a separate coverage check.
+
 - Framework: **pytest** with `pytest-xdist` (parallel via `-n auto`)
 - Timeout: 120 seconds per test
 - Coverage minimum: 65% (branch coverage enabled)
