@@ -658,6 +658,7 @@ def build_playbook_prompt_context(
     *,
     expert: bool = False,
     label_turns: bool = False,
+    include_expert_corrections: bool = False,
 ) -> PlaybookPromptContext:
     """Render playbook evidence and retain a call-local provenance map.
 
@@ -665,6 +666,11 @@ def build_playbook_prompt_context(
     backwards-compatible formatting detail. Legacy and expert prompts therefore
     remain unlabelled unless their selected prompt version explicitly opts into
     evidence-grounded extraction.
+
+    ``include_expert_corrections`` renders every turn, and additionally shows and
+    binds the expert correction of each expert-reviewed turn. Reconciliation needs
+    that view: it audits candidates that may come from expert comparisons while
+    also citing ordinary turns. Comparison-only ``expert`` output omits those.
     """
     presentation = current_overflow_presentation.get()
     if presentation is not None:
@@ -776,7 +782,10 @@ def build_playbook_prompt_context(
                 key=lambda item: (item.created_at, item.interaction_id),
             ):
                 turn_ref = ref_by_object_id[id(interaction)]
-                view = render_interaction(interaction)
+                view = render_interaction(
+                    interaction,
+                    include_expert_correction=include_expert_corrections,
+                )
                 remember_evidence(interaction, view.evidence_texts)
                 turn_prefix = f"[{turn_ref}] " if label_turns else ""
                 lines.extend(f"{turn_prefix}{line}" for line in view.text.splitlines())

@@ -1134,7 +1134,7 @@ if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 
 
-def _evidence_context(interactions, *, expert=False):
+def _evidence_context(interactions, *, expert=False, include_expert_corrections=False):
     request = Request(
         request_id="evidence-request",
         user_id="user",
@@ -1152,6 +1152,7 @@ def _evidence_context(interactions, *, expert=False):
         ],
         expert=expert,
         label_turns=True,
+        include_expert_corrections=include_expert_corrections,
     )
 
 
@@ -1265,3 +1266,49 @@ def test_repeated_expert_question_keeps_every_displayed_source_segment():
     assert context.evidence_units["T1"].source_span == (
         "Visible question.\n\nVisible correction to the question."
     )
+
+
+def test_reconciliation_view_shows_and_binds_expert_correction():
+    """Reconciliation renders expert corrections and binds evidence to that view."""
+    interactions = [
+        Interaction(
+            interaction_id=1,
+            request_id="evidence-request",
+            user_id="user",
+            role="user",
+            content="Submit the form.",
+            created_at=1,
+        ),
+        Interaction(
+            interaction_id=2,
+            request_id="evidence-request",
+            user_id="user",
+            role="assistant",
+            content="Check authorization before submitting.",
+            expert_content="Report authorization result.",
+            created_at=2,
+        ),
+    ]
+    ordinary = _evidence_context(interactions)
+    context = _evidence_context(interactions, include_expert_corrections=True)
+
+    assert "Report authorization result." not in ordinary.text
+    assert "[T2] expert correction: ```Report authorization result.```" in (
+        context.text
+    )
+    assert context.evidence_sources["T2"].evidence_texts == (
+        "Check authorization before submitting.",
+        "Report authorization result.",
+    )
+    for source in context.evidence_sources.values():
+        for segment in source.evidence_texts:
+            assert segment in context.text
+    assert context.evidence_units["T2"].source_span == (
+        "Check authorization before submitting.\n\nReport authorization result."
+    )
+    # A turn without expert content renders and binds exactly as the ordinary view.
+    assert context.evidence_sources["T1"] == ordinary.evidence_sources["T1"]
+    assert context.evidence_units["T1"] == ordinary.evidence_units["T1"]
+    assert [line for line in context.text.splitlines() if "[T1]" in line] == [
+        line for line in ordinary.text.splitlines() if "[T1]" in line
+    ]
