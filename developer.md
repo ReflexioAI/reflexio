@@ -371,6 +371,14 @@ not a promise of online speedup.
 | Azure OpenAI | via config | `azure/` | `azure/<deployment>` |
 | Custom endpoint | via config | — | — |
 
+Azure's `v1`, `latest` and `preview` API modes use LiteLLM's standard OpenAI
+client transport. `_azure_transport.py` compiles explicit resource endpoints
+and full `/openai/v1/` endpoints to the same resource base before dispatch and
+request-contract binding, preserving custom path prefixes and deployment IDs.
+Query/fragment-bearing v1 endpoints refuse without logging their values;
+explicit non-Azure transport overrides and dated Azure API versions retain
+their existing behavior. The API-version configuration remains supported.
+
 To change which models Reflexio uses, edit [`reflexio/server/site_var/site_var_sources/llm_model_setting.json`](reflexio/server/site_var/site_var_sources/llm_model_setting.json).
 Use the provider prefix shown above (e.g., `anthropic/` for Anthropic models). Set the corresponding API key in your `.env` file.
 

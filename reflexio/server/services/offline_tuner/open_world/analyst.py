@@ -21,6 +21,7 @@ from pydantic import ValidationError
 
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.llm import ProviderRequestGuardError
+from reflexio.server.llm._azure_transport import normalize_azure_v1_endpoints
 from reflexio.server.llm.failure import (
     OutageWait,
     Transient,
@@ -1265,8 +1266,17 @@ def _litellm_transport_identity(client: LiteLLMClient) -> _LiteLLMTransportIdent
     # The retired Azure credential-level `deployment_name` never described
     # dispatch. Only the selected model id names the actual deployment; legacy
     # payload cleanup must not change this transport identity.
-    payload = {
+    endpoint = {
+        "model": config.model,
         "api_base": client._api_base,  # noqa: SLF001
+        "api_version": client._api_version,  # noqa: SLF001
+    }
+    # Bind the same resource the completion compiler hands to LiteLLM. A root
+    # and a full v1 endpoint cannot name different qualification subjects while
+    # dispatching to the same physical route.
+    normalize_azure_v1_endpoints(endpoint)
+    payload = {
+        "api_base": endpoint["api_base"],
         "api_version": client._api_version,  # noqa: SLF001
         "client_implementation": ("reflexio.server.llm.litellm_client.LiteLLMClient"),
         "completion_implementation": (

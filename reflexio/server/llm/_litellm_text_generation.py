@@ -45,6 +45,7 @@ from pydantic import BaseModel
 from reflexio.removed_env import reject_removed_env
 from reflexio.server import search_runtime
 from reflexio.server.error_reporting import set_error_tags
+from reflexio.server.llm._azure_transport import normalize_azure_v1_endpoints
 from reflexio.server.llm._litellm_subprocess import (
     _litellm_completion_worker,
     _raise_completion_error,
@@ -1145,6 +1146,7 @@ class TextGenerationMixin:
             params["api_version"] = api_version
 
         params.update(kwargs)
+        normalize_azure_v1_endpoints(params)
 
         # Braintrust metadata for observability (no-op if callback not registered)
         if os.environ.get("BRAINTRUST_API_KEY"):
