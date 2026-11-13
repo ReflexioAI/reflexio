@@ -30,6 +30,17 @@ REDUCER_POLICY_ID = "adverse-veto-coverage-75-v1"
 # for the promoted rule-evidence method. The old identity remains readable only
 # for historical artifacts until the native runner/SQL contract is advanced.
 RULE_EVIDENCE_POLICY_ID = "evidence-grounded-exact-edit-v1"
+# Distinct writer authority; the frozen source/eligibility policy above is unchanged.
+PLAYBOOK_REVISION_POLICY_ID = "evidence-grounded-playbook-revision-v2"
+TRIGGER_QUALIFICATION_CHECK_NAMES = (
+    "source_only_builder",
+    "trigger_only_revision",
+    "null_preserved_without_inference",
+    "invalid_quote_refused",
+    "invalid_keep_refused",
+    "wrong_index_refused",
+    "source_frame_binding",
+)
 
 if TYPE_CHECKING:
     from reflexio.server.services.storage.session_outcome_identity import (

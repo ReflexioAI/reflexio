@@ -22,6 +22,9 @@ answers. What SQLite answers differently, and why:
   the invocation table does not admit that role; a prepare naming it is
   refused at the role check, as PostgreSQL refuses it without a confirmation
   qualification.
+* **Trigger source roles.** V2 gate/builder calls have separate method-bound
+  identities; they carry no invented manifest session. Their request bytes bind
+  the prior admitted Content result and exact source frame.
 * **Authority shape.** Only the rule-evidence method authority is admitted:
   the table rejects the retired held-out authority shape.
 * **Projects.** A SQLite database is one project, so the compaction reuse read
@@ -76,6 +79,11 @@ from reflexio.server.services.storage.error import OptimizationArtifactIntegrity
 
 from . import _open_world_rule_evidence as rule
 from ._base import SQLiteStorageBase
+from ._open_world_trigger import (
+    AUTHORITY_V2,
+    POLICY_V2,
+    SQLiteTriggerV2Mixin,
+)
 from .playbook._optimization import _row_to_playbook_optimization_artifact
 
 #: The tables this module owns; ``rule_evidence_method_ready`` probes them.
@@ -198,7 +206,7 @@ def _usage_text(usage: object) -> str | None:
     return rule.canonical_text(usage)
 
 
-class SQLiteOpenWorldAttemptMixin:
+class SQLiteOpenWorldAttemptMixin(SQLiteTriggerV2Mixin):
     """``OpenWorldAttemptStorage`` and the compaction checkpoint on SQLite."""
 
     conn: sqlite3.Connection
@@ -215,15 +223,28 @@ class SQLiteOpenWorldAttemptMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def rule_evidence_method_ready(self) -> bool:
-        """True when every table the attempt store writes exists."""
+        """True only when current tables and v2 checked vocabularies exist."""
         with self._lock:
-            names = {
-                row["name"]
+            definitions = {
+                row["name"]: row["sql"]
                 for row in self.conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    "SELECT name,sql FROM sqlite_master WHERE type='table'"
                 ).fetchall()
             }
-        return set(ATTEMPT_TABLES) <= names
+        return (
+            set(ATTEMPT_TABLES) <= definitions.keys()
+            and all(
+                role in definitions.get("offline_tuner_open_world_invocations", "")
+                for role in ("'trigger_gate'", "'trigger_builder'")
+            )
+            and all(
+                kind in definitions.get("playbook_optimization_artifacts", "")
+                for kind in (
+                    "'open_world_content_result'",
+                    "'open_world_trigger_result'",
+                )
+            )
+        )
 
     @SQLiteStorageBase.handle_exceptions
     def reconcile_rule_evidence_authority(
@@ -335,9 +356,23 @@ class SQLiteOpenWorldAttemptMixin:
             not isinstance(value, dict)
             or canonical != authority_json
             or rule.json_digest(value) != authority_digest
-            or rule.text(rule.get(value, "schema_version")) != _AUTHORITY_SCHEMA
-            or rule.text(rule.get(value, "policy_id")) != RULE_EVIDENCE_POLICY_ID
-            or set(value) - {"schema_version", "policy_id", "diagnostic", "proposal"}
+            or (
+                rule.text(rule.get(value, "schema_version")),
+                rule.text(rule.get(value, "policy_id")),
+            )
+            not in {
+                (_AUTHORITY_SCHEMA, RULE_EVIDENCE_POLICY_ID),
+                (AUTHORITY_V2, POLICY_V2),
+            }
+            or set(value)
+            != (
+                {"schema_version", "policy_id", "diagnostic", "proposal"}
+                | (
+                    {"trigger_maintenance"}
+                    if value.get("schema_version") == AUTHORITY_V2
+                    else set()
+                )
+            )
             or rule.text_at(diagnostic, "component_identity", "component_role")
             != "discovery"
             or rule.text_at(proposal, "component_identity", "component_role")
@@ -346,11 +381,16 @@ class SQLiteOpenWorldAttemptMixin:
             or rule.text(rule.get(receipt, "suite_digest"))
             != rule.text(rule.get(diagnostic, "suite_digest"))
             or rule.get(receipt, "passed") is not True
-            or rule.get(receipt, "checks") != _QUALIFICATION_CHECKS
+            or rule.canonical_text(rule.get(receipt, "checks"))
+            != rule.canonical_text(_QUALIFICATION_CHECKS)
             or set(receipt) - {"suite_digest", "checks", "passed"}
             or receipt_digest != rule.text(rule.get(diagnostic, "result_digest"))
         ):
             return invalid()
+        if value["schema_version"] == AUTHORITY_V2:
+            from ._open_world_trigger import validate_trigger_authority
+
+            validate_trigger_authority(value)
         return value
 
     @SQLiteStorageBase.handle_exceptions
@@ -815,6 +855,20 @@ class SQLiteOpenWorldAttemptMixin:
                     ],
                 },
             }
+            method_value = json.loads(authority["method_authority_json"])
+            if method_value.get("schema_version") == AUTHORITY_V2:
+                for role, name in (
+                    ("trigger_gate", "gate"),
+                    ("trigger_builder", "builder"),
+                ):
+                    stage = method_value["trigger_maintenance"][name]
+                    context[role] = {
+                        "component_identity_digest": component_digest(
+                            stage["component_identity"]
+                        ),
+                        "qualification_suite_digest": None,
+                        "qualification_result_digest": stage["authorization_digest"],
+                    }
             context_json = rule.canonical_text(context)
             context_digest = rule.text_digest(context_json)
             existing = self.conn.execute(
@@ -1290,8 +1344,8 @@ class SQLiteOpenWorldAttemptMixin:
             rule.conflict("invocation does not bind the exact durable attempt context")
         return context
 
-    @staticmethod
     def _assert_role_identity(
+        self,
         context: sqlite3.Row,
         role: object,
         component_identity_digest: object,
@@ -1310,6 +1364,13 @@ class SQLiteOpenWorldAttemptMixin:
                 context["held_out_component_identity_digest"],
                 context["held_out_qualification_suite_digest"],
                 context["held_out_qualification_result_digest"],
+            )
+        elif role in ("trigger_gate", "trigger_builder"):
+            stage = self._bound_trigger_component(context, str(role))
+            expected = (
+                component_digest(stage["component_identity"]),
+                None,
+                stage["authorization_digest"],
             )
         elif role == "candidate":
             expected = (
@@ -1444,7 +1505,9 @@ class SQLiteOpenWorldAttemptMixin:
             or rule.text(rule.get(request, "component_identity_digest"))
             != row["component_identity_digest"]
             or rule.json_digest(
-                rule.schema_template(rule.get(request, "output_schema"))
+                rule.get(request, "output_schema")
+                if role in ("trigger_gate", "trigger_builder")
+                else rule.schema_template(rule.get(request, "output_schema"))
             )
             != rule.text(rule.get(component, "output_schema_digest"))
             or rule.text_digest(rule.text(rule.get(request, "system")) or "")
@@ -1497,14 +1560,20 @@ class SQLiteOpenWorldAttemptMixin:
             or rule.text(rule.get(question, "outcome_contract_digest"))
             != outcome_contract_digest
             or rule.text(rule.get(question, "role")) != role
-            or invocation != expected_invocation
+            or rule.canonical_text(invocation)
+            != rule.canonical_text(expected_invocation)
         ):
             rule.conflict("rule-evidence receipt provenance changed")
         output = {
-            "schema_version": "v1",
-            "contract_type": "rule_evidence_diagnostic"
-            if role == "discovery"
-            else "rule_evidence_proposal",
+            "schema_version": "v2"
+            if role in ("trigger_gate", "trigger_builder")
+            else "v1",
+            "contract_type": {
+                "discovery": "rule_evidence_diagnostic",
+                "candidate": "rule_evidence_proposal",
+                "trigger_gate": "rule_evidence_trigger_gate",
+                "trigger_builder": "rule_evidence_trigger_builder",
+            }[role],
             "payload": observed,
         }
         if (
@@ -1513,9 +1582,10 @@ class SQLiteOpenWorldAttemptMixin:
             or rule.canonical_text(output) != row["output_json"]
         ):
             rule.conflict("rule-evidence receipt observed output changed")
-        rule.assert_schema_domains(
-            rule.get(request, "output_schema"), rule.get(request, "payload"), role
-        )
+        if role not in ("trigger_gate", "trigger_builder"):
+            rule.assert_schema_domains(
+                rule.get(request, "output_schema"), rule.get(request, "payload"), role
+            )
         if role == "discovery":
             self._assert_manifest_session(context, "discovery", dict(row))
             if (
@@ -1539,6 +1609,9 @@ class SQLiteOpenWorldAttemptMixin:
         stored candidate, or abstain with a completed proposal that edits
         nothing. An accepted decision re-enters once as its bound candidate.
         """
+        if rule.text(rule.get(content, "schema_version")) == "v2":
+            self._authorize_v2_artifact_locked(job_id, artifact_kind, content)
+            return
         memo_authorized = False
         while True:
             if artifact_kind == OPEN_WORLD_EVIDENCE_ARTIFACT_KIND:
@@ -1587,12 +1660,28 @@ class SQLiteOpenWorldAttemptMixin:
                 authority is None
                 or method is None
                 or rule.json_digest(json.loads(method)) != authority["authority_digest"]
-                or rule.text(rule.get(json.loads(method), "policy_id"))
-                != RULE_EVIDENCE_POLICY_ID
+                or rule.text(
+                    rule.get(
+                        rule.decode(method, "method authority is not JSON"), "policy_id"
+                    )
+                )
+                not in (RULE_EVIDENCE_POLICY_ID, POLICY_V2)
             ):
                 _refuse(
                     OpenWorldRefusal.AUTHORITY_STALE,
                     "rule-evidence authority is unavailable",
+                )
+            if (
+                artifact_kind != OPEN_WORLD_DISCOVERY_MEMO_ARTIFACT_KIND
+                and rule.text(
+                    rule.get(
+                        rule.decode(method, "method authority is not JSON"), "policy_id"
+                    )
+                )
+                == POLICY_V2
+            ):
+                rule.integrity(
+                    "v2 authority requires explicit v2 preparation artifacts"
                 )
             if artifact_kind == OPEN_WORLD_DISCOVERY_MEMO_ARTIFACT_KIND:
                 self._authorize_memo_locked(

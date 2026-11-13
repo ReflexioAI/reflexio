@@ -2898,6 +2898,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "'open_world_evidence_bundle'",
             "'open_world_discovery_memo'",
             "'open_world_candidate'",
+            "'open_world_content_result'",
+            "'open_world_trigger_result'",
             "'open_world_attempt_decision'",
         )
         if all(
@@ -2935,6 +2937,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                         'open_world_evidence_bundle',
                         'open_world_discovery_memo',
                         'open_world_candidate',
+                        'open_world_content_result',
+                        'open_world_trigger_result',
                         'open_world_attempt_decision'
                     )),
                     content_json TEXT NOT NULL,
@@ -4080,6 +4084,8 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_artifacts (
         'open_world_evidence_bundle',
         'open_world_discovery_memo',
         'open_world_candidate',
+                        'open_world_content_result',
+                        'open_world_trigger_result',
         'open_world_attempt_decision'
     )),
     content_json TEXT NOT NULL,
