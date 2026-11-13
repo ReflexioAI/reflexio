@@ -169,13 +169,15 @@ def test_provider_qualified_model_reaches_the_cli_intact(
     assert call.call_args.kwargs["model"] == "openai/gpt-5.6-luna"
 
 
-def test_fresh_process_uses_real_litellm_and_owned_native_cli(tmp_path):
+def test_fresh_process_uses_real_litellm_and_owned_native_cli(tmp_path, monkeypatch):
     """Prove transport selection without the pytest completion mock or a paid CLI."""
     import os
     import subprocess
     import sys
     from pathlib import Path
 
+    monkeypatch.setenv("BRAINTRUST_API_KEY", "synthetic-parent-telemetry-canary")
+    monkeypatch.setenv("REFLEXIO_TEST_ENV_CANARY", "parent-only")
     record = tmp_path / "native-calls.jsonl"
     standin = tmp_path / "native.py"
     standin.write_text(
@@ -199,6 +201,8 @@ def test_fresh_process_uses_real_litellm_and_owned_native_cli(tmp_path):
     program = tmp_path / "probe.py"
     program.write_text(
         """import json,os,threading
+assert 'BRAINTRUST_API_KEY' not in os.environ
+assert 'REFLEXIO_TEST_ENV_CANARY' not in os.environ
 from http.server import BaseHTTPRequestHandler,HTTPServer
 from pydantic import BaseModel
 from reflexio.server.llm.litellm_client import LiteLLMClient,LiteLLMConfig
@@ -245,13 +249,39 @@ if __name__=='__main__':
     print('OWNED_TRANSPORT_OK')
 """
     )
-    env = os.environ.copy()
+    # Only process-launch essentials cross the boundary: provider/telemetry
+    # credentials, callbacks, proxy settings and user configuration do not.
+    env = {
+        key: os.environ[key]
+        for key in (
+            "PATH",
+            "TMPDIR",
+            "TMP",
+            "TEMP",
+            "SystemRoot",
+            "SYSTEMROOT",
+            "WINDIR",
+            "COMSPEC",
+            "PATHEXT",
+            "LANG",
+            "LC_ALL",
+        )
+        if key in os.environ
+    }
     env.update(
+        OPENAI_API_KEY="sk-test-not-real",
+        OMP_NUM_THREADS="1",
+        OPENBLAS_NUM_THREADS="1",
+        MKL_NUM_THREADS="1",
+        RAYON_NUM_THREADS="1",
         OPENCLAW_SMART_USE_LOCAL_CLI="1",
         OPENCLAW_BIN=str(cli),
         PYTHON_DOTENV_DISABLED="1",
         REFLEXIO_ENV_FILE=str(tmp_path / "empty.env"),
         HOME=str(tmp_path / "home"),
+        USERPROFILE=str(tmp_path / "home"),
+        APPDATA=str(tmp_path / "home" / "appdata"),
+        LOCALAPPDATA=str(tmp_path / "home" / "localappdata"),
         PYTHONPATH=str(Path(__file__).resolve().parents[3]),
     )
     Path(env["HOME"]).mkdir()
