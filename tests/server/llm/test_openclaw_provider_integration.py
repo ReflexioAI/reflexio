@@ -167,3 +167,113 @@ def test_provider_qualified_model_reaches_the_cli_intact(
             model=model, messages=[{"role": "user", "content": "hi"}]
         )
     assert call.call_args.kwargs["model"] == "openai/gpt-5.6-luna"
+
+
+def test_fresh_process_uses_real_litellm_and_owned_native_cli(tmp_path):
+    """Prove transport selection without the pytest completion mock or a paid CLI."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    record = tmp_path / "native-calls.jsonl"
+    standin = tmp_path / "native.py"
+    standin.write_text(
+        "import json,os,sys\n"
+        "from pathlib import Path\n"
+        f"record=Path({str(record)!r})\n"
+        "args=sys.argv[1:]\n"
+        "prompt=args[args.index('--prompt')+1]\n"
+        "entry={'argv':args,'pid':os.getpid(),'internal':os.environ.get('OPENCLAW_SMART_INTERNAL')}\n"
+        "with record.open('a') as stream: stream.write(json.dumps(entry)+'\\n')\n"
+        "text=(json.dumps({'tool':'finish_test','args':{'answer':'ok'}}) if 'tool-synthetic' in prompt else json.dumps({'answer':'ok'}) if 'structured-synthetic' in prompt else 'from-owned-cli')\n"
+        "print(json.dumps({'ok':True,'outputs':[{'text':text}]}))\n"
+    )
+    if os.name == "nt":
+        cli = tmp_path / "openclaw.cmd"
+        cli.write_text(f'@"{sys.executable}" "{standin}" %*\r\n')
+    else:
+        cli = tmp_path / "openclaw"
+        cli.write_text(f"#!{sys.executable}\n" + standin.read_text())
+        cli.chmod(0o700)
+    program = tmp_path / "probe.py"
+    program.write_text(
+        """import json,os,threading
+from http.server import BaseHTTPRequestHandler,HTTPServer
+from pydantic import BaseModel
+from reflexio.server.llm.litellm_client import LiteLLMClient,LiteLLMConfig
+from reflexio.server.llm.model_defaults import ModelRole
+class Answer(BaseModel):
+    answer:str
+def local_only(params,*_args):
+    assert params['model'].startswith('openclaw/'), 'Unintended cloud route'
+    endpoint=params.get('api_base') or params.get('base_url')
+    assert not endpoint or endpoint.startswith('http://127.0.0.1:'), 'Unowned endpoint'
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        self.server.bodies.append(body)
+        result={'id':'synthetic-http','object':'chat.completion','created':1,'model':'loopback-model','choices':[{'index':0,'message':{'role':'assistant','content':'from-owned-http'},'finish_reason':'stop'}],'usage':{'prompt_tokens':1,'completion_tokens':1,'total_tokens':2}}
+        payload=json.dumps(result).encode()
+        self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(payload)));self.end_headers();self.wfile.write(payload)
+    def log_message(self,*_args): pass
+if __name__=='__main__':
+    target='openclaw/anthropic/claude-sonnet-4-6'
+    client=LiteLLMClient(LiteLLMConfig(model=target,max_tokens=32,timeout=20,fallback_models=[]))
+    os.environ['OPENCLAW_DEFAULT_MODEL']='private-unused-model'
+    native=client.generate_chat_response_with_provenance([{'role':'user','content':'explicit-synthetic'}],model_role=ModelRole.EXTRACTION_AGENT,provider_request_guard=local_only)
+    assert native.value=='from-owned-cli' and native.provenance.model_name is None and native.provenance.provider is None
+    tools=[{'type':'function','function':{'name':'finish_test','description':'Synthetic test finish','parameters':{'type':'object','properties':{'answer':{'type':'string'}},'required':['answer']}}}]
+    native_tool=client.generate_chat_response_with_provenance([{'role':'user','content':'tool-synthetic'}],tools=tools,provider_request_guard=local_only)
+    assert native_tool.provenance.model_name is None and native_tool.provenance.provider is None
+    output=native_tool.value
+    assert output.tool_calls[0].function.name=='finish_test'
+    assert json.loads(output.tool_calls[0].function.arguments)=={'answer':'ok'}
+    output=client.generate_chat_response([{'role':'user','content':'structured-synthetic'}],response_format=Answer,provider_request_guard=local_only)
+    assert output.answer=='ok'
+    os.environ.pop('OPENCLAW_DEFAULT_MODEL')
+    assert client.generate_chat_response([{'role':'user','content':'default-synthetic'}],model='openclaw/default',model_role=ModelRole.EXTRACTION_AGENT,provider_request_guard=local_only)=='from-owned-cli'
+    server=HTTPServer(('127.0.0.1',0),Handler);server.bodies=[]
+    thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+    try:
+        os.environ['OPENCLAW_DEFAULT_MODEL']='private-unused-model'
+        http=client.generate_chat_response_with_provenance([{'role':'user','content':'http-synthetic'}],model='openclaw/default',custom_llm_provider='openai',api_base=f'http://127.0.0.1:{server.server_port}/v1',provider_request_guard=local_only)
+        assert http.value=='from-owned-http' and http.provenance.model_name=='loopback-model'
+        assert len(server.bodies)==1 and server.bodies[0]['model']=='openclaw/default'
+    finally:
+        server.shutdown();server.server_close();thread.join(timeout=2)
+    print('OWNED_TRANSPORT_OK')
+"""
+    )
+    env = os.environ.copy()
+    env.update(
+        OPENCLAW_SMART_USE_LOCAL_CLI="1",
+        OPENCLAW_BIN=str(cli),
+        PYTHON_DOTENV_DISABLED="1",
+        REFLEXIO_ENV_FILE=str(tmp_path / "empty.env"),
+        HOME=str(tmp_path / "home"),
+        PYTHONPATH=str(Path(__file__).resolve().parents[3]),
+    )
+    Path(env["HOME"]).mkdir()
+    Path(env["REFLEXIO_ENV_FILE"]).touch()
+    result = subprocess.run(  # noqa: S603 — fixed interpreter and test-owned script.
+        [sys.executable, str(program)],
+        env=env,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-2000:]
+    assert "OWNED_TRANSPORT_OK" in result.stdout
+    calls = [json.loads(line) for line in record.read_text().splitlines()]
+    assert len(calls) == 4
+    assert all(call["internal"] == "1" for call in calls)
+    for call in calls[:3]:
+        argv = call["argv"]
+        assert argv[argv.index("--model") + 1] == "anthropic/claude-sonnet-4-6"
+    assert "--model" not in calls[3]["argv"]
+    assert "finish_test" in calls[1]["argv"][calls[1]["argv"].index("--prompt") + 1]
+    assert "answer" in calls[2]["argv"][calls[2]["argv"].index("--prompt") + 1]
+    assert "private-unused-model" not in result.stdout + result.stderr

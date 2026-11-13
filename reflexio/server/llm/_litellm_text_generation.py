@@ -174,6 +174,13 @@ class LadderBudgetExhaustedError(LiteLLMClientError):
     """
 
 
+def _uses_openclaw_transport(model: str, custom_llm_provider: str | None) -> bool:
+    """Respect LiteLLM's explicit transport before interpreting a model prefix."""
+    if custom_llm_provider:
+        return custom_llm_provider == "openclaw"
+    return model.startswith("openclaw/")
+
+
 def _bounded_repair_errors(errors: Sequence[str]) -> tuple[str, ...]:
     """Clamp a validation-error list to the repair-prompt budget.
 
@@ -877,9 +884,9 @@ class TextGenerationMixin:
                 When provided, the return type is ``ToolCallingChatResponse``.
             tool_choice: Optional tool choice control ("auto", "none", "required",
                 or a dict specifying a particular tool). Forwarded to the provider.
-            model_role: Optional ``ModelRole`` to override the model selected for
-                this request. The role is resolved via ``resolve_model_name`` using
-                the client's ``api_key_config``.
+            model_role: Role-based selection for standard provider requests.
+                Selected custom gateways and native OpenClaw routes keep their
+                request/client model; the role does not retarget those routes.
             max_retries (int | None): Optional per-call override for the number of
                 retry attempts. When ``None`` (the default), the value falls back to
                 ``LiteLLMConfig.max_retries``.
@@ -1028,8 +1035,18 @@ class TextGenerationMixin:
         # custom_endpoint precedence the fallback ladder resolution uses, so the
         # two never drift.
         actual_model = self._resolve_primary_model(
-            kwargs.pop("model", None), model_role
+            kwargs.pop("model", None),
+            model_role,
+            custom_llm_provider=kwargs.get("custom_llm_provider"),
         )
+        if _uses_openclaw_transport(actual_model, kwargs.get("custom_llm_provider")):
+            from reflexio.server.llm.providers.openclaw_provider import (
+                resolve_openclaw_model,
+            )
+
+            # Parameter preparation is outside provider retry/fallback catches.
+            # An ambiguous retired default must never dispatch another model.
+            resolve_openclaw_model(actual_model)
         ensure_model_capabilities(actual_model)
 
         if actual_model != self.config.model:
@@ -1172,26 +1189,33 @@ class TextGenerationMixin:
         return final_messages
 
     def _resolve_primary_model(
-        self, model: str | None, model_role: ModelRole | None
+        self,
+        model: str | None,
+        model_role: ModelRole | None,
+        *,
+        custom_llm_provider: str | None = None,
     ) -> str:
         """Resolve work separately from the endpoint supplying its credentials.
 
         Applies the same precedence used by ``_build_completion_params`` so the
         ladder walker and the per-rung param builder never disagree on which
         model is the primary: an explicit ``model`` (or the config default),
-        overridden by ``model_role`` resolution on standard providers. A custom
-        gateway has opaque model IDs: its selected client/request model owns
-        dispatch, not provider autodetection or a second endpoint model pin.
+        overridden by ``model_role`` resolution on standard providers. Custom
+        gateways and selected OpenClaw routes retain their client/request model;
+        generic role detection must not retarget that opaque native selection.
 
         Args:
             model: Explicit per-call model, or ``None`` for the config default.
-            model_role: Optional role whose resolution overrides ``model``.
+            model_role: Role override for standard provider selection.
+            custom_llm_provider: Existing per-call explicit transport override.
 
         Returns:
             str: The resolved primary model name.
         """
         actual_model = model or self.config.model
         if self.config.api_key_config and self.config.api_key_config.custom_endpoint:
+            return actual_model
+        if _uses_openclaw_transport(actual_model, custom_llm_provider):
             return actual_model
         if model_role is not None:
             actual_model = resolve_model_name(
@@ -1222,7 +1246,9 @@ class TextGenerationMixin:
             list[str]: The ordered, deduped rung list beginning with the primary.
         """
         primary = self._resolve_primary_model(
-            kwargs.get("model"), kwargs.get("model_role")
+            kwargs.get("model"),
+            kwargs.get("model_role"),
+            custom_llm_provider=kwargs.get("custom_llm_provider"),
         )
         ce = (
             self.config.api_key_config.custom_endpoint
@@ -1461,9 +1487,8 @@ class TextGenerationMixin:
         intentionally ignored: LiteLLM often echoes the requested model there, which
         would record a configured route as if it had been observed.
 
-        The claude-code LiteLLM route can execute different local host CLIs. Its
-        public ``ModelResponse.model`` is the *requested* route string (same as
-        other providers). Observed model is only the bridge stamp
+        Native CLI routes construct ``ModelResponse.model`` from the requested
+        route. Observed model is only an independently established bridge stamp
         ``reflexio_served_model`` — never ``response.model``, which would launder
         the requested route as observed when the CLI does not report a served model.
         """
@@ -1472,7 +1497,7 @@ class TextGenerationMixin:
         served_provider = _nonempty_string(hidden.get("reflexio_served_provider"))
         stamped_served = _nonempty_string(hidden.get("reflexio_served_model"))
 
-        if route_provider == "claude-code":
+        if route_provider in {"claude-code", "openclaw"}:
             provider = served_provider
             model_name = stamped_served
         else:
