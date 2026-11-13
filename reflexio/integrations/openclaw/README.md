@@ -89,6 +89,9 @@ Existing frozen-binding checks keep refusing changed recipes before dispatch.
 The request-derived response model label is not proof of the model actually
 served. Observed model/provider attribution stays unknown until independently
 established by the native bridge; it is never filled from that request echo.
+Offline shared compaction requires an observed model in its dispatch journal.
+It therefore refuses native OpenClaw calls before spending a CLI call or
+debiting a journal attempt; explicit HTTP transport overrides remain eligible.
 
 Run a Gateway alongside: two embedded OpenClaw processes on one state directory
 contend for it.
