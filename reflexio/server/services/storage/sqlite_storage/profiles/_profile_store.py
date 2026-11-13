@@ -46,6 +46,7 @@ def _emit_hard_delete_profile(
     entity_id: str,
     request_id: str,
     actor: str = "api",
+    reason: str = "erasure",
 ) -> None:
     """Emit a single hard_delete lineage event for a profile entity."""
     _append_event_stmt(
@@ -58,7 +59,7 @@ def _emit_hard_delete_profile(
         source_ids=[],
         actor=actor,
         request_id=request_id,
-        reason="erasure",
+        reason=reason,
     )
 
 
@@ -86,6 +87,7 @@ class ProfileStoreMixin:
     _assert_subject_writable_locked: Any
     _own_transaction: Any
     commit_scope: Any
+    _deferred_index_ops: list[tuple[str, Any]]
 
     def _subject_ref_from_profile_row(self, row: sqlite3.Row) -> str:
         subject_ref = row["governance_subject_ref"]
@@ -974,7 +976,11 @@ class ProfileStoreMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def delete_profiles_by_ids(
-        self, profile_ids: list[str], *, emit_hard_delete: bool = True
+        self,
+        profile_ids: list[str],
+        *,
+        emit_hard_delete: bool = True,
+        reason: str = "erasure",
     ) -> int:
         if not profile_ids:
             return 0
@@ -982,7 +988,7 @@ class ProfileStoreMixin:
         # prevention (see delete_user_profile comment, #196).
         ph = ",".join("?" for _ in profile_ids)
         batch_request_id = uuid.uuid4().hex
-        with self._lock:
+        with self._lock, self.commit_scope():
             pre_rows = self.conn.execute(
                 f"SELECT rowid, profile_id FROM profiles WHERE profile_id IN ({ph})",
                 profile_ids,
@@ -991,6 +997,24 @@ class ProfileStoreMixin:
                 return 0
             existing = [r["profile_id"] for r in pre_rows]
             rowids = [r["rowid"] for r in pre_rows]
+            # A due row may have just been inserted in this same publication.
+            # Its queued index upsert must not recreate erased payload after
+            # the outer commit; rowid reuse must not inherit its vector either.
+            self._deferred_index_ops = [
+                (kind, args)
+                for kind, args in self._deferred_index_ops
+                if not (
+                    (
+                        kind in {"fts_upsert_profile", "fts_delete_profile"}
+                        and args[0] in existing
+                    )
+                    or (
+                        kind in {"vec_upsert", "vec_delete"}
+                        and args[0] == "profiles_vec"
+                        and args[1] in rowids
+                    )
+                )
+            ]
             self._delete_in_chunks("profiles_fts", "profile_id", existing)
             if self._has_sqlite_vec and rowids:
                 self._delete_in_chunks("profiles_vec", "rowid", rowids)
@@ -1006,6 +1030,6 @@ class ProfileStoreMixin:
                         entity_id=str(pid),
                         request_id=batch_request_id,
                         actor="system",
+                        reason=reason,
                     )
-            self.conn.commit()
         return cur.rowcount

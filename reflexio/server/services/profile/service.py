@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -34,12 +35,18 @@ from reflexio.server.services.base_generation_service import (
     StatusChangeOperation,
 )
 from reflexio.server.services.deferred_learning_plan import (
+    ProfilePayloadErasure,
     ProfileWritePlan,
 )
 from reflexio.server.services.extraction.overflow_presentation import (
     current_overflow_presentation,
 )
 from reflexio.server.services.profile.components.extractor import ProfileExtractor
+from reflexio.server.services.profile.lifecycle import KEY, whole_epoch
+from reflexio.server.services.profile.lifecycle_deadlines import (
+    NativeLifecycleDeadlineStore,
+    publish_with_lifecycle,
+)
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileGenerationRequest,
     build_profile_gate_prompt,
@@ -47,6 +54,7 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
 from reflexio.server.services.service_utils import (
     format_sessions_to_history_string,
 )
+from reflexio.server.work_scope import current_project_id
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +201,7 @@ class ProfileGenerationService(
 
         all_new_profiles = [p for result in results if result for p in result]
         existing_ids_to_delete: list[str] = []
+        erasure_instructions: list[ProfilePayloadErasure] = []
         consolidation_provenance = None
         consolidation_sources: dict[str, list[str]] = {}
         consolidated_output_indices: set[int] = set()
@@ -205,6 +214,7 @@ class ProfileGenerationService(
                     all_new_profiles, user_id, generation_request_id
                 )
             )
+            erasure_instructions = consolidator.erasure_instructions
             consolidation_provenance = consolidator.model_provenance
             consolidation_sources = consolidator.lineage_sources_by_profile_id
             consolidated_output_indices = consolidator.consolidated_output_indices
@@ -231,6 +241,7 @@ class ProfileGenerationService(
                 user_id=user_id,
             )
             existing_ids_to_delete = []
+            erasure_instructions = []
 
         if not all_new_profiles and not existing_ids_to_delete:
             return None
@@ -277,9 +288,47 @@ class ProfileGenerationService(
             new_profiles=all_new_profiles,
             superseded_ids=existing_ids_to_delete,
             lineage_contexts=lineage_contexts,
+            erasure_instructions=erasure_instructions,
+            lifecycle_epoch=int(datetime.now(UTC).timestamp()),
         )
 
-    def _persist_write_plan(self, plan: ProfileWritePlan) -> None:
+    def _persist_write_plan(
+        self, plan: ProfileWritePlan, *, now: int | None = None
+    ) -> None:
+        """Preserve prepared authority; observe execution time on its writer owner."""
+        if plan.lifecycle_epoch is None:
+            # Persisted pre-lifecycle plans already contain their resolved payload
+            # and expiry. Recover that work without inventing a new publication
+            # clock or treating an old guessed expiry as erasure permission.
+            if plan.erasure_instructions or any(
+                KEY in (profile.custom_features or {}) for profile in plan.new_profiles
+            ):
+                raise ValueError(
+                    "Profile lifecycle authority requires its declared epoch"
+                )
+            self._persist_profile_rows(plan)
+            return
+        whole_epoch(plan.lifecycle_epoch)
+        project_id = current_project_id() or ""
+        if self.storage is None:
+            raise ValueError("Profile lifecycle publication requires storage")
+        store = NativeLifecycleDeadlineStore(self.storage, plan.user_id, project_id)
+        with self.storage.commit_scope():
+            if now is None:
+                # Recovery may execute long after preparation. Its immutable
+                # clock is not evidence that a persisted deadline is still in
+                # the future. Observe eligibility using this same transaction,
+                # without re-authoring creation, deadline or payload versions.
+                with self.storage._stream_sql(read_only=True) as db:
+                    execution_epoch = int(db.now())
+            else:
+                execution_epoch = now
+            whole_epoch(execution_epoch)
+            publish_with_lifecycle(
+                store, plan, self._persist_profile_rows, execution_epoch
+            )
+
+    def _persist_profile_rows(self, plan: ProfileWritePlan) -> None:
         """Persist-half of profile finalization — apply the resolved write-plan.
 
         Issues only the fence-critical row writes: inserts the new profiles
@@ -328,8 +377,8 @@ class ProfileGenerationService(
                 # extractor bookmark over a window whose rows failed to write.
                 raise
 
-        # Always soft-supersede superseded existing profiles (never hard-delete
-        # on the dedup path). Compute already dropped these when request_id was
+        # Only ordinary supersession IDs reach this half; explicitly authorized
+        # erasures were staged by the native lifecycle owner. Compute dropped IDs when request_id was
         # empty, so any ids here carry a valid lineage key.
         if plan.superseded_ids:
             try:

@@ -66,7 +66,7 @@ def install_crashing_model(monkeypatch: pytest.MonkeyPatch) -> list[int]:
             "profiles": [
                 {
                     "content": "The user prefers concise answers.",
-                    "time_to_live": "infinity",
+                    "explicit_storage_deadline": None,
                     "source_span": "I prefer concise answers with details 0",
                 }
             ]

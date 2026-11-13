@@ -65,7 +65,7 @@ def setup(pipeline, monkeypatch, *, gate=True, profiles=True):
                     "profiles": [
                         {
                             "content": "Prefers concise answers",
-                            "time_to_live": "infinity",
+                            "explicit_storage_deadline": None,
                             "source_span": "I prefer concise answers with details 0",
                         }
                     ]
@@ -527,6 +527,10 @@ def test_frozen_old_projection_replays_without_vectors_or_new_search(
         source_interaction_ids=[1],
     )
     storage.add_user_profile("u", [old], skip_embedding=True)
+    # Search must expose the same canonical native projection as by-ID
+    # hydration (including SQLite's NULL-source normalization).
+    old = storage.get_profile_by_id("old")
+    assert old is not None
     search = Mock(return_value=[old])
     monkeypatch.setattr(storage, "search_user_profile", search)
     original = storage.precompute_profile_embeddings

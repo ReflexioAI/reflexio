@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from reflexio.models.api_schema.retriever_schema import SearchUserProfileRequest
 from reflexio.models.api_schema.service_schemas import Status, UserProfile
@@ -31,9 +31,18 @@ from reflexio.server.services.deduplication_utils import (
     parse_item_id,
     resolve_dedup_query_embeddings,
 )
+from reflexio.server.services.deferred_learning_plan import ProfilePayloadErasure
+from reflexio.server.services.profile.lifecycle import (
+    expiration_for,
+    merge_features,
+    metadata,
+)
+from reflexio.server.services.profile.lifecycle_deadlines import (
+    PAYLOAD_FIELDS,
+    profile_version,
+)
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileTimeToLive,
-    calculate_expiration_timestamp,
 )
 
 logger = logging.getLogger(__name__)
@@ -138,7 +147,6 @@ class ProfileDuplicateGroup(BaseModel):
     Attributes:
         item_ids: List of item IDs matching prompt format (e.g., 'NEW-0', 'EXISTING-1')
         merged_content: The consolidated profile content combining information from all duplicates
-        merged_time_to_live: The chosen time_to_live for the merged profile
     """
 
     item_ids: list[str] = Field(
@@ -147,9 +155,23 @@ class ProfileDuplicateGroup(BaseModel):
     merged_content: str = Field(
         description="Consolidated profile content combining all duplicate information"
     )
-    merged_time_to_live: str = Field(
-        description="Time to live for merged profile: one_day, one_week, one_month, one_quarter, one_year, infinity"
+
+    erase_replaced_payloads: bool = Field(
+        default=False,
+        strict=True,
+        description="Only for a source-authorized partial forget: erase exact seen CURRENT old payloads while retaining unrelated facts in merged_content; false for ordinary corrections",
     )
+    retained_source_quote: str | None = Field(
+        default=None,
+        description="For a partial forget, exact original source excerpt supporting only surviving facts; never carry the forgotten payload into replacement provenance",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def refuse_estimated_lifetime(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "merged_time_to_live" in value:
+            raise ValueError("TTL-free consolidation cannot author estimated lifetime")
+        return value
 
     model_config = ConfigDict(
         extra="allow",
@@ -383,6 +405,7 @@ class ProfileConsolidator(BaseDeduplicator):
         self.model_provenance: ModelProvenance | None = None
         self.lineage_sources_by_profile_id: dict[str, list[str]] = {}
         self.consolidated_output_indices: set[int] = set()
+        self.erasure_instructions: list[ProfilePayloadErasure] = []
 
     def _get_prompt_id(self) -> str:
         """Get the prompt ID for profile deduplication."""
@@ -429,15 +452,19 @@ class ProfileConsolidator(BaseDeduplicator):
             return "(None)"
         lines = []
         for idx, profile in enumerate(profiles):
-            ttl = (
-                profile.profile_time_to_live.value
-                if profile.profile_time_to_live
-                else "unknown"
-            )
             source = profile.source or "unknown"
+            forget = metadata(profile).get("explicit_forget_quote")
+            permission = (
+                f" | Explicit forget source quote: {forget!r}" if forget else ""
+            )
+            evidence = (
+                f" | Original source evidence: {profile.source_span!r}"
+                if profile.source_span
+                else ""
+            )
             modified_date = _format_profile_timestamp(profile.last_modified_timestamp)
             lines.append(
-                f'[{prefix}-{idx}] Content: "{profile.content}" | TTL: {ttl} | Source: {source} | Last Modified: {modified_date}'
+                f'[{prefix}-{idx}] Content: "{profile.content}" | Source: {source} | Last Modified: {modified_date}{permission}{evidence}'
             )
         return "\n".join(lines)
 
@@ -547,6 +574,79 @@ class ProfileConsolidator(BaseDeduplicator):
         )
         return existing_profiles
 
+    def _hydrate_selected_profiles(
+        self,
+        selected: list[UserProfile],
+        user_id: str,
+    ) -> list[UserProfile]:
+        """Complete only ranked native incumbents, without widening retrieval.
+
+        The frozen hybrid RPC omits source interaction IDs and lineage pointers.
+        Its converter defaults are not authoritative observations of those fields.
+        One existing scoped by-ID read supplies them before history capture,
+        semantic rendering and exact erasure compilation. Compare every field the
+        hybrid route actually exposes; changed meaning/version refuses outright.
+        """
+        if not selected:
+            return []
+        expected_status = Status.PENDING if self.output_pending_status else None
+        ids = [profile.profile_id for profile in selected]
+        if (
+            not user_id
+            or any(not identity for identity in ids)
+            or len(ids) != len(set(ids))
+            or any(
+                p.user_id != user_id or p.status != expected_status for p in selected
+            )
+        ):
+            raise ValueError("Selected profile identity, owner or status is invalid")
+        storage = self.request_context.storage
+        if storage is None:
+            raise ValueError("Selected profile hydration requires native storage")
+        hydrated = storage.get_profiles_by_ids(
+            user_id,
+            ids,
+            status_filter=[expected_status],
+        )
+        by_id = {}
+        for profile in hydrated:
+            if (
+                profile.profile_id not in ids
+                or profile.profile_id in by_id
+                or profile.user_id != user_id
+                or profile.status != expected_status
+            ):
+                raise ValueError(
+                    "Hydrated profile identity, owner or status is invalid"
+                )
+            by_id[profile.profile_id] = profile
+        if set(by_id) != set(ids):
+            raise ValueError(
+                "Selected profile is missing from authoritative native read"
+            )
+        omitted_by_hybrid = {"source_interaction_ids", "merged_into", "superseded_by"}
+        for profile in selected:
+            observed_fields: set[str] = set(PAYLOAD_FIELDS)
+            observed_fields.difference_update(omitted_by_hybrid)
+            # Non-default values supplied by a fuller native search are also
+            # observations; only the frozen RPC's missing-field defaults resolve.
+            if profile.source_interaction_ids:
+                observed_fields.add("source_interaction_ids")
+            observed_fields.update(
+                field
+                for field in ("merged_into", "superseded_by")
+                if getattr(profile, field) is not None
+            )
+            observed = profile.model_dump(mode="json", include=observed_fields)
+            authoritative = by_id[profile.profile_id].model_dump(
+                mode="json", include=observed_fields
+            )
+            if observed != authoritative:
+                raise ValueError(
+                    "Selected profile meaning or version changed before hydration"
+                )
+        return [by_id[identity] for identity in ids]
+
     def _render_dedup_prompt(
         self,
         new_profiles: list[UserProfile],
@@ -605,6 +705,7 @@ class ProfileConsolidator(BaseDeduplicator):
         self.model_provenance = None
         self.lineage_sources_by_profile_id = {}
         self.consolidated_output_indices = set()
+        self.erasure_instructions = []
 
         # Check if mock mode is enabled
         if env_bool("MOCK_LLM_RESPONSE", default=False):
@@ -615,7 +716,10 @@ class ProfileConsolidator(BaseDeduplicator):
             return [], [], []
 
         # Retrieve existing profiles via hybrid search
-        existing_profiles = self._retrieve_existing_profiles(new_profiles, user_id)
+        existing_profiles = self._hydrate_selected_profiles(
+            self._retrieve_existing_profiles(new_profiles, user_id),
+            user_id,
+        )
 
         from reflexio.server.services.extraction.history_inputs import (
             record_historical_profiles,
@@ -776,6 +880,7 @@ class ProfileConsolidator(BaseDeduplicator):
         Returns:
             Tuple of (profiles ready to save, existing profile IDs to delete, superseded existing profiles)
         """
+        self.erasure_instructions = []
         handled_new_indices: set[int] = set()
         result_profiles: list[UserProfile] = []
         existing_ids_to_delete: list[str] = []
@@ -795,6 +900,7 @@ class ProfileConsolidator(BaseDeduplicator):
             existing_ids_to_delete=existing_ids_to_delete,
             seen_delete_ids=seen_delete_ids,
             superseded_profiles=superseded_profiles,
+            request_id=request_id,
         )
 
         # Process duplicate groups
@@ -876,6 +982,16 @@ class ProfileConsolidator(BaseDeduplicator):
                 )
                 continue
 
+            if group.erase_replaced_payloads:
+                self._authorize_partial_erasure(
+                    group,
+                    group_new_profiles,
+                    group_existing_profiles,
+                    group_profiles_in_item_order,
+                    user_id,
+                    request_id,
+                )
+
             # Past this point the group is committed to producing a merged
             # profile, so it is safe to consume its members.
             for idx in group_new_indices:
@@ -896,7 +1012,11 @@ class ProfileConsolidator(BaseDeduplicator):
             # extractor_names are carried into the merged profile rather than
             # dropped. Mixed groups keep their previous NEW-only behavior.
             metadata_sources = group_new_profiles or group_existing_profiles
-            merged_custom_features = self._merge_custom_features(metadata_sources)
+            merged_custom_features = (
+                {}
+                if group.erase_replaced_payloads
+                else self._merge_custom_features(metadata_sources)
+            )
             merged_extractor_names = self._merge_extractor_names(metadata_sources)
             merged_source_interaction_ids = list(
                 dict.fromkeys(
@@ -905,20 +1025,23 @@ class ProfileConsolidator(BaseDeduplicator):
                     for source_id in profile.source_interaction_ids
                 )
             )
-            merged_source_span, merged_notes, reader_angle = _merged_provenance(
-                group_profiles_in_item_order
-            )
-
-            # Determine TTL
-            try:
-                ttl = ProfileTimeToLive(group.merged_time_to_live)
-            except ValueError:
-                ttl = template_profile.profile_time_to_live
-                logger.warning(
-                    "Invalid TTL '%s' from LLM, using template TTL '%s'",
-                    group.merged_time_to_live,
-                    ttl.value,
+            if group.erase_replaced_payloads:
+                merged_source_span, merged_notes, reader_angle = (
+                    group.retained_source_quote,
+                    None,
+                    None,
                 )
+            else:
+                merged_source_span, merged_notes, reader_angle = _merged_provenance(
+                    group_profiles_in_item_order
+                )
+
+            merged_custom_features = merge_features(
+                group_profiles_in_item_order,
+                inherited_features=merged_custom_features,
+                existing_profiles=group_existing_profiles,
+                erase_replaced_payloads=group.erase_replaced_payloads,
+            )
 
             merged_profile = UserProfile(
                 profile_id=new_profile_id(),
@@ -926,8 +1049,8 @@ class ProfileConsolidator(BaseDeduplicator):
                 content=group.merged_content,
                 last_modified_timestamp=now_ts,
                 generated_from_request_id=request_id,
-                profile_time_to_live=ttl,
-                expiration_timestamp=calculate_expiration_timestamp(now_ts, ttl),
+                profile_time_to_live=ProfileTimeToLive.INFINITY,
+                expiration_timestamp=expiration_for(merged_custom_features),
                 custom_features=merged_custom_features,
                 source=template_profile.source,
                 status=template_profile.status,
@@ -981,6 +1104,7 @@ class ProfileConsolidator(BaseDeduplicator):
         existing_ids_to_delete: list[str],
         seen_delete_ids: set[str],
         superseded_profiles: list[UserProfile],
+        request_id: str,
     ) -> None:
         """
         Apply deletion directives in place: consume the NEW profile and mark matched
@@ -1004,10 +1128,34 @@ class ProfileConsolidator(BaseDeduplicator):
                 changelog; this method appends to it.
         """
         for directive in directives:
+            parsed_new = parse_item_id(directive.new_id)
+            authority = None
+            if (
+                parsed_new is not None
+                and parsed_new[0] == "NEW"
+                and 0 <= parsed_new[1] < len(new_profiles)
+            ):
+                candidate = new_profiles[parsed_new[1]]
+                authority = self._forget_authority(
+                    [candidate], candidate.user_id, request_id
+                )
             self._consume_new_index(
                 directive.new_id, len(new_profiles), handled_new_indices
             )
             for eid in directive.existing_ids:
+                parsed_old = parse_item_id(eid)
+                if (
+                    authority is not None
+                    and parsed_old is not None
+                    and parsed_old[0] == "EXISTING"
+                    and 0 <= parsed_old[1] < len(existing_profiles)
+                ):
+                    self._authorize_payload_erasure(
+                        existing_profiles[parsed_old[1]],
+                        authority,
+                        authority.user_id,
+                        request_id,
+                    )
                 self._mark_existing_for_deletion(
                     eid,
                     existing_profiles,
@@ -1021,6 +1169,71 @@ class ProfileConsolidator(BaseDeduplicator):
                 directive.existing_ids,
                 directive.reasoning,
             )
+
+    def _authorize_partial_erasure(
+        self,
+        group: ProfileDuplicateGroup,
+        new_profiles: list[UserProfile],
+        existing_profiles: list[UserProfile],
+        all_profiles: list[UserProfile],
+        user_id: str,
+        request_id: str,
+    ) -> None:
+        authority = self._forget_authority(new_profiles, user_id, request_id)
+        quote = group.retained_source_quote
+        if authority is None or not existing_profiles:
+            raise ValueError(
+                "Partial erasure requires NEW source-backed forget authority and seen CURRENT targets"
+            )
+        if (
+            not quote
+            or not quote.strip()
+            or not any(quote in (p.source_span or "") for p in all_profiles)
+        ):
+            raise ValueError(
+                "Partial erasure must preserve exact surviving original source evidence"
+            )
+        for old in existing_profiles:
+            self._authorize_payload_erasure(old, authority, user_id, request_id)
+
+    @staticmethod
+    def _forget_authority(
+        profiles: list[UserProfile], user_id: str, request_id: str
+    ) -> UserProfile | None:
+        for profile in profiles:
+            quote = metadata(profile).get("explicit_forget_quote")
+            if (
+                quote
+                and request_id
+                and profile.user_id == user_id
+                and profile.generated_from_request_id == request_id
+            ):
+                return profile
+        return None
+
+    def _authorize_payload_erasure(
+        self, old: UserProfile, authority: UserProfile, user_id: str, request_id: str
+    ) -> None:
+        quote = metadata(authority).get("explicit_forget_quote")
+        if (
+            old.user_id != user_id
+            or old.status is not None
+            or not request_id
+            or not quote
+        ):
+            raise ValueError(
+                "Erasure requires exact CURRENT owned payload and source authority"
+            )
+        instruction = ProfilePayloadErasure(
+            profile_id=old.profile_id,
+            user_id=user_id,
+            request_id=request_id,
+            expected_version=profile_version(old.model_dump(mode="json")),
+            source_profile_id=authority.profile_id,
+            source_quote=quote,
+        )
+        if instruction not in self.erasure_instructions:
+            self.erasure_instructions.append(instruction)
 
     @staticmethod
     def _consume_new_index(

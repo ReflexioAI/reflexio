@@ -41,6 +41,7 @@ from reflexio.server.llm.embedding_policy import (
 from reflexio.server.llm.embedding_policy import (
     resolve_retrieval_threshold as resolve_retrieval_threshold,
 )
+from reflexio.server.services.profile.lifecycle import KEY as PROFILE_LIFECYCLE_KEY
 
 EmbeddingTextEntity = (
     Interaction
@@ -85,8 +86,15 @@ def embedding_text(entity: EmbeddingTextEntity) -> str:
         return f"{entity.content}\n{entity.user_action_description}"
     if isinstance(entity, UserProfile):
         parts = [entity.content]
-        if entity.custom_features:
-            parts.append(str(entity.custom_features))
+        # Operational lifecycle authority is persisted, but is not semantic
+        # profile text. Preserve every ordinary feature and never mutate storage.
+        features = {
+            key: value
+            for key, value in (entity.custom_features or {}).items()
+            if key != PROFILE_LIFECYCLE_KEY
+        }
+        if features:
+            parts.append(str(features))
         return "\n".join(parts)
     if isinstance(entity, (UserPlaybook, AgentPlaybook)):
         return playbook_trigger_embedding_text(entity.trigger)

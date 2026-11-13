@@ -489,6 +489,17 @@ Key files:
 - `service.py`: Service orchestrator and profile persistence/finalization
 - `components/extractor.py`: Extractor that generates profile updates
 - `components/consolidator.py`: Consolidates newly extracted profiles against existing DB profiles using LLM
+- `lifecycle.py`: Source-backed storage permission, inherited origin/ancestry and fixed 30-day attention math; no guessed lifetime authoring.
+- `lifecycle_deadlines.py`: Exact-payload erasure and due-deadline publication through storage-owned reads/locks/deletion. The service preserves serialized authority and observes execution time inside the writer transaction.
+- `attention.py`: Bounded owner-scoped access snapshots and final-response acceptance callbacks. Actual-access evidence is separate from profile facts; metadata is excluded from embedding text.
+
+New ordinary profiles use the infinity compatibility marker. Legacy profiles keep
+their existing visibility bounds and receive neutral attention when origin is
+unknown; mixed merges do not invent a new origin or deletion permission. Both
+SQLite and enterprise storage implement the same lifecycle/access contracts under
+their existing resource and transaction owners. Individual payload erasure can
+leave content-free access history needed by surviving descendants; whole-subject
+erasure clears it. No candidate/baseline router or alternate engine is retained.
 
 **Flow**: Interactions → ProfileExtractor (extraction-only) → ProfileConsolidator (deduplicates new vs existing DB profiles) → ProfileGenerationService → Storage
 

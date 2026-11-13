@@ -15,6 +15,7 @@ from ._open_world_attempt import SQLiteOpenWorldAttemptMixin
 from ._open_world_evidence import SQLiteOpenWorldEvidenceMixin
 from ._open_world_publication import SQLiteOpenWorldPublicationMixin
 from ._operations import OperationMixin
+from ._profile_lifecycle import SQLiteProfileLifecycleMixin
 from ._requests import RequestMixin
 from ._session_outcomes import SessionOutcomeStoreMixin
 from ._shadow_verdicts import ShadowVerdictsMixin as SQLiteShadowVerdictsMixin
@@ -44,9 +45,12 @@ from .playbook import (
     UserPlaybookStoreMixin,
 )
 from .profiles import InteractionStoreMixin, ProfileSearchMixin, ProfileStoreMixin
+from .profiles._attention import ProfileAttentionStoreMixin
 
 
 class SQLiteStorage(
+    SQLiteProfileLifecycleMixin,
+    ProfileAttentionStoreMixin,
     SQLiteExtractionStreamMixin,
     SQLiteAgentRunStoreMixin,
     SQLitePendingToolCallStoreMixin,

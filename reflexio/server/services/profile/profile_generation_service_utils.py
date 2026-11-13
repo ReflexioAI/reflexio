@@ -5,9 +5,9 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from reflexio.models.api_schema.common import NEVER_EXPIRES_TIMESTAMP
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
@@ -21,6 +21,7 @@ from reflexio.server.services.extraction.history_inputs import HistoricalInputs
 from reflexio.server.services.extraction.overflow_presentation import (
     current_overflow_presentation,
 )
+from reflexio.server.services.profile.lifecycle import ExplicitStorageDeadline
 from reflexio.server.services.service_utils import (
     MessageConstructionConfig,
     PromptConfig,
@@ -86,15 +87,28 @@ class ProfileAddItem(BaseModel):
 
     Attributes:
         content (str): The profile content based on content definition
-        time_to_live (str): Time to live for the profile - one of: 'one_day', 'one_week', 'one_month', 'one_quarter', 'one_year', 'infinity'
+        explicit_storage_deadline: Source-explicit storage permission, otherwise null
     """
 
     content: str = Field(description="Profile content based on content definition")
-    time_to_live: Literal[
-        "one_day", "one_week", "one_month", "one_quarter", "one_year", "infinity"
-    ] = Field(
-        description="Time to live for the profile - determines when the profile expires"
+    explicit_storage_deadline: ExplicitStorageDeadline | None = Field(
+        default=None,
+        description="Only a source-explicit instruction to stop storing this memory: exact UTC deadline plus verbatim quote; null for ordinary facts and fact-valid dates",
     )
+    explicit_forget_quote: str | None = Field(
+        default=None,
+        description="Verbatim original user instruction authorizing forgetting stored information; null for ordinary corrections or updates",
+    )
+
+    @field_validator("explicit_forget_quote")
+    @classmethod
+    def nonempty_forget_quote(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError(
+                "Explicit forget authority requires a nonempty source quote"
+            )
+        return value
+
     source_span: str | None = Field(
         default=None,
         description="Verbatim excerpt from the source that most directly supports this profile item",
@@ -107,6 +121,13 @@ class ProfileAddItem(BaseModel):
         default=None,
         description="The extraction perspective or reader role that surfaced this item",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def refuse_estimated_lifetime(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "time_to_live" in value:
+            raise ValueError("TTL-free extraction cannot author estimated lifetime")
+        return value
 
     # OpenAI structured output requires explicit schema constraints
     model_config = ConfigDict(
@@ -128,7 +149,7 @@ class ProfileUpdateOutput(StrictStructuredOutput):
 
     add: list[ProfileAddItem] | None = Field(
         default=None,
-        description="List of new profiles to be added with their content and time to live",
+        description="List of new profiles to be added with their content and explicit storage permission",
     )
     delete: list[str] | None = Field(
         default=None,
@@ -152,12 +173,12 @@ class StructuredProfilesOutput(StrictStructuredOutput):
     Only extracts profiles — no delete/mention operations.
 
     Attributes:
-        profiles (list[ProfileAddItem], optional): List of extracted profiles with content and time_to_live
+        profiles (list[ProfileAddItem], optional): List of extracted profiles with content and explicit storage permission
     """
 
     profiles: list[ProfileAddItem] | None = Field(
         default=None,
-        description="List of extracted profiles with content and time_to_live",
+        description="List of extracted profiles with content and explicit storage permission",
     )
 
     model_config = ConfigDict(

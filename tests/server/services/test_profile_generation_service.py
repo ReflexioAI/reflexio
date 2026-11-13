@@ -1,5 +1,7 @@
 import datetime
+import json
 import os
+import re
 import tempfile
 from datetime import UTC
 from pathlib import Path
@@ -32,6 +34,9 @@ from reflexio.models.config_schema import ProfileExtractorConfig
 from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.generation_service import GenerationService
+from reflexio.server.services.profile.components.consolidator import (
+    ProfileDeduplicationOutput,
+)
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileAddItem,
     ProfileGenerationRequest,
@@ -48,6 +53,38 @@ def _storage(service):
     storage = service.storage
     assert storage is not None
     return storage
+
+
+def _original_source_quote(messages):
+    """Echo an actual immutable source excerpt, never a fabricated quotation."""
+    decoder = json.JSONDecoder()
+    for message in messages:
+        body = message.get("content", "")
+        texts = (
+            [body]
+            if isinstance(body, str)
+            else [
+                part.get("text", "")
+                for part in body
+                if isinstance(part, dict) and part.get("type") == "text"
+            ]
+        )
+        for text in texts:
+            # Direct synchronous extraction uses the original fenced history;
+            # durable source packages use their immutable JSON presentation.
+            if "[User Interactions to Analyze]" in text:
+                source = text.split("[User Interactions to Analyze]", 1)[1]
+                quote = re.search(r"(?im)^User: ```([\s\S]*?)```", source)
+                if quote is not None:
+                    return quote.group(1)
+            start = text.find('{"protected_record":')
+            if start < 0:
+                continue
+            original, _ = decoder.raw_decode(text[start:])
+            for row in original.get("original_chunk", {}).get("evidence", []):
+                if row.get("text"):
+                    return row["text"]
+    raise AssertionError("Extraction fake requires original source evidence")
 
 
 @pytest.fixture
@@ -74,14 +111,23 @@ def mock_chat_completion():
             return "true"
         # Extraction turn: a response_format is requested, so return the parsed
         # structured output model directly (the structured-response terminus).
+        if (
+            kwargs.get("response_format") is ProfileDeduplicationOutput
+            or "profile deduplication assistant" in prompt_content
+        ):
+            return ProfileDeduplicationOutput(unique_ids=["NEW-0"])
         if kwargs.get("response_format"):
             return StructuredProfilesOutput(
                 profiles=[
-                    ProfileAddItem(content="like sushi", time_to_live="one_month")
+                    ProfileAddItem(
+                        content="like sushi",
+                        explicit_storage_deadline=None,
+                        source_span=_original_source_quote(messages),
+                    )
                 ]
             )
         # Fallback: non-structured JSON string (legacy non-loop callers).
-        return '```json\n{\n    "add": [{\n        "content": "like sushi",\n        "time_to_live": "one_month"\n    }]\n}\n```'
+        return '```json\n{\n    "add": [{\n        "content": "like sushi",\n        "explicit_storage_deadline": null\n    }]\n}\n```'
 
     def mock_generate_with_provenance(*args, **kwargs):
         return CompletionResult(
@@ -170,7 +216,7 @@ def test_refresh_profiles_for_user(mock_chat_completion):
         assert len(profiles) == 1
         profile = profiles[0]
         assert profile.content == "like sushi"
-        assert profile.profile_time_to_live == ProfileTimeToLive.ONE_MONTH
+        assert profile.profile_time_to_live == ProfileTimeToLive.INFINITY
 
 
 def test_test_refresh_profiles_for_user_with_image_encoding(mock_chat_completion):
@@ -243,7 +289,7 @@ def test_test_refresh_profiles_for_user_with_image_encoding(mock_chat_completion
         assert len(profiles) == 1
         profile = profiles[0]
         assert profile.content == "like sushi"
-        assert profile.profile_time_to_live == ProfileTimeToLive.ONE_MONTH
+        assert profile.profile_time_to_live == ProfileTimeToLive.INFINITY
 
 
 def test_profile_extraction_message_construction():
@@ -336,16 +382,24 @@ def test_profile_extraction_message_construction():
                     return "true"
                 # This is the actual profile extraction call
                 # Check if parse_structured_output is True in kwargs
-                if kwargs.get("parse_structured_output", False):
+                if (
+                    kwargs.get("response_format") is ProfileDeduplicationOutput
+                    or "profile deduplication assistant" in prompt_content
+                ):
+                    return ProfileDeduplicationOutput(unique_ids=["NEW-0"])
+                if kwargs.get("response_format") or kwargs.get(
+                    "parse_structured_output", False
+                ):
                     return StructuredProfilesOutput(
                         profiles=[
                             ProfileAddItem(
                                 content="like Italian food and sushi",
-                                time_to_live="one_month",
+                                explicit_storage_deadline=None,
+                                source_span=_original_source_quote(messages),
                             )
                         ]
                     )
-                return '```json\n{\n    "add": [{\n        "content": "like Italian food and sushi",\n        "time_to_live": "one_month"\n    }]\n}\n```'
+                return '```json\n{\n    "add": [{\n        "content": "like Italian food and sushi",\n        "explicit_storage_deadline": null\n    }]\n}\n```'
 
             def mock_generate_with_provenance(*args, **kwargs):
                 return CompletionResult(

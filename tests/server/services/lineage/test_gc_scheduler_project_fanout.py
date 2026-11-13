@@ -62,7 +62,7 @@ def _ctx():
     shaped well enough for ``_sweep_org`` to reach the loop.
     """
     return types.SimpleNamespace(
-        storage=types.SimpleNamespace(),
+        storage=types.SimpleNamespace(profile_lifecycle_due_users=lambda **_: []),
         configurator=types.SimpleNamespace(get_config=lambda: types.SimpleNamespace()),
     )
 
@@ -163,6 +163,7 @@ def test_project_sweep_failures_are_scoped_per_project(transient_failure_classif
 
     failing = [False]
     storage = types.SimpleNamespace(
+        profile_lifecycle_due_users=lambda **_: [],
         expire_active_profiles=_expire,
         gc_expired_tombstones=lambda **_kwargs: 0,
     )

@@ -293,3 +293,28 @@ class TestUnifiedSearchSessionDedup(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@patch("reflexio.server.services.unified_search_service.QueryReformulator")
+def test_attention_records_final_selector_ids_without_a_session(reformulator_cls):
+    reformulator_cls.return_value.rewrite.return_value = ReformulationResult(
+        standalone_query="how to refund"
+    )
+    storage = _mock_storage(single_rpc=False)
+    final = _profiles(7)[-2:]
+    with (
+        patch(
+            "reflexio.server.services.unified_search_service.is_multilingual_e5_model",
+            return_value=True,
+        ),
+        patch(
+            "reflexio.server.services.unified_search_service.select_profiles",
+            return_value=final,
+        ),
+    ):
+        returned, _, _ = _search(storage, None)
+    assert returned == ["p6", "p7"]
+    assert storage.record_served_profile_access.call_count == 1
+    kwargs = storage.record_served_profile_access.call_args.kwargs
+    assert kwargs["user_id"] == "u1"
+    assert kwargs["profile_ids"] == ["p6", "p7"]

@@ -1434,6 +1434,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             init_playbook_aggregation_tables(self.conn)
             self.conn.commit()
             backfill_user_playbook_subject_refs(self.conn, self.org_id)
+        from .profiles._attention import ATTENTION_DDL
+
+        with self._lock:
+            self.conn.executescript(ATTENTION_DDL)
         self._migrate_session_outcomes_schema()
         if self._has_sqlite_vec:
             self._create_vec_tables()
@@ -3604,6 +3608,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                         (self.org_id, user_id),
                     )
                 self._erase_pending_tool_calls_for_user_unlocked(user_id)
+                self.conn.execute(
+                    "DELETE FROM profile_access_epochs WHERE org_id=? AND user_id=?",
+                    (self.org_id, user_id),
+                )
                 # ------------------------------------------------------------------
                 # Phase 1: snapshot learning/source ids before touching their rows.
                 # ------------------------------------------------------------------

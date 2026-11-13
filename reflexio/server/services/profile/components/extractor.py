@@ -46,12 +46,16 @@ if TYPE_CHECKING:
     )
     from reflexio.server.services.storage.storage_base import AgentRunRecord
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
+from reflexio.server.services.profile.lifecycle import (
+    ExplicitStorageDeadline,
+    expiration_for,
+    new_features,
+)
 from reflexio.server.services.profile.profile_generation_service_utils import (
     PROFILE_SOURCE_EVIDENCE_INSTRUCTION,
     ProfileGenerationServiceConstants,
     ProfileTimeToLive,
     StructuredProfilesOutput,
-    calculate_expiration_timestamp,
     construct_profile_extraction_messages_from_sessions,
     prepare_profile_extraction_prompt,
 )
@@ -116,13 +120,27 @@ def _profile_evidence_validation_errors(
             previous_end = max(previous_end, span.end)
         if text:
             contiguous_texts.append(text)
-    return [
+    errors = [
         f"profiles[{index}]: quote exact visible original evidence in source_span."
         for index, profile in enumerate(output.profiles or [])
         if not profile.source_span
         or not profile.source_span.strip()
         or not any(profile.source_span in text for text in contiguous_texts)
     ]
+    for index, profile in enumerate(output.profiles or []):
+        deadline = profile.explicit_storage_deadline
+        if deadline is not None and not any(
+            deadline.source_quote in text for text in contiguous_texts
+        ):
+            errors.append(
+                f"profiles[{index}]: storage deadline must quote exact visible original source."
+            )
+        quote = profile.explicit_forget_quote
+        if quote is not None and not any(quote in text for text in contiguous_texts):
+            errors.append(
+                f"profiles[{index}]: forget authority must quote exact visible original source."
+            )
+    return errors
 
 
 class ProfileExtractor:
@@ -317,6 +335,12 @@ class ProfileExtractor:
             user_id=self.service_config.user_id,
             request_id=self.service_config.request_id,
             source_interaction_ids=source_interaction_ids,
+            source_texts=[
+                interaction.content
+                for request_model in request_interaction_data_models
+                for interaction in request_model.interactions
+                if isinstance(interaction.content, str)
+            ],
         )
         # Defer the stride-bookmark advance onto the outcome instead of
         # self-advancing here (F1): the advance is applied downstream — inside
@@ -354,12 +378,13 @@ class ProfileExtractor:
         user_id: str,
         request_id: str,
         source_interaction_ids: list[int] | None = None,
+        source_texts: list[str] | None = None,
     ) -> list[UserProfile]:
         """
         Convert raw profile dicts from LLM to UserProfile objects.
 
         Args:
-            raw_profiles: List of profile dicts with content, time_to_live, and optional metadata
+            raw_profiles: List of profile dicts with content, explicit storage permission, and optional metadata
             user_id: User ID
             request_id: Request ID
             source_interaction_ids: Stored interaction ids used as the extraction window
@@ -388,7 +413,8 @@ class ProfileExtractor:
                 if k
                 not in {
                     "content",
-                    "time_to_live",
+                    "explicit_storage_deadline",
+                    "explicit_forget_quote",
                     "source_span",
                     "notes",
                     "reader_angle",
@@ -396,7 +422,18 @@ class ProfileExtractor:
             }
 
             now_ts = int(datetime.now(UTC).timestamp())
-            ttl = ProfileTimeToLive(profile_content.get("time_to_live", "infinity"))
+            if "time_to_live" in profile_content:
+                raise ValueError("TTL-free extraction cannot accept guessed TTL")
+            raw_deadline = profile_content.get("explicit_storage_deadline")
+            custom_features = new_features(
+                custom_features,
+                now=now_ts,
+                deadline=ExplicitStorageDeadline.model_validate(raw_deadline)
+                if raw_deadline is not None
+                else None,
+                source_texts=source_texts or [],
+                forget_quote=profile_content.get("explicit_forget_quote"),
+            )
 
             added_profile = UserProfile(
                 profile_id=new_profile_id(),
@@ -404,8 +441,8 @@ class ProfileExtractor:
                 content=profile_content["content"],
                 last_modified_timestamp=now_ts,
                 generated_from_request_id=request_id,
-                profile_time_to_live=ttl,
-                expiration_timestamp=calculate_expiration_timestamp(now_ts, ttl),
+                profile_time_to_live=ProfileTimeToLive.INFINITY,
+                expiration_timestamp=expiration_for(custom_features),
                 custom_features=custom_features or None,
                 extractor_names=None,
                 source_interaction_ids=profile_source_interaction_ids,
@@ -435,7 +472,7 @@ class ProfileExtractor:
             existing_profiles: List of existing user profiles for context
 
         Returns:
-            list[dict]: List of profile dicts with content, time_to_live, and optional metadata
+            list[dict]: List of profile dicts with content, explicit storage permission, and optional metadata
         """
         # Check if mock mode is enabled
         if env_bool("MOCK_LLM_RESPONSE", default=False):
@@ -661,7 +698,7 @@ class ProfileExtractor:
 
         mock_profile = {
             "content": " ".join(summary_parts),
-            "time_to_live": "one_month",
+            "explicit_storage_deadline": None,
         }
 
         return [mock_profile]
