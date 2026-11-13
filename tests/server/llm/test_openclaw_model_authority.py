@@ -85,6 +85,54 @@ def test_legacy_default_refuses_before_any_dispatch_or_fallback(
     transport.assert_not_called()
 
 
+@pytest.mark.parametrize("mode", ["plain", "structured", "validated"])
+def test_retired_timeout_refuses_selected_route_before_dispatch_or_fallback(
+    client_transport, monkeypatch, mode
+):
+    client, transport = client_transport
+    client.config.fallback_models = ["gpt-4o-mini"]
+    monkeypatch.setenv("OPENCLAW_CLI_TIMEOUT", "private-old-duration")
+    options: dict[str, Any] = {} if mode == "plain" else {"response_format": Answer}
+    if mode == "validated":
+        options["structured_output_validator"] = lambda _value: []
+    with pytest.raises(ValueError, match="OPENCLAW_CLI_TIMEOUT") as failure:
+        client.generate_chat_response(
+            [{"role": "user", "content": "synthetic evidence"}], **options
+        )
+    assert "private-old-duration" not in str(failure.value)
+    transport.assert_not_called()
+
+
+@pytest.mark.parametrize("reaches_fallback", [False, True])
+def test_retired_timeout_is_checked_only_when_native_route_is_reached(
+    client_transport, monkeypatch, reaches_fallback
+):
+    client, transport = client_transport
+    client.config.model = "gpt-4o-mini"
+    client.config.fallback_models = [TARGET]
+    monkeypatch.setenv("OPENCLAW_CLI_TIMEOUT", "private-old-duration")
+    if reaches_fallback:
+        transport.side_effect = LiteLLMClientError("synthetic primary outage")
+        with pytest.raises(ValueError, match="OPENCLAW_CLI_TIMEOUT"):
+            client.generate_response("synthetic evidence")
+    else:
+        client.generate_response("synthetic evidence")
+    assert transport.call_count == 1
+
+
+def test_http_override_does_not_read_retired_native_timeout(
+    client_transport, monkeypatch
+):
+    client, transport = client_transport
+    monkeypatch.setenv("OPENCLAW_CLI_TIMEOUT", "private-unused-duration")
+    client.generate_response(
+        "synthetic evidence",
+        custom_llm_provider="openai",
+        api_base="http://127.0.0.1:1/v1",
+    )
+    assert transport.call_count == 1
+
+
 @pytest.mark.parametrize("reaches_fallback", [False, True])
 def test_old_default_is_checked_only_when_its_route_is_reached(
     client_transport, monkeypatch, reaches_fallback
@@ -112,7 +160,9 @@ def test_default_delegates_without_inventing_a_model(monkeypatch, legacy):
     dispatch = Mock(return_value="ok")
     monkeypatch.setattr(openclaw_provider, "_call_cli", dispatch)
     openclaw_provider.OpenClawLLM().completion(
-        model="openclaw/default", messages=[{"role": "user", "content": "hello"}]
+        timeout=5,
+        model="openclaw/default",
+        messages=[{"role": "user", "content": "hello"}],
     )
     assert dispatch.call_args.kwargs["model"] is None
 
@@ -123,7 +173,9 @@ def test_direct_provider_refuses_legacy_default_before_cli(monkeypatch):
     monkeypatch.setattr(openclaw_provider, "_call_cli", dispatch)
     with pytest.raises(ValueError, match=LEGACY):
         openclaw_provider.OpenClawLLM().completion(
-            model="openclaw/default", messages=[{"role": "user", "content": "hello"}]
+            timeout=5,
+            model="openclaw/default",
+            messages=[{"role": "user", "content": "hello"}],
         )
     dispatch.assert_not_called()
 

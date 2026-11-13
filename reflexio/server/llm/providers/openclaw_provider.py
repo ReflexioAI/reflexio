@@ -20,6 +20,7 @@ import reflexio.provider_bootstrap  # noqa: F401
 
 import json
 import logging
+import math
 import os
 import shutil
 import subprocess  # noqa: S404 — subprocess is the integration point.
@@ -55,8 +56,6 @@ ENV_ENABLE = "OPENCLAW_SMART_USE_LOCAL_CLI"
 ENV_CLI_PATH = "OPENCLAW_BIN"
 # Retired selector; retained only for operation-scoped adoption refusal.
 ENV_DEFAULT_MODEL = "OPENCLAW_DEFAULT_MODEL"
-ENV_TIMEOUT = "OPENCLAW_CLI_TIMEOUT"
-_DEFAULT_TIMEOUT_SECONDS = 180
 _BUSY_MARKER = "retry when it finishes"
 _BUSY_ATTEMPTS = 4
 _BUSY_BACKOFF_SECONDS = 2.0
@@ -149,13 +148,13 @@ def _json_or_none(text: str) -> Any:
         return None
 
 
-def _call_cli(*, prompt: str, model: str | None, timeout_s: int) -> str:
+def _call_cli(*, prompt: str, model: str | None, timeout_s: float) -> str:
     """Invoke openclaw CLI for a one-shot completion.
 
     Args:
         prompt (str): User prompt text passed via ``--prompt``.
         model (str | None): Optional model id passed via ``--model``.
-        timeout_s (int): Subprocess timeout in seconds.
+        timeout_s (float): Whole invocation allowance, including busy retries.
 
     Returns:
         str: Completion text extracted from the CLI's JSON stdout.
@@ -164,6 +163,7 @@ def _call_cli(*, prompt: str, model: str | None, timeout_s: int) -> str:
         OpenClawCLIError: If the CLI is not found, exits non-zero, returns
             non-JSON stdout, or returns JSON with no recognized text field.
     """
+    deadline = time.monotonic() + timeout_s
     cli = _resolve_cli_path()
     if not cli:
         raise OpenClawCLIError("openclaw CLI not found; set OPENCLAW_BIN")
@@ -184,13 +184,16 @@ def _call_cli(*, prompt: str, model: str | None, timeout_s: int) -> str:
     env["OPENCLAW_SMART_INTERNAL"] = "1"
 
     for attempt in range(1, _BUSY_ATTEMPTS + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise OpenClawCLIError("openclaw request deadline expired")
         try:
             proc = run_native_cli(  # noqa: S603 — argv is fully constructed.
                 argv,
                 env=env,
                 capture_output=True,
                 text=True,
-                timeout=timeout_s,
+                timeout=remaining,
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
@@ -201,7 +204,12 @@ def _call_cli(*, prompt: str, model: str | None, timeout_s: int) -> str:
         # with --local and this one) contend for its startup maintenance; the
         # loser is told to retry. A running Gateway avoids it.
         if _BUSY_MARKER in str(error) and attempt < _BUSY_ATTEMPTS:
-            time.sleep(_BUSY_BACKOFF_SECONDS * attempt)
+            delay = _BUSY_BACKOFF_SECONDS * attempt
+            if delay >= deadline - time.monotonic():
+                raise OpenClawCLIError(
+                    "openclaw request deadline cannot accommodate busy retry"
+                )
+            time.sleep(delay)
             continue
         break
 
@@ -247,6 +255,32 @@ def resolve_openclaw_model(model: str | None) -> str | None:
     return selected
 
 
+def reject_retired_openclaw_timeout() -> None:
+    """Require deliberate adoption of the single request budget on this route."""
+    if os.environ.get("OPENCLAW_CLI_TIMEOUT", "").strip():
+        raise ValueError(
+            "OPENCLAW_CLI_TIMEOUT is retired. Select the intended whole-request "
+            "timeout with LiteLLMConfig.timeout or the completion timeout argument, "
+            "then remove the old assignment. Busy retries share this budget."
+        )
+
+
+def _request_timeout(value: Any) -> float:
+    """Use LiteLLM's selected allowance; never invent a second provider clock."""
+    reject_retired_openclaw_timeout()
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("OpenClaw completion requires a finite positive timeout")
+    try:
+        timeout = float(value)
+    except OverflowError as exc:
+        raise ValueError(
+            "OpenClaw completion requires a finite positive timeout"
+        ) from exc
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("OpenClaw completion requires a finite positive timeout")
+    return timeout
+
+
 class OpenClawLLM(CustomLLM):
     """LiteLLM CustomLLM that routes completions through the openclaw CLI."""
 
@@ -259,7 +293,8 @@ class OpenClawLLM(CustomLLM):
 
         Args:
             *args: Unused (LiteLLM signature).
-            **kwargs: LiteLLM completion kwargs (``messages``, ``model``).
+            **kwargs: LiteLLM completion kwargs (``messages``, ``model``, and
+                a finite positive numeric ``timeout`` in seconds).
 
         Returns:
             ModelResponse: Reply text in ``choices[0].message.content``.
@@ -271,6 +306,7 @@ class OpenClawLLM(CustomLLM):
         # LiteLLM may already have removed our prefix; preserve a native
         # provider/model pair and share adoption with parent preflight.
         model = resolve_openclaw_model(model_kwarg)
+        timeout_s = _request_timeout(kwargs.get("timeout"))
 
         messages = kwargs.get("messages", [])
         # Tools and response_format arrive in optional_params (LiteLLM's
@@ -283,25 +319,6 @@ class OpenClawLLM(CustomLLM):
         prompt = _messages_to_prompt(
             messages, tools=tools, response_format=response_format
         )
-        # An invalid OPENCLAW_CLI_TIMEOUT must not crash the completion path —
-        # fall back to the default with a warning so misconfiguration degrades
-        # to working-but-slow rather than working-then-erroring.
-        raw_timeout = os.environ.get(ENV_TIMEOUT)
-        try:
-            timeout_s = (
-                int(raw_timeout)
-                if raw_timeout is not None
-                else _DEFAULT_TIMEOUT_SECONDS
-            )
-        except ValueError:
-            _LOGGER.warning(
-                "Invalid %s=%r; using default %d",
-                ENV_TIMEOUT,
-                raw_timeout,
-                _DEFAULT_TIMEOUT_SECONDS,
-            )
-            timeout_s = _DEFAULT_TIMEOUT_SECONDS
-
         text = _call_cli(prompt=prompt, model=model, timeout_s=timeout_s)
 
         if tools:
