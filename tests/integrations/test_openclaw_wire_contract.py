@@ -18,8 +18,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi.routing import APIRoute
 from pydantic import BaseModel
+
+from reflexio.server.route_inventory import api_route_contexts
 
 _THIS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _THIS_DIR.parents[1]  # tests/integrations/ -> repo root
@@ -33,8 +34,8 @@ def _route_models() -> dict[str, type[BaseModel]]:
     from reflexio.server.api import app
 
     models: dict[str, type[BaseModel]] = {}
-    for route in app.routes:
-        if isinstance(route, APIRoute) and route.body_field is not None:
+    for route in api_route_contexts(app):
+        if route.body_field is not None:
             annotation = route.body_field.field_info.annotation
             if isinstance(annotation, type) and issubclass(annotation, BaseModel):
                 models[route.path] = annotation

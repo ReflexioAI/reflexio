@@ -12,7 +12,7 @@ dependencies = [
     "python-dotenv>=1.1.0",
     "pyyaml>=6.0",
     # Server deps
-    "fastapi>=0.111.1",
+    "fastapi>=0.143.1",
     # Explicit security floor for FastAPI's parser.
     "starlette>=1.3.1",
     "uvicorn>=0.34.0",

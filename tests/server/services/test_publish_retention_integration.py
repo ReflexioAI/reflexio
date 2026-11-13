@@ -7,13 +7,13 @@ from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
-from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from reflexio.housekeeping_policy import DAILY_SWEEP_SECONDS
 from reflexio.lib.reflexio_lib import Reflexio
 from reflexio.server import publish_timing
 from reflexio.server.api_endpoints import publisher_api
+from reflexio.server.route_inventory import api_route_contexts
 from reflexio.server.routes import interactions
 from reflexio.server.services.lineage.gc_scheduler import LineageGCScheduler
 from reflexio.server.services.storage import retention_sweep
@@ -60,8 +60,8 @@ def test_http_persists_without_sweeping_then_scheduler_enforces_caps(
     # Resolve the real route's two auth dependencies without booting enterprise.
     route = next(
         r
-        for r in interactions.router.routes
-        if isinstance(r, APIRoute) and r.path == "/api/publish_interaction"
+        for r in api_route_contexts(interactions.router)
+        if r.path == "/api/publish_interaction"
     )
     for dependency in route.dependant.dependencies:
         assert dependency.call is not None

@@ -33,6 +33,7 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.rate_limit import limiter
+from reflexio.server.route_inventory import api_route_contexts
 from reflexio.server.services.configurator.base_configurator import BaseConfigurator
 from reflexio.server.services.configurator.config_storage import (
     ConfigWriteConflictError,
@@ -56,7 +57,9 @@ class TestHealthEndpoints:
 
     def test_health_check_is_async(self, client):
         """Keep container healthchecks off the shared sync worker threadpool."""
-        route = next(route for route in client.app.routes if route.path == "/health")
+        route = next(
+            route for route in api_route_contexts(client.app) if route.path == "/health"
+        )
         assert iscoroutinefunction(route.endpoint)
 
 

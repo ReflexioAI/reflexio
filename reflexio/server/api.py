@@ -7,7 +7,9 @@ seams, mounts the data-plane routers, and attaches the capability lifespan loop.
 The data-plane handlers live in ``reflexio.server.routes.<domain>`` sub-routers.
 ``core_router`` aggregates every sub-router via ``include_router`` so it remains
 the single data-plane router surface the enterprise composition mounts and
-iterates (e.g. the QPS billable-endpoint scan over ``core_router.routes``).
+enumerates through ``reflexio.server.route_inventory.api_route_contexts`` (e.g.
+the QPS billable-endpoint scan). ``core_router.routes`` itself is FastAPI's
+internal route tree and no longer lists the included handlers.
 
 ``limiter`` / ``configure_rate_limiter`` are re-exported from
 ``reflexio.server.rate_limit`` and the middleware classes from
@@ -106,8 +108,8 @@ __all__ = [
 
 
 # ``core_router`` stays an aggregator: it ``include_router``s every domain
-# sub-router so ``core_router.routes`` still enumerates all data-plane handlers
-# (enterprise QPS enforcement iterates this list). The include order is
+# sub-router so ``api_route_contexts(core_router)`` enumerates all data-plane
+# handlers (enterprise QPS enforcement relies on it). The include order is
 # functionally irrelevant — all paths are distinct literals with no overlapping
 # templates, so FastAPI's first-match routing is unaffected.
 core_router = APIRouter()
