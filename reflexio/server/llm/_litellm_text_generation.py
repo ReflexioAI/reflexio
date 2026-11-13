@@ -1042,12 +1042,14 @@ class TextGenerationMixin:
         )
         if _uses_openclaw_transport(actual_model, kwargs.get("custom_llm_provider")):
             from reflexio.server.llm.providers.openclaw_provider import (
+                reject_retired_openclaw_timeout,
                 resolve_openclaw_model,
             )
 
             # Parameter preparation is outside provider retry/fallback catches.
             # An ambiguous retired default must never dispatch another model.
             resolve_openclaw_model(actual_model)
+            reject_retired_openclaw_timeout()
         ensure_model_capabilities(actual_model)
 
         if actual_model != self.config.model:

@@ -72,6 +72,7 @@ def test_litellm_dispatches_to_openclaw_provider(
     )
     with patch("subprocess.run", return_value=fake_proc) as run:
         resp = handler.completion(
+            timeout=5,
             model="openclaw/anthropic/claude-sonnet-4-6",
             messages=[{"role": "user", "content": "ping"}],
         )
@@ -164,7 +165,7 @@ def test_provider_qualified_model_reaches_the_cli_intact(
     monkeypatch.delenv(ocp.ENV_DEFAULT_MODEL, raising=False)
     with patch.object(ocp, "_call_cli", return_value="ok") as call:
         ocp.OpenClawLLM().completion(
-            model=model, messages=[{"role": "user", "content": "hi"}]
+            timeout=5, model=model, messages=[{"role": "user", "content": "hi"}]
         )
     assert call.call_args.kwargs["model"] == "openai/gpt-5.6-luna"
 
