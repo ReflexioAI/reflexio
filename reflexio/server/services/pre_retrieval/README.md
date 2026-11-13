@@ -31,3 +31,5 @@ Host CLI capacity stays delegated to the host. Capacity refusal returns empty
 optional enrichment; existing outer storage preparation timeouts/errors are
 unchanged. Playbook callers supply their selected trigger text, not the entire
 playbook. This changes neither embedding input policy nor the original stored text.
+
+Expansion and reformulation log prompt sizes rather than raw rendered prompts.

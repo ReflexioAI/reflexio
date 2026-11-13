@@ -130,7 +130,9 @@ class DocumentExpander:
             "document_expansion",
             {"content": content},
         )
-        logger.debug("Document expansion prompt: %s", prompt)
+        logger.debug(
+            "Document expansion request prepared (content_chars=%d)", len(content)
+        )
         with model_input_budget():
             result = self.llm_client.generate_response(
                 prompt,

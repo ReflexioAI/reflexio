@@ -1,6 +1,8 @@
 """Complete expansion input crosses the actual renderer/client admission seam."""
 
 import json
+import logging
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -201,3 +203,57 @@ def test_sqlite_storage_keeps_source_and_indexes_after_expansion_admission(
         )
     finally:
         storage.conn.close()
+
+
+def test_refused_document_does_not_reach_debug_logs(capacity, caplog):
+    dispatch, _, info = capacity
+    info.return_value = {"max_input_tokens": 100, "max_output_tokens": 200}
+    with caplog.at_level(
+        logging.DEBUG,
+        logger="reflexio.server.services.pre_retrieval._document_expander",
+    ):
+        assert not _expander().expand(CONTENT).expanded_text
+    dispatch.assert_not_called()
+    assert "request prepared" in caplog.text
+    assert CONTENT not in caplog.text
+    assert "important-middle-and-tail" not in caplog.text
+
+
+@pytest.mark.parametrize("half_open", [False, True])
+def test_capacity_refusal_is_circuit_neutral_and_releases_probe(
+    capacity, monkeypatch, half_open
+):
+    from reflexio.server.llm import _litellm_text_generation
+    from reflexio.server.llm.provider_circuit import (
+        OPEN_AFTER_FAILURES,
+        ProviderCircuitBreaker,
+        circuit_route,
+    )
+    from reflexio.server.services.pre_retrieval import _document_expander
+
+    now = [0.0]
+    breaker = ProviderCircuitBreaker(clock=lambda: now[0], jitter=lambda: 0.0)
+    monkeypatch.setattr(_litellm_text_generation, "provider_circuit", breaker)
+    monkeypatch.setattr(_document_expander, "provider_circuit", breaker)
+    route = circuit_route({"model": "gpt-4o"})
+    if half_open:
+        for _ in range(OPEN_AFTER_FAILURES):
+            breaker.admit(route, model="gpt-4o").failed()
+        now[0] = 120.0
+    else:
+        breaker.admit(route, model="gpt-4o").close()
+    before = asdict(breaker._circuits[route])
+    dispatch, _, info = capacity
+    info.return_value = {"max_input_tokens": 100, "max_output_tokens": 200}
+    expander = _expander()
+    assert not expander.expand(CONTENT).expanded_text
+    dispatch.assert_not_called()
+    assert asdict(breaker._circuits[route]) == before
+    assert breaker._circuits[route].probe_started is None
+
+    info.return_value = {"max_input_tokens": 100_000, "max_output_tokens": 200}
+    assert expander.expand(CONTENT).expanded_text == "tail, synonym"
+    assert dispatch.call_count == 1
+    assert not breaker.refusing_model("gpt-4o")
+    assert breaker._circuits[route].probe_started is None
+    assert breaker._circuits[route].failures == 0
