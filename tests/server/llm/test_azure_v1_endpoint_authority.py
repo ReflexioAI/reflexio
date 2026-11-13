@@ -29,6 +29,7 @@ def client(endpoint, version="v1"):
 
 @pytest.mark.parametrize("version", ["v1", "preview", "latest"])
 @pytest.mark.parametrize("suffix", ["/", "/openai/v1/", "/resource/openai/v1/"])
+@pytest.mark.unit
 def test_v1_contract_contains_the_resource_base_exactly_once(version, suffix):
     selected = client("https://resource.example" + suffix, version)
     contract = selected.get_completion_request_contract()
@@ -44,6 +45,7 @@ def test_v1_contract_contains_the_resource_base_exactly_once(version, suffix):
     assert str(keys.openai.azure_config.endpoint) == "https://resource.example" + suffix
 
 
+@pytest.mark.unit
 def test_selected_caller_endpoint_and_explicit_transport_own_normalization():
     selected = client("https://configured.example/")
     for key in ("api_base", "base_url"):
@@ -60,6 +62,7 @@ def test_selected_caller_endpoint_and_explicit_transport_own_normalization():
 
 
 @pytest.mark.parametrize("suffix", ["/?route=private", "/#private-fragment"])
+@pytest.mark.unit
 def test_ambiguous_v1_url_refuses_before_dispatch_or_fallback(monkeypatch, suffix):
     selected = client("https://resource.example" + suffix)
     selected.config.fallback_models = ["gpt-4o-mini"]
@@ -71,6 +74,7 @@ def test_ambiguous_v1_url_refuses_before_dispatch_or_fallback(monkeypatch, suffi
     dispatch.assert_not_called()
 
 
+@pytest.mark.unit
 def test_dated_transport_endpoint_remains_unmodified():
     endpoint = "https://resource.example/prefix/"
     contract = client(endpoint, "2024-02-15-preview").get_completion_request_contract()
@@ -78,7 +82,45 @@ def test_dated_transport_endpoint_remains_unmodified():
     assert contract["api_version"] == "2024-02-15-preview"
 
 
+@pytest.mark.unit
+def test_selected_base_url_does_not_validate_a_shadowed_configured_endpoint():
+    selected = client("https://configured.example/?route=private")
+    contract = selected.get_completion_request_contract(
+        base_url="https://caller.example/openai/v1/"
+    )
+    assert contract["base_url"] == "https://caller.example"
+    assert contract["api_base"] == "https://configured.example/?route=private"
+
+
+@pytest.mark.unit
+def test_equal_endpoint_declarations_stay_equal_after_compilation():
+    endpoint = "https://configured.example/openai/v1/"
+    contract = client(endpoint).get_completion_request_contract(base_url=endpoint)
+    assert contract["api_base"] == contract["base_url"] == "https://configured.example"
+
+
+@pytest.mark.unit
+def test_budgeted_request_still_refuses_conflicting_endpoint_declarations(monkeypatch):
+    from reflexio.server.llm.input_budget import (
+        InputBudgetConfigurationError,
+        model_input_budget,
+    )
+
+    selected = client("https://configured.example/?route=private")
+    dispatch = Mock()
+    monkeypatch.setattr(selected, "_completion_with_hard_timeout", dispatch)
+    with (
+        model_input_budget(),
+        pytest.raises(InputBudgetConfigurationError, match="Conflicting"),
+    ):
+        selected.generate_response(
+            "synthetic", base_url="https://caller.example/openai/v1/"
+        )
+    dispatch.assert_not_called()
+
+
 @pytest.mark.parametrize("suffix", ["/?route=private", "/#private-fragment"])
+@pytest.mark.unit
 def test_ambiguous_embedding_endpoint_refuses_before_compute(monkeypatch, suffix):
     from reflexio.server.llm import _litellm_embedding
     from reflexio.server.llm.litellm_client import LiteLLMClientError
@@ -236,13 +278,22 @@ def _owned_wire_probe():
                 "/explicit/openai/v1/chat/completions",
                 "gpt-4o-mini",
             )
-            assert len(calls) == 21
+            shadowed = client(endpoint + "/unused/?route=private")
+            assert (
+                shadowed.generate_response(
+                    "selected URL", base_url=endpoint + "/selected/openai/v1/"
+                )
+                == "owned-ok"
+            )
+            assert calls[-1][0] == "/selected/openai/v1/chat/completions"
+            assert len(calls) == 22
             print("OWNED_AZURE_WIRE_OK")
         finally:
             server.shutdown()
             worker.join(timeout=2)
 
 
+@pytest.mark.integration
 def test_unpatched_chat_and_single_batch_embedding_wire(tmp_path, monkeypatch):
     import os
     import subprocess
@@ -300,6 +351,7 @@ def test_unpatched_chat_and_single_batch_embedding_wire(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("prefix", ["", "/resource"])
+@pytest.mark.unit
 def test_qualification_identity_uses_the_same_compiled_resource(prefix):
     from reflexio.server.services.offline_tuner.open_world.analyst import (
         _litellm_transport_identity,
