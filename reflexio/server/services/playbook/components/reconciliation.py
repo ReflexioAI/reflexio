@@ -1009,7 +1009,11 @@ def reconcile_playbooks(
             # extractor's chunk presentation has different origins and coordinates.
             presentation_token = current_overflow_presentation.set(None)
             try:
-                context = build_playbook_prompt_context(window, label_turns=True)
+                # Expert corrections are the evidence of expert-derived candidates;
+                # render them so the map binds exactly what the auditor reads.
+                context = build_playbook_prompt_context(
+                    window, label_turns=True, include_expert_corrections=True
+                )
             finally:
                 current_overflow_presentation.reset(presentation_token)
             sources.update(

@@ -297,8 +297,18 @@ class RenderedInteraction:
     evidence_texts: tuple[str, ...]
 
 
-def render_interaction(interaction: Interaction) -> RenderedInteraction:
-    """Render complete ordinary turn text and its identical original evidence."""
+def render_interaction(
+    interaction: Interaction, *, include_expert_correction: bool = False
+) -> RenderedInteraction:
+    """Render complete turn text and its identical original evidence.
+
+    Args:
+        interaction: The turn to render.
+        include_expert_correction: Also show the turn's expert correction, when it
+            has one, and bind it as evidence. Consumers that read evidence of
+            expert-reviewed turns (reconciliation) need it; ordinary extraction
+            prompts keep it hidden because expert sessions use comparison pairs.
+    """
     reject_removed_env(os.environ, {"REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS": ""})
     lines: list[str] = []
     evidence: list[str] = []
@@ -313,6 +323,9 @@ def render_interaction(interaction: Interaction) -> RenderedInteraction:
         prefix = " ".join(tool_prefixes)
         shown_content = f"{prefix} {content}" if prefix else content
         lines.append(f"{interaction.role}: ```{shown_content}```")
+    if include_expert_correction and interaction.expert_content:
+        lines.append(f"expert correction: ```{interaction.expert_content}```")
+        evidence.append(interaction.expert_content)
     if interaction.user_action != UserActionType.NONE:
         action = (
             f"{interaction.user_action.value} {interaction.user_action_description}"
