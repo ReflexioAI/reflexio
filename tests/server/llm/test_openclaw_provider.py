@@ -282,10 +282,7 @@ class TestAutoDetection:
         monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
         for env_var in md._ENV_TO_PROVIDER:
             monkeypatch.delenv(env_var, raising=False)
-        monkeypatch.setattr(
-            "reflexio.server.llm.providers.claude_code_provider.is_claude_code_available",
-            lambda: False,
-        )
+        monkeypatch.delenv("REFLEXIO_NATIVE_CLI_MODEL", raising=False)
 
         providers = md.detect_available_providers()
         assert "openclaw" in providers

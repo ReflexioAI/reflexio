@@ -17,13 +17,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from reflexio.models.config_schema import APIKeyConfig, LLMConfig
 
-# Env var opting into the Claude Code CLI provider (registered in
-# reflexio.server.llm.providers.claude_code_provider). When set to "1"
-# *and* the active host CLI is available, the provider is auto-detected
-# with highest priority — reflexio will route extraction/evaluation
-# calls through the local CLI instead of requiring an API key.
-_CLAUDE_CODE_ENABLE_ENV = "CLAUDE_SMART_USE_LOCAL_CLI"
-_CLAUDE_CODE_PROVIDER = "claude-code"
+from reflexio.server.llm._native_model_ref import (
+    ENV_NATIVE_MODEL,
+    configured_native_model,
+)
+from reflexio.server.llm._native_model_ref import (
+    PROVIDER_KEY as _NATIVE_PROVIDER,
+)
 
 # Installed local embedding capability is advertised without activating it.
 # resolve_model_name owns the embedding-role default independently of provider
@@ -54,12 +54,12 @@ _ENV_TO_PROVIDER: dict[str, str] = {
     "ZAI_API_KEY": "zai",
 }
 
-# When multiple keys are set, prefer providers in this order. The
-# claude-code CLI provider sits at the top — when it's available, users
-# are explicitly opting into local-auth extraction and should not be
-# surprised by an OpenAI/Anthropic API bill from a leftover env var.
+# When multiple credentials exist, use this priority order.
+# An operator-selected native target takes priority over automatic API
+# credentials, even if its executable is missing. Availability must not
+# silently substitute a paid provider for that explicit selection.
 _PROVIDER_PRIORITY: list[str] = [
-    _CLAUDE_CODE_PROVIDER,
+    _NATIVE_PROVIDER,
     _OPENCLAW_PROVIDER,
     _LOCAL_EMBEDDING_PROVIDER,
     "anthropic",
@@ -137,16 +137,10 @@ def detect_available_providers(
         is_local_embedder_available,
     )
 
-    if env_truthy(os.environ.get(_CLAUDE_CODE_ENABLE_ENV, "")):
-        from reflexio.server.llm.providers.claude_code_provider import (
-            has_pending_codex_migration,
-            is_claude_code_available,
-        )
-
-        # An obsolete enabled native selection must refuse on its own route,
-        # rather than silently yielding automatic selection to a paid provider.
-        if is_claude_code_available() or has_pending_codex_migration():
-            available.add(_CLAUDE_CODE_PROVIDER)
+    # Explicit operator intent reserves the native route even if its binary
+    # is unavailable. Never fall through to an unrelated API credential.
+    if configured_native_model() is not None:
+        available.add(_NATIVE_PROVIDER)
     if env_truthy(os.environ.get("OPENCLAW_SMART_USE_LOCAL_CLI", "")):
         from reflexio.server.llm.providers.openclaw_provider import (
             is_openclaw_available,
@@ -171,7 +165,7 @@ class ProviderDefaults:
 
     Any field may be ``None`` for a role the provider does not support.
     For example, the ``local`` ONNX embedder has no generation model;
-    the ``claude-code`` CLI has no embedding endpoint. ``_auto_detect_model``
+    the ``local-cli`` adapter has no embedding endpoint. ``_auto_detect_model``
     falls through to the next provider in priority order when the
     requested role is missing.
 
@@ -193,18 +187,6 @@ class ProviderDefaults:
 
 
 _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
-    # claude-code routes through the local Claude Code CLI via LiteLLM's
-    # custom provider mechanism (see providers/claude_code_provider.py).
-    # The model-name suffix after "claude-code/" is opaque — the CLI
-    # picks whichever model the user has auth for.
-    _CLAUDE_CODE_PROVIDER: ProviderDefaults(
-        generation="claude-code/default",
-        evaluation="claude-code/default",
-        should_run="claude-code/default",
-        pre_retrieval="claude-code/default",
-        embedding=None,
-        extraction_agent="claude-code/default",
-    ),
     # openclaw routes through `openclaw infer model run`; "default" lets
     # OpenClaw pick its configured model. No embedding endpoint.
     _OPENCLAW_PROVIDER: ProviderDefaults(
@@ -217,7 +199,7 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
     ),
     # local is an embedding-only provider that routes through an
     # in-process ONNX model (all-MiniLM-L6-v2). Generation
-    # roles stay None — use claude-code for those.
+    # roles stay None — text roles use an independently selected provider.
     _LOCAL_EMBEDDING_PROVIDER: ProviderDefaults(
         generation=None,
         evaluation=None,
@@ -372,14 +354,11 @@ EMBEDDING_CAPABLE_PROVIDERS: frozenset[str] = frozenset(
 
 GENERATION_CAPABLE_PROVIDERS: frozenset[str] = frozenset(
     p for p, d in _PROVIDER_DEFAULTS.items() if d.generation is not None
-)
+) | {_NATIVE_PROVIDER}
 
 
 def _local_cli_provider_hint() -> str:
-    return (
-        f"or set {_CLAUDE_CODE_ENABLE_ENV}=1 with the active host CLI "
-        "(claude for Claude Code, codex for Codex) available."
-    )
+    return f"or configure {ENV_NATIVE_MODEL} with an explicitly selected native host."
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +412,11 @@ def _auto_detect_model(
     # for this role is non-None. Lets embedding-only providers (e.g.
     # "local") sit in the priority list without breaking generation.
     for provider in providers:
+        if provider == _NATIVE_PROVIDER:
+            target = configured_native_model()
+            if target is not None and role != ModelRole.EMBEDDING:
+                return target.reference
+            continue
         defaults = _PROVIDER_DEFAULTS[provider]
         model_name = getattr(defaults, role.value)
         if model_name:
@@ -558,7 +542,7 @@ def validate_llm_availability(
 
     logger.info("Auto-detected LLM providers (priority order): %s", providers)
     generation_provider = next(
-        (p for p in providers if _PROVIDER_DEFAULTS[p].generation), None
+        (p for p in providers if p in GENERATION_CAPABLE_PROVIDERS), None
     )
     if generation_provider is None:
         # Configurations that surface only embedding-capable providers
@@ -581,7 +565,7 @@ def validate_llm_availability(
     # no remote endpoint is configured. API workers never import or construct
     # the local model.
     embedding_provider = next(
-        (p for p in providers if _PROVIDER_DEFAULTS[p].embedding), None
+        (p for p in providers if p in EMBEDDING_CAPABLE_PROVIDERS), None
     )
     if embedding_provider:
         logger.info(

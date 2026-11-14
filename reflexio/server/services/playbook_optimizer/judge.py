@@ -21,9 +21,10 @@ from reflexio.server.llm import _litellm_subprocess as worker_module
 from reflexio.server.llm import _litellm_text_generation as text_generation_module
 from reflexio.server.llm import _native_cli as native_cli_module
 from reflexio.server.llm import _native_cli_process as native_process_module
+from reflexio.server.llm import _native_model_ref as native_model_ref
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.providers import _opencode_cli as opencode_module
-from reflexio.server.llm.providers import claude_code_provider, openclaw_provider
+from reflexio.server.llm.providers import native_cli_provider, openclaw_provider
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.service_utils import log_model_response
 
@@ -142,6 +143,11 @@ def build_pairwise_judge_request_plan(
         "judge_output_schema_code_digest": _code_digest(JudgeOutput),
         "judge_output_schema_digest": _json_digest(JudgeOutput.model_json_schema()),
         "implementation_callables": callables,
+        "native_policy_digest": (
+            native_model_ref.native_policy_digest()
+            if any(model.startswith("local-cli/") for model in ladder)
+            else None
+        ),
         "judge_generation_settings": {
             "requested_model": requested_model,
             "resolved_primary_model": ladder[0],
@@ -298,6 +304,13 @@ class PairwiseJudge:
             self.request_context.prompt_manager,
             self.llm_client,
         )
+        expected_policy = frozen_plan.get("native_policy_digest")
+        if expected_policy is not None and (
+            native_model_ref.native_policy_digest() != expected_policy
+        ):
+            raise FrozenEvaluatorPlanDriftError(
+                "PairwiseJudge operator native policy drifted after job creation"
+            )
         if current != frozen_plan["implementation_callables"]:
             raise FrozenEvaluatorPlanDriftError(
                 "PairwiseJudge evaluator implementation drifted after job creation"
@@ -369,6 +382,7 @@ def _pairwise_judge_implementation_identities(
         f"llm_client.{name}": _bound_callable_identity(client, name)
         for name in _LLM_IMPLEMENTATION_METHODS
     }
+    callables["registered_native_handler"] = _registered_native_handler_identity()
     callables.update(
         {
             f"prompt_manager.{name}": _bound_callable_identity(prompt_manager, name)
@@ -395,8 +409,48 @@ def _pairwise_judge_implementation_identities(
     return callables
 
 
+def _registered_native_handler_identity() -> dict[str, str]:
+    """Freeze the actual registered handler, including trusted path overrides."""
+    bindings = []
+    for entry in getattr(litellm, "custom_provider_map", None) or []:
+        if entry.get("provider") != native_model_ref.PROVIDER_KEY:
+            continue
+        handler = entry.get("custom_handler")
+        bindings.append(
+            {
+                "class": _callable_identity(type(handler)),
+                "completion": _callable_identity(getattr(handler, "completion", None)),
+                "instance_completion": "completion" in vars(handler)
+                if hasattr(handler, "__dict__")
+                else False,
+                "path": getattr(handler, "_explicit_cli_path", None),
+                "timeout": getattr(handler, "_explicit_timeout", None),
+            }
+        )
+    return {
+        "identity": "registered_native_handler",
+        "code_digest": _json_digest(bindings),
+    }
+
+
 def _implementation_helper_identities() -> dict[str, dict[str, str]]:
     helpers = {
+        "judge._registered_native_handler_identity": _registered_native_handler_identity,
+        "native_model_ref.NativeModelRef": native_model_ref.NativeModelRef,
+        "native_model_ref.env_str": native_model_ref.env_str,
+        "native_cli_provider.reject_native_selection": native_cli_provider.reject_native_selection,
+        "native_cli_provider.register_native_provider": native_cli_provider.register_native_provider,
+        "native_model_ref.parse_native_model_ref": native_model_ref.parse_native_model_ref,
+        "native_model_ref.configured_native_model": native_model_ref.configured_native_model,
+        "native_model_ref.authorize_native_model": native_model_ref.authorize_native_model,
+        "native_model_ref.native_policy_digest": native_model_ref.native_policy_digest,
+        "native_model_ref.native_request_authority": native_model_ref.native_request_authority,
+        "native_model_ref.reject_native_selection": native_model_ref.reject_native_selection,
+        "native_model_ref._NativeRequestAuthority": native_model_ref._NativeRequestAuthority,
+        "native_cli_provider.authorize_native_model": native_cli_provider.authorize_native_model,
+        "worker.authorize_native_model": worker_module.authorize_native_model,
+        "worker.native_request_authority": worker_module.native_request_authority,
+        "text_generation.authorize_native_model": text_generation_module.authorize_native_model,
         "litellm.completion": litellm.completion,
         "text_generation._run_isolated_completion": text_generation_module._run_isolated_completion,
         "litellm.get_llm_provider": litellm.get_llm_provider,
@@ -438,25 +492,33 @@ def _implementation_helper_identities() -> dict[str, dict[str, str]]:
         "native_cli.run_native_cli": native_cli_module.run_native_cli,
         "native_cli.native_cli_worker": native_cli_module.native_cli_worker,
         "worker.native_cli_worker": worker_module.native_cli_worker,
-        "claude_code_provider.native_cli_directory": claude_code_provider.native_cli_directory,
+        "native_cli_provider.native_cli_directory": native_cli_provider.native_cli_directory,
         "native_cli.native_cli_directory": native_cli_module.native_cli_directory,
         "native_cli.remaining_native_time": native_cli_module.remaining_native_time,
-        "claude_code_provider.remaining_native_time": claude_code_provider.remaining_native_time,
+        "native_cli_provider.remaining_native_time": native_cli_provider.remaining_native_time,
         "native_cli._publish": native_cli_module._publish,
         "native_cli.NativeCLIContext": native_cli_module.NativeCLIContext,
         "native_cli._WorkerContext": native_cli_module._WorkerContext,
         "native_cli._NativeTask": native_cli_module._NativeTask,
-        "claude_code_provider.run_native_cli": claude_code_provider.run_native_cli,
+        "native_cli_provider.run_native_cli": native_cli_provider.run_native_cli,
         "openclaw_provider.run_native_cli": openclaw_provider.run_native_cli,
-        "claude_code_provider.ClaudeCodeLLM": claude_code_provider.ClaudeCodeLLM,
-        "claude_code_provider.ClaudeCodeLLM.completion": claude_code_provider.ClaudeCodeLLM.completion,
-        "claude_code_provider.ClaudeCodeLLM._cli_path": claude_code_provider.ClaudeCodeLLM._cli_path,
-        "claude_code_provider.ClaudeCodeLLM._timeout": claude_code_provider.ClaudeCodeLLM._timeout,
-        "claude_code_provider.resolve_cli_request_timeout": claude_code_provider.resolve_cli_request_timeout,
-        "claude_code_provider._resolve_cli_path": claude_code_provider._resolve_cli_path,
-        "claude_code_provider._run_cli_stream": claude_code_provider._run_cli_stream,
-        "claude_code_provider._host": claude_code_provider._host,
-        "claude_code_provider._compat_host": claude_code_provider._compat_host,
+        "native_cli_provider.NativeCLILLM": native_cli_provider.NativeCLILLM,
+        "native_cli_provider.NativeCLILLM.completion": native_cli_provider.NativeCLILLM.completion,
+        "native_cli_provider.NativeCLILLM._cli_path": native_cli_provider.NativeCLILLM._cli_path,
+        "native_cli_provider.NativeCLILLM._timeout": native_cli_provider.NativeCLILLM._timeout,
+        "native_cli_provider.resolve_cli_request_timeout": native_cli_provider.resolve_cli_request_timeout,
+        "native_cli_provider._resolve_cli_override_path": native_cli_provider._resolve_cli_override_path,
+        "native_cli_provider._windows_cli_suffixes": native_cli_provider._windows_cli_suffixes,
+        "native_cli_provider._is_windows": native_cli_provider._is_windows,
+        "native_cli_provider._resolve_cli_path": native_cli_provider._resolve_cli_path,
+        "native_cli_provider._run_claude_stream": native_cli_provider._run_claude_stream,
+        "native_cli_provider._run_codex_stream": native_cli_provider._run_codex_stream,
+        "native_cli_provider._cli_name": native_cli_provider._cli_name,
+        "native_cli_provider._codex_migration_error": native_cli_provider._codex_migration_error,
+        "native_cli_provider.validate_native_selection": native_cli_provider.validate_native_selection,
+        "native_cli_provider.parse_stream_json": native_cli_provider.parse_stream_json,
+        "native_cli_provider._run_cli_stream": native_cli_provider._run_cli_stream,
+        "native_cli_provider._compat_host": native_cli_provider._compat_host,
         "opencode.run_opencode": opencode_module.run_opencode,
         "opencode.resolve_executable": opencode_module.resolve_executable,
         "opencode._uses_private_server": opencode_module._uses_private_server,

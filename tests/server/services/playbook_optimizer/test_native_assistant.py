@@ -11,7 +11,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from reflexio.server.llm.providers import claude_code_provider as provider
+from reflexio.server.llm.providers import native_cli_provider as provider
 from reflexio.server.llm.providers.claude_code_stream_parser import ParseResult
 from reflexio.server.services.playbook_optimizer.assistant_webhook import (
     LocalScriptAssistant,

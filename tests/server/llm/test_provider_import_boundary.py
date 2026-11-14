@@ -50,7 +50,7 @@ def test_server_environment_import_does_not_load_provider_clients(tmp_path):
     "module",
     [
         "reflexio.server.llm.litellm_client",
-        "reflexio.server.llm.providers.claude_code_provider",
+        "reflexio.server.llm.providers.native_cli_provider",
         "reflexio.server.services.playbook_optimizer.judge",
         "reflexio.server.services.offline_tuner.evidence.native_capacity",
     ],
@@ -78,7 +78,7 @@ import reflexio.server.env_utils
 assert "openai" not in sys.modules
 modules = (
     "reflexio.server.llm.litellm_client",
-    "reflexio.server.llm.providers.claude_code_provider",
+    "reflexio.server.llm.providers.native_cli_provider",
     "reflexio.server.services.playbook_optimizer.judge",
     "reflexio.server.services.offline_tuner.evidence.native_capacity",
 )
@@ -235,7 +235,7 @@ os.environ.pop("CLAUDE_SMART_USE_LOCAL_CLI", None)
 os.environ.pop("OPENCLAW_SMART_USE_LOCAL_CLI", None)
 ensure_provider_credential()
 assert os.environ["OPENAI_API_KEY"] == "sk-placeholder-mock"
-assert "reflexio.server.llm.providers.claude_code_provider" not in sys.modules
+assert "reflexio.server.llm.providers.native_cli_provider" not in sys.modules
 assert "reflexio.server.llm.providers.openclaw_provider" not in sys.modules
 assert "litellm" not in sys.modules
 assert "openai" not in sys.modules

@@ -315,13 +315,13 @@ _TOOL_CALLING_OVERRIDES: tuple[str, ...] = (
     # `litellm.completion(model='minimax/MiniMax-M3', tools=[...])` round-trip
     # that returned a proper tool_call message (finish_reason='tool_calls').
     "minimax/MiniMax-M3",
-    # claude-code/* models route through our local CLI provider
-    # (see providers/claude_code_provider.py). litellm has no registry
+    # local-cli/* models route through our local CLI provider
+    # (see providers/native_cli_provider.py). litellm has no registry
     # entry for them, so it returns False. The provider handles tool
     # calling explicitly by rendering tool specs into the system prompt
     # and parsing the model's JSON output back into ChatCompletionMessageToolCall
     # blocks. Verified end-to-end against the resumable extraction tool loop.
-    "claude-code/",
+    "local-cli/",
     # openclaw/* routes through `openclaw infer` (providers/openclaw_provider.py)
     # with the same prompt-level protocol, shared via cli_tool_protocol.
     "openclaw/",
