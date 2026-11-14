@@ -24,14 +24,25 @@ module.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import time
 from typing import Any, Protocol
 
 import httpx
+from pydantic import ValidationError
 
 from reflexio.http_tls import tls_verify_from_env
 from reflexio.models.api_schema.domain import AgentPlaybook
+from reflexio.server.llm._litellm_types import LLMHardTimeoutError
+from reflexio.server.llm._native_cli import request_timeout_seconds, run_native_cli
 
+from .assistant_native import (
+    NativeAssistantError,
+    NativeAssistantRequest,
+    remaining_assistant_time,
+    run_native_assistant,
+)
 from .models import ChatMessage
 
 
@@ -137,11 +148,12 @@ class WebhookAssistant:
 
 
 class LocalScriptAssistant:
-    """Start one process per invocation, exchanging the shared JSON payload.
+    """Compile one script response and execute its selected native call once.
 
     The command is a list without a shell. Failure/invalid output/timeout aborts
     this evaluation; scripts own any retries they can perform safely. The
-    existing subprocess timeout kills and waits for this child, not descendants.
+    native result form lets the caller launch the actual CLI after compilation.
+    Retirement covers each immediate child, not arbitrary wrapper descendants.
     """
 
     def __init__(
@@ -153,22 +165,30 @@ class LocalScriptAssistant:
     def __call__(
         self, messages: list[ChatMessage], playbooks: list[AgentPlaybook]
     ) -> str:
+        deadline = time.monotonic() + request_timeout_seconds(self.timeout_s)
+        env = {
+            **os.environ,
+            "_REFLEXIO_ASSISTANT_INVOCATION": json.dumps(
+                {"protocol": "native-cli/v1", "deadline_monotonic": deadline}
+            ),
+        }
         try:
-            result = subprocess.run(  # noqa: S603 - explicit configured executable, no shell
+            result = run_native_cli(
                 self.command,
                 input=json.dumps(
                     _build_payload(messages, playbooks), ensure_ascii=False
                 ),
                 text=True,
                 capture_output=True,
-                timeout=self.timeout_s,
+                timeout=remaining_assistant_time(deadline),
                 check=False,
+                env=env,
             )
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, LLMHardTimeoutError, NativeAssistantError):
             raise LocalScriptFailedError(
                 f"assistant script timed out after {self.timeout_s}s"
             ) from None
-        except OSError:
+        except (OSError, ValueError):
             raise LocalScriptFailedError("assistant script could not start") from None
         if result.returncode != 0:
             raise LocalScriptFailedError(
@@ -180,6 +200,21 @@ class LocalScriptAssistant:
             raise LocalScriptFailedError(
                 "assistant script returned invalid JSON"
             ) from None
+        if isinstance(data, dict) and "native_cli_v1" in data:
+            if set(data) != {"native_cli_v1"}:
+                raise LocalScriptFailedError(
+                    "assistant script returned ambiguous output"
+                )
+            try:
+                request = NativeAssistantRequest.model_validate(data["native_cli_v1"])
+            except ValidationError:
+                raise LocalScriptFailedError(
+                    "assistant script returned an invalid native request"
+                ) from None
+            try:
+                return run_native_assistant(request, deadline)
+            except NativeAssistantError as exc:
+                raise LocalScriptFailedError(str(exc)) from None
         content = data.get("content") if isinstance(data, dict) else None
         if not isinstance(content, str):
             raise LocalScriptFailedError("assistant script returned no content")

@@ -1746,6 +1746,10 @@ The existing `CLAUDE_SMART_CLI_MODEL` chooses an explicit native model; unset
 delegates to OpenCode. The opaque `claude-code/` request label never chooses a
 native model or proves which model served the response.
 
+Codex spends its selected deadline on setup, native execution and reading its
+final output. Setup cannot grant a fresh allowance, and a result read after
+expiry is a timeout.
+
 Native Codex (`CLAUDE_SMART_HOST=codex`) also forwards the existing
 `CLAUDE_SMART_CLI_MODEL` as `codex exec --model`. Unset or blank leaves model
 selection to Codex. This matches the plugin bridge's saved learning-model
@@ -2116,3 +2120,15 @@ readable even when its unused automatic stride is larger; ordinary automatic
 admission still refuses that geometry. Existing read/write acceptance, defaults,
 public fields, project inheritance and frozen admission witnesses are unchanged.
 This refactor does not retire a setting or convert stored configuration.
+
+
+### Caller-owned native optimizer execution
+
+The local assistant adapter can accept a compile-only `native_cli_v1` result.
+The script prepares prompts; the SDK owns the actual Claude JSON or Codex
+invocation and spends the existing caller timeout across both phases. The
+private capability/deadline header is generated per invocation, never selected
+from user configuration. Generic content-returning scripts and HTTP payloads
+retain their contract. See [assistant backend protocol](docs/playbook_optimizer_assistant_backends.md#compile-only-native-assistant-results)
+for permission, version-compatibility and immediate-child ownership limits.
+This prerequisite does not retire CLI timeout settings or change OpenCode.

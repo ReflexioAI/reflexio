@@ -160,7 +160,7 @@ Anything that satisfies this Protocol can be swapped in. The two concrete backen
 
 | Aspect | `WebhookAssistant` | `LocalScriptAssistant` |
 |---|---|---|
-| Transport | HTTPS POST | `subprocess.run` |
+| Transport | HTTPS POST | SDK-owned process launch |
 | Where the assistant runs | Wherever the URL points | On the same host as the optimizer |
 | Payload format | JSON body | JSON on stdin |
 | Response format | JSON body with `{"content": "..."}` | JSON on stdout with `{"content": "..."}` |
@@ -169,7 +169,9 @@ Anything that satisfies this Protocol can be swapped in. The two concrete backen
 | Common base | `AssistantFailedError` | `AssistantFailedError` |
 | Best for | Production / remote deployments | Local dev, CI, offline evaluation |
 
-Both share the same timeout policy and single-attempt delivery contract and the same payload builder (`_build_payload`), so the wire shape is identical regardless of transport.
+Both share the configured timeout field, single-attempt delivery contract and
+payload builder (`_build_payload`). HTTP timeouts bound each transport phase;
+local compilation and native execution share one caller deadline.
 
 ### 3.1 The shared payload
 
@@ -193,20 +195,71 @@ For the webhook, this becomes the request body. For the script, this becomes the
 {"content": "<assistant reply>"}
 ```
 
-Anything else — non-string `content`, missing key, malformed JSON, non-zero exit code, network error, timeout — is reported as a typed failure.
+Local scripts may also return the compile-only native form below. Otherwise,
+non-string `content`, missing keys, malformed JSON, non-zero exit status, network
+errors and timeouts are typed failures.
+
+### Compile-only native assistant results
+
+A local script can prepare a request instead of starting its own model process:
+
+```json
+{
+  "native_cli_v1": {
+    "protocol": "codex",
+    "executable": "/absolute/path/to/codex",
+    "model": null,
+    "system_prompt": "Read-only evaluation context",
+    "dialogue": "The current task"
+  }
+}
+```
+
+Supported protocols are `codex` and `claude-json`. `claude-json` preserves the
+existing custom executable contract: `-p --output-format json`, with a string
+`result` or `response` in its reply. The SDK applies the optimizer's read-only
+Claude tools/MCP/session policy; Codex uses its read-only sandbox and ephemeral
+execution. Requests cannot select permissions, arbitrary argv/environment,
+retries, fallback or a second timeout. Unknown fields and ambiguous
+`content` plus `native_cli_v1` responses fail before native dispatch.
+
+The SDK supplies `_REFLEXIO_ASSISTANT_INVOCATION` only in the script child's
+environment, overwriting any inherited value. This private invocation header
+contains `protocol: "native-cli/v1"` and `deadline_monotonic`; it is IPC metadata,
+not a configuration setting. The messages/playbooks input JSON and HTTP webhook
+payload stay unchanged. A compile-only integration must require this capability
+and refuse an older caller before any model dispatch. Updating a helper at a
+stable filesystem path or bundling a newer SDK does not upgrade an independently
+running older server. Upgrade that caller before adopting a compile-only helper.
+Existing scripts returning `{"content":"..."}` remain supported.
+
+One caller deadline starts before compilation and bounds subsequent native
+execution; time spent compiling/parsing/setup is unavailable to the model. The
+SDK launches and retires each immediate process through the existing native
+process owner. Arbitrary custom wrappers retain their descendant limitations.
+The new compiled-native path removes the shipped adapter as model launcher; it
+does not establish cancellation of a CLI's external/shared model server or
+contain arbitrary descendants. No model call is replayed after uncertain
+completion. Native errors expose bounded metadata rather than captured prompts,
+model output, stderr or executable paths.
+
+OpenCode variant, Windows wrapper and server-lifecycle adoption are outside this
+first protocol. Existing OpenCode bridge behavior is unchanged; no native
+OpenCode or configuration-retirement credit follows. Managed platform hosts
+still reject local script assistant configuration.
 
 ### 3.3 Failure and replay ownership
 
-Each invocation sends one POST or starts one process. Reflexio does not replay
+Each invocation sends one POST or starts its configured script once. A compiled
+result authorizes one native dispatch in the same budget. Reflexio does not replay
 failures, invalid responses or timeouts: the assistant may already have acted.
 HTTP redirects are rejected. Integrations own retries they can prove safe near
 their side effects. `webhook_timeout_seconds` remains the shared timeout setting.
 
 A failed invocation becomes an **aborted evaluation**, not necessarily an aborted
 job. Later evaluator calls can invoke the assistant again. No exactly-once remote
-execution or cross-evaluation guarantee is made. Requests uses connection/read
-timeouts; subprocess timeout kills and waits for its immediate child, not an
-arbitrary descendant process tree.
+execution or cross-evaluation guarantee is made. HTTP timeouts bound connect/write/read/pool phases. Process retirement covers
+the immediate child, not an arbitrary descendant process tree.
 
 `webhook_max_retries` and `webhook_backoff_base_seconds` are retired. Generation7
 local-file and canonical-v10 enterprise startup upgrades validate historical values,
@@ -532,3 +585,10 @@ Remote organizations require their separately qualified enterprise image upgrade
 installing this SDK alone does not authorize a remote conversion. Immutable job
 authority continues to record the historical `budget_settings.max_metric_calls`
 output key, which is not a supported configuration input.
+
+
+The local script adapter's compile-only execution uses
+`reflexio/server/services/playbook_optimizer/assistant_native.py`: a strict
+request parser and fixed optimizer policy over the existing native launcher.
+It introduces no optimizer setting, new transport registry or plugin imports
+inside the SDK. Generation CLI behavior remains owned by its existing provider.
