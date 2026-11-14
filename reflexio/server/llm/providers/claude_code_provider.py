@@ -781,6 +781,27 @@ def _warn_on_ignored_params(*sources: Any) -> None:
                 _warn_unsupported_param_once(name)
 
 
+def resolve_cli_request_timeout(
+    value: Any, explicit_timeout: int | None = None
+) -> float:
+    """Bound dispatch by the caller allowance and any explicit shorter cap.
+
+    Retiring caps belongs to the matching producer migration. A supplied
+    caller budget never acquires an implicit provider duration default.
+    """
+    timeout = request_timeout_seconds(value)
+    if explicit_timeout is not None:
+        return min(timeout, request_timeout_seconds(explicit_timeout))
+    raw = env_str(_ENV_TIMEOUT)
+    if not raw:
+        return timeout
+    try:
+        cap = max(1, int(raw))
+    except ValueError:
+        raise ValueError("CLAUDE_SMART_CLI_TIMEOUT must be integer seconds") from None
+    return min(timeout, cap)
+
+
 class ClaudeCodeLLM(CustomLLM):
     """LiteLLM custom handler routing completions through the ``claude`` CLI."""
 
@@ -839,26 +860,6 @@ class ClaudeCodeLLM(CustomLLM):
                 _LOGGER.warning("Ignoring non-integer %s", _ENV_TIMEOUT)
         return _DEFAULT_TIMEOUT_SECONDS
 
-    def _native_request_timeout(self, value: Any) -> float:
-        """A new native path has no provider default; explicit old caps still apply.
-
-        Retiring those choices belongs to the matching producer migration. This
-        intermediate adapter must not silently ignore a valid constructor/env cap.
-        """
-        timeout = request_timeout_seconds(value)
-        if self._explicit_timeout is not None:
-            return min(timeout, request_timeout_seconds(self._explicit_timeout))
-        raw = env_str(_ENV_TIMEOUT)
-        if not raw:
-            return timeout
-        try:
-            cap = max(1, int(raw))
-        except ValueError:
-            raise ValueError(
-                "CLAUDE_SMART_CLI_TIMEOUT must be integer seconds"
-            ) from None
-        return min(timeout, cap)
-
     def completion(  # type: ignore[override]
         self,
         *args: Any,
@@ -892,6 +893,7 @@ class ClaudeCodeLLM(CustomLLM):
         # standard plumbing for custom providers) or as a top-level ``tools``
         # kwarg. Read both before discarding kwargs.
         tools = optional_params.get("tools") or kwargs.get("tools")
+        has_request_timeout = "timeout" in kwargs
         request_timeout = kwargs.get("timeout")
         del kwargs
 
@@ -910,8 +912,9 @@ class ClaudeCodeLLM(CustomLLM):
         cli_path = self._cli_path()
         host = _host()
         timeout = (
-            self._native_request_timeout(request_timeout)
-            if host == _HOST_OPENCODE and _compat_host(cli_path) is None
+            resolve_cli_request_timeout(request_timeout, self._explicit_timeout)
+            if has_request_timeout
+            or (host == _HOST_OPENCODE and _compat_host(cli_path) is None)
             else self._timeout()
         )
         started = time.perf_counter()

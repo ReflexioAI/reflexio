@@ -73,7 +73,10 @@ from reflexio.server.llm._model_compat import (
     ensure_model_capabilities,
     reasoning_exhausted_retry_extra_body,
 )
-from reflexio.server.llm._native_cli import NATIVE_CLI_REQUEST, NativeCLIOwner
+from reflexio.server.llm._native_cli import (
+    NATIVE_CLI_REQUEST,
+    NativeCLIOwner,
+)
 from reflexio.server.llm._provider_concurrency import (
     ProviderCapSaturatedError,
     provider_slot,
@@ -1059,10 +1062,12 @@ class TextGenerationMixin:
         ):
             from reflexio.server.llm.providers.claude_code_provider import (
                 reject_retired_codex_selection,
+                resolve_cli_request_timeout,
             )
 
             # Preparation errors stop the walk before retries or paid fallback.
             reject_retired_codex_selection()
+            resolve_cli_request_timeout(kwargs.get("timeout", self.config.timeout))
         ensure_model_capabilities(actual_model)
 
         if actual_model != self.config.model:
