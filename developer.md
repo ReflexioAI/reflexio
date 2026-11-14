@@ -380,6 +380,14 @@ not a promise of online speedup.
 | Azure OpenAI | via config | `azure/` | `azure/<deployment>` |
 | Custom endpoint | via config | — | — |
 
+Azure's `v1`, `latest` and `preview` API modes use LiteLLM's standard OpenAI
+client transport. `_azure_transport.py` compiles explicit resource endpoints
+and full `/openai/v1/` endpoints to the same resource base before dispatch and
+request-contract binding, preserving custom path prefixes and deployment IDs.
+Query/fragment-bearing v1 endpoints refuse without logging their values;
+explicit non-Azure transport overrides and dated Azure API versions retain
+their existing behavior. The API-version configuration remains supported.
+
 To change which models Reflexio uses, edit [`reflexio/server/site_var/site_var_sources/llm_model_setting.json`](reflexio/server/site_var/site_var_sources/llm_model_setting.json).
 Use the provider prefix shown above (e.g., `anthropic/` for Anthropic models). Set the corresponding API key in your `.env` file.
 
@@ -1709,6 +1717,23 @@ connection lease or introduce a runtime alias.
 
 
 ### Native provider CLI ownership
+
+OpenClaw uses the selected completion `timeout` as one allowance for CLI
+execution and busy retry waits. Retries receive only the remaining time; they
+cannot restart the allowance. The SDK's outer per-rung deadline may tighten it
+further, and native process ownership/cleanup stays unchanged. A direct
+`OpenClawLLM.completion(...)` call must supply a finite positive numeric timeout;
+ordinary `litellm.completion(...)` and `LiteLLMClient` supply their selected
+request budget. No OpenClaw-specific default duration is installed.
+
+`OPENCLAW_CLI_TIMEOUT` is retired. A nonblank old assignment refuses a selected
+OpenClaw route before dispatch or fallback. Deliberately select the intended
+existing `LiteLLMConfig.timeout` or completion `timeout`, then remove the old
+assignment. The old setting bounded each subprocess separately; the new budget
+includes all busy retries, so copying the number is not a guarantee of identical
+retry timing. Empty/whitespace assignments are unset. HTTP overrides and native
+fallbacks that are never reached do not read it. This does not retire
+`CLAUDE_SMART_CLI_TIMEOUT`, which also controls a separate plugin bridge.
 
 Local Claude, Codex and OpenClaw commands use the shared private controller in
 `reflexio/server/llm/_native_cli.py` and fresh stdlib-only launch owner in
