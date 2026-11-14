@@ -64,7 +64,7 @@ class CapturedPriorKnowledge:
         exclude_pending_tool_call_ids: set[str] | None = None,
     ) -> None:
         """Bind a capture to the caller's actual original-seed lookup policy."""
-        from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+        from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 
         expected = {
             "version": 1,
@@ -77,13 +77,13 @@ class CapturedPriorKnowledge:
         }
         values = self.snapshot
         if any(values.get(key) != value for key, value in expected.items()):
-            raise InputBudgetConfigurationError("Prior lookup contract changed")
+            raise ExtractionInputIntegrityError("Prior lookup contract changed")
 
 
 def _resolved_prior_record(
     storage: BaseStorage, match: PriorAnswerMatch
 ) -> PendingToolCallRecord:
-    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+    from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 
     record = storage.get_pending_tool_call(match.pending_tool_call_id)
     if record is None or (
@@ -93,7 +93,7 @@ def _resolved_prior_record(
         or record.resolved_at != match.resolved_at
         or record.valid_until != match.valid_until
     ):
-        raise InputBudgetConfigurationError("Prior answer changed during capture")
+        raise ExtractionInputIntegrityError("Prior answer changed during capture")
     return record
 
 

@@ -29,6 +29,7 @@ from reflexio.server.llm._litellm_text_generation import (
 )
 from reflexio.server.llm._model_compat import reasoning_exhausted_retry_extra_body
 from reflexio.server.llm.input_budget import (
+    ExtractionInputIntegrityError,
     InputBudgetConfigurationError,
     check_request_input_budget,
     extraction_provider_guard,
@@ -90,7 +91,7 @@ def _validate_profile_native_contract(
         "agent": StructuredProfilesOutput.model_json_schema(),
         "dedup": ProfileDeduplicationOutput.model_json_schema(),
     }:
-        raise InputBudgetConfigurationError("Profile output schema changed")
+        raise ExtractionInputIntegrityError("Profile output schema changed")
     for stage, models in ladders.items():
         if not models:
             continue
@@ -102,7 +103,7 @@ def _validate_profile_native_contract(
             ]
             != contracts[stage]
         ):
-            raise InputBudgetConfigurationError("Profile native contract changed")
+            raise ExtractionInputIntegrityError("Profile native contract changed")
 
 
 def build_profile_package_request(
@@ -116,7 +117,7 @@ def build_profile_package_request(
     """
 
     def refuse_dispatch(*_args: Any) -> None:
-        raise InputBudgetConfigurationError("Profile preparation forbids dispatch")
+        raise ExtractionInputIntegrityError("Profile preparation forbids dispatch")
 
     token = extraction_provider_guard.set(refuse_dispatch)
     try:
@@ -233,7 +234,7 @@ def _extractor_snapshot(
 
     effective = effective_frozen_extractor_config(frozen, extractor_kind="profile")
     if canonical_json(effective) != canonical_json(current):
-        raise InputBudgetConfigurationError("Frozen profile configuration changed")
+        raise ExtractionInputIntegrityError("Frozen profile configuration changed")
     return copy.deepcopy(frozen)
 
 
@@ -285,11 +286,11 @@ def pending_tool_policy_snapshot(
         actual = comparable(current)
         expected = comparable(frozen)
     except ConfigurationMigrationError:
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Frozen profile pending tool policy is invalid"
         ) from None
     if actual != expected:
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Profile pending tool configuration changed"
         )
     return copy.deepcopy(frozen)
@@ -332,12 +333,12 @@ def prepare_profile_package(
     config_snapshot = _extractor_snapshot(config, frozen_extractor_config)
     profiles = [profile.model_copy(deep=True) for profile in existing_profiles]
     if any(profile.user_id != user_id for profile in profiles):
-        raise InputBudgetConfigurationError("Profile context owner changed")
+        raise ExtractionInputIntegrityError("Profile context owner changed")
     prior = prior_context.snapshot if prior_context is not None else None
     if prior is not None and (prior["org_id"] != org_id or not pending_tools_active):
-        raise InputBudgetConfigurationError("Profile prior context scope changed")
+        raise ExtractionInputIntegrityError("Profile prior context scope changed")
     if pending_tools_active and (pending_tool_config is None or prior_context is None):
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Profile tool configuration and prior capture are required"
         )
     suffix = prior["suffix"] if prior is not None else []
@@ -407,7 +408,7 @@ def prepare_profile_package(
             template_identity=templates[Prompts.PROFILE_SHOULD_GENERATE_PROMPT_ID],
         )
         if prompt is None:
-            raise InputBudgetConfigurationError("Enabled profile gate lacks criteria")
+            raise ExtractionInputIntegrityError("Enabled profile gate lacks criteria")
         return [{"role": "user", "content": prompt}]
 
     stage_options: dict[str, dict[str, Any]] = {
@@ -523,7 +524,7 @@ def prepare_profile_package(
                 _digest(client._completion_request_contract_from_params(request))
                 for request in params
             ] != contracts[stage]:
-                raise InputBudgetConfigurationError("Profile native contract changed")
+                raise ExtractionInputIntegrityError("Profile native contract changed")
             costs.extend(measure_request_input_tokens(request) for request in params)
         return max(costs)
 
@@ -547,7 +548,7 @@ def prepare_profile_package(
         output_contract=f"profile-package-complete-native-v1:{contract_digest}",
     )
     if plan.source_digest != source_digest:
-        raise InputBudgetConfigurationError("Profile original source changed")
+        raise ExtractionInputIntegrityError("Profile original source changed")
 
     def check_request(
         stage: str,
@@ -566,7 +567,7 @@ def prepare_profile_package(
             or params.get("num_retries") != 0
             or "fallbacks" in params
         ):
-            raise InputBudgetConfigurationError("Profile dispatch policy changed")
+            raise ExtractionInputIntegrityError("Profile dispatch policy changed")
         validate_consumer()
         index = ladder.index(params["model"])
         actual_contract = _digest(
@@ -581,7 +582,7 @@ def prepare_profile_package(
         ) or _digest(
             client._completion_request_contract_from_params(expected)
         ) != contracts[stage][index]:
-            raise InputBudgetConfigurationError("Profile native contract changed")
+            raise ExtractionInputIntegrityError("Profile native contract changed")
         actual_messages = params.get("messages")
         if not isinstance(actual_messages, list) or (
             actual_messages != expected["messages"]
@@ -600,7 +601,7 @@ def prepare_profile_package(
                 )
             )
         ):
-            raise InputBudgetConfigurationError("Profile dispatch messages changed")
+            raise ExtractionInputIntegrityError("Profile dispatch messages changed")
         check_request_input_budget(
             params,
             context_limits=context_limits,

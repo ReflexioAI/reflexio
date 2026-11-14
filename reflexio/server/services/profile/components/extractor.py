@@ -15,7 +15,7 @@ from reflexio.models.profile_id import new_profile_id
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.env_utils import env_bool
 from reflexio.server.llm._litellm_types import ProviderRequestGuardError
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_tokens
 from reflexio.server.llm.tools import describe_tool_loop_error
@@ -681,7 +681,7 @@ class ProfileExtractor:
                 != identity
                 for prompt_id, identity in templates.items()
             ):
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Profile templates changed while constructing extraction"
                 )
             return OverflowExtractionCall(

@@ -27,7 +27,7 @@ from reflexio.server.llm._litellm_types import (
 from reflexio.server.llm.failure import OutageWait, classify_llm_failure
 from reflexio.server.llm.input_budget import (
     ComputationEvidenceChangedError,
-    InputBudgetConfigurationError,
+    ExtractionInputIntegrityError,
     InputBudgetExceededError,
     OutputTruncatedRequestError,
     ProviderInputOverflowError,
@@ -88,7 +88,7 @@ def legacy_observed_usage(payload: dict[str, Any] | None) -> dict[str, int] | No
         return None
     totals = asdict(sum_trace_tokens(trace))
     if any(type(value) is not int or value < 0 for value in totals.values()):
-        raise InputBudgetConfigurationError("Invalid observed historical usage")
+        raise ExtractionInputIntegrityError("Invalid observed historical usage")
     return totals
 
 
@@ -164,7 +164,7 @@ class OverflowCoordinator:
             or set(legacy) != set(asdict(RunTokenTotals()))
             or any(type(value) is not int or value < 0 for value in legacy.values())
         ):
-            raise InputBudgetConfigurationError("Invalid observed historical usage")
+            raise ExtractionInputIntegrityError("Invalid observed historical usage")
         self.storage, self.window, self.token = storage, window, token
         self.source_digest = source_digest
         self.context_limits = dict(context_limits)
@@ -228,7 +228,7 @@ class OverflowCoordinator:
             or any(char not in "0123456789abcdef" for char in receipt_key)
             or self._profile_request.get() is not None
         ):
-            raise InputBudgetConfigurationError("Profile package request changed")
+            raise ExtractionInputIntegrityError("Profile package request changed")
         self.validate_current_parent()
         binding = self._profile_request.set(
             (preparation, stage, copy.deepcopy(messages), receipt_key)
@@ -265,7 +265,7 @@ class OverflowCoordinator:
                 for identity in identities
             )
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Profile result lacks bound paid attempts"
             )
 
@@ -313,7 +313,7 @@ class OverflowCoordinator:
             or minimum_remaining_attempts < 0
             or self._attempt_stage.get() is not None
         ):
-            raise InputBudgetConfigurationError("Invalid package attempt stage")
+            raise ExtractionInputIntegrityError("Invalid package attempt stage")
         identities: list[str] = []
         token = self._attempt_stage.set((stage, minimum_remaining_attempts, identities))
         try:
@@ -371,7 +371,7 @@ class OverflowCoordinator:
             or run.generation_request_snapshot.get("output_schema_name")
             not in ((schema, None) if self.window.kind == "profile" else (schema,))
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Candidate lacks a scoped legacy adoption contract"
             )
         prepared = self.require_prepared()
@@ -384,7 +384,7 @@ class OverflowCoordinator:
     def _verify_adopted_record(self, record: ProtectedRecord) -> ProtectedRecord:
         run = self.saved_run
         if run is None:
-            raise InputBudgetConfigurationError("Saved adoption source is unavailable")
+            raise ExtractionInputIntegrityError("Saved adoption source is unavailable")
         spans = tuple(
             span
             for chunk in self.require_prepared().chunks
@@ -430,7 +430,7 @@ class OverflowCoordinator:
     def package_protocol(self) -> dict[str, Any]:
         """Return the frozen package descriptor without exposing mutable state."""
         if self._manifest["version"] != 2:
-            raise InputBudgetConfigurationError("Extraction is not package protocol")
+            raise ExtractionInputIntegrityError("Extraction is not package protocol")
         return copy.deepcopy(self._manifest["input_protocol"])
 
     @contextmanager
@@ -523,7 +523,7 @@ class OverflowCoordinator:
             current = checkpoint.get(KEY)
             if current is not None:
                 if current["operation_key"] != key or current["limit"] != limit:
-                    raise InputBudgetConfigurationError(
+                    raise ExtractionInputIntegrityError(
                         "Reconciliation source contract changed"
                     )
                 return
@@ -532,7 +532,7 @@ class OverflowCoordinator:
                 or checkpoint.get("audited_consolidation_budget")
                 or checkpoint.get("audited_conversation")
             ):
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Admitted reconciliation protocol cannot change"
                 )
             checkpoint[KEY] = {
@@ -612,7 +612,7 @@ class OverflowCoordinator:
                     and self.saved_run.binding.agent_version != playbook.agent_version
                 )
             ):
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Historical playbook scope or status changed"
                 )
             key = str(playbook.user_playbook_id)
@@ -627,7 +627,7 @@ class OverflowCoordinator:
                 witnesses[key] = digest
                 changed = True
         if len(witnesses) > 128:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Historical playbook witness limit exceeded"
             )
         if changed:
@@ -640,7 +640,7 @@ class OverflowCoordinator:
         contract = {"key": key, "policy": checkpoint.get("extraction_policy")}
         previous = children.get(identity)
         if previous is not None and previous != contract:
-            raise InputBudgetConfigurationError("Extraction child contract changed")
+            raise ExtractionInputIntegrityError("Extraction child contract changed")
         if previous is None:
             children[identity] = contract
             self.save_checkpoint(checkpoint)
@@ -723,7 +723,7 @@ class OverflowCoordinator:
     def complete_selection_step(self, key: str, receipt: dict[str, Any]) -> None:
         """Save a host-normalized selection without inventing authored provenance."""
         if self._manifest["version"] != 2:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Selection receipts require package protocol"
             )
         with self._lock:
@@ -856,7 +856,7 @@ class OverflowCoordinator:
         stage = self._attempt_stage.get()
         if self._manifest["version"] == 2:
             if stage is None:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Package dispatch lacks stage attribution"
                 )
             if stage[0] != "compress":
@@ -870,13 +870,13 @@ class OverflowCoordinator:
                     "ladders"
                 ][ladder_name]
                 if _ladder != tuple(expected_ladder):
-                    raise InputBudgetConfigurationError(
+                    raise ExtractionInputIntegrityError(
                         "Package consumer model ladder changed"
                     )
                 if self.window.kind == "profile":
                     binding = self._profile_request.get()
                     if binding is None or binding[1] != ladder_name:
-                        raise InputBudgetConfigurationError(
+                        raise ExtractionInputIntegrityError(
                             "Profile package dispatch lacks its request contract"
                         )
                     binding[0].check_request(
@@ -899,7 +899,7 @@ class OverflowCoordinator:
                         context is None
                         or (context["operation_key"], context["limit"]) != operation
                     ):
-                        raise InputBudgetConfigurationError(
+                        raise ExtractionInputIntegrityError(
                             "Reconciliation reservation changed"
                         )
                     if len(context["attempt_ids"]) >= operation[1]:

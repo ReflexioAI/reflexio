@@ -33,7 +33,7 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.models.config_schema import PlaybookConfig
 from reflexio.server.llm._litellm_types import ModelProvenance
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     StatusChangeOperation,
@@ -688,7 +688,7 @@ class PlaybookGenerationService(
             is_source_quoted_playbook(row)
             for row in self.storage.get_user_playbooks_by_ids_any_user(sorted(targets))  # type: ignore[reportOptionalMemberAccess]
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Automatic consolidation cannot replace source-quoted rules"
             )
         try:

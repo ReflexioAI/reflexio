@@ -18,7 +18,7 @@ from reflexio.server.env_utils import env_bool, env_str
 from reflexio.server.llm.compute_admission import compute_attempt_scope
 from reflexio.server.llm.failure import exception_chain
 from reflexio.server.llm.input_budget import (
-    InputBudgetConfigurationError,
+    ExtractionInputIntegrityError,
     ProviderInputOverflowError,
     declared_context_limits,
 )
@@ -175,7 +175,7 @@ class WindowExecutor:
             if known is not None:
                 # A mode toggle must not replace durable real work with fake
                 # results, fabricate source coverage, or refund its quota.
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Mock mode cannot replace an existing extraction agent run"
                 )
             # Simulations have no provider input to budget. Keep their established
@@ -187,7 +187,7 @@ class WindowExecutor:
             for item in group.interactions
         ):
             if manifest is not None:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Admitted textual extraction cannot consume image evidence"
                 )
             # Preserve the established multimodal prompt and evidence contract.
@@ -200,7 +200,7 @@ class WindowExecutor:
         # adapter, including committed output. Never re-admit historical work.
         if known is not None and manifest is None:
             if known.status == AgentRunStatus.FAILED and known.committed_output is None:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Failed legacy extraction needs explicit recovery; historical quota is unknown"
                 )
             return True
@@ -217,7 +217,7 @@ class WindowExecutor:
                 known.generation_request_snapshot["overflow"]
             )
         except OverflowCheckpointConflictError as exc:
-            raise InputBudgetConfigurationError(str(exc)) from exc
+            raise ExtractionInputIntegrityError(str(exc)) from exc
 
     @staticmethod
     def _prepare_coordinator_sources(
@@ -230,10 +230,10 @@ class WindowExecutor:
         # retain their original partition and cannot reclaim consumed slots.
         chunk_tokens = manifest.get("input_chunk_tokens", 8192) if manifest else 10000
         if type(chunk_tokens) is not int or chunk_tokens not in {8192, 10000, 20000}:
-            raise InputBudgetConfigurationError("Extraction partition changed")
+            raise ExtractionInputIntegrityError("Extraction partition changed")
         preparation_version = manifest.get("preparation_version", 1) if manifest else 3
         if type(preparation_version) is not int or preparation_version not in {1, 2, 3}:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Unknown extraction preparation version"
             )
         if known is None:
@@ -300,7 +300,7 @@ class WindowExecutor:
         )
         if not prepared.chunks:
             if manifest is not None:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Prepared extraction lost textual evidence"
                 )
             # Image-only requests use the established multimodal extractor.
@@ -316,7 +316,7 @@ class WindowExecutor:
         if manifest is not None and manifest.get("chunk_digests") != [
             OverflowCoordinator.candidate_key(chunk.text) for chunk in prepared.chunks
         ]:
-            raise InputBudgetConfigurationError("Admitted extraction partition changed")
+            raise ExtractionInputIntegrityError("Admitted extraction partition changed")
         replan = manifest.get("checkpoint", {}).get("repartition") if manifest else None
         if replan is not None:
             prepared = repartition_extraction_input(
@@ -328,7 +328,7 @@ class WindowExecutor:
                 OverflowCoordinator.candidate_key(chunk.text)
                 for chunk in prepared.chunks
             ]:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Frozen extraction repartition changed"
                 )
         expected_run = build_extractor_agent_run_record(
@@ -351,7 +351,7 @@ class WindowExecutor:
             window.policy["extractor"],
             project_id=window.project_id,
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Extraction coordinator parent binding changed"
             )
         if manifest is None:
@@ -582,7 +582,7 @@ class WindowExecutor:
                 )
             except (ValueError, KeyError, TypeError, AttributeError) as exc:
                 if coordinator is not None and is_source_quoted_window(coordinator):
-                    raise InputBudgetConfigurationError(
+                    raise ExtractionInputIntegrityError(
                         "Cached source projection plan is malformed"
                     ) from exc
                 raise

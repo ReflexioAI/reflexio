@@ -13,7 +13,7 @@ from reflexio.server.llm._litellm_types import (
     ProviderRequestGuardError,
 )
 from reflexio.server.llm.input_budget import (
-    InputBudgetConfigurationError,
+    ExtractionInputIntegrityError,
     SavedOutputIncompatibleError,
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -182,7 +182,7 @@ def _saved_raw_candidates(
                 )
             presentation = current_overflow_presentation.get()
             if presentation is None:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Saved child presentation is unavailable"
                 )
             raw = output.model_dump(mode="json").get(field) or []
@@ -211,9 +211,9 @@ def _recover_saved_output(
     field = "profiles" if coordinator.window.kind == "profile" else "playbooks"
     saved_run = coordinator.saved_run
     if saved_run is None or saved_run.committed_output is None:
-        raise InputBudgetConfigurationError("Saved extraction output is unavailable")
+        raise ExtractionInputIntegrityError("Saved extraction output is unavailable")
     if not prepared.chunks:
-        raise InputBudgetConfigurationError("Extraction has no prepared chunks")
+        raise ExtractionInputIntegrityError("Extraction has no prepared chunks")
     with present_extraction_chunk(prepared, prepared.chunks[0], coordinator.record):
         cached_call = build_call()
     stored_schema = saved_run.generation_request_snapshot.get("output_schema_name")
@@ -222,7 +222,7 @@ def _recover_saved_output(
         and stored_schema is None
         and cached_call.schema.__name__ == "StructuredProfilesOutput"
     ):
-        raise InputBudgetConfigurationError("Saved extraction schema is incompatible")
+        raise ExtractionInputIntegrityError("Saved extraction schema is incompatible")
     checkpoint = coordinator.checkpoint
     saved_policy = checkpoint.get("extraction_policy")
     protocol_output = bool(saved_policy)
@@ -276,7 +276,7 @@ def _recover_saved_output(
             "candidate_models" in checkpoint
             and set(checkpoint["candidate_models"]) != keys
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Saved candidate attribution contract changed"
             )
     except (ProviderRequestGuardError, ValueError) as exc:
@@ -345,7 +345,7 @@ def _instruction_contract(
     if call.context_free_messages is None:
         return None
     if call.template_identities is None:
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Extraction template identities unavailable"
         )
     return coordinator.step_key(
@@ -372,15 +372,15 @@ def _pin_extraction_policy(
     instructions = _instruction_contract(coordinator, call)
     saved_instructions = checkpoint.get("extraction_instruction_contract")
     if saved_instructions is not None and saved_instructions != instructions:
-        raise InputBudgetConfigurationError("Extraction instructions changed")
+        raise ExtractionInputIntegrityError("Extraction instructions changed")
     changed = previous != policy
     if previous is not None and changed:
         if instructions is None or saved_instructions != instructions:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Extraction policy changed after checkpoint"
             )
         if checkpoint.get("active_child") or checkpoint.get("waiting_child"):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Extraction context changed during an active continuation"
             )
         # Old outputs stay immutable and content-addressed in completed_steps.
@@ -419,13 +419,13 @@ def extract_overflow_window(
         with present_extraction_chunk(prepared, chunk, coordinator.record):
             call = build_call()
             if schema is not None and schema is not call.schema:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Extraction schema changed between chunks"
                 )
             schema = call.schema
             current_policy = _extraction_policy(coordinator, call)
             if policy_key is not None and policy_key != current_policy:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Extraction policy changed after checkpoint"
                 )
             _pin_extraction_policy(coordinator, call, current_policy)
@@ -445,7 +445,7 @@ def extract_overflow_window(
             if result.output is not None:
                 presentation = current_overflow_presentation.get()
                 if presentation is None:
-                    raise InputBudgetConfigurationError(
+                    raise ExtractionInputIntegrityError(
                         "Extraction child presentation is unavailable"
                     )
                 spans = _candidate_source_spans(
@@ -463,7 +463,7 @@ def extract_overflow_window(
                 result.model_provenance or ModelProvenance(),
             )
     if schema is None:
-        raise InputBudgetConfigurationError("Extraction has no prepared chunks")
+        raise ExtractionInputIntegrityError("Extraction has no prepared chunks")
     protected, protected_spans = protected_quote_view(prepared, coordinator.record)
     coordinator.carried_source_spans = (*carried.values(), *protected_spans)
 
@@ -599,7 +599,7 @@ def _extraction_policy(
     """Use the same complete prompt contract for fresh and cached output."""
     presentation = current_overflow_presentation.get()
     if presentation is None or not presentation.is_present_in(call.messages):
-        raise InputBudgetConfigurationError("Extraction template omits prepared source")
+        raise ExtractionInputIntegrityError("Extraction template omits prepared source")
     return coordinator.step_key(
         "extraction-policy-v1",
         {

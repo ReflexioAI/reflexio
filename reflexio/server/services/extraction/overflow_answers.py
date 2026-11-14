@@ -6,7 +6,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.services.storage.storage_base import (
     PendingToolCallRecord,
     PendingToolCallStatus,
@@ -70,7 +70,7 @@ def require_current_answer(witness: dict[str, Any], org_id: str, now: datetime) 
             and datetime.fromisoformat(witness["valid_until"]) <= now
         )
     ):
-        raise InputBudgetConfigurationError("Extraction human answer is unavailable")
+        raise ExtractionInputIntegrityError("Extraction human answer is unavailable")
 
 
 def pin_extraction_answer(record: PendingToolCallRecord) -> None:
@@ -89,10 +89,10 @@ def pin_extraction_answer(record: PendingToolCallRecord) -> None:
     checkpoint = coordinator.checkpoint
     answers = checkpoint.setdefault("answer_witnesses", {})
     if record.id in answers and answers[record.id] != witness:
-        raise InputBudgetConfigurationError("Extraction human answer changed")
+        raise ExtractionInputIntegrityError("Extraction human answer changed")
     if record.id not in answers:
         if len(answers) >= 128:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Extraction answer witness limit exceeded"
             )
         answers[record.id] = witness
@@ -135,7 +135,7 @@ def resume_waiting_child(coordinator: OverflowCoordinator, key: str) -> None:
         or len(ids) > 128
         or len(set(ids)) != len(ids)
     ):
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Extraction child continuation binding changed"
         )
     records: list[PendingToolCallRecord] = []
@@ -145,7 +145,7 @@ def resume_waiting_child(coordinator: OverflowCoordinator, key: str) -> None:
             PendingToolCallStatus.PENDING,
             PendingToolCallStatus.RESOLVED,
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Extraction child answer is unavailable"
             )
         if (
@@ -153,7 +153,7 @@ def resume_waiting_child(coordinator: OverflowCoordinator, key: str) -> None:
             and record.expires_at is not None
             and record.expires_at <= datetime.now(UTC)
         ):
-            raise InputBudgetConfigurationError("Extraction child question expired")
+            raise ExtractionInputIntegrityError("Extraction child question expired")
         records.append(record)
     if any(record.status == PendingToolCallStatus.PENDING for record in records):
         raise OverflowSuspendedError("Extraction child awaits human/tool input")

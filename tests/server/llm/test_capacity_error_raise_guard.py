@@ -7,12 +7,11 @@ hold and the same public ``input_budget_configuration_error`` reason; only the
 internal label (logs, metrics) tells them apart, so a non-capacity reason
 raised as the capacity class silently mislabels every hold it causes.
 
-The scan walks every module under ``reflexio/`` and fails three ways:
+The scan walks every module under ``reflexio/`` and fails two ways:
 
 - a construction of ``InputBudgetConfigurationError`` (or a class deriving
   from it directly) that :data:`CAPACITY_RAISES` does not record;
-- a :data:`CAPACITY_RAISES` entry the scan no longer finds;
-- a :data:`PENDING_MODULES` entry with nothing left to migrate.
+- a :data:`CAPACITY_RAISES` entry the scan no longer finds.
 
 :data:`CAPACITY_RAISES` is keyed by module and message, so rewording a capacity
 raise retires its entry and must be re-recorded deliberately. The scan sees
@@ -31,8 +30,24 @@ INPUT_BUDGET = "reflexio/server/llm/input_budget.py"
 
 #: Every construction of the capacity class, by (module, message). Each one
 #: refuses a request because model or endpoint capacity is undeclared,
-#: conflicting or uncountable -- the class's meaning.
+#: conflicting or uncountable, or because the measured capacity (or the
+#: call budget that spends it) leaves no room -- the class's meaning.
 CAPACITY_RAISES: frozenset[tuple[str, str]] = frozenset(
+    {
+        (
+            "reflexio/server/services/extraction/profile_package_preparation.py",
+            "'Profile fixed request lacks capacity'",
+        ),
+        (
+            "reflexio/server/services/playbook/components/context_compression.py",
+            "'No consolidation input capacity remains'",
+        ),
+        (
+            "reflexio/server/services/playbook/components/context_compression.py",
+            "'Compression must reserve draft and audit calls'",
+        ),
+    }
+) | frozenset(
     (INPUT_BUDGET, message)
     for message in (
         "'Custom endpoint requires an explicit output reservation'",
@@ -52,38 +67,6 @@ CAPACITY_RAISES: frozenset[tuple[str, str]] = frozenset(
 #: Classes deriving directly from the capacity class.
 CAPACITY_SUBCLASSES: frozenset[tuple[str, str]] = frozenset(
     {(INPUT_BUDGET, "ExtractionInputIntegrityError")}
-)
-
-#: Extraction modules whose raise sites move to the integrity family in the
-#: follow-up change; that change classifies each site and deletes this set.
-PENDING_MODULES: frozenset[str] = frozenset(
-    {
-        "reflexio/server/services/durable_learning/profile_package_executor.py",
-        "reflexio/server/services/durable_learning/window_executor.py",
-        "reflexio/server/services/extraction/answer_inputs.py",
-        "reflexio/server/services/extraction/chunk_gate.py",
-        "reflexio/server/services/extraction/history_inputs.py",
-        "reflexio/server/services/extraction/overflow_answers.py",
-        "reflexio/server/services/extraction/overflow_coordinator.py",
-        "reflexio/server/services/extraction/overflow_pipeline.py",
-        "reflexio/server/services/extraction/overflow_presentation.py",
-        "reflexio/server/services/extraction/package_compression.py",
-        "reflexio/server/services/extraction/preparation_attempt.py",
-        "reflexio/server/services/extraction/prior_answer_search.py",
-        "reflexio/server/services/extraction/profile_package_consolidator.py",
-        "reflexio/server/services/extraction/profile_package_consumer.py",
-        "reflexio/server/services/extraction/profile_package_preparation.py",
-        "reflexio/server/services/extraction/publication.py",
-        "reflexio/server/services/extraction/publication_preparation.py",
-        "reflexio/server/services/extraction/resumable_agent.py",
-        "reflexio/server/services/extraction/source_inputs.py",
-        "reflexio/server/services/playbook/components/context_compression.py",
-        "reflexio/server/services/playbook/components/extractor.py",
-        "reflexio/server/services/playbook/service.py",
-        "reflexio/server/services/playbook/source_quoted_overflow.py",
-        "reflexio/server/services/profile/components/extractor.py",
-        "reflexio/server/services/profile/profile_generation_service_utils.py",
-    }
 )
 
 
@@ -114,10 +97,6 @@ def _scan() -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
     return raises, subclasses
 
 
-def _unpending(found: set[tuple[str, str]]) -> set[tuple[str, str]]:
-    return {site for site in found if site[0] not in PENDING_MODULES}
-
-
 def test_scan_sees_the_capacity_raises() -> None:
     """The walk is not empty by construction."""
     raises, subclasses = _scan()
@@ -127,7 +106,7 @@ def test_scan_sees_the_capacity_raises() -> None:
 
 def test_capacity_error_is_raised_only_for_capacity() -> None:
     raises, _ = _scan()
-    unrecorded = sorted(_unpending(raises) - CAPACITY_RAISES)
+    unrecorded = sorted(raises - CAPACITY_RAISES)
     assert not unrecorded, (
         "Raise ExtractionInputIntegrityError for a non-capacity failure, or "
         f"record a genuine capacity raise in CAPACITY_RAISES: {unrecorded}"
@@ -136,7 +115,7 @@ def test_capacity_error_is_raised_only_for_capacity() -> None:
 
 def test_only_the_integrity_family_derives_from_the_capacity_error() -> None:
     _, subclasses = _scan()
-    unrecorded = sorted(_unpending(subclasses) - CAPACITY_SUBCLASSES)
+    unrecorded = sorted(subclasses - CAPACITY_SUBCLASSES)
     assert not unrecorded, (
         f"Derive non-capacity errors from ExtractionInputIntegrityError: {unrecorded}"
     )
@@ -146,9 +125,3 @@ def test_every_recorded_capacity_raise_still_exists() -> None:
     raises, subclasses = _scan()
     assert not sorted(CAPACITY_RAISES - raises)
     assert not sorted(CAPACITY_SUBCLASSES - subclasses)
-
-
-def test_every_pending_module_still_has_sites_to_migrate() -> None:
-    raises, subclasses = _scan()
-    remaining = {module for module, _ in raises | subclasses}
-    assert not sorted(PENDING_MODULES - remaining), "Remove migrated modules"

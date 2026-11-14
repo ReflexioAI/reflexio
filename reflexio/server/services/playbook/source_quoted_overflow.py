@@ -19,7 +19,7 @@ import tiktoken
 from reflexio.models.api_schema.domain.entities import LineageContext, UserPlaybook
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
 )
@@ -55,7 +55,7 @@ def ordinary_playbook_notes(
     """
     if _has_source_quoted_policy(notes):
         if saved_ordinary_output:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Saved ordinary output claims reserved source-projection policy"
             )
         return "Ordinary generation notes (verbatim):\n" + (notes or "")
@@ -165,7 +165,7 @@ def _projection(
 ) -> tuple[list[UserPlaybook], dict[str, Any]]:
     config = service.service_config
     if config is None or config.window_interactions is None:
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Source projection requires a scoped window"
         )
     if (
@@ -174,7 +174,7 @@ def _projection(
         or config.request_id != config.window_interactions[-1].request.request_id
         or config.agent_version != config.window_interactions[-1].request.agent_version
     ):
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Source projection generation binding changed"
         )
     prepared = coordinator.require_prepared()
@@ -182,7 +182,7 @@ def _projection(
         coordinator.checkpoint.get("active_child") is not None
         or coordinator.checkpoint.get("waiting_child") is not None
     ):
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Source projection cannot bypass a child continuation"
         )
     coverage = [coordinator.candidate_key(chunk.text) for chunk in prepared.chunks]
@@ -190,7 +190,7 @@ def _projection(
         not is_source_quoted_window(coordinator)
         or coordinator.checkpoint.get("protected_coverage") != coverage
     ):
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Source projection requires a complete protected scan"
         )
     try:
@@ -204,7 +204,7 @@ def _projection(
         # A persisted record can pass structural parsing but reference an
         # unshown source or invalid quote. This pure validation failure must
         # use the typed configuration path, preserving the saved journal.
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Source projection evidence or source witness is invalid"
         ) from exc
     rows = [
@@ -277,7 +277,7 @@ def _row_witness(row: UserPlaybook) -> dict[str, Any]:
 def _embedding_digest(row: UserPlaybook) -> str:
     """Bind precomputed search vectors carried by the durable cached plan."""
     if row.embedding is None or len(row.embedding) != EMBEDDING_DIMENSIONS:
-        raise InputBudgetConfigurationError("Source projection lacks a search vector")
+        raise ExtractionInputIntegrityError("Source projection lacks a search vector")
     try:
         if any(isinstance(value, bool) for value in row.embedding):
             raise ValueError("Boolean vector component")
@@ -290,7 +290,7 @@ def _embedding_digest(row: UserPlaybook) -> str:
             separators=(",", ":"),
         )
     except (ValueError, TypeError, OverflowError) as exc:
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Source projection has an invalid search vector"
         ) from exc
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -319,7 +319,7 @@ def compute_source_quoted_plan(
             or len(vectors) != len(rows)
             or any(not isinstance(vector, list) for vector in vectors)
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Source projection lost its sealed search vectors"
             )
         for row, vector in zip(rows, vectors, strict=True):
@@ -336,7 +336,7 @@ def compute_source_quoted_plan(
             )
     receipt["embedding_digests"] = [_embedding_digest(row) for row in rows]
     if previous is not None and previous != receipt:
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Source projection publication policy changed"
         )
     checkpoint["source_quoted_publication"] = receipt
@@ -353,7 +353,7 @@ def compute_source_quoted_plan(
     )
 
     if coordinator.saved_run is None:
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Source projection parent execution unavailable"
         )
     with owned_agent_run_write(coordinator.storage, coordinator.saved_run):
@@ -365,7 +365,7 @@ def compute_source_quoted_plan(
         )
         run = coordinator.storage.get_agent_run(run_id)
         if run is None or run.pending_tool_call_ids:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Source projection parent is unavailable or awaiting input"
             )
         if run.status in {AgentRunStatus.RUNNING, AgentRunStatus.FAILED}:
@@ -373,12 +373,12 @@ def compute_source_quoted_plan(
                 run_id, AgentRunStatus.AGENT_COMPLETED, expected_statuses=(run.status,)
             )
             if updated is None or updated.status != AgentRunStatus.AGENT_COMPLETED:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Source projection parent lost ownership"
                 )
             run = updated
         elif run.status != AgentRunStatus.AGENT_COMPLETED:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Source projection parent cannot publish"
             )
     coordinator.saved_run = run
@@ -468,6 +468,6 @@ def validate_source_quoted_plan(
             )
         )
     ):
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Write plan lacks the exact source-quoted publication receipt"
         )
