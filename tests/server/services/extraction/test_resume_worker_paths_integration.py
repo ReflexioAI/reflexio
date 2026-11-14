@@ -573,7 +573,11 @@ def test_resume_reconstructs_request_when_request_row_is_missing(
     _, make_stop = tool_call_completion
     answer = make_stop(
         json.dumps(
-            {"profiles": [{"content": "Deploys to ECS.", "time_to_live": "infinity"}]}
+            {
+                "profiles": [
+                    {"content": "Deploys to ECS.", "explicit_storage_deadline": None}
+                ]
+            }
         )
     )
     worker = DurableLearningWorker(lambda _org: _context(storage, org_id))

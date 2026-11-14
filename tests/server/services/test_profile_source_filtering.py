@@ -1,6 +1,7 @@
 """Test request source filtering for profile extractors"""
 
 import datetime
+import json
 import tempfile
 from datetime import UTC
 from unittest.mock import patch
@@ -23,6 +24,7 @@ from reflexio.server.services.profile.service import (
     ProfileGenerationService,
 )
 from reflexio.server.services.storage.storage_base import BaseStorage
+from reflexio.test_support.llm_model_registry import get_model_registry
 
 
 @pytest.fixture
@@ -38,10 +40,18 @@ def mock_chat_completion():
         # Check if this is a should_extract_profile call
         if "Output just a boolean value" in prompt_content:
             return "true"
-        # Return parsed dict for structured output
-        if kwargs.get("parse_structured_output", False):
-            return {"add": [{"content": "test profile", "time_to_live": "one_month"}]}
-        return '{"add": [{"content": "test profile", "time_to_live": "one_month"}]}'
+        registry = get_model_registry()
+        entry = registry[
+            "profile_deduplication"
+            if "unique_ids" in prompt_content
+            else "profile_extraction"
+        ]
+        if kwargs.get("response_format") or kwargs.get(
+            "parse_structured_output", False
+        ):
+            assert entry.model_class is not None
+            return entry.model_class.model_validate(entry.minimal_valid)
+        return json.dumps(entry.minimal_valid)
 
     with patch(
         "reflexio.server.llm.litellm_client.LiteLLMClient.generate_chat_response",

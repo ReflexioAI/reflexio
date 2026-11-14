@@ -809,7 +809,7 @@ def test_48_chunk_restart_counts_only_uncached_children(
                             "profiles": [
                                 {
                                     "content": "shared lesson",
-                                    "time_to_live": "infinity",
+                                    "explicit_storage_deadline": None,
                                     "source_span": chunk.spans[0].text,
                                 }
                             ]
@@ -875,7 +875,7 @@ def test_48_chunk_restart_counts_only_uncached_children(
                         "profiles": [
                             {
                                 "content": "shared lesson",
-                                "time_to_live": "infinity",
+                                "explicit_storage_deadline": None,
                                 "source_span": prepared.chunks[0].spans[0].text,
                             }
                         ],
@@ -959,7 +959,7 @@ def test_48_chunk_restart_counts_only_uncached_children(
                 "profiles": [
                     {
                         "content": "shared lesson",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                         "source_span": prepared.chunks[0].spans[0].text,
                     }
                 ]
@@ -1328,12 +1328,12 @@ def test_cached_overflow_output_preserves_child_models_and_prompt_contract(
                 "profiles": [
                     {
                         "content": "first supported lesson",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                         "source_span": spans[0].text,
                     },
                     {
                         "content": "second supported lesson",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                         "source_span": spans[-1].text,
                     },
                 ]
@@ -3120,7 +3120,7 @@ def test_enabled_overflow_profile_uses_real_window_commit_once(
                             "profiles": [
                                 {
                                     "content": "The user prefers concise answers.",
-                                    "time_to_live": "infinity",
+                                    "explicit_storage_deadline": None,
                                     "source_span": "I prefer concise answers with details 0",
                                 }
                             ]
@@ -3354,7 +3354,7 @@ def test_http_overflow_human_answer_resumes_same_window_and_commits_once(
                     "profiles": [
                         {
                             "content": "The user requires separate deployment approval.",
-                            "time_to_live": "infinity",
+                            "explicit_storage_deadline": None,
                             "source_span": source_text,
                         }
                     ]
@@ -4281,6 +4281,9 @@ def _saved_legacy_window(pipeline, monkeypatch, *, kind, empty=False, schema=Non
     from reflexio.server.services.playbook.playbook_service_utils import (
         StructuredPlaybookList,
     )
+    from reflexio.server.services.profile.committed_output import (
+        read_saved_structured_output,
+    )
     from reflexio.server.services.profile.profile_generation_service_utils import (
         StructuredProfilesOutput,
     )
@@ -4330,7 +4333,8 @@ def _saved_legacy_window(pipeline, monkeypatch, *, kind, empty=False, schema=Non
             }
         )
         if kind == "playbook"
-        else StructuredProfilesOutput.model_validate(
+        else read_saved_structured_output(
+            StructuredProfilesOutput,
             {
                 "profiles": []
                 if empty
@@ -4340,7 +4344,7 @@ def _saved_legacy_window(pipeline, monkeypatch, *, kind, empty=False, schema=Non
                         "time_to_live": "infinity",
                     }
                 ]
-            }
+            },
         )
     )
     run = build_extractor_agent_run_record(
@@ -4354,7 +4358,10 @@ def _saved_legacy_window(pipeline, monkeypatch, *, kind, empty=False, schema=Non
         extractor_config=config,
         service_config=service.service_config,
         agent_context=engine.request_context.configurator.get_agent_context(),
-        output_schema_name=schema or type(output).__name__,
+        output_schema_name=schema
+        or (
+            StructuredPlaybookList if kind == "playbook" else StructuredProfilesOutput
+        ).__name__,
     )
     run = replace(
         run,
@@ -4741,7 +4748,7 @@ def test_profile_consolidation_control_failure_preserves_extracted_window_withou
                                 "profiles": [
                                     {
                                         "content": "The user prefers concise explanations.",
-                                        "time_to_live": "infinity",
+                                        "explicit_storage_deadline": None,
                                         "source_span": quote,
                                     }
                                 ]

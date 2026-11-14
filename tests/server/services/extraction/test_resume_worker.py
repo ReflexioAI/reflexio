@@ -492,7 +492,7 @@ def test_resume_worker_resumes_profile_run_and_consumes_dependency(
                 "profiles": [
                     {
                         "content": "User deployment target is AWS ECS.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                     }
                 ]
             }
@@ -545,7 +545,7 @@ def test_resume_worker_retries_finalization_without_rerunning_agent(
                 "profiles": [
                     {
                         "content": "User deployment target is AWS ECS.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                     }
                 ]
             }

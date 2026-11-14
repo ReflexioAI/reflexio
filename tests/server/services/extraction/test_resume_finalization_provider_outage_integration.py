@@ -106,7 +106,7 @@ def _resume_commits_once(monkeypatch) -> list[int]:
                 "profiles": [
                     {
                         "content": "Deploy to the container cluster.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                     }
                 ]
             },
