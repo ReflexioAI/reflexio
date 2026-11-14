@@ -1,4 +1,4 @@
-"""SQLite vector writes use semantic profile text, retaining stored authority."""
+"""SQLite semantic indexes omit lifecycle authority without changing storage."""
 
 from copy import deepcopy
 from hashlib import sha256
@@ -7,7 +7,12 @@ from unittest.mock import patch
 
 import pytest
 
-from reflexio.models.api_schema.service_schemas import ProfileTimeToLive, UserProfile
+from reflexio.models.api_schema.retriever_schema import SearchUserProfileRequest
+from reflexio.models.api_schema.service_schemas import (
+    ProfileTimeToLive,
+    UserProfile,
+)
+from reflexio.models.config_schema import SearchMode
 from reflexio.server.services.profile.lifecycle import KEY
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import BaseStorage
@@ -108,3 +113,74 @@ def test_sqlite_profile_vectors_ignore_only_lifecycle_bookkeeping(
             ).fetchall()
         ]
         assert vectors == [plain.embedding, controlled.embedding]
+
+
+@pytest.mark.parametrize("operation", ["add", "update"])
+def test_sqlite_profile_fts_excludes_operational_metadata_but_keeps_facts(
+    storage: BaseStorage, operation: str
+) -> None:
+    assert isinstance(storage, SQLiteStorage)
+    profile = UserProfile(
+        user_id="lexical-owner",
+        profile_id="lexical-profile",
+        content="factuniquetoken",
+        last_modified_timestamp=1_800_000_000,
+        generated_from_request_id="lexical-request",
+        profile_time_to_live=ProfileTimeToLive.INFINITY,
+        custom_features={
+            "ordinaryuniquekey": "ordinaryuniquetoken",
+            "nested": {KEY: "nestedordinarytoken"},
+            KEY: {
+                "created_at": 1_893_456_789,
+                "ancestor_ids": ["ancestoruniquetoken"],
+                "explicit_storage_deadline": {
+                    "deadline_utc": "2030-01-01T00:00:00Z",
+                    "source_quote": "permissionuniquetoken",
+                },
+            },
+        },
+        expanded_terms="expansionuniquetoken",
+    )
+    before = deepcopy(profile.custom_features)
+    if operation == "add":
+        storage.add_user_profile(profile.user_id, [profile], skip_embedding=True)
+    else:
+        original = profile.model_copy(
+            update={"content": "oldfactuniquetoken", "custom_features": None}
+        )
+        storage.add_user_profile(profile.user_id, [original], skip_embedding=True)
+        storage.update_user_profile_by_id(profile.user_id, profile.profile_id, profile)
+
+    def matches(token: str) -> list[str]:
+        return [
+            row.profile_id
+            for row in storage.search_user_profile(
+                SearchUserProfileRequest(
+                    user_id=profile.user_id, query=token, search_mode=SearchMode.FTS
+                )
+            )
+        ]
+
+    for token in [
+        "factuniquetoken",
+        "ordinaryuniquetoken",
+        "nestedordinarytoken",
+        "expansionuniquetoken",
+    ]:
+        assert matches(token) == [profile.profile_id]
+    for token in [
+        "1893456789",
+        "ancestoruniquetoken",
+        "permissionuniquetoken",
+        "created_at",
+        "oldfactuniquetoken",
+        "ordinaryuniquekey",
+    ]:
+        assert matches(token) == []
+    assert storage.get_user_profile(profile.user_id)[0].custom_features == before
+
+    # Literal fact text is still searchable even when it repeats an operational
+    # value: exclude metadata at its source rather than scrubbing matching words.
+    profile.content = "factuniquetoken permissionuniquetoken"
+    storage.update_user_profile_by_id(profile.user_id, profile.profile_id, profile)
+    assert matches("permissionuniquetoken") == [profile.profile_id]

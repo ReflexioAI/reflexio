@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
@@ -80,6 +81,15 @@ def playbook_trigger_embedding_text(trigger: str | None) -> str:
     return " ".join(text.split())
 
 
+def profile_semantic_features(profile: UserProfile) -> dict[str, Any]:
+    """Return ordinary features, excluding only top-level lifecycle authority."""
+    return {
+        key: value
+        for key, value in (profile.custom_features or {}).items()
+        if key != PROFILE_LIFECYCLE_KEY
+    }
+
+
 def embedding_text(entity: EmbeddingTextEntity) -> str:
     """Return the exact text used for an entity's stored embedding."""
     if isinstance(entity, Interaction):
@@ -88,11 +98,7 @@ def embedding_text(entity: EmbeddingTextEntity) -> str:
         parts = [entity.content]
         # Operational lifecycle authority is persisted, but is not semantic
         # profile text. Preserve every ordinary feature and never mutate storage.
-        features = {
-            key: value
-            for key, value in (entity.custom_features or {}).items()
-            if key != PROFILE_LIFECYCLE_KEY
-        }
+        features = profile_semantic_features(entity)
         if features:
             parts.append(str(features))
         return "\n".join(parts)

@@ -18,7 +18,10 @@ from reflexio.models.api_schema.service_schemas import (
     Status,
     UserProfile,
 )
-from reflexio.server.services.embedding_text import embedding_text
+from reflexio.server.services.embedding_text import (
+    embedding_text,
+    profile_semantic_features,
+)
 from reflexio.server.services.storage.lifecycle_filters import (
     GC_ELIGIBLE_STATUSES,
     PROFILE_TOMBSTONE_STATUS_VALUES,
@@ -354,8 +357,9 @@ class ProfileStoreMixin:
         for profile, _lineage_context, _subject_ref in rows:
             embedding = profile.embedding
             fts_parts = [profile.content or ""]
-            if profile.custom_features:
-                fts_parts.extend(str(v) for v in profile.custom_features.values() if v)
+            fts_parts.extend(
+                str(v) for v in profile_semantic_features(profile).values() if v
+            )
             if profile.expanded_terms:
                 fts_parts.append(profile.expanded_terms)
             self._fts_upsert_profile(profile.profile_id, " ".join(fts_parts))
@@ -442,10 +446,9 @@ class ProfileStoreMixin:
                 )
             self.conn.commit()
             fts_parts = [new_profile.content or ""]
-            if new_profile.custom_features:
-                fts_parts.extend(
-                    str(v) for v in new_profile.custom_features.values() if v
-                )
+            fts_parts.extend(
+                str(v) for v in profile_semantic_features(new_profile).values() if v
+            )
             if new_profile.expanded_terms:
                 fts_parts.append(new_profile.expanded_terms)
             self._fts_upsert_profile(profile_id, " ".join(fts_parts))
