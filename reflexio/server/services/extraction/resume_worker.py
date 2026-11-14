@@ -74,6 +74,7 @@ from reflexio.server.services.profile.committed_output import (
 from reflexio.server.services.profile.components.extractor import (
     MAX_EXISTING_PROFILES_FOR_CONTEXT,
     ProfileExtractor,
+    profile_forget_authority_texts,
     profile_source_evidence_texts,
 )
 from reflexio.server.services.profile.profile_generation_service_utils import (
@@ -1283,6 +1284,9 @@ class ExtractionResumeWorker:
                 source_interaction_ids=list(run.binding.source_interaction_ids),
                 committed_run=run,
                 source_texts=profile_source_evidence_texts(
+                    request_interaction_data_models
+                ),
+                user_source_texts=profile_forget_authority_texts(
                     request_interaction_data_models
                 ),
             ),

@@ -39,6 +39,7 @@ def new_request(quote: str | None = FORGET):
         "u",
         "r",
         source_texts=[FORGET],
+        user_source_texts=[FORGET],
     )[0]
 
 

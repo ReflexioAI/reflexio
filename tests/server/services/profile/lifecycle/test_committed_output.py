@@ -163,7 +163,9 @@ def test_modern_saved_permissions_retain_strict_evidence_validation():
     payload = {"profiles": [{"content": "tea", "explicit_forget_quote": "forget tea"}]}
     with pytest.raises(ValueError, match="absent from original source"):
         convert(payload, saved_run(payload))
-    (profile,) = convert(payload, saved_run(payload), source_texts=["forget tea"])
+    with pytest.raises(ValueError, match="absent from original source"):
+        convert(payload, saved_run(payload), source_texts=["forget tea"])
+    (profile,) = convert(payload, saved_run(payload), user_source_texts=["forget tea"])
     assert lifecycle.metadata(profile)["explicit_forget_quote"] == "forget tea"
 
 

@@ -91,12 +91,27 @@ def storage_deadline(
     return ExplicitStorageDeadline.model_validate(value)
 
 
+def validate_forget_authority(
+    forget_quote: str | None, user_source_texts: Sequence[str]
+) -> None:
+    """Require exact visible original User text for destructive authority."""
+    if forget_quote is not None and (
+        not isinstance(forget_quote, str)
+        or not forget_quote.strip()
+        or not any(forget_quote in text for text in user_source_texts)
+    ):
+        raise ValueError(
+            "Explicit forget quote is absent from original source User instruction"
+        )
+
+
 def new_features(
     features: Mapping[str, Any] | None,
     *,
     now: int,
     deadline: ExplicitStorageDeadline | None,
     source_texts: Sequence[str] = (),
+    user_source_texts: Sequence[str] = (),
     forget_quote: str | None = None,
 ) -> dict[str, Any]:
     """Validate provenance membership, without classifying retention semantics."""
@@ -108,12 +123,7 @@ def new_features(
         raise ValueError(
             "Explicit storage deadline quote is absent from original source"
         )
-    if forget_quote is not None and (
-        not isinstance(forget_quote, str)
-        or not forget_quote.strip()
-        or not any(forget_quote in text for text in source_texts)
-    ):
-        raise ValueError("Explicit forget quote is absent from original source")
+    validate_forget_authority(forget_quote, user_source_texts)
     return {
         **(features or {}),
         KEY: {

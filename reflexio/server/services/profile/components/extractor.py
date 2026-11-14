@@ -137,6 +137,44 @@ def profile_source_evidence_texts(
     return contiguous_texts
 
 
+def profile_forget_authority_texts(
+    request_interaction_data_models: list[RequestInteractionDataModel],
+    *,
+    visible_spans: tuple[SourceSpan, ...] | None = None,
+) -> list[str]:
+    """Visible original User instructions, separate from factual source context.
+
+    Attached tool results and expert/shadow annotations are factual context,
+    not User instructions. Filtering precedes contiguous-range reconstruction,
+    so other roles or missing excerpts cannot complete an authority quotation.
+    """
+    if visible_spans is not None:
+        return profile_source_evidence_texts(
+            [],
+            visible_spans=tuple(
+                span
+                for span in visible_spans
+                if span.role.strip().casefold() == "user"
+                and span.field in {"content", "user_action_description"}
+            ),
+        )
+    texts = []
+    for model in request_interaction_data_models:
+        for interaction in model.interactions:
+            if interaction.role.strip().casefold() != "user":
+                continue
+            if interaction.content:
+                texts.append(interaction.content)
+            # Match ordinary prompt visibility without promoting the rendered
+            # action label or attached tool serialization into User authority.
+            if (
+                interaction.user_action.value != "none"
+                and interaction.user_action_description
+            ):
+                texts.append(interaction.user_action_description)
+    return texts
+
+
 def _profile_evidence_validation_errors(
     output: BaseModel, spans: tuple[SourceSpan, ...]
 ) -> list[str]:
@@ -145,6 +183,7 @@ def _profile_evidence_validation_errors(
         return ["Return the supplied profile extraction schema."]
     try:
         contiguous_texts = profile_source_evidence_texts([], visible_spans=spans)
+        user_texts = profile_forget_authority_texts([], visible_spans=spans)
     except ValueError as error:
         return [str(error)]
     errors = [
@@ -163,9 +202,9 @@ def _profile_evidence_validation_errors(
                 f"profiles[{index}]: storage deadline must quote exact visible original source."
             )
         quote = profile.explicit_forget_quote
-        if quote is not None and not any(quote in text for text in contiguous_texts):
+        if quote is not None and not any(quote in text for text in user_texts):
             errors.append(
-                f"profiles[{index}]: forget authority must quote exact visible original source."
+                f"profiles[{index}]: forget authority must quote exact visible original User instruction."
             )
     return errors
 
@@ -369,6 +408,12 @@ class ProfileExtractor:
                 if coordinator is not None
                 else None,
             ),
+            user_source_texts=profile_forget_authority_texts(
+                request_interaction_data_models,
+                visible_spans=(coordinator.carried_source_spans or ())
+                if coordinator is not None
+                else None,
+            ),
             committed_run=self._last_resumable_run,
         )
         # Defer the stride-bookmark advance onto the outcome instead of
@@ -408,6 +453,7 @@ class ProfileExtractor:
         request_id: str,
         source_interaction_ids: list[int] | None = None,
         source_texts: list[str] | None = None,
+        user_source_texts: list[str] | None = None,
         committed_run: AgentRunRecord | None = None,
     ) -> list[UserProfile]:
         """
@@ -493,6 +539,7 @@ class ProfileExtractor:
                 if raw_deadline is not None
                 else None,
                 source_texts=source_texts or [],
+                user_source_texts=user_source_texts or [],
                 forget_quote=profile_content.get("explicit_forget_quote"),
             )
             if legacy_ttl is not None:

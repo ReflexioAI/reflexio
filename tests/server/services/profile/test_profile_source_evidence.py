@@ -19,6 +19,7 @@ from reflexio.server.services.extraction.resume_worker import ExtractionResumeWo
 from reflexio.server.services.profile.components.extractor import (
     ProfileExtractor,
     _profile_evidence_validation_errors,
+    profile_forget_authority_texts,
     profile_source_evidence_texts,
 )
 from reflexio.server.services.profile.lifecycle import metadata
@@ -56,9 +57,9 @@ def _raw(kind):
     return {"content": "An extracted fact", "source_span": "A visible fact", **fields}
 
 
-def _convert(raw, texts):
+def _convert(raw, texts, user_texts=()):
     return ProfileExtractor._convert_raw_to_user_profiles(
-        [raw], "u", "r", source_texts=texts
+        [raw], "u", "r", source_texts=texts, user_source_texts=user_texts
     )[0]
 
 
@@ -84,7 +85,7 @@ def test_ordinary_view_authorizes_visible_action_but_not_hidden_fields(kind):
     ]
     texts = profile_source_evidence_texts(models)
     assert quote in "\n".join(texts)
-    assert _convert(_raw(kind), texts)
+    assert _convert(_raw(kind), texts, profile_forget_authority_texts(models))
     hidden = interaction.model_copy(update={"user_action": UserActionType.NONE})
     hidden_models = [models[0].model_copy(update={"interactions": [hidden]})]
     with pytest.raises(ValueError, match="absent from original source"):
@@ -95,11 +96,13 @@ def test_ordinary_view_authorizes_visible_action_but_not_hidden_fields(kind):
 
 @pytest.mark.integration
 @pytest.mark.parametrize("kind", ["deadline", "forget"])
+@pytest.mark.parametrize("role", ["User", "Assistant", "Tool"])
 def test_fresh_run_converts_permission_in_actual_visible_action_view(
-    request_context, kind, monkeypatch
+    request_context, kind, monkeypatch, role
 ):
     quote, _ = _permission(kind)
     interaction = Interaction(
+        role=role,
         interaction_id=1,
         user_id="u",
         request_id="r",
@@ -125,6 +128,10 @@ def test_fresh_run_converts_permission_in_actual_visible_action_view(
     )
     generated = MagicMock(return_value=[_raw(kind)])
     monkeypatch.setattr(extractor, "_generate_raw_updates_from_sessions", generated)
+    if kind == "forget" and role != "User":
+        with pytest.raises(ValueError, match="User instruction"):
+            extractor.run()
+        return
     outcome = extractor.run()
     assert isinstance(outcome, ExtractionOutcome)
     assert len(outcome.items) == 1
@@ -156,8 +163,16 @@ def test_prepared_permission_uses_every_visible_original_field(kind, field):
     )
     raw = _raw(kind)
     output = StructuredProfilesOutput.model_validate({"profiles": [raw]})
-    assert _profile_evidence_validation_errors(output, spans) == []
-    assert _convert(raw, profile_source_evidence_texts([], visible_spans=spans))
+    errors = _profile_evidence_validation_errors(output, spans)
+    texts = profile_source_evidence_texts([], visible_spans=spans)
+    users = profile_forget_authority_texts([], visible_spans=spans)
+    if kind == "forget" and field not in {"content", "user_action_description"}:
+        assert errors
+        with pytest.raises(ValueError, match="User instruction"):
+            _convert(raw, texts, users)
+    else:
+        assert errors == []
+        assert _convert(raw, texts, users)
 
 
 @pytest.mark.parametrize("kind", ["deadline", "forget"])
@@ -209,7 +224,9 @@ def test_overflow_carries_permission_separate_from_factual_source_quote(kind):
         == []
     )
     assert _convert(
-        _raw(kind), profile_source_evidence_texts([], visible_spans=carried)
+        _raw(kind),
+        profile_source_evidence_texts([], visible_spans=carried),
+        profile_forget_authority_texts([], visible_spans=carried),
     )
 
 
@@ -218,8 +235,9 @@ def test_overflow_carries_permission_separate_from_factual_source_quote(kind):
 @pytest.mark.parametrize(
     "field", ["content", "user_action_description", "expert_content", "shadow_content"]
 )
+@pytest.mark.parametrize("role", ["User", "Assistant", "Tool"])
 def test_resumed_conversion_reconstructs_only_ordinary_visible_evidence(
-    storage, request_context, kind, field
+    storage, request_context, kind, field, role
 ):
     quote, permission = _permission(kind)
     resume._seed_interactions(storage)
@@ -232,6 +250,9 @@ def test_resumed_conversion_reconstructs_only_ordinary_visible_evidence(
     }
     with storage.commit_scope():
         storage.conn.execute(statements[field], (quote,))
+        storage.conn.execute(
+            "UPDATE interactions SET role=? WHERE interaction_id=1", (role,)
+        )
     run = storage.get_agent_run("run_1")
     run = replace(
         run,
@@ -245,7 +266,9 @@ def test_resumed_conversion_reconstructs_only_ordinary_visible_evidence(
     client = MagicMock()
     worker = ExtractionResumeWorker(request_context=request_context, llm_client=client)
     client.reset_mock()  # Constructor's client-presence check is not inference.
-    if field in {"expert_content", "shadow_content"}:
+    if field in {"expert_content", "shadow_content"} or (
+        kind == "forget" and role != "User"
+    ):
         with pytest.raises(ValueError, match="absent from original source"):
             worker._items_from_committed_output(run)
     else:
@@ -260,3 +283,45 @@ def test_resumed_conversion_reconstructs_only_ordinary_visible_evidence(
             assert metadata(items[0])["explicit_forget_quote"] == quote
     client.assert_not_called()
     assert client.mock_calls == []
+
+
+@pytest.mark.parametrize("role", ["User", "Assistant", "Tool"])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "content",
+        "user_action_description",
+        "tools_used[0]",
+        "expert_content",
+        "shadow_content",
+    ],
+)
+def test_overflow_forget_requires_user_instruction_not_attached_context(role, field):
+    quote, _ = _permission("forget")
+    spans = (
+        SourceSpan(1, "r", "User", "content", 0, 14, "A visible fact"),
+        SourceSpan(2, "r", role, field, 0, len(quote), quote),
+    )
+    carried = _candidate_source_spans([_raw("forget")], "profiles", spans)
+    facts = profile_source_evidence_texts([], visible_spans=carried)
+    users = profile_forget_authority_texts([], visible_spans=carried)
+    assert quote in facts
+    output = StructuredProfilesOutput.model_validate({"profiles": [_raw("forget")]})
+    if role == "User" and field in {"content", "user_action_description"}:
+        assert not _profile_evidence_validation_errors(output, carried)
+        assert _convert(_raw("forget"), facts, users)
+    else:
+        assert _profile_evidence_validation_errors(output, carried)
+        with pytest.raises(ValueError, match="User instruction"):
+            _convert(_raw("forget"), facts, users)
+
+
+def test_assistant_span_cannot_complete_user_instruction_gap():
+    quote, _ = _permission("forget")
+    middle = len(quote) // 2
+    spans = (
+        SourceSpan(1, "r", "User", "content", 0, middle, quote[:middle]),
+        SourceSpan(1, "r", "Assistant", "content", middle, len(quote), quote[middle:]),
+    )
+    assert quote in profile_source_evidence_texts([], visible_spans=spans)
+    assert quote not in profile_forget_authority_texts([], visible_spans=spans)
