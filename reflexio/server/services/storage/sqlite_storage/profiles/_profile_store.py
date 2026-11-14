@@ -18,6 +18,7 @@ from reflexio.models.api_schema.service_schemas import (
     Status,
     UserProfile,
 )
+from reflexio.server.services.embedding_text import embedding_text
 from reflexio.server.services.storage.lifecycle_filters import (
     GC_ELIGIBLE_STATUSES,
     PROFILE_TOMBSTONE_STATUS_VALUES,
@@ -236,11 +237,11 @@ class ProfileStoreMixin:
         and then persist with ``skip_embedding=True``.
         """
         for profile in profiles:
-            embedding_text = "\n".join([profile.content, str(profile.custom_features)])
+            profile_text = embedding_text(profile)
             if self._should_expand_documents():
                 with ThreadPoolExecutor(max_workers=2) as executor:
                     emb_future = executor.submit(
-                        copy_context().run, self._get_embedding, embedding_text
+                        copy_context().run, self._get_embedding, profile_text
                     )
                     exp_future = executor.submit(
                         copy_context().run, self._expand_document, profile.content
@@ -248,7 +249,7 @@ class ProfileStoreMixin:
                     profile.embedding = emb_future.result(timeout=15)
                     profile.expanded_terms = exp_future.result(timeout=15)
             else:
-                profile.embedding = self._get_embedding(embedding_text)
+                profile.embedding = self._get_embedding(profile_text)
 
     @SQLiteStorageBase.handle_exceptions
     def add_user_profile(
@@ -390,9 +391,7 @@ class ProfileStoreMixin:
             self._assert_subject_writable_locked(
                 self._subject_ref_from_profile_row(row)
             )
-        embedding = self._get_embedding(
-            "\n".join([new_profile.content, str(new_profile.custom_features)])
-        )
+        embedding = self._get_embedding(embedding_text(new_profile))
         new_profile.embedding = embedding
         with self._lock:
             if (
