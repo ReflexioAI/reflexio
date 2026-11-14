@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from threading import Lock
 from typing import TYPE_CHECKING, Any
 
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.work_scope import current_project_id
 
 if TYPE_CHECKING:
@@ -32,7 +32,7 @@ def require_historical_inputs(inputs: HistoricalInputs | None) -> HistoricalInpu
     if not isinstance(inputs, HistoricalInputs) or any(
         not isinstance(values, dict) for values in (inputs.profiles, inputs.playbooks)
     ):
-        raise InputBudgetConfigurationError("Original historical inputs unavailable")
+        raise ExtractionInputIntegrityError("Original historical inputs unavailable")
     if any(
         not isinstance(key, str)
         or not key
@@ -42,12 +42,12 @@ def require_historical_inputs(inputs: HistoricalInputs | None) -> HistoricalInpu
         for values in (inputs.profiles, inputs.playbooks)
         for key, digest in values.items()
     ):
-        raise InputBudgetConfigurationError("Original historical inputs invalid")
+        raise ExtractionInputIntegrityError("Original historical inputs invalid")
     try:
         if any(str(int(key)) != key for key in inputs.playbooks):
             raise ValueError("noncanonical identity")
     except ValueError as exc:
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Historical playbook identity invalid"
         ) from exc
     return deepcopy(inputs)
@@ -59,7 +59,7 @@ def history_from_output(output: Any) -> HistoricalInputs:
         publication.get("history_inputs") if isinstance(publication, dict) else None
     )
     if not isinstance(inputs, dict) or set(inputs) != {"profiles", "playbooks"}:
-        raise InputBudgetConfigurationError("Original historical inputs unavailable")
+        raise ExtractionInputIntegrityError("Original historical inputs unavailable")
     return require_historical_inputs(
         HistoricalInputs(inputs["profiles"], inputs["playbooks"])
     )
@@ -78,7 +78,7 @@ def merge_historical_inputs(
             key in previous and previous[key] != digest
             for key, digest in current.items()
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Historical learning changed between model stages"
             )
         previous.update(current)
@@ -114,14 +114,14 @@ class _Capture:
                 or user_id != self.user_id
                 or not identity
             ):
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Historical input capture scope changed"
                 )
             values = (
                 self.inputs.profiles if kind == "profile" else self.inputs.playbooks
             )
             if identity in values and values[identity] != digest:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Historical learning changed during preparation"
                 )
             values[identity] = digest
@@ -129,7 +129,7 @@ class _Capture:
     def finish(self) -> HistoricalInputs:
         with self.lock:
             if not self.active:
-                raise InputBudgetConfigurationError("Historical input capture ended")
+                raise ExtractionInputIntegrityError("Historical input capture ended")
             self.active = False
             return HistoricalInputs(
                 dict(self.inputs.profiles), dict(self.inputs.playbooks)
@@ -147,7 +147,7 @@ def historical_input_scope(
 ) -> Iterator[_Capture]:
     # Each preparation owns one capture. A nested/copy cannot reset the evidence.
     if _current.get() is not None:
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Historical preparation capture already active"
         )
     if (
@@ -155,7 +155,7 @@ def historical_input_scope(
         or not run.binding.user_id
         or (run.project_id or "") != (current_project_id() or "")
     ):
-        raise InputBudgetConfigurationError("Historical preparation binding changed")
+        raise ExtractionInputIntegrityError("Historical preparation binding changed")
     capture = _Capture(storage, run)
     token = _current.set(capture)
     try:
@@ -178,7 +178,7 @@ def record_historical_profiles(
 
     for profile in profiles:
         if not profile.profile_id:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Historical profile identity unavailable"
             )
         capture.record(
@@ -202,7 +202,7 @@ def record_historical_playbooks(
 
     for playbook in playbooks:
         if playbook.user_playbook_id is None:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Historical playbook identity unavailable"
             )
         capture.record(

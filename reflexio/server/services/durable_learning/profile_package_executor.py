@@ -15,7 +15,7 @@ from typing import Any
 from reflexio.models.api_schema.service_schemas import UserProfile
 from reflexio.server.env_utils import env_bool, env_str
 from reflexio.server.llm.input_budget import (
-    InputBudgetConfigurationError,
+    ExtractionInputIntegrityError,
     declared_context_limits,
 )
 from reflexio.server.prompt.prompt_manager import PromptManager
@@ -95,7 +95,7 @@ class _ProfilePackageCoordinator(OverflowCoordinator):
             cache_only=True,
         )
         if self.checkpoint.get("stage") not in {"extracted", "gated_false"}:
-            raise InputBudgetConfigurationError("Profile processing is incomplete")
+            raise ExtractionInputIntegrityError("Profile processing is incomplete")
 
     def billing_input_text(self) -> str:
         return "\n".join(
@@ -125,7 +125,7 @@ class ProfilePackageWindowExecutor(WindowExecutor):
 
     def service(self, window: Window) -> tuple[Any, Any, Any]:
         if window.kind != "profile" or env_bool("MOCK_LLM_RESPONSE", default=False):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Profile package requires real textual profile work"
             )
         return super().service(window)
@@ -144,11 +144,11 @@ class ProfilePackageWindowExecutor(WindowExecutor):
         known = self.storage.get_agent_run(f"window:{window.window_id}")
         manifest = self._overflow_manifest(known)
         if known is not None and (manifest is None or manifest["version"] != 2):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Existing extraction requires its original protocol"
             )
         if known is None and window.outcome is not None:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Cached extraction lacks its package parent"
             )
         groups = service.service_config.window_interactions
@@ -164,7 +164,7 @@ class ProfilePackageWindowExecutor(WindowExecutor):
         )
         if known:
             if not isinstance(snapshot, dict):
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Frozen profile preparation unavailable"
                 )
             profiles = [
@@ -252,7 +252,7 @@ class ProfilePackageWindowExecutor(WindowExecutor):
         if known is not None and not matches_frozen_extractor_binding(
             known, expected, window.policy["extractor"]
         ):
-            raise InputBudgetConfigurationError("Profile package admission changed")
+            raise ExtractionInputIntegrityError("Profile package admission changed")
         preparation = prepare_profile_package(
             groups,
             org_id=self.storage.org_id,
@@ -279,7 +279,7 @@ class ProfilePackageWindowExecutor(WindowExecutor):
             ),
         )
         if snapshot is not None and preparation.snapshot != snapshot:
-            raise InputBudgetConfigurationError("Frozen profile preparation changed")
+            raise ExtractionInputIntegrityError("Frozen profile preparation changed")
         plan = preparation.compression
         descriptor = {
             "name": "source-package",
@@ -303,7 +303,7 @@ class ProfilePackageWindowExecutor(WindowExecutor):
         if known is not None and (
             manifest is None or manifest["input_protocol"] != descriptor
         ):
-            raise InputBudgetConfigurationError("Profile package admission changed")
+            raise ExtractionInputIntegrityError("Profile package admission changed")
         with self.storage.commit_scope():
             self.storage.fence_user_extraction(window.user_id, token)
             self.storage.validate_extraction_inputs(window)
@@ -332,13 +332,13 @@ class ProfilePackageWindowExecutor(WindowExecutor):
                     known.generation_request_snapshot
                     != expected.generation_request_snapshot
                 ):
-                    raise InputBudgetConfigurationError(
+                    raise ExtractionInputIntegrityError(
                         "Profile parent admission lost ownership"
                     )
             else:
                 known = adopt_agent_run_for_execution(self.storage, known)
         if manifest is None:
-            raise InputBudgetConfigurationError("Profile manifest unavailable")
+            raise ExtractionInputIntegrityError("Profile manifest unavailable")
         coordinator = _ProfilePackageCoordinator(
             self.storage,
             window,
@@ -498,7 +498,7 @@ class ProfilePackageWindowExecutor(WindowExecutor):
                 allow_nan=False,
             )
         except (TypeError, ValueError) as exc:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Profile write plan is not finite JSON"
             ) from exc
         return hashlib.sha256(encoded.encode()).hexdigest()
@@ -520,14 +520,14 @@ class ProfilePackageWindowExecutor(WindowExecutor):
                 "version": 1,
                 "skipped": True,
             }:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Negative profile gate has a write plan"
                 )
             return
         if checkpoint.get("profile_package_plan_digest") != self._plan_digest(
             coordinator, result, checkpoint
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Frozen profile write plan binding changed"
             )
         # The frozen digest establishes integrity, not User permission. Recheck
@@ -552,7 +552,7 @@ class ProfilePackageWindowExecutor(WindowExecutor):
                 candidates.get(instruction.source_profile_id)
                 != instruction.source_quote
             ):
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Frozen erasure lacks original User authority candidate"
                 )
             validate_forget_authority(
@@ -570,10 +570,10 @@ class ProfilePackageWindowExecutor(WindowExecutor):
         if not result.gate_decision:
             return
         if result.agent is None or result.agent.output is None:
-            raise InputBudgetConfigurationError("Completed profile child unavailable")
+            raise ExtractionInputIntegrityError("Completed profile child unavailable")
         run = coordinator.saved_run
         if run is None:
-            raise InputBudgetConfigurationError("Profile parent execution unavailable")
+            raise ExtractionInputIntegrityError("Profile parent execution unavailable")
         with owned_agent_run_write(self.storage, run):
             coordinator.require_full_source_coverage()
             self.storage.validate_extraction_historical_profiles(
@@ -593,7 +593,7 @@ class ProfilePackageWindowExecutor(WindowExecutor):
                 ),
             )
             if completed is None or completed.status != AgentRunStatus.AGENT_COMPLETED:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Profile package completion lost ownership"
                 )
         coordinator.saved_run = completed
@@ -615,4 +615,4 @@ class ProfilePackageWindowExecutor(WindowExecutor):
         if encode_plan(plan, service) != coordinator.checkpoint.get(
             "profile_package_plan"
         ):
-            raise InputBudgetConfigurationError("Cached profile write plan changed")
+            raise ExtractionInputIntegrityError("Cached profile write plan changed")

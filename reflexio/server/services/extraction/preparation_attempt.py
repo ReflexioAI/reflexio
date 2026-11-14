@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from threading import Lock
 
 from reflexio.server.llm.compute_admission import external_compute_admission
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.services.extraction.publication_preparation import (
     preparation_claim_digest,
 )
@@ -31,11 +31,11 @@ class _PreparationAttempt:
         # neither provider I/O nor worker joins run while this mutex is held.
         with self.lock:
             if self.storage.in_commit_scope:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Secondary compute requires its own admission writer"
                 )
             if not self.active or current_project_id() != self.project:
-                raise InputBudgetConfigurationError("Preparation admission scope ended")
+                raise ExtractionInputIntegrityError("Preparation admission scope ended")
             if self.identity is None:
                 entry = self.storage.begin_agent_preparation_attempt(self.run)
                 self.identity = entry.identity
@@ -54,7 +54,7 @@ def preparation_attempt_scope(
     storage: BaseStorage, run: AgentRunRecord
 ) -> Iterator[_PreparationAttempt]:
     if external_compute_admission.get() is not None:
-        raise InputBudgetConfigurationError("Preparation admission already active")
+        raise ExtractionInputIntegrityError("Preparation admission already active")
     attempt = _PreparationAttempt(storage, run)
     guard_token = external_compute_admission.set(attempt.enter)
     try:
