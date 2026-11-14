@@ -26,7 +26,7 @@ def test_invalid_native_configuration_logs_names_without_values(
     if setting == "path":
         monkeypatch.setenv("CLAUDE_SMART_HOST", "opencode")
         monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "private-canary-not-an-executable")
-        monkeypatch.setattr(provider.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(provider.shutil, "which", lambda _name, **_kwargs: None)
         assert provider._resolve_cli_path() is None
     else:
         monkeypatch.setenv(
@@ -200,17 +200,25 @@ def test_native_relative_executable_is_anchored_before_changing_cwd(
     executable = tmp_path / "bin with spaces" / "opencode.exe"
     executable.parent.mkdir()
     executable.touch()
+    executable.chmod(0o755)
     selected = []
 
     def launch(argv, **kwargs):
         selected.append((argv, kwargs))
+        if argv[-1] == "--help":
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                "  --model\n  --agent\n  --format\n  --title\n  --standalone\n",
+                "",
+            )
         assert Path(kwargs["cwd"]) != tmp_path
         return subprocess.CompletedProcess(argv, 0, '{"type":"text","text":"ok"}', "")
 
     monkeypatch.setattr(native, "run_native_cli", launch)
     relative = str(executable.relative_to(tmp_path))
     if through_path:
-        monkeypatch.setattr(native.shutil, "which", lambda _name: relative)
+        monkeypatch.setattr(native.shutil, "which", lambda _name, **_kwargs: relative)
     native.run_opencode(
         cli_path="opencode" if through_path else relative,
         system_prompt="s",
@@ -285,7 +293,9 @@ def test_setup_expiry_cannot_launch(monkeypatch, tmp_path):
     monkeypatch.setattr(native, "run_native_cli", dispatch)
     times = iter((1.0, 3.0))
     monkeypatch.setattr(native.time, "monotonic", lambda: next(times))
-    with pytest.raises(native.OpenCodeCLIError, match="before launch"):
+    from reflexio.server.llm._litellm_types import LLMHardTimeoutError
+
+    with pytest.raises(LLMHardTimeoutError, match="deadline expired"):
         native.run_opencode(
             cli_path=sys.executable,
             system_prompt="",

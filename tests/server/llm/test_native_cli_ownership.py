@@ -431,7 +431,9 @@ def test_codex_scratch_and_permit_survive_until_native_reaping(
         hook = tmp_path / "native-hooks"
         hook.mkdir()
         (hook / "sitecustomize.py").write_text(
-            "import sys\nif sys.argv[0] == 'run':\n" + f" exec({code!r})\n",
+            "import sys,os\nif sys.argv[0] == 'run':\n"
+            " if '--help' in sys.argv: print('  --model\\n  --agent\\n  --format\\n  --title\\n  --standalone',flush=True);os._exit(0)\n"
+            + f" exec({code!r})\n",
             encoding="utf-8",
         )
         environment["PYTHONPATH"] = (
@@ -945,6 +947,7 @@ def _physical_probe(root: Path):
         " Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_text('native codex λ',encoding='utf-8')\n"
         " os._exit(0)\n"
         "if Path(sys.argv[0]).name == 'run':\n"
+        " if '--help' in sys.argv: print('  --model\\n  --agent\\n  --format\\n  --title\\n  --standalone',flush=True);os._exit(0)\n"
         " data={'pid':os.getpid(),'ppid':os.getppid(),'argv':sys.argv,'cwd':os.getcwd(),'stdin':sys.stdin.read()}\n"
         " data['config']=json.loads((Path.cwd()/'.opencode'/'opencode.json').read_text(encoding='utf-8'))\n"
         " data['env']={key:os.environ.get(key) for key in ('PWD','OPENCODE_PURE','CLAUDE_SMART_HOST','CLAUDE_SMART_INTERNAL','CLAUDE_CODE_ENTRYPOINT')}\n"

@@ -22,6 +22,7 @@ from reflexio.server.llm import _litellm_text_generation as text_generation_modu
 from reflexio.server.llm import _native_cli as native_cli_module
 from reflexio.server.llm import _native_cli_process as native_process_module
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.llm.providers import _opencode_cli as opencode_module
 from reflexio.server.llm.providers import claude_code_provider, openclaw_provider
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.service_utils import log_model_response
@@ -447,6 +448,26 @@ def _implementation_helper_identities() -> dict[str, dict[str, str]]:
         "native_cli._NativeTask": native_cli_module._NativeTask,
         "claude_code_provider.run_native_cli": claude_code_provider.run_native_cli,
         "openclaw_provider.run_native_cli": openclaw_provider.run_native_cli,
+        "claude_code_provider.ClaudeCodeLLM": claude_code_provider.ClaudeCodeLLM,
+        "claude_code_provider.ClaudeCodeLLM.completion": claude_code_provider.ClaudeCodeLLM.completion,
+        "claude_code_provider.ClaudeCodeLLM._cli_path": claude_code_provider.ClaudeCodeLLM._cli_path,
+        "claude_code_provider.ClaudeCodeLLM._timeout": claude_code_provider.ClaudeCodeLLM._timeout,
+        "claude_code_provider.resolve_cli_request_timeout": claude_code_provider.resolve_cli_request_timeout,
+        "claude_code_provider._resolve_cli_path": claude_code_provider._resolve_cli_path,
+        "claude_code_provider._run_cli_stream": claude_code_provider._run_cli_stream,
+        "claude_code_provider._host": claude_code_provider._host,
+        "claude_code_provider._compat_host": claude_code_provider._compat_host,
+        "opencode.run_opencode": opencode_module.run_opencode,
+        "opencode.resolve_executable": opencode_module.resolve_executable,
+        "opencode._uses_private_server": opencode_module._uses_private_server,
+        "opencode.parse_output": opencode_module.parse_output,
+        "opencode._error_message": opencode_module._error_message,
+        "opencode.run_native_cli": opencode_module.run_native_cli,
+        "opencode.native_cli_directory": opencode_module.native_cli_directory,
+        "opencode.remaining_native_time": opencode_module.remaining_native_time,
+        "opencode.request_timeout_seconds": opencode_module.request_timeout_seconds,
+        "opencode.classify_stall": opencode_module.classify_stall,
+        "opencode.parse_reset_estimate": opencode_module.parse_reset_estimate,
         **{
             f"native_cli.NativeCLIOwner.{name}": getattr(
                 text_generation_module.NativeCLIOwner, name
