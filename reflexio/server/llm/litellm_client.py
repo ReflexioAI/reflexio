@@ -245,9 +245,10 @@ class LiteLLMClient(TextGenerationMixin, EmbeddingMixin, StructuredOutputMixin):
         if not akc:
             return None, None, None
 
-        # local-cli/* routes through the Claude Code CLI (custom provider);
-        # it has no API key config — auth comes from the CLI itself.
-        if model_lower.startswith("local-cli/"):
+        # Native routes have no API credential. Explicit HTTP requests may
+        # still carry an opaque old label: preserve its previous exclusion,
+        # rather than inferring an Anthropic key from the word "claude".
+        if model_lower.startswith(("local-cli/", "claude-code/")):
             return None, None, None
 
         for prefix, attr in self._SIMPLE_PROVIDER_PREFIXES.items():

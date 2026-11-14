@@ -5,11 +5,13 @@ import reflexio.provider_bootstrap  # noqa: F401
 
 # isort: split
 
+import ast
 import inspect
 import json
 import logging
 from collections.abc import Mapping
 from hashlib import sha256
+from types import ModuleType
 from typing import Any, cast
 
 import litellm
@@ -24,6 +26,10 @@ from reflexio.server.llm import _native_cli_process as native_process_module
 from reflexio.server.llm import _native_model_ref as native_model_ref
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.providers import _opencode_cli as opencode_module
+from reflexio.server.llm.providers import (
+    claude_code_stream_parser as native_stream_parser,
+)
+from reflexio.server.llm.providers import cli_tool_protocol as native_tool_protocol
 from reflexio.server.llm.providers import native_cli_provider, openclaw_provider
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.service_utils import log_model_response
@@ -442,20 +448,6 @@ def _registered_native_handler_identity() -> dict[str, str]:
 def _implementation_helper_identities() -> dict[str, dict[str, str]]:
     helpers = {
         "judge._registered_native_handler_identity": _registered_native_handler_identity,
-        "native_model_ref.NativeModelRef": native_model_ref.NativeModelRef,
-        "native_model_ref.env_str": native_model_ref.env_str,
-        "native_model_ref.env_truthy": native_model_ref.env_truthy,
-        "native_cli_provider.env_str": native_cli_provider.env_str,
-        "native_cli_provider.reject_native_selection": native_cli_provider.reject_native_selection,
-        "native_cli_provider.register_native_provider": native_cli_provider.register_native_provider,
-        "native_model_ref.parse_native_model_ref": native_model_ref.parse_native_model_ref,
-        "native_model_ref.configured_native_model": native_model_ref.configured_native_model,
-        "native_model_ref.authorize_native_model": native_model_ref.authorize_native_model,
-        "native_model_ref.native_policy_digest": native_model_ref.native_policy_digest,
-        "native_model_ref.native_request_authority": native_model_ref.native_request_authority,
-        "native_model_ref.reject_native_selection": native_model_ref.reject_native_selection,
-        "native_model_ref._NativeRequestAuthority": native_model_ref._NativeRequestAuthority,
-        "native_cli_provider.authorize_native_model": native_cli_provider.authorize_native_model,
         "worker.authorize_native_model": worker_module.authorize_native_model,
         "worker.native_request_authority": worker_module.native_request_authority,
         "text_generation.authorize_native_model": text_generation_module.authorize_native_model,
@@ -500,44 +492,13 @@ def _implementation_helper_identities() -> dict[str, dict[str, str]]:
         "native_cli.run_native_cli": native_cli_module.run_native_cli,
         "native_cli.native_cli_worker": native_cli_module.native_cli_worker,
         "worker.native_cli_worker": worker_module.native_cli_worker,
-        "native_cli_provider.native_cli_directory": native_cli_provider.native_cli_directory,
         "native_cli.native_cli_directory": native_cli_module.native_cli_directory,
         "native_cli.remaining_native_time": native_cli_module.remaining_native_time,
-        "native_cli_provider.remaining_native_time": native_cli_provider.remaining_native_time,
         "native_cli._publish": native_cli_module._publish,
         "native_cli.NativeCLIContext": native_cli_module.NativeCLIContext,
         "native_cli._WorkerContext": native_cli_module._WorkerContext,
         "native_cli._NativeTask": native_cli_module._NativeTask,
-        "native_cli_provider.run_native_cli": native_cli_provider.run_native_cli,
         "openclaw_provider.run_native_cli": openclaw_provider.run_native_cli,
-        "native_cli_provider.NativeCLILLM": native_cli_provider.NativeCLILLM,
-        "native_cli_provider.NativeCLILLM.completion": native_cli_provider.NativeCLILLM.completion,
-        "native_cli_provider.NativeCLILLM._cli_path": native_cli_provider.NativeCLILLM._cli_path,
-        "native_cli_provider.NativeCLILLM._timeout": native_cli_provider.NativeCLILLM._timeout,
-        "native_cli_provider.resolve_cli_request_timeout": native_cli_provider.resolve_cli_request_timeout,
-        "native_cli_provider._resolve_cli_override_path": native_cli_provider._resolve_cli_override_path,
-        "native_cli_provider._windows_cli_suffixes": native_cli_provider._windows_cli_suffixes,
-        "native_cli_provider._is_windows": native_cli_provider._is_windows,
-        "native_cli_provider._resolve_cli_path": native_cli_provider._resolve_cli_path,
-        "native_cli_provider._run_claude_stream": native_cli_provider._run_claude_stream,
-        "native_cli_provider._run_codex_stream": native_cli_provider._run_codex_stream,
-        "native_cli_provider._cli_name": native_cli_provider._cli_name,
-        "native_cli_provider._codex_migration_error": native_cli_provider._codex_migration_error,
-        "native_cli_provider.validate_native_selection": native_cli_provider.validate_native_selection,
-        "native_cli_provider.parse_stream_json": native_cli_provider.parse_stream_json,
-        "native_cli_provider._run_cli_stream": native_cli_provider._run_cli_stream,
-        "native_cli_provider._compat_host": native_cli_provider._compat_host,
-        "opencode.run_opencode": opencode_module.run_opencode,
-        "opencode.resolve_executable": opencode_module.resolve_executable,
-        "opencode._uses_private_server": opencode_module._uses_private_server,
-        "opencode.parse_output": opencode_module.parse_output,
-        "opencode._error_message": opencode_module._error_message,
-        "opencode.run_native_cli": opencode_module.run_native_cli,
-        "opencode.native_cli_directory": opencode_module.native_cli_directory,
-        "opencode.remaining_native_time": opencode_module.remaining_native_time,
-        "opencode.request_timeout_seconds": opencode_module.request_timeout_seconds,
-        "opencode.classify_stall": opencode_module.classify_stall,
-        "opencode.parse_reset_estimate": opencode_module.parse_reset_estimate,
         **{
             f"native_cli.NativeCLIOwner.{name}": getattr(
                 text_generation_module.NativeCLIOwner, name
@@ -560,13 +521,65 @@ def _implementation_helper_identities() -> dict[str, dict[str, str]]:
         ),
         "text_generation.resolve_model_name": text_generation_module.resolve_model_name,
     }
-    return {name: _callable_identity(value) for name, value in helpers.items()} | {
-        "native_cli.owner_script": native_cli_module.native_owner_identity()
+    return (
+        {name: _callable_identity(value) for name, value in helpers.items()}
+        | _native_helper_identities()
+        | {"native_cli.owner_script": native_cli_module.native_owner_identity()}
+    )
+
+
+def _native_helper_identities() -> dict[str, dict[str, str]]:
+    """Bind declared native code and SDK aliases without a drifting hand-list."""
+    result: dict[str, dict[str, str]] = {}
+    modules = {
+        "native_cli_provider": native_cli_provider,
+        "native_model_ref": native_model_ref,
+        "opencode": opencode_module,
+        "native_stream_parser": native_stream_parser,
+        "native_tool_protocol": native_tool_protocol,
     }
+    for label, module in modules.items():
+        names, classes = _native_binding_declarations(module)
+        for name in names:
+            value = getattr(module, name, None)
+            if callable(value):
+                result[f"{label}.{name}"] = _callable_identity(value)
+        for name in classes:
+            cls = getattr(module, name, None)
+            if not inspect.isclass(cls):
+                continue
+            for member, descriptor in vars(cls).items():
+                value = getattr(cls, member)
+                if isinstance(descriptor, property):
+                    for accessor in ("fget", "fset", "fdel"):
+                        result[f"{label}.{name}.{member}.{accessor}"] = (
+                            _callable_identity(getattr(descriptor, accessor))
+                        )
+                elif callable(value):
+                    result[f"{label}.{name}.{member}"] = _callable_identity(value)
+    return result
+
+
+def _native_binding_declarations(module: ModuleType) -> tuple[set[str], set[str]]:
+    """Source declares eligible names; current values never decide eligibility."""
+    names: set[str] = set()
+    classes: set[str] = set()
+    for node in ast.parse(inspect.getsource(module)).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+            if isinstance(node, ast.ClassDef):
+                classes.add(node.name)
+        elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+            "reflexio."
+        ):
+            names.update(alias.asname or alias.name for alias in node.names)
+    return names, classes
 
 
 def _judge_helper_identities() -> dict[str, dict[str, str]]:
     helpers = {
+        "judge._native_helper_identities": _native_helper_identities,
+        "judge._native_binding_declarations": _native_binding_declarations,
         "judge.build_pairwise_judge_request_plan": build_pairwise_judge_request_plan,
         "judge.canonicalize_pairwise_judge_request_plan": (
             canonicalize_pairwise_judge_request_plan

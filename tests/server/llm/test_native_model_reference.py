@@ -477,10 +477,18 @@ def test_known_bridge_cannot_override_operator_runtime(monkeypatch, host, suffix
 
 
 def test_explicit_http_legacy_label_preserves_opaque_message_wire_shape(monkeypatch):
+    from reflexio.models.config_schema import AnthropicConfig, APIKeyConfig
     from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 
     monkeypatch.setenv(authority.ENV_NATIVE_MODEL, "local-cli/codex/owned")
-    client = LiteLLMClient(LiteLLMConfig(model="claude-code/opaque-http-label"))
+    client = LiteLLMClient(
+        LiteLLMConfig(
+            model="claude-code/opaque-http-label",
+            api_key_config=APIKeyConfig(
+                anthropic=AnthropicConfig(api_key="owned-foreign-key")
+            ),
+        )
+    )
     messages = [
         {"role": "system", "content": "owned synthetic system"},
         {"role": "user", "content": "owned synthetic input"},
@@ -491,6 +499,8 @@ def test_explicit_http_legacy_label_preserves_opaque_message_wire_shape(monkeypa
         api_base="https://gateway.example/v1",
     )
     assert params["model"] == "claude-code/opaque-http-label"
+    assert not params.get("api_key")
+    assert "owned-foreign-key" not in repr(params)
     assert params["custom_llm_provider"] == "openai"
     assert params["messages"] == messages
     # Preserving an explicit HTTP label does not retain a native execution alias.

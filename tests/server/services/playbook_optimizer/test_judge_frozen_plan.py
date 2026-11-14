@@ -302,6 +302,15 @@ def test_pairwise_judge_rejects_drift_during_prompt_render_before_provider(
         ("native_cli_provider", "_windows_cli_suffixes"),
         ("native_cli_provider", "_is_windows"),
         ("native_cli_provider", "validate_native_selection"),
+        ("native_cli_provider", "request_timeout_seconds"),
+        ("native_cli_provider", "_codex_prompt"),
+        ("native_cli_provider", "_temporary_output_path"),
+        ("native_cli_provider", "_split_system_and_dialogue"),
+        ("native_cli_provider", "_maybe_append_schema"),
+        ("native_cli_provider", "_maybe_append_tools_instruction"),
+        ("native_cli_provider", "_parse_tool_use"),
+        ("native_stream_parser", "parse_stream_json"),
+        ("native_tool_protocol", "append_schema_instruction"),
         ("native_cli_provider", "_run_cli_stream"),
         ("native_model_ref", "parse_native_model_ref"),
         ("native_model_ref", "configured_native_model"),
@@ -415,3 +424,24 @@ def test_registered_native_handler_override_invalidates_frozen_plan(
     monkeypatch.setattr(handler, method, Mock())
     with pytest.raises(judge_module.FrozenEvaluatorPlanDriftError):
         judge._assert_frozen_implementation_identities(frozen)
+
+
+def test_native_helper_census_covers_actual_owned_functions_and_aliases():
+    modules = {
+        "native_cli_provider": judge_module.native_cli_provider,
+        "native_model_ref": judge_module.native_model_ref,
+        "opencode": judge_module.opencode_module,
+        "native_stream_parser": judge_module.native_stream_parser,
+        "native_tool_protocol": judge_module.native_tool_protocol,
+    }
+    bindings = judge_module._native_helper_identities()
+    expected = {
+        f"{label}.{name}"
+        for label, module in modules.items()
+        for name, value in vars(module).items()
+        if (inspect.isfunction(value) or inspect.isclass(value))
+        and getattr(value, "__module__", "").startswith("reflexio.")
+    }
+    assert "native_cli_provider._codex_prompt" in expected
+    assert "native_cli_provider.request_timeout_seconds" in expected
+    assert expected <= set(bindings)
