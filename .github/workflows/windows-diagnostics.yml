@@ -13,6 +13,7 @@ on:
       - tests/server/llm/test_native_cli_ownership.py
       - tests/server/llm/test_native_opencode.py
       - tests/server/llm/test_codex_path_authority.py
+      - tests/server/services/playbook_optimizer/test_native_assistant.py
       - tests/e2e_tests/test_local_publish_concurrency_diagnostic.py
       - tests/e2e_tests/test_local_model_cold_start_diagnostic.py
       - tests/test_scripts/local_publish_probe.py
@@ -45,6 +46,7 @@ jobs:
           tests/server/llm/test_native_cli_ownership.py
           tests/server/llm/test_native_opencode.py
           tests/server/llm/test_codex_path_authority.py
+          tests/server/services/playbook_optimizer/test_native_assistant.py
           -o addopts= --timeout=360 --junitxml=windows-diagnostics.xml -v -s
       - name: Preserve diagnostics
         if: always()

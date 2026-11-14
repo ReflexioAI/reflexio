@@ -110,6 +110,10 @@ class ClaudeCodeCLIError(RuntimeError):
     """Raised when the claude CLI subprocess fails in a way we cannot recover from."""
 
 
+class ClaudeCodeCLITimeoutError(ClaudeCodeCLIError):
+    """The immediate native CLI exhausted its selected timeout."""
+
+
 def _diagnostic_excerpt(text: str, limit: int = 500) -> str:
     """Return a bounded single-line excerpt for local CLI diagnostics."""
     compact = " ".join((text or "").split())
@@ -463,6 +467,7 @@ def _run_cli_stream(
             system_prompt=system_prompt,
             dialogue=dialogue,
             timeout_seconds=timeout_seconds,
+            model=env_str(_ENV_MODEL) or None,
         )
     return _run_claude_stream(
         cli_path=cli_path,
@@ -525,7 +530,7 @@ def _run_claude_stream(
             env=env,
         )
     except subprocess.TimeoutExpired as exc:
-        raise ClaudeCodeCLIError(
+        raise ClaudeCodeCLITimeoutError(
             f"claude CLI timed out after {timeout_seconds}s"
         ) from exc
     except FileNotFoundError as exc:
@@ -545,6 +550,8 @@ def _run_codex_stream(
     system_prompt: str,
     dialogue: str,
     timeout_seconds: float,
+    model: str | None = None,
+    optimizer: bool = False,
 ) -> ParseResult:
     """Invoke ``codex exec`` and shape its output like a terminal stream result."""
     output_path = _temporary_output_path()
@@ -560,7 +567,6 @@ def _run_codex_stream(
         str(output_path),
     ]
     # A role label such as claude-code/default is not a native model selector.
-    model = env_str(_ENV_MODEL)
     if model:
         cmd.extend(["--model", model])
     cmd.append("-")
@@ -568,6 +574,8 @@ def _run_codex_stream(
     env = os.environ.copy()
     env[_ENV_HOST] = _HOST_CODEX
     env["CLAUDE_SMART_INTERNAL"] = "1"
+    if optimizer:
+        env["CLAUDE_CODE_ENTRYPOINT"] = "optimizer"
 
     try:
         proc = run_native_cli(  # noqa: S603 — cmd is constructed from validated parts.
@@ -586,7 +594,7 @@ def _run_codex_stream(
         except OSError:
             terminal_text = ""
     except subprocess.TimeoutExpired as exc:
-        raise ClaudeCodeCLIError(
+        raise ClaudeCodeCLITimeoutError(
             f"codex CLI timed out after {timeout_seconds}s"
         ) from exc
     except FileNotFoundError as exc:
