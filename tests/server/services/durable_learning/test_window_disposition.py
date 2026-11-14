@@ -1,5 +1,7 @@
 """Every failure shape the window handler acts on, and exactly what it does.
 
+``classify_window_failure`` decides; the worker executes its verdict.
+
 ``DurableLearningWorker._handle_window_failure`` turns a failed window into one
 of a closed set of actions: yield the turn, defer setup, suspend, recompute,
 hold or park the input, wait for the provider, or retry. This table pins each
@@ -32,6 +34,17 @@ from reflexio.server.llm.input_budget import (
 )
 from reflexio.server.llm.provider_circuit import ProviderCircuitOpenError
 from reflexio.server.services.durable_learning import worker as worker_module
+from reflexio.server.services.durable_learning.window_disposition import (
+    DeferSetup,
+    HoldInput,
+    ProviderWait,
+    Recompute,
+    Retry,
+    Suspend,
+    WindowDisposition,
+    YieldTurn,
+    classify_window_failure,
+)
 from reflexio.server.services.durable_learning.worker import DurableLearningWorker
 from reflexio.server.services.extraction.input_preparation import (
     ExtractionInputBudgetExceededError,
@@ -568,3 +581,89 @@ def test_each_failure_shape_has_its_effects(
         if r.name == worker_module.__name__
     ] == case.logs
     assert reports == case.reports
+
+
+_HOLD_CONFIG = HoldInput(CONFIG, park=False)
+_PARK_CONFIG = HoldInput(CONFIG, park=True)
+_HOLD_EXCEEDED = HoldInput(EXCEEDED, park=False)
+
+#: The verdict for each row above. The effects table was pinned against the
+#: worker's if-chain before this module existed, so the pair proves the move
+#: kept every outcome.
+DISPOSITIONS: dict[str, WindowDisposition] = {
+    "busy": YieldTurn(),
+    "busy-wrapped-by-cause": YieldTurn(),
+    "busy-beats-readiness": YieldTurn(),
+    "busy-beats-input-budget": YieldTurn(),
+    "busy-beats-outage": YieldTurn(),
+    "busy-via-context-is-not-busy": Retry(),
+    "readiness": DeferSetup(),
+    "readiness-beats-input-budget": DeferSetup(),
+    "readiness-wrapped-retries": Retry(),
+    "suspended": Suspend(),
+    "suspended-beats-evidence-changed": Suspend(),
+    "suspended-wrapped-retries": Retry(),
+    "evidence-changed": Recompute(),
+    "evidence-changed-wrapped": Recompute(),
+    "evidence-changed-via-context": Recompute(),
+    "evidence-changed-beats-exceeded": Recompute(),
+    "configuration": _HOLD_CONFIG,
+    "configuration-at-attempt-ceiling": _HOLD_CONFIG,
+    "configuration-wrapped": _HOLD_CONFIG,
+    "configuration-via-context": _HOLD_CONFIG,
+    "saved-output-incompatible-parks": _PARK_CONFIG,
+    "configuration-from-saved-output-parks": _PARK_CONFIG,
+    "exceeded": _HOLD_EXCEEDED,
+    "output-truncated-is-exceeded": _HOLD_EXCEEDED,
+    "provider-input-overflow-is-exceeded": _HOLD_EXCEEDED,
+    "extraction-input-exceeded": _HOLD_EXCEEDED,
+    "overflow-attempts-exceeded": _HOLD_EXCEEDED,
+    "outermost-budget-link-wins-exceeded": _HOLD_EXCEEDED,
+    "outermost-budget-link-wins-configuration": _HOLD_CONFIG,
+    "exceeded-from-saved-output-does-not-park": _HOLD_EXCEEDED,
+    "input-budget-beats-outage": _HOLD_CONFIG,
+    "cap-saturated-waits": ProviderWait(0.0),
+    "cap-saturated-wrapped-waits": ProviderWait(0.0),
+    "provider-wait-lease-lost-retries-effects": ProviderWait(0.0),
+    "circuit-refusal-without-route-retries": Retry(),
+    "ordinary": Retry(),
+    "ordinary-at-attempt-ceiling-parks": Retry(),
+    "ordinary-lease-lost-retries-effects": Retry(),
+}
+
+
+def test_every_row_has_a_verdict() -> None:
+    assert sorted(DISPOSITIONS) == sorted(case.id for case in CASES)
+
+
+@pytest.mark.parametrize("case", CASES, ids=[case.id for case in CASES])
+def test_each_failure_shape_has_its_verdict(case: Case) -> None:
+    assert classify_window_failure(case.make()) == DISPOSITIONS[case.id]
+
+
+def test_every_verdict_is_exercised() -> None:
+    """A verdict no row reaches would go untested."""
+    kinds = {type(verdict) for verdict in DISPOSITIONS.values()}
+    assert kinds == {
+        YieldTurn,
+        DeferSetup,
+        Suspend,
+        Recompute,
+        HoldInput,
+        ProviderWait,
+        Retry,
+    }
+
+
+def test_from_none_severs_the_chain() -> None:
+    """``raise ... from None`` hides the handled error on purpose.
+
+    The chain is read by ``exception_chain`` (Python's traceback rule), so a
+    deliberately severed input-budget error is not the window's verdict. The
+    worker's earlier private walk followed the suppressed context; no raise
+    site on the window path severs a chain over these errors.
+    """
+    severed = RuntimeError("x")
+    severed.__context__ = InputBudgetConfigurationError("x")
+    severed.__suppress_context__ = True
+    assert classify_window_failure(severed) == Retry()
