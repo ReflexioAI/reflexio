@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import time
 from types import SimpleNamespace
@@ -304,6 +305,8 @@ def test_pairwise_judge_rejects_drift_during_prompt_render_before_provider(
         ("native_cli_provider", "_run_cli_stream"),
         ("native_model_ref", "parse_native_model_ref"),
         ("native_model_ref", "configured_native_model"),
+        ("native_model_ref", "env_truthy"),
+        ("native_cli_provider", "env_str"),
         ("native_model_ref", "authorize_native_model"),
         ("native_model_ref", "native_policy_digest"),
         ("native_model_ref", "reject_native_selection"),
@@ -379,7 +382,19 @@ def test_native_frozen_policy_cannot_change_after_job_creation(
         judge._assert_frozen_implementation_identities(frozen)
 
 
-def test_registered_native_handler_override_invalidates_frozen_plan(monkeypatch):
+@pytest.mark.parametrize(
+    "method",
+    [
+        name
+        for name, function in vars(
+            judge_module.native_cli_provider.NativeCLILLM
+        ).items()
+        if inspect.isfunction(function) and name != "__init__"
+    ],
+)
+def test_registered_native_handler_override_invalidates_frozen_plan(
+    monkeypatch, method
+):
     prompt_manager = PromptManager()
     client = LiteLLMClient(LiteLLMConfig(model="azure/judge-deployment"))
     handler = judge_module.native_cli_provider.NativeCLILLM()
@@ -397,6 +412,6 @@ def test_registered_native_handler_override_invalidates_frozen_plan(monkeypatch)
         "azure/judge-deployment",
         frozen_request_plan=frozen,
     )
-    monkeypatch.setattr(handler, "completion", Mock())
+    monkeypatch.setattr(handler, method, Mock())
     with pytest.raises(judge_module.FrozenEvaluatorPlanDriftError):
         judge._assert_frozen_implementation_identities(frozen)

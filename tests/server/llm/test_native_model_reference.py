@@ -474,3 +474,25 @@ def test_known_bridge_cannot_override_operator_runtime(monkeypatch, host, suffix
     ):
         native_cli_provider.NativeCLILLM(cli_path=bridge).completion(model=reference)
     dispatch.assert_not_called()
+
+
+def test_explicit_http_legacy_label_preserves_opaque_message_wire_shape(monkeypatch):
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+    monkeypatch.setenv(authority.ENV_NATIVE_MODEL, "local-cli/codex/owned")
+    client = LiteLLMClient(LiteLLMConfig(model="claude-code/opaque-http-label"))
+    messages = [
+        {"role": "system", "content": "owned synthetic system"},
+        {"role": "user", "content": "owned synthetic input"},
+    ]
+    params, *_ = client._build_completion_params(
+        messages,
+        custom_llm_provider="openai",
+        api_base="https://gateway.example/v1",
+    )
+    assert params["model"] == "claude-code/opaque-http-label"
+    assert params["custom_llm_provider"] == "openai"
+    assert params["messages"] == messages
+    # Preserving an explicit HTTP label does not retain a native execution alias.
+    with pytest.raises(authority.NativeCLISelectionError, match="Legacy native"):
+        client._build_completion_params(messages)

@@ -419,10 +419,16 @@ def _registered_native_handler_identity() -> dict[str, str]:
         bindings.append(
             {
                 "class": _callable_identity(type(handler)),
-                "completion": _callable_identity(getattr(handler, "completion", None)),
-                "instance_completion": "completion" in vars(handler)
-                if hasattr(handler, "__dict__")
-                else False,
+                "methods": {
+                    name: {
+                        **_callable_identity(getattr(handler, name, None)),
+                        "instance_override": name in vars(handler)
+                        if hasattr(handler, "__dict__")
+                        else False,
+                    }
+                    for name, function in vars(native_cli_provider.NativeCLILLM).items()
+                    if inspect.isfunction(function) and name != "__init__"
+                },
                 "path": getattr(handler, "_explicit_cli_path", None),
                 "timeout": getattr(handler, "_explicit_timeout", None),
             }
@@ -438,6 +444,8 @@ def _implementation_helper_identities() -> dict[str, dict[str, str]]:
         "judge._registered_native_handler_identity": _registered_native_handler_identity,
         "native_model_ref.NativeModelRef": native_model_ref.NativeModelRef,
         "native_model_ref.env_str": native_model_ref.env_str,
+        "native_model_ref.env_truthy": native_model_ref.env_truthy,
+        "native_cli_provider.env_str": native_cli_provider.env_str,
         "native_cli_provider.reject_native_selection": native_cli_provider.reject_native_selection,
         "native_cli_provider.register_native_provider": native_cli_provider.register_native_provider,
         "native_model_ref.parse_native_model_ref": native_model_ref.parse_native_model_ref,

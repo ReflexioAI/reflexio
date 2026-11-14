@@ -2849,9 +2849,11 @@ class TextGenerationMixin:
             list[dict]: Messages with cache control applied where appropriate.
         """
         model_lower = model.lower()
-        # The local-cli/* custom provider routes through the Claude Code CLI,
-        # which does not accept Anthropic API cache_control content blocks.
-        if model_lower.startswith("local-cli/"):
+        # Native CLI messages have no Anthropic HTTP cache-control protocol.
+        # An old label passed explicitly through HTTP remains opaque and keeps
+        # its previous wire shape; native execution under that label is denied
+        # before parameter preparation, independently of this formatting rule.
+        if model_lower.startswith(("local-cli/", "claude-code/")):
             return messages
         is_anthropic = "claude" in model_lower or "anthropic" in model_lower
 
