@@ -1731,6 +1731,12 @@ The existing `CLAUDE_SMART_CLI_MODEL` chooses an explicit native model; unset
 delegates to OpenCode. The opaque `claude-code/` request label never chooses a
 native model or proves which model served the response.
 
+Native Codex (`CLAUDE_SMART_HOST=codex`) also forwards the existing
+`CLAUDE_SMART_CLI_MODEL` as `codex exec --model`. Unset or blank leaves model
+selection to Codex. This matches the plugin bridge's saved learning-model
+selection without deriving a model from the opaque LiteLLM role label. The
+requested model does not establish observed model/provider provenance.
+
 All known explicit Codex/OpenCode plugin bridges retain Claude wire protocol
 and legacy timeouts across coding hosts. This adapter does not switch plugin
 producers or retire any setting. The later producer/optimizer migration must

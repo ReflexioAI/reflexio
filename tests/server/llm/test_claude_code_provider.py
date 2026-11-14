@@ -631,7 +631,12 @@ class TestClaudeCodeLLMCompletion:
         )
         assert response.choices[0].message.content == "ok"  # type: ignore[union-attr]
 
-    def test_codex_host_uses_codex_exec(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize(
+        "override", [None, "", " \t", "chosen-model", " opaque/model#variant "]
+    )
+    def test_codex_host_uses_codex_exec(
+        self, monkeypatch: pytest.MonkeyPatch, override: str | None
+    ) -> None:
         """Codex runs generation through ``codex exec`` instead of Claude flags."""
 
         def fake_run(cmd, **kwargs):
@@ -640,6 +645,10 @@ class TestClaudeCodeLLMCompletion:
             return _fake_completed_process(stdout="", returncode=0)
 
         mock_run = MagicMock(side_effect=fake_run)
+        if override is None:
+            monkeypatch.delenv("CLAUDE_SMART_CLI_MODEL", raising=False)
+        else:
+            monkeypatch.setenv("CLAUDE_SMART_CLI_MODEL", override)
         monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
         monkeypatch.setattr(ccp, "_is_windows", lambda: True)
         monkeypatch.setattr(ccp.subprocess, "run", mock_run)
@@ -655,6 +664,14 @@ class TestClaudeCodeLLMCompletion:
 
         cmd = mock_run.call_args.args[0]
         assert cmd[:2] == ["/usr/local/bin/codex", "exec"]
+        if override and override.strip():
+            assert cmd[cmd.index("--model") + 1] == override.strip()
+        else:
+            assert "--model" not in cmd
+        assert cmd[-1] == "-"
+        assert cmd[cmd.index("--sandbox") + 1] == "read-only"
+        assert response._hidden_params.get("reflexio_served_model") is None
+        assert response._hidden_params.get("reflexio_served_provider") is None
         assert "-p" not in cmd
         assert "--append-system-prompt" not in cmd
         kwargs = mock_run.call_args.kwargs

@@ -533,8 +533,12 @@ def _run_codex_stream(
         "--ignore-rules",
         "--output-last-message",
         str(output_path),
-        "-",
     ]
+    # A role label such as claude-code/default is not a native model selector.
+    model = env_str(_ENV_MODEL)
+    if model:
+        cmd.extend(["--model", model])
+    cmd.append("-")
 
     env = os.environ.copy()
     env[_ENV_HOST] = _HOST_CODEX

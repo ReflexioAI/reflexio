@@ -938,6 +938,11 @@ def _physical_probe(root: Path):
     response_file = root / "response.txt"
     (hooks / "sitecustomize.py").write_text(
         "import sys,os,json,time\nfrom pathlib import Path\n"
+        "if Path(sys.argv[0]).name == 'exec':\n"
+        " data={'pid':os.getpid(),'ppid':os.getppid(),'argv':sys.argv,'stdin':sys.stdin.read()}\n"
+        f" with Path({str(record)!r}).open('a',encoding='utf-8') as out: out.write(json.dumps(data)+'\\n')\n"
+        " Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_text('native codex λ',encoding='utf-8')\n"
+        " os._exit(0)\n"
         "if Path(sys.argv[0]).name == 'run':\n"
         " data={'pid':os.getpid(),'ppid':os.getppid(),'argv':sys.argv,'cwd':os.getcwd(),'stdin':sys.stdin.read()}\n"
         " data['config']=json.loads((Path.cwd()/'.opencode'/'opencode.json').read_text(encoding='utf-8'))\n"
@@ -1106,6 +1111,42 @@ def _physical_probe(root: Path):
         if os.name != "nt":
             with pytest.raises(ProcessLookupError):
                 os.kill(last["pid"], 0)
+        # Same real LiteLLM/provider path and executable owner, with no user CLI.
+        # Codex must preserve the plugin bridge's explicit model selection.
+        os.environ.pop("NATIVE_TEST_SLEEP")
+        os.environ["CLAUDE_SMART_HOST"] = "codex"
+        for selected in (None, "", " \t", " opaque/model#variant "):
+            if selected is None:
+                os.environ.pop("CLAUDE_SMART_CLI_MODEL", None)
+            else:
+                os.environ["CLAUDE_SMART_CLI_MODEL"] = selected
+            output = litellm.completion(
+                model="claude-code/not-a-physical-model",
+                messages=[{"role": "user", "content": "codex private synthetic λ"}],
+                timeout=2.5,
+                num_retries=0,
+            )
+            assert isinstance(output, litellm.ModelResponse)
+            assert output.choices[0].message.content == "native codex λ"
+            entry = json.loads(record.read_text().splitlines()[-1])
+            assert entry["pid"] in pids and entry["ppid"] == os.getpid()
+            assert entry["argv"][0] == "exec" and entry["argv"][-1] == "-"
+            assert entry["argv"][entry["argv"].index("--sandbox") + 1] == "read-only"
+            if selected and selected.strip():
+                assert (
+                    entry["argv"][entry["argv"].index("--model") + 1]
+                    == selected.strip()
+                )
+            else:
+                assert "--model" not in entry["argv"]
+            assert "codex private synthetic λ" in entry["stdin"]
+            assert "codex private synthetic λ" not in repr(entry["argv"])
+            assert "not-a-physical-model" not in repr(entry["argv"])
+            assert not Path(
+                entry["argv"][entry["argv"].index("--output-last-message") + 1]
+            ).exists()
+            assert output._hidden_params.get("reflexio_served_model") is None
+            assert output._hidden_params.get("reflexio_served_provider") is None
     finally:
         subprocess.Popen = popen
     print("OWNED_NATIVE_OPENCODE_OK")
