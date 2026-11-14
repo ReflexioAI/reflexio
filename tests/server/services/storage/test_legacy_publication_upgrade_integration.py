@@ -1,4 +1,4 @@
-"""Original-v1 persisted protocols survive current config/schema/worker cutover."""
+"""Replay committed v1 outputs; hold unfinished work across instruction changes."""
 
 import copy
 import json
@@ -84,7 +84,9 @@ def _row(conn):
         "completed_erased_acked",
     ],
 )
-def test_current_owner_upgrades_and_drains_original_v1(tmp_path, monkeypatch, phase):
+def test_original_v1_cutover_replays_completed_and_holds_changed_instructions(
+    tmp_path, monkeypatch, caplog, phase
+):
     target = restore_legacy_publication_fixture(phase, tmp_path / "predecessor.sqlite")
     with sqlite3.connect(target) as destination:
         before = _row(destination)
@@ -128,7 +130,7 @@ def test_current_owner_upgrades_and_drains_original_v1(tmp_path, monkeypatch, ph
             "profiles": [
                 {
                     "content": "The user prefers concise answers.",
-                    "time_to_live": "infinity",
+                    "explicit_storage_deadline": None,
                     "source_span": "I prefer concise answers with details 0",
                 }
             ]
@@ -208,6 +210,30 @@ def test_current_owner_upgrades_and_drains_original_v1(tmp_path, monkeypatch, ph
     configure_usage_event_recorder(record)
     try:
         worker = DurableLearningWorker(lambda _: engine.request_context)
+        if phase == "running":
+            # The original policy includes the historical TTL authoring schema.
+            # Finish this work under its original publisher before cutover; a
+            # new image must not dispatch with a different instruction witness.
+            worker.drain_org("stream-test", 3, 300)
+            assert "Extraction input held kind=profile" in caplog.text
+            assert "reason=input_budget_configuration_error" in caplog.text
+            held = storage.get_agent_run(before["id"])
+            assert held.status == AgentRunStatus.FAILED
+            assert held.committed_output is None
+            assert held.generation_request_snapshot == json.loads(
+                before["generation_request_snapshot"]
+            )
+            assert calls == [] and accepted == {}
+            assert storage.count_all_profiles() == 0
+            assert storage.extraction_status("u", "original-v1")["status"] != "done"
+            with sqlite3.connect(target) as conn:
+                assert [
+                    tuple(row)
+                    for row in conn.execute(
+                        "SELECT * FROM _agent_run_finalization_receipts"
+                    ).fetchall()
+                ] == original_receipts
+            return
         worker.drain_org("stream-test", 3, 300)
         if phase != "completed_erased_acked":
             assert (

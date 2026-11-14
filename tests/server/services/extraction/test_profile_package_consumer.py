@@ -224,7 +224,7 @@ def install_transport(
                     "profiles": [
                         {
                             "content": "Prefers concise answers",
-                            "time_to_live": "infinity",
+                            "explicit_storage_deadline": None,
                             "source_span": "absent quotation"
                             if bad_quote
                             else "I prefer concise answers with details 0",

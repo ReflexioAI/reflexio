@@ -449,7 +449,11 @@ def test_actual_native_agent_and_semantic_repair_pass_the_frozen_checker(
         seen.append(copy.deepcopy(params))
         content = (
             json.dumps(
-                {"profiles": [{"content": "x" * 5000, "time_to_live": "infinity"}]}
+                {
+                    "profiles": [
+                        {"content": "x" * 5000, "explicit_storage_deadline": None}
+                    ]
+                }
             )
             if long_echo and len(seen) == 1
             else '{"profiles":[]}'
@@ -690,7 +694,7 @@ def test_fitting_initial_request_refuses_oversized_native_repair_before_reservat
                                 "profiles": [
                                     {
                                         "content": "unsupported preference",
-                                        "time_to_live": "infinity",
+                                        "explicit_storage_deadline": None,
                                         "source_span": "absent quotation",
                                     }
                                 ]

@@ -1,6 +1,7 @@
 """Process-local scheduler for lineage tombstone garbage collection and expiry reclamation.
 
-Startup runs when EITHER positive ``lineage_gc.tombstone_grace_window_days`` OR ``expiry_reclamation.enabled``
+Required explicit profile-deadline maintenance always starts this owner.
+Optional reclamation runs when positive ``lineage_gc.tombstone_grace_window_days`` OR ``expiry_reclamation.enabled``
 OR ``governance_retention.audit_events_max_age_days > 0`` is set in the bootstrap
 org's config. Each tick evaluates every org independently.
 
@@ -34,6 +35,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import CancelledError
 from dataclasses import dataclass
 
 from reflexio.housekeeping_policy import DAILY_SWEEP_SECONDS
@@ -48,6 +50,7 @@ from reflexio.server.env_utils import env_str
 from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.org_fanout import OrgFanout, iterate_orgs_bounded
 from reflexio.server.scheduling import LeaderGate, ThreadedScheduler
+from reflexio.server.services.profile.maintenance import purge_due_profile_payloads
 from reflexio.server.services.storage.retention import get_row_retention_limits
 from reflexio.server.services.storage.retention_sweep import (
     RetentionSweepResult,
@@ -85,6 +88,10 @@ _MAX_CONSECUTIVE_FAST_RETRIES = 3
 _HIGH_VOLUME_THRESHOLD = 1000
 
 _ENTITY_TYPES = ("user_playbook", "agent_playbook", "profile")
+
+# Required source-permission maintenance, independent of optional GC policies.
+# Built into this existing per-project owner; no second scheduler or setting.
+_REQUIRED_PROJECT_SWEEPS = (("profile_deadlines", purge_due_profile_payloads),)
 
 # Class B: direct-delete sweeps for expired plain rows (no PII/audit obligation).
 # Each entry is (storage_method_name, grace_seconds, batch_limit).
@@ -521,6 +528,51 @@ class LineageGCScheduler(ThreadedScheduler):
             )
         return project_ids
 
+    def _sweep_required_project_data(
+        self, org_id: str, storage: BaseStorage, project_id: str | None
+    ) -> bool:
+        """Required source-permission maintenance uses this owner's bound project."""
+        unit = f"{org_id}:{project_id}"
+
+        def checkpoint() -> None:
+            if self._stop_event.is_set():
+                raise CancelledError("Profile deadline maintenance owner is stopping")
+
+        for name, sweep in _REQUIRED_PROJECT_SWEEPS:
+            try:
+                deleted = sweep(
+                    storage, int(time.time()), project_id or "", checkpoint=checkpoint
+                )
+                if deleted:
+                    logger.info(
+                        "event=profile_deadline_maintenance org_id=%s project_id=%s deleted=%d",
+                        org_id,
+                        project_id,
+                        deleted,
+                    )
+            except CancelledError:
+                # Normal owner shutdown is neither a failed pass nor evidence
+                # that this incomplete project sweep succeeded.
+                return False
+            except Exception as exc:
+                capture_anomaly(
+                    "lineage.profile_deadlines.failed",
+                    org_id=org_id,
+                    project_id=project_id,
+                )
+                report_background_failure(
+                    logger,
+                    "profile_deadline_maintenance_failed",
+                    exc,
+                    scope=f"lineage-{name}:{unit}",
+                    org_id=org_id,
+                    project_id=project_id,
+                )
+                self._record_tick_failure()
+            else:
+                report_background_success(f"lineage-{name}:{unit}")
+        return True
+
     def _sweep_project_data(
         self,
         org_id: str,
@@ -528,7 +580,7 @@ class LineageGCScheduler(ThreadedScheduler):
         cfg: Config,
         project_id: str | None = None,
     ) -> None:
-        """Run the Class A and Class B sweeps for the bound project.
+        """Run required profile deadlines and reclamation for the bound project.
 
         Called once per project with that project bound; see ``_sweep_org``.
 
@@ -544,6 +596,9 @@ class LineageGCScheduler(ThreadedScheduler):
         # times per tick and let a healthy sibling clear its streak. Passed in
         # rather than read from the bound scope, which is inert in OSS.
         unit = f"{org_id}:{project_id}"
+        if not self._sweep_required_project_data(org_id, storage, project_id):
+            return
+
         # Class A: profile expiry sweep (requires PII/grace sign-off; gated on
         # positive lineage grace independently of Class B).
         cutoff = cfg.lineage_gc.reclamation_cutoff(int(time.time()))
@@ -952,7 +1007,8 @@ def maybe_start_lineage_gc(
 ) -> LineageGCScheduler | None:
     """Start the scheduler when bootstrap config enables tombstone GC or expiry reclamation.
 
-    Startup runs when the bootstrap-org config sets positive ``lineage_gc.tombstone_grace_window_days``
+    Required source-authorized profile deadlines always start this owner.
+    Optional reclamation runs when the bootstrap-org config sets positive ``lineage_gc.tombstone_grace_window_days``
     (Class A: profile expiry + tombstone GC), ``expiry_reclamation.enabled``
     (Class B: plain-row direct-delete sweeps), or
     ``governance_retention.audit_events_max_age_days > 0`` — OR when any sweep
@@ -1008,7 +1064,10 @@ def maybe_start_lineage_gc(
     # with 8 registered sweeps (metering force-seal/retention/derive, governance
     # retention, missing-vector backfill) never firing because this read raised.
     has_registered_sweeps = bool(
-        _per_org_sweep_hooks or _global_sweep_hooks or _always_global_sweep_hooks
+        _per_org_sweep_hooks
+        or _global_sweep_hooks
+        or _always_global_sweep_hooks
+        or _REQUIRED_PROJECT_SWEEPS
     )
 
     # Resolved BEFORE the config read, because that read can fail and its

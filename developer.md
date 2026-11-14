@@ -322,6 +322,15 @@ cleanup; ordinary upgrades remain image replacement and restart.
 Existing protocol journals and legacy continuations retain their original
 recovery contracts; image and mock execution are unchanged.
 
+Committed pre-upgrade profile outputs use a dedicated reader for their required
+legacy `time_to_live` enum. New model responses remain strictly TTL-free. Replay
+preserves the original receipt fields and scope evidence; the saved completion
+clock (or recorded preparation clock for older rows) fixes the legacy visibility
+bound across retries. Legacy profiles have unknown lifecycle origin and neutral
+attention: their guessed TTL never grants deletion authority. Missing clocks,
+malformed enums, or legacy payloads carrying new storage authority remain held
+for recovery rather than being re-extracted or silently rewritten.
+
 Custom model endpoints must declare their actual context capacity in
 `REFLEXIO_LLM_CONTEXT_LIMITS_JSON` and set the tenant
 `llm_config.generation_max_output_tokens` to a positive integer. Unset preserves

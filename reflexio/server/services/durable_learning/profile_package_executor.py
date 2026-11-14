@@ -20,7 +20,10 @@ from reflexio.server.llm.input_budget import (
 )
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.base_generation_service import PreparedGenerationRun
-from reflexio.server.services.deferred_learning_plan import GenerationComputePlan
+from reflexio.server.services.deferred_learning_plan import (
+    GenerationComputePlan,
+    ProfileWritePlan,
+)
 from reflexio.server.services.durable_learning.window_codec import encode_plan
 from reflexio.server.services.durable_learning.window_executor import WindowExecutor
 from reflexio.server.services.extraction.agent_run_records import (
@@ -57,10 +60,17 @@ from reflexio.server.services.extractor_config_utils import get_extractor_name
 from reflexio.server.services.profile.components.extractor import (
     MAX_EXISTING_PROFILES_FOR_CONTEXT,
     ProfileExtractor,
+    profile_forget_authority_texts,
+    profile_source_evidence_texts,
+)
+from reflexio.server.services.profile.lifecycle import (
+    metadata,
+    validate_forget_authority,
 )
 from reflexio.server.services.profile.service import ProfileGenerationService
 from reflexio.server.services.storage.storage_base import AgentRunStatus, canonical_json
 from reflexio.server.services.storage.storage_base._extraction_stream import Window
+from reflexio.server.services.write_plan_codec import decode_write_plan
 
 
 class _PackageProfileService(ProfileGenerationService):
@@ -414,12 +424,20 @@ class ProfilePackageWindowExecutor(WindowExecutor):
                     request.user_id,
                     request.request_id,
                     [row["interaction_id"] for row in coordinator.window.manifest],
+                    source_texts=profile_source_evidence_texts(
+                        [], visible_spans=result.package.presentation.visible_spans
+                    ),
+                    user_source_texts=profile_forget_authority_texts(
+                        [], visible_spans=result.package.presentation.visible_spans
+                    ),
+                    committed_run=result.agent.execution_run,
                 )
             checkpoint = coordinator.checkpoint
             converted = [row.model_dump(mode="json") for row in profiles]
             checkpoint["profile_package_candidates"] = converted
             coordinator.save_checkpoint(checkpoint)
         profiles = [UserProfile.model_validate(row) for row in converted]
+        self._validate_candidate_authority(profiles, result)
         service._last_model_provenance = result.agent.model_provenance
         coordinator.candidate_models.update(
             {row.profile_id: result.agent.model_provenance for row in profiles}
@@ -485,6 +503,16 @@ class ProfilePackageWindowExecutor(WindowExecutor):
             ) from exc
         return hashlib.sha256(encoded.encode()).hexdigest()
 
+    @staticmethod
+    def _validate_candidate_authority(profiles: list[UserProfile], result: Any) -> None:
+        user_texts = profile_forget_authority_texts(
+            [], visible_spans=result.package.presentation.visible_spans
+        )
+        for profile in profiles:
+            validate_forget_authority(
+                metadata(profile).get("explicit_forget_quote"), user_texts
+            )
+
     def _validate_host_binding(self, coordinator: Any, result: Any) -> None:
         checkpoint = coordinator.checkpoint
         if not result.gate_decision:
@@ -501,6 +529,37 @@ class ProfilePackageWindowExecutor(WindowExecutor):
         ):
             raise InputBudgetConfigurationError(
                 "Frozen profile write plan binding changed"
+            )
+        # The frozen digest establishes integrity, not User permission. Recheck
+        # cached conversions and compiled erasures against authenticated originals
+        # without changing any prepared plan bytes or recovery hashes.
+        profiles = [
+            UserProfile.model_validate(row)
+            for row in checkpoint.get("profile_package_candidates", [])
+        ]
+        self._validate_candidate_authority(profiles, result)
+        saved = checkpoint["profile_package_plan"]
+        plan = decode_write_plan(saved.get("write_plan"), "profile")
+        if not isinstance(plan, ProfileWritePlan):
+            return
+        self._validate_candidate_authority(plan.new_profiles, result)
+        candidates = {
+            row.profile_id: metadata(row).get("explicit_forget_quote")
+            for row in profiles
+        }
+        for instruction in plan.erasure_instructions:
+            if not instruction.source_quote or (
+                candidates.get(instruction.source_profile_id)
+                != instruction.source_quote
+            ):
+                raise InputBudgetConfigurationError(
+                    "Frozen erasure lacks original User authority candidate"
+                )
+            validate_forget_authority(
+                instruction.source_quote,
+                profile_forget_authority_texts(
+                    [], visible_spans=result.package.presentation.visible_spans
+                ),
             )
 
     def _complete_parent(self, coordinator: Any, result: Any) -> None:

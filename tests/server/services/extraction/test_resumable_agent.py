@@ -141,14 +141,14 @@ def _agent_run(run_id: str, extractor_kind: str = "profile") -> AgentRunRecord:
 
 def test_profile_instruction_prompt_delivers_structured_response():
     """The extraction agent now delivers its result as a structured response,
-    so the active ``profile_update_instruction_start`` version (v1.2.0) frames
+    so the active ``profile_update_instruction_start`` version (v1.4.0) frames
     the output as a direct JSON response rather than a ``finish_extraction``
     tool call. ``attach_pending_info_request`` remains a real intermediate tool;
     the profile extractor does not offer ``ask_human``."""
     prompt_manager = PromptManager()
 
     assert prompt_manager.get_active_version("profile_update_instruction_start") == (
-        "1.2.0"
+        "1.4.0"
     )
     rendered = prompt_manager.render_prompt(
         "profile_update_instruction_start",
@@ -253,7 +253,7 @@ def test_resumable_agent_finishes_profile_output(
                 "profiles": [
                     {
                         "content": "User prefers AWS ECS deployments.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                     }
                 ]
             }
@@ -283,7 +283,8 @@ def test_resumable_agent_finishes_profile_output(
         "profiles": [
             {
                 "content": "User prefers AWS ECS deployments.",
-                "time_to_live": "infinity",
+                "explicit_storage_deadline": None,
+                "explicit_forget_quote": None,
                 "source_span": None,
                 "notes": None,
                 "reader_angle": None,
@@ -310,7 +311,7 @@ def test_resumable_agent_discards_late_output_after_timeout_failure(
                 "profiles": [
                     {
                         "content": "User prefers AWS ECS deployments.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                     }
                 ]
             }
@@ -612,7 +613,7 @@ def test_resumable_agent_resume_injects_resolved_tool_result(
                 "profiles": [
                     {
                         "content": "User deployment standard is AWS ECS.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                     }
                 ]
             }
@@ -1316,3 +1317,35 @@ def test_resume_turn_with_a_saturated_provider_cap_stays_resumable(
     assert stored is not None
     assert stored.status == AgentRunStatus.RESUMING
     assert stored.max_steps_remaining == 3
+
+
+@pytest.mark.integration
+def test_window_replays_preupgrade_ttl_output_without_model_call(storage):
+    payload = {
+        "profiles": [{"content": "Saved preference", "time_to_live": "one_week"}]
+    }
+    admitted = replace(
+        _agent_run("window:legacy_profile"),
+        status=AgentRunStatus.AGENT_COMPLETED,
+        committed_output=payload,
+    )
+    storage.create_agent_run(admitted)
+    original = storage.get_agent_run(admitted.id)
+    client = MagicMock()
+    client.generate_chat_response_with_provenance.side_effect = AssertionError(
+        "saved receipt must not call a model"
+    )
+    agent = ResumableExtractionAgent(client=client, storage=storage)
+    result = agent.start(
+        source_inputs=_source_inputs(storage, admitted),
+        run=admitted,
+        messages=[],
+        history_inputs=HistoricalInputs(),
+        output_schema=StructuredProfilesOutput,
+    )
+    assert isinstance(result.output, StructuredProfilesOutput)
+    assert result.output.model_dump(mode="json") == payload
+    assert (
+        storage.get_agent_run(admitted.id).committed_output == original.committed_output
+    )
+    client.generate_chat_response_with_provenance.assert_not_called()

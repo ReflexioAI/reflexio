@@ -188,7 +188,7 @@ def _loop_result(kwargs, kind, storage, *, nonempty, pending=()):
     field = "profiles" if kind == "profile" else "playbooks"
     entry: dict[str, Any] = {"content": "Deployment requires approval."}
     if kind == "profile":
-        entry["time_to_live"] = "infinity"
+        entry["explicit_storage_deadline"] = None
     else:
         entry.update(
             trigger="when deploying", rationale="Required deployment procedure"

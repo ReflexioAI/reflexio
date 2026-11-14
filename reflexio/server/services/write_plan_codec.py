@@ -17,6 +17,7 @@ from reflexio.models.api_schema.domain.entities import (
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.services.deferred_learning_plan import (
     PlaybookWritePlan,
+    ProfilePayloadErasure,
     ProfileWritePlan,
 )
 
@@ -41,6 +42,10 @@ def decode_write_plan(
     if kind == "profile":
         raw["new_profiles"] = [
             UserProfile.model_validate(x) for x in raw["new_profiles"]
+        ]
+        raw["erasure_instructions"] = [
+            ProfilePayloadErasure(**item)
+            for item in raw.get("erasure_instructions", [])
         ]
         return ProfileWritePlan(**raw)
     raw["new_playbooks"] = [

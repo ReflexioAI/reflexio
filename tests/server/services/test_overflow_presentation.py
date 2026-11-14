@@ -235,7 +235,7 @@ def test_protected_quotation_exposes_only_shown_text_across_profile_and_playbook
                     "profiles": [
                         {
                             "content": "Keep scope narrow.",
-                            "time_to_live": "infinity",
+                            "explicit_storage_deadline": None,
                             "source_span": text,
                         }
                     ]

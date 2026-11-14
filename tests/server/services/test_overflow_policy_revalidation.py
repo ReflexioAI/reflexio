@@ -24,7 +24,7 @@ from tests.server.services.test_overflow_carried_evidence import (
 
 _PROFILE = {
     "content": "The user prefers concise answers.",
-    "time_to_live": "infinity",
+    "explicit_storage_deadline": None,
     "source_span": "I prefer concise answers with details 0",
 }
 
