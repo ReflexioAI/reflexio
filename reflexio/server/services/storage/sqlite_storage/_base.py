@@ -1221,6 +1221,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             temperature=0.0,
             api_key_config=self.api_key_config,
         )
+        if llm_config and llm_config.generation_max_output_tokens is not None:
+            litellm_config.max_tokens = llm_config.generation_max_output_tokens
         self.llm_client = LiteLLMClient(litellm_config)
 
         # Optionally load sqlite-vec for native KNN vector search
@@ -2898,6 +2900,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "'open_world_evidence_bundle'",
             "'open_world_discovery_memo'",
             "'open_world_candidate'",
+            "'open_world_content_result'",
+            "'open_world_trigger_result'",
             "'open_world_attempt_decision'",
         )
         if all(
@@ -2935,6 +2939,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                         'open_world_evidence_bundle',
                         'open_world_discovery_memo',
                         'open_world_candidate',
+                        'open_world_content_result',
+                        'open_world_trigger_result',
                         'open_world_attempt_decision'
                     )),
                     content_json TEXT NOT NULL,
@@ -4080,6 +4086,8 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_artifacts (
         'open_world_evidence_bundle',
         'open_world_discovery_memo',
         'open_world_candidate',
+                        'open_world_content_result',
+                        'open_world_trigger_result',
         'open_world_attempt_decision'
     )),
     content_json TEXT NOT NULL,

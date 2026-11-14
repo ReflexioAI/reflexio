@@ -14,6 +14,7 @@ from reflexio.models.api_schema.domain.entities import (
     OptimizerKind,
     UserPlaybook,
 )
+from reflexio.server.services.playbook.revision import FinalPlaybookRevision
 
 PublicationOutcome = Literal["applied", "incumbent_changed"]
 # Derived from the exported Literal rather than restated, so the SQL state
@@ -269,59 +270,104 @@ class PublicationSearchProjection:
     lexical_document: str
 
     def __post_init__(self) -> None:
-        if self.schema_version != _PROJECTION_SCHEMA_VERSION:
-            raise ValueError("search projection schema is unsupported")
-        _require_digest("search projection digest", self.digest)
-        _require_text("search projection projector_id", self.projector_id)
-        _require_text("search projection projector_version", self.projector_version)
-        _require_digest(
-            "search projection projector_code_digest", self.projector_code_digest
+        _validate_publication_projection(
+            self,
+            schema_version=_PROJECTION_SCHEMA_VERSION,
+            trigger_key="preserved_trigger",
+            trigger=self.preserved_trigger,
         )
-        _require_digest(
-            "search projection candidate_content_digest",
-            self.candidate_content_digest,
+
+
+@dataclass(frozen=True)
+class FinalVersionPublicationSearchProjection:
+    """V2 projection binds the final Trigger instead of a preservation promise."""
+
+    schema_version: str
+    canonical_json: str
+    digest: str
+    projector_id: str
+    projector_version: str
+    projector_code_digest: str
+    candidate_content_digest: str
+    candidate_trigger: str | None
+    embedding_model_id: str
+    embedding: tuple[str, ...]
+    expanded_terms: tuple[str, ...]
+    lexical_document: str
+
+    def __post_init__(self) -> None:
+        _validate_publication_projection(
+            self,
+            schema_version="offline-tuner-candidate-search-projection-v2",
+            trigger_key="candidate_trigger",
+            trigger=self.candidate_trigger,
         )
-        _require_text("search projection embedding_model_id", self.embedding_model_id)
-        _require_text("search projection lexical_document", self.lexical_document)
-        if self.preserved_trigger is not None:
-            _require_text("search projection preserved_trigger", self.preserved_trigger)
-        if not isinstance(self.embedding, tuple) or not self.embedding:
-            raise ValueError("search projection embedding must be a non-empty tuple")
-        if not isinstance(self.expanded_terms, tuple) or any(
-            not isinstance(term, str) or not term.strip()
-            for term in self.expanded_terms
+
+
+def _validate_publication_projection(
+    projection: PublicationSearchProjection | FinalVersionPublicationSearchProjection,
+    *,
+    schema_version: str,
+    trigger_key: str,
+    trigger: str | None,
+) -> None:
+    if projection.schema_version != schema_version:
+        raise ValueError("search projection schema is unsupported")
+    _require_digest("search projection digest", projection.digest)
+    _require_text("search projection projector_id", projection.projector_id)
+    _require_text("search projection projector_version", projection.projector_version)
+    _require_digest(
+        "search projection projector_code_digest", projection.projector_code_digest
+    )
+    _require_digest(
+        "search projection candidate_content_digest",
+        projection.candidate_content_digest,
+    )
+    _require_text("search projection embedding_model_id", projection.embedding_model_id)
+    _require_text("search projection lexical_document", projection.lexical_document)
+    if trigger is not None:
+        if trigger_key == "preserved_trigger":
+            _require_text(f"search projection {trigger_key}", trigger)
+        elif not isinstance(trigger, str):
+            raise ValueError("search projection candidate_trigger must be text or null")
+    if not isinstance(projection.embedding, tuple) or not projection.embedding:
+        raise ValueError("search projection embedding must be a non-empty tuple")
+    if not isinstance(projection.expanded_terms, tuple) or any(
+        not isinstance(term, str) or not term.strip()
+        for term in projection.expanded_terms
+    ):
+        raise ValueError("search projection expanded_terms must contain non-empty text")
+    for coordinate in projection.embedding:
+        if (
+            not isinstance(coordinate, str)
+            or coordinate == "-0"
+            or _CANONICAL_DECIMAL.fullmatch(coordinate) is None
         ):
             raise ValueError(
-                "search projection expanded_terms must contain non-empty text"
+                "search projection embedding must contain canonical decimals"
             )
-        for coordinate in self.embedding:
-            if (
-                not isinstance(coordinate, str)
-                or coordinate == "-0"
-                or _CANONICAL_DECIMAL.fullmatch(coordinate) is None
-            ):
-                raise ValueError(
-                    "search projection embedding must contain canonical decimals"
-                )
-        payload = _canonical_payload(
-            "search projection canonical_json", self.canonical_json
-        )
-        if sha256(self.canonical_json.encode("utf-8")).hexdigest() != self.digest:
-            raise ValueError("search projection digest does not match canonical JSON")
-        expected = {
-            "candidate_content_digest": self.candidate_content_digest,
-            "embedding": list(self.embedding),
-            "embedding_model_id": self.embedding_model_id,
-            "expanded_terms": list(self.expanded_terms),
-            "lexical_document": self.lexical_document,
-            "preserved_trigger": self.preserved_trigger,
-            "projector_code_digest": self.projector_code_digest,
-            "projector_id": self.projector_id,
-            "projector_version": self.projector_version,
-            "schema_version": self.schema_version,
-        }
-        if payload != expected:
-            raise ValueError("search projection fields do not match canonical JSON")
+    payload = _canonical_payload(
+        "search projection canonical_json", projection.canonical_json
+    )
+    if (
+        sha256(projection.canonical_json.encode("utf-8")).hexdigest()
+        != projection.digest
+    ):
+        raise ValueError("search projection digest does not match canonical JSON")
+    expected = {
+        "candidate_content_digest": projection.candidate_content_digest,
+        "embedding": list(projection.embedding),
+        "embedding_model_id": projection.embedding_model_id,
+        "expanded_terms": list(projection.expanded_terms),
+        "lexical_document": projection.lexical_document,
+        trigger_key: trigger,
+        "projector_code_digest": projection.projector_code_digest,
+        "projector_id": projection.projector_id,
+        "projector_version": projection.projector_version,
+        "schema_version": projection.schema_version,
+    }
+    if payload != expected:
+        raise ValueError("search projection fields do not match canonical JSON")
 
 
 @dataclass(frozen=True)
@@ -407,7 +453,10 @@ class QualificationAuthorityRef:
             self.held_out_qualification_suite_digest,
             self.held_out_qualification_result_digest,
         )
-        if self.policy_id == "evidence-grounded-exact-edit-v1":
+        if self.policy_id in {
+            "evidence-grounded-exact-edit-v1",
+            "evidence-grounded-playbook-revision-v2",
+        }:
             if any(value is not None for value in held_out):
                 raise ValueError("rule-evidence authority has no held-out component")
         elif self.policy_id == "adverse-veto-coverage-75-v1":
@@ -463,19 +512,23 @@ class ProvisionalPublicationRequest:
     incumbent_full_version_fingerprint: str
     incumbent_snapshot_json: str
     revised_content: str
-    projection: PublicationSearchProjection
+    projection: PublicationSearchProjection | FinalVersionPublicationSearchProjection
     decision_proof: DecisionProofEnvelope
     subject_epochs_json: str
     qualification_authority: QualificationAuthorityRef
     evidence_bundle_digest: str
     candidate_digest: str
+    final_revision: FinalPlaybookRevision | None = None
 
     def __post_init__(self) -> None:
         if self.optimizer_kind != "offline_tuner_open_world":
             raise ValueError("optimizer_kind must be offline_tuner_open_world")
         if type(self.publication_claim) is not PublicationClaim:
             raise ValueError("publication_claim must be PublicationClaim")
-        if type(self.projection) is not PublicationSearchProjection:
+        if type(self.projection) not in {
+            PublicationSearchProjection,
+            FinalVersionPublicationSearchProjection,
+        }:
             raise ValueError("projection must be PublicationSearchProjection")
         if type(self.decision_proof) is not DecisionProofEnvelope:
             raise ValueError("decision_proof must be DecisionProofEnvelope")
@@ -491,16 +544,17 @@ class ProvisionalPublicationRequest:
             or self.incumbent_user_playbook_id <= 0
         ):
             raise ValueError("incumbent_user_playbook_id must be positive")
+        if type(self.qualification_authority) is not QualificationAuthorityRef:
+            raise ValueError(
+                "qualification authority must be QualificationAuthorityRef"
+            )
         snapshot = _validated_full_version_snapshot(
             incumbent_snapshot_json=self.incumbent_snapshot_json,
             incumbent_full_version_fingerprint=self.incumbent_full_version_fingerprint,
             incumbent_user_playbook_id=self.incumbent_user_playbook_id,
         )
         _require_text("revised_content", self.revised_content)
-        if self.revised_content == snapshot.content:
-            raise ValueError("revised_content must differ from incumbent content")
-        if self.projection.preserved_trigger != snapshot.trigger:
-            raise ValueError("search projection must preserve incumbent trigger")
+        self._validate_revision_binding(snapshot)
         if self.decision_proof.optimizer_kind != self.optimizer_kind:
             raise ValueError("decision proof optimizer_kind must match request")
         if sha256(self.revised_content.encode("utf-8")).hexdigest() != (
@@ -508,12 +562,56 @@ class ProvisionalPublicationRequest:
         ):
             raise ValueError("revised content digest must match search projection")
         _validate_subject_epochs_json(self.subject_epochs_json)
-        if type(self.qualification_authority) is not QualificationAuthorityRef:
-            raise ValueError(
-                "qualification authority must be QualificationAuthorityRef"
-            )
         _require_digest("evidence bundle digest", self.evidence_bundle_digest)
         _require_digest("candidate digest", self.candidate_digest)
+
+    def _validate_revision_binding(self, snapshot: UserPlaybook) -> None:
+        if self.final_revision is None:
+            if type(self.projection) is not PublicationSearchProjection:
+                raise ValueError(
+                    "Content-only publication requires a v1 search projection"
+                )
+            if self.revised_content == snapshot.content:
+                raise ValueError("revised_content must differ from incumbent content")
+            if self.projection.preserved_trigger != snapshot.trigger:
+                raise ValueError("search projection must preserve incumbent trigger")
+        else:
+            if type(self.final_revision) is not FinalPlaybookRevision:
+                raise ValueError("final_revision must be FinalPlaybookRevision")
+            FinalPlaybookRevision.model_validate_json(
+                self.final_revision.model_dump_json()
+            )
+            if self.final_revision.revised_content != self.revised_content:
+                raise ValueError("final revision content must match revised_content")
+            if type(self.projection) is not FinalVersionPublicationSearchProjection:
+                raise ValueError(
+                    "Final-version publication requires a v2 search projection"
+                )
+            if self.projection.candidate_trigger != self.final_revision.revised_trigger:
+                raise ValueError("search projection must match final revision trigger")
+            if (self.revised_content, self.final_revision.revised_trigger) == (
+                snapshot.content,
+                snapshot.trigger,
+            ):
+                raise ValueError("final revision must change Content or Trigger")
+            if (
+                self.qualification_authority.policy_id
+                != "evidence-grounded-playbook-revision-v2"
+            ):
+                raise ValueError("final revision requires v2 method authority")
+            if (
+                self.decision_proof.schema_version
+                != "offline-tuner-rule-evidence-publication-proof-v2"
+            ):
+                raise ValueError("final revision requires v2 decision proof")
+
+    @property
+    def final_trigger(self) -> str | None:
+        if self.final_revision is not None:
+            return self.final_revision.revised_trigger
+        if type(self.projection) is not PublicationSearchProjection:
+            raise ValueError("Content-only publication requires a v1 search projection")
+        return self.projection.preserved_trigger
 
 
 @dataclass(frozen=True)

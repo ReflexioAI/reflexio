@@ -73,6 +73,10 @@ from reflexio.server.services.offline_tuner.open_world.runner import AttemptLeas
 from reflexio.server.services.playbook.publication import (
     incumbent_user_playbook_semantic_digest,
 )
+from reflexio.server.services.playbook.rule_evidence.trigger_maintenance import (
+    TriggerBatch,
+    TriggerGate,
+)
 from reflexio.server.services.search_exposure import (
     SearchExposureBatch,
     user_playbook_full_version_fingerprint,
@@ -237,7 +241,11 @@ def test_an_attempt_runs_from_served_sessions_to_a_served_successor(
     )
     assert not isinstance(outcome, AttemptTerminalFailure), outcome
     assert outcome.decision.decision == "accept"
-    assert len(transport.calls) == _SESSIONS + 1
+    # Five diagnostics, one Content audit, and one healthy-Trigger gate.
+    # KEEP must not spend a builder call.
+    assert len(transport.calls) == _SESSIONS + 2
+    assert transport.calls[-1]["response_format"] is TriggerGate
+    assert all(call["response_format"] is not TriggerBatch for call in transport.calls)
 
     # Publication: the provisional publisher over SQLite.
     result = OpenWorldProvisionalPublisher(

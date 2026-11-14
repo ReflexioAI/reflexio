@@ -83,7 +83,13 @@ def empty_prior_capture(monkeypatch, *, groups=None):
 
 
 @pytest.mark.parametrize(
-    "model", ["gpt-4o-mini", "minimax/MiniMax-M3", "anthropic/claude-sonnet-4-5"]
+    "model",
+    [
+        "gpt-4o-mini",
+        "minimax/MiniMax-M3",
+        "anthropic/claude-sonnet-4-5",
+        "openclaw/anthropic/claude-sonnet-4-6",
+    ],
 )
 @pytest.mark.parametrize("with_tools", [False, True])
 def test_pure_build_matches_scoped_native_build_and_restores_guard(
@@ -425,7 +431,13 @@ def test_signing_secret_rotation_changes_only_its_frozen_digest(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "model", ["gpt-4o-mini", "minimax/MiniMax-M3", "anthropic/claude-sonnet-4-5"]
+    "model",
+    [
+        "gpt-4o-mini",
+        "minimax/MiniMax-M3",
+        "anthropic/claude-sonnet-4-5",
+        "openclaw/anthropic/claude-sonnet-4-6",
+    ],
 )
 @pytest.mark.parametrize("long_echo", [False, True])
 def test_actual_native_agent_and_semantic_repair_pass_the_frozen_checker(

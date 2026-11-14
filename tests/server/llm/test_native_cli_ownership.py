@@ -1,7 +1,9 @@
 """An isolated SDK worker must not own the lifetime of a native provider CLI."""
 
+import json
 import multiprocessing
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -9,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from reflexio.server.llm import _litellm_subprocess as worker_module
 from reflexio.server.llm import _litellm_text_generation as generation
@@ -97,6 +100,17 @@ def _broker_completion(params):
     environment = params.get(
         "native_env", {**os.environ, "SDK_WORKER_PID": str(os.getpid())}
     )
+    if params.get("native_opencode"):
+        from reflexio.server.llm.providers._opencode_cli import run_opencode
+
+        os.environ.update(environment)
+        return run_opencode(
+            cli_path=getattr(sys, "_base_executable", sys.executable),
+            system_prompt="",
+            dialogue="synthetic native ownership",
+            model=None,
+            timeout_seconds=params["native_timeout"],
+        )
     output = (
         claude_code_provider._temporary_output_path()
         if params.get("native_codex_temp")
@@ -188,7 +202,6 @@ def _capture_brokers(monkeypatch):
 
 @pytest.mark.parametrize("method", ["spawn", "fork"])
 def test_broker_preserves_large_output_input_and_parent_identity(monkeypatch, method):
-    import json
 
     if method not in multiprocessing.get_all_start_methods():
         pytest.skip(f"{method} is not supported on this platform")
@@ -338,7 +351,6 @@ def test_worker_death_does_not_abandon_its_running_cli(monkeypatch):
 
 
 def test_worker_environment_and_cwd_are_preserved(monkeypatch, tmp_path):
-    import json
 
     monkeypatch.setenv("NATIVE_PARENT_MARKER", "must not leak into empty child env")
     client = _broker_client(monkeypatch, "spawn")
@@ -385,7 +397,10 @@ def _fault_owner_script(monkeypatch, tmp_path, mode):
     monkeypatch.setattr(_native_cli, "_NATIVE_OWNER_SCRIPT", script)
 
 
-def test_codex_scratch_and_permit_survive_until_native_reaping(monkeypatch, tmp_path):
+@pytest.mark.parametrize("native_protocol", ["codex", "opencode"])
+def test_codex_scratch_and_permit_survive_until_native_reaping(
+    monkeypatch, tmp_path, native_protocol
+):
     from reflexio.server.llm._litellm_types import LLMHardTimeoutError
 
     method = "fork" if "fork" in multiprocessing.get_all_start_methods() else "spawn"
@@ -397,11 +412,31 @@ def test_codex_scratch_and_permit_survive_until_native_reaping(monkeypatch, tmp_
     _fault_owner_script(monkeypatch, tmp_path, "reap")
     reaping, allow_reap = tmp_path / "reaping", tmp_path / "allow-reap"
     record = tmp_path / "codex-path"
+    output_source = (
+        "Path.cwd()/'native-output'"
+        if native_protocol == "opencode"
+        else "Path(os.environ['NATIVE_OUTPUT_FILE'])"
+    )
     code = (
         "import os,time;from pathlib import Path;"
-        "p=Path(os.environ['NATIVE_OUTPUT_FILE']);p.write_text('native output');"
+        f"p={output_source};p.write_text('native output');"
         f"Path({str(record)!r}).write_text(str(p));time.sleep(30)"
     )
+    environment = {
+        **os.environ,
+        "TEST_REAP_MARKER": str(reaping),
+        "TEST_REAP_RELEASE": str(allow_reap),
+    }
+    if native_protocol == "opencode":
+        hook = tmp_path / "native-hooks"
+        hook.mkdir()
+        (hook / "sitecustomize.py").write_text(
+            "import sys\nif sys.argv[0] == 'run':\n" + f" exec({code!r})\n",
+            encoding="utf-8",
+        )
+        environment["PYTHONPATH"] = (
+            str(hook) + os.pathsep + environment.get("PYTHONPATH", "")
+        )
     try:
         with (
             admission.provider_slot("openai/gpt-4o"),
@@ -412,12 +447,9 @@ def test_codex_scratch_and_permit_survive_until_native_reaping(monkeypatch, tmp_
                     "model": "openai/gpt-4o",
                     "native_code": code,
                     "native_timeout": 1,
-                    "native_codex_temp": True,
-                    "native_env": {
-                        **os.environ,
-                        "TEST_REAP_MARKER": str(reaping),
-                        "TEST_REAP_RELEASE": str(allow_reap),
-                    },
+                    "native_codex_temp": native_protocol == "codex",
+                    "native_opencode": native_protocol == "opencode",
+                    "native_env": environment,
                 },
                 3 if method == "fork" else 15,
             )
@@ -432,6 +464,67 @@ def test_codex_scratch_and_permit_survive_until_native_reaping(monkeypatch, tmp_
     while output.parent.exists() and time.monotonic() < end:
         time.sleep(0.01)
     assert not output.parent.exists()
+
+
+@pytest.mark.integration
+def test_real_native_opencode_dispatch_and_owner_in_fresh_interpreter(
+    tmp_path, monkeypatch
+):
+    """Also collected by Windows diagnostics: actual native exe, no batch shell."""
+    monkeypatch.setenv("BRAINTRUST_API_KEY", "private-parent-telemetry-canary")
+    monkeypatch.setenv("PRIVATE_PARENT_CANARY", "parent-only")
+    env = {
+        key: os.environ[key]
+        for key in (
+            "PATH",
+            "TMPDIR",
+            "TMP",
+            "TEMP",
+            "SystemRoot",
+            "SYSTEMROOT",
+            "WINDIR",
+            "COMSPEC",
+            "PATHEXT",
+            "LANG",
+            "LC_ALL",
+        )
+        if key in os.environ
+    }
+    home = tmp_path / "home"
+    home.mkdir()
+    empty = home / "empty.env"
+    empty.touch()
+    env.update(
+        HOME=str(home),
+        USERPROFILE=str(home),
+        APPDATA=str(home / "appdata"),
+        LOCALAPPDATA=str(home / "localappdata"),
+        REFLEXIO_ENV_FILE=str(empty),
+        PYTHON_DOTENV_DISABLED="1",
+        PYTHONNOUSERSITE="1",
+        PYTHONPATH=str(Path(__file__).resolve().parents[3]),
+        LITELLM_LOCAL_MODEL_COST_MAP="true",
+        OPENAI_API_KEY="sk-test-not-real",
+        OMP_NUM_THREADS="1",
+        OPENBLAS_NUM_THREADS="1",
+        MKL_NUM_THREADS="1",
+        RAYON_NUM_THREADS="1",
+    )
+    result = subprocess.run(  # noqa: S603 — owned interpreter/test script, no installed provider CLI.
+        [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            str(tmp_path),
+        ],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=90,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-3000:]
+    assert "OWNED_NATIVE_OPENCODE_OK" in result.stdout
 
 
 @pytest.mark.skipif(
@@ -819,3 +912,204 @@ def test_invalid_native_launch_retires_without_holding_capacity(
         client._completion_with_hard_timeout(params, 5)
     assert released.wait(3), "Rejected input retained provider admission"
     assert brokers and all(process.returncode == 0 for process in brokers)
+
+
+class NativeProbeAnswer(BaseModel):
+    answer: str
+
+
+def _physical_probe(root: Path):
+    """A fresh interpreter avoids paid-provider mocks; the owned CLI is Python itself."""
+    import litellm
+
+    from reflexio.server.llm._litellm_types import ToolCallingChatResponse
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+    from reflexio.server.llm.providers import _opencode_cli as native
+    from reflexio.server.llm.providers import claude_code_provider as provider
+
+    assert (
+        "BRAINTRUST_API_KEY" not in os.environ
+        and "PRIVATE_PARENT_CANARY" not in os.environ
+    )
+    executable = str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())
+    hooks = root / "native hooks"
+    hooks.mkdir()
+    record = root / "native-calls.jsonl"
+    response_file = root / "response.txt"
+    (hooks / "sitecustomize.py").write_text(
+        "import sys,os,json,time\nfrom pathlib import Path\n"
+        "if Path(sys.argv[0]).name == 'run':\n"
+        " data={'pid':os.getpid(),'ppid':os.getppid(),'argv':sys.argv,'cwd':os.getcwd(),'stdin':sys.stdin.read()}\n"
+        " data['config']=json.loads((Path.cwd()/'.opencode'/'opencode.json').read_text(encoding='utf-8'))\n"
+        " data['env']={key:os.environ.get(key) for key in ('PWD','OPENCODE_PURE','CLAUDE_SMART_HOST','CLAUDE_SMART_INTERNAL','CLAUDE_CODE_ENTRYPOINT')}\n"
+        f" with Path({str(record)!r}).open('a',encoding='utf-8') as out: out.write(json.dumps(data)+'\\n')\n"
+        " time.sleep(float(os.environ.get('NATIVE_TEST_SLEEP','0')))\n"
+        f" print(Path({str(response_file)!r}).read_text(encoding='utf-8'),flush=True)\n"
+        " os._exit(0)\n",
+        encoding="utf-8",
+    )
+    os.environ.update(
+        CLAUDE_SMART_HOST="opencode",
+        CLAUDE_SMART_USE_LOCAL_CLI="1",
+        CLAUDE_SMART_CLI_PATH=executable,
+        PYTHONPATH=str(hooks) + os.pathsep + str(Path(__file__).resolve().parents[3]),
+        PYTHONNOUSERSITE="1",
+        PYTHONIOENCODING="utf-8",
+    )
+    os.environ.pop("CLAUDE_SMART_CLI_TIMEOUT", None)
+    os.environ["CLAUDE_SMART_CLI_MODEL"] = "owned/model#low"
+    provider.register_if_enabled()
+    response_file.write_text(
+        '{"type":"text","part":{"type":"text","text":"native λ"}}', encoding="utf-8"
+    )
+    pids = []
+    popen = subprocess.Popen
+
+    def observed(*args, **kwargs):
+        child = popen(*args, **kwargs)
+        pids.append(child.pid)
+        return child
+
+    subprocess.Popen = observed
+    try:
+        output = litellm.completion(
+            model="claude-code/default",
+            messages=[{"role": "user", "content": "synthetic private λ"}],
+            timeout=2.5,
+            num_retries=0,
+        )
+        assert isinstance(output, litellm.ModelResponse)
+        assert output.choices[0].message.content == "native λ"
+        entry = json.loads(record.read_text().splitlines()[-1])
+        assert entry["pid"] in pids and entry["ppid"] == os.getpid(), (
+            "Native executable is not immediate child"
+        )
+        assert entry["argv"][1:5] == [
+            "--format",
+            "json",
+            "--agent",
+            "claude-smart-extractor",
+        ]
+        assert entry["argv"][-2:] == ["--model", "owned/model#low"]
+        assert "synthetic private λ" in entry[
+            "stdin"
+        ] and "synthetic private λ" not in repr(entry["argv"])
+        assert (
+            entry["config"]["agent"]["claude-smart-extractor"]["permission"] == "deny"
+        )
+        assert entry["env"]["PWD"] == entry["cwd"]
+        assert (
+            entry["env"]["CLAUDE_SMART_INTERNAL"] == "1"
+            and entry["env"]["OPENCODE_PURE"] == "1"
+        )
+        assert not Path(entry["cwd"]).exists()
+        os.environ.pop("CLAUDE_SMART_CLI_MODEL")
+        handler = provider.ClaudeCodeLLM(cli_path=executable)
+        handler.completion(
+            messages=[{"role": "user", "content": "default synthetic"}], timeout=1
+        )
+        assert "--model" not in json.loads(record.read_text().splitlines()[-1])["argv"]
+
+        client = LiteLLMClient(
+            LiteLLMConfig(
+                model="claude-code/default",
+                max_tokens=32,
+                timeout=20,
+                fallback_models=[],
+            )
+        )
+
+        def local_only(params, *_args):
+            assert params["model"].startswith("claude-code/") and not params.get(
+                "api_base"
+            ), "Unowned route"
+
+        response_file.write_text(
+            json.dumps({"type": "text", "text": '{"answer":"ok"}'}), encoding="utf-8"
+        )
+        import multiprocessing
+
+        multiprocessing.set_start_method("spawn", force=True)
+        answer = client.generate_chat_response(
+            [{"role": "user", "content": "structured synthetic"}],
+            response_format=NativeProbeAnswer,
+            provider_request_guard=local_only,
+        )
+        assert isinstance(answer, NativeProbeAnswer)
+        assert answer.answer == "ok"
+        delegated = json.loads(record.read_text().splitlines()[-1])
+        assert delegated["ppid"] in pids and delegated["ppid"] != os.getpid(), (
+            "Native owner was bypassed"
+        )
+        end = time.monotonic() + 5
+        while Path(delegated["cwd"]).exists() and time.monotonic() < end:
+            time.sleep(0.02)
+        assert not Path(delegated["cwd"]).exists()
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "finish_test",
+                    "description": "Synthetic finish",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"answer": {"type": "string"}},
+                        "required": ["answer"],
+                    },
+                },
+            }
+        ]
+        response_file.write_text(
+            json.dumps(
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {"tool": "finish_test", "args": {"answer": "ok"}}
+                    ),
+                }
+            ),
+            encoding="utf-8",
+        )
+        output = client.generate_chat_response_with_provenance(
+            [{"role": "user", "content": "tool synthetic"}],
+            tools=tools,
+            provider_request_guard=local_only,
+        )
+        assert isinstance(output.value, ToolCallingChatResponse)
+        assert output.value.tool_calls is not None
+        assert output.value.tool_calls[0].function.name == "finish_test"
+        assert (
+            output.provenance.model_name is None and output.provenance.provider is None
+        )
+        if os.name == "nt":
+            shim = root / "opencode.cmd"
+            shim.write_text("@exit /b 99\n")
+            with pytest.raises(native.OpenCodeCLIError, match="requires an .exe"):
+                native.run_opencode(
+                    cli_path=str(shim),
+                    system_prompt="",
+                    dialogue="",
+                    model=None,
+                    timeout_seconds=1,
+                )
+        os.environ["NATIVE_TEST_SLEEP"] = "30"
+        started = time.monotonic()
+        with pytest.raises(provider.ClaudeCodeCLIError, match="timed out"):
+            handler.completion(
+                messages=[{"role": "user", "content": "timeout synthetic"}], timeout=0.3
+            )
+        assert time.monotonic() - started < 2
+        last = json.loads(record.read_text().splitlines()[-1])
+        assert not Path(last["cwd"]).exists()
+        # Actual executable records its own process, so this also rejects a
+        # Windows venv redirector/launcher standing between owner and CLI.
+        if os.name != "nt":
+            with pytest.raises(ProcessLookupError):
+                os.kill(last["pid"], 0)
+    finally:
+        subprocess.Popen = popen
+    print("OWNED_NATIVE_OPENCODE_OK")
+
+
+if __name__ == "__main__":
+    _physical_probe(Path(sys.argv[1]))
