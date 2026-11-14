@@ -25,7 +25,6 @@ from reflexio.server.operational_metrics import record_health
 from reflexio.server.services.durable_learning.window_disposition import (
     DeferSetup,
     HoldInput,
-    InputHoldReason,
     ProviderWait,
     Recompute,
     Retry,
@@ -371,9 +370,9 @@ class DurableLearningWorker:
                 storage.discard_extraction_computation(window, token)
                 record_health("worker.computation_discards", extractor=window.kind)
                 return "input_budget_failure"
-            case HoldInput(reason=reason, park=park):
+            case HoldInput() as hold:
                 return DurableLearningWorker._hold_input(
-                    storage, window, token, exc, reason, park=park
+                    storage, window, token, exc, hold
                 )
             case ProviderWait(delay_seconds=wait):
                 return DurableLearningWorker._wait_for_provider(
@@ -390,30 +389,35 @@ class DurableLearningWorker:
         window: Window,
         token: str,
         exc: Exception,
-        reason: InputHoldReason,
-        *,
-        park: bool,
+        hold: HoldInput,
     ) -> str:
-        parked = storage.fail_extraction_input_budget(window, token, reason, park=park)
-        if parked and reason == "input_budget_configuration_error":
+        """Persist ``hold.reason``; log and count the accurate ``hold.label``."""
+        parked = storage.fail_extraction_input_budget(
+            window, token, hold.reason, park=hold.park
+        )
+        if parked and hold.reason == "input_budget_configuration_error":
             # Parked until an operator re-arms it, so this logs once per
             # park rather than on every backoff retry.
             logger.error(
-                "Extraction input parked kind=%s reason=%s error=%s at=%s",
+                "Extraction input parked kind=%s reason=%s status_reason=%s "
+                "error=%s at=%s",
                 window.kind,
-                reason,
+                hold.label,
+                hold.reason,
                 type(exc).__name__,
                 exception_locator(exc),
             )
         else:
             logger.warning(
-                "Extraction input held kind=%s reason=%s error=%s at=%s",
+                "Extraction input held kind=%s reason=%s status_reason=%s "
+                "error=%s at=%s",
                 window.kind,
-                reason,
+                hold.label,
+                hold.reason,
                 type(exc).__name__,
                 exception_locator(exc),
             )
-        record_health("worker.input_budget_failures", reason=reason)
+        record_health("worker.input_budget_failures", reason=hold.label)
         return "input_budget_failure"
 
     @staticmethod
