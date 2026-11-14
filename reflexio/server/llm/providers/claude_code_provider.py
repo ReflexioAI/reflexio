@@ -48,7 +48,11 @@ from litellm.types.utils import (
 )
 
 from reflexio.server.env_utils import env_str, env_truthy
-from reflexio.server.llm._native_cli import native_cli_directory, run_native_cli
+from reflexio.server.llm._native_cli import (
+    native_cli_directory,
+    request_timeout_seconds,
+    run_native_cli,
+)
 from reflexio.server.llm.providers.claude_code_stream_parser import (
     ParseResult,
     classify_stall,
@@ -74,23 +78,25 @@ PROVIDER_KEY = "claude-code"
 ENV_ENABLE = "CLAUDE_SMART_USE_LOCAL_CLI"
 _ENV_CLI_PATH = "CLAUDE_SMART_CLI_PATH"
 _ENV_HOST = "CLAUDE_SMART_HOST"
-_ENV_CODEX_PATH = "CLAUDE_SMART_CODEX_PATH"
+_RETIRED_CODEX_PATH = "CLAUDE_SMART_CODEX_PATH"
 _ENV_TIMEOUT = "CLAUDE_SMART_CLI_TIMEOUT"
 _ENV_MODEL = "CLAUDE_SMART_CLI_MODEL"
 _HOST_CODEX = "codex"
 _HOST_CLAUDE_CODE = "claude-code"
+_HOST_OPENCODE = "opencode"
+_COMPAT_HOSTS = {
+    f"{_HOST_OPENCODE}-claude-compat{suffix}": _HOST_OPENCODE
+    for suffix in ("", ".cmd", ".js")
+}
 
 
 def _is_windows() -> bool:
     return os.name == "nt"
 
 
-_CODEX_COMPAT_SCRIPT_NAMES = (
-    ("codex-claude-compat.cmd", "codex-claude-compat")
-    if _is_windows()
-    else ("codex-claude-compat", "codex-claude-compat.cmd")
+_RETIRED_CODEX_BRIDGES = frozenset(
+    f"codex-claude-compat{suffix}" for suffix in ("", ".cmd", ".js")
 )
-_CODEX_COMPAT_SCRIPT_NAME_SET = set(_CODEX_COMPAT_SCRIPT_NAMES)
 _DEFAULT_TIMEOUT_SECONDS = 120
 _WINDOWS_ARGV_SYSTEM_PROMPT_LIMIT = 3_000
 _WINDOWS_CLI_SUFFIXES = (".cmd", ".exe", ".bat")
@@ -122,27 +128,19 @@ def _env_enabled() -> bool:
 
 def _host() -> str:
     """Return the host that owns this backend process."""
-    return (
-        _HOST_CODEX if os.environ.get(_ENV_HOST) == _HOST_CODEX else _HOST_CLAUDE_CODE
-    )
+    selected = os.environ.get(_ENV_HOST)
+    return selected if selected in (_HOST_CODEX, _HOST_OPENCODE) else _HOST_CLAUDE_CODE
 
 
 def _cli_name() -> str:
     """Return the expected local CLI binary for the active host."""
-    return "codex" if _host() == _HOST_CODEX else "claude"
+    selected = _host()
+    return "claude" if selected == _HOST_CLAUDE_CODE else selected
 
 
-def _candidate_codex_compat_path() -> Path | None:
-    """Return the Codex compatibility wrapper from plugin roots, if present."""
-    for env_var in ("PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT"):
-        root = os.environ.get(env_var)
-        if not root:
-            continue
-        for name in _CODEX_COMPAT_SCRIPT_NAMES:
-            candidate = Path(root) / "scripts" / name
-            if candidate.is_file() and os.access(candidate, os.X_OK):
-                return candidate
-    return None
+def _compat_host(cli_path: str) -> str | None:
+    """Known plugin adapters speak Claude protocol, independent of coding host."""
+    return _COMPAT_HOSTS.get(Path(cli_path).name.lower())
 
 
 def _windows_cli_suffixes() -> tuple[str, ...]:
@@ -183,9 +181,7 @@ def _resolve_cli_path() -> str | None:
     """Return the path to the active host CLI, or None if unavailable.
 
     Honours the ``CLAUDE_SMART_CLI_PATH`` override before falling back to
-    host-specific defaults. Claude Code uses ``claude``. Codex prefers the
-    compatibility wrapper shipped with the plugin, then falls back to
-    ``codex`` directly.
+    host-specific native defaults. Retired assignments never select a path.
 
     Returns:
         str | None: Absolute path to the CLI, or None if not found.
@@ -196,29 +192,72 @@ def _resolve_cli_path() -> str | None:
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
         _LOGGER.warning(
-            "%s=%s is not an executable file; falling back to PATH",
+            "%s is not an executable file; falling back to PATH",
             _ENV_CLI_PATH,
-            override,
         )
     if _host() == _HOST_CODEX:
-        compat = _candidate_codex_compat_path()
-        if compat is not None:
-            return str(compat)
-        return os.environ.get(_ENV_CODEX_PATH) or shutil.which("codex")
+        return shutil.which("codex")
+    if _host() == _HOST_OPENCODE:
+        return shutil.which("opencode")
     return shutil.which("claude")
+
+
+def _codex_migration_error(explicit_path: str | None = None) -> str | None:
+    """Inspect obsolete intent without ever resolving its executable value."""
+    canonical = explicit_path or os.environ.get(_ENV_CLI_PATH)
+    if canonical and Path(canonical).name.lower() in _RETIRED_CODEX_BRIDGES:
+        return (
+            "Codex compatibility bridge is retired. Select CLAUDE_SMART_HOST=codex "
+            "and use the native executable through CLAUDE_SMART_CLI_PATH or PATH."
+        )
+    if _host() != _HOST_CODEX or not env_str(_RETIRED_CODEX_PATH):
+        return None
+    # Constructor paths already dominated all environment selection. A valid
+    # canonical env override also dominated the old key; preserve that choice.
+    if explicit_path:
+        return None
+    if canonical:
+        candidate = Path(_resolve_cli_override_path(canonical))
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return None
+    return (
+        f"{_RETIRED_CODEX_PATH} no longer selects an executable. Preserve the "
+        "intended path in CLAUDE_SMART_CLI_PATH before removing the old assignment, "
+        "or remove it deliberately to adopt Codex from PATH."
+    )
+
+
+def reject_retired_codex_selection(explicit_path: str | None = None) -> None:
+    """Refuse active obsolete selection only when this CLI route is reached."""
+    message = _codex_migration_error(explicit_path)
+    if message:
+        raise ValueError(message)
+
+
+def has_pending_codex_migration() -> bool:
+    """Reserve enabled native intent even without a usable binary.
+
+    Availability and selection differ: deleting an old target cannot select a
+    paid HTTP provider merely because the native executable is missing.
+    """
+    return _env_enabled() and _codex_migration_error() is not None
 
 
 def is_claude_code_available() -> bool:
     """Return True when the local CLI provider is usable right now.
 
-    Both the opt-in env var *and* a resolvable CLI path are required, so
-    an unrelated env var can't silently redirect extraction traffic.
+    Both opt-in and a resolvable CLI path are required, without pending
+    migration. Default selection reserves obsolete native intent separately.
 
     Returns:
         bool: True iff ``CLAUDE_SMART_USE_LOCAL_CLI`` is truthy AND a
             host CLI is resolvable.
     """
-    return _env_enabled() and _resolve_cli_path() is not None
+    return (
+        _env_enabled()
+        and _codex_migration_error() is None
+        and _resolve_cli_path() is not None
+    )
 
 
 def _flatten_content(content: Any) -> str:
@@ -371,7 +410,8 @@ def _run_cli_stream(
     cli_path: str,
     system_prompt: str,
     dialogue: str,
-    timeout_seconds: int,
+    timeout_seconds: float,
+    host: str | None = None,
 ) -> ParseResult:
     """Invoke the active host CLI and return a ParseResult.
 
@@ -388,10 +428,36 @@ def _run_cli_stream(
     Raises:
         ClaudeCodeCLIError: On timeout or missing binary.
     """
-    if (
-        _host() == _HOST_CODEX
-        and Path(cli_path).name not in _CODEX_COMPAT_SCRIPT_NAME_SET
-    ):
+    reject_retired_codex_selection(cli_path)
+    bridge = _compat_host(cli_path)
+    if bridge:
+        return replace(
+            _run_claude_stream(
+                cli_path=cli_path,
+                system_prompt=system_prompt,
+                dialogue=dialogue,
+                timeout_seconds=timeout_seconds,
+            ),
+            cli_binary=bridge,
+        )
+    selected = host or _host()
+    if selected == _HOST_OPENCODE:
+        from reflexio.server.llm.providers._opencode_cli import (
+            OpenCodeCLIError,
+            run_opencode,
+        )
+
+        try:
+            return run_opencode(
+                cli_path=cli_path,
+                system_prompt=system_prompt,
+                dialogue=dialogue,
+                model=env_str(_ENV_MODEL) or None,
+                timeout_seconds=timeout_seconds,
+            )
+        except OpenCodeCLIError as exc:
+            raise ClaudeCodeCLIError(str(exc)) from None
+    if selected == _HOST_CODEX:
         return _run_codex_stream(
             codex_path=cli_path,
             system_prompt=system_prompt,
@@ -411,7 +477,7 @@ def _run_claude_stream(
     cli_path: str,
     system_prompt: str,
     dialogue: str,
-    timeout_seconds: int,
+    timeout_seconds: float,
 ) -> ParseResult:
     """Invoke ``claude -p --output-format stream-json`` and return a ParseResult."""
     model = env_str(_ENV_MODEL)
@@ -478,7 +544,7 @@ def _run_codex_stream(
     codex_path: str,
     system_prompt: str,
     dialogue: str,
-    timeout_seconds: int,
+    timeout_seconds: float,
 ) -> ParseResult:
     """Invoke ``codex exec`` and shape its output like a terminal stream result."""
     output_path = _temporary_output_path()
@@ -492,8 +558,12 @@ def _run_codex_stream(
         "--ignore-rules",
         "--output-last-message",
         str(output_path),
-        "-",
     ]
+    # A role label such as claude-code/default is not a native model selector.
+    model = env_str(_ENV_MODEL)
+    if model:
+        cmd.extend(["--model", model])
+    cmd.append("-")
 
     env = os.environ.copy()
     env[_ENV_HOST] = _HOST_CODEX
@@ -744,6 +814,7 @@ class ClaudeCodeLLM(CustomLLM):
         Raises:
             ClaudeCodeCLIError: If the CLI cannot be located.
         """
+        reject_retired_codex_selection(self._explicit_cli_path)
         path = self._explicit_cli_path or _resolve_cli_path()
         if not path:
             raise ClaudeCodeCLIError(
@@ -765,8 +836,28 @@ class ClaudeCodeLLM(CustomLLM):
             try:
                 return max(1, int(raw))
             except ValueError:
-                _LOGGER.warning("Ignoring non-integer %s=%r", _ENV_TIMEOUT, raw)
+                _LOGGER.warning("Ignoring non-integer %s", _ENV_TIMEOUT)
         return _DEFAULT_TIMEOUT_SECONDS
+
+    def _native_request_timeout(self, value: Any) -> float:
+        """A new native path has no provider default; explicit old caps still apply.
+
+        Retiring those choices belongs to the matching producer migration. This
+        intermediate adapter must not silently ignore a valid constructor/env cap.
+        """
+        timeout = request_timeout_seconds(value)
+        if self._explicit_timeout is not None:
+            return min(timeout, request_timeout_seconds(self._explicit_timeout))
+        raw = env_str(_ENV_TIMEOUT)
+        if not raw:
+            return timeout
+        try:
+            cap = max(1, int(raw))
+        except ValueError:
+            raise ValueError(
+                "CLAUDE_SMART_CLI_TIMEOUT must be integer seconds"
+            ) from None
+        return min(timeout, cap)
 
     def completion(  # type: ignore[override]
         self,
@@ -801,6 +892,7 @@ class ClaudeCodeLLM(CustomLLM):
         # standard plumbing for custom providers) or as a top-level ``tools``
         # kwarg. Read both before discarding kwargs.
         tools = optional_params.get("tools") or kwargs.get("tools")
+        request_timeout = kwargs.get("timeout")
         del kwargs
 
         _warn_on_ignored_params(optional_params)
@@ -815,12 +907,20 @@ class ClaudeCodeLLM(CustomLLM):
         else:
             system_prompt = _maybe_append_schema(system_prompt, response_format)
 
+        cli_path = self._cli_path()
+        host = _host()
+        timeout = (
+            self._native_request_timeout(request_timeout)
+            if host == _HOST_OPENCODE and _compat_host(cli_path) is None
+            else self._timeout()
+        )
         started = time.perf_counter()
         result = _run_cli_stream(
-            cli_path=self._cli_path(),
+            cli_path=cli_path,
             system_prompt=system_prompt,
             dialogue=dialogue,
-            timeout_seconds=self._timeout(),
+            timeout_seconds=timeout,
+            host=host,
         )
 
         if result.success:
@@ -901,9 +1001,8 @@ class ClaudeCodeLLM(CustomLLM):
             self._storage.upsert_stall_state(
                 reason=reason,
                 stalled_at=datetime.now(UTC),
-                reset_estimate=parse_reset_estimate(
-                    f"{result.stderr_text} {result.terminal_text}"
-                ),
+                reset_estimate=result.reset_estimate
+                or parse_reset_estimate(f"{result.stderr_text} {result.terminal_text}"),
                 error_message=(result.stderr_text or result.terminal_text)[:1000],
             )
         except Exception as exc:  # noqa: BLE001 — never crash the provider over telemetry.
@@ -944,11 +1043,11 @@ _HANDLER: ClaudeCodeLLM | None = None
 
 
 def register_if_enabled(storage: Any | None = None) -> bool:
-    """Register the ``claude-code`` provider with LiteLLM if enabled and available.
+    """Register an enabled CLI provider or reserve its pending migration intent.
 
     Idempotent — safe to call more than once per process. Opt-in via
     ``CLAUDE_SMART_USE_LOCAL_CLI=1``. Skips registration (with a warning)
-    when the env var is set but the CLI is not on PATH.
+    when no usable CLI or pending migration exists.
 
     Args:
         storage (Any | None): Optional BaseStorage-shaped handle used by the
@@ -967,8 +1066,9 @@ def register_if_enabled(storage: Any | None = None) -> bool:
         return True
     if not _env_enabled():
         return False
-    cli_path = _resolve_cli_path()
-    if not cli_path:
+    pending_migration = has_pending_codex_migration()
+    cli_path = None if pending_migration else _resolve_cli_path()
+    if not cli_path and not pending_migration:
         _LOGGER.warning(
             "%s=1 is set but the %s CLI is not available for %s. "
             "Install the host CLI or set %s; skipping provider registration.",

@@ -305,7 +305,9 @@ class TestAutoDetection:
         monkeypatch.delenv(ocp.ENV_DEFAULT_MODEL, raising=False)
         with patch.object(ocp, "_call_cli", return_value="ok") as call:
             ocp.OpenClawLLM().completion(
-                model="openclaw/default", messages=[{"role": "user", "content": "hi"}]
+                timeout=5,
+                model="openclaw/default",
+                messages=[{"role": "user", "content": "hi"}],
             )
         assert call.call_args.kwargs["model"] is None
 
@@ -388,6 +390,7 @@ class TestToolCalling:
         reply = 'Sure.\n{"tool": "finish", "args": {"items": ["x"]}}'
         with patch.object(ocp, "_call_cli", return_value=reply) as call:
             response = ocp.OpenClawLLM().completion(
+                timeout=5,
                 model="openclaw/default",
                 messages=[
                     {"role": "system", "content": "Extract."},
@@ -424,6 +427,7 @@ class TestToolCalling:
     def test_unparsable_reply_stays_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
         with patch.object(ocp, "_call_cli", return_value="I cannot help"):
             response = ocp.OpenClawLLM().completion(
+                timeout=5,
                 model="openclaw/default",
                 messages=[{"role": "user", "content": "hi"}],
                 optional_params={"tools": self.TOOLS},
@@ -438,6 +442,7 @@ class TestToolCalling:
 
         with patch.object(ocp, "_call_cli", return_value='{"answer": "4"}') as call:
             ocp.OpenClawLLM().completion(
+                timeout=5,
                 model="openclaw/default",
                 messages=[{"role": "user", "content": "2+2"}],
                 optional_params={"response_format": Out},

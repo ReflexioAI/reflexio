@@ -39,7 +39,7 @@ from litellm.types.utils import (
 )
 
 from reflexio.server.env_utils import env_truthy
-from reflexio.server.llm._native_cli import run_native_cli
+from reflexio.server.llm._native_cli import request_timeout_seconds, run_native_cli
 from reflexio.server.llm.providers.cli_tool_protocol import (
     append_schema_instruction,
     append_tools_instruction,
@@ -53,9 +53,8 @@ _LOGGER = logging.getLogger(__name__)
 PROVIDER_KEY = "openclaw"
 ENV_ENABLE = "OPENCLAW_SMART_USE_LOCAL_CLI"
 ENV_CLI_PATH = "OPENCLAW_BIN"
+# Retired selector; retained only for operation-scoped adoption refusal.
 ENV_DEFAULT_MODEL = "OPENCLAW_DEFAULT_MODEL"
-ENV_TIMEOUT = "OPENCLAW_CLI_TIMEOUT"
-_DEFAULT_TIMEOUT_SECONDS = 180
 _BUSY_MARKER = "retry when it finishes"
 _BUSY_ATTEMPTS = 4
 _BUSY_BACKOFF_SECONDS = 2.0
@@ -148,13 +147,13 @@ def _json_or_none(text: str) -> Any:
         return None
 
 
-def _call_cli(*, prompt: str, model: str | None, timeout_s: int) -> str:
+def _call_cli(*, prompt: str, model: str | None, timeout_s: float) -> str:
     """Invoke openclaw CLI for a one-shot completion.
 
     Args:
         prompt (str): User prompt text passed via ``--prompt``.
         model (str | None): Optional model id passed via ``--model``.
-        timeout_s (int): Subprocess timeout in seconds.
+        timeout_s (float): Whole invocation allowance, including busy retries.
 
     Returns:
         str: Completion text extracted from the CLI's JSON stdout.
@@ -163,6 +162,7 @@ def _call_cli(*, prompt: str, model: str | None, timeout_s: int) -> str:
         OpenClawCLIError: If the CLI is not found, exits non-zero, returns
             non-JSON stdout, or returns JSON with no recognized text field.
     """
+    deadline = time.monotonic() + timeout_s
     cli = _resolve_cli_path()
     if not cli:
         raise OpenClawCLIError("openclaw CLI not found; set OPENCLAW_BIN")
@@ -183,13 +183,16 @@ def _call_cli(*, prompt: str, model: str | None, timeout_s: int) -> str:
     env["OPENCLAW_SMART_INTERNAL"] = "1"
 
     for attempt in range(1, _BUSY_ATTEMPTS + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise OpenClawCLIError("openclaw request deadline expired")
         try:
             proc = run_native_cli(  # noqa: S603 — argv is fully constructed.
                 argv,
                 env=env,
                 capture_output=True,
                 text=True,
-                timeout=timeout_s,
+                timeout=remaining,
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
@@ -200,7 +203,12 @@ def _call_cli(*, prompt: str, model: str | None, timeout_s: int) -> str:
         # with --local and this one) contend for its startup maintenance; the
         # loser is told to retry. A running Gateway avoids it.
         if _BUSY_MARKER in str(error) and attempt < _BUSY_ATTEMPTS:
-            time.sleep(_BUSY_BACKOFF_SECONDS * attempt)
+            delay = _BUSY_BACKOFF_SECONDS * attempt
+            if delay >= deadline - time.monotonic():
+                raise OpenClawCLIError(
+                    "openclaw request deadline cannot accommodate busy retry"
+                )
+            time.sleep(delay)
             continue
         break
 
@@ -226,6 +234,42 @@ def _call_cli(*, prompt: str, model: str | None, timeout_s: int) -> str:
     return text
 
 
+def resolve_openclaw_model(model: str | None) -> str | None:
+    """Use the explicit native target or delegate to the host's model policy.
+
+    An unused historical assignment never overrides an explicit target. A
+    default target with a nonblank old override requires deliberate adoption
+    before any CLI call; silently dropping it could change the model and cost.
+    """
+    selected = (model or "").removeprefix(f"{PROVIDER_KEY}/") or None
+    if selected == "default":
+        selected = None
+    if selected is None and os.environ.get(ENV_DEFAULT_MODEL, "").strip():
+        raise ValueError(
+            "OPENCLAW_DEFAULT_MODEL no longer selects a model. Preserve the "
+            "intended choice in an explicit openclaw/<provider/model> role "
+            "reference, then remove the assignment; or remove it to deliberately "
+            "adopt the native host's configured default."
+        )
+    return selected
+
+
+def reject_retired_openclaw_timeout() -> None:
+    """Require deliberate adoption of the single request budget on this route."""
+    if os.environ.get("OPENCLAW_CLI_TIMEOUT", "").strip():
+        raise ValueError(
+            "OPENCLAW_CLI_TIMEOUT is retired. Select the intended whole-request "
+            "timeout with LiteLLMConfig.timeout or the completion timeout argument, "
+            "then remove the old assignment. Busy retries share this budget."
+        )
+
+
+def _request_timeout(value: Any) -> float:
+    """Use LiteLLM's selected allowance; never invent a second provider clock."""
+    reject_retired_openclaw_timeout()
+    return request_timeout_seconds(value)
+
+
 class OpenClawLLM(CustomLLM):
     """LiteLLM CustomLLM that routes completions through the openclaw CLI."""
 
@@ -233,12 +277,13 @@ class OpenClawLLM(CustomLLM):
         """Synchronous completion via ``openclaw infer model run``.
 
         The ``openclaw/`` prefix is stripped from the requested model id.
-        If no model is provided, ``OPENCLAW_DEFAULT_MODEL`` is used; if
-        that's also unset, the CLI's own default is used.
+        Default requests delegate to the host's configured model. A nonblank
+        retired override requires explicit adoption before dispatch.
 
         Args:
             *args: Unused (LiteLLM signature).
-            **kwargs: LiteLLM completion kwargs (``messages``, ``model``).
+            **kwargs: LiteLLM completion kwargs (``messages``, ``model``, and
+                a finite positive numeric ``timeout`` in seconds).
 
         Returns:
             ModelResponse: Reply text in ``choices[0].message.content``.
@@ -247,17 +292,10 @@ class OpenClawLLM(CustomLLM):
         # would yield the literal "None" and skip the default-model fallback.
         raw_model = kwargs.get("model")
         model_kwarg = "" if raw_model is None else str(raw_model)
-        # LiteLLM hands a custom handler the model with its provider prefix
-        # already removed ("openclaw/openai/gpt-x" arrives as "openai/gpt-x"),
-        # and OpenClaw needs that provider/model pair intact. Splitting off the
-        # first segment unconditionally left a bare model OpenClaw rejects.
-        model = model_kwarg.removeprefix(f"{PROVIDER_KEY}/") or None
-        # `openclaw/default` (the auto-detected model) means "whatever model
-        # OpenClaw is configured to use", like `claude-code/default`.
-        if model == "default":
-            model = None
-        if not model:
-            model = os.environ.get(ENV_DEFAULT_MODEL) or None
+        # LiteLLM may already have removed our prefix; preserve a native
+        # provider/model pair and share adoption with parent preflight.
+        model = resolve_openclaw_model(model_kwarg)
+        timeout_s = _request_timeout(kwargs.get("timeout"))
 
         messages = kwargs.get("messages", [])
         # Tools and response_format arrive in optional_params (LiteLLM's
@@ -270,43 +308,36 @@ class OpenClawLLM(CustomLLM):
         prompt = _messages_to_prompt(
             messages, tools=tools, response_format=response_format
         )
-        # An invalid OPENCLAW_CLI_TIMEOUT must not crash the completion path —
-        # fall back to the default with a warning so misconfiguration degrades
-        # to working-but-slow rather than working-then-erroring.
-        raw_timeout = os.environ.get(ENV_TIMEOUT)
-        try:
-            timeout_s = (
-                int(raw_timeout)
-                if raw_timeout is not None
-                else _DEFAULT_TIMEOUT_SECONDS
-            )
-        except ValueError:
-            _LOGGER.warning(
-                "Invalid %s=%r; using default %d",
-                ENV_TIMEOUT,
-                raw_timeout,
-                _DEFAULT_TIMEOUT_SECONDS,
-            )
-            timeout_s = _DEFAULT_TIMEOUT_SECONDS
-
         text = _call_cli(prompt=prompt, model=model, timeout_s=timeout_s)
 
         if tools:
             names = tool_names(tools)
             tool_use = parse_tool_use(text, names)
             if tool_use is not None:
-                return _tool_call_response(model_kwarg or PROVIDER_KEY, tool_use)
+                return _with_native_origin(
+                    _tool_call_response(model_kwarg or PROVIDER_KEY, tool_use)
+                )
             # Metadata only: the reply can carry user content.
             _LOGGER.warning(
                 "openclaw provider: tools=%s were provided but the reply held no "
                 "tool-call JSON; the tool loop will end without its finish tool.",
                 sorted(names),
             )
-        return ModelResponse(
-            choices=[Choices(message=Message(content=text, role="assistant"))],
-            usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
-            model=model_kwarg or PROVIDER_KEY,
+        return _with_native_origin(
+            ModelResponse(
+                choices=[Choices(message=Message(content=text, role="assistant"))],
+                usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+                model=model_kwarg or PROVIDER_KEY,
+            )
         )
+
+
+def _with_native_origin(response: ModelResponse) -> ModelResponse:
+    """Tag a native response whose model field is request-derived, not observed."""
+    hidden = dict(getattr(response, "_hidden_params", {}) or {})
+    hidden["reflexio_provider"] = PROVIDER_KEY
+    response._hidden_params = hidden
+    return response
 
 
 def _tool_call_response(model: str, tool_use: dict[str, Any]) -> ModelResponse:

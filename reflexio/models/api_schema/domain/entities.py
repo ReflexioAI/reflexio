@@ -641,6 +641,8 @@ OptimizationArtifactKind = Literal[
     "open_world_evidence_bundle",
     "open_world_discovery_memo",
     "open_world_candidate",
+    "open_world_content_result",
+    "open_world_trigger_result",
     "open_world_attempt_decision",
 ]
 

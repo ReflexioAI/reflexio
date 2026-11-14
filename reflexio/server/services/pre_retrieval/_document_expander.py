@@ -16,6 +16,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from reflexio.server.llm.failure import OutageWait, classify_llm_failure
+from reflexio.server.llm.input_budget import model_input_budget
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.provider_circuit import provider_circuit
 from reflexio.server.prompt.prompt_manager import PromptManager
@@ -42,7 +43,6 @@ class DocumentExpander:
     for improved full-text search recall at storage time.
     """
 
-    MAX_CONTENT_LENGTH = 4000
     LLM_TIMEOUT = 25
     LLM_MAX_RETRIES = 1
 
@@ -77,8 +77,6 @@ class DocumentExpander:
         Returns:
             ExpansionResult: Expansion mapping and formatted text
         """
-        if len(content) > self.MAX_CONTENT_LENGTH:
-            content = content[: self.MAX_CONTENT_LENGTH]
         try:
             if self._provider_down():
                 # The breaker logged the outage once; a per-document line
@@ -132,13 +130,16 @@ class DocumentExpander:
             "document_expansion",
             {"content": content},
         )
-        logger.debug("Document expansion prompt: %s", prompt)
-        result = self.llm_client.generate_response(
-            prompt,
-            timeout=self.LLM_TIMEOUT,
-            max_retries=self.LLM_MAX_RETRIES,
-            **self._model_kwargs(),
+        logger.debug(
+            "Document expansion request prepared (content_chars=%d)", len(content)
         )
+        with model_input_budget():
+            result = self.llm_client.generate_response(
+                prompt,
+                timeout=self.LLM_TIMEOUT,
+                max_retries=self.LLM_MAX_RETRIES,
+                **self._model_kwargs(),
+            )
         if isinstance(result, str):
             return self._parse_expansion_json(result)
         return {}

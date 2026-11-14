@@ -11,6 +11,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import assert_never
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.background_work import (
@@ -19,19 +20,22 @@ from reflexio.server.background_work import (
     report_background_success,
 )
 from reflexio.server.env_utils import env_str
-from reflexio.server.llm.failure import OutageWait, classify_llm_failure
 from reflexio.server.operation_limiter import operation_limit_value
 from reflexio.server.operational_metrics import record_health
+from reflexio.server.services.durable_learning.window_disposition import (
+    DeferSetup,
+    HoldInput,
+    InputHoldReason,
+    ProviderWait,
+    Recompute,
+    Retry,
+    Suspend,
+    YieldTurn,
+    classify_window_failure,
+)
 from reflexio.server.services.durable_learning.window_executor import (
     WindowExecutor,
     WindowInputsDeletedError,
-)
-from reflexio.server.services.extraction.overflow_coordinator import (
-    OverflowSuspendedError,
-)
-from reflexio.server.services.storage.error import (
-    ReadinessUnavailableError,
-    execution_input_is_busy,
 )
 from reflexio.server.services.storage.storage_base import AgentRunRecord, BaseStorage
 from reflexio.server.services.storage.storage_base._extraction_stream import (
@@ -245,62 +249,6 @@ def _release() -> None:
         _budget.release()
 
 
-def _cause_chain(exc: BaseException) -> list[BaseException]:
-    seen: set[int] = set()
-    chain: list[BaseException] = []
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        chain.append(current)
-        current = current.__cause__ or current.__context__
-    return chain
-
-
-def _input_budget_failure_reason(exc: BaseException) -> str | None:
-    from reflexio.server.llm.input_budget import (
-        InputBudgetConfigurationError,
-        InputBudgetExceededError,
-    )
-    from reflexio.server.services.extraction.input_preparation import (
-        ExtractionInputBudgetExceededError,
-    )
-    from reflexio.server.services.storage.storage_base._extraction_stream import (
-        OverflowAttemptBudgetExceededError,
-    )
-
-    for current in _cause_chain(exc):
-        if isinstance(current, InputBudgetConfigurationError):
-            return "input_budget_configuration_error"
-        if isinstance(
-            current,
-            InputBudgetExceededError
-            | ExtractionInputBudgetExceededError
-            | OverflowAttemptBudgetExceededError,
-        ):
-            return "input_budget_exceeded"
-    return None
-
-
-def _discards_computation(exc: BaseException) -> bool:
-    """Evidence behind a cached computation changed; only a recompute can pass."""
-    from reflexio.server.llm.input_budget import ComputationEvidenceChangedError
-
-    return any(
-        isinstance(current, ComputationEvidenceChangedError)
-        for current in _cause_chain(exc)
-    )
-
-
-def _parks_configuration_hold(exc: BaseException) -> bool:
-    """A saved output that fails the current contract cannot pass on retry."""
-    from reflexio.server.llm.input_budget import SavedOutputIncompatibleError
-
-    return any(
-        isinstance(current, SavedOutputIncompatibleError)
-        for current in _cause_chain(exc)
-    )
-
-
 class DurableLearningWorker:
     def __init__(
         self,
@@ -386,73 +334,93 @@ class DurableLearningWorker:
     def _handle_window_failure(
         storage: BaseStorage, window: Window, token: str, exc: Exception
     ) -> str:
-        if execution_input_is_busy(exc):
-            # Preserve the cached computation/journal and all window budgets.
-            # Existing class/turn scheduling owns the next attempt, not a new
-            # timer or a readiness delay borrowed for unrelated contention.
-            storage.yield_extraction_turn(window.user_id, token)
-            record_health("worker.retries", phase="input_busy")
-            return "input_busy"
-        if isinstance(exc, ReadinessUnavailableError):
-            # Dependency admission has not failed the logical extraction.
-            # Keep its window/output and ordinary retry budget intact. This
-            # existing token-CAS cannot change a replacement owner's schedule;
-            # _turn's finally still releases only this token.
-            storage.defer_extraction_setup(window.user_id, token)
-            _report_turn_failure(
-                storage.org_id, window.user_id, exc, readiness_deferred=True
-            )
-            record_health("worker.retries", phase="readiness")
-            return "readiness_deferred"
-        if isinstance(exc, OverflowSuspendedError):
-            storage.suspend_extraction(window, token)
-            return "suspended"
-        if _discards_computation(exc):
-            # Retrying the cached computation would re-validate the same stale
-            # witnesses forever; discard it so the next attempt recomputes.
-            logger.warning(
-                "Extraction outcome discarded for recompute kind=%s reason=%s error=%s at=%s",
+        """Execute :func:`classify_window_failure`'s verdict for ``exc``."""
+        match classify_window_failure(exc):
+            case YieldTurn():
+                # Preserve the cached computation/journal and all window budgets.
+                # Existing class/turn scheduling owns the next attempt, not a new
+                # timer or a readiness delay borrowed for unrelated contention.
+                storage.yield_extraction_turn(window.user_id, token)
+                record_health("worker.retries", phase="input_busy")
+                return "input_busy"
+            case DeferSetup():
+                # Dependency admission has not failed the logical extraction.
+                # Keep its window/output and ordinary retry budget intact. This
+                # existing token-CAS cannot change a replacement owner's schedule;
+                # _turn's finally still releases only this token.
+                storage.defer_extraction_setup(window.user_id, token)
+                _report_turn_failure(
+                    storage.org_id, window.user_id, exc, readiness_deferred=True
+                )
+                record_health("worker.retries", phase="readiness")
+                return "readiness_deferred"
+            case Suspend():
+                storage.suspend_extraction(window, token)
+                return "suspended"
+            case Recompute():
+                # Retrying the cached computation would re-validate the same
+                # stale witnesses forever; discard it so the next attempt
+                # recomputes.
+                logger.warning(
+                    "Extraction outcome discarded for recompute kind=%s reason=%s error=%s at=%s",
+                    window.kind,
+                    "computation_evidence_changed",
+                    type(exc).__name__,
+                    exception_locator(exc),
+                )
+                storage.discard_extraction_computation(window, token)
+                record_health("worker.computation_discards", extractor=window.kind)
+                return "input_budget_failure"
+            case HoldInput(reason=reason, park=park):
+                return DurableLearningWorker._hold_input(
+                    storage, window, token, exc, reason, park=park
+                )
+            case ProviderWait(delay_seconds=wait):
+                return DurableLearningWorker._wait_for_provider(
+                    storage, window, token, exc, wait
+                )
+            case Retry():
+                return DurableLearningWorker._retry_window(storage, window, token, exc)
+            case unreachable:
+                assert_never(unreachable)
+
+    @staticmethod
+    def _hold_input(
+        storage: BaseStorage,
+        window: Window,
+        token: str,
+        exc: Exception,
+        reason: InputHoldReason,
+        *,
+        park: bool,
+    ) -> str:
+        parked = storage.fail_extraction_input_budget(window, token, reason, park=park)
+        if parked and reason == "input_budget_configuration_error":
+            # Parked until an operator re-arms it, so this logs once per
+            # park rather than on every backoff retry.
+            logger.error(
+                "Extraction input parked kind=%s reason=%s error=%s at=%s",
                 window.kind,
-                "computation_evidence_changed",
+                reason,
                 type(exc).__name__,
                 exception_locator(exc),
             )
-            storage.discard_extraction_computation(window, token)
-            record_health("worker.computation_discards", extractor=window.kind)
-            return "input_budget_failure"
-        reason = _input_budget_failure_reason(exc)
-        if reason is not None:
-            park = reason == "input_budget_configuration_error" and (
-                _parks_configuration_hold(exc)
+        else:
+            logger.warning(
+                "Extraction input held kind=%s reason=%s error=%s at=%s",
+                window.kind,
+                reason,
+                type(exc).__name__,
+                exception_locator(exc),
             )
-            park = storage.fail_extraction_input_budget(
-                window, token, reason, park=park
-            )
-            if park and reason == "input_budget_configuration_error":
-                # Parked until an operator re-arms it, so this logs once per
-                # park rather than on every backoff retry.
-                logger.error(
-                    "Extraction input parked kind=%s reason=%s error=%s at=%s",
-                    window.kind,
-                    reason,
-                    type(exc).__name__,
-                    exception_locator(exc),
-                )
-            else:
-                logger.warning(
-                    "Extraction input held kind=%s reason=%s error=%s at=%s",
-                    window.kind,
-                    reason,
-                    type(exc).__name__,
-                    exception_locator(exc),
-                )
-            record_health("worker.input_budget_failures", reason=reason)
-            return "input_budget_failure"
-        outage = classify_llm_failure(exc)
-        if isinstance(outage, OutageWait):
-            return DurableLearningWorker._wait_for_provider(
-                storage, window, token, exc, outage.delay_seconds
-            )
+        record_health("worker.input_budget_failures", reason=reason)
+        return "input_budget_failure"
+
+    @staticmethod
+    def _retry_window(
+        storage: BaseStorage, window: Window, token: str, exc: Exception
+    ) -> str:
+        """The window's own failure: a charged retry, parked at the ceiling."""
         where = exception_locator(exc)
         logger.warning(
             "Extraction window failed kind=%s error=%s at=%s",

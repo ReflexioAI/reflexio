@@ -16,6 +16,12 @@ from reflexio.server.services.playbook.rule_evidence.models import (
     RuleEvidenceInput,
     RuleEvidenceResult,
 )
+from reflexio.server.services.playbook.rule_evidence.trigger_maintenance import (
+    PROFILE,
+    TriggerBatch,
+    TriggerGate,
+    trigger_prompt,
+)
 from reflexio.server.services.playbook.rule_evidence.wire import (
     WIRE_NORMALIZATION_VERSION,
     SupportTurns,
@@ -30,10 +36,28 @@ from reflexio.server.services.playbook.rule_evidence.wire import (
 )
 
 from ..evidence.manifests import canonical_json_bytes
-from ..evidence.open_world_models import RULE_EVIDENCE_POLICY_ID
+from ..evidence.open_world_models import (
+    PLAYBOOK_REVISION_POLICY_ID,
+    RULE_EVIDENCE_POLICY_ID,
+)
 from .analyst import generation_settings_digest
 from .identity import pinned_generator_authorization_digest
 from .models import ComponentIdentity
+from .trigger_qualification import qualify_trigger_structure
+
+PLAYBOOK_REVISION_AUTHORITY_SCHEMA = "offline-tuner-rule-evidence-authority-v2"
+
+
+def trigger_authorization_digest(component: ComponentIdentity) -> str:
+    if component.component_role not in {"trigger_gate", "trigger_builder"}:
+        raise ValueError("Trigger authorization needs a Trigger component")
+    return _digest(
+        {
+            "schema_version": "rule-evidence-trigger-component-authority-v1",
+            "role": component.component_role,
+            "component_identity": dataclasses.asdict(component),
+        }
+    )
 
 
 def _digest(value: object) -> str:
@@ -184,11 +208,59 @@ def _structural_qualification() -> dict[str, object]:
 
 @dataclass(frozen=True)
 class RuleEvidenceMethod:
-    """The two real components and actual structural-qualification receipt."""
+    """Versioned method components and their executed structural receipts."""
 
     diagnostic: ComponentIdentity
     proposal: ComponentIdentity
     qualification_receipt: dict[str, object]
+    trigger_gate: ComponentIdentity | None = None
+    trigger_builder: ComponentIdentity | None = None
+    trigger_qualification_receipt: dict[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        present = (
+            self.trigger_gate is not None,
+            self.trigger_builder is not None,
+            self.trigger_qualification_receipt is not None,
+        )
+        if any(present) and not all(present):
+            raise ValueError("Trigger method authority must be complete")
+        if self.trigger_gate and self.trigger_gate.component_role != "trigger_gate":
+            raise ValueError("wrong Trigger gate authority role")
+        if (
+            self.trigger_builder
+            and self.trigger_builder.component_role != "trigger_builder"
+        ):
+            raise ValueError("wrong Trigger builder authority role")
+
+    @property
+    def is_v2(self) -> bool:
+        return self.trigger_gate is not None
+
+    @property
+    def policy_id(self) -> str:
+        return PLAYBOOK_REVISION_POLICY_ID if self.is_v2 else RULE_EVIDENCE_POLICY_ID
+
+    def component_for_schema(
+        self, schema: type[StrictStructuredOutput]
+    ) -> ComponentIdentity:
+        if issubclass(schema, Diagnostic):
+            return self.diagnostic
+        if issubclass(schema, Proposal):
+            return self.proposal
+        if schema is TriggerGate and self.trigger_gate is not None:
+            return self.trigger_gate
+        if schema is TriggerBatch and self.trigger_builder is not None:
+            return self.trigger_builder
+        raise ValueError("output schema has no admitted method component")
+
+    def authorization_for_schema(self, schema: type[StrictStructuredOutput]) -> str:
+        component = self.component_for_schema(schema)
+        if component.component_role == "discovery":
+            return self.result_digest
+        if component.component_role == "candidate":
+            return self.proposal_authorization_digest
+        return trigger_authorization_digest(component)
 
     @property
     def suite_digest(self) -> str:
@@ -204,9 +276,9 @@ class RuleEvidenceMethod:
 
     @property
     def payload(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "schema_version": "offline-tuner-rule-evidence-authority-v1",
-            "policy_id": RULE_EVIDENCE_POLICY_ID,
+            "policy_id": self.policy_id,
             "diagnostic": {
                 "component_identity": dataclasses.asdict(self.diagnostic),
                 "suite_digest": self.suite_digest,
@@ -218,6 +290,30 @@ class RuleEvidenceMethod:
                 "authorization_digest": self.proposal_authorization_digest,
             },
         }
+        if self.is_v2:
+            if self.trigger_gate is None or self.trigger_builder is None:
+                raise ValueError("Trigger method authority must be complete")
+            result["schema_version"] = PLAYBOOK_REVISION_AUTHORITY_SCHEMA
+            result["trigger_maintenance"] = {
+                "profile": PROFILE,
+                "gate": {
+                    "component_identity": dataclasses.asdict(self.trigger_gate),
+                    "authorization_digest": trigger_authorization_digest(
+                        self.trigger_gate
+                    ),
+                },
+                "builder": {
+                    "component_identity": dataclasses.asdict(self.trigger_builder),
+                    "authorization_digest": trigger_authorization_digest(
+                        self.trigger_builder
+                    ),
+                },
+                "qualification_receipt": self.trigger_qualification_receipt,
+                "qualification_result_digest": _digest(
+                    self.trigger_qualification_receipt
+                ),
+            }
+        return result
 
     @property
     def canonical_json(self) -> str:
@@ -239,7 +335,7 @@ class RuleEvidenceMethod:
             held_out_qualification_result_digest=None,
             candidate_generator_identity_digest=self.proposal.digest,
             candidate_generator_authorization_digest=self.proposal_authorization_digest,
-            policy_id=RULE_EVIDENCE_POLICY_ID,
+            policy_id=self.policy_id,
         )
 
 
@@ -275,4 +371,117 @@ def qualify_rule_evidence_method(transport: Any) -> RuleEvidenceMethod:
                 qualification_suite_version="native-global-rule-audit-contract-v7",
             )
         )
-    return RuleEvidenceMethod(components[0], components[1], receipt)
+    trigger_components = []
+    for role, stage, schema in (
+        ("trigger_gate", "gate", TriggerGate),
+        ("trigger_builder", "build", TriggerBatch),
+    ):
+        trigger_components.append(
+            ComponentIdentity(
+                component_role=cast(Any, role),
+                provider=transport.transport_identity.provider,
+                immutable_model_revision=transport.transport_identity.model_revision,
+                prompt_id=f"playbook.rule_evidence.trigger_{stage}",
+                prompt_version="1",
+                prompt_template_digest=sha256(
+                    trigger_prompt(cast(Any, stage)).encode()
+                ).hexdigest(),
+                output_schema_id=f"rule_evidence_{role}",
+                output_schema_version="v2",
+                output_schema_digest=_digest(schema.model_json_schema()),
+                generation_settings_digest=_digest(
+                    {
+                        "transport": generation_settings_digest(),
+                        "profile": PROFILE,
+                        "input_budget_policy": input_budget_policy(),
+                        "implementation_digest": _trigger_implementation_digest(),
+                        "stage": generation_profile(
+                            "tune", provider=transport.transport_identity.provider
+                        ),
+                    }
+                ),
+                qualification_suite_version="native-trigger-maintenance-contract-v1",
+            )
+        )
+    return RuleEvidenceMethod(
+        components[0],
+        components[1],
+        receipt,
+        trigger_components[0],
+        trigger_components[1],
+        qualify_trigger_structure(),
+    )
+
+
+# File-level dependencies actually used by this component. Keep this closure
+# explicit: validator/sizing logic can change without changing emitted schemas.
+# Prompts and provider settings have separate component-identity fields.
+TRIGGER_CODE_DEPENDENCIES: tuple[tuple[str, str, str], ...] = (
+    (
+        "portable",
+        "reflexio.server.services.playbook.rule_evidence",
+        "trigger_maintenance.py",
+    ),
+    ("portable_models", "reflexio.server.services.playbook.rule_evidence", "models.py"),
+    (
+        "portable_execution",
+        "reflexio.server.services.playbook.rule_evidence",
+        "__init__.py",
+    ),
+    ("wire_profile", "reflexio.server.services.playbook.rule_evidence", "wire.py"),
+    ("revision", "reflexio.server.services.playbook", "revision.py"),
+    ("canonical_publication", "reflexio.server.services.playbook", "publication.py"),
+    (
+        "canonical_manifests",
+        "reflexio.server.services.offline_tuner.evidence",
+        "manifests.py",
+    ),
+    ("structured_output", "reflexio.models", "structured_output.py"),
+    (
+        "runtime",
+        "reflexio.server.services.offline_tuner.open_world",
+        "rule_evidence_runtime.py",
+    ),
+    (
+        "authority",
+        "reflexio.server.services.offline_tuner.open_world",
+        "rule_evidence_authority.py",
+    ),
+    (
+        "qualification",
+        "reflexio.server.services.offline_tuner.open_world",
+        "trigger_qualification.py",
+    ),
+    (
+        "v2_stages",
+        "reflexio.server.services.offline_tuner.open_world",
+        "rule_evidence_v2.py",
+    ),
+    (
+        "source_validation",
+        "reflexio.server.services.offline_tuner.open_world",
+        "rule_evidence.py",
+    ),
+    ("identity", "reflexio.server.services.offline_tuner.open_world", "identity.py"),
+    (
+        "identity_models",
+        "reflexio.server.services.offline_tuner.open_world",
+        "models.py",
+    ),
+    (
+        "native_transport",
+        "reflexio.server.services.offline_tuner.open_world",
+        "analyst.py",
+    ),
+)
+
+
+def _trigger_implementation_digest() -> str:
+    from importlib.resources import files
+
+    return _digest(
+        {
+            name: sha256(files(package).joinpath(filename).read_bytes()).hexdigest()
+            for name, package, filename in TRIGGER_CODE_DEPENDENCIES
+        }
+    )
