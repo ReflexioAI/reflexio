@@ -381,6 +381,13 @@ Unrecovered exceptions continue to the existing caller, which owns durable
 waiting, retry exhaustion and terminal failure reporting; this does not add a
 global error for a provider outage.
 
+Truncated structured responses may retain complete, valid list items, but the
+combined result must still satisfy the full schema, including list bounds and
+model validators. Aggregate validation failures enter the existing bounded
+structured-output repair path with field/error-code diagnostics. They do not
+become provider errors or silently discard excess items. Salvage is logged only
+after the whole result validates; exhausted repair remains a typed failure.
+
 Optionally set `MINIMAX_BACKUP_API_KEY` to another subscription's key. On explicit
 MiniMax plan exhaustion (2056), text generation retries the same request/model
 once with that key. The primary quota circuit opens immediately, skips blocked
