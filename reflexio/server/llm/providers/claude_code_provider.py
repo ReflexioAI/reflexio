@@ -48,7 +48,11 @@ from litellm.types.utils import (
 )
 
 from reflexio.server.env_utils import env_str, env_truthy
-from reflexio.server.llm._native_cli import native_cli_directory, run_native_cli
+from reflexio.server.llm._native_cli import (
+    native_cli_directory,
+    request_timeout_seconds,
+    run_native_cli,
+)
 from reflexio.server.llm.providers.claude_code_stream_parser import (
     ParseResult,
     classify_stall,
@@ -79,6 +83,12 @@ _ENV_TIMEOUT = "CLAUDE_SMART_CLI_TIMEOUT"
 _ENV_MODEL = "CLAUDE_SMART_CLI_MODEL"
 _HOST_CODEX = "codex"
 _HOST_CLAUDE_CODE = "claude-code"
+_HOST_OPENCODE = "opencode"
+_COMPAT_HOSTS = {
+    f"{host}-claude-compat{suffix}": host
+    for host in (_HOST_CODEX, _HOST_OPENCODE)
+    for suffix in ("", ".cmd", ".js")
+}
 
 
 def _is_windows() -> bool:
@@ -90,7 +100,6 @@ _CODEX_COMPAT_SCRIPT_NAMES = (
     if _is_windows()
     else ("codex-claude-compat", "codex-claude-compat.cmd")
 )
-_CODEX_COMPAT_SCRIPT_NAME_SET = set(_CODEX_COMPAT_SCRIPT_NAMES)
 _DEFAULT_TIMEOUT_SECONDS = 120
 _WINDOWS_ARGV_SYSTEM_PROMPT_LIMIT = 3_000
 _WINDOWS_CLI_SUFFIXES = (".cmd", ".exe", ".bat")
@@ -122,14 +131,19 @@ def _env_enabled() -> bool:
 
 def _host() -> str:
     """Return the host that owns this backend process."""
-    return (
-        _HOST_CODEX if os.environ.get(_ENV_HOST) == _HOST_CODEX else _HOST_CLAUDE_CODE
-    )
+    selected = os.environ.get(_ENV_HOST)
+    return selected if selected in (_HOST_CODEX, _HOST_OPENCODE) else _HOST_CLAUDE_CODE
 
 
 def _cli_name() -> str:
     """Return the expected local CLI binary for the active host."""
-    return "codex" if _host() == _HOST_CODEX else "claude"
+    selected = _host()
+    return "claude" if selected == _HOST_CLAUDE_CODE else selected
+
+
+def _compat_host(cli_path: str) -> str | None:
+    """Known plugin adapters speak Claude protocol, independent of coding host."""
+    return _COMPAT_HOSTS.get(Path(cli_path).name.lower())
 
 
 def _candidate_codex_compat_path() -> Path | None:
@@ -196,15 +210,16 @@ def _resolve_cli_path() -> str | None:
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
         _LOGGER.warning(
-            "%s=%s is not an executable file; falling back to PATH",
+            "%s is not an executable file; falling back to PATH",
             _ENV_CLI_PATH,
-            override,
         )
     if _host() == _HOST_CODEX:
         compat = _candidate_codex_compat_path()
         if compat is not None:
             return str(compat)
         return os.environ.get(_ENV_CODEX_PATH) or shutil.which("codex")
+    if _host() == _HOST_OPENCODE:
+        return shutil.which("opencode")
     return shutil.which("claude")
 
 
@@ -371,7 +386,8 @@ def _run_cli_stream(
     cli_path: str,
     system_prompt: str,
     dialogue: str,
-    timeout_seconds: int,
+    timeout_seconds: float,
+    host: str | None = None,
 ) -> ParseResult:
     """Invoke the active host CLI and return a ParseResult.
 
@@ -388,10 +404,35 @@ def _run_cli_stream(
     Raises:
         ClaudeCodeCLIError: On timeout or missing binary.
     """
-    if (
-        _host() == _HOST_CODEX
-        and Path(cli_path).name not in _CODEX_COMPAT_SCRIPT_NAME_SET
-    ):
+    bridge = _compat_host(cli_path)
+    if bridge:
+        return replace(
+            _run_claude_stream(
+                cli_path=cli_path,
+                system_prompt=system_prompt,
+                dialogue=dialogue,
+                timeout_seconds=timeout_seconds,
+            ),
+            cli_binary=bridge,
+        )
+    selected = host or _host()
+    if selected == _HOST_OPENCODE:
+        from reflexio.server.llm.providers._opencode_cli import (
+            OpenCodeCLIError,
+            run_opencode,
+        )
+
+        try:
+            return run_opencode(
+                cli_path=cli_path,
+                system_prompt=system_prompt,
+                dialogue=dialogue,
+                model=env_str(_ENV_MODEL) or None,
+                timeout_seconds=timeout_seconds,
+            )
+        except OpenCodeCLIError as exc:
+            raise ClaudeCodeCLIError(str(exc)) from None
+    if selected == _HOST_CODEX:
         return _run_codex_stream(
             codex_path=cli_path,
             system_prompt=system_prompt,
@@ -411,7 +452,7 @@ def _run_claude_stream(
     cli_path: str,
     system_prompt: str,
     dialogue: str,
-    timeout_seconds: int,
+    timeout_seconds: float,
 ) -> ParseResult:
     """Invoke ``claude -p --output-format stream-json`` and return a ParseResult."""
     model = env_str(_ENV_MODEL)
@@ -478,7 +519,7 @@ def _run_codex_stream(
     codex_path: str,
     system_prompt: str,
     dialogue: str,
-    timeout_seconds: int,
+    timeout_seconds: float,
 ) -> ParseResult:
     """Invoke ``codex exec`` and shape its output like a terminal stream result."""
     output_path = _temporary_output_path()
@@ -765,8 +806,28 @@ class ClaudeCodeLLM(CustomLLM):
             try:
                 return max(1, int(raw))
             except ValueError:
-                _LOGGER.warning("Ignoring non-integer %s=%r", _ENV_TIMEOUT, raw)
+                _LOGGER.warning("Ignoring non-integer %s", _ENV_TIMEOUT)
         return _DEFAULT_TIMEOUT_SECONDS
+
+    def _native_request_timeout(self, value: Any) -> float:
+        """A new native path has no provider default; explicit old caps still apply.
+
+        Retiring those choices belongs to the matching producer migration. This
+        intermediate adapter must not silently ignore a valid constructor/env cap.
+        """
+        timeout = request_timeout_seconds(value)
+        if self._explicit_timeout is not None:
+            return min(timeout, request_timeout_seconds(self._explicit_timeout))
+        raw = env_str(_ENV_TIMEOUT)
+        if not raw:
+            return timeout
+        try:
+            cap = max(1, int(raw))
+        except ValueError:
+            raise ValueError(
+                "CLAUDE_SMART_CLI_TIMEOUT must be integer seconds"
+            ) from None
+        return min(timeout, cap)
 
     def completion(  # type: ignore[override]
         self,
@@ -801,6 +862,7 @@ class ClaudeCodeLLM(CustomLLM):
         # standard plumbing for custom providers) or as a top-level ``tools``
         # kwarg. Read both before discarding kwargs.
         tools = optional_params.get("tools") or kwargs.get("tools")
+        request_timeout = kwargs.get("timeout")
         del kwargs
 
         _warn_on_ignored_params(optional_params)
@@ -815,12 +877,20 @@ class ClaudeCodeLLM(CustomLLM):
         else:
             system_prompt = _maybe_append_schema(system_prompt, response_format)
 
+        cli_path = self._cli_path()
+        host = _host()
+        timeout = (
+            self._native_request_timeout(request_timeout)
+            if host == _HOST_OPENCODE and _compat_host(cli_path) is None
+            else self._timeout()
+        )
         started = time.perf_counter()
         result = _run_cli_stream(
-            cli_path=self._cli_path(),
+            cli_path=cli_path,
             system_prompt=system_prompt,
             dialogue=dialogue,
-            timeout_seconds=self._timeout(),
+            timeout_seconds=timeout,
+            host=host,
         )
 
         if result.success:
@@ -901,9 +971,8 @@ class ClaudeCodeLLM(CustomLLM):
             self._storage.upsert_stall_state(
                 reason=reason,
                 stalled_at=datetime.now(UTC),
-                reset_estimate=parse_reset_estimate(
-                    f"{result.stderr_text} {result.terminal_text}"
-                ),
+                reset_estimate=result.reset_estimate
+                or parse_reset_estimate(f"{result.stderr_text} {result.terminal_text}"),
                 error_message=(result.stderr_text or result.terminal_text)[:1000],
             )
         except Exception as exc:  # noqa: BLE001 — never crash the provider over telemetry.
