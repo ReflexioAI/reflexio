@@ -35,7 +35,7 @@ from tests.server.services.test_durable_window_pipeline import pipeline as pipel
 _JOURNAL_ATTEMPTS = 128
 _PROFILE = {
     "content": "The user prefers concise answers.",
-    "time_to_live": "infinity",
+    "explicit_storage_deadline": None,
     "source_span": "I prefer concise answers with details 0",
 }
 

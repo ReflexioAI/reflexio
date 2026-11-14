@@ -69,7 +69,7 @@ def test_overflow_profile_quote_cannot_splice_sources_or_cross_a_missing_region(
             "profiles": [
                 {
                     "content": "Scoped approval",
-                    "time_to_live": "one_day",
+                    "explicit_storage_deadline": None,
                     "source_span": "Do not deploy.",
                 }
             ]
@@ -742,7 +742,7 @@ class TestResumableAgentPath:
                 "profiles": [
                     {
                         "content": "User prefers dark mode.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                     }
                 ]
             },
@@ -810,7 +810,7 @@ class TestResumableAgentPath:
                 "profiles": [
                     {
                         "content": "Loop extraction path.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                     }
                 ]
             },
@@ -906,7 +906,7 @@ class TestResumableAgentPath:
                 "profiles": [
                     {
                         "content": "User prefers dark mode.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                     }
                 ]
             },
@@ -1024,8 +1024,8 @@ class TestConvertRawToUserProfiles:
         )
 
         raw_profiles = [
-            {"content": "User prefers dark mode", "time_to_live": "one_month"},
-            {"content": "User's name is John", "time_to_live": "infinity"},
+            {"content": "User prefers dark mode", "explicit_storage_deadline": None},
+            {"content": "User's name is John", "explicit_storage_deadline": None},
         ]
 
         result = extractor._convert_raw_to_user_profiles(
@@ -1038,6 +1038,9 @@ class TestConvertRawToUserProfiles:
         assert all(UUID(profile.profile_id).version == 4 for profile in result)
         assert all(
             str(UUID(profile.profile_id)) == profile.profile_id for profile in result
+        )
+        assert all(
+            profile.profile_time_to_live.value == "infinity" for profile in result
         )
         assert result[0].content == "User prefers dark mode"
         assert result[0].user_id == "test_user"
@@ -1054,7 +1057,7 @@ class TestConvertRawToUserProfiles:
         )
 
         raw_profiles = [
-            {"content": "Valid profile", "time_to_live": "one_month"},
+            {"content": "Valid profile", "explicit_storage_deadline": None},
             {"no_content_key": "Invalid"},
             "not_a_dict",
         ]
@@ -1079,7 +1082,7 @@ class TestConvertRawToUserProfiles:
         raw_profiles = [
             {
                 "content": "Likes pizza",
-                "time_to_live": "one_month",
+                "explicit_storage_deadline": None,
                 "metadata": "pizza",
             },
         ]
@@ -1091,4 +1094,10 @@ class TestConvertRawToUserProfiles:
         )
 
         assert len(result) == 1
-        assert result[0].custom_features == {"metadata": "pizza"}
+        from reflexio.server.services.profile.lifecycle import KEY, metadata
+
+        assert result[0].custom_features == {
+            "metadata": "pizza",
+            KEY: metadata(result[0]),
+        }
+        assert metadata(result[0])["explicit_storage_deadline"] is None

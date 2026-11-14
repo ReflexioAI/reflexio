@@ -11,12 +11,15 @@ from datetime import UTC, datetime
 
 from reflexio.removed_env import reject_removed_env
 from reflexio.server.env_utils import env_str
+from reflexio.server.services.profile.lifecycle import (
+    HALF_LIFE_SECONDS,
+    attention_epoch,
+)
 
 logger = logging.getLogger(__name__)
 
 SECONDS_PER_DAY = 24 * 60 * 60
 PLAYBOOK_HALF_LIFE_SECONDS = 90 * SECONDS_PER_DAY
-_PROFILE_TTL_HALF_LIFE_FRACTION = 0.5
 
 
 @dataclass(frozen=True)
@@ -96,12 +99,7 @@ def additive_penalty(decay_value: float, max_penalty_logit: float) -> float:
 
 
 def _profile_decay(item: object, *, now: int) -> float:
-    modified_at = _int_or_none(getattr(item, "last_modified_timestamp", None))
-    expires_at = _int_or_none(getattr(item, "expiration_timestamp", None))
-    if modified_at is None or expires_at is None or expires_at <= modified_at:
-        return 1.0
-    half_life = (expires_at - modified_at) * _PROFILE_TTL_HALF_LIFE_FRACTION
-    return decay(now - modified_at, half_life)
+    return decay(now - attention_epoch(item, now=now), HALF_LIFE_SECONDS)
 
 
 def _timestamp_decay(value: object, *, half_life_seconds: int, now: int) -> float:

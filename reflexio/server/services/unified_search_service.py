@@ -48,6 +48,11 @@ from reflexio.server.llm.rerank.common import reranker_enabled
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.embedding_text import resolve_retrieval_threshold
 from reflexio.server.services.pre_retrieval import QueryReformulator
+from reflexio.server.services.profile.attention import (
+    candidate_attention,
+    record_accepted_profiles,
+    storage_snapshot,
+)
 from reflexio.server.services.retrieval.agent_selection import select_agent_playbooks
 from reflexio.server.services.retrieval.playbook_selection import (
     PLAYBOOK_CANDIDATE_LIMIT,
@@ -131,6 +136,29 @@ _embedding_cache: OrderedDict[
 
 
 def run_unified_search(
+    request: UnifiedSearchRequest,
+    org_id: str,
+    storage: BaseStorage,
+    llm_client: LiteLLMClient,
+    prompt_manager: PromptManager,
+    pre_retrieval_model_name: str | None = None,
+    retrieval_floor: RetrievalFloorConfig | None = None,
+    recency: RecencyConfig | None = None,
+) -> UnifiedSearchResponse:
+    with storage_snapshot(storage, request.user_id):
+        return _run_unified_search(
+            request=request,
+            org_id=org_id,
+            storage=storage,
+            llm_client=llm_client,
+            prompt_manager=prompt_manager,
+            pre_retrieval_model_name=pre_retrieval_model_name,
+            retrieval_floor=retrieval_floor,
+            recency=recency,
+        )
+
+
+def _run_unified_search(
     request: UnifiedSearchRequest,
     org_id: str,
     storage: BaseStorage,
@@ -485,6 +513,10 @@ def run_unified_search(
     # Post-processing may perform a remote lookup. Expired results were never
     # served and must remain available to a retry in the same session.
     search_runtime.checkpoint()
+    if response.success:
+        record_accepted_profiles(
+            storage, response.profiles or [], user_id=request.user_id
+        )
     if session_id:
         keys = _served_entity_keys(response)
         search_runtime.on_response_accepted(
@@ -1074,6 +1106,34 @@ def _finalize_floor_arm(
     top_k: int,
     recency: RecencyConfig | None,
 ) -> list[Any]:
+    if (
+        entity_type == "profiles"
+        and recency
+        and recency.enabled
+        and (
+            result.scores is not None
+            or all(
+                isinstance(item, ScoredItem) and item.score is not None
+                for item in result.items
+            )
+        )
+    ):
+        with candidate_attention(result.items):
+            return _score_floor_arm(
+                result, entity_type=entity_type, top_k=top_k, recency=recency
+            )
+    return _score_floor_arm(
+        result, entity_type=entity_type, top_k=top_k, recency=recency
+    )
+
+
+def _score_floor_arm(
+    result: Any,
+    *,
+    entity_type: str,
+    top_k: int,
+    recency: RecencyConfig | None,
+) -> list[Any]:
     if not recency or not recency.enabled:
         return _unwrap_items(result.items)[:top_k]
     if result.scores is None:
@@ -1093,6 +1153,23 @@ def _finalize_floor_arm(
 
 
 def _apply_combined_score_recency(
+    items: list[Any],
+    *,
+    entity_type: str,
+    top_k: int,
+    cfg: RecencyConfig,
+) -> list[Any]:
+    if entity_type == "profiles" and all(
+        isinstance(item, ScoredItem) and item.score is not None for item in items
+    ):
+        with candidate_attention(items):
+            return _score_combined_recency(
+                items, entity_type=entity_type, top_k=top_k, cfg=cfg
+            )
+    return _score_combined_recency(items, entity_type=entity_type, top_k=top_k, cfg=cfg)
+
+
+def _score_combined_recency(
     items: list[Any],
     *,
     entity_type: str,

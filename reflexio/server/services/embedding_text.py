@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
@@ -41,6 +42,7 @@ from reflexio.server.llm.embedding_policy import (
 from reflexio.server.llm.embedding_policy import (
     resolve_retrieval_threshold as resolve_retrieval_threshold,
 )
+from reflexio.server.services.profile.lifecycle import KEY as PROFILE_LIFECYCLE_KEY
 
 EmbeddingTextEntity = (
     Interaction
@@ -79,14 +81,26 @@ def playbook_trigger_embedding_text(trigger: str | None) -> str:
     return " ".join(text.split())
 
 
+def profile_semantic_features(profile: UserProfile) -> dict[str, Any]:
+    """Return ordinary features, excluding only top-level lifecycle authority."""
+    return {
+        key: value
+        for key, value in (profile.custom_features or {}).items()
+        if key != PROFILE_LIFECYCLE_KEY
+    }
+
+
 def embedding_text(entity: EmbeddingTextEntity) -> str:
     """Return the exact text used for an entity's stored embedding."""
     if isinstance(entity, Interaction):
         return f"{entity.content}\n{entity.user_action_description}"
     if isinstance(entity, UserProfile):
         parts = [entity.content]
-        if entity.custom_features:
-            parts.append(str(entity.custom_features))
+        # Operational lifecycle authority is persisted, but is not semantic
+        # profile text. Preserve every ordinary feature and never mutate storage.
+        features = profile_semantic_features(entity)
+        if features:
+            parts.append(str(features))
         return "\n".join(parts)
     if isinstance(entity, (UserPlaybook, AgentPlaybook)):
         return playbook_trigger_embedding_text(entity.trigger)

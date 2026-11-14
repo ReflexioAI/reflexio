@@ -57,10 +57,12 @@ from .playbook import (
     UserPlaybookStoreMixin,
 )
 from .profiles import InteractionStoreMixin, ProfileSearchMixin, ProfileStoreMixin
+from .profiles._lifecycle import ProfileLifecycleStoreMixin
 from .resume_selection import ResumeSelectionStore
 
 
 class BaseStorage(
+    ProfileLifecycleStoreMixin,
     PendingToolExpiryStore,
     ResumeSelectionStore,
     PublicationPreparationStore,

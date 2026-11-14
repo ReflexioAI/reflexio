@@ -76,6 +76,9 @@ from reflexio.server.services.extraction.source_inputs import (
     capture_source_inputs,
     require_source_inputs,
 )
+from reflexio.server.services.profile.committed_output import (
+    read_saved_structured_output,
+)
 from reflexio.server.services.storage.storage_base import (
     AgentRunRecord,
     AgentRunStatus,
@@ -615,7 +618,7 @@ class ResumableExtractionAgent:
                     )
                     return AgentRunResult(
                         run_id=existing.id,
-                        output=output_schema.model_validate(payload),
+                        output=read_saved_structured_output(output_schema, payload),
                         pending_tool_call_ids=existing.pending_tool_call_ids,
                         messages=[],
                         trace=ToolLoopTrace.model_validate(
@@ -776,7 +779,7 @@ class ResumableExtractionAgent:
                 coordinator.validate_profile_attempts(
                     "profile_agent", payload.get("attempt_ids"), key
                 )
-            output = output_schema.model_validate(payload["output"])
+            output = read_saved_structured_output(output_schema, payload["output"])
             if (
                 package_request is not None
                 and structured_output_validator is not None

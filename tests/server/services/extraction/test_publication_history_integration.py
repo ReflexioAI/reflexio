@@ -215,7 +215,6 @@ def test_historical_profile_lifetime_after_own_writes_and_final_status(
                     ProfileDuplicateGroup(
                         item_ids=["NEW-0", "EXISTING-0"],
                         merged_content="Merged approval policy.",
-                        merged_time_to_live="infinity",
                     )
                 ]
                 if merge_history
