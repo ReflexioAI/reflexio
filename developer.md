@@ -1746,11 +1746,25 @@ selection to Codex. This matches the plugin bridge's saved learning-model
 selection without deriving a model from the opaque LiteLLM role label. The
 requested model does not establish observed model/provider provenance.
 
-All known explicit Codex/OpenCode plugin bridges retain Claude wire protocol
-and legacy timeouts across coding hosts. This adapter does not switch plugin
-producers or retire any setting. The later producer/optimizer migration must
-preserve their model precedence, explicit paths, permissions and caller budgets
-before bridge files and redundant controls can be removed.
+The plugin's Codex learning producers now use the SDK's native adapter. Codex
+uses the canonical `CLAUDE_SMART_CLI_PATH` or PATH; `CLAUDE_SMART_CODEX_PATH`
+no longer selects an executable, and plugin installation roots no longer
+select a bridge. Active obsolete selection refuses when the native route is
+reached, before dispatch, retries or paid fallback. Move the intended executable
+to the canonical path before removing the old assignment, or deliberately
+remove it to adopt Codex from PATH. A valid canonical override or an explicit
+direct SDK adapter constructor path that previously dominated an unused old
+key remains valid. Client-worker admission uses the portable environment
+binding; a manually registered constructor-only binding is not carried into
+spawned workers. Use the canonical environment path for that client route. Explicit HTTP transports and other CLI hosts ignore that unused key.
+
+Historical `codex-claude-compat`, `.cmd` and `.js` paths refuse with migration
+guidance, including missing files, instead of silently changing wire protocol.
+Enabled obsolete native intent stays selected even without an installed binary;
+provider availability does not claim it is usable. The remaining OpenCode
+bridges retain Claude wire protocol and legacy timeouts across coding hosts.
+Their later retirement must preserve model/variant precedence, explicit paths,
+permissions and caller budgets.
 
 The native workdir retains the existing supported V1 agent configuration,
 including denied tools and recursion guards; OpenCode documents V1 config

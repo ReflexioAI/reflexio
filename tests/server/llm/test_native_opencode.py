@@ -118,15 +118,12 @@ def test_generated_billing_words_are_not_failure_evidence():
 @pytest.mark.parametrize(
     "bridge",
     [
-        "codex-claude-compat",
-        "codex-claude-compat.cmd",
-        "codex-claude-compat.js",
         "opencode-claude-compat",
         "opencode-claude-compat.cmd",
         "opencode-claude-compat.js",
     ],
 )
-def test_all_known_bridges_keep_claude_protocol_and_legacy_cap(
+def test_opencode_bridges_keep_claude_protocol_and_legacy_cap(
     monkeypatch, host, bridge
 ):
     monkeypatch.setenv("CLAUDE_SMART_HOST", host)
@@ -232,7 +229,7 @@ def test_bridge_symlink_is_discriminated_before_native_path_canonicalization(
 ):
     if os.name == "nt":
         pytest.skip("POSIX symlink name contract; native Windows exe tested separately")
-    bridge = tmp_path / "codex-claude-compat"
+    bridge = tmp_path / "opencode-claude-compat"
     bridge.symlink_to(sys.executable)
     monkeypatch.setenv("CLAUDE_SMART_HOST", "opencode")
     legacy = Mock(return_value=ParseResult(True, "ok"))

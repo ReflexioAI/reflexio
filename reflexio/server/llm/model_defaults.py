@@ -139,10 +139,13 @@ def detect_available_providers(
 
     if env_truthy(os.environ.get(_CLAUDE_CODE_ENABLE_ENV, "")):
         from reflexio.server.llm.providers.claude_code_provider import (
+            has_pending_codex_migration,
             is_claude_code_available,
         )
 
-        if is_claude_code_available():
+        # An obsolete enabled native selection must refuse on its own route,
+        # rather than silently yielding automatic selection to a paid provider.
+        if is_claude_code_available() or has_pending_codex_migration():
             available.add(_CLAUDE_CODE_PROVIDER)
     if env_truthy(os.environ.get("OPENCLAW_SMART_USE_LOCAL_CLI", "")):
         from reflexio.server.llm.providers.openclaw_provider import (

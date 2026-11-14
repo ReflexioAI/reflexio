@@ -175,11 +175,13 @@ class LadderBudgetExhaustedError(LiteLLMClientError):
     """
 
 
-def _uses_openclaw_transport(model: str, custom_llm_provider: str | None) -> bool:
+def _uses_native_transport(
+    model: str, custom_llm_provider: str | None, provider_key: str
+) -> bool:
     """Respect LiteLLM's explicit transport before interpreting a model prefix."""
     if custom_llm_provider:
-        return custom_llm_provider == "openclaw"
-    return model.startswith("openclaw/")
+        return custom_llm_provider == provider_key
+    return model.startswith(f"{provider_key}/")
 
 
 def _bounded_repair_errors(errors: Sequence[str]) -> tuple[str, ...]:
@@ -1040,7 +1042,9 @@ class TextGenerationMixin:
             model_role,
             custom_llm_provider=kwargs.get("custom_llm_provider"),
         )
-        if _uses_openclaw_transport(actual_model, kwargs.get("custom_llm_provider")):
+        if _uses_native_transport(
+            actual_model, kwargs.get("custom_llm_provider"), "openclaw"
+        ):
             from reflexio.server.llm.providers.openclaw_provider import (
                 reject_retired_openclaw_timeout,
                 resolve_openclaw_model,
@@ -1050,6 +1054,15 @@ class TextGenerationMixin:
             # An ambiguous retired default must never dispatch another model.
             resolve_openclaw_model(actual_model)
             reject_retired_openclaw_timeout()
+        if _uses_native_transport(
+            actual_model, kwargs.get("custom_llm_provider"), "claude-code"
+        ):
+            from reflexio.server.llm.providers.claude_code_provider import (
+                reject_retired_codex_selection,
+            )
+
+            # Preparation errors stop the walk before retries or paid fallback.
+            reject_retired_codex_selection()
         ensure_model_capabilities(actual_model)
 
         if actual_model != self.config.model:
@@ -1219,7 +1232,7 @@ class TextGenerationMixin:
         actual_model = model or self.config.model
         if self.config.api_key_config and self.config.api_key_config.custom_endpoint:
             return actual_model
-        if _uses_openclaw_transport(actual_model, custom_llm_provider):
+        if _uses_native_transport(actual_model, custom_llm_provider, "openclaw"):
             return actual_model
         if model_role is not None:
             actual_model = resolve_model_name(
