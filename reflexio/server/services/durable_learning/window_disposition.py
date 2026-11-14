@@ -17,13 +17,21 @@ Precedence, highest first:
 - :class:`Recompute` -- a ``ComputationEvidenceChangedError`` anywhere in the
   chain: the cached computation is stale and only recomputing it can pass.
 - :class:`HoldInput` -- the first input-budget link in the chain decides the
-  reason. ``InputBudgetConfigurationError`` is
+  label. ``InputBudgetConfigurationError`` is
   ``input_budget_configuration_error``, retried with backoff up to the window
   ceiling, and parked at once when a ``SavedOutputIncompatibleError`` is
-  anywhere in the chain. A capacity overrun (``InputBudgetExceededError``,
+  anywhere in the chain. Its non-capacity subclass
+  ``ExtractionInputIntegrityError`` (frozen inputs unavailable, changed or
+  malformed) is held exactly the same way under the internal label
+  ``input_integrity_error``. A capacity overrun (``InputBudgetExceededError``,
   ``ExtractionInputBudgetExceededError``,
   ``OverflowAttemptBudgetExceededError``) is ``input_budget_exceeded`` and is
   held without replay.
+
+  The label is internal (logs, metrics). :attr:`HoldInput.reason` is what
+  storage persists in ``extraction_cursors.last_error`` and what the public
+  learning status reports; an integrity hold keeps the public
+  ``input_budget_configuration_error`` so clients waiting on it are unchanged.
 - :class:`ProviderWait` -- :func:`classify_llm_failure` says
   :class:`OutageWait`: the provider is down for everyone, so the window waits
   without spending an attempt.
@@ -47,6 +55,7 @@ from reflexio.server.llm.failure import (
 )
 from reflexio.server.llm.input_budget import (
     ComputationEvidenceChangedError,
+    ExtractionInputIntegrityError,
     InputBudgetConfigurationError,
     InputBudgetExceededError,
     SavedOutputIncompatibleError,
@@ -66,6 +75,16 @@ from reflexio.server.services.storage.storage_base._extraction_stream import (
 )
 
 InputHoldReason = Literal["input_budget_configuration_error", "input_budget_exceeded"]
+InputHoldLabel = Literal[
+    "input_budget_configuration_error", "input_budget_exceeded", "input_integrity_error"
+]
+
+#: The public reason each internal label persists and reports.
+_STATUS_REASON: dict[InputHoldLabel, InputHoldReason] = {
+    "input_budget_configuration_error": "input_budget_configuration_error",
+    "input_budget_exceeded": "input_budget_exceeded",
+    "input_integrity_error": "input_budget_configuration_error",
+}
 
 _CAPACITY_EXCEEDED = (
     InputBudgetExceededError,
@@ -96,14 +115,19 @@ class Recompute:
 
 @dataclass(frozen=True)
 class HoldInput:
-    """The input budget refused the window, for ``reason``.
+    """The input budget refused the window, for the internal ``label``.
 
     ``park`` asks storage to hold the window for an operator now instead of
     retrying it; storage reports whether it ended up parked.
     """
 
-    reason: InputHoldReason
+    label: InputHoldLabel
     park: bool
+
+    @property
+    def reason(self) -> InputHoldReason:
+        """The persisted and public reason: ``last_error`` and learning status."""
+        return _STATUS_REASON[self.label]
 
 
 @dataclass(frozen=True)
@@ -144,7 +168,9 @@ def classify_window_failure(exc: BaseException) -> WindowDisposition:
     for link in chain:
         if isinstance(link, InputBudgetConfigurationError):
             return HoldInput(
-                "input_budget_configuration_error",
+                "input_integrity_error"
+                if isinstance(link, ExtractionInputIntegrityError)
+                else "input_budget_configuration_error",
                 park=any(
                     isinstance(other, SavedOutputIncompatibleError) for other in chain
                 ),
