@@ -1709,6 +1709,36 @@ connection lease or introduce a runtime alias.
 
 ### Native provider CLI ownership
 
+The existing `claude-code/` provider can execute OpenCode directly with
+`CLAUDE_SMART_HOST=opencode` and `CLAUDE_SMART_USE_LOCAL_CLI=1`. Set the existing
+`CLAUDE_SMART_CLI_PATH` to its native executable, or let PATH resolve `opencode`.
+Relative executable paths are anchored before entering the private workdir.
+Windows native execution requires the actual `.exe`; batch shims continue to
+use the existing plugin bridge. No shell is introduced.
+
+Native OpenCode spends the selected completion timeout on setup and execution.
+Direct handler calls must provide a finite positive numeric timeout. Explicit
+constructor or `CLAUDE_SMART_CLI_TIMEOUT` caps remain supported and tighten that
+budget (constructor wins); no provider duration default is added when absent.
+The existing `CLAUDE_SMART_CLI_MODEL` chooses an explicit native model; unset
+delegates to OpenCode. The opaque `claude-code/` request label never chooses a
+native model or proves which model served the response.
+
+All known explicit Codex/OpenCode plugin bridges retain Claude wire protocol
+and legacy timeouts across coding hosts. This adapter does not switch plugin
+producers or retire any setting. The later producer/optimizer migration must
+preserve their model precedence, explicit paths, permissions and caller budgets
+before bridge files and redundant controls can be removed.
+
+The native workdir retains the existing supported V1 agent configuration,
+including denied tools and recursion guards; OpenCode documents V1 config
+compatibility in its [V2 migration guide](https://opencode.ai/docs/migrate-v1/).
+Delegated workdirs remain parent-owned until native retirement. Native OpenCode failure text,
+including partial output alongside error events, stays out of exceptions, logs
+and stored stall messages; auth/billing reasons and parsed reset times survive.
+Neither this path nor its tests claim arbitrary-descendant containment or
+cancellation of work inside OpenCode's shared background server.
+
 OpenClaw uses the selected completion `timeout` as one allowance for CLI
 execution and busy retry waits. Retries receive only the remaining time; they
 cannot restart the allowance. The SDK's outer per-rung deadline may tighten it

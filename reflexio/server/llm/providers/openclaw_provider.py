@@ -20,7 +20,6 @@ import reflexio.provider_bootstrap  # noqa: F401
 
 import json
 import logging
-import math
 import os
 import shutil
 import subprocess  # noqa: S404 — subprocess is the integration point.
@@ -40,7 +39,7 @@ from litellm.types.utils import (
 )
 
 from reflexio.server.env_utils import env_truthy
-from reflexio.server.llm._native_cli import run_native_cli
+from reflexio.server.llm._native_cli import request_timeout_seconds, run_native_cli
 from reflexio.server.llm.providers.cli_tool_protocol import (
     append_schema_instruction,
     append_tools_instruction,
@@ -268,17 +267,7 @@ def reject_retired_openclaw_timeout() -> None:
 def _request_timeout(value: Any) -> float:
     """Use LiteLLM's selected allowance; never invent a second provider clock."""
     reject_retired_openclaw_timeout()
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("OpenClaw completion requires a finite positive timeout")
-    try:
-        timeout = float(value)
-    except OverflowError as exc:
-        raise ValueError(
-            "OpenClaw completion requires a finite positive timeout"
-        ) from exc
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError("OpenClaw completion requires a finite positive timeout")
-    return timeout
+    return request_timeout_seconds(value)
 
 
 class OpenClawLLM(CustomLLM):

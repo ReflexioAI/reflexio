@@ -74,6 +74,21 @@ def native_cli_directory() -> str | None:
     return _worker_context.context.directory if _worker_context else None
 
 
+def request_timeout_seconds(value: Any) -> float:
+    """Validate a caller-owned allowance without installing a provider default."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Native CLI completion requires a finite positive timeout")
+    try:
+        timeout = float(value)
+    except OverflowError as exc:
+        raise ValueError(
+            "Native CLI completion requires a finite positive timeout"
+        ) from exc
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("Native CLI completion requires a finite positive timeout")
+    return timeout
+
+
 def _remaining(deadline: float) -> float:
     remaining = deadline - time.monotonic()
     if not math.isfinite(remaining) or remaining <= 0:

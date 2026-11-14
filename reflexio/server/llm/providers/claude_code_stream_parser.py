@@ -66,6 +66,7 @@ class ParseResult:
     served_model: str | None = None
     served_provider: str | None = None
     cli_binary: str | None = None
+    reset_estimate: datetime | None = None
 
     @property
     def stall_candidate(self) -> str | None:
@@ -187,10 +188,10 @@ def _classify_from_text(text: str) -> StallReason | None:
     """Belt-and-suspenders: regex the raw error text after NDJSON has been parsed."""
     lower = text.lower()
     if any(p in lower for p in _TEXT_PATTERNS_BILLING):
-        _LOGGER.warning("Stall classified via text fallback (billing): %r", text[:200])
+        _LOGGER.warning("Stall classified via text fallback: billing_error")
         return "billing_error"
     if any(p in lower for p in _TEXT_PATTERNS_AUTH):
-        _LOGGER.warning("Stall classified via text fallback (auth): %r", text[:200])
+        _LOGGER.warning("Stall classified via text fallback: auth_error")
         return "auth_error"
     return None
 
