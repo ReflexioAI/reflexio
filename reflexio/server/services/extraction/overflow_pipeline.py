@@ -40,6 +40,9 @@ from reflexio.server.services.extraction.resumable_agent import (
 from reflexio.server.services.playbook.playbook_evidence import (
     resolve_verbatim_source_span,
 )
+from reflexio.server.services.profile.committed_output import (
+    read_saved_structured_output,
+)
 from reflexio.server.services.storage.storage_base import AgentRunStatus
 
 _ops_logger = logging.getLogger("reflexio.ops")
@@ -118,10 +121,15 @@ def _candidate_source_spans(
     selected = {}
     for candidate in candidates:
         if field == "profiles":
-            spans = resolve_visible_quote(
-                candidate["source_span"], visible, require_unique=False
-            )
-            selected.update({span.evidence_ref: span for span in spans})
+            quotes = [candidate["source_span"]]
+            deadline = candidate.get("explicit_storage_deadline")
+            if deadline is not None:
+                quotes.append(deadline["source_quote"])
+            if candidate.get("explicit_forget_quote") is not None:
+                quotes.append(candidate["explicit_forget_quote"])
+            for quote in quotes:
+                spans = resolve_visible_quote(quote, visible, require_unique=False)
+                selected.update({span.evidence_ref: span for span in spans})
         else:
             for ref in candidate.get("evidence_refs", []):
                 span = resolve_evidence_span(ref.strip(), visible)
@@ -165,7 +173,9 @@ def _saved_raw_candidates(
             coordinator.require_prepared(), chunk, coordinator.record
         ):
             call = build_call()
-            output = call.schema.model_validate(receipt["output"]["output"])
+            output = read_saved_structured_output(
+                call.schema, receipt["output"]["output"]
+            )
             if call.validator is not None and call.validator(output):
                 raise ProviderRequestGuardError(
                     "Saved child lacks visible original evidence"
@@ -222,7 +232,7 @@ def _recover_saved_output(
             current_policy = _extraction_policy(coordinator, cached_call)
     try:
         payload, cached_provenance = decode_committed_output(saved_run.committed_output)
-        output = cached_call.schema.model_validate(payload)
+        output = read_saved_structured_output(cached_call.schema, payload)
         coverage = [coordinator.candidate_key(chunk.text) for chunk in prepared.chunks]
         evidence = checkpoint.get("candidate_evidence", {})
         if protocol_output:
@@ -473,7 +483,7 @@ def extract_overflow_window(
         output = schema.model_validate({field: []})
         provenance = ModelProvenance()
     elif len(prepared.chunks) == 1:
-        output = schema.model_validate({field: candidates})
+        output = read_saved_structured_output(schema, {field: candidates})
         provenance = next(iter(models.values()))
     else:
         messages = [
@@ -530,7 +540,7 @@ def extract_overflow_window(
                 )
             coordinator.complete_step(key, output.model_dump(mode="json"), provenance)
         else:
-            output = schema.model_validate(saved["output"])
+            output = read_saved_structured_output(schema, saved["output"])
             provenance = ModelProvenance(**saved["model_provenance"])
     if validate_final(output):
         raise ProviderRequestGuardError("Reconciled candidates lack original evidence")
@@ -573,7 +583,7 @@ def extract_overflow_window(
     payload, observed = decode_committed_output(envelope)
     return AgentRunResult(
         run_id=run_id,
-        output=schema.model_validate(payload),
+        output=read_saved_structured_output(schema, payload),
         pending_tool_call_ids=[],
         messages=[],
         trace=ToolLoopTrace(finished=True),

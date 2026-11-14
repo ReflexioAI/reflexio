@@ -63,6 +63,7 @@ from reflexio.server.services.service_utils import (
     extract_interactions_from_request_interaction_data_models,
     format_sessions_to_history_string,
     log_llm_messages,
+    visible_interaction_evidence_texts,
 )
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 
@@ -90,14 +91,25 @@ def _is_transient_extraction_failure(exc: BaseException) -> bool:
     return describe_tool_loop_error(exc)[1] == "transient"
 
 
-def _profile_evidence_validation_errors(
-    output: BaseModel, spans: tuple[SourceSpan, ...]
+def profile_source_evidence_texts(
+    request_interaction_data_models: list[RequestInteractionDataModel],
+    *,
+    visible_spans: tuple[SourceSpan, ...] | None = None,
 ) -> list[str]:
-    """A source quote must occur in one contiguous original field, never a splice."""
-    if not isinstance(output, StructuredProfilesOutput):
-        return ["Return the supplied profile extraction schema."]
+    """Use the actual prompt view, preserving contiguous original field ranges.
+
+    Ordinary prompts hide expert/shadow fields. Prepared consumers instead
+    supply their authenticated visible spans, never the complete hidden source.
+    """
+    if visible_spans is None:
+        return [
+            text
+            for model in request_interaction_data_models
+            for interaction in model.interactions
+            for text in visible_interaction_evidence_texts(interaction)
+        ]
     fields: dict[tuple[int, str, str], list[SourceSpan]] = {}
-    for span in spans:
+    for span in visible_spans:
         fields.setdefault(
             (span.interaction_id, span.request_id, span.field), []
         ).append(span)
@@ -115,11 +127,26 @@ def _profile_evidence_validation_errors(
                 text[span.start - run_start : span.start - run_start + overlap]
                 != span.text[:overlap]
             ):
-                return ["Visible original evidence disagrees at overlapping offsets."]
+                raise ValueError(
+                    "Visible original evidence disagrees at overlapping offsets."
+                )
             text += span.text[overlap:]
             previous_end = max(previous_end, span.end)
         if text:
             contiguous_texts.append(text)
+    return contiguous_texts
+
+
+def _profile_evidence_validation_errors(
+    output: BaseModel, spans: tuple[SourceSpan, ...]
+) -> list[str]:
+    """A source quote must occur in one contiguous original field, never a splice."""
+    if not isinstance(output, StructuredProfilesOutput):
+        return ["Return the supplied profile extraction schema."]
+    try:
+        contiguous_texts = profile_source_evidence_texts([], visible_spans=spans)
+    except ValueError as error:
+        return [str(error)]
     errors = [
         f"profiles[{index}]: quote exact visible original evidence in source_span."
         for index, profile in enumerate(output.profiles or [])
@@ -330,17 +357,19 @@ class ProfileExtractor:
             for interaction in request_model.interactions
             if interaction.interaction_id
         ]
+        coordinator = current_overflow_coordinator.get()
         user_profiles = self._convert_raw_to_user_profiles(
             raw_profiles=raw_profiles or [],
             user_id=self.service_config.user_id,
             request_id=self.service_config.request_id,
             source_interaction_ids=source_interaction_ids,
-            source_texts=[
-                interaction.content
-                for request_model in request_interaction_data_models
-                for interaction in request_model.interactions
-                if isinstance(interaction.content, str)
-            ],
+            source_texts=profile_source_evidence_texts(
+                request_interaction_data_models,
+                visible_spans=(coordinator.carried_source_spans or ())
+                if coordinator is not None
+                else None,
+            ),
+            committed_run=self._last_resumable_run,
         )
         # Defer the stride-bookmark advance onto the outcome instead of
         # self-advancing here (F1): the advance is applied downstream — inside
@@ -379,6 +408,7 @@ class ProfileExtractor:
         request_id: str,
         source_interaction_ids: list[int] | None = None,
         source_texts: list[str] | None = None,
+        committed_run: AgentRunRecord | None = None,
     ) -> list[UserProfile]:
         """
         Convert raw profile dicts from LLM to UserProfile objects.
@@ -418,12 +448,43 @@ class ProfileExtractor:
                     "source_span",
                     "notes",
                     "reader_angle",
+                    "time_to_live",
                 }
             }
 
-            now_ts = int(datetime.now(UTC).timestamp())
+            legacy_ttl = None
             if "time_to_live" in profile_content:
-                raise ValueError("TTL-free extraction cannot accept guessed TTL")
+                from reflexio.server.services.extraction.resumable_agent import (
+                    decode_committed_output,
+                )
+                from reflexio.server.services.profile.committed_output import (
+                    read_saved_structured_output,
+                )
+
+                if committed_run is None or committed_run.committed_output is None:
+                    raise ValueError("TTL-free extraction cannot accept guessed TTL")
+                if (
+                    committed_run.binding.user_id != user_id
+                    or committed_run.binding.request_id != request_id
+                    or list(committed_run.binding.source_interaction_ids)
+                    != profile_source_interaction_ids
+                ):
+                    raise ValueError("Committed legacy profile scope changed")
+                saved, _ = decode_committed_output(committed_run.committed_output)
+                validated = read_saved_structured_output(
+                    StructuredProfilesOutput, saved
+                )
+                if profile_content not in [
+                    item.model_dump() for item in validated.profiles or []
+                ]:
+                    raise ValueError("Legacy profile is absent from committed output")
+                clock = committed_run.agent_completed_at or committed_run.created_at
+                if clock is None or clock.tzinfo is None:
+                    raise ValueError("Committed legacy profile has no recorded clock")
+                now_ts = int(clock.timestamp())
+                legacy_ttl = ProfileTimeToLive(profile_content["time_to_live"])
+            else:
+                now_ts = int(datetime.now(UTC).timestamp())
             raw_deadline = profile_content.get("explicit_storage_deadline")
             custom_features = new_features(
                 custom_features,
@@ -434,6 +495,19 @@ class ProfileExtractor:
                 source_texts=source_texts or [],
                 forget_quote=profile_content.get("explicit_forget_quote"),
             )
+            if legacy_ttl is not None:
+                from reflexio.server.services.profile.lifecycle import KEY
+                from reflexio.server.services.profile.profile_generation_service_utils import (
+                    calculate_expiration_timestamp,
+                )
+
+                custom_features[KEY].update(
+                    created_at=None,
+                    legacy_origin=True,
+                    legacy_expiration_timestamp=calculate_expiration_timestamp(
+                        now_ts, legacy_ttl
+                    ),
+                )
 
             added_profile = UserProfile(
                 profile_id=new_profile_id(),
@@ -441,7 +515,7 @@ class ProfileExtractor:
                 content=profile_content["content"],
                 last_modified_timestamp=now_ts,
                 generated_from_request_id=request_id,
-                profile_time_to_live=ProfileTimeToLive.INFINITY,
+                profile_time_to_live=legacy_ttl or ProfileTimeToLive.INFINITY,
                 expiration_timestamp=expiration_for(custom_features),
                 custom_features=custom_features or None,
                 extractor_names=None,

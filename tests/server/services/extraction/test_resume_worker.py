@@ -2717,10 +2717,24 @@ def test_profile_output_conversion_does_not_construct_runtime_extractor(
     request_context.configurator.get_agent_context.side_effect = AssertionError(
         "pure conversion loaded agent context"
     )
+    from reflexio.server.services.extraction.resume_worker import (
+        _request_interaction_models_from_ids,
+    )
+
+    saved_output = {
+        "profiles": [{"content": "Saved content", "time_to_live": "infinity"}]
+    }
+    run = replace(run, committed_output=saved_output)
     items, pending = worker._profile_items_from_output(
         run,
         request_context.configurator.get_config().profile_extractor_config,
-        {"profiles": [{"content": "Saved content", "time_to_live": "infinity"}]},
+        saved_output,
+        request_interaction_data_models=_request_interaction_models_from_ids(
+            storage,
+            run.binding.source_interaction_ids,
+            fallback_source=run.binding.source,
+            fallback_agent_version=run.binding.agent_version,
+        ),
     )
     assert [item.content for item in items] == ["Saved content"]
     assert items[0].user_id == run.binding.user_id

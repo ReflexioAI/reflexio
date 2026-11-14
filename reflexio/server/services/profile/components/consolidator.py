@@ -1217,13 +1217,17 @@ class ProfileConsolidator(BaseDeduplicator):
         quote = metadata(authority).get("explicit_forget_quote")
         if (
             old.user_id != user_id
-            or old.status is not None
+            or old.status != (Status.PENDING if self.output_pending_status else None)
             or not request_id
             or not quote
         ):
             raise ValueError(
                 "Erasure requires exact CURRENT owned payload and source authority"
             )
+        if self.output_pending_status:
+            # Preview retains source/owner validation and pending transitions;
+            # only current publication can compile physical erasure authority.
+            return
         instruction = ProfilePayloadErasure(
             profile_id=old.profile_id,
             user_id=user_id,
@@ -1232,8 +1236,22 @@ class ProfileConsolidator(BaseDeduplicator):
             source_profile_id=authority.profile_id,
             source_quote=quote,
         )
-        if instruction not in self.erasure_instructions:
-            self.erasure_instructions.append(instruction)
+        for previous in self.erasure_instructions:
+            if previous.profile_id == instruction.profile_id:
+                if (
+                    previous.user_id,
+                    previous.request_id,
+                    previous.expected_version,
+                ) != (
+                    instruction.user_id,
+                    instruction.request_id,
+                    instruction.expected_version,
+                ):
+                    raise ValueError(
+                        "Conflicting erasure target version or owner/request"
+                    )
+                return  # One exact target may have several valid source authorities.
+        self.erasure_instructions.append(instruction)
 
     @staticmethod
     def _consume_new_index(

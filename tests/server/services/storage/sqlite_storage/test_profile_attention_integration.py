@@ -164,3 +164,42 @@ def test_startup_upgrade_retains_access(tmp_path):
             ) == {"old": 200}
         finally:
             second.conn.close()
+
+
+def test_owner_clear_catches_access_inserted_before_last_content_purge(
+    storage, monkeypatch
+):
+    add_profile(storage)
+    add_profile(storage, "other", "other-owner")
+    storage.conn.execute(
+        "UPDATE profiles SET status='merged',merged_into='other' WHERE profile_id='old'"
+    )
+    storage.conn.commit()
+    path = storage.conn.execute("PRAGMA database_list").fetchone()[2]
+    other = SQLiteStorage(org_id=storage.org_id, db_path=path)
+    original_purge = storage.purge_content
+    observed = []
+
+    def concurrent_access_then_purge(*, entity_type, entity_id, **kwargs):
+        if entity_type == "profile" and entity_id == "old":
+            other.record_served_profile_access(
+                user_id="u", profile_ids=["old"], accessed_at=300
+            )
+            observed.append(
+                other.get_profile_access_epochs(user_id="u", profile_ids=["old"])
+            )
+        return original_purge(entity_type=entity_type, entity_id=entity_id, **kwargs)
+
+    monkeypatch.setattr(storage, "purge_content", concurrent_access_then_purge)
+    try:
+        result = storage.clear_user_data("u")
+        assert result["purged_profiles"] == 1
+        assert observed == [{"old": 300}]
+        assert other.get_profile_access_epochs(user_id="u", profile_ids=["old"]) == {}
+        other.record_served_profile_access(
+            user_id="u", profile_ids=["old"], accessed_at=400
+        )
+        assert other.get_profile_access_epochs(user_id="u", profile_ids=["old"]) == {}
+        assert other.get_user_profile("other-owner")[0].content == "likes tea"
+    finally:
+        other.conn.close()

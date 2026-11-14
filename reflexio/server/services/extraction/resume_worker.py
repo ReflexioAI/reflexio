@@ -68,9 +68,13 @@ from reflexio.server.services.playbook.service import (
     PlaybookGenerationService,
     PlaybookGenerationServiceConfig,
 )
+from reflexio.server.services.profile.committed_output import (
+    read_saved_structured_output,
+)
 from reflexio.server.services.profile.components.extractor import (
     MAX_EXISTING_PROFILES_FOR_CONTEXT,
     ProfileExtractor,
+    profile_source_evidence_texts,
 )
 from reflexio.server.services.profile.profile_generation_service_utils import (
     StructuredProfilesOutput,
@@ -1240,6 +1244,7 @@ class ExtractionResumeWorker:
                 run,
                 extractor_config,
                 output,
+                request_interaction_data_models=request_interaction_data_models,
             )
             return items, pending_ids, model_provenance
         if run.binding.extractor_kind == "playbook":
@@ -1259,12 +1264,16 @@ class ExtractionResumeWorker:
         run: AgentRunRecord,
         extractor_config: ProfileExtractorConfig | PlaybookConfig,
         committed_output: dict[str, Any],
+        *,
+        request_interaction_data_models: list[RequestInteractionDataModel],
     ) -> tuple[list[Any], list[str]]:
         if not isinstance(extractor_config, ProfileExtractorConfig):
             raise ResumeWorkerError("Expected profile extractor config")
         if run.binding.user_id is None:
             raise ResumeWorkerError("Profile finalization retry requires user_id")
-        output = StructuredProfilesOutput.model_validate(committed_output)
+        output = read_saved_structured_output(
+            StructuredProfilesOutput, committed_output
+        )
         raw_profiles = [profile.model_dump() for profile in output.profiles or []]
         return (
             ProfileExtractor._convert_raw_to_user_profiles(
@@ -1272,6 +1281,10 @@ class ExtractionResumeWorker:
                 user_id=run.binding.user_id,
                 request_id=run.binding.request_id,
                 source_interaction_ids=list(run.binding.source_interaction_ids),
+                committed_run=run,
+                source_texts=profile_source_evidence_texts(
+                    request_interaction_data_models
+                ),
             ),
             run.pending_tool_call_ids,
         )

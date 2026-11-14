@@ -44,6 +44,7 @@ def new_request(quote: str | None = FORGET):
 
 def consolidator():
     instance = object.__new__(ProfileConsolidator)
+    instance.output_pending_status = False
     instance.consolidated_output_indices = set()
     instance.lineage_sources_by_profile_id = {}
     return instance

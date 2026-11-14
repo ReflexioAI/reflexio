@@ -23,7 +23,15 @@ pipeline = durable.pipeline
 pytestmark = pytest.mark.integration
 
 
-def setup(pipeline, monkeypatch, *, gate=True, profiles=True):
+def setup(
+    pipeline,
+    monkeypatch,
+    *,
+    gate=True,
+    profiles=True,
+    source_text=None,
+    permission=None,
+):
     engine, _, http = pipeline
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     monkeypatch.setenv("OPENAI_API_KEY", "fixture-no-provider")
@@ -40,9 +48,11 @@ def setup(pipeline, monkeypatch, *, gate=True, profiles=True):
     monkeypatch.setattr(
         ProfileGenerationService, "_resolve_should_run_model", lambda _: "gpt-4o-mini"
     )
-    assert http.post(
-        "/api/publish_interaction", json=durable.payload("package-parent")
-    ).json()["success"]
+    source = durable.payload("package-parent")
+    if source_text is not None:
+        for interaction in source["interaction_data_list"]:
+            interaction["content"] = source_text
+    assert http.post("/api/publish_interaction", json=source).json()["success"]
     storage = engine.get_storage()
     monkeypatch.setattr(storage, "_get_embedding", Mock(return_value=[0.0] * 512))
     user, token = storage.claim_extraction("package-parent-test", 600)
@@ -66,7 +76,9 @@ def setup(pipeline, monkeypatch, *, gate=True, profiles=True):
                         {
                             "content": "Prefers concise answers",
                             "explicit_storage_deadline": None,
-                            "source_span": "I prefer concise answers with details 0",
+                            "source_span": source_text
+                            or "I prefer concise answers with details 0",
+                            **(permission or {}),
                         }
                     ]
                     if profiles
@@ -87,6 +99,51 @@ def setup(pipeline, monkeypatch, *, gate=True, profiles=True):
 
     monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
     return engine, storage, window, token, client, calls
+
+
+@pytest.mark.parametrize("kind", ["deadline", "forget"])
+def test_package_conversion_publishes_source_backed_storage_permission(
+    pipeline, monkeypatch, kind
+):
+    from reflexio.server.services.profile.lifecycle import metadata
+    from reflexio.server.services.storage.storage_base import LeaseLostError
+
+    quote = (
+        "Delete this memory on 2033-05-18T03:33:20Z."
+        if kind == "deadline"
+        else "Forget my address."
+    )
+    permission = (
+        {
+            "explicit_storage_deadline": {
+                "deadline_utc": "2033-05-18T03:33:20Z",
+                "source_quote": quote,
+            }
+        }
+        if kind == "deadline"
+        else {"explicit_forget_quote": quote}
+    )
+    engine, storage, window, token, client, calls = setup(
+        pipeline,
+        monkeypatch,
+        source_text=f"I prefer concise answers. {quote}",
+        permission=permission,
+    )
+    executor = ProfilePackageWindowExecutor(engine.request_context, client)
+    executor.execute(window, token)
+    rows = storage.get_user_profile("u")
+    assert len(rows) == 1
+    authority = metadata(rows[0])
+    if kind == "deadline":
+        assert authority["explicit_storage_deadline"]["source_quote"] == quote
+    else:
+        assert authority["explicit_forget_quote"] == quote
+    assert storage.extraction_status("u", "package-parent")["status"] == "done"
+    prior_calls = len(calls)
+    with pytest.raises(LeaseLostError):
+        executor.execute(window, token)
+    assert len(calls) == prior_calls
+    assert len(storage.get_user_profile("u")) == 1
 
 
 @pytest.mark.parametrize(

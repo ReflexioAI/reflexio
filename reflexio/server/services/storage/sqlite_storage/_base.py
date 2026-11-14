@@ -3608,10 +3608,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                         (self.org_id, user_id),
                     )
                 self._erase_pending_tool_calls_for_user_unlocked(user_id)
-                self.conn.execute(
-                    "DELETE FROM profile_access_epochs WHERE org_id=? AND user_id=?",
-                    (self.org_id, user_id),
-                )
                 # ------------------------------------------------------------------
                 # Phase 1: snapshot learning/source ids before touching their rows.
                 # ------------------------------------------------------------------
@@ -3741,6 +3737,14 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 self.purge_content(entity_type="profile", entity_id=str(pid))
             for upid in purge_upb_ids:
                 self.purge_content(entity_type="user_playbook", entity_id=str(upid))
+            # Another SQLiteStorage connection has a different Python lock.
+            # Sweep access history only after preserved profile payloads are
+            # blank, so an in-flight accepted access cannot leave old epochs.
+            with self.commit_scope():
+                self.conn.execute(
+                    "DELETE FROM profile_access_epochs WHERE org_id=? AND user_id=?",
+                    (self.org_id, user_id),
+                )
 
         return {
             "session_outcomes": session_outcomes_cur.rowcount,

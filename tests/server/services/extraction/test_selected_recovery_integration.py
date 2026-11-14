@@ -519,7 +519,7 @@ def _publish_with_pending_delivery(context, *, kind="profile", selected=True):
     )
     context.prompt_manager = PromptManager()
     entry = (
-        {"content": "Synthetic result", "time_to_live": "infinity"}
+        {"content": "Synthetic result"}
         if kind == "profile"
         else {
             "content": "Require approval",

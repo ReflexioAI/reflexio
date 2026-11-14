@@ -57,6 +57,7 @@ from reflexio.server.services.extractor_config_utils import get_extractor_name
 from reflexio.server.services.profile.components.extractor import (
     MAX_EXISTING_PROFILES_FOR_CONTEXT,
     ProfileExtractor,
+    profile_source_evidence_texts,
 )
 from reflexio.server.services.profile.service import ProfileGenerationService
 from reflexio.server.services.storage.storage_base import AgentRunStatus, canonical_json
@@ -414,6 +415,10 @@ class ProfilePackageWindowExecutor(WindowExecutor):
                     request.user_id,
                     request.request_id,
                     [row["interaction_id"] for row in coordinator.window.manifest],
+                    source_texts=profile_source_evidence_texts(
+                        [], visible_spans=result.package.presentation.visible_spans
+                    ),
+                    committed_run=result.agent.execution_run,
                 )
             checkpoint = coordinator.checkpoint
             converted = [row.model_dump(mode="json") for row in profiles]

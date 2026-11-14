@@ -491,6 +491,7 @@ Key files:
 - `components/consolidator.py`: Consolidates newly extracted profiles against existing DB profiles using LLM
 - `lifecycle.py`: Source-backed storage permission, inherited origin/ancestry and fixed 30-day attention math; no guessed lifetime authoring.
 - `lifecycle_deadlines.py`: Exact-payload erasure and due-deadline publication through storage-owned reads/locks/deletion. The service preserves serialized authority and observes execution time inside the writer transaction.
+- `services/profile/committed_output.py`: committed-only legacy profile output reader; preserves saved fields while new authoring stays TTL-free.
 - `attention.py`: Bounded owner-scoped access snapshots and final-response acceptance callbacks. Actual-access evidence is separate from profile facts; metadata is excluded from embedding text.
 
 New ordinary profiles use the infinity compatibility marker. Legacy profiles keep

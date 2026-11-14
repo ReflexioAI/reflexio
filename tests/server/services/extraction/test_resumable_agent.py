@@ -1317,3 +1317,35 @@ def test_resume_turn_with_a_saturated_provider_cap_stays_resumable(
     assert stored is not None
     assert stored.status == AgentRunStatus.RESUMING
     assert stored.max_steps_remaining == 3
+
+
+@pytest.mark.integration
+def test_window_replays_preupgrade_ttl_output_without_model_call(storage):
+    payload = {
+        "profiles": [{"content": "Saved preference", "time_to_live": "one_week"}]
+    }
+    admitted = replace(
+        _agent_run("window:legacy_profile"),
+        status=AgentRunStatus.AGENT_COMPLETED,
+        committed_output=payload,
+    )
+    storage.create_agent_run(admitted)
+    original = storage.get_agent_run(admitted.id)
+    client = MagicMock()
+    client.generate_chat_response_with_provenance.side_effect = AssertionError(
+        "saved receipt must not call a model"
+    )
+    agent = ResumableExtractionAgent(client=client, storage=storage)
+    result = agent.start(
+        source_inputs=_source_inputs(storage, admitted),
+        run=admitted,
+        messages=[],
+        history_inputs=HistoricalInputs(),
+        output_schema=StructuredProfilesOutput,
+    )
+    assert isinstance(result.output, StructuredProfilesOutput)
+    assert result.output.model_dump(mode="json") == payload
+    assert (
+        storage.get_agent_run(admitted.id).committed_output == original.committed_output
+    )
+    client.generate_chat_response_with_provenance.assert_not_called()
