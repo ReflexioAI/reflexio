@@ -158,7 +158,7 @@ def _registered_custom_provider(model: str) -> str | None:
     provider has registered itself into ``litellm.custom_provider_map`` --
     verified against a registered handler, not assumed. So the cap silently
     skipped every custom provider, and both of ours are CLI bridges that shell
-    out to a local binary: ``claude-code`` and ``openclaw``. The providers least
+    out to a local binary: ``local-cli`` and ``openclaw``. The providers least
     able to tolerate concurrency were the only ones the gate could not see
     (claude-smart#162).
 

@@ -41,6 +41,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "XAI_API_KEY",
         "MOONSHOT_API_KEY",
         "ZAI_API_KEY",
+        "REFLEXIO_NATIVE_CLI_MODEL",
         "CLAUDE_SMART_USE_LOCAL_CLI",
         "CLAUDE_SMART_CLI_PATH",
         "CLAUDE_SMART_CLI_TIMEOUT",
@@ -95,56 +96,56 @@ class TestDetectAvailableProviders:
     def test_claude_code_needs_env_and_cli(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """claude-code requires both the env var AND the `claude` binary."""
-        from reflexio.server.llm.providers import claude_code_provider
+        """Configured native intent is reserved even when its binary is missing."""
+        from reflexio.server.llm.providers import native_cli_provider
 
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "1")
-        monkeypatch.setattr(claude_code_provider.shutil, "which", lambda _: None)
-        assert "claude-code" not in detect_available_providers()
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
+        monkeypatch.setattr(native_cli_provider.shutil, "which", lambda _: None)
+        assert detect_available_providers() == ["local-cli"]
 
         monkeypatch.setattr(
-            claude_code_provider.shutil, "which", lambda _: "/usr/local/bin/claude"
+            native_cli_provider.shutil, "which", lambda _: "/usr/local/bin/claude"
         )
-        assert detect_available_providers() == ["claude-code"]
+        assert detect_available_providers() == ["local-cli"]
 
     def test_claude_code_not_detected_without_env(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Without CLAUDE_SMART_USE_LOCAL_CLI=1, the CLI alone is not enough."""
-        from reflexio.server.llm.providers import claude_code_provider
+        from reflexio.server.llm.providers import native_cli_provider
 
         monkeypatch.setattr(
-            claude_code_provider.shutil, "which", lambda _: "/usr/local/bin/claude"
+            native_cli_provider.shutil, "which", lambda _: "/usr/local/bin/claude"
         )
         assert detect_available_providers() == []
 
     def test_claude_code_takes_priority_over_anthropic(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from reflexio.server.llm.providers import claude_code_provider
+        from reflexio.server.llm.providers import native_cli_provider
 
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "1")
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
         monkeypatch.setattr(
-            claude_code_provider.shutil, "which", lambda _: "/usr/local/bin/claude"
+            native_cli_provider.shutil, "which", lambda _: "/usr/local/bin/claude"
         )
         providers = detect_available_providers()
-        assert providers[0] == "claude-code"
+        assert providers[0] == "local-cli"
         assert "anthropic" in providers
 
     def test_claude_code_respects_cli_path_override(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
     ) -> None:
         """CLAUDE_SMART_CLI_PATH should be honoured when `claude` is not on PATH."""
-        from reflexio.server.llm.providers import claude_code_provider
+        from reflexio.server.llm.providers import native_cli_provider
 
         fake_cli = tmp_path / "claude"
         fake_cli.write_text("#!/bin/sh\n")
         fake_cli.chmod(0o755)
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "1")
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
         monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", str(fake_cli))
-        monkeypatch.setattr(claude_code_provider.shutil, "which", lambda _: None)
-        assert "claude-code" in detect_available_providers()
+        monkeypatch.setattr(native_cli_provider.shutil, "which", lambda _: None)
+        assert "local-cli" in detect_available_providers()
 
 
 # ---------------------------------------------------------------------------
@@ -404,8 +405,9 @@ class TestProviderDefaults:
     def test_all_priority_providers_have_defaults(self) -> None:
         from reflexio.server.llm.model_defaults import _PROVIDER_PRIORITY
 
-        for provider in _PROVIDER_PRIORITY:
-            assert provider in _PROVIDER_DEFAULTS, f"Missing defaults for {provider}"
+        # Native defaults are the operator-owned reference, not a static
+        # model constant that could silently replace that selection.
+        assert set(_PROVIDER_PRIORITY) == set(_PROVIDER_DEFAULTS) | {"local-cli"}
 
     def test_all_roles_have_values(self) -> None:
         """Every provider must support either generation+evaluation or embedding.
@@ -467,9 +469,9 @@ class TestExtractionAgentRole:
         openai = _PROVIDER_DEFAULTS["openai"]
         assert openai.extraction_agent == "gpt-5.5"
 
-    def test_claude_code_defaults_cover_extraction_agent(self) -> None:
-        cc = _PROVIDER_DEFAULTS["claude-code"]
-        assert cc.extraction_agent == "claude-code/default"
+    def test_native_reference_covers_extraction_agent(self, monkeypatch) -> None:
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/codex/owned")
+        assert resolve_model_name(ModelRole.EXTRACTION_AGENT) == "local-cli/codex/owned"
 
     def test_unpopulated_providers_default_to_none(self) -> None:
         """Providers without an extraction_agent fall through to next priority provider."""

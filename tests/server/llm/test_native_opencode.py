@@ -12,7 +12,7 @@ import pytest
 
 from reflexio.server.llm._litellm_types import LLMHardTimeoutError
 from reflexio.server.llm.providers import _opencode_cli as native
-from reflexio.server.llm.providers import claude_code_provider as provider
+from reflexio.server.llm.providers import native_cli_provider as provider
 from reflexio.server.llm.providers.claude_code_stream_parser import (
     ParseResult,
     classify_stall,
@@ -25,15 +25,15 @@ def test_invalid_native_configuration_logs_names_without_values(
     monkeypatch, caplog, setting
 ):
     if setting == "path":
-        monkeypatch.setenv("CLAUDE_SMART_HOST", "opencode")
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/" + "opencode")
         monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "private-canary-not-an-executable")
         monkeypatch.setattr(provider.shutil, "which", lambda _name, **_kwargs: None)
-        assert provider._resolve_cli_path() is None
+        assert provider._resolve_cli_path("opencode") is None
     else:
         monkeypatch.setenv(
             "CLAUDE_SMART_CLI_TIMEOUT", "private-canary-invalid-duration"
         )
-        provider.ClaudeCodeLLM()._timeout()
+        provider.NativeCLILLM()._timeout()
     assert "private-canary" not in caplog.text
     assert "CLAUDE_SMART_CLI_" in caplog.text
 
@@ -75,13 +75,15 @@ def test_error_event_defeats_partial_output_and_redacts_every_sink(
     result = native.parse_output(raw, code, "private-canary")
     assert not result.success and result.terminal_text == ""
     storage = Mock()
-    handler = provider.ClaudeCodeLLM(cli_path=sys.executable, storage=storage)
-    monkeypatch.setenv("CLAUDE_SMART_HOST", "opencode")
+    handler = provider.NativeCLILLM(cli_path=sys.executable, storage=storage)
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/" + "opencode")
     monkeypatch.delenv("CLAUDE_SMART_CLI_TIMEOUT", raising=False)
     monkeypatch.setattr(provider, "_run_cli_stream", Mock(return_value=result))
     with pytest.raises(provider.ClaudeCodeCLIError) as failure:
         handler.completion(
-            messages=[{"role": "user", "content": "synthetic"}], timeout=1
+            model="local-cli/" + "opencode",
+            messages=[{"role": "user", "content": "synthetic"}],
+            timeout=1,
         )
     sinks = str(failure.value) + caplog.text + repr(storage.mock_calls)
     assert "private-canary" not in sinks
@@ -127,6 +129,7 @@ def test_generated_billing_words_are_not_failure_evidence():
 def test_opencode_bridges_keep_claude_protocol_and_caller_bound(
     monkeypatch, host, bridge
 ):
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/opencode")
     monkeypatch.setenv("CLAUDE_SMART_HOST", host)
     monkeypatch.setenv("CLAUDE_SMART_CLI_TIMEOUT", "7")
     legacy = Mock(return_value=ParseResult(True, "ok"))
@@ -134,8 +137,8 @@ def test_opencode_bridges_keep_claude_protocol_and_caller_bound(
     monkeypatch.setattr(
         native, "run_opencode", Mock(side_effect=AssertionError("bridge misrouted"))
     )
-    handler = provider.ClaudeCodeLLM(cli_path=f"/plugin/{bridge}")
-    response = handler.completion(timeout=0.25)
+    handler = provider.NativeCLILLM(cli_path=f"/plugin/{bridge}")
+    response = handler.completion(model="local-cli/opencode", timeout=0.25)
     assert response.choices[0].message.content == "ok"
     assert legacy.call_args.kwargs["timeout_seconds"] == 0.25
     assert response._hidden_params["reflexio_cli_binary"] == bridge.split("-")[0]
@@ -149,12 +152,12 @@ def test_opencode_bridges_keep_claude_protocol_and_caller_bound(
 def test_native_allowance_has_no_implicit_default_and_preserves_explicit_caps(
     monkeypatch, budget, cap, constructor, expected
 ):
-    monkeypatch.setenv("CLAUDE_SMART_HOST", "opencode")
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/" + "opencode")
     if cap is None:
         monkeypatch.delenv("CLAUDE_SMART_CLI_TIMEOUT", raising=False)
     else:
         monkeypatch.setenv("CLAUDE_SMART_CLI_TIMEOUT", cap)
-    handler = provider.ClaudeCodeLLM(
+    handler = provider.NativeCLILLM(
         cli_path=sys.executable, timeout_seconds=constructor
     )
     monkeypatch.setattr(
@@ -162,7 +165,7 @@ def test_native_allowance_has_no_implicit_default_and_preserves_explicit_caps(
     )
     dispatch = Mock(return_value=ParseResult(True, "ok", cli_binary="opencode"))
     monkeypatch.setattr(native, "run_opencode", dispatch)
-    handler.completion(timeout=budget)
+    handler.completion(model="local-cli/" + "opencode", timeout=budget)
     assert dispatch.call_args.kwargs["timeout_seconds"] == expected
 
 
@@ -171,22 +174,26 @@ def test_native_allowance_has_no_implicit_default_and_preserves_explicit_caps(
     "timeout", [None, True, "3", 0, -1, float("inf"), float("nan"), 2**1024]
 )
 def test_native_invalid_budget_cannot_launch(monkeypatch, timeout):
-    monkeypatch.setenv("CLAUDE_SMART_HOST", "opencode")
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/" + "opencode")
     dispatch = Mock()
     monkeypatch.setattr(native, "run_opencode", dispatch)
     with pytest.raises(ValueError, match="finite positive timeout"):
-        provider.ClaudeCodeLLM(cli_path=sys.executable).completion(timeout=timeout)
+        provider.NativeCLILLM(cli_path=sys.executable).completion(
+            model="local-cli/" + "opencode", timeout=timeout
+        )
     dispatch.assert_not_called()
 
 
 @pytest.mark.unit
 def test_native_async_handler_keeps_the_selected_budget(monkeypatch):
-    monkeypatch.setenv("CLAUDE_SMART_HOST", "opencode")
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/" + "opencode")
     monkeypatch.delenv("CLAUDE_SMART_CLI_TIMEOUT", raising=False)
     dispatch = Mock(return_value=ParseResult(True, "ok", cli_binary="opencode"))
     monkeypatch.setattr(native, "run_opencode", dispatch)
     response = asyncio.run(
-        provider.ClaudeCodeLLM(cli_path=sys.executable).acompletion(timeout=0.25)
+        provider.NativeCLILLM(cli_path=sys.executable).acompletion(
+            model="local-cli/" + "opencode", timeout=0.25
+        )
     )
     assert response.choices[0].message.content == "ok"
     assert dispatch.call_args.kwargs["timeout_seconds"] == 0.25
@@ -240,10 +247,12 @@ def test_bridge_symlink_is_discriminated_before_native_path_canonicalization(
         pytest.skip("POSIX symlink name contract; native Windows exe tested separately")
     bridge = tmp_path / "opencode-claude-compat"
     bridge.symlink_to(sys.executable)
-    monkeypatch.setenv("CLAUDE_SMART_HOST", "opencode")
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/" + "opencode")
     legacy = Mock(return_value=ParseResult(True, "ok"))
     monkeypatch.setattr(provider, "_run_claude_stream", legacy)
-    provider.ClaudeCodeLLM(cli_path=str(bridge)).completion(timeout=0.25)
+    provider.NativeCLILLM(cli_path=str(bridge)).completion(
+        model="local-cli/" + "opencode", timeout=0.25
+    )
     assert legacy.call_args.kwargs["cli_path"] == str(bridge)
 
 
@@ -322,11 +331,13 @@ def test_every_cli_protocol_uses_caller_budget(
     monkeypatch, host, bridge, budget, cap, constructor, expected
 ):
     monkeypatch.setenv("CLAUDE_SMART_HOST", host)
+    target = "local-cli/" + ("opencode" if bridge else host)
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", target)
     if cap is None:
         monkeypatch.delenv("CLAUDE_SMART_CLI_TIMEOUT", raising=False)
     else:
         monkeypatch.setenv("CLAUDE_SMART_CLI_TIMEOUT", cap)
-    handler = provider.ClaudeCodeLLM(
+    handler = provider.NativeCLILLM(
         cli_path="opencode-claude-compat" if bridge else sys.executable,
         timeout_seconds=constructor,
     )
@@ -335,7 +346,7 @@ def test_every_cli_protocol_uses_caller_budget(
     )
     dispatch = Mock(return_value=ParseResult(True, "ok"))
     monkeypatch.setattr(provider, "_run_cli_stream", dispatch)
-    handler.completion(timeout=budget)
+    handler.completion(model=target, timeout=budget)
     assert dispatch.call_args.kwargs["timeout_seconds"] == expected
 
 
@@ -345,32 +356,36 @@ def test_every_cli_protocol_uses_caller_budget(
     "budget", [None, True, "private-duration", 0, -1, float("inf"), float("nan")]
 )
 def test_explicit_invalid_cli_budget_refuses_before_launch(monkeypatch, host, budget):
-    monkeypatch.setenv("CLAUDE_SMART_HOST", host)
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/" + host)
     dispatch = Mock()
     monkeypatch.setattr(provider, "_run_cli_stream", dispatch)
     with pytest.raises(ValueError, match="finite positive timeout") as failure:
-        provider.ClaudeCodeLLM(cli_path=sys.executable).completion(timeout=budget)
+        provider.NativeCLILLM(cli_path=sys.executable).completion(
+            model="local-cli/" + host, timeout=budget
+        )
     assert "private-duration" not in str(failure.value)
     dispatch.assert_not_called()
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("transport", [None, "claude-code", "openai"])
+@pytest.mark.parametrize("transport", [None, "local-cli", "openai"])
 def test_native_parent_rejects_invalid_budget_without_retargeting_http(
     monkeypatch, transport
 ):
     from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
-    monkeypatch.setenv("CLAUDE_SMART_HOST", "claude-code")
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/" + "claude-code")
     monkeypatch.delenv("CLAUDE_SMART_CODEX_PATH", raising=False)
-    client = LiteLLMClient(LiteLLMConfig(model="claude-code/default", timeout=2))
+    client = LiteLLMClient(LiteLLMConfig(model="local-cli/" + "claude-code", timeout=2))
     options = {"timeout": "private-duration"}
     if transport:
         options["custom_llm_provider"] = transport
     if transport == "openai":
-        params, *_ = client._build_completion_params([], **options)
-        assert params["timeout"] == "private-duration"
+        from reflexio.server.llm._litellm_types import ProviderRequestGuardError
+
+        with pytest.raises(ProviderRequestGuardError, match="transport"):
+            client._build_completion_params([], **options)
     else:
         with pytest.raises(ValueError, match="finite positive timeout") as failure:
             client._build_completion_params([], **options)
@@ -382,12 +397,12 @@ def test_invalid_portable_cli_cap_refuses_in_parent_before_fallback(monkeypatch)
     from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
-    monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/" + "codex")
     monkeypatch.delenv("CLAUDE_SMART_CODEX_PATH", raising=False)
     monkeypatch.setenv("CLAUDE_SMART_CLI_TIMEOUT", "private-duration")
     client = LiteLLMClient(
         LiteLLMConfig(
-            model="claude-code/default", timeout=2, fallback_models=["gpt-4o-mini"]
+            model="local-cli/" + "codex", timeout=2, fallback_models=["gpt-4o-mini"]
         )
     )
     dispatch = Mock()
@@ -544,12 +559,12 @@ def test_bare_selection_honors_path_instead_of_working_directory(
         path.chmod(0o755)
     monkeypatch.chdir(cwd)
     monkeypatch.setenv("PATH", str(bins))
-    monkeypatch.setenv("CLAUDE_SMART_HOST", "opencode")
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/" + "opencode")
     monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", name)
     if selection == "automatic":
         monkeypatch.delenv("CLAUDE_SMART_CLI_PATH")
     result = (
-        provider._resolve_cli_path()
+        provider._resolve_cli_path("opencode")
         if selection != "native"
         else native.resolve_executable(name)
     )
@@ -557,7 +572,7 @@ def test_bare_selection_honors_path_instead_of_working_directory(
     assert Path(result) == bins / name
     (bins / name).unlink()
     if selection != "native":
-        assert provider._resolve_cli_path() is None
+        assert provider._resolve_cli_path("opencode") is None
     else:
         with pytest.raises(native.OpenCodeCLIError):
             native.resolve_executable(name)
@@ -571,11 +586,11 @@ def test_invalid_explicit_override_cannot_retarget_to_default_path(
     fallback.write_text("owned fallback; never executed")
     fallback.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setenv("CLAUDE_SMART_HOST", "opencode")
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/" + "opencode")
     monkeypatch.setenv(
         "CLAUDE_SMART_CLI_PATH", str(tmp_path / "private-canary-missing")
     )
-    assert provider._resolve_cli_path() is None
+    assert provider._resolve_cli_path("opencode") is None
     assert (
         "CLAUDE_SMART_CLI_PATH" in caplog.text and "private-canary" not in caplog.text
     )

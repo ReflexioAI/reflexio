@@ -39,7 +39,7 @@ def remaining_assistant_time(deadline: float) -> float:
 
 def run_native_assistant(request: NativeAssistantRequest, deadline: float) -> str:
     """Own the immediate CLI child; arbitrary wrappers retain descendant limits."""
-    from reflexio.server.llm.providers.claude_code_provider import (
+    from reflexio.server.llm.providers.native_cli_provider import (
         ClaudeCodeCLIError,
         ClaudeCodeCLITimeoutError,
         _run_codex_stream,

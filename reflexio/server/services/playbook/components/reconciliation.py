@@ -312,7 +312,7 @@ class Reconciler:
                 *client.get_completion_model_ladder(),
             )
             if any(
-                name.partition("/")[0] in {"claude-code", "openclaw"} for name in models
+                name.partition("/")[0] in {"local-cli", "openclaw"} for name in models
             ):
                 # The window executor preserves these opaque host adapters.
                 # They cannot claim native capacity, but still use this audit

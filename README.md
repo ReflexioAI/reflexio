@@ -342,6 +342,7 @@ cost improvements; measure those separately.
 
 - OpenAI and Azure OpenAI, Anthropic, OpenRouter, Google Gemini, MiniMax, DeepSeek, DashScope/Qwen, Zhipu AI/GLM, Moonshot/Kimi, xAI/Grok, and custom OpenAI-compatible endpoints
 - Powered by LiteLLM — configure your preferred provider via API keys or custom endpoints
+- [Native CLI model selection and explicit upgrades](docs/native-cli-model-selection.md)
 - [OpenAI-compatible gateway configuration and verified limits](developer.md#openai-compatible-gateways-including-orcarouter-492)
 
 DashScope's optional `api_key_config.dashscope.api_base` uses the same HTTP URL

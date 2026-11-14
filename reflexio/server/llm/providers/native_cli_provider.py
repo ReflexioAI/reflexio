@@ -1,13 +1,13 @@
-"""Claude Code CLI as a LiteLLM custom provider.
+"""Operator-authorized native CLI as a LiteLLM custom provider.
 
-Routes ``litellm.completion(model="claude-code/...", ...)`` through the
+Routes ``litellm.completion(model="local-cli/<host>[/model]", ...)`` through the
 user's locally-installed ``claude`` CLI (the Claude Code binary), so
 reflexio's extractors can run with no external LLM API key — they reuse
 whatever auth the user already has for Claude Code.
 
-Activation is opt-in via ``CLAUDE_SMART_USE_LOCAL_CLI=1``. Without it,
-the provider does not register and reflexio falls back to its normal
-OpenAI/Anthropic/etc. provider priority.
+One REFLEXIO_NATIVE_CLI_MODEL binds the permitted host and physical-model
+selection. Registration grants no authority; every completion checks the exact
+operator target. Omitted model delegates to the selected CLI's own default.
 
 Structured output: when callers pass a Pydantic ``response_format``,
 the JSON schema is appended to the system prompt instructing the CLI
@@ -34,7 +34,7 @@ from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import litellm
 from litellm.llms.custom_llm import CustomLLM
@@ -47,13 +47,19 @@ from litellm.types.utils import (
     Usage,
 )
 
-from reflexio.server.env_utils import env_str, env_truthy
+from reflexio.server.env_utils import env_str
 from reflexio.server.llm._litellm_types import LLMHardTimeoutError
 from reflexio.server.llm._native_cli import (
     native_cli_directory,
     remaining_native_time,
     request_timeout_seconds,
     run_native_cli,
+)
+from reflexio.server.llm._native_model_ref import (
+    PROVIDER_KEY,
+    NativeModelRef,
+    authorize_native_model,
+    reject_native_selection,
 )
 from reflexio.server.llm.providers.claude_code_stream_parser import (
     ParseResult,
@@ -76,13 +82,10 @@ from reflexio.server.llm.providers.cli_tool_protocol import (
 
 _LOGGER = logging.getLogger(__name__)
 
-PROVIDER_KEY = "claude-code"
-ENV_ENABLE = "CLAUDE_SMART_USE_LOCAL_CLI"
+
 _ENV_CLI_PATH = "CLAUDE_SMART_CLI_PATH"
-_ENV_HOST = "CLAUDE_SMART_HOST"
 _RETIRED_CODEX_PATH = "CLAUDE_SMART_CODEX_PATH"
 _ENV_TIMEOUT = "CLAUDE_SMART_CLI_TIMEOUT"
-_ENV_MODEL = "CLAUDE_SMART_CLI_MODEL"
 _HOST_CODEX = "codex"
 _HOST_CLAUDE_CODE = "claude-code"
 _HOST_OPENCODE = "opencode"
@@ -122,26 +125,9 @@ def _diagnostic_excerpt(text: str, limit: int = 500) -> str:
     return compact[:limit]
 
 
-def _env_enabled() -> bool:
-    """Return True when ``CLAUDE_SMART_USE_LOCAL_CLI`` is set to a truthy value.
-
-    Returns:
-        bool: True if the opt-in env var is set, False otherwise.
-    """
-    raw = os.environ.get(ENV_ENABLE)
-    return bool(raw) and env_truthy(raw)
-
-
-def _host() -> str:
-    """Return the host that owns this backend process."""
-    selected = os.environ.get(_ENV_HOST)
-    return selected if selected in (_HOST_CODEX, _HOST_OPENCODE) else _HOST_CLAUDE_CODE
-
-
-def _cli_name() -> str:
-    """Return the expected local CLI binary for the active host."""
-    selected = _host()
-    return "claude" if selected == _HOST_CLAUDE_CODE else selected
+def _cli_name(host: str) -> str:
+    """Map the validated host identity to its executable name."""
+    return "claude" if host == _HOST_CLAUDE_CODE else host
 
 
 def _compat_host(cli_path: str) -> str | None:
@@ -183,7 +169,7 @@ def _resolve_cli_override_path(cli_path: str) -> str:
     return cli_path
 
 
-def _resolve_cli_path() -> str | None:
+def _resolve_cli_path(host: str) -> str | None:
     """Return the path to the active host CLI, or None if unavailable.
 
     Honours the ``CLAUDE_SMART_CLI_PATH`` override before falling back to
@@ -193,14 +179,17 @@ def _resolve_cli_path() -> str | None:
         str | None: Absolute path to the CLI, or None if not found.
     """
     override = os.environ.get(_ENV_CLI_PATH)
-    if _host() == _HOST_OPENCODE:
+    if host == _HOST_OPENCODE:
         from reflexio.server.llm.providers._opencode_cli import (
             OpenCodeCLIError,
             resolve_executable,
         )
 
         try:
-            return str(resolve_executable(override or "opencode"))
+            selected = override or "opencode"
+            if override and _compat_host(override):
+                selected = _resolve_cli_override_path(override)
+            return str(resolve_executable(selected))
         except OpenCodeCLIError:
             if override:
                 _LOGGER.warning(
@@ -215,20 +204,20 @@ def _resolve_cli_path() -> str | None:
             "%s is not an executable file; falling back to PATH",
             _ENV_CLI_PATH,
         )
-    if _host() == _HOST_CODEX:
+    if host == _HOST_CODEX:
         return shutil.which("codex")
     return shutil.which("claude")
 
 
-def _codex_migration_error(explicit_path: str | None = None) -> str | None:
+def _codex_migration_error(host: str, explicit_path: str | None = None) -> str | None:
     """Inspect obsolete intent without ever resolving its executable value."""
     canonical = explicit_path or os.environ.get(_ENV_CLI_PATH)
     if canonical and Path(canonical).name.lower() in _RETIRED_CODEX_BRIDGES:
         return (
-            "Codex compatibility bridge is retired. Select CLAUDE_SMART_HOST=codex "
+            "Codex compatibility bridge is retired. Select local-cli/codex "
             "and use the native executable through CLAUDE_SMART_CLI_PATH or PATH."
         )
-    if _host() != _HOST_CODEX or not env_str(_RETIRED_CODEX_PATH):
+    if host != _HOST_CODEX or not env_str(_RETIRED_CODEX_PATH):
         return None
     # Constructor paths already dominated all environment selection. A valid
     # canonical env override also dominated the old key; preserve that choice.
@@ -245,37 +234,18 @@ def _codex_migration_error(explicit_path: str | None = None) -> str | None:
     )
 
 
-def reject_retired_codex_selection(explicit_path: str | None = None) -> None:
-    """Refuse active obsolete selection only when this CLI route is reached."""
-    message = _codex_migration_error(explicit_path)
+def validate_native_selection(host: str, explicit_path: str | None = None) -> None:
+    """Refuse obsolete or conflicting known runtime selection before dispatch."""
+    message = _codex_migration_error(host, explicit_path)
     if message:
-        raise ValueError(message)
-
-
-def has_pending_codex_migration() -> bool:
-    """Reserve enabled native intent even without a usable binary.
-
-    Availability and selection differ: deleting an old target cannot select a
-    paid HTTP provider merely because the native executable is missing.
-    """
-    return _env_enabled() and _codex_migration_error() is not None
-
-
-def is_claude_code_available() -> bool:
-    """Return True when the local CLI provider is usable right now.
-
-    Both opt-in and a resolvable CLI path are required, without pending
-    migration. Default selection reserves obsolete native intent separately.
-
-    Returns:
-        bool: True iff ``CLAUDE_SMART_USE_LOCAL_CLI`` is truthy AND a
-            host CLI is resolvable.
-    """
-    return (
-        _env_enabled()
-        and _codex_migration_error() is None
-        and _resolve_cli_path() is not None
-    )
+        reject_native_selection(message)
+    path = explicit_path or env_str(_ENV_CLI_PATH)
+    bridge_host = _compat_host(path) if path else None
+    if bridge_host is not None and bridge_host != host:
+        reject_native_selection(
+            "Configured bridge runtime conflicts with the operator native target. "
+            "OpenCode bridges require a local-cli/opencode reference."
+        )
 
 
 def _flatten_content(content: Any) -> str:
@@ -429,7 +399,8 @@ def _run_cli_stream(
     system_prompt: str,
     dialogue: str,
     timeout_seconds: float,
-    host: str | None = None,
+    host: str,
+    model: str | None,
 ) -> ParseResult:
     """Invoke the active host CLI and return a ParseResult.
 
@@ -446,7 +417,7 @@ def _run_cli_stream(
     Raises:
         ClaudeCodeCLIError: On timeout or missing binary.
     """
-    reject_retired_codex_selection(cli_path)
+    validate_native_selection(host, cli_path)
     bridge = _compat_host(cli_path)
     if bridge:
         return replace(
@@ -455,10 +426,11 @@ def _run_cli_stream(
                 system_prompt=system_prompt,
                 dialogue=dialogue,
                 timeout_seconds=timeout_seconds,
+                model=model,
             ),
             cli_binary=bridge,
         )
-    selected = host or _host()
+    selected = host
     if selected == _HOST_OPENCODE:
         from reflexio.server.llm.providers._opencode_cli import (
             OpenCodeCLIError,
@@ -470,7 +442,7 @@ def _run_cli_stream(
                 cli_path=cli_path,
                 system_prompt=system_prompt,
                 dialogue=dialogue,
-                model=env_str(_ENV_MODEL) or None,
+                model=model,
                 timeout_seconds=timeout_seconds,
             )
         except OpenCodeCLIError as exc:
@@ -481,13 +453,14 @@ def _run_cli_stream(
             system_prompt=system_prompt,
             dialogue=dialogue,
             deadline=time.monotonic() + request_timeout_seconds(timeout_seconds),
-            model=env_str(_ENV_MODEL) or None,
+            model=model,
         )
     return _run_claude_stream(
         cli_path=cli_path,
         system_prompt=system_prompt,
         dialogue=dialogue,
         timeout_seconds=timeout_seconds,
+        model=model,
     )
 
 
@@ -497,9 +470,9 @@ def _run_claude_stream(
     system_prompt: str,
     dialogue: str,
     timeout_seconds: float,
+    model: str | None,
 ) -> ParseResult:
     """Invoke ``claude -p --output-format stream-json`` and return a ParseResult."""
-    model = env_str(_ENV_MODEL)
     inline_system_prompt = (
         _is_windows() and len(system_prompt) > _WINDOWS_ARGV_SYSTEM_PROMPT_LIMIT
     )
@@ -554,7 +527,7 @@ def _run_claude_stream(
         parse_stream_json(
             proc.stdout, exit_code=proc.returncode, stderr_text=proc.stderr
         ),
-        cli_binary=_cli_name(),
+        cli_binary="claude",
     )
 
 
@@ -588,7 +561,7 @@ def _run_codex_stream(
             cmd.extend(["--model", model])
         cmd.append("-")
         env = os.environ.copy()
-        env[_ENV_HOST] = _HOST_CODEX
+        env["CLAUDE_SMART_HOST"] = _HOST_CODEX
         env["CLAUDE_SMART_INTERNAL"] = "1"
         if optimizer:
             env["CLAUDE_CODE_ENTRYPOINT"] = "optimizer"
@@ -657,7 +630,7 @@ def _build_model_response(
 
     Args:
         model (str): The model string originally requested
-            (e.g. ``claude-code/default``). Populates the public LiteLLM
+            (e.g. ``local-cli/codex/owned-model``). Populates the public LiteLLM
             ``ModelResponse.model`` field the same way other providers do.
         terminal_text (str): The terminal ``result`` text from the CLI.
         elapsed_seconds (float): Wall time the subprocess took — for logging only.
@@ -823,7 +796,7 @@ def resolve_cli_request_timeout(
     return min(timeout, cap)
 
 
-class ClaudeCodeLLM(CustomLLM):
+class NativeCLILLM(CustomLLM):
     """LiteLLM custom handler routing completions through the ``claude`` CLI."""
 
     def __init__(
@@ -847,7 +820,7 @@ class ClaudeCodeLLM(CustomLLM):
         self._explicit_timeout = timeout_seconds
         self._storage = storage
 
-    def _cli_path(self) -> str:
+    def _cli_path(self, host: str) -> str:
         """Resolve the CLI path, raising when unavailable.
 
         Returns:
@@ -856,11 +829,11 @@ class ClaudeCodeLLM(CustomLLM):
         Raises:
             ClaudeCodeCLIError: If the CLI cannot be located.
         """
-        reject_retired_codex_selection(self._explicit_cli_path)
-        path = self._explicit_cli_path or _resolve_cli_path()
+        validate_native_selection(host, self._explicit_cli_path)
+        path = self._explicit_cli_path or _resolve_cli_path(host)
         if not path:
             raise ClaudeCodeCLIError(
-                f"{_cli_name()} CLI not found for {_host()}. Install the host "
+                f"{_cli_name(host)} CLI not found for {host}. Install the host "
                 f"CLI or set {_ENV_CLI_PATH} to an executable path."
             )
         return path
@@ -884,7 +857,7 @@ class ClaudeCodeLLM(CustomLLM):
     def completion(  # type: ignore[override]
         self,
         *args: Any,
-        model: str = "claude-code/default",
+        model: str,
         messages: list[dict[str, Any]] | None = None,
         optional_params: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -893,7 +866,7 @@ class ClaudeCodeLLM(CustomLLM):
 
         Args:
             *args: Ignored; LiteLLM may pass ``model_response`` positionally.
-            model: The requested model slug (e.g. ``claude-code/default``).
+            model: The requested model slug (e.g. ``local-cli/codex/owned-model``).
             messages: LiteLLM-style chat messages.
             optional_params: LiteLLM's bag of generation params — checked for
                 ``response_format`` and logged when unsupported knobs are set.
@@ -907,6 +880,9 @@ class ClaudeCodeLLM(CustomLLM):
             ClaudeCodeCLIError: On CLI failure or missing binary.
         """
         del args
+        # LiteLLM strips the outer provider prefix before invoking CustomLLM.
+        target = cast(NativeModelRef, authorize_native_model(model, PROVIDER_KEY))
+        model = target.reference
         messages = messages or []
         optional_params = optional_params or {}
 
@@ -930,8 +906,8 @@ class ClaudeCodeLLM(CustomLLM):
         else:
             system_prompt = _maybe_append_schema(system_prompt, response_format)
 
-        cli_path = self._cli_path()
-        host = _host()
+        host = target.host
+        cli_path = self._cli_path(host)
         timeout = (
             resolve_cli_request_timeout(request_timeout, self._explicit_timeout)
             if has_request_timeout
@@ -945,6 +921,7 @@ class ClaudeCodeLLM(CustomLLM):
             dialogue=dialogue,
             timeout_seconds=timeout,
             host=host,
+            model=target.model,
         )
 
         if result.success:
@@ -1062,56 +1039,29 @@ class ClaudeCodeLLM(CustomLLM):
         return await asyncio.to_thread(self.completion, *args, **kwargs)
 
 
-_REGISTERED = False
-_HANDLER: ClaudeCodeLLM | None = None
+_HANDLER: NativeCLILLM | None = None
 
 
-def register_if_enabled(storage: Any | None = None) -> bool:
-    """Register an enabled CLI provider or reserve its pending migration intent.
+def register_native_provider(storage: Any | None = None) -> bool:
+    """Register a name resolver, never a grant to execute a native account.
 
-    Idempotent — safe to call more than once per process. Opt-in via
-    ``CLAUDE_SMART_USE_LOCAL_CLI=1``. Skips registration (with a warning)
-    when no usable CLI or pending migration exists.
-
-    Args:
-        storage (Any | None): Optional BaseStorage-shaped handle used by the
-            provider to persist stall_state on credit/auth failures. The
-            caller (``LiteLLMClient`` import-time wiring) typically has no
-            storage available, so use :func:`set_storage` to late-bind it
-            once a request context exists.
-
-    Returns:
-        bool: True if the provider is registered after this call.
+    Each completion authorizes the exact operator target before path lookup.
+    Registration is unconditional so invalid native intent cannot fall through
+    to implicit HTTP autodetection, including in spawned workers.
     """
-    global _REGISTERED, _HANDLER
-    if _REGISTERED:
-        if storage is not None and _HANDLER is not None:
-            _HANDLER._storage = storage
-        return True
-    if not _env_enabled():
-        return False
-    pending_migration = has_pending_codex_migration()
-    cli_path = None if pending_migration else _resolve_cli_path()
-    if not cli_path and not pending_migration:
-        _LOGGER.warning(
-            "%s=1 is set but the %s CLI is not available for %s. "
-            "Install the host CLI or set %s; skipping provider registration.",
-            ENV_ENABLE,
-            _cli_name(),
-            _host(),
-            _ENV_CLI_PATH,
-        )
-        return False
-
+    global _HANDLER
     existing = list(getattr(litellm, "custom_provider_map", None) or [])
-    if any(entry.get("provider") == PROVIDER_KEY for entry in existing):
-        _REGISTERED = True
-        return True
-    _HANDLER = ClaudeCodeLLM(storage=storage)
+    for entry in existing:
+        if entry.get("provider") == PROVIDER_KEY:
+            handler = entry.get("custom_handler")
+            if isinstance(handler, NativeCLILLM):
+                _HANDLER = handler
+                if storage is not None:
+                    handler._storage = storage
+            return True
+    _HANDLER = NativeCLILLM(storage=storage)
     existing.append({"provider": PROVIDER_KEY, "custom_handler": _HANDLER})
     litellm.custom_provider_map = existing
-    _REGISTERED = True
-    _LOGGER.info("Registered %s LiteLLM provider (cli=%s)", PROVIDER_KEY, cli_path)
     return True
 
 
@@ -1133,11 +1083,9 @@ def set_storage(storage: Any) -> None:
 
 
 __all__ = [
-    "ENV_ENABLE",
     "PROVIDER_KEY",
     "ClaudeCodeCLIError",
-    "ClaudeCodeLLM",
-    "is_claude_code_available",
-    "register_if_enabled",
+    "NativeCLILLM",
+    "register_native_provider",
     "set_storage",
 ]

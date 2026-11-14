@@ -88,8 +88,8 @@ provider; a local model uses the separate inference service. The service URL
 owns process attachment: an explicit URL, including loopback, attaches to an
 existing service; an absent URL leaves the launcher responsible for its child.
 Dependency availability advertises capability without loading a model. It never
-authorizes generation or authenticated CLI access. `CLAUDE_SMART_USE_LOCAL_CLI`
-and the OpenClaw CLI opt-in retain their separate credential-access decisions.
+authorizes generation or authenticated CLI access. `REFLEXIO_NATIVE_CLI_MODEL`
+and the OpenClaw CLI opt-in retain separate credential-access decisions.
 
 `CLAUDE_SMART_USE_LOCAL_EMBEDDING` is retired. Normal loading rejects active
 assignments, including empty ones and those alongside a canonical setting.
@@ -1725,8 +1725,11 @@ connection lease or introduce a runtime alias.
 
 ### Native provider CLI ownership
 
-The existing `claude-code/` provider can execute OpenCode directly with
-`CLAUDE_SMART_HOST=opencode` and `CLAUDE_SMART_USE_LOCAL_CLI=1`. Set the existing
+The `local-cli/` provider binds one operator-owned native target through
+`REFLEXIO_NATIVE_CLI_MODEL`, such as `local-cli/opencode/provider/model#high`.
+Requests must match that full reference before any native work. See the
+[selection and explicit-upgrade contract](docs/native-cli-model-selection.md).
+Set the existing
 `CLAUDE_SMART_CLI_PATH` to its native executable, or let PATH resolve `opencode`.
 Relative executable paths are anchored before entering the private workdir.
 Windows native execution requires the actual `.exe`; batch shims continue to
@@ -1742,22 +1745,26 @@ constructor or `CLAUDE_SMART_CLI_TIMEOUT` caps remain supported and tighten that
 budget (constructor wins for direct calls); no provider duration default shortens
 a supplied budget. SDK worker admission validates the portable environment cap;
 constructor-only bindings are not carried into spawned workers.
-The existing `CLAUDE_SMART_CLI_MODEL` chooses an explicit native model; unset
-delegates to OpenCode. The opaque `claude-code/` request label never chooses a
-native model or proves which model served the response.
+The explicit native reference carries the physical model selection. A
+host-only reference delegates to that CLI's own default; an explicit suffix
+`/default` remains a literal model ID. The requested reference never proves
+which model physically served the response.
 
 Codex spends its selected deadline on setup, native execution and reading its
 final output. Setup cannot grant a fresh allowance, and a result read after
 expiry is a timeout.
 
-Native Codex (`CLAUDE_SMART_HOST=codex`) also forwards the existing
-`CLAUDE_SMART_CLI_MODEL` as `codex exec --model`. Unset or blank leaves model
-selection to Codex. This matches the plugin bridge's saved learning-model
-selection without deriving a model from the opaque LiteLLM role label. The
-requested model does not establish observed model/provider provenance.
+Native Codex (`local-cli/codex[/model]`) forwards an explicit model remainder
+as `codex exec --model`; host-only selection leaves model choice to Codex.
+Legacy `claude-code/*` suffixes were opaque role labels and cannot be converted
+into physical models by guessing. Adopt the new native reference explicitly.
+The requested model does not establish observed model/provider provenance.
 
-The plugin's Codex learning producers now use the SDK's native adapter. Codex
-uses the canonical `CLAUDE_SMART_CLI_PATH` or PATH; `CLAUDE_SMART_CODEX_PATH`
+An explicitly configured optimizer script/compile result retains its separate
+native authority and saved learning-model selection. Released plugin bundles
+remain on their existing pinned SDK until a matching producer migration is
+qualified; this SDK change does not update or migrate installed plugin files.
+Codex uses the canonical `CLAUDE_SMART_CLI_PATH` or PATH; `CLAUDE_SMART_CODEX_PATH`
 no longer selects an executable, and plugin installation roots no longer
 select a bridge. Active obsolete selection refuses when the native route is
 reached, before dispatch, retries or paid fallback. Move the intended executable
