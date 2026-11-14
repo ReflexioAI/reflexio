@@ -1,5 +1,6 @@
 """Obsolete native selection cannot silently change a route or executable."""
 
+import importlib
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
@@ -218,3 +219,15 @@ def test_registration_reserves_pending_intent_without_resolving_old_value(
     assert provider._HANDLER is not None
     with pytest.raises(ValueError, match=LEGACY):
         provider._HANDLER.completion()
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        "reflexio.server.services.offline_tuner.open_world.shared_compaction",
+        "reflexio.server.services.offline_tuner.open_world.analyst",
+        "reflexio.server.services.offline_tuner.open_world.rule_evidence_v2",
+    ],
+)
+def test_native_transport_consumers_remain_importable(module):
+    importlib.import_module(module)
