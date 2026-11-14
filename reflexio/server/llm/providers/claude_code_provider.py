@@ -48,8 +48,10 @@ from litellm.types.utils import (
 )
 
 from reflexio.server.env_utils import env_str, env_truthy
+from reflexio.server.llm._litellm_types import LLMHardTimeoutError
 from reflexio.server.llm._native_cli import (
     native_cli_directory,
+    remaining_native_time,
     request_timeout_seconds,
     run_native_cli,
 )
@@ -466,7 +468,7 @@ def _run_cli_stream(
             codex_path=cli_path,
             system_prompt=system_prompt,
             dialogue=dialogue,
-            timeout_seconds=timeout_seconds,
+            deadline=time.monotonic() + request_timeout_seconds(timeout_seconds),
             model=env_str(_ENV_MODEL) or None,
         )
     return _run_claude_stream(
@@ -549,43 +551,44 @@ def _run_codex_stream(
     codex_path: str,
     system_prompt: str,
     dialogue: str,
-    timeout_seconds: float,
+    deadline: float,
     model: str | None = None,
     optimizer: bool = False,
 ) -> ParseResult:
-    """Invoke ``codex exec`` and shape its output like a terminal stream result."""
-    output_path = _temporary_output_path()
-    cmd = [
-        codex_path,
-        "exec",
-        "--sandbox",
-        "read-only",
-        "--skip-git-repo-check",
-        "--ephemeral",
-        "--ignore-rules",
-        "--output-last-message",
-        str(output_path),
-    ]
-    # A role label such as claude-code/default is not a native model selector.
-    if model:
-        cmd.extend(["--model", model])
-    cmd.append("-")
-
-    env = os.environ.copy()
-    env[_ENV_HOST] = _HOST_CODEX
-    env["CLAUDE_SMART_INTERNAL"] = "1"
-    if optimizer:
-        env["CLAUDE_CODE_ENTRYPOINT"] = "optimizer"
-
+    """Spend one absolute deadline on Codex setup, execution and output reads."""
+    output_path: Path | None = None
     try:
-        proc = run_native_cli(  # noqa: S603 — cmd is constructed from validated parts.
+        remaining_native_time(deadline)
+        output_path = _temporary_output_path()
+        cmd = [
+            codex_path,
+            "exec",
+            "--sandbox",
+            "read-only",
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--ignore-rules",
+            "--output-last-message",
+            str(output_path),
+        ]
+        # A role label such as claude-code/default is not a native model selector.
+        if model:
+            cmd.extend(["--model", model])
+        cmd.append("-")
+        env = os.environ.copy()
+        env[_ENV_HOST] = _HOST_CODEX
+        env["CLAUDE_SMART_INTERNAL"] = "1"
+        if optimizer:
+            env["CLAUDE_CODE_ENTRYPOINT"] = "optimizer"
+        prompt = _codex_prompt(prompt=dialogue, system_prompt=system_prompt)
+        proc = run_native_cli(  # noqa: S603 — fixed protocol plus selected executable/model.
             cmd,
-            input=_codex_prompt(prompt=dialogue, system_prompt=system_prompt),
+            input=prompt,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace" if _is_windows() else "strict",
-            timeout=timeout_seconds,
+            timeout=remaining_native_time(deadline),
             check=False,
             env=env,
         )
@@ -593,18 +596,16 @@ def _run_codex_stream(
             terminal_text = output_path.read_text(encoding="utf-8").strip()
         except OSError:
             terminal_text = ""
-    except subprocess.TimeoutExpired as exc:
-        raise ClaudeCodeCLITimeoutError(
-            f"codex CLI timed out after {timeout_seconds}s"
-        ) from exc
+        remaining_native_time(deadline)
+    except (subprocess.TimeoutExpired, LLMHardTimeoutError) as exc:
+        raise ClaudeCodeCLITimeoutError("codex CLI timed out") from exc
     except FileNotFoundError as exc:
         raise ClaudeCodeCLIError(f"codex CLI not found at {codex_path}") from exc
     finally:
         # Delegated output belongs to the parent until native reaping completes.
-        if native_cli_directory() is None:
+        if output_path is not None and native_cli_directory() is None:
             with suppress(OSError):
                 output_path.unlink()
-
     return ParseResult(
         success=proc.returncode == 0 and bool(terminal_text),
         terminal_text=terminal_text,

@@ -43,7 +43,7 @@ def test_compiled_native_request_is_executed_by_sdk(tmp_path, monkeypatch):
         calls.append(kwargs)
         assert kwargs["model"] == "owned-model"
         assert kwargs["optimizer"] is True
-        assert 0 < kwargs["timeout_seconds"] <= 2
+        assert 0 < kwargs["deadline"] - time.monotonic() <= 2
         return ParseResult(True, "owned result")
 
     monkeypatch.setattr(provider, "_run_codex_stream", launch)
@@ -171,7 +171,7 @@ def test_caller_allowance_above_old_300_seconds_survives(tmp_path, monkeypatch):
         timeout=600,
     )
     assert assistant([], []) == "owned"
-    assert 300 < calls[0]["timeout_seconds"] <= 600
+    assert 300 < calls[0]["deadline"] - time.monotonic() <= 600
 
 
 @pytest.mark.parametrize("field", ["result", "response"])
@@ -447,3 +447,64 @@ def test_compiler_and_native_calls_reuse_retained_owner(
     if not delay:
         assert entry["ppid"] != result["worker_pid"]
         assert compiled["ppid"] != result["worker_pid"]
+
+
+def test_codex_setup_cannot_start_after_absolute_deadline(tmp_path, monkeypatch):
+    from reflexio.server.services.playbook_optimizer import assistant_native as native
+
+    now = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    output = tmp_path / "native-output"
+
+    def slow_setup():
+        output.touch()
+        now[0] = 3.0
+        return output
+
+    monkeypatch.setattr(provider, "_temporary_output_path", slow_setup)
+    launch = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
+    monkeypatch.setattr(provider, "run_native_cli", launch)
+    with pytest.raises(native.NativeAssistantError, match="timed out|expired"):
+        native.run_native_assistant(native.NativeAssistantRequest(**_request()), 2)
+    launch.assert_not_called()
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("protocol", ["codex", "claude-json"])
+def test_native_decoding_cannot_accept_expired_content(tmp_path, monkeypatch, protocol):
+    from reflexio.server.services.playbook_optimizer import assistant_native as native
+
+    now = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    output = tmp_path / "native-output"
+    output.touch()
+    if protocol == "codex":
+        monkeypatch.setattr(provider, "_temporary_output_path", lambda: output)
+        original_read = Path.read_text
+
+        def slow_read(path, *args, **kwargs):
+            if path == output:
+                now[0] = 3.0
+                return "owned reply"
+            return original_read(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", slow_read)
+        launch = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
+        monkeypatch.setattr(provider, "run_native_cli", launch)
+    else:
+        body = '{"result":"owned reply"}'
+        original_loads = json.loads
+
+        def slow_decode(value, *args, **kwargs):
+            if value == body:
+                now[0] = 3.0
+            return original_loads(value, *args, **kwargs)
+
+        monkeypatch.setattr(json, "loads", slow_decode)
+        launch = Mock(return_value=subprocess.CompletedProcess([], 0, body, ""))
+        monkeypatch.setattr(native, "run_native_cli", launch)
+    with pytest.raises(native.NativeAssistantError, match="timed out|expired"):
+        native.run_native_assistant(
+            native.NativeAssistantRequest(**_request(protocol=protocol)), 2
+        )
+    assert launch.call_count == 1, "expired completion was replayed"

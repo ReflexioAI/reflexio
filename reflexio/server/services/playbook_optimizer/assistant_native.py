@@ -5,13 +5,12 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import time
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from reflexio.server.llm._litellm_types import LLMHardTimeoutError
-from reflexio.server.llm._native_cli import run_native_cli
+from reflexio.server.llm._native_cli import remaining_native_time, run_native_cli
 
 
 class NativeAssistantError(Exception):
@@ -32,10 +31,10 @@ class NativeAssistantRequest(BaseModel):
 
 def remaining_assistant_time(deadline: float) -> float:
     """Spend one caller deadline across compilation, parsing and execution."""
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise NativeAssistantError("native assistant deadline expired")
-    return remaining
+    try:
+        return remaining_native_time(deadline)
+    except LLMHardTimeoutError:
+        raise NativeAssistantError("native assistant deadline expired") from None
 
 
 def run_native_assistant(request: NativeAssistantRequest, deadline: float) -> str:
@@ -47,6 +46,7 @@ def run_native_assistant(request: NativeAssistantRequest, deadline: float) -> st
     )
 
     try:
+        remaining_assistant_time(deadline)
         if request.protocol == "codex":
             result = _run_codex_stream(
                 codex_path=request.executable,
@@ -54,12 +54,15 @@ def run_native_assistant(request: NativeAssistantRequest, deadline: float) -> st
                 dialogue=request.dialogue,
                 model=request.model,
                 optimizer=True,
-                timeout_seconds=remaining_assistant_time(deadline),
+                deadline=deadline,
             )
             if not result.success:
                 raise NativeAssistantError("native assistant execution failed")
-            return result.terminal_text
-        return _run_claude_json(request, deadline)
+            content = result.terminal_text
+        else:
+            content = _run_claude_json(request, deadline)
+        remaining_assistant_time(deadline)
+        return content
     except (subprocess.TimeoutExpired, LLMHardTimeoutError, ClaudeCodeCLITimeoutError):
         raise NativeAssistantError("native assistant timed out") from None
     except ClaudeCodeCLIError:

@@ -1746,6 +1746,10 @@ The existing `CLAUDE_SMART_CLI_MODEL` chooses an explicit native model; unset
 delegates to OpenCode. The opaque `claude-code/` request label never chooses a
 native model or proves which model served the response.
 
+Codex spends its selected deadline on setup, native execution and reading its
+final output. Setup cannot grant a fresh allowance, and a result read after
+expiry is a timeout.
+
 Native Codex (`CLAUDE_SMART_HOST=codex`) also forwards the existing
 `CLAUDE_SMART_CLI_MODEL` as `codex exec --model`. Unset or blank leaves model
 selection to Codex. This matches the plugin bridge's saved learning-model
