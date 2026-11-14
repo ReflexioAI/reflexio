@@ -7,6 +7,8 @@ import pytest
 from reflexio.server.services.offline_tuner.evidence import manifests
 from reflexio.server.services.playbook import publication
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.mark.parametrize(
     "encode", [publication.canonical_json_bytes, manifests.canonical_json_bytes]
