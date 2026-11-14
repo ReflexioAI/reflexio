@@ -508,9 +508,9 @@ def test_every_timeout_exemption_names_a_real_route():
     the claude-smart#162 failure again. Derive the valid set from the app
     rather than trusting the keys.
     """
-    from fastapi.routing import APIRoute
+    from reflexio.server.route_inventory import api_route_contexts
 
-    declared = {r.path for r in create_app().routes if isinstance(r, APIRoute)}
+    declared = {r.path for r in api_route_contexts(create_app())}
     exempt = set(SYNC_REQUEST_PATHS) | set(ROUTE_BACKSTOP_SECONDS)
     assert declared, "create_app() exposed no routes; this guard would prove nothing"
     missing = sorted(exempt - declared)

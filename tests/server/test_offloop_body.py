@@ -25,12 +25,12 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
-from fastapi.routing import APIRoute
 from pydantic import BaseModel
 
 from reflexio.server import offloop_body
 from reflexio.server.api import _safe_request_validation_exception_handler, create_app
 from reflexio.server.offloop_body import _dependency, off_loop_body
+from reflexio.server.route_inventory import ApiRouteContext, api_route_contexts
 
 _HEADERS = {"User-Agent": "pytest-agent"}
 
@@ -56,7 +56,7 @@ def _bulk_fields(model: Any) -> list[str]:
     return bulk
 
 
-def _off_loop_model(route: APIRoute) -> type[BaseModel] | None:
+def _off_loop_model(route: ApiRouteContext) -> type[BaseModel] | None:
     """The model an ``off_loop_body`` dependency of this route validates, if any."""
     for dependency in route.dependant.dependencies:
         for body_param in dependency.body_params:
@@ -66,15 +66,15 @@ def _off_loop_model(route: APIRoute) -> type[BaseModel] | None:
     return None
 
 
-def _body_routes() -> list[APIRoute]:
+def _body_routes() -> list[ApiRouteContext]:
     return [
         route
-        for route in create_app().routes
-        if isinstance(route, APIRoute) and route.body_field is not None
+        for route in api_route_contexts(create_app())
+        if route.body_field is not None
     ]
 
 
-def _bulk_routes() -> list[tuple[APIRoute, type[BaseModel]]]:
+def _bulk_routes() -> list[tuple[ApiRouteContext, type[BaseModel]]]:
     found = []
     for route in _body_routes():
         model = route.body_field.field_info.annotation  # type: ignore[union-attr]
@@ -291,8 +291,8 @@ def test_publish_route_declares_its_body_after_its_dependencies() -> None:
     """Body errors still come after auth and the billing gate, as before."""
     route = next(
         route
-        for route in create_app().routes
-        if isinstance(route, APIRoute) and route.path == "/api/publish_interaction"
+        for route in api_route_contexts(create_app())
+        if route.path == "/api/publish_interaction"
     )
     calls = [dependency.call for dependency in route.dependant.dependencies]
     body = _dependency(_off_loop_model(route))  # type: ignore[arg-type]
