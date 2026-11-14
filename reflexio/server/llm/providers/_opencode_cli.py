@@ -15,6 +15,7 @@ from typing import Any
 from reflexio.server.llm._litellm_types import LLMHardTimeoutError
 from reflexio.server.llm._native_cli import (
     native_cli_directory,
+    remaining_native_time,
     request_timeout_seconds,
     run_native_cli,
 )
@@ -29,6 +30,40 @@ _AGENT = "claude-smart-extractor"
 
 class OpenCodeCLIError(RuntimeError):
     """Metadata-only transport failure; never includes captured model/error text."""
+
+
+def resolve_executable(cli_path: str) -> Path:
+    """Resolve only the selected path, preserving a bridge symlink's basename."""
+    path = Path(cli_path)
+    candidates = (
+        (Path(directory) / path for directory in os.get_exec_path())
+        if path.name == cli_path
+        else (path,)
+    )
+    for candidate in candidates:
+        # An absolute candidate prevents Windows' implicit current-directory
+        # search; which still supplies platform PATHEXT handling.
+        found = shutil.which(str(candidate.absolute()), path="")
+        if found:
+            return Path(found).absolute()
+    raise OpenCodeCLIError("OpenCode selected executable is unavailable")
+
+
+def _uses_private_server(help_text: str) -> bool:
+    """Recognize declared CLI capabilities, never mentions in diagnostic prose."""
+    options = set(
+        re.findall(
+            r"(?m)^\s*(?:-[A-Za-z0-9],\s*)?(--[A-Za-z0-9][A-Za-z0-9-]*)(?=[,\s=]|$)",
+            help_text,
+        )
+    )
+    if not {"--model", "--agent", "--format", "--title"} <= options:
+        raise OpenCodeCLIError("OpenCode CLI capabilities are unsupported")
+    if "--standalone" in options:
+        return True
+    if {"--attach", "--variant"} <= options:
+        return False
+    raise OpenCodeCLIError("OpenCode CLI capabilities are unsupported")
 
 
 def _error_message(error: Any) -> str:
@@ -121,13 +156,7 @@ def run_opencode(
     owner = native_cli_directory()
     directory: Path | None = None
     try:
-        selected = Path(cli_path)
-        if not selected.is_file():
-            found = shutil.which(cli_path)
-            if not found:
-                raise OpenCodeCLIError("OpenCode native executable not found")
-            selected = Path(found)
-        executable = selected.absolute()
+        executable = resolve_executable(cli_path)
         if os.name == "nt" and executable.suffix.lower() != ".exe":
             raise OpenCodeCLIError(
                 "Native OpenCode requires an .exe; select it with CLAUDE_SMART_CLI_PATH. "
@@ -153,9 +182,6 @@ def run_opencode(
             ),
             encoding="utf-8",
         )
-        argv = [str(executable), "run", "--format", "json", "--agent", _AGENT]
-        if model:
-            argv += ["--model", model]
         env = {
             **os.environ,
             "PWD": str(directory),
@@ -167,21 +193,44 @@ def run_opencode(
         prompt = (
             f"{system_prompt}\n\n## Task\n{dialogue}" if system_prompt else dialogue
         )
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise OpenCodeCLIError("OpenCode request deadline expired before launch")
+        capture = {
+            "cwd": str(directory),
+            "env": env,
+            "capture_output": True,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace" if os.name == "nt" else "strict",
+            "check": False,
+        }
         try:
+            discovery = run_native_cli(
+                [str(executable), "run", "--help"],
+                input="",
+                timeout=remaining_native_time(deadline),
+                **capture,
+            )
+            if discovery.returncode != 0:
+                raise OpenCodeCLIError("OpenCode CLI capability discovery failed")
+            private = _uses_private_server(discovery.stdout)
+            argv = [
+                str(executable),
+                "run",
+                "--format",
+                "json",
+                "--agent",
+                _AGENT,
+                "--title",
+                _AGENT,
+            ]
+            if private:
+                argv.append("--standalone")
+            if model:
+                argv += ["--model", model]
             result = run_native_cli(
                 argv,
                 input=prompt,
-                cwd=str(directory),
-                env=env,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace" if os.name == "nt" else "strict",
-                timeout=remaining,
-                check=False,
+                timeout=remaining_native_time(deadline),
+                **capture,
             )
         except subprocess.TimeoutExpired:
             raise OpenCodeCLIError("OpenCode request timed out") from None
@@ -195,7 +244,9 @@ def run_opencode(
             raise OpenCodeCLIError(
                 "OpenCode native executable could not start"
             ) from None
-        return parse_output(result.stdout, result.returncode, result.stderr)
+        parsed = parse_output(result.stdout, result.returncode, result.stderr)
+        remaining_native_time(deadline)
+        return parsed
     except LLMHardTimeoutError:
         raise
     except OSError:

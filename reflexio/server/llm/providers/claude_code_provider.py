@@ -193,6 +193,20 @@ def _resolve_cli_path() -> str | None:
         str | None: Absolute path to the CLI, or None if not found.
     """
     override = os.environ.get(_ENV_CLI_PATH)
+    if _host() == _HOST_OPENCODE:
+        from reflexio.server.llm.providers._opencode_cli import (
+            OpenCodeCLIError,
+            resolve_executable,
+        )
+
+        try:
+            return str(resolve_executable(override or "opencode"))
+        except OpenCodeCLIError:
+            if override:
+                _LOGGER.warning(
+                    "%s is unavailable; refusing OpenCode selection", _ENV_CLI_PATH
+                )
+            return None
     if override:
         candidate = Path(_resolve_cli_override_path(override))
         if candidate.is_file() and os.access(candidate, os.X_OK):
@@ -203,8 +217,6 @@ def _resolve_cli_path() -> str | None:
         )
     if _host() == _HOST_CODEX:
         return shutil.which("codex")
-    if _host() == _HOST_OPENCODE:
-        return shutil.which("opencode")
     return shutil.which("claude")
 
 

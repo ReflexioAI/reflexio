@@ -286,3 +286,51 @@ def test_pairwise_judge_rejects_drift_during_prompt_render_before_provider(
     with pytest.raises(judge_module.FrozenEvaluatorPlanDriftError):
         judge.judge(**_inputs())
     provider.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "module_name,attribute",
+    [
+        ("claude_code_provider", "ClaudeCodeLLM"),
+        ("claude_code_provider", "ClaudeCodeLLM.completion"),
+        ("claude_code_provider", "ClaudeCodeLLM._cli_path"),
+        ("claude_code_provider", "ClaudeCodeLLM._timeout"),
+        ("claude_code_provider", "resolve_cli_request_timeout"),
+        ("claude_code_provider", "_resolve_cli_path"),
+        ("claude_code_provider", "_run_cli_stream"),
+        ("claude_code_provider", "_host"),
+        ("claude_code_provider", "_compat_host"),
+        ("opencode_module", "run_opencode"),
+        ("opencode_module", "resolve_executable"),
+        ("opencode_module", "_uses_private_server"),
+        ("opencode_module", "parse_output"),
+        ("opencode_module", "_error_message"),
+        ("opencode_module", "run_native_cli"),
+        ("opencode_module", "native_cli_directory"),
+        ("opencode_module", "remaining_native_time"),
+        ("opencode_module", "request_timeout_seconds"),
+        ("opencode_module", "classify_stall"),
+        ("opencode_module", "parse_reset_estimate"),
+    ],
+)
+def test_frozen_judge_rejects_each_opencode_binding_before_dispatch(
+    monkeypatch, module_name, attribute
+):
+    prompt_manager = PromptManager()
+    client = LiteLLMClient(LiteLLMConfig(model="azure/judge-deployment"))
+    dispatch = Mock()
+    cast(Any, client)._completion_with_hard_timeout = dispatch
+    frozen = _freeze(prompt_manager, client)
+    judge = PairwiseJudge(
+        cast(Any, SimpleNamespace(prompt_manager=prompt_manager)),
+        client,
+        "azure/judge-deployment",
+        frozen_request_plan=frozen,
+    )
+    owner = getattr(judge_module, module_name)
+    for component in attribute.split(".")[:-1]:
+        owner = getattr(owner, component)
+    monkeypatch.setattr(owner, attribute.split(".")[-1], Mock())
+    with pytest.raises(judge_module.FrozenEvaluatorPlanDriftError):
+        judge.judge(**_inputs())
+    dispatch.assert_not_called()
