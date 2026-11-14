@@ -941,6 +941,7 @@ def _physical_probe(root: Path):
         "if Path(sys.argv[0]).name == 'exec':\n"
         " data={'pid':os.getpid(),'ppid':os.getppid(),'argv':sys.argv,'stdin':sys.stdin.read()}\n"
         f" with Path({str(record)!r}).open('a',encoding='utf-8') as out: out.write(json.dumps(data)+'\\n')\n"
+        " time.sleep(float(os.environ.get('NATIVE_TEST_SLEEP','0')))\n"
         " Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_text('native codex λ',encoding='utf-8')\n"
         " os._exit(0)\n"
         "if Path(sys.argv[0]).name == 'run':\n"
@@ -1147,6 +1148,24 @@ def _physical_probe(root: Path):
             ).exists()
             assert output._hidden_params.get("reflexio_served_model") is None
             assert output._hidden_params.get("reflexio_served_provider") is None
+        # The caller's shorter allowance must stop actual Codex, rather than
+        # the former provider cap. Both clocks are bounded in this regression.
+        os.environ["CLAUDE_SMART_CLI_TIMEOUT"] = "3"
+        os.environ["NATIVE_TEST_SLEEP"] = "30"
+        started = time.monotonic()
+        with pytest.raises(provider.ClaudeCodeCLIError, match="timed out"):
+            provider.ClaudeCodeLLM(cli_path=executable).completion(
+                messages=[{"role": "user", "content": "bounded codex"}], timeout=0.3
+            )
+        assert time.monotonic() - started < 2
+        entry = json.loads(record.read_text().splitlines()[-1])
+        assert entry["pid"] in pids
+        assert not Path(
+            entry["argv"][entry["argv"].index("--output-last-message") + 1]
+        ).exists()
+        if os.name != "nt":
+            with pytest.raises(ProcessLookupError):
+                os.kill(entry["pid"], 0)
     finally:
         subprocess.Popen = popen
     print("OWNED_NATIVE_OPENCODE_OK")

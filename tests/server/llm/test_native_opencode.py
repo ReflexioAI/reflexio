@@ -123,7 +123,7 @@ def test_generated_billing_words_are_not_failure_evidence():
         "opencode-claude-compat.js",
     ],
 )
-def test_opencode_bridges_keep_claude_protocol_and_legacy_cap(
+def test_opencode_bridges_keep_claude_protocol_and_caller_bound(
     monkeypatch, host, bridge
 ):
     monkeypatch.setenv("CLAUDE_SMART_HOST", host)
@@ -136,7 +136,7 @@ def test_opencode_bridges_keep_claude_protocol_and_legacy_cap(
     handler = provider.ClaudeCodeLLM(cli_path=f"/plugin/{bridge}")
     response = handler.completion(timeout=0.25)
     assert response.choices[0].message.content == "ok"
-    assert legacy.call_args.kwargs["timeout_seconds"] == 7
+    assert legacy.call_args.kwargs["timeout_seconds"] == 0.25
     assert response._hidden_params["reflexio_cli_binary"] == bridge.split("-")[0]
 
 
@@ -293,4 +293,97 @@ def test_setup_expiry_cannot_launch(monkeypatch, tmp_path):
             model=None,
             timeout_seconds=1,
         )
+    dispatch.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("host", ["claude-code", "codex", "opencode"])
+@pytest.mark.parametrize("bridge", [False, True])
+@pytest.mark.parametrize(
+    "budget,cap,constructor,expected",
+    [
+        (0.25, None, None, 0.25),
+        (180, None, None, 180),
+        (5, "2", None, 2),
+        (5, "2", 1, 1),
+        (0.25, "2", 1, 0.25),
+    ],
+)
+def test_every_cli_protocol_uses_caller_budget(
+    monkeypatch, host, bridge, budget, cap, constructor, expected
+):
+    monkeypatch.setenv("CLAUDE_SMART_HOST", host)
+    if cap is None:
+        monkeypatch.delenv("CLAUDE_SMART_CLI_TIMEOUT", raising=False)
+    else:
+        monkeypatch.setenv("CLAUDE_SMART_CLI_TIMEOUT", cap)
+    handler = provider.ClaudeCodeLLM(
+        cli_path="opencode-claude-compat" if bridge else sys.executable,
+        timeout_seconds=constructor,
+    )
+    monkeypatch.setattr(
+        handler, "_timeout", Mock(side_effect=AssertionError("implicit clock used"))
+    )
+    dispatch = Mock(return_value=ParseResult(True, "ok"))
+    monkeypatch.setattr(provider, "_run_cli_stream", dispatch)
+    handler.completion(timeout=budget)
+    assert dispatch.call_args.kwargs["timeout_seconds"] == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("host", ["claude-code", "codex", "opencode"])
+@pytest.mark.parametrize(
+    "budget", [None, True, "private-duration", 0, -1, float("inf"), float("nan")]
+)
+def test_explicit_invalid_cli_budget_refuses_before_launch(monkeypatch, host, budget):
+    monkeypatch.setenv("CLAUDE_SMART_HOST", host)
+    dispatch = Mock()
+    monkeypatch.setattr(provider, "_run_cli_stream", dispatch)
+    with pytest.raises(ValueError, match="finite positive timeout") as failure:
+        provider.ClaudeCodeLLM(cli_path=sys.executable).completion(timeout=budget)
+    assert "private-duration" not in str(failure.value)
+    dispatch.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("transport", [None, "claude-code", "openai"])
+def test_native_parent_rejects_invalid_budget_without_retargeting_http(
+    monkeypatch, transport
+):
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+    monkeypatch.setenv("CLAUDE_SMART_HOST", "claude-code")
+    monkeypatch.delenv("CLAUDE_SMART_CODEX_PATH", raising=False)
+    client = LiteLLMClient(LiteLLMConfig(model="claude-code/default", timeout=2))
+    options = {"timeout": "private-duration"}
+    if transport:
+        options["custom_llm_provider"] = transport
+    if transport == "openai":
+        params, *_ = client._build_completion_params([], **options)
+        assert params["timeout"] == "private-duration"
+    else:
+        with pytest.raises(ValueError, match="finite positive timeout") as failure:
+            client._build_completion_params([], **options)
+        assert "private-duration" not in str(failure.value)
+
+
+@pytest.mark.unit
+def test_invalid_portable_cli_cap_refuses_in_parent_before_fallback(monkeypatch):
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+    monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
+    monkeypatch.delenv("CLAUDE_SMART_CODEX_PATH", raising=False)
+    monkeypatch.setenv("CLAUDE_SMART_CLI_TIMEOUT", "private-duration")
+    client = LiteLLMClient(
+        LiteLLMConfig(
+            model="claude-code/default", timeout=2, fallback_models=["gpt-4o-mini"]
+        )
+    )
+    dispatch = Mock()
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
+    with pytest.raises(ValueError, match="CLAUDE_SMART_CLI_TIMEOUT") as failure:
+        client.generate_response("synthetic evidence")
+    assert "private-duration" not in str(failure.value)
     dispatch.assert_not_called()

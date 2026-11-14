@@ -1732,10 +1732,16 @@ Relative executable paths are anchored before entering the private workdir.
 Windows native execution requires the actual `.exe`; batch shims continue to
 use the existing plugin bridge. No shell is introduced.
 
-Native OpenCode spends the selected completion timeout on setup and execution.
-Direct handler calls must provide a finite positive numeric timeout. Explicit
+All CLI protocols honor a supplied completion timeout: native Claude, Codex,
+OpenCode and the remaining OpenCode compatibility bridge. Native OpenCode also
+charges private-workdir setup to that allowance. A supplied budget must be a
+finite positive number and is checked in SDK preparation before retries/fallback.
+Direct native OpenCode calls must supply it; existing standalone Claude/Codex
+and bridge calls that omit it retain their legacy provider default. Explicit
 constructor or `CLAUDE_SMART_CLI_TIMEOUT` caps remain supported and tighten that
-budget (constructor wins); no provider duration default is added when absent.
+budget (constructor wins for direct calls); no provider duration default shortens
+a supplied budget. SDK worker admission validates the portable environment cap;
+constructor-only bindings are not carried into spawned workers.
 The existing `CLAUDE_SMART_CLI_MODEL` chooses an explicit native model; unset
 delegates to OpenCode. The opaque `claude-code/` request label never chooses a
 native model or proves which model served the response.
@@ -1762,7 +1768,8 @@ Historical `codex-claude-compat`, `.cmd` and `.js` paths refuse with migration
 guidance, including missing files, instead of silently changing wire protocol.
 Enabled obsolete native intent stays selected even without an installed binary;
 provider availability does not claim it is usable. The remaining OpenCode
-bridges retain Claude wire protocol and legacy timeouts across coding hosts.
+bridges retain Claude wire protocol across coding hosts and honor supplied
+caller budgets. Budget-omitting direct calls retain their legacy timeout.
 Their later retirement must preserve model/variant precedence, explicit paths,
 permissions and caller budgets.
 
