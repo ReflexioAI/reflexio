@@ -77,12 +77,17 @@ def test_held_claims_preserve_nonempty_queue_and_no_model_attempt(
 
 @pytest.mark.parametrize("manual", [False, True])
 def test_actual_wrong_source_root_refuses_before_token(storage, monkeypatch, manual):
-    from reflexio.server.services.extraction import profile_authoring_protocol
+    from reflexio import profile_authoring_protocol
 
     _queue(storage)
     before = _snapshot(storage)
+    different_policy = next(
+        policy
+        for policy in profile_authoring_protocol.AUTHORING_POLICIES
+        if policy != profile_authoring_protocol.PROFILE_AUTHORING_POLICY
+    )
     monkeypatch.setattr(
-        profile_authoring_protocol, "PROFILE_AUTHORING_POLICY", "estimated-lifetime-v1"
+        profile_authoring_protocol, "PROFILE_AUTHORING_POLICY", different_policy
     )
     with pytest.raises(LearningTransitionBlockedError):
         if manual:

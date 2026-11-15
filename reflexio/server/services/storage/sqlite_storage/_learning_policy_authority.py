@@ -15,7 +15,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from reflexio.server.services.extraction.profile_authoring_protocol import (
+from reflexio.profile_authoring_protocol import (
     PROFILE_AUTHORING_POLICY,
 )
 from reflexio.server.services.storage.storage_base.learning_transition import (

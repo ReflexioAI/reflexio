@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
-from reflexio.server.services.extraction.profile_authoring_protocol import (
+from reflexio.profile_authoring_protocol import (
     AUTHORING_POLICIES,
     PROFILE_AUTHORING_POLICY,
 )

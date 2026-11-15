@@ -26,6 +26,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from reflexio.models.config_schema import ProfileExtractorConfig
+from reflexio.profile_authoring_protocol import (
+    PROFILE_AUTHORING_POLICY,
+)
 from reflexio.server.env_utils import env_str
 from reflexio.server.llm.input_budget import (
     ExtractionInputIntegrityError,
@@ -33,9 +36,6 @@ from reflexio.server.llm.input_budget import (
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
-from reflexio.server.services.extraction.profile_authoring_protocol import (
-    PROFILE_AUTHORING_POLICY,
-)
 from reflexio.server.services.extraction.profile_package_preparation import (
     build_profile_package_request,
 )
