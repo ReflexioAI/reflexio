@@ -345,11 +345,11 @@ def _require_learning_claim_db(db: StreamSQL, *, org_id: str, user_id: str) -> N
     This creates no execution permission. Selected work still proves its exact
     grant/original native witness after the actual user lease is acquired.
     """
+    from reflexio.profile_authoring_protocol import (
+        PROFILE_AUTHORING_POLICY,
+    )
     from reflexio.server.services.durable_learning.selected_learning import (
         selected_claim_matches_authority,
-    )
-    from reflexio.server.services.extraction.profile_authoring_protocol import (
-        PROFILE_AUTHORING_POLICY,
     )
 
     from .learning_transition import LearningTransitionBlockedError, _read_authority

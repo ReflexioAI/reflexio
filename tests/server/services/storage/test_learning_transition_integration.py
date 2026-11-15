@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from reflexio.server.services.extraction.profile_authoring_protocol import (
+from reflexio.profile_authoring_protocol import (
     AUTHORING_POLICIES,
     ESTIMATED_LIFETIME_POLICY,
     PROFILE_AUTHORING_POLICY,
