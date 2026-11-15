@@ -940,3 +940,106 @@ def test_partial_resume_seal_is_hold_without_failure_or_refund(
     assert dispatches == ["returned"]
     assert storage.count_all_profiles() == 0
     physical.assert_not_called()
+
+
+@pytest.mark.parametrize("legacy_owner", [None, "", "   "])
+@pytest.mark.parametrize("phase", ["continuation", "finalization"])
+def test_normal_legacy_playbook_work_adopts_complete_source_owner(
+    storage, org_id, monkeypatch, legacy_owner, phase
+):
+    from reflexio.server.llm.compute_admission import admit_external_compute
+    from tests.server.services.extraction.test_resume_worker import (
+        _commit_resumed_output,
+    )
+
+    class StopBeforePublication(BaseException):
+        pass
+
+    _seed_interactions(storage)
+    run_id = _seed_ready_run(
+        storage,
+        org_id,
+        kind="playbook",
+        snapshot={"output_schema_name": "StructuredPlaybookList"},
+    )
+    context = _context(storage, org_id)
+    worker = DurableLearningWorker(lambda _: context)
+    calls = []
+    physical = MagicMock(side_effect=AssertionError("No real provider execution"))
+    monkeypatch.setattr(
+        "reflexio.server.llm.litellm_client.LiteLLMClient._completion_with_hard_timeout",
+        physical,
+    )
+
+    def resumed(resumer, run, resolved):
+        assert run.binding.user_id == "user_1" and resolved
+        admit_external_compute()
+        calls.append(1)
+        return _commit_resumed_output(resumer, run, {"playbooks": []})
+
+    monkeypatch.setattr(ExtractionResumeWorker, "_resume_run", resumed)
+    if phase == "finalization":
+        publisher = ExtractionResumeWorker._publish_retained_output
+
+        def stop(*_args):
+            raise StopBeforePublication()
+
+        monkeypatch.setattr(ExtractionResumeWorker, "_publish_retained_output", stop)
+        with pytest.raises(StopBeforePublication):
+            worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300)
+        monkeypatch.setattr(
+            ExtractionResumeWorker, "_publish_retained_output", publisher
+        )
+        assert storage.get_agent_run(run_id).committed_output is not None
+        storage._execute(
+            "UPDATE _agent_runs SET status='finalization_failed' WHERE id=?", (run_id,)
+        )
+    # Synthetic representation of an accepted legacy row; never repair a real
+    # customer binding or pass the inferred owner as caller-supplied authority.
+    storage._execute(
+        "UPDATE _agent_runs SET user_id=? WHERE id=?", (legacy_owner, run_id)
+    )
+    for _ in range(4):
+        worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300)
+        if storage.get_agent_run(run_id).status == AgentRunStatus.FINALIZED:
+            break
+    result = storage.get_agent_run(run_id)
+    assert result.status == AgentRunStatus.FINALIZED
+    assert result.binding.user_id == "user_1"
+    assert calls == [1]
+    assert storage.list_run_tool_dependencies(run_id)[0].consumed_at is not None
+    assert storage.count_all_profiles() == 0
+    physical.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    ["mixed_interactions", "erased_interaction", "request_owner", "profile_null"],
+)
+def test_normal_legacy_resume_does_not_adopt_unproven_owner(
+    storage, org_id, monkeypatch, invalid
+):
+    _seed_interactions(storage)
+    kind = "profile" if invalid == "profile_null" else "playbook"
+    run_id = _seed_ready_run(storage, org_id, kind=kind)
+    storage._execute("UPDATE _agent_runs SET user_id=NULL WHERE id=?", (run_id,))
+    if invalid == "mixed_interactions":
+        storage._execute(
+            "UPDATE interactions SET user_id='other' WHERE interaction_id=2"
+        )
+    elif invalid == "erased_interaction":
+        storage._execute("DELETE FROM interactions WHERE interaction_id=2")
+    elif invalid == "request_owner":
+        storage._execute(
+            "UPDATE requests SET user_id='other' WHERE request_id='request_1'"
+        )
+    before = storage.get_agent_run(run_id)
+    forbidden = MagicMock(
+        side_effect=AssertionError("Unproven legacy row cannot execute")
+    )
+    monkeypatch.setattr(ExtractionResumeWorker, "_resume_run", forbidden)
+    worker = DurableLearningWorker(lambda _: _context(storage, org_id))
+    for _ in range(4):
+        worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300)
+    assert storage.get_agent_run(run_id) == before
+    forbidden.assert_not_called()

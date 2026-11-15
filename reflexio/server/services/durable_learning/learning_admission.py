@@ -193,10 +193,18 @@ def require_learning_run(storage: BaseStorage, run: AgentRunRecord) -> None:
     if active is None:
         raise LearningTransitionIntegrityError("Learning execution is not bound")
     work = active.work
+    missing_legacy_owner = run.binding.user_id is None or (
+        isinstance(run.binding.user_id, str) and not run.binding.user_id.strip()
+    )
+    legacy_playbook = (
+        missing_legacy_owner
+        and run.binding.extractor_kind == "playbook"
+        and run.created_at is not None
+    )
     if (
         active.storage is not storage
         or run.binding.org_id != work.org_id
-        or run.binding.user_id != work.user_id
+        or (run.binding.user_id != work.user_id and not legacy_playbook)
         # Project is storage-stamped, read-side only. A genuinely new run has
         # neither creation time nor a persisted project to compare yet.
         or (run.created_at is not None and (run.project_id or "") != work.project_id)
@@ -209,7 +217,31 @@ def require_learning_run(storage: BaseStorage, run: AgentRunRecord) -> None:
     )
     if not matches:
         raise LearningTransitionIntegrityError("Learning run differs from its root")
-    fence_learning_work(storage)
+    with storage.commit_scope():
+        # Preliminary admission uses complete ordinary reads under W/root.
+        # Actual adoption retains its unchanged W -> R -> I locked proof and
+        # persists the owner before any model/publication work can enter.
+        fence_learning_work(storage)
+        if legacy_playbook:
+            from reflexio.server.services.playbook.review_window import (
+                PlaybookReviewWindowError,
+                infer_playbook_review_user_id,
+            )
+
+            try:
+                proven_user = infer_playbook_review_user_id(
+                    storage=storage,
+                    source_interaction_ids=run.binding.source_interaction_ids,
+                    subject="Legacy learning run admission",
+                )
+            except PlaybookReviewWindowError as error:
+                raise LearningTransitionIntegrityError(
+                    "Legacy playbook run owner is not source-proven"
+                ) from error
+            if proven_user != work.user_id:
+                raise LearningTransitionIntegrityError(
+                    "Legacy playbook run crossed its source-proven user"
+                )
 
 
 # One supported public surface for the operational caller; implementation stays
