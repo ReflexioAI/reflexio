@@ -26,6 +26,7 @@ import pytest
 from reflexio.server.llm._provider_concurrency import ProviderCapSaturatedError
 from reflexio.server.llm.input_budget import (
     ComputationEvidenceChangedError,
+    ExtractionInputIntegrityError,
     InputBudgetConfigurationError,
     InputBudgetExceededError,
     OutputTruncatedRequestError,
@@ -67,6 +68,7 @@ from reflexio.server.services.storage.storage_base._extraction_stream import (
 
 CONFIG = "input_budget_configuration_error"
 EXCEEDED = "input_budget_exceeded"
+INTEGRITY = "input_integrity_error"
 W, INFO, E = logging.WARNING, logging.INFO, logging.ERROR
 
 
@@ -151,17 +153,20 @@ class Case:
     storage: dict[str, Any] = field(default_factory=dict)
 
 
-def _held(reason: str, error: str) -> tuple[int, str]:
+def _held(label: str, error: str) -> tuple[int, str]:
+    reason = CONFIG if label == INTEGRITY else label
     return (
         W,
-        f"Extraction input held kind=profile reason={reason} error={error} at=unknown",
+        f"Extraction input held kind=profile reason={label} status_reason={reason} "
+        f"error={error} at=unknown",
     )
 
 
-def _parked_input(error: str) -> tuple[int, str]:
+def _parked_input(error: str, label: str = CONFIG) -> tuple[int, str]:
     return (
         E,
-        f"Extraction input parked kind=profile reason={CONFIG} error={error} at=unknown",
+        f"Extraction input parked kind=profile reason={label} status_reason={CONFIG} "
+        f"error={error} at=unknown",
     )
 
 
@@ -357,8 +362,8 @@ CASES: list[Case] = [
         lambda: SavedOutputIncompatibleError("x"),
         "input_budget_failure",
         [("fail_extraction_input_budget", CONFIG, True)],
-        [(_INPUT_FAILURES[0], {"reason": CONFIG})],
-        [_parked_input("SavedOutputIncompatibleError")],
+        [(_INPUT_FAILURES[0], {"reason": INTEGRITY})],
+        [_parked_input("SavedOutputIncompatibleError", INTEGRITY)],
         storage={"input_parked": True},
     ),
     Case(
@@ -371,6 +376,93 @@ CASES: list[Case] = [
         [(_INPUT_FAILURES[0], {"reason": CONFIG})],
         [_parked_input("InputBudgetConfigurationError")],
         storage={"input_parked": True},
+    ),
+    # -- integrity (non-capacity): the configuration hold, public reason and
+    # park outcome, under its own internal label.
+    Case(
+        "integrity",
+        lambda: ExtractionInputIntegrityError("x"),
+        "input_budget_failure",
+        [("fail_extraction_input_budget", CONFIG, False)],
+        [(_INPUT_FAILURES[0], {"reason": INTEGRITY})],
+        [_held(INTEGRITY, "ExtractionInputIntegrityError")],
+    ),
+    Case(
+        "integrity-at-attempt-ceiling",
+        lambda: ExtractionInputIntegrityError("x"),
+        "input_budget_failure",
+        [("fail_extraction_input_budget", CONFIG, False)],
+        [(_INPUT_FAILURES[0], {"reason": INTEGRITY})],
+        [_parked_input("ExtractionInputIntegrityError", INTEGRITY)],
+        storage={"input_parked": True},
+    ),
+    Case(
+        "integrity-wrapped",
+        lambda: _from(RuntimeError("x"), ExtractionInputIntegrityError("x")),
+        "input_budget_failure",
+        [("fail_extraction_input_budget", CONFIG, False)],
+        [(_INPUT_FAILURES[0], {"reason": INTEGRITY})],
+        [_held(INTEGRITY, "RuntimeError")],
+    ),
+    Case(
+        "integrity-via-context",
+        lambda: _during(RuntimeError("x"), ExtractionInputIntegrityError("x")),
+        "input_budget_failure",
+        [("fail_extraction_input_budget", CONFIG, False)],
+        [(_INPUT_FAILURES[0], {"reason": INTEGRITY})],
+        [_held(INTEGRITY, "RuntimeError")],
+    ),
+    Case(
+        "integrity-from-saved-output-parks",
+        lambda: _from(
+            ExtractionInputIntegrityError("x"), SavedOutputIncompatibleError("x")
+        ),
+        "input_budget_failure",
+        [("fail_extraction_input_budget", CONFIG, True)],
+        [(_INPUT_FAILURES[0], {"reason": INTEGRITY})],
+        [_parked_input("ExtractionInputIntegrityError", INTEGRITY)],
+        storage={"input_parked": True},
+    ),
+    Case(
+        "outermost-budget-link-wins-integrity",
+        lambda: _from(
+            ExtractionInputIntegrityError("x"), InputBudgetConfigurationError("x")
+        ),
+        "input_budget_failure",
+        [("fail_extraction_input_budget", CONFIG, False)],
+        [(_INPUT_FAILURES[0], {"reason": INTEGRITY})],
+        [_held(INTEGRITY, "ExtractionInputIntegrityError")],
+    ),
+    Case(
+        "outermost-budget-link-wins-over-integrity",
+        lambda: _from(
+            InputBudgetConfigurationError("x"), ExtractionInputIntegrityError("x")
+        ),
+        "input_budget_failure",
+        [("fail_extraction_input_budget", CONFIG, False)],
+        [(_INPUT_FAILURES[0], {"reason": CONFIG})],
+        [_held(CONFIG, "InputBudgetConfigurationError")],
+    ),
+    Case(
+        "exceeded-beats-inner-integrity",
+        lambda: _from(
+            InputBudgetExceededError("x"), ExtractionInputIntegrityError("x")
+        ),
+        "input_budget_failure",
+        [("fail_extraction_input_budget", EXCEEDED, False)],
+        [(_INPUT_FAILURES[0], {"reason": EXCEEDED})],
+        [_held(EXCEEDED, "InputBudgetExceededError")],
+        storage={"input_parked": True},
+    ),
+    Case(
+        "integrity-beats-outage",
+        lambda: _from(
+            ExtractionInputIntegrityError("x"), ProviderCapSaturatedError("x")
+        ),
+        "input_budget_failure",
+        [("fail_extraction_input_budget", CONFIG, False)],
+        [(_INPUT_FAILURES[0], {"reason": INTEGRITY})],
+        [_held(INTEGRITY, "ExtractionInputIntegrityError")],
     ),
     Case(
         "exceeded",
@@ -586,6 +678,8 @@ def test_each_failure_shape_has_its_effects(
 _HOLD_CONFIG = HoldInput(CONFIG, park=False)
 _PARK_CONFIG = HoldInput(CONFIG, park=True)
 _HOLD_EXCEEDED = HoldInput(EXCEEDED, park=False)
+_HOLD_INTEGRITY = HoldInput(INTEGRITY, park=False)
+_PARK_INTEGRITY = HoldInput(INTEGRITY, park=True)
 
 #: The verdict for each row above. The effects table was pinned against the
 #: worker's if-chain before this module existed, so the pair proves the move
@@ -611,8 +705,17 @@ DISPOSITIONS: dict[str, WindowDisposition] = {
     "configuration-at-attempt-ceiling": _HOLD_CONFIG,
     "configuration-wrapped": _HOLD_CONFIG,
     "configuration-via-context": _HOLD_CONFIG,
-    "saved-output-incompatible-parks": _PARK_CONFIG,
+    "saved-output-incompatible-parks": _PARK_INTEGRITY,
     "configuration-from-saved-output-parks": _PARK_CONFIG,
+    "integrity": _HOLD_INTEGRITY,
+    "integrity-at-attempt-ceiling": _HOLD_INTEGRITY,
+    "integrity-wrapped": _HOLD_INTEGRITY,
+    "integrity-via-context": _HOLD_INTEGRITY,
+    "integrity-from-saved-output-parks": _PARK_INTEGRITY,
+    "outermost-budget-link-wins-integrity": _HOLD_INTEGRITY,
+    "outermost-budget-link-wins-over-integrity": _HOLD_CONFIG,
+    "exceeded-beats-inner-integrity": _HOLD_EXCEEDED,
+    "integrity-beats-outage": _HOLD_INTEGRITY,
     "exceeded": _HOLD_EXCEEDED,
     "output-truncated-is-exceeded": _HOLD_EXCEEDED,
     "provider-input-overflow-is-exceeded": _HOLD_EXCEEDED,
@@ -667,3 +770,47 @@ def test_from_none_severs_the_chain() -> None:
     severed.__context__ = InputBudgetConfigurationError("x")
     severed.__suppress_context__ = True
     assert classify_window_failure(severed) == Retry()
+
+
+def test_integrity_holds_keep_the_public_reason() -> None:
+    """Owner decision: the persisted ``last_error`` and public ``reason`` stay.
+
+    Clients wait on ``input_budget_configuration_error`` (the documented
+    learning-status example), so every hold that is not a capacity overrun
+    reports it, whatever its internal label.
+    """
+    for case_id, verdict in DISPOSITIONS.items():
+        if isinstance(verdict, HoldInput):
+            expected = EXCEEDED if verdict.label == EXCEEDED else CONFIG
+            assert verdict.reason == expected, case_id
+    assert HoldInput(INTEGRITY, park=False).reason == CONFIG
+    assert HoldInput(INTEGRITY, park=True).reason == CONFIG
+
+
+def test_integrity_is_held_exactly_like_configuration() -> None:
+    """Same storage calls and outcome; only the label differs."""
+    pairs = [
+        ("integrity", "configuration"),
+        ("integrity-at-attempt-ceiling", "configuration-at-attempt-ceiling"),
+        ("integrity-wrapped", "configuration-wrapped"),
+        ("integrity-via-context", "configuration-via-context"),
+        ("integrity-from-saved-output-parks", "configuration-from-saved-output-parks"),
+        ("integrity-beats-outage", "input-budget-beats-outage"),
+    ]
+    by_id = {case.id: case for case in CASES}
+    for integrity, configuration in pairs:
+        left, right = by_id[integrity], by_id[configuration]
+        assert (left.outcome, left.calls, left.storage) == (
+            right.outcome,
+            right.calls,
+            right.storage,
+        )
+        assert left.health != right.health
+        left_verdict = DISPOSITIONS[integrity]
+        right_verdict = DISPOSITIONS[configuration]
+        assert isinstance(left_verdict, HoldInput)
+        assert isinstance(right_verdict, HoldInput)
+        assert (left_verdict.reason, left_verdict.park) == (
+            right_verdict.reason,
+            right_verdict.park,
+        )
