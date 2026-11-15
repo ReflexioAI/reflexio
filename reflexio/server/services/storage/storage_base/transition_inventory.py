@@ -254,12 +254,16 @@ def _attributed_cursors(
         )
     items = []
     previous = after
+    # The matching SQL keyset predicate and ORDER BY own collation/type order.
+    # Reject repeats without comparing database keys using Python's ordering.
+    seen: set[tuple[str, ...]] = {after} if after is not None else set()
     for row in rows:
         if row["key0"] is None:
             continue
         key = tuple(str(row[f"key{i}"]) for i in range(3))
-        if previous is not None and key <= previous:
+        if key in seen:
             raise ValueError("Transition inventory page did not advance")
+        seen.add(key)
         items.append(_item("cursors", key, row))
         previous = key
     return TransitionInventoryPage(tuple(items), previous if items else None, not items)
@@ -645,10 +649,14 @@ def read_transition_inventory_page_db(
     rows = [row for row in guarded if row["key0"] is not None]
     items = []
     previous = after
+    # The matching SQL keyset predicate and ORDER BY own collation/type order.
+    # Reject repeats without comparing database keys using Python's ordering.
+    seen: set[tuple[str, ...]] = {after} if after is not None else set()
     for row in rows:
         key = tuple(str(row[f"key{i}"]) for i in range(len(keys)))
-        if previous is not None and key <= previous:
+        if key in seen:
             raise ValueError("Transition inventory page did not advance")
+        seen.add(key)
         items.append(_item(source, key, row))
         previous = key
     return TransitionInventoryPage(tuple(items), previous if rows else None, not rows)
