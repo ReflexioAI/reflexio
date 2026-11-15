@@ -23,6 +23,7 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 |------|---------|
 | `playbook_service_constants.py` | Prompt IDs for all playbook operations |
 | `playbook_service_utils.py` | Request dataclasses, Pydantic output schemas, message construction utilities |
+| `publication.py` | Atomic publication contracts and RFC 8785 canonical bytes; surrogate validation scans ordinary strings without caching payloads and preserves subclass iteration semantics |
 | `playbook_evidence.py` | Strict evidence validation, call-local reference checks, and persisted provenance helpers |
 | `rule_evidence/` | Owned/version-matched source schemas, packaged judge/tuner prompts, compact diagnostics and indexed exact-clause repair; see [usage](rule_evidence/README.md) |
 | `components/reconciliation.py` | Evidence-backed Create/Replace/Remove planning with independent audit and immutable prompt bindings |

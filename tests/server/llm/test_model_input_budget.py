@@ -93,8 +93,11 @@ def test_smaller_fallback_cannot_bypass_complete_budget(transport, monkeypatch):
     assert dispatch.call_args.args[0]["model"] == "gpt-4o"
 
 
-@pytest.mark.parametrize("provider", ["claude-code", "openclaw"])
+@pytest.mark.parametrize("provider", ["local-cli", "openclaw"])
 def test_opaque_host_retains_its_own_capacity_owner(transport, monkeypatch, provider):
+    model = "local-cli/codex" if provider == "local-cli" else "openclaw/default"
+    if provider == "local-cli":
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", model)
     client, dispatch, counter = transport
     client.config.max_tokens = None
     monkeypatch.setattr(
@@ -106,7 +109,7 @@ def test_opaque_host_retains_its_own_capacity_owner(transport, monkeypatch, prov
         assert (
             client.generate_chat_response(
                 [{"role": "user", "content": "complete host evidence"}],
-                model=f"{provider}/default",
+                model=model,
             )
             == "ok"
         )

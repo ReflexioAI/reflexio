@@ -289,8 +289,7 @@ class WindowExecutor:
                 *agent_models,
             )
             if any(
-                model.partition("/")[0] in {"claude-code", "openclaw"}
-                for model in models
+                model.partition("/")[0] in {"local-cli", "openclaw"} for model in models
             ):
                 return None
         # The coordinator owns eligible native text work. Existing CLI, image,

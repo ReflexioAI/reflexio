@@ -59,7 +59,7 @@ def model_input_budget() -> Iterator[None]:
 def _native_capacity_limits(params: Mapping[str, Any]) -> dict[str, int] | None:
     limits = _model_capacity_limits.get()
     if limits is None or params["model"].partition("/")[0] in {
-        "claude-code",
+        "local-cli",
         "openclaw",
     }:
         return None

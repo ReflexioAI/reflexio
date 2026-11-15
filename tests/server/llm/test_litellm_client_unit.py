@@ -580,17 +580,18 @@ class TestGenerateResponse:
 
     @patch("reflexio.server.llm.litellm_client.litellm.completion")
     def test_claude_code_does_not_launder_requested_route_as_observed(
-        self, mock_completion
+        self, mock_completion, monkeypatch
     ):
         """Public ModelResponse.model is the requested route; only the stamp counts."""
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
         response = _make_completion_response("hello")
-        response.model = "claude-code/default"
+        response.model = "local-cli/claude-code"
         response._hidden_params = {
-            "reflexio_provider": "claude-code",
+            "reflexio_provider": "local-cli",
             "reflexio_cli_binary": "claude",
         }
         mock_completion.return_value = response
-        client = _build_client(LiteLLMConfig(model="claude-code/default"))
+        client = _build_client(LiteLLMConfig(model="local-cli/claude-code"))
 
         result = client.generate_response_with_provenance("test")
 
@@ -601,15 +602,18 @@ class TestGenerateResponse:
         )
 
     @patch("reflexio.server.llm.litellm_client.litellm.completion")
-    def test_codex_cli_provenance_keeps_unknown_model(self, mock_completion):
+    def test_codex_cli_provenance_keeps_unknown_model(
+        self, mock_completion, monkeypatch
+    ):
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/codex")
         response = _make_completion_response("hello")
         response.model = None
         response._hidden_params = {
-            "reflexio_provider": "claude-code",
+            "reflexio_provider": "local-cli",
             "reflexio_cli_binary": "codex",
         }
         mock_completion.return_value = response
-        client = _build_client(LiteLLMConfig(model="claude-code/default"))
+        client = _build_client(LiteLLMConfig(model="local-cli/codex"))
 
         result = client.generate_response_with_provenance("test")
 
@@ -620,16 +624,19 @@ class TestGenerateResponse:
         )
 
     @patch("reflexio.server.llm.litellm_client.litellm.completion")
-    def test_claude_cli_provenance_keeps_served_model(self, mock_completion):
+    def test_claude_cli_provenance_keeps_served_model(
+        self, mock_completion, monkeypatch
+    ):
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
         response = _make_completion_response("hello")
         response.model = "claude-sonnet-5"
         response._hidden_params = {
-            "reflexio_provider": "claude-code",
+            "reflexio_provider": "local-cli",
             "reflexio_cli_binary": "claude",
             "reflexio_served_model": "claude-sonnet-5",
         }
         mock_completion.return_value = response
-        client = _build_client(LiteLLMConfig(model="claude-code/default"))
+        client = _build_client(LiteLLMConfig(model="local-cli/claude-code"))
 
         result = client.generate_response_with_provenance("test")
 
@@ -3442,13 +3449,14 @@ class TestApplyPromptCaching:
         # Should not re-wrap
         assert result[0]["content"] == [{"type": "text", "text": "Already formatted"}]
 
-    def test_claude_code_prefix_is_noop(self, client):
-        """claude-code/* routes through the CLI, which cannot accept cache_control blocks."""
+    def test_native_cli_prefix_is_noop(self, client, monkeypatch):
+        """Native CLI messages bypass HTTP prompt-cache transformations."""
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
         messages = [
             {"role": "system", "content": "You are helpful."},
             {"role": "user", "content": "Hi"},
         ]
-        result = client._apply_prompt_caching(messages, "claude-code/default")
+        result = client._apply_prompt_caching(messages, "local-cli/claude-code")
         assert result == messages
         assert isinstance(result[0]["content"], str)
 
@@ -3461,23 +3469,25 @@ class TestApplyPromptCaching:
 class TestResolveByPrefixClaudeCode:
     """claude-code/* must not hit any API-key field in APIKeyConfig."""
 
-    def test_claude_code_returns_all_none(self):
+    def test_native_cli_returns_all_none(self, monkeypatch):
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
         cfg = APIKeyConfig(
             openai=CommonsOpenAIConfig(api_key="sk-test"),
             anthropic=AnthropicConfig(api_key="ant-test"),
         )
         client = _build_client(
-            LiteLLMConfig(model="claude-code/default", api_key_config=cfg)
+            LiteLLMConfig(model="local-cli/claude-code", api_key_config=cfg)
         )
-        assert client._resolve_by_prefix("claude-code/default") == (None, None, None)
+        assert client._resolve_by_prefix("local-cli/claude-code") == (None, None, None)
 
-    def test_claude_code_does_not_fall_through_to_anthropic_branch(self):
+    def test_native_cli_does_not_fall_through_to_anthropic_branch(self, monkeypatch):
         """Guard against regressions where 'claude' substring match swallows claude-code/*."""
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
         cfg = APIKeyConfig(anthropic=AnthropicConfig(api_key="ant-test"))
         client = _build_client(
-            LiteLLMConfig(model="claude-code/default", api_key_config=cfg)
+            LiteLLMConfig(model="local-cli/claude-code", api_key_config=cfg)
         )
-        api_key, _, _ = client._resolve_by_prefix("claude-code/default")
+        api_key, _, _ = client._resolve_by_prefix("local-cli/claude-code")
         assert api_key is None
 
 
@@ -4093,8 +4103,9 @@ class TestLitellmIntegration:
         """Local reflexio / claude-smart safety check: with no env var and no
         explicit construction arg, the primary serves alone and no ``fallbacks``
         kwarg is ever passed."""
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
         monkeypatch.delenv("REFLEXIO_LLM_FALLBACK_MODELS", raising=False)
-        client = LiteLLMClient(LiteLLMConfig(model="claude-code/claude-sonnet-4-6"))
+        client = LiteLLMClient(LiteLLMConfig(model="local-cli/claude-code"))
         captured: dict[str, Any] = {}
 
         def _fake(**params):
@@ -4905,12 +4916,13 @@ class TestFallbackObservability:
         assert tags.get("llm.fallback_reason") == "transport_error"
 
     def test_cli_route_resolution_is_not_reported_as_fallback(self, monkeypatch):
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
         tags = self._install_recording_reporter(monkeypatch)
-        client = LiteLLMClient(LiteLLMConfig(model="claude-code/default"))
+        client = LiteLLMClient(LiteLLMConfig(model="local-cli/claude-code"))
         response = _make_completion_response("ok")
         response.model = "claude-sonnet-5"
         response._hidden_params = {
-            "reflexio_provider": "claude-code",
+            "reflexio_provider": "local-cli",
             "reflexio_cli_binary": "claude",
             "reflexio_served_model": "claude-sonnet-5",
         }
@@ -4929,10 +4941,11 @@ class TestFallbackObservability:
         fallback signal (see test_cli_route_resolution_is_not_reported_as_fallback).
         A transport failure on the CLI primary that reaches a later rung is.
         """
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
         tags = self._install_recording_reporter(monkeypatch)
         client = LiteLLMClient(
             LiteLLMConfig(
-                model="claude-code/default",
+                model="local-cli/claude-code",
                 fallback_models=["gpt-5.4-mini"],
             )
         )
@@ -4941,11 +4954,11 @@ class TestFallbackObservability:
         response._hidden_params = {"custom_llm_provider": "openai"}
 
         def _fake(**params):
-            if params["model"] == "claude-code/default":
+            if params["model"] == "local-cli/claude-code":
                 raise APIConnectionError(
                     message="cli unreachable",
-                    llm_provider="claude-code",
-                    model="claude-code/default",
+                    llm_provider="local-cli",
+                    model="local-cli/claude-code",
                 )
             return response
 
@@ -4954,7 +4967,7 @@ class TestFallbackObservability:
         client.generate_chat_response([{"role": "user", "content": "hi"}])
 
         assert tags.get("llm.fallback_used") == "true"
-        assert tags.get("llm.primary_model") == "claude-code/default"
+        assert tags.get("llm.primary_model") == "local-cli/claude-code"
         assert tags.get("llm.fallback_model") == "gpt-5.4-mini"
         assert tags.get("llm.fallback_reason") == "transport_error"
 

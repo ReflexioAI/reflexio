@@ -88,8 +88,8 @@ provider; a local model uses the separate inference service. The service URL
 owns process attachment: an explicit URL, including loopback, attaches to an
 existing service; an absent URL leaves the launcher responsible for its child.
 Dependency availability advertises capability without loading a model. It never
-authorizes generation or authenticated CLI access. `CLAUDE_SMART_USE_LOCAL_CLI`
-and the OpenClaw CLI opt-in retain their separate credential-access decisions.
+authorizes generation or authenticated CLI access. `REFLEXIO_NATIVE_CLI_MODEL`
+and the OpenClaw CLI opt-in retain separate credential-access decisions.
 
 `CLAUDE_SMART_USE_LOCAL_EMBEDDING` is retired. Normal loading rejects active
 assignments, including empty ones and those alongside a canonical setting.
@@ -1725,32 +1725,64 @@ connection lease or introduce a runtime alias.
 
 ### Native provider CLI ownership
 
-The existing `claude-code/` provider can execute OpenCode directly with
-`CLAUDE_SMART_HOST=opencode` and `CLAUDE_SMART_USE_LOCAL_CLI=1`. Set the existing
+The `local-cli/` provider binds one operator-owned native target through
+`REFLEXIO_NATIVE_CLI_MODEL`, such as `local-cli/opencode/provider/model#high`.
+Requests must match that full reference before any native work. See the
+[selection and explicit-upgrade contract](docs/native-cli-model-selection.md).
+Set the existing
 `CLAUDE_SMART_CLI_PATH` to its native executable, or let PATH resolve `opencode`.
 Relative executable paths are anchored before entering the private workdir.
 Windows native execution requires the actual `.exe`; batch shims continue to
 use the existing plugin bridge. No shell is introduced.
 
-Native OpenCode spends the selected completion timeout on setup and execution.
-Direct handler calls must provide a finite positive numeric timeout. Explicit
+All CLI protocols honor a supplied completion timeout: native Claude, Codex,
+OpenCode and the remaining OpenCode compatibility bridge. Native OpenCode also
+charges private-workdir setup to that allowance. A supplied budget must be a
+finite positive number and is checked in SDK preparation before retries/fallback.
+Direct native OpenCode calls must supply it; existing standalone Claude/Codex
+and bridge calls that omit it retain their legacy provider default. Explicit
 constructor or `CLAUDE_SMART_CLI_TIMEOUT` caps remain supported and tighten that
-budget (constructor wins); no provider duration default is added when absent.
-The existing `CLAUDE_SMART_CLI_MODEL` chooses an explicit native model; unset
-delegates to OpenCode. The opaque `claude-code/` request label never chooses a
-native model or proves which model served the response.
+budget (constructor wins for direct calls); no provider duration default shortens
+a supplied budget. SDK worker admission validates the portable environment cap;
+constructor-only bindings are not carried into spawned workers.
+The explicit native reference carries the physical model selection. A
+host-only reference delegates to that CLI's own default; an explicit suffix
+`/default` remains a literal model ID. The requested reference never proves
+which model physically served the response.
 
-Native Codex (`CLAUDE_SMART_HOST=codex`) also forwards the existing
-`CLAUDE_SMART_CLI_MODEL` as `codex exec --model`. Unset or blank leaves model
-selection to Codex. This matches the plugin bridge's saved learning-model
-selection without deriving a model from the opaque LiteLLM role label. The
-requested model does not establish observed model/provider provenance.
+Codex spends its selected deadline on setup, native execution and reading its
+final output. Setup cannot grant a fresh allowance, and a result read after
+expiry is a timeout.
 
-All known explicit Codex/OpenCode plugin bridges retain Claude wire protocol
-and legacy timeouts across coding hosts. This adapter does not switch plugin
-producers or retire any setting. The later producer/optimizer migration must
-preserve their model precedence, explicit paths, permissions and caller budgets
-before bridge files and redundant controls can be removed.
+Native Codex (`local-cli/codex[/model]`) forwards an explicit model remainder
+as `codex exec --model`; host-only selection leaves model choice to Codex.
+Legacy `claude-code/*` suffixes were opaque role labels and cannot be converted
+into physical models by guessing. Adopt the new native reference explicitly.
+The requested model does not establish observed model/provider provenance.
+
+An explicitly configured optimizer script/compile result retains its separate
+native authority and saved learning-model selection. Released plugin bundles
+remain on their existing pinned SDK until a matching producer migration is
+qualified; this SDK change does not update or migrate installed plugin files.
+Codex uses the canonical `CLAUDE_SMART_CLI_PATH` or PATH; `CLAUDE_SMART_CODEX_PATH`
+no longer selects an executable, and plugin installation roots no longer
+select a bridge. Active obsolete selection refuses when the native route is
+reached, before dispatch, retries or paid fallback. Move the intended executable
+to the canonical path before removing the old assignment, or deliberately
+remove it to adopt Codex from PATH. A valid canonical override or an explicit
+direct SDK adapter constructor path that previously dominated an unused old
+key remains valid. Client-worker admission uses the portable environment
+binding; a manually registered constructor-only binding is not carried into
+spawned workers. Use the canonical environment path for that client route. Explicit HTTP transports and other CLI hosts ignore that unused key.
+
+Historical `codex-claude-compat`, `.cmd` and `.js` paths refuse with migration
+guidance, including missing files, instead of silently changing wire protocol.
+Enabled obsolete native intent stays selected even without an installed binary;
+provider availability does not claim it is usable. The remaining OpenCode
+bridges retain Claude wire protocol across coding hosts and honor supplied
+caller budgets. Budget-omitting direct calls retain their legacy timeout.
+Their later retirement must preserve model/variant precedence, explicit paths,
+permissions and caller budgets.
 
 The native workdir retains the existing supported V1 agent configuration,
 including denied tools and recursion guards; OpenCode documents V1 config
@@ -2095,3 +2127,15 @@ readable even when its unused automatic stride is larger; ordinary automatic
 admission still refuses that geometry. Existing read/write acceptance, defaults,
 public fields, project inheritance and frozen admission witnesses are unchanged.
 This refactor does not retire a setting or convert stored configuration.
+
+
+### Caller-owned native optimizer execution
+
+The local assistant adapter can accept a compile-only `native_cli_v1` result.
+The script prepares prompts; the SDK owns the actual Claude JSON or Codex
+invocation and spends the existing caller timeout across both phases. The
+private capability/deadline header is generated per invocation, never selected
+from user configuration. Generic content-returning scripts and HTTP payloads
+retain their contract. See [assistant backend protocol](docs/playbook_optimizer_assistant_backends.md#compile-only-native-assistant-results)
+for permission, version-compatibility and immediate-child ownership limits.
+This prerequisite does not retire CLI timeout settings or change OpenCode.

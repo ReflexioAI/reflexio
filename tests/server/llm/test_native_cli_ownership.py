@@ -18,16 +18,17 @@ from reflexio.server.llm import _litellm_text_generation as generation
 from reflexio.server.llm import _provider_concurrency as admission
 from reflexio.server.llm._litellm_text_generation import _run_isolated_completion
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-from reflexio.server.llm.providers import claude_code_provider
+from reflexio.server.llm.providers import native_cli_provider
 
 
 def _synthetic_completion(params):
     os.environ["SDK_WORKER_PID"] = str(os.getpid())
-    return claude_code_provider._run_claude_stream(
+    return native_cli_provider._run_claude_stream(
         cli_path=params["native_cli_script"],
         system_prompt="",
         dialogue="synthetic local CLI only",
         timeout_seconds=30,
+        model=None,
     )
 
 
@@ -112,7 +113,7 @@ def _broker_completion(params):
             timeout_seconds=params["native_timeout"],
         )
     output = (
-        claude_code_provider._temporary_output_path()
+        native_cli_provider._temporary_output_path()
         if params.get("native_codex_temp")
         else None
     )
@@ -431,7 +432,9 @@ def test_codex_scratch_and_permit_survive_until_native_reaping(
         hook = tmp_path / "native-hooks"
         hook.mkdir()
         (hook / "sitecustomize.py").write_text(
-            "import sys\nif sys.argv[0] == 'run':\n" + f" exec({code!r})\n",
+            "import sys,os\nif sys.argv[0] == 'run':\n"
+            " if '--help' in sys.argv: print('  --model\\n  --agent\\n  --format\\n  --title\\n  --standalone',flush=True);os._exit(0)\n"
+            + f" exec({code!r})\n",
             encoding="utf-8",
         )
         environment["PYTHONPATH"] = (
@@ -925,7 +928,7 @@ def _physical_probe(root: Path):
     from reflexio.server.llm._litellm_types import ToolCallingChatResponse
     from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
     from reflexio.server.llm.providers import _opencode_cli as native
-    from reflexio.server.llm.providers import claude_code_provider as provider
+    from reflexio.server.llm.providers import native_cli_provider as provider
 
     assert (
         "BRAINTRUST_API_KEY" not in os.environ
@@ -941,9 +944,11 @@ def _physical_probe(root: Path):
         "if Path(sys.argv[0]).name == 'exec':\n"
         " data={'pid':os.getpid(),'ppid':os.getppid(),'argv':sys.argv,'stdin':sys.stdin.read()}\n"
         f" with Path({str(record)!r}).open('a',encoding='utf-8') as out: out.write(json.dumps(data)+'\\n')\n"
+        " time.sleep(float(os.environ.get('NATIVE_TEST_SLEEP','0')))\n"
         " Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_text('native codex λ',encoding='utf-8')\n"
         " os._exit(0)\n"
         "if Path(sys.argv[0]).name == 'run':\n"
+        " if '--help' in sys.argv: print('  --model\\n  --agent\\n  --format\\n  --title\\n  --standalone',flush=True);os._exit(0)\n"
         " data={'pid':os.getpid(),'ppid':os.getppid(),'argv':sys.argv,'cwd':os.getcwd(),'stdin':sys.stdin.read()}\n"
         " data['config']=json.loads((Path.cwd()/'.opencode'/'opencode.json').read_text(encoding='utf-8'))\n"
         " data['env']={key:os.environ.get(key) for key in ('PWD','OPENCODE_PURE','CLAUDE_SMART_HOST','CLAUDE_SMART_INTERNAL','CLAUDE_CODE_ENTRYPOINT')}\n"
@@ -955,15 +960,14 @@ def _physical_probe(root: Path):
     )
     os.environ.update(
         CLAUDE_SMART_HOST="opencode",
-        CLAUDE_SMART_USE_LOCAL_CLI="1",
+        REFLEXIO_NATIVE_CLI_MODEL="local-cli/opencode/owned/model#low",
         CLAUDE_SMART_CLI_PATH=executable,
         PYTHONPATH=str(hooks) + os.pathsep + str(Path(__file__).resolve().parents[3]),
         PYTHONNOUSERSITE="1",
         PYTHONIOENCODING="utf-8",
     )
     os.environ.pop("CLAUDE_SMART_CLI_TIMEOUT", None)
-    os.environ["CLAUDE_SMART_CLI_MODEL"] = "owned/model#low"
-    provider.register_if_enabled()
+    provider.register_native_provider()
     response_file.write_text(
         '{"type":"text","part":{"type":"text","text":"native λ"}}', encoding="utf-8"
     )
@@ -978,7 +982,7 @@ def _physical_probe(root: Path):
     subprocess.Popen = observed
     try:
         output = litellm.completion(
-            model="claude-code/default",
+            model=os.environ["REFLEXIO_NATIVE_CLI_MODEL"],
             messages=[{"role": "user", "content": "synthetic private λ"}],
             timeout=2.5,
             num_retries=0,
@@ -1008,16 +1012,18 @@ def _physical_probe(root: Path):
             and entry["env"]["OPENCODE_PURE"] == "1"
         )
         assert not Path(entry["cwd"]).exists()
-        os.environ.pop("CLAUDE_SMART_CLI_MODEL")
-        handler = provider.ClaudeCodeLLM(cli_path=executable)
+        os.environ["REFLEXIO_NATIVE_CLI_MODEL"] = "local-cli/opencode"
+        handler = provider.NativeCLILLM(cli_path=executable)
         handler.completion(
-            messages=[{"role": "user", "content": "default synthetic"}], timeout=1
+            model=os.environ["REFLEXIO_NATIVE_CLI_MODEL"],
+            messages=[{"role": "user", "content": "default synthetic"}],
+            timeout=1,
         )
         assert "--model" not in json.loads(record.read_text().splitlines()[-1])["argv"]
 
         client = LiteLLMClient(
             LiteLLMConfig(
-                model="claude-code/default",
+                model="local-cli/opencode",
                 max_tokens=32,
                 timeout=20,
                 fallback_models=[],
@@ -1025,7 +1031,7 @@ def _physical_probe(root: Path):
         )
 
         def local_only(params, *_args):
-            assert params["model"].startswith("claude-code/") and not params.get(
+            assert params["model"].startswith("local-cli/") and not params.get(
                 "api_base"
             ), "Unowned route"
 
@@ -1101,7 +1107,9 @@ def _physical_probe(root: Path):
         started = time.monotonic()
         with pytest.raises(provider.ClaudeCodeCLIError, match="timed out"):
             handler.completion(
-                messages=[{"role": "user", "content": "timeout synthetic"}], timeout=0.3
+                model=os.environ["REFLEXIO_NATIVE_CLI_MODEL"],
+                messages=[{"role": "user", "content": "timeout synthetic"}],
+                timeout=0.3,
             )
         assert time.monotonic() - started < 2
         last = json.loads(record.read_text().splitlines()[-1])
@@ -1116,12 +1124,13 @@ def _physical_probe(root: Path):
         os.environ.pop("NATIVE_TEST_SLEEP")
         os.environ["CLAUDE_SMART_HOST"] = "codex"
         for selected in (None, "", " \t", " opaque/model#variant "):
-            if selected is None:
-                os.environ.pop("CLAUDE_SMART_CLI_MODEL", None)
-            else:
-                os.environ["CLAUDE_SMART_CLI_MODEL"] = selected
+            physical_model = selected.strip() if selected and selected.strip() else None
+            reference = "local-cli/codex" + (
+                f"/{physical_model}" if physical_model else ""
+            )
+            os.environ["REFLEXIO_NATIVE_CLI_MODEL"] = reference
             output = litellm.completion(
-                model="claude-code/not-a-physical-model",
+                model=reference,
                 messages=[{"role": "user", "content": "codex private synthetic λ"}],
                 timeout=2.5,
                 num_retries=0,
@@ -1147,6 +1156,26 @@ def _physical_probe(root: Path):
             ).exists()
             assert output._hidden_params.get("reflexio_served_model") is None
             assert output._hidden_params.get("reflexio_served_provider") is None
+        # The caller's shorter allowance must stop actual Codex, rather than
+        # the former provider cap. Both clocks are bounded in this regression.
+        os.environ["CLAUDE_SMART_CLI_TIMEOUT"] = "3"
+        os.environ["NATIVE_TEST_SLEEP"] = "30"
+        started = time.monotonic()
+        with pytest.raises(provider.ClaudeCodeCLIError, match="timed out"):
+            provider.NativeCLILLM(cli_path=executable).completion(
+                model=os.environ["REFLEXIO_NATIVE_CLI_MODEL"],
+                messages=[{"role": "user", "content": "bounded codex"}],
+                timeout=0.3,
+            )
+        assert time.monotonic() - started < 2
+        entry = json.loads(record.read_text().splitlines()[-1])
+        assert entry["pid"] in pids
+        assert not Path(
+            entry["argv"][entry["argv"].index("--output-last-message") + 1]
+        ).exists()
+        if os.name != "nt":
+            with pytest.raises(ProcessLookupError):
+                os.kill(entry["pid"], 0)
     finally:
         subprocess.Popen = popen
     print("OWNED_NATIVE_OPENCODE_OK")

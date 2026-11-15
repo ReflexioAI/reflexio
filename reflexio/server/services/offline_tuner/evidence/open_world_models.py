@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from reflexio.models.api_schema.domain.entities import Sha256Digest
 
 from ..open_world_invocations import OpenWorldRefusal, OpenWorldRefusalError
+from ..open_world_records import EVIDENCE_SOURCE_READ_LIMIT_REASONS
 from .manifests import canonical_json_bytes
 from .open_world_policy import (
     PRODUCTION_OPEN_WORLD_POLICY,
@@ -155,9 +156,18 @@ AWAITING_COUNTED_EVIDENCE_REASON = "awaiting_counted_evidence"
 #: fixes the writer or the data, and the tick outcome line is the only place it
 #: is reported, so ``sweep_progress.is_problem_outcome`` keeps them at WARNING
 #: while routine ``ineligible_*`` answers go to INFO.
-#: Every member must stay a reason the bundle derivation can return.
+#:
+#: AND the snapshot source-read refusals (``EVIDENCE_SOURCE_READ_LIMIT_REASONS``):
+#: a source too large to read whole inside the byte budget or the deadline is
+#: refused visibly, never tuned on partial evidence, and holds tuning off for
+#: that playbook until the source shrinks or the limit is revisited.
+#:
+#: Every member must stay a reason the bundle derivation can return, except
+#: those read refusals, which the storage snapshot read raises before any
+#: bundle exists.
 EVIDENCE_FAULT_REASONS: frozenset[str] = frozenset(
     {
+        *EVIDENCE_SOURCE_READ_LIMIT_REASONS,
         "evidence_population_limit_exceeded",
         "missing_full_version_fingerprint",
         "malformed_full_version_fingerprint",

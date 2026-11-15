@@ -38,7 +38,7 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
@@ -73,7 +73,11 @@ from reflexio.server.llm._model_compat import (
     ensure_model_capabilities,
     reasoning_exhausted_retry_extra_body,
 )
-from reflexio.server.llm._native_cli import NATIVE_CLI_REQUEST, NativeCLIOwner
+from reflexio.server.llm._native_cli import (
+    NATIVE_CLI_REQUEST,
+    NativeCLIOwner,
+)
+from reflexio.server.llm._native_model_ref import NativeModelRef, authorize_native_model
 from reflexio.server.llm._provider_concurrency import (
     ProviderCapSaturatedError,
     provider_slot,
@@ -175,11 +179,13 @@ class LadderBudgetExhaustedError(LiteLLMClientError):
     """
 
 
-def _uses_openclaw_transport(model: str, custom_llm_provider: str | None) -> bool:
+def _uses_native_transport(
+    model: str, custom_llm_provider: str | None, provider_key: str
+) -> bool:
     """Respect LiteLLM's explicit transport before interpreting a model prefix."""
     if custom_llm_provider:
-        return custom_llm_provider == "openclaw"
-    return model.startswith("openclaw/")
+        return custom_llm_provider == provider_key
+    return model.startswith(f"{provider_key}/")
 
 
 def _bounded_repair_errors(errors: Sequence[str]) -> tuple[str, ...]:
@@ -1040,7 +1046,9 @@ class TextGenerationMixin:
             model_role,
             custom_llm_provider=kwargs.get("custom_llm_provider"),
         )
-        if _uses_openclaw_transport(actual_model, kwargs.get("custom_llm_provider")):
+        if _uses_native_transport(
+            actual_model, kwargs.get("custom_llm_provider"), "openclaw"
+        ):
             from reflexio.server.llm.providers.openclaw_provider import (
                 reject_retired_openclaw_timeout,
                 resolve_openclaw_model,
@@ -1050,6 +1058,21 @@ class TextGenerationMixin:
             # An ambiguous retired default must never dispatch another model.
             resolve_openclaw_model(actual_model)
             reject_retired_openclaw_timeout()
+        if _uses_native_transport(
+            actual_model, kwargs.get("custom_llm_provider"), "local-cli"
+        ):
+            from reflexio.server.llm.providers.native_cli_provider import (
+                resolve_cli_request_timeout,
+                validate_native_selection,
+            )
+
+            # Preparation errors stop the walk before retries or paid fallback.
+            target = cast(
+                NativeModelRef,
+                authorize_native_model(actual_model, kwargs.get("custom_llm_provider")),
+            )
+            validate_native_selection(target.host)
+            resolve_cli_request_timeout(kwargs.get("timeout", self.config.timeout))
         ensure_model_capabilities(actual_model)
 
         if actual_model != self.config.model:
@@ -1217,9 +1240,12 @@ class TextGenerationMixin:
             str: The resolved primary model name.
         """
         actual_model = model or self.config.model
+        native_target = authorize_native_model(actual_model, custom_llm_provider)
+        if native_target is not None:
+            return native_target.reference
         if self.config.api_key_config and self.config.api_key_config.custom_endpoint:
             return actual_model
-        if _uses_openclaw_transport(actual_model, custom_llm_provider):
+        if _uses_native_transport(actual_model, custom_llm_provider, "openclaw"):
             return actual_model
         if model_role is not None:
             actual_model = resolve_model_name(
@@ -1501,7 +1527,7 @@ class TextGenerationMixin:
         served_provider = _nonempty_string(hidden.get("reflexio_served_provider"))
         stamped_served = _nonempty_string(hidden.get("reflexio_served_model"))
 
-        if route_provider in {"claude-code", "openclaw"}:
+        if route_provider in {"local-cli", "openclaw"}:
             provider = served_provider
             model_name = stamped_served
         else:
@@ -2823,9 +2849,11 @@ class TextGenerationMixin:
             list[dict]: Messages with cache control applied where appropriate.
         """
         model_lower = model.lower()
-        # The claude-code/* custom provider routes through the Claude Code CLI,
-        # which does not accept Anthropic API cache_control content blocks.
-        if model_lower.startswith("claude-code/"):
+        # Native CLI messages have no Anthropic HTTP cache-control protocol.
+        # An old label passed explicitly through HTTP remains opaque and keeps
+        # its previous wire shape; native execution under that label is denied
+        # before parameter preparation, independently of this formatting rule.
+        if model_lower.startswith(("local-cli/", "claude-code/")):
             return messages
         is_anthropic = "claude" in model_lower or "anthropic" in model_lower
 
