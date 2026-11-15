@@ -393,3 +393,99 @@ def test_parallel_embedding_and_expansion_share_one_pending_entry(
         ).fetchone()[0]
         is None
     )
+
+
+@pytest.mark.parametrize("held", [True, False])
+def test_transition_hold_preserves_pending_compute_until_existing_reconciliation(
+    shared_worker, publication, monkeypatch, held
+):
+    from reflexio.server.llm.compute_admission import ComputeTransitionInterruptedError
+    from reflexio.server.services.storage.storage_base.learning_transition import (
+        _change_learning_policy_authority_db,
+    )
+    from tests.server.services.durable_learning.test_learning_admission_integration import (
+        seal,
+    )
+
+    storage, worker, kind, _, events = publication
+    worker.request_context.configurator.get_config().pending_tool_call_config.max_finalization_attempts = (
+        2 if held else 1
+    )
+    service_type = (
+        ProfileGenerationService if kind == "profile" else PlaybookGenerationService
+    )
+    resolve = service_type._resolve_write_plan
+    computes, actor_calls = [], []
+
+    def interrupted(self, groups):
+        plan = resolve(self, groups)  # Existing physical admission creates receipt.
+        computes.append(1)
+        if len(computes) == 1:
+            if held:
+                seal(storage)
+                raise ComputeTransitionInterruptedError("Value-free transition hold")
+            raise RuntimeError("Synthetic genuine preparation failure")
+        return plan
+
+    def actor(**kwargs):
+        actor_calls.append(1)
+        return base._loop_result(kwargs, kind, storage, nonempty=True)
+
+    monkeypatch.setattr(service_type, "_resolve_write_plan", interrupted)
+    monkeypatch.setattr(
+        "reflexio.server.services.extraction.resumable_agent.run_tool_loop", actor
+    )
+    assert shared_worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == (
+        0 if held else 1
+    )
+    after = storage.get_agent_run("run_1")
+    assert after.committed_output is not None
+    saved_output = after.committed_output
+    pending = storage.conn.execute(
+        "SELECT active_attempt FROM _agent_output_preparations WHERE run_id='run_1'"
+    ).fetchone()
+    assert computes == actor_calls == [1]
+    assert not base._learnings(storage, kind)
+    if not held:
+        assert after.status == AgentRunStatus.FAILED
+        assert after.finalization_attempts == 1
+        assert pending is None
+        return
+    assert after.status == AgentRunStatus.FINALIZATION_FAILED
+    assert (
+        after.finalization_attempts == 0
+        and after.last_error == "learning_transition_held"
+    )
+    assert pending is not None and pending["active_attempt"] is not None
+    saved_entry = pending["active_attempt"]
+    # Waiting under the seal preserves, rather than settles/refunds, that entry.
+    assert shared_worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 0
+    assert (
+        storage.conn.execute(
+            "SELECT active_attempt FROM _agent_output_preparations WHERE run_id='run_1'"
+        ).fetchone()["active_attempt"]
+        == saved_entry
+    )
+    with storage._learning_policy_authority_scope() as (db, root):
+        _change_learning_policy_authority_db(
+            db,
+            action="abort",
+            operation_id="release",
+            expected_nonce=root.authority_nonce,
+            expected_generation=root.generation,
+        )
+    # Existing next-owner reconciliation charges the abandoned physical work
+    # once, then ordinary publication retries without rerunning the actor.
+    for _ in range(6):
+        shared_worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300)
+        if storage.get_agent_run("run_1").status == AgentRunStatus.FINALIZED:
+            break
+    result = storage.get_agent_run("run_1")
+    assert result.status == AgentRunStatus.FINALIZED
+    assert result.finalization_attempts == 1
+    assert result.committed_output == saved_output
+    assert computes == [1, 1] and actor_calls == [1]
+    assert len(base._learnings(storage, kind)) == 1
+    assert shared_worker.drain_org(storage.org_id, batch_size=6, lease_seconds=300) == 0
+    assert storage.get_agent_run("run_1").finalization_attempts == 1
+    assert computes == [1, 1]

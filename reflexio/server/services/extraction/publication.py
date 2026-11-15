@@ -92,11 +92,16 @@ def settle_finalization_failure(
     """One allowance/deferral rule for initial and resumed publication owners.
 
     Input contention, unavailable readiness and a provider outage (the charging
-    invariant in ``provider_circuit``) defer without spending an attempt; every
-    other failure is charged against ``max_attempts``.
+    invariant in ``provider_circuit``) defer without spending an attempt. Typed
+    transition holds additionally preserve pending physical preparation entries
+    for their existing next-owner reconciliation; they neither refund work nor
+    add a method-failure debit. Other failures spend ``max_attempts``.
     """
     from reflexio.server.llm.compute_admission import ComputeAdmissionError
     from reflexio.server.llm.failure import OutageWait, classify_llm_failure
+    from reflexio.server.services.durable_learning.learning_admission import (
+        learning_transition_is_held,
+    )
     from reflexio.server.services.storage.error import (
         ReadinessUnavailableError,
         execution_input_is_busy,
@@ -106,18 +111,23 @@ def settle_finalization_failure(
     if isinstance(reason, LeaseLostError):
         raise reason
     with owned_agent_run_write(storage, run):
+        held = learning_transition_is_held(reason)
         busy = execution_input_is_busy(reason)
-        # Do not settle or replace a prepared result on input contention.
-        entry = None if busy else storage.pending_agent_preparation_attempt(run)
+        # Holds preserve the exact physical preparation entry and any returned
+        # evidence. Do not refund/delete it or call a seal a method failure;
+        # its existing owner still settles abandoned physical work later.
+        entry = None if busy or held else storage.pending_agent_preparation_attempt(run)
         readiness = isinstance(reason, ReadinessUnavailableError) and entry is None
         # Preparation calls the model; a route that is down for everyone is
         # not this run's failure, whether or not preparation had started.
-        verdict = None if busy else classify_llm_failure(reason)
+        verdict = None if busy or held else classify_llm_failure(reason)
         outage_wait = verdict.delay_seconds if isinstance(verdict, OutageWait) else None
-        charge = not (busy or readiness or outage_wait is not None)
+        charge = not (held or busy or readiness or outage_wait is not None)
         count = run.finalization_attempts + int(charge)
         now = datetime.now(UTC)
-        if busy:
+        if held:
+            next_at, last_error = now, "learning_transition_held"
+        elif busy:
             next_at, last_error = now, "ExecutionInputBusyError"
         elif readiness:
             next_at, last_error = (
@@ -441,6 +451,24 @@ def _publish_agent_output(
     origin: Literal["initial_inline", "resume"],
 ) -> tuple[AgentRunRecord, FinalizationResult, PreparedPublication | None]:
     """Own replay/preparation, atomic publication and postcommit obligations."""
+    from reflexio.server.services.durable_learning.user_lease import agent_run_user_work
+
+    with agent_run_user_work(storage, run):
+        return _publish_admitted_output(
+            storage, run, prepare=prepare, on_published=on_published, origin=origin
+        )
+
+
+def _publish_admitted_output(
+    storage: BaseStorage,
+    run: AgentRunRecord,
+    *,
+    prepare: Callable[
+        [AgentRunRecord, SavedPublicationPreparation | None], PreparedPublication
+    ],
+    on_published: Callable[[AgentRunRecord, PreparedPublication | None], None],
+    origin: Literal["initial_inline", "resume"],
+) -> tuple[AgentRunRecord, FinalizationResult, PreparedPublication | None]:
     if storage.in_commit_scope:
         raise RuntimeError("Agent output publication requires its own outer writer")
     retained = deepcopy(run)
@@ -480,7 +508,15 @@ def _publish_agent_output(
     receipt: PublicationReceipt | None = None
     history_deadline: int | None = None
     try:
-        with owned_agent_run_write(storage, retained), storage._stream_sql() as db:
+        from reflexio.server.services.durable_learning.learning_admission import (
+            learning_business_write,
+        )
+
+        with (
+            learning_business_write(storage),
+            owned_agent_run_write(storage, retained),
+            storage._stream_sql() as db,
+        ):
             storage._require_current_agent_output(db, retained, output)
             receipt = storage._get_output_publication_receipt(
                 db, retained.id, output_id

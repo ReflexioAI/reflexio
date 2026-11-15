@@ -30,6 +30,8 @@ from reflexio.server.work_scope import current_project_id
 
 Kind = Literal["profile", "playbook"]
 KINDS: tuple[Kind, ...] = ("profile", "playbook")
+USER_WORK_CLAIM_PROTOCOL_SETTING = "reflexio.learning_work_protocol"
+USER_WORK_CLAIM_PROTOCOL = "v1"
 
 # SQL transport page, not a supported source-count ceiling or timing policy.
 # Fits SQLite's historical 999-variable floor with the two scope parameters.
@@ -95,6 +97,8 @@ class StreamSQL(Protocol):
     """Parameterised queries; identifiers are resolved by the backend."""
 
     def query(self, sql: str, params: tuple = ()) -> list[dict[str, Any]]: ...
+    def user_work_claim_protocol(self) -> AbstractContextManager[None]: ...
+    def learning_transition_write_protocol(self) -> AbstractContextManager[None]: ...
     def table(self, name: str) -> str: ...
     def publication_order(self) -> str: ...
     def resume_json_predicates(self) -> tuple[str, str]: ...
@@ -108,6 +112,19 @@ class StreamSQL(Protocol):
     def transition_run_witness_columns(self) -> str: ...
     def transition_project_scope(self, source: str) -> tuple[str, str]: ...
     def transition_unbound_project(self) -> str: ...
+    def lock_learning_policy_authority(self, *, exclusive: bool) -> None: ...
+    def read_learning_policy_authority(self) -> dict[str, Any] | None: ...
+    def write_learning_policy_authority(
+        self, payload: str, *, missing: bool
+    ) -> None: ...
+    def learning_transition_project(self, project_id: str | None = None) -> str: ...
+    def extraction_project_scope(
+        self, project_id: str
+    ) -> AbstractContextManager[None]: ...
+    def lock_learning_transition(self, key: str) -> None: ...
+    def insert_learning_transition(
+        self, key: str, project: str, payload: str
+    ) -> None: ...
     def transition_json_scalar(self, field: str) -> str: ...
     def erasure_run_columns(self) -> str: ...
     def expiry_question_columns(self) -> str: ...
@@ -322,6 +339,38 @@ def validate_extraction_overflow_manifest(manifest: Any) -> dict[str, Any]:
     return manifest
 
 
+def _require_learning_claim_db(db: StreamSQL, *, org_id: str, user_id: str) -> None:
+    """Scheduling admission on the candidate's existing W -> root writer.
+
+    This creates no execution permission. Selected work still proves its exact
+    grant/original native witness after the actual user lease is acquired.
+    """
+    from reflexio.server.services.durable_learning.selected_learning import (
+        selected_claim_matches_authority,
+    )
+    from reflexio.server.services.extraction.profile_authoring_protocol import (
+        PROFILE_AUTHORING_POLICY,
+    )
+
+    from .learning_transition import LearningTransitionBlockedError, _read_authority
+
+    db.lock_learning_policy_authority(exclusive=False)
+    authority = _read_authority(db)
+    if authority is None or authority.active_policy != PROFILE_AUTHORING_POLICY:
+        raise LearningTransitionBlockedError(
+            "Learning claim requires current dataset source authority"
+        )
+    if authority.phase == "open":
+        return
+    if authority.phase == "sealed" and selected_claim_matches_authority(
+        authority, org_id=org_id, user_id=user_id
+    ):
+        return
+    raise LearningTransitionBlockedError(
+        "Dataset policy transition holds new learning claims"
+    )
+
+
 def lock_user_work_row(db: StreamSQL, org_id: str, user_id: str) -> None:
     """Join the caller's writer; serialize even a previously absent user row."""
     work = db.table("learning_work")
@@ -444,12 +493,16 @@ class ExtractionStreamStore:
             )
             if not rows:
                 return None
-            user_id, token = rows[0]["user_id"], uuid.uuid4().hex
-            db.query(
-                f"UPDATE {work} SET lease_token=?,lease_owner=?,lease_until=?,last_turn=? "
-                "WHERE org_id=? AND user_id=?",
-                (token, owner, now + lease_seconds, now, self.org_id, user_id),
-            )
+            user_id = rows[0]["user_id"]
+            _require_learning_claim_db(db, org_id=self.org_id, user_id=user_id)
+            # Root admission may have waited; start the lease on a fresh clock.
+            now, token = db.now(), uuid.uuid4().hex
+            with db.user_work_claim_protocol():
+                db.query(
+                    f"UPDATE {work} SET lease_token=?,lease_owner=?,lease_until=?,last_turn=? "
+                    "WHERE org_id=? AND user_id=?",
+                    (token, owner, now + lease_seconds, now, self.org_id, user_id),
+                )
             return user_id, token
 
     def _live_user_work_clock(
@@ -929,6 +982,8 @@ class ExtractionStreamStore:
         return window, 0
 
     def prepare_extraction(self, user_id: str, token: str) -> Window | None:
+        from .learning_transition import fence_learning_transition_db
+
         with self._stream_sql(discovery=True) as db:
             self._fence(db, user_id, token)
             now = db.now()
@@ -951,46 +1006,50 @@ class ExtractionStreamStore:
                     next_due = min(next_due, cursor["retry_at"])
                     waiting_on_failure = True
                     continue
-                if cursor["window_id"]:
-                    rows = db.query(
-                        f"SELECT * FROM {db.table('extraction_windows')} WHERE window_id=?",
-                        (cursor["window_id"],),
+                with db.extraction_project_scope(cursor["project_id"] or ""):
+                    fence_learning_transition_db(
+                        db, org_id=self.org_id, project_id=cursor["project_id"] or ""
                     )
-                    return replace(
-                        Window.from_row(rows[0]),
-                        attempts=int(cursor["attempts"] or 0),
+                    if cursor["window_id"]:
+                        rows = db.query(
+                            f"SELECT * FROM {db.table('extraction_windows')} WHERE window_id=?",
+                            (cursor["window_id"],),
+                        )
+                        return replace(
+                            Window.from_row(rows[0]),
+                            attempts=int(cursor["attempts"] or 0),
+                        )
+                    deadlines: list[float] = []
+                    window, _ = self._select(
+                        db, user_id, cursor["kind"], cursor, deadlines=deadlines
                     )
-                deadlines: list[float] = []
-                window, _ = self._select(
-                    db, user_id, cursor["kind"], cursor, deadlines=deadlines
-                )
-                if deadlines:
-                    next_due = min(next_due, *deadlines)
-                if window is None:
-                    continue
-                db.query(
-                    f"INSERT INTO {db.table('extraction_windows')} "
-                    "(window_id,user_id,kind,predecessor,end_seq,manifest,policy,force,skip_aggregation,project_id,org_id) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        window.window_id,
-                        user_id,
-                        window.kind,
-                        window.predecessor,
-                        window.end_seq,
-                        json.dumps(window.manifest),
-                        json.dumps(window.policy),
-                        int(window.force),
-                        int(window.skip_aggregation),
-                        window.project_id,
-                        self.org_id,
-                    ),
-                )
-                db.query(
-                    f"UPDATE {db.table('extraction_cursors')} SET window_id=? WHERE user_id=? AND kind=? AND project_id=?",
-                    (window.window_id, user_id, window.kind, window.project_id),
-                )
-                return replace(window, attempts=int(cursor["attempts"] or 0))
+                    if deadlines:
+                        next_due = min(next_due, *deadlines)
+                    if window is None:
+                        continue
+                    db.query(
+                        f"INSERT INTO {db.table('extraction_windows')} "
+                        "(window_id,user_id,kind,predecessor,end_seq,manifest,policy,force,skip_aggregation,project_id,org_id) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            window.window_id,
+                            user_id,
+                            window.kind,
+                            window.predecessor,
+                            window.end_seq,
+                            json.dumps(window.manifest),
+                            json.dumps(window.policy),
+                            int(window.force),
+                            int(window.skip_aggregation),
+                            window.project_id,
+                            self.org_id,
+                        ),
+                    )
+                    db.query(
+                        f"UPDATE {db.table('extraction_cursors')} SET window_id=? WHERE user_id=? AND kind=? AND project_id=?",
+                        (window.window_id, user_id, window.kind, window.project_id),
+                    )
+                    return replace(window, attempts=int(cursor["attempts"] or 0))
             # Same row lock as ingestion: publication either precedes this
             # inspection or follows this update and sets due_at=0 again.
             #
@@ -2210,13 +2269,15 @@ class ExtractionStreamStore:
         # Keep the stream lock, clock and token assignment on one transaction.
         with self.commit_scope(), self._stream_sql() as db:
             self.lock_extraction_stream(user_id)
+            _require_learning_claim_db(db, org_id=self.org_id, user_id=user_id)
             token = uuid.uuid4().hex
             now = db.now()
-            rows = db.query(
-                f"UPDATE {db.table('learning_work')} SET lease_token=?,lease_owner=?,lease_until=? "
-                "WHERE org_id=? AND user_id=? AND lease_until<=? RETURNING user_id",
-                (token, owner, now + seconds, self.org_id, user_id, now),
-            )
+            with db.user_work_claim_protocol():
+                rows = db.query(
+                    f"UPDATE {db.table('learning_work')} SET lease_token=?,lease_owner=?,lease_until=? "
+                    "WHERE org_id=? AND user_id=? AND lease_until<=? RETURNING user_id",
+                    (token, owner, now + seconds, self.org_id, user_id, now),
+                )
             return token if rows else None
 
     def release_user_extraction(self, user_id: str, token: str) -> None:

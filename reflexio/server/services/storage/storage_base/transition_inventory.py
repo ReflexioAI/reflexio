@@ -47,6 +47,10 @@ InventoryReason = Literal[
     "unproven_admission",
     "live_owner",
     "unknown_project",
+    "cursor_completion_unproven",
+    "cursor_source_unproven",
+    "uncovered_cursor_source",
+    "cursor_execution_debt",
 ]
 _RUN_FACTS: tuple[InventoryReason, ...] = (
     "dependency",
@@ -82,6 +86,8 @@ _UNKNOWN = {
     "unreceipted_output",
     "overflow_requires_inspection",
     "unproven_admission",
+    "cursor_completion_unproven",
+    "cursor_source_unproven",
 }
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _SCHEMA = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,127}\Z")
@@ -123,6 +129,140 @@ class TransitionInventoryPage:
 
 class TransitionInventoryScopeError(ValueError):
     """The storage route cannot attribute this source without exposing identifiers."""
+
+
+@dataclass(frozen=True)
+class TransitionInventoryAttribution:
+    """Internal owner-produced binding, never a user-supplied verification claim.
+
+    The enterprise discovery owner validates the complete roster, project and
+    actual routes before and after a page. This value binds that operation to
+    its exact storage writer; it grants neither execution nor fleet readiness.
+    """
+
+    org_id: str
+    project_id: str
+    route: object
+
+
+def _attributed_cursors(
+    db: StreamSQL,
+    attribution: TransitionInventoryAttribution,
+    after: tuple[str, ...] | None,
+    limit: int,
+) -> TransitionInventoryPage:
+    """Observe retained cursor lineage in one statement, including empty pages."""
+    if after is not None and (
+        not isinstance(after, tuple)
+        or len(after) != 3
+        or not all(isinstance(value, str) for value in after)
+    ):
+        raise ValueError("Invalid transition inventory cursor")
+    windows, cursors = db.table("extraction_windows"), db.table("extraction_cursors")
+    requests, interactions = db.table("requests"), db.table("interactions")
+    runs = db.table("_agent_runs")
+    work = db.table("learning_work")
+    now = db.now()
+    # Reuse native eligibility/project/admission projections. SQLite has no
+    # project-bearing source tables, and its adapter supplies the neutral scope.
+    project = db.project_filter("q").replace("?", "scope.project_id")
+    eligible = (
+        "CASE r.kind "
+        + " ".join(
+            f"WHEN '{kind}' THEN ({db.eligible(kind).replace('r.', 'q.')})"
+            for kind in ("profile", "playbook")
+        )
+        + " END"
+    )
+    maximum = db.admission_value("max_seq").replace("r.", "q.")
+    minimum = db.admission_value("min_seq").replace("r.", "q.")
+    admitted = db.admission_value("admitted_at").replace("r.", "q.")
+    source = f"{requests} q WHERE q.user_id=r.user_id AND ({project})"
+    input_project = db.project_filter("i").replace("?", "scope.project_id")
+    input_scope = (
+        f"i.user_id=q.user_id AND i.request_id=q.request_id AND ({input_project})"
+    )
+    matching = (
+        "w.org_id=scope.org_id AND w.user_id=r.user_id AND w.kind=r.kind "
+        "AND w.project_id=r.project_id AND w.completed=1 AND w.invalidated=0 "
+        "AND w.effects_done=1"
+        f" AND w.completed_at>=0 AND w.completed_at<={now!r} "
+        "AND w.predecessor>=0 AND w.end_seq>w.predecessor"
+    )
+    # This is the acceptance-to-coverage predicate in learning_completion._page:
+    # a cursor counter alone is insufficient without its completed-window receipt.
+    coverage = (
+        f"EXISTS(SELECT 1 FROM {windows} w WHERE {matching} "
+        f"AND w.predecessor<{maximum} AND w.end_seq>={maximum} "
+        f"AND w.completed_at>={admitted})"
+    )
+    _, _, _, run_columns = _projection(db, "runs", now)
+    run_project = (
+        db.project_filter().replace("r.", "a.").replace("?", "scope.project_id")
+    )
+    run_debt = (
+        f"EXISTS(SELECT 1 FROM (SELECT {run_columns.replace('r.', 'a.')} "
+        f"FROM {runs} a WHERE a.org_id=scope.org_id AND a.user_id=r.user_id "
+        "AND a.extractor_kind=r.kind "
+        f"AND ({run_project})) facts WHERE facts.status NOT IN ('finalized','failed','expired','cancelled') "
+        "OR facts.dependency OR facts.preparation OR facts.debt OR facts.window "
+        "OR (facts.saved_output AND NOT facts.published AND NOT facts.legacy_published) "
+        "OR (facts.overflow AND NOT facts.overflow_retired AND NOT facts.published))"
+    )
+    unsafe = (
+        # Full-source guard is not narrowed by the caller's after cursor.
+        f"EXISTS(SELECT 1 FROM {cursors} c WHERE COALESCE(c.project_id,'')='' "
+        "AND scope.project_id<>'') OR "
+        f"EXISTS(SELECT 1 FROM {runs} a WHERE a.org_id<>scope.org_id "
+        f"AND ({run_project})) OR "
+        f"EXISTS(SELECT 1 FROM {windows} w WHERE w.project_id=scope.project_id "
+        "AND (w.org_id IS NULL OR w.org_id<>scope.org_id))"
+    )
+    boundary = (
+        " AND (r.user_id,r.kind,r.project_id)>(?,?,?)" if after is not None else ""
+    )
+    statement = (
+        "WITH scope AS (SELECT ? AS org_id,? AS project_id) "
+        f"SELECT page.*,({unsafe}) AS inventory_unsafe FROM scope LEFT JOIN ("
+        "SELECT r.user_id AS key0,r.kind AS key1,r.project_id AS key2,"
+        "r.user_id,r.project_id,r.window_id,r.started,r.attempts,r.retry_at,"
+        "r.last_error IS NOT NULL AS held,r.completed_seq,"
+        f"EXISTS(SELECT 1 FROM {windows} w WHERE {matching} "
+        "AND w.end_seq=r.completed_seq AND r.started=1) AS completion_proven,"
+        f"EXISTS(SELECT 1 FROM {source} AND ({eligible}) AND {maximum}>r.completed_seq) AS uncovered_source,"
+        f"EXISTS(SELECT 1 FROM {source} AND (q.learning_admission IS NULL OR ({eligible}) IS NULL "
+        f"OR (({eligible}) AND ({maximum} IS NULL OR {minimum} IS NULL OR {admitted} IS NULL "
+        f"OR {admitted}<0 OR {admitted}>{now!r} "
+        f"OR {maximum}<{minimum} OR NOT ({coverage}) "
+        f"OR (SELECT COUNT(*) FROM {interactions} i WHERE {input_scope})<>{maximum}-{minimum}+1 "
+        f"OR (SELECT MAX(i.ingestion_seq) FROM {interactions} i WHERE {input_scope})<>{maximum})))) AS source_unproven,"
+        f"({run_debt} OR EXISTS(SELECT 1 FROM {windows} w WHERE w.org_id=scope.org_id "
+        "AND w.user_id=r.user_id AND w.kind=r.kind AND w.project_id=r.project_id "
+        "AND (w.completed=0 OR w.effects_done=0))) AS execution_debt,"
+        f"EXISTS(SELECT 1 FROM {work} u WHERE u.org_id=scope.org_id "
+        f"AND u.user_id=r.user_id AND u.lease_until>{now!r}) AS live_owner "
+        f"FROM {cursors} r CROSS JOIN scope WHERE r.project_id=scope.project_id{boundary} "
+        "ORDER BY r.user_id,r.kind,r.project_id LIMIT ?) page ON 1=1 "
+        "ORDER BY page.key0,page.key1,page.key2"
+    )
+    rows = db.query(
+        statement, (attribution.org_id, attribution.project_id, *(after or ()), limit)
+    )
+    if not rows or any(row["inventory_unsafe"] for row in rows):
+        raise TransitionInventoryScopeError(
+            "Transition inventory source attribution is unavailable"
+        )
+    items = []
+    previous = after
+    for row in rows:
+        if row["key0"] is None:
+            continue
+        key = tuple(str(row[f"key{i}"]) for i in range(3))
+        if previous is not None and key <= previous:
+            raise ValueError("Transition inventory page did not advance")
+        items.append(_item("cursors", key, row))
+        previous = key
+    return TransitionInventoryPage(tuple(items), previous if items else None, not items)
 
 
 def _ambiguity(
@@ -272,6 +412,31 @@ def _run_reasons(row: dict) -> list[InventoryReason]:
     return reasons
 
 
+def _cursor_reasons(row: dict) -> list[InventoryReason]:
+    reasons: list[InventoryReason] = []
+    if row["window_id"] or row["started"] > row["completed_seq"] or row["held"]:
+        reasons.append(
+            "parked_cursor"
+            if row["retry_at"] == float("inf")
+            else "held_cursor"
+            if row["held"]
+            else "unfinished_cursor"
+        )
+    if "completion_proven" in row:
+        facts: tuple[tuple[bool, InventoryReason], ...] = (
+            (not row["completion_proven"], "cursor_completion_unproven"),
+            (row["source_unproven"], "cursor_source_unproven"),
+            (row["uncovered_source"], "uncovered_cursor_source"),
+            (row["execution_debt"], "cursor_execution_debt"),
+        )
+        for condition, reason in facts:
+            if condition:
+                reasons.append(reason)
+        if (row["attempts"] > 0 or row["retry_at"] > 0) and not reasons:
+            reasons.append("unfinished_cursor")
+    return reasons
+
+
 def _item(
     source: InventorySource, key: tuple[str, ...], row: dict
 ) -> TransitionInventoryItem:
@@ -288,14 +453,7 @@ def _item(
         if row["unknown_route"]:
             reasons.append("unknown_route")
     elif source == "cursors":
-        if row["window_id"] or row["started"] > row["completed_seq"] or row["held"]:
-            reasons.append(
-                "parked_cursor"
-                if row["retry_at"] == float("inf")
-                else "held_cursor"
-                if row["held"]
-                else "unfinished_cursor"
-            )
+        reasons.extend(_cursor_reasons(row))
     elif source == "dependencies":
         if not row["consumed"]:
             reasons.append(
@@ -317,7 +475,7 @@ def _item(
             reasons.append("pending_admission")
         if row["unproven_admission"]:
             reasons.append("unproven_admission")
-    if row.get("live_owner") and (reasons or source == "work"):
+    if row.get("live_owner") and (reasons or source in {"work", "cursors"}):
         reasons.append("live_owner")
     if (
         reasons
@@ -373,6 +531,7 @@ def _item(
 class TransitionInventoryStore:
     org_id: str
     _independent_writer_metadata_sql: Any
+    _durable_work_route: Any
 
     def transition_inventory_page(
         self,
@@ -380,6 +539,7 @@ class TransitionInventoryStore:
         *,
         after: tuple[str, ...] | None = None,
         limit: int = 100,
+        attribution: TransitionInventoryAttribution | None = None,
     ) -> TransitionInventoryPage:
         """One bounded metadata page; only an empty page proves exhaustion.
 
@@ -398,57 +558,97 @@ class TransitionInventoryStore:
         ):
             raise ValueError("Invalid transition inventory page")
         with self._independent_writer_metadata_sql() as db:
-            table, keys, scope, columns = _projection(db, source, db.now())
-            if after is not None and (
-                not isinstance(after, tuple)
-                or len(after) != len(keys)
-                or not all(isinstance(k, str) for k in after)
-            ):
-                raise ValueError("Invalid transition inventory cursor")
-            params: tuple = (self.org_id,)
-            if source == "windows":
-                # Projection's live-owner placeholder precedes WHERE bindings.
-                params = (self.org_id, self.org_id)
-            project_column, project_scope = db.transition_project_scope(source)
-            ambiguity, ambiguity_params = _ambiguity(
-                db, source, self.org_id, current_project_id() or ""
+            if attribution is not None:
+                if (
+                    attribution.org_id != self.org_id
+                    or attribution.project_id != (current_project_id() or "")
+                    or attribution.route != self._durable_work_route()
+                ):
+                    raise TransitionInventoryScopeError(
+                        "Transition inventory scope binding changed"
+                    )
+                if source == "cursors":
+                    return _attributed_cursors(db, attribution, after, limit)
+            return read_transition_inventory_page_db(
+                db,
+                source,
+                org_id=self.org_id,
+                project_id=current_project_id() or "",
+                after=after,
+                limit=limit,
             )
-            project = f" AND {project_scope}"
-            params += (current_project_id() or "",)
-            cursor_sql = ""
-            if after is not None:
-                cursor_sql = (
-                    f" AND ({','.join(keys)})>({','.join('?' for _ in keys)})"
-                    if len(keys) > 1
-                    else f" AND {keys[0]}>?"
-                )
-                params += after
-            key_columns = ",".join(f"{key} AS key{i}" for i, key in enumerate(keys))
-            # SQLite's runs/dependencies have no project_id; the adapter owns
-            # that dialect distinction along with witness scalar projection.
-            page_statement = (
-                f"SELECT {key_columns},{project_column},{columns} FROM {table} r "
-                f"WHERE {scope}{project}{cursor_sql} ORDER BY {','.join(keys)} LIMIT ?"
-            )
-            guarded = db.query(
-                f"SELECT page.*,({ambiguity}) AS inventory_unsafe FROM (SELECT 1) guard "
-                f"LEFT JOIN ({page_statement}) page ON 1=1 ORDER BY "
-                + ",".join(f"page.key{i}" for i in range(len(keys))),
-                (*ambiguity_params, *params, limit),
-            )
-            if not guarded or any(row["inventory_unsafe"] for row in guarded):
-                raise TransitionInventoryScopeError(
-                    "Transition inventory source attribution is unavailable"
-                )
-            rows = [row for row in guarded if row["key0"] is not None]
-            items = []
-            previous = after
-            for row in rows:
-                key = tuple(str(row[f"key{i}"]) for i in range(len(keys)))
-                if previous is not None and key <= previous:
-                    raise ValueError("Transition inventory page did not advance")
-                items.append(_item(source, key, row))
-                previous = key
-            return TransitionInventoryPage(
-                tuple(items), previous if rows else None, not rows
-            )
+
+
+def read_transition_inventory_page_db(
+    db: StreamSQL,
+    source: InventorySource,
+    *,
+    org_id: str,
+    project_id: str,
+    after: tuple[str, ...] | None = None,
+    limit: int = 100,
+) -> TransitionInventoryPage:
+    """Read through the caller's existing writer, without opening or committing.
+
+    Used by the fixed closure owner while the project control is locked. It
+    preserves the raw observer's conservative cursor/route interpretation; it
+    grants neither routing authority nor a whole-fleet readiness receipt.
+    """
+    if (
+        source not in INVENTORY_SOURCES
+        or type(limit) is not int
+        or not 1 <= limit <= 500
+    ):
+        raise ValueError("Invalid transition inventory page")
+    if project_id != (current_project_id() or ""):
+        raise TransitionInventoryScopeError("Transition inventory project changed")
+    table, keys, scope, columns = _projection(db, source, db.now())
+    if after is not None and (
+        not isinstance(after, tuple)
+        or len(after) != len(keys)
+        or not all(isinstance(k, str) for k in after)
+    ):
+        raise ValueError("Invalid transition inventory cursor")
+    params: tuple = (org_id,)
+    if source == "windows":
+        # Projection's live-owner placeholder precedes WHERE bindings.
+        params = (org_id, org_id)
+    project_column, project_scope = db.transition_project_scope(source)
+    ambiguity, ambiguity_params = _ambiguity(db, source, org_id, project_id)
+    project = f" AND {project_scope}"
+    params += (project_id,)
+    cursor_sql = ""
+    if after is not None:
+        cursor_sql = (
+            f" AND ({','.join(keys)})>({','.join('?' for _ in keys)})"
+            if len(keys) > 1
+            else f" AND {keys[0]}>?"
+        )
+        params += after
+    key_columns = ",".join(f"{key} AS key{i}" for i, key in enumerate(keys))
+    # SQLite's runs/dependencies have no project_id; the adapter owns
+    # that dialect distinction along with witness scalar projection.
+    page_statement = (
+        f"SELECT {key_columns},{project_column},{columns} FROM {table} r "
+        f"WHERE {scope}{project}{cursor_sql} ORDER BY {','.join(keys)} LIMIT ?"
+    )
+    guarded = db.query(
+        f"SELECT page.*,({ambiguity}) AS inventory_unsafe FROM (SELECT 1) guard "
+        f"LEFT JOIN ({page_statement}) page ON 1=1 ORDER BY "
+        + ",".join(f"page.key{i}" for i in range(len(keys))),
+        (*ambiguity_params, *params, limit),
+    )
+    if not guarded or any(row["inventory_unsafe"] for row in guarded):
+        raise TransitionInventoryScopeError(
+            "Transition inventory source attribution is unavailable"
+        )
+    rows = [row for row in guarded if row["key0"] is not None]
+    items = []
+    previous = after
+    for row in rows:
+        key = tuple(str(row[f"key{i}"]) for i in range(len(keys)))
+        if previous is not None and key <= previous:
+            raise ValueError("Transition inventory page did not advance")
+        items.append(_item(source, key, row))
+        previous = key
+    return TransitionInventoryPage(tuple(items), previous if rows else None, not rows)

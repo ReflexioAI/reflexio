@@ -124,7 +124,14 @@ class ProfilePackageWindowExecutor(WindowExecutor):
         return _PackageProfileService(self.client, self.context)
 
     def _coordinator(
-        self, window: Window, token: str, service: Any, request: Any, config: Any
+        self,
+        window: Window,
+        token: str,
+        service: Any,
+        request: Any,
+        config: Any,
+        *,
+        preview_only: bool = False,
     ) -> _ProfilePackageCoordinator:
         from reflexio.server.services.durable_learning.user_lease import (
             adopt_agent_run_for_execution,
@@ -294,39 +301,47 @@ class ProfilePackageWindowExecutor(WindowExecutor):
             manifest is None or manifest["input_protocol"] != descriptor
         ):
             raise InputBudgetConfigurationError("Profile package admission changed")
-        with self.storage.commit_scope():
-            self.storage.fence_user_extraction(window.user_id, token)
-            self.storage.validate_extraction_inputs(window)
-            self.storage.validate_extraction_source_digest(window, plan.source_digest)
-            self.storage.validate_extraction_answers(
-                prior.answer_witnesses if prior else {}
-            )
-            witnesses = {row.profile_id: profile_witness(row) for row in profiles}
-            self.storage.validate_extraction_historical_profiles(window, witnesses)
+        if preview_only:
             if known is None:
-                manifest = OverflowCoordinator.initial_package_manifest(
-                    plan.source_digest, descriptor
+                raise InputBudgetConfigurationError(
+                    "Original profile parent unavailable"
                 )
-                manifest["checkpoint"].update(
-                    answer_witnesses=prior.answer_witnesses if prior else {},
-                    historical_profiles=witnesses,
+        else:
+            with self.storage.commit_scope():
+                self.storage.fence_user_extraction(window.user_id, token)
+                self.storage.validate_extraction_inputs(window)
+                self.storage.validate_extraction_source_digest(
+                    window, plan.source_digest
                 )
-                expected = replace(expected, id=f"window:{window.window_id}")
-                expected.generation_request_snapshot.update(
-                    overflow=manifest,
-                    profile_package_preparation=preparation.snapshot,
-                    profile_dedup_template=template,
+                self.storage.validate_extraction_answers(
+                    prior.answer_witnesses if prior else {}
                 )
-                known = create_owned_agent_run(self.storage, expected)
-                if (
-                    known.generation_request_snapshot
-                    != expected.generation_request_snapshot
-                ):
-                    raise InputBudgetConfigurationError(
-                        "Profile parent admission lost ownership"
+                witnesses = {row.profile_id: profile_witness(row) for row in profiles}
+                self.storage.validate_extraction_historical_profiles(window, witnesses)
+                if known is None:
+                    manifest = OverflowCoordinator.initial_package_manifest(
+                        plan.source_digest, descriptor
                     )
-            else:
-                known = adopt_agent_run_for_execution(self.storage, known)
+                    manifest["checkpoint"].update(
+                        answer_witnesses=prior.answer_witnesses if prior else {},
+                        historical_profiles=witnesses,
+                    )
+                    expected = replace(expected, id=f"window:{window.window_id}")
+                    expected.generation_request_snapshot.update(
+                        overflow=manifest,
+                        profile_package_preparation=preparation.snapshot,
+                        profile_dedup_template=template,
+                    )
+                    known = create_owned_agent_run(self.storage, expected)
+                    if (
+                        known.generation_request_snapshot
+                        != expected.generation_request_snapshot
+                    ):
+                        raise InputBudgetConfigurationError(
+                            "Profile parent admission lost ownership"
+                        )
+                else:
+                    known = adopt_agent_run_for_execution(self.storage, known)
         if manifest is None:
             raise InputBudgetConfigurationError("Profile manifest unavailable")
         coordinator = _ProfilePackageCoordinator(

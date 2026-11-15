@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 
 from pydantic import ConfigDict, Field
@@ -10,13 +11,22 @@ from reflexio.models.api_schema.service_schemas import (
     UserPlaybook,
     UserProfile,
 )
+from reflexio.models.config_schema import Config
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.env_utils import env_bool
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
+from reflexio.server.services.durable_learning.learning_admission import (
+    LearningWork,
+    fence_learning_compute,
+    learning_business_write,
+    learning_work_scope,
+)
+from reflexio.server.services.durable_learning.user_lease import user_extraction_lease
 from reflexio.server.services.service_utils import log_llm_messages, log_model_response
 from reflexio.server.site_var.site_var_manager import SiteVarManager
+from reflexio.server.work_scope import current_project_id
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +87,40 @@ class TaggingService:
         if config is None:
             return
 
+        # A scheduled callback is fresh work; it never inherits a selected
+        # window grant or retains a writer lock across inference.
+        key = [
+            self.request_context.org_id,
+            current_project_id() or "",
+            user_id,
+            agent_version,
+        ]
+        work = LearningWork(
+            key[0], key[1], user_id, "tagging", json.dumps(key, separators=(",", ":"))
+        )
+        with (
+            user_extraction_lease(self.storage, user_id, max_wait_seconds=0),
+            learning_work_scope(self.storage, work),
+        ):
+            self._run_owned(
+                config,
+                user_id=user_id,
+                agent_version=agent_version,
+                tag_profiles=tag_profiles,
+                tag_playbooks=tag_playbooks,
+                tag_evaluations=tag_evaluations,
+            )
+
+    def _run_owned(
+        self,
+        config: Config,
+        *,
+        user_id: str,
+        agent_version: str,
+        tag_profiles: bool,
+        tag_playbooks: bool,
+        tag_evaluations: bool,
+    ) -> None:
         profile_prompt = getattr(
             config.profile_extractor_config, "tagging_definition_prompt", None
         )
@@ -128,11 +172,12 @@ class TaggingService:
                 tagging_definition_prompt=tagging_definition_prompt,
                 content=self._evaluation_content(evaluation),
             )
-            self.storage.update_agent_success_evaluation_result_tags(  # type: ignore[union-attr]
-                evaluation.result_id,
-                tags,
-                expected_result=evaluation,
-            )
+            with learning_business_write(self.storage):  # type: ignore[arg-type]
+                self.storage.update_agent_success_evaluation_result_tags(  # type: ignore[union-attr]
+                    evaluation.result_id,
+                    tags,
+                    expected_result=evaluation,
+                )
 
     def _tag_profiles(self, *, user_id: str, tagging_definition_prompt: str) -> None:
         profiles = self.storage.get_user_profile(user_id)  # type: ignore[union-attr]
@@ -143,9 +188,10 @@ class TaggingService:
                 tagging_definition_prompt=tagging_definition_prompt,
                 content=self._profile_content(profile),
             )
-            self.storage.update_user_profile_tags(  # type: ignore[union-attr]
-                user_id, profile.profile_id, tags
-            )
+            with learning_business_write(self.storage):  # type: ignore[arg-type]
+                self.storage.update_user_profile_tags(  # type: ignore[union-attr]
+                    user_id, profile.profile_id, tags
+                )
 
     def _tag_user_playbooks(
         self,
@@ -167,10 +213,11 @@ class TaggingService:
                 tagging_definition_prompt=tagging_definition_prompt,
                 content=self._playbook_content(playbook),
             )
-            self.storage.update_user_playbook(  # type: ignore[union-attr]
-                playbook.user_playbook_id,
-                tags=tags,
-            )
+            with learning_business_write(self.storage):  # type: ignore[arg-type]
+                self.storage.update_user_playbook(  # type: ignore[union-attr]
+                    playbook.user_playbook_id,
+                    tags=tags,
+                )
 
     def _tag_agent_playbooks(
         self,
@@ -190,14 +237,16 @@ class TaggingService:
                 tagging_definition_prompt=tagging_definition_prompt,
                 content=self._playbook_content(playbook),
             )
-            self.storage.update_agent_playbook(  # type: ignore[union-attr]
-                playbook.agent_playbook_id,
-                tags=tags,
-            )
+            with learning_business_write(self.storage):  # type: ignore[arg-type]
+                self.storage.update_agent_playbook(  # type: ignore[union-attr]
+                    playbook.agent_playbook_id,
+                    tags=tags,
+                )
 
     def _generate_tags(
         self, *, tagging_definition_prompt: str, content: str
     ) -> list[str]:
+        fence_learning_compute()
         if env_bool("MOCK_LLM_RESPONSE", default=False):
             return ["example_tag"]
 

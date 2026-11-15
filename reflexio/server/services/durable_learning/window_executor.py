@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from dataclasses import replace
 from typing import Any
 
@@ -362,13 +362,28 @@ class WindowExecutor:
                 OverflowCoordinator.candidate_key(chunk.text)
                 for chunk in prepared.chunks
             ]
+            run = replace(expected_run, id=f"window:{window.window_id}")
+            run.generation_request_snapshot["overflow"] = manifest
+            if window.kind == "profile":
+                from reflexio.server.services.durable_learning.ordinary_profile_preparation import (
+                    KEY,
+                    ordinary_profile_preparation,
+                )
+
+                # Unsupported layouts/adapters retain ordinary execution but
+                # acquire no selective continuation authority. Capture outside
+                # the short owner transaction and before any provider call.
+                with suppress(
+                    OSError, ValueError, TypeError, InputBudgetConfigurationError
+                ):
+                    run.generation_request_snapshot[KEY] = ordinary_profile_preparation(
+                        self, window, service, config
+                    )
             with self.storage.commit_scope():
                 self.storage.fence_user_extraction(window.user_id, token)
                 self.storage.validate_extraction_source_digest(
                     window, prepared.source_digest
                 )
-                run = replace(expected_run, id=f"window:{window.window_id}")
-                run.generation_request_snapshot["overflow"] = manifest
                 known = create_owned_agent_run(self.storage, run)
         elif known is not None:
             with self.storage.commit_scope():
@@ -538,6 +553,27 @@ class WindowExecutor:
             self._execute_owned_window(window, token)
 
     def _execute_owned_window(self, window: Window, token: str) -> None:
+        from reflexio.server.services.durable_learning.learning_admission import (
+            LearningWork,
+            learning_work_scope,
+        )
+
+        with learning_work_scope(
+            self.storage,
+            LearningWork(
+                self.storage.org_id,
+                window.project_id,
+                window.user_id,
+                "window",
+                window.window_id,
+            ),
+        ):
+            self._execute_admitted_window(window, token)
+
+    def _execute_admitted_window(self, window: Window, token: str) -> None:
+        from reflexio.server.services.durable_learning.learning_admission import (
+            learning_business_write,
+        )
         from reflexio.server.services.durable_learning.user_lease import (
             owned_agent_run_write,
         )
@@ -601,7 +637,7 @@ class WindowExecutor:
             plan.execution_run = coordinator.saved_run
             service._last_extraction_run = coordinator.saved_run
         self._preserve_ordinary_plan_notes(window, coordinator, plan)
-        with self.storage.commit_scope():
+        with learning_business_write(self.storage):
             if coordinator is not None and coordinator.saved_run is None:
                 raise OverflowCheckpointConflictError(
                     "Extraction parent execution unavailable"
@@ -749,19 +785,49 @@ class WindowExecutor:
             return adopt_agent_run_for_execution(self.storage, known)
 
     def _validate_overflow_plan(
-        self, coordinator: OverflowCoordinator, service: Any, plan: Any
+        self,
+        coordinator: OverflowCoordinator,
+        service: Any,
+        plan: Any,  # noqa: ARG002
     ) -> None:
         """Scoped consumers may fence additional frozen decision inputs."""
+        from reflexio.server.services.durable_learning.ordinary_profile_preparation import (
+            require_original_ordinary_profile_preparation,
+        )
+        from reflexio.server.services.durable_learning.selected_learning import (
+            current_selected_learning,
+        )
+
+        if (
+            current_selected_learning() is not None
+            and coordinator.saved_run is not None
+        ):
+            require_original_ordinary_profile_preparation(
+                self,
+                coordinator.window,
+                service,
+                ProfileExtractorConfig.model_validate(
+                    coordinator.window.policy["extractor"]
+                ),
+                coordinator.saved_run,
+            )
 
     def _compute_overflow_window(
         self, coordinator: OverflowCoordinator, service: Any, request: Any, config: Any
     ) -> Any:
+        from reflexio.server.services.durable_learning.ordinary_profile_preparation import (
+            original_ordinary_instruction_scope,
+        )
+
         try:
-            self._prepare_overflow_context(coordinator, config)
-            with coordinator.provider_scope():
-                if is_source_quoted_window(coordinator):
-                    return compute_source_quoted_plan(coordinator, service, config)
-                return service.compute_generation(request)
+            with original_ordinary_instruction_scope(
+                self, coordinator, service, config
+            ):
+                self._prepare_overflow_context(coordinator, config)
+                with coordinator.provider_scope():
+                    if is_source_quoted_window(coordinator):
+                        return compute_source_quoted_plan(coordinator, service, config)
+                    return service.compute_generation(request)
         except Exception as exc:
             for link in exception_chain(exc):
                 if isinstance(link, ProviderInputOverflowError):
@@ -788,7 +854,7 @@ class WindowExecutor:
         if run_ids != [f"window:{window.window_id}"]:
             raise OverflowCheckpointConflictError("Completed window changed its parent")
         from reflexio.server.services.durable_learning.user_lease import (
-            adopt_agent_run_for_execution,
+            adopt_completed_window_for_finalization,
         )
 
         with self.storage.commit_scope():
@@ -817,7 +883,7 @@ class WindowExecutor:
                 raise OverflowCheckpointConflictError(
                     "Completed window finalization receipt unavailable"
                 )
-            run = adopt_agent_run_for_execution(self.storage, run)
+            run = adopt_completed_window_for_finalization(self.storage, run, window)
             from reflexio.server.services.extraction.publication import (
                 finalize_window_execution,
             )

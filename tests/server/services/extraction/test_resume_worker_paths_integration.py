@@ -880,3 +880,59 @@ def test_tagging_is_scheduled_only_for_owned_profile_or_playbook_runs(
     )
     worker._schedule_finalized_tagging(run)
     assert recorded_tagging == []
+
+
+@pytest.mark.parametrize("retained_output", [False, True])
+def test_partial_resume_seal_is_hold_without_failure_or_refund(
+    storage, org_id, monkeypatch, retained_output
+):
+    from reflexio.server.llm.compute_admission import (
+        admit_external_compute,
+        record_compute_result,
+    )
+    from tests.server.services.durable_learning.test_learning_admission_integration import (
+        seal,
+    )
+
+    _seed_interactions(storage)
+    run_id = _seed_ready_run(storage, org_id, kind="profile")
+    context = _context(storage, org_id, max_resume_attempts=1)
+    worker = DurableLearningWorker(lambda _: context)
+    returned = {"profiles": [], "usage": {"input_tokens": 7, "output_tokens": 3}}
+    physical = MagicMock(side_effect=AssertionError("No real provider execution"))
+    monkeypatch.setattr(
+        "reflexio.server.llm.litellm_client.LiteLLMClient._completion_with_hard_timeout",
+        physical,
+    )
+    dispatches = []
+
+    def partial(resumer, run, resolved):
+        assert resolved
+        admit_external_compute()
+        dispatches.append("returned")
+        record_compute_result()
+        if retained_output:
+            resumer._update_claimed_status(
+                run.id, AgentRunStatus.AGENT_COMPLETED, committed_output=returned
+            )
+        seal(storage)
+        admit_external_compute()
+        pytest.fail("A sealed second call was admitted")
+
+    monkeypatch.setattr(ExtractionResumeWorker, "_resume_run", partial)
+    assert worker.drain_org(storage.org_id, batch_size=1, lease_seconds=300) == 0
+    after = storage.get_agent_run(run_id)
+    assert after.status == (
+        AgentRunStatus.FINALIZATION_FAILED
+        if retained_output
+        else AgentRunStatus.RESUME_READY
+    )
+    assert after.resume_attempts == 1  # Preserve only the admitted physical work.
+    assert after.finalization_attempts == 0
+    assert after.last_error == "learning_transition_held"
+    assert after.committed_output == (returned if retained_output else None)
+    assert after.next_resume_at is not None
+    assert storage.list_run_tool_dependencies(run_id)[0].consumed_at is None
+    assert dispatches == ["returned"]
+    assert storage.count_all_profiles() == 0
+    physical.assert_not_called()

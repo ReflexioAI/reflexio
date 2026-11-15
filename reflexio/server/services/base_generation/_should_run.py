@@ -238,7 +238,14 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
             )
             return decision
         except Exception as exc:
-            if getattr(self.service_config, "window_interactions", None) is not None:
+            from reflexio.server.services.durable_learning.learning_admission import (
+                learning_transition_is_held,
+            )
+
+            if (
+                learning_transition_is_held(exc)
+                or getattr(self.service_config, "window_interactions", None) is not None
+            ):
                 raise
             logger.error(
                 "Consolidated should_generate check failed for %s: %s, defaulting to run",

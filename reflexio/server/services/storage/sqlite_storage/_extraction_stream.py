@@ -1,6 +1,7 @@
 # ruff: noqa: S608 -- Migration identifiers below are fixed constants.
 """SQLite transaction adapter for durable extraction."""
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -15,6 +16,7 @@ from reflexio.server.services.storage.storage_base._extraction_stream import (
 from reflexio.server.services.storage.storage_base.agent_run._models import (
     PendingToolCallRecord,
 )
+from reflexio.server.work_scope import current_project_id
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS learning_work (
@@ -124,6 +126,16 @@ def _migrate_user_work_ownership(conn: sqlite3.Connection) -> None:
 
 
 class SQLiteStreamSQL:
+    @contextmanager
+    def learning_transition_write_protocol(self) -> Iterator[None]:
+        """SQLite serializes typed control writes through its writer owner."""
+        yield
+
+    @contextmanager
+    def user_work_claim_protocol(self) -> Iterator[None]:
+        """SQLite has no native protocol-floor trigger or session marker."""
+        yield
+
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
@@ -139,6 +151,7 @@ class SQLiteStreamSQL:
             "requests",
             "interactions",
             "_agent_runs",
+            "_operation_state",
             "_agent_run_finalization_receipts",
             "_agent_output_receipts",
             "_agent_output_preparations",
@@ -212,6 +225,55 @@ class SQLiteStreamSQL:
     def transition_unbound_project(self) -> str:
         return "0=1"  # Projects do not exist in OSS SQLite.
 
+    def lock_learning_policy_authority(self, *, exclusive: bool) -> None:  # noqa: ARG002 -- BEGIN IMMEDIATE serializes SQLite authority writers.
+        if not self.conn.in_transaction:
+            raise ValueError("Policy authority lock requires an existing transaction")
+
+    def read_learning_policy_authority(self) -> dict[str, Any] | None:
+        rows = self.query(
+            "SELECT authority FROM _learning_policy_authority WHERE singleton=1"
+        )
+        return json.loads(rows[0]["authority"]) if rows else None
+
+    def write_learning_policy_authority(self, payload: str, *, missing: bool) -> None:
+        self.lock_learning_policy_authority(exclusive=True)
+        if missing:
+            self.query(
+                "INSERT INTO _learning_policy_authority(singleton,authority) VALUES(1,?)",
+                (payload,),
+            )
+        elif (
+            len(
+                self.query(
+                    "UPDATE _learning_policy_authority SET authority=? WHERE singleton=1 RETURNING singleton",
+                    (payload,),
+                )
+            )
+            != 1
+        ):
+            raise ValueError("Dataset policy authority disappeared")
+
+    @contextmanager
+    def extraction_project_scope(self, project_id: str) -> Iterator[None]:
+        """Validate SQLite's neutral scope; it has no native project carrier."""
+        self.learning_transition_project(project_id)
+        yield
+
+    def learning_transition_project(self, project_id: str | None = None) -> str:
+        if project_id or current_project_id():
+            raise ValueError("SQLite learning transitions do not support project scope")
+        return ""
+
+    def lock_learning_transition(self, key: str) -> None:  # noqa: ARG002 -- BEGIN IMMEDIATE owns writer serialization.
+        if not self.conn.in_transaction:
+            raise ValueError("Learning transition requires a writer transaction")
+
+    def insert_learning_transition(self, key: str, project: str, payload: str) -> None:  # noqa: ARG002 -- SQLite project scope was checked before writing.
+        self.query(
+            "INSERT INTO _operation_state(service_name,operation_state) VALUES(?,?)",
+            (key, payload),
+        )
+
     def transition_json_scalar(self, field: str) -> str:
         values = {
             "output_id": "json_extract(r.committed_output,'$.publication.id')",
@@ -275,10 +337,21 @@ class SQLiteExtractionStreamMixin:
                 )
 
     @contextmanager
+    def _learning_policy_authority_sql(self) -> Iterator[StreamSQL]:
+        with self._lock:
+            self._require_independent_writer()
+            with self._stream_sql() as db:
+                yield db
+
+    @contextmanager
     def _independent_writer_metadata_sql(self) -> Iterator[StreamSQL]:
         with self._stream_sql(read_only=True) as db:
             self._require_independent_writer()
-            yield db
+            self.conn.execute("BEGIN")
+            try:
+                yield db
+            finally:
+                self.conn.rollback()
 
     @contextmanager
     def _publication_receipt_sql(

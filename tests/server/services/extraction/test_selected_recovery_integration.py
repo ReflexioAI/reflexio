@@ -60,6 +60,9 @@ def context(tmp_path, monkeypatch):
         lambda *_args: None,
     )
     store = SQLiteStorage(org_id="org", db_path=str(tmp_path / "recovery.db"))
+    from reflexio.test_support.learning_transition import qualify_empty_learning_scope
+
+    qualify_empty_learning_scope(store)
     ctx = RequestContext.__new__(RequestContext)
     ctx.org_id, ctx.storage, ctx.storage_base_dir = "org", store, None
     ctx.configurator = MagicMock()
