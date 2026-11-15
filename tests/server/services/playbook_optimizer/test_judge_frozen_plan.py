@@ -367,6 +367,8 @@ def test_frozen_judge_rejects_each_opencode_binding_before_dispatch(
         ("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/codex/other"),
         ("CLAUDE_SMART_CLI_PATH", "/owned/different-executable"),
         ("CLAUDE_SMART_CLI_TIMEOUT", "17"),
+        ("CODEX_HOME", "/owned/different-codex-account"),
+        ("CLAUDE_CONFIG_DIR", "/owned/different-claude-account"),
     ],
 )
 def test_native_frozen_policy_cannot_change_after_job_creation(
@@ -386,7 +388,31 @@ def test_native_frozen_policy_cannot_change_after_job_creation(
         "local-cli/codex/owned",
         frozen_request_plan=frozen,
     )
+    judge._assert_frozen_implementation_identities(frozen)
     monkeypatch.setenv(setting, value)
+    with pytest.raises(judge_module.FrozenEvaluatorPlanDriftError):
+        judge._assert_frozen_implementation_identities(frozen)
+
+
+def test_native_frozen_policy_binds_effective_home(monkeypatch, tmp_path):
+    # Path.home also covers Windows USERPROFILE and platform home resolution;
+    # binding only the raw HOME variable would miss those accounts.
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/codex/owned")
+    first, second = tmp_path / "first", tmp_path / "second"
+    monkeypatch.setattr(judge_module.native_model_ref.Path, "home", lambda: first)
+    prompt_manager = PromptManager()
+    client = LiteLLMClient(LiteLLMConfig(model="local-cli/codex/owned", max_tokens=32))
+    frozen = judge_module.build_pairwise_judge_request_plan(
+        prompt_manager=prompt_manager, llm_client=client, model_name=None
+    )
+    judge = PairwiseJudge(
+        cast(Any, SimpleNamespace(prompt_manager=prompt_manager)),
+        client,
+        "local-cli/codex/owned",
+        frozen_request_plan=frozen,
+    )
+    judge._assert_frozen_implementation_identities(frozen)
+    monkeypatch.setattr(judge_module.native_model_ref.Path, "home", lambda: second)
     with pytest.raises(judge_module.FrozenEvaluatorPlanDriftError):
         judge._assert_frozen_implementation_identities(frozen)
 

@@ -37,6 +37,15 @@ child environment, with stale bridge model/variant hints cleared. A host-only
 reference delegates to OpenCode's own configuration. The parent environment and
 independently invoked optimizer scripts retain their separate learning policy.
 
+Frozen native judge plans bind the effective home directory and the inherited
+`CODEX_HOME` and `CLAUDE_CONFIG_DIR` overrides, alongside the native target,
+working directory and executable settings. Changing these after job creation
+requires a new plan; a directory override must not silently select another
+account midway through evaluation. Only a digest is recorded: Reflexio does not
+read or copy account credentials for this check. This detects launch-context
+drift, not changes to files inside those directories, credential rotation or
+changes to the model served by a host default.
+
 Each native request must match the operator's full reference before role or
 gateway rewriting, before admission, and again inside the provider. An explicit
 `custom_llm_provider` cannot turn a reserved `local-cli/` reference into HTTP.
