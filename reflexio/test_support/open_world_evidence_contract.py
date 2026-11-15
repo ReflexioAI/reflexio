@@ -84,6 +84,7 @@ from reflexio.server.services.offline_tuner.open_world_records import (
     OPEN_WORLD_EVIDENCE_ARTIFACT_KIND,
     OPEN_WORLD_EVIDENCE_OPTIMIZER_KIND,
     OpenWorldEvidenceGovernanceError,
+    OpenWorldEvidenceSourceReadLimitError,
     OpenWorldEvidenceStorageRecord,
     OpenWorldEvidenceTargetStaleError,
 )
@@ -122,6 +123,19 @@ _LIMITS = OpenWorldEvidenceReadLimits(
 _SUCCESS_DEFINITION = "e" * 64
 _BUDGET_EXCEEDED = "evidence_source_read_budget_exceeded"
 _DEADLINE_EXCEEDED = "evidence_source_read_deadline_exceeded"
+
+
+def _read_limit_reason(raised: pytest.ExceptionInfo[Exception]) -> str:
+    """The TYPED refusal's reason: a bare ``StorageError`` is not an answer.
+
+    The sweep turns ``OpenWorldEvidenceSourceReadLimitError`` into a recorded
+    ``ineligible_<reason>``; any other class escapes the tick unrecorded and
+    re-selects the same playbook every tick (PYTHON-FASTAPI-19P/19Q).
+    """
+    assert isinstance(raised.value, OpenWorldEvidenceSourceReadLimitError), type(
+        raised.value
+    )
+    return raised.value.reason
 
 
 class JobRow(NamedTuple):
@@ -851,9 +865,10 @@ class OpenWorldEvidenceContract:
 
         with (
             port_harness.source_read_budget(100),
-            pytest.raises(StorageError, match=_BUDGET_EXCEEDED),
+            pytest.raises(StorageError, match=_BUDGET_EXCEEDED) as raised,
         ):
             _snapshot(port_harness, target)
+        assert _read_limit_reason(raised) == _BUDGET_EXCEEDED
 
         assert _snapshot(port_harness, target).events, "the budget, not the data"
 
@@ -865,9 +880,10 @@ class OpenWorldEvidenceContract:
 
         with (
             port_harness.source_read_clock_jumps(),
-            pytest.raises(StorageError, match=_DEADLINE_EXCEEDED),
+            pytest.raises(StorageError, match=_DEADLINE_EXCEEDED) as raised,
         ):
             _snapshot(port_harness, target)
+        assert _read_limit_reason(raised) == _DEADLINE_EXCEEDED
 
     # ----------------------------------------------------------- lifecycles
 

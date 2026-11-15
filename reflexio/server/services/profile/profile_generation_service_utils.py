@@ -264,7 +264,7 @@ def prepare_profile_extraction_prompt(
     extraction_definition_prompt: str,
 ) -> PreparedProfilePrompt:
     """Pair the exact private historical rows with the prompt they produce."""
-    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+    from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
     from reflexio.server.services.extraction.profile_package_state import (
         profile_witness,
     )
@@ -273,12 +273,12 @@ def prepare_profile_extraction_prompt(
     witnesses: dict[str, str] = {}
     for profile in profiles:
         if profile.user_id != user_id or not profile.profile_id:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Candidate historical profile scope changed"
             )
         digest = profile_witness(profile)
         if profile.profile_id in witnesses and witnesses[profile.profile_id] != digest:
-            raise InputBudgetConfigurationError("Candidate historical profile changed")
+            raise ExtractionInputIntegrityError("Candidate historical profile changed")
         witnesses[profile.profile_id] = digest
     messages = construct_profile_extraction_messages_from_sessions(
         prompt_manager=prompt_manager,

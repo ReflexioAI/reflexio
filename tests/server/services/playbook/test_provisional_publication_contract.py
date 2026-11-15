@@ -8,6 +8,10 @@ from inspect import signature
 import pytest
 
 from reflexio.models.api_schema.domain import UserPlaybook
+from reflexio.server.services.offline_tuner.search_projection import (
+    FinalVersionSearchProjection,
+    publication_search_projection,
+)
 from reflexio.server.services.playbook.publication import (
     DecisionProofEnvelope,
     ProvisionalPublicationRequest,
@@ -18,6 +22,7 @@ from reflexio.server.services.playbook.publication import (
     UserPlaybookProvisionalPublicationStore,
     UserPlaybookPublicationStore,
 )
+from reflexio.server.services.playbook.revision import FinalPlaybookRevision
 
 
 def _canonical(payload: dict[str, object]) -> str:
@@ -169,6 +174,120 @@ def _request(**changes: object) -> ProvisionalPublicationRequest:
     }
     values.update(changes)
     return ProvisionalPublicationRequest(**values)  # type: ignore[arg-type]
+
+
+def _final_request(
+    *,
+    content="old content",
+    trigger="unknown refund result",
+    original_trigger="refund",
+    **changes,
+):
+    snapshot = _incumbent_snapshot(trigger=original_trigger)
+    projection = publication_search_projection(
+        FinalVersionSearchProjection(
+            projector_id="reflexio.search.user-playbook",
+            projector_version="2",
+            projector_code_digest="3" * 64,
+            candidate_content_digest=_digest(content),
+            candidate_trigger=trigger,
+            embedding_model_id="test-embedding-v1",
+            embedding=("0.125", "0.5"),
+            expanded_terms=("refund",),
+            lexical_document="bound final pair",
+        )
+    )
+    proof_payload: dict[str, object] = {
+        "decision": "apply",
+        "optimizer_kind": "offline_tuner_open_world",
+        "schema_version": "offline-tuner-rule-evidence-publication-proof-v2",
+        "policy_id": "evidence-grounded-playbook-revision-v2",
+    }
+    proof_json = _canonical(proof_payload)
+    values = {
+        "revised_content": content,
+        "projection": projection,
+        "final_revision": FinalPlaybookRevision(
+            revised_content=content, revised_trigger=trigger
+        ),
+        "incumbent_snapshot_json": snapshot,
+        "incumbent_full_version_fingerprint": _digest(snapshot),
+        "qualification_authority": replace(
+            _authority(),
+            policy_id="evidence-grounded-playbook-revision-v2",
+            held_out_component_identity_digest=None,
+            held_out_qualification_suite_digest=None,
+            held_out_qualification_result_digest=None,
+        ),
+        "decision_proof": DecisionProofEnvelope(
+            optimizer_kind="offline_tuner_open_world",
+            schema_version=str(proof_payload["schema_version"]),
+            canonical_json=proof_json,
+            digest=_digest(proof_json),
+            decision="apply",
+        ),
+    }
+    values.update(changes)
+    return _request(**values)
+
+
+@pytest.mark.parametrize(
+    "content,trigger",
+    [
+        ("old content", "new trigger"),
+        ("new content", "refund"),
+        ("new content", "new trigger"),
+    ],
+)
+def test_final_revision_can_change_either_or_both_fields(content, trigger):
+    request = _final_request(content=content, trigger=trigger)
+    assert request.revised_content == content
+    assert request.final_trigger == trigger
+    assert request.final_revision is not None
+
+
+@pytest.mark.parametrize("trigger", [None, "", " \t"])
+def test_final_revision_preserves_nullable_or_blank_trigger_with_content_edit(trigger):
+    request = _final_request(
+        content="new content", trigger=trigger, original_trigger=trigger
+    )
+    assert request.final_trigger == trigger
+
+
+def test_final_revision_does_not_publish_a_complete_noop():
+    with pytest.raises(ValueError, match="change Content or Trigger"):
+        _final_request(content="old content", trigger="refund")
+
+
+def test_final_revision_requires_exact_projection_content_and_trigger():
+    valid = _final_request()
+    with pytest.raises(ValueError, match="final revision content"):
+        replace(
+            valid,
+            final_revision=FinalPlaybookRevision(
+                revised_content="other", revised_trigger=valid.final_trigger
+            ),
+        )
+    with pytest.raises(ValueError, match="final revision trigger"):
+        replace(
+            valid,
+            final_revision=FinalPlaybookRevision(
+                revised_content=valid.revised_content, revised_trigger="other"
+            ),
+        )
+    with pytest.raises(ValueError, match="v2 search projection"):
+        replace(valid, projection=_projection())
+    with pytest.raises(ValueError, match="v1 search projection"):
+        replace(valid, final_revision=None)
+
+
+def test_final_revision_requires_its_new_authority_and_decision_proof():
+    valid = _final_request()
+    with pytest.raises(ValueError, match="v2 method authority"):
+        replace(valid, qualification_authority=_authority())
+    with pytest.raises(ValueError, match="v2 decision proof"):
+        replace(valid, decision_proof=_proof())
+    assert _request().final_trigger == "refund"
 
 
 class _PublicationClaimImpostor:

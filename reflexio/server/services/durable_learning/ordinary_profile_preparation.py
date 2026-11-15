@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from reflexio.models.config_schema import ProfileExtractorConfig
 from reflexio.server.env_utils import env_str
 from reflexio.server.llm.input_budget import (
-    InputBudgetConfigurationError,
+    ExtractionInputIntegrityError,
     declared_context_limits,
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -79,19 +79,19 @@ def _digest(value: Any) -> str:
 
 def _files_digest(root: Path, *, python_only: bool) -> str:
     if root.is_symlink() or not root.is_dir():
-        raise InputBudgetConfigurationError("Ordinary consumer resources unavailable")
+        raise ExtractionInputIntegrityError("Ordinary consumer resources unavailable")
     files = {}
     for path in sorted(root.rglob("*")):
         if "__pycache__" in path.parts:
             continue
         if path.is_symlink():
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Ordinary consumer resource layout ambiguous"
             )
         if path.is_dir():
             continue
         if not path.is_file():
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Ordinary consumer resource is not a file"
             )
         if python_only and path.suffix != ".py":
@@ -100,7 +100,7 @@ def _files_digest(root: Path, *, python_only: bool) -> str:
             path.read_bytes()
         ).hexdigest()
     if not files:
-        raise InputBudgetConfigurationError("Ordinary consumer resources empty")
+        raise ExtractionInputIntegrityError("Ordinary consumer resources empty")
     return _digest(files)
 
 
@@ -108,7 +108,7 @@ def _files_digest(root: Path, *, python_only: bool) -> str:
 def _installed_source_digest() -> str:
     root = Path(__file__).parents[3]
     if not (root / "__init__.py").is_file():
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Ordinary consumer requires installed Python source"
         )
     return _files_digest(root, python_only=True)
@@ -119,7 +119,7 @@ def _installed_native_source_digest() -> str:
     package = importlib.import_module("reflexio_ext")
     location = getattr(package, "__file__", None)
     if not isinstance(location, str) or not Path(location).is_file():
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Native ordinary consumer requires installed Enterprise source"
         )
     return _files_digest(Path(location).parent, python_only=True)
@@ -139,7 +139,7 @@ def _installed_runtime_digest() -> str:
         names = metadata.get_all("Name", [])
         versions = metadata.get_all("Version", [])
         if len(names) != 1 or len(versions) != 1:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Ordinary runtime distribution metadata ambiguous or missing"
             )
         name, version = names[0], versions[0]
@@ -149,17 +149,17 @@ def _installed_runtime_digest() -> str:
             or not isinstance(version, str)
             or re.fullmatch(r"[vV]?[0-9][A-Za-z0-9.!+_-]{0,255}", version) is None
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Ordinary runtime distribution identity invalid"
             )
         canonical = re.sub(r"[-_.]+", "-", name).lower()
         if canonical in installed:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Ordinary runtime distribution identity duplicated"
             )
         installed[canonical] = version
     if not installed:
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Ordinary runtime distribution metadata unavailable"
         )
     return _digest(
@@ -199,11 +199,11 @@ def ordinary_profile_preparation(
         or type(executor.client) is not LiteLLMClient
         or service.client is not executor.client
     ):
-        raise InputBudgetConfigurationError("Unsupported ordinary profile consumer")
+        raise ExtractionInputIntegrityError("Unsupported ordinary profile consumer")
     manager = executor.context.prompt_manager
     banks = [Path(path) for path in manager.prompt_bank_paths]
     if not banks or len({str(path.resolve()) for path in banks}) != len(banks):
-        raise InputBudgetConfigurationError("Ordinary prompt resource layout ambiguous")
+        raise ExtractionInputIntegrityError("Ordinary prompt resource layout ambiguous")
     templates = {
         prompt: manager.get_prompt_template_identity(prompt)
         if manager.get_active_version(prompt) is not None
@@ -211,7 +211,7 @@ def ordinary_profile_preparation(
         for prompt in sorted(manager.get_all_prompt_ids())
     }
     if not templates:
-        raise InputBudgetConfigurationError("Ordinary native templates unavailable")
+        raise ExtractionInputIntegrityError("Ordinary native templates unavailable")
     root_config = executor.context.configurator.get_config()
     settings = root_config.model_dump(
         mode="json",
@@ -242,7 +242,7 @@ def ordinary_profile_preparation(
         ("reflexio_ext.server.services.storage.supabase_storage", "SupabaseStorage"),
         ("reflexio_ext.server.services.storage.postgres_storage", "PostgresStorage"),
     }:
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Unsupported ordinary storage implementation"
         )
     storage = cast(_NativeProfileStorage, executor.storage)
@@ -250,7 +250,7 @@ def ordinary_profile_preparation(
     if expansion_enabled:
         expansion_client = storage.llm_client
         if type(expansion_client) is not LiteLLMClient:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Unsupported ordinary storage completion adapter"
             )
         options["expansion"] = {"model": storage._expansion_model_name}
@@ -262,7 +262,7 @@ def ordinary_profile_preparation(
         if not models or any(
             model.partition("/")[0] in {"claude-code", "openclaw"} for model in models
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Unsupported ordinary completion adapter"
             )
         per_rung = {
@@ -361,7 +361,7 @@ def validate_ordinary_profile_preparation(
         or type(saved.get("version")) is not int
         or saved != current
     ):
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Original ordinary profile consumer contract unavailable or changed"
         )
     return current
@@ -401,7 +401,7 @@ def require_original_ordinary_profile_preparation(
         return validate_ordinary_profile_preparation(
             executor, window, service, config, parent
         )
-    except (InputBudgetConfigurationError, OSError, ValueError, TypeError) as error:
+    except (ExtractionInputIntegrityError, OSError, ValueError, TypeError) as error:
         raise LearningTransitionBlockedError(
             "Original selected ordinary instructions unavailable or changed"
         ) from error

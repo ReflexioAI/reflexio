@@ -359,7 +359,8 @@ def test_run_tool_loop_returns_structured_terminus_provenance(monkeypatch):
         ),
         provenance,
     )
-    client = LiteLLMClient(LiteLLMConfig(model="claude-code/default"))
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
+    client = LiteLLMClient(LiteLLMConfig(model="local-cli/claude-code"))
     generate = MagicMock(return_value=response)
     monkeypatch.setattr(client, "generate_chat_response_with_provenance", generate)
 

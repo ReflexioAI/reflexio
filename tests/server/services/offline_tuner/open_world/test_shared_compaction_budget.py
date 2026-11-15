@@ -111,3 +111,78 @@ def test_budget_change_cannot_rebind_an_existing_journal():
     with pytest.raises(ProviderRequestGuardError, match="frozen plan changed"):
         journal.bind(plan("Original evidence", _compression_budget(512, 1_000_000)))
     assert storage.rows == saved
+
+
+@pytest.mark.parametrize(
+    ("model", "transport", "native"),
+    [
+        ("openclaw/anthropic/claude-sonnet-4-6", None, True),
+        ("anthropic/claude-sonnet-4-6", "openclaw", True),
+        ("openclaw/anthropic/claude-sonnet-4-6", "openai", False),
+    ],
+)
+def test_shared_native_identity_admission_precedes_dispatch_and_receipt_debit(
+    monkeypatch, model, transport, native
+):
+    from copy import deepcopy
+    from unittest.mock import Mock
+
+    import litellm
+
+    from reflexio.server.llm import input_budget
+    from reflexio.server.services.input_compression import CompressionNodeInput
+    from reflexio.server.services.offline_tuner.open_world.shared_compaction import (
+        JournaledCompressionClient,
+    )
+
+    storage = MemoryCheckpoints()
+    journal = SharedCompactionJournal(
+        storage,
+        job_id=7,
+        fence=1,
+        identity="a" * 64,
+        before_call=lambda: None,
+        now=lambda: 1,
+        limit=128,
+    )
+    journal.bind(plan("Original evidence", CompressionBudget(output_tokens=512)))
+    journal.inspect(CompressionNodeInput(key="b" * 64, input_refs_digest="c" * 64))
+    saved = deepcopy(storage.rows)
+    monkeypatch.setattr(input_budget.litellm, "token_counter", lambda **_: 100)
+    monkeypatch.setattr(
+        input_budget.litellm,
+        "get_model_info",
+        lambda *_args, **_kwargs: {
+            "max_input_tokens": 1000000,
+            "max_output_tokens": 32,
+        },
+    )
+    response = litellm.ModelResponse(
+        model="requested-model-echo" if native else "served-http-model",
+        choices=[
+            {"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+        ],
+    )
+    if native:
+        response._hidden_params = {"reflexio_provider": "openclaw"}
+    dispatch = Mock(return_value=response)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
+    client = JournaledCompressionClient(
+        LiteLLMConfig(model=model, max_tokens=32, fallback_models=["gpt-4o-mini"]),
+        journal,
+    )
+    options = {"custom_llm_provider": transport} if transport else {}
+    with journal.provider_scope():
+        if native:
+            with pytest.raises(ProviderRequestGuardError, match="OpenClaw"):
+                client.generate_chat_response_with_provenance(
+                    [{"role": "user", "content": "synthetic evidence"}], **options
+                )
+            dispatch.assert_not_called()
+            assert storage.rows == saved
+        else:
+            result = client.generate_chat_response_with_provenance(
+                [{"role": "user", "content": "synthetic evidence"}], **options
+            )
+            assert result.provenance.model_name == "served-http-model"
+            assert dispatch.call_count == 1

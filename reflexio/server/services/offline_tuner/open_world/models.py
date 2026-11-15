@@ -32,7 +32,16 @@ __all_abstain_reexports__ = (
     OPEN_WORLD_ABSTAIN_TERMINAL_OUTCOMES,
 )
 
-_ANALYST_ROLES = frozenset({"discovery", "candidate", "held_out", "confirmation"})
+_ANALYST_ROLES = frozenset(
+    {
+        "discovery",
+        "candidate",
+        "held_out",
+        "confirmation",
+        "trigger_gate",
+        "trigger_builder",
+    }
+)
 _MANIFEST_ROLES = frozenset({"discovery", "held_out", "safety_only"})
 # Deliberately imported from the evidence package rather than restated, so the
 # label the analyst reads cannot drift from the classifier that derives it.
@@ -650,7 +659,14 @@ class VerifiedCitation:
 
 @dataclass(frozen=True)
 class ComponentIdentity:
-    component_role: Literal["discovery", "candidate", "held_out", "confirmation"]
+    component_role: Literal[
+        "discovery",
+        "candidate",
+        "held_out",
+        "confirmation",
+        "trigger_gate",
+        "trigger_builder",
+    ]
     provider: str
     immutable_model_revision: str
     prompt_id: str
@@ -752,7 +768,14 @@ class AnalystInputIdentity:
     qualification_result_digest: str
     rendered_input_digest: str
     outcome_contract_digest: str
-    role: Literal["discovery", "candidate", "held_out", "confirmation"]
+    role: Literal[
+        "discovery",
+        "candidate",
+        "held_out",
+        "confirmation",
+        "trigger_gate",
+        "trigger_builder",
+    ]
     attempt: int = 1
 
     def __post_init__(self) -> None:
@@ -780,7 +803,14 @@ class InvocationIntent:
     analyst_input_identity: str
     component_identity_digest: str
     input_digest: str
-    role: Literal["discovery", "candidate", "held_out", "confirmation"]
+    role: Literal[
+        "discovery",
+        "candidate",
+        "held_out",
+        "confirmation",
+        "trigger_gate",
+        "trigger_builder",
+    ]
     expected_provider: str
     expected_model_revision: str
     manifest_role: Literal["held_out", "safety_only"] | None
@@ -854,7 +884,14 @@ class PreparedInvocation:
     qualification_result_digest: str
     rendered_input_digest: str
     outcome_contract_digest: str
-    role: Literal["discovery", "candidate", "held_out", "confirmation"]
+    role: Literal[
+        "discovery",
+        "candidate",
+        "held_out",
+        "confirmation",
+        "trigger_gate",
+        "trigger_builder",
+    ]
     manifest_role: Literal["held_out", "safety_only"] | None
     user_id: str | None
     session_id: str | None
@@ -874,7 +911,14 @@ class PreparedInvocation:
         qualification_result_digest: str,
         rendered_input_digest: str,
         outcome_contract_digest: str,
-        role: Literal["discovery", "candidate", "held_out", "confirmation"],
+        role: Literal[
+            "discovery",
+            "candidate",
+            "held_out",
+            "confirmation",
+            "trigger_gate",
+            "trigger_builder",
+        ],
         manifest_role: Literal["held_out", "safety_only"] | None,
         user_id: str | None,
         session_id: str | None,

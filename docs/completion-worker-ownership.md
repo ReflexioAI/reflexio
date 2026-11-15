@@ -59,8 +59,11 @@ The process-local live-owner registry prevents garbage collection from discardin
 unresolved files after the caller and controller thread finish. Qualified cleanup
 or process restart is required for an unresolved owner; no timed release is added.
 
-Original absolute worker expiry and the existing shorter CLI allowance remain
-authoritative, including helper startup. Codex's last-message file shares the
+Original absolute worker expiry and the selected CLI allowance remain
+authoritative, including helper startup. OpenClaw derives that allowance from
+the selected completion timeout and spends it across all busy retries and waits;
+it has no separate environment timeout or provider default. Claude/Codex retain
+their existing independent CLI allowance. Codex's last-message file shares the
 attempt directory and survives SDK-worker death until native cleanup completes.
 Closing refuses new launches and best-effort marks the attempt cancelled; a
 filesystem failure cannot skip SDK-worker retirement. A newly obtained

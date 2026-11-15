@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import time
 from types import SimpleNamespace
@@ -82,6 +83,8 @@ def _freeze(
         "native_retirement",
         "native_worker_alias",
         "native_directory_alias",
+        "native_remaining",
+        "native_remaining_alias",
         "native_error_transport",
         "native_launch_owner_alias",
         "native_launch_execution",
@@ -119,12 +122,20 @@ def test_pairwise_judge_rejects_frozen_plan_drift_before_provider_execution(
             Mock(return_value=frozen_plan),
         )
     elif drift == "native_launch":
-        monkeypatch.setattr(judge_module.claude_code_provider, "run_native_cli", Mock())
+        monkeypatch.setattr(judge_module.native_cli_provider, "run_native_cli", Mock())
     elif drift == "native_worker_alias":
         monkeypatch.setattr(judge_module.worker_module, "native_cli_worker", Mock())
     elif drift == "native_directory_alias":
         monkeypatch.setattr(
-            judge_module.claude_code_provider, "native_cli_directory", Mock()
+            judge_module.native_cli_provider, "native_cli_directory", Mock()
+        )
+    elif drift == "native_remaining":
+        monkeypatch.setattr(
+            judge_module.native_cli_module, "remaining_native_time", Mock()
+        )
+    elif drift == "native_remaining_alias":
+        monkeypatch.setattr(
+            judge_module.native_cli_provider, "remaining_native_time", Mock()
         )
     elif drift == "native_error_transport":
         monkeypatch.setattr(generation, "_raise_completion_error", Mock())
@@ -276,3 +287,187 @@ def test_pairwise_judge_rejects_drift_during_prompt_render_before_provider(
     with pytest.raises(judge_module.FrozenEvaluatorPlanDriftError):
         judge.judge(**_inputs())
     provider.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "module_name,attribute",
+    [
+        ("native_cli_provider", "NativeCLILLM"),
+        ("native_cli_provider", "NativeCLILLM.completion"),
+        ("native_cli_provider", "NativeCLILLM._cli_path"),
+        ("native_cli_provider", "NativeCLILLM._timeout"),
+        ("native_cli_provider", "resolve_cli_request_timeout"),
+        ("native_cli_provider", "_resolve_cli_path"),
+        ("native_cli_provider", "_resolve_cli_override_path"),
+        ("native_cli_provider", "_windows_cli_suffixes"),
+        ("native_cli_provider", "_is_windows"),
+        ("native_cli_provider", "validate_native_selection"),
+        ("native_cli_provider", "request_timeout_seconds"),
+        ("native_cli_provider", "_codex_prompt"),
+        ("native_cli_provider", "_temporary_output_path"),
+        ("native_cli_provider", "_split_system_and_dialogue"),
+        ("native_cli_provider", "_maybe_append_schema"),
+        ("native_cli_provider", "_maybe_append_tools_instruction"),
+        ("native_cli_provider", "_parse_tool_use"),
+        ("native_stream_parser", "parse_stream_json"),
+        ("native_tool_protocol", "append_schema_instruction"),
+        ("native_cli_provider", "_run_cli_stream"),
+        ("native_model_ref", "parse_native_model_ref"),
+        ("native_model_ref", "configured_native_model"),
+        ("native_model_ref", "env_truthy"),
+        ("native_cli_provider", "env_str"),
+        ("native_model_ref", "authorize_native_model"),
+        ("native_model_ref", "native_policy_digest"),
+        ("native_model_ref", "reject_native_selection"),
+        ("native_cli_provider", "authorize_native_model"),
+        ("native_cli_provider", "reject_native_selection"),
+        ("worker_module", "authorize_native_model"),
+        ("worker_module", "native_request_authority"),
+        ("text_generation_module", "authorize_native_model"),
+        ("native_cli_provider", "_compat_host"),
+        ("opencode_module", "run_opencode"),
+        ("opencode_module", "resolve_executable"),
+        ("opencode_module", "_uses_private_server"),
+        ("opencode_module", "parse_output"),
+        ("opencode_module", "_error_message"),
+        ("opencode_module", "run_native_cli"),
+        ("opencode_module", "native_cli_directory"),
+        ("opencode_module", "remaining_native_time"),
+        ("opencode_module", "request_timeout_seconds"),
+        ("opencode_module", "classify_stall"),
+        ("opencode_module", "parse_reset_estimate"),
+    ],
+)
+def test_frozen_judge_rejects_each_opencode_binding_before_dispatch(
+    monkeypatch, module_name, attribute
+):
+    prompt_manager = PromptManager()
+    client = LiteLLMClient(LiteLLMConfig(model="azure/judge-deployment"))
+    dispatch = Mock()
+    cast(Any, client)._completion_with_hard_timeout = dispatch
+    frozen = _freeze(prompt_manager, client)
+    judge = PairwiseJudge(
+        cast(Any, SimpleNamespace(prompt_manager=prompt_manager)),
+        client,
+        "azure/judge-deployment",
+        frozen_request_plan=frozen,
+    )
+    owner = getattr(judge_module, module_name)
+    for component in attribute.split(".")[:-1]:
+        owner = getattr(owner, component)
+    monkeypatch.setattr(owner, attribute.split(".")[-1], Mock())
+    with pytest.raises(judge_module.FrozenEvaluatorPlanDriftError):
+        judge.judge(**_inputs())
+    dispatch.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "setting,value",
+    [
+        ("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/codex/other"),
+        ("CLAUDE_SMART_CLI_PATH", "/owned/different-executable"),
+        ("CLAUDE_SMART_CLI_TIMEOUT", "17"),
+        ("CODEX_HOME", "/owned/different-codex-account"),
+        ("CLAUDE_CONFIG_DIR", "/owned/different-claude-account"),
+    ],
+)
+def test_native_frozen_policy_cannot_change_after_job_creation(
+    monkeypatch, setting, value
+):
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/codex/owned")
+    prompt_manager = PromptManager()
+    client = LiteLLMClient(LiteLLMConfig(model="local-cli/codex/owned", max_tokens=32))
+    frozen = judge_module.build_pairwise_judge_request_plan(
+        prompt_manager=prompt_manager,
+        llm_client=client,
+        model_name=None,
+    )
+    judge = PairwiseJudge(
+        cast(Any, SimpleNamespace(prompt_manager=prompt_manager)),
+        client,
+        "local-cli/codex/owned",
+        frozen_request_plan=frozen,
+    )
+    judge._assert_frozen_implementation_identities(frozen)
+    monkeypatch.setenv(setting, value)
+    with pytest.raises(judge_module.FrozenEvaluatorPlanDriftError):
+        judge._assert_frozen_implementation_identities(frozen)
+
+
+def test_native_frozen_policy_binds_effective_home(monkeypatch, tmp_path):
+    # Path.home also covers Windows USERPROFILE and platform home resolution;
+    # binding only the raw HOME variable would miss those accounts.
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/codex/owned")
+    first, second = tmp_path / "first", tmp_path / "second"
+    monkeypatch.setattr(judge_module.native_model_ref.Path, "home", lambda: first)
+    prompt_manager = PromptManager()
+    client = LiteLLMClient(LiteLLMConfig(model="local-cli/codex/owned", max_tokens=32))
+    frozen = judge_module.build_pairwise_judge_request_plan(
+        prompt_manager=prompt_manager, llm_client=client, model_name=None
+    )
+    judge = PairwiseJudge(
+        cast(Any, SimpleNamespace(prompt_manager=prompt_manager)),
+        client,
+        "local-cli/codex/owned",
+        frozen_request_plan=frozen,
+    )
+    judge._assert_frozen_implementation_identities(frozen)
+    monkeypatch.setattr(judge_module.native_model_ref.Path, "home", lambda: second)
+    with pytest.raises(judge_module.FrozenEvaluatorPlanDriftError):
+        judge._assert_frozen_implementation_identities(frozen)
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        name
+        for name, function in vars(
+            judge_module.native_cli_provider.NativeCLILLM
+        ).items()
+        if inspect.isfunction(function) and name != "__init__"
+    ],
+)
+def test_registered_native_handler_override_invalidates_frozen_plan(
+    monkeypatch, method
+):
+    prompt_manager = PromptManager()
+    client = LiteLLMClient(LiteLLMConfig(model="azure/judge-deployment"))
+    handler = judge_module.native_cli_provider.NativeCLILLM()
+    monkeypatch.setattr(
+        judge_module.litellm,
+        "custom_provider_map",
+        [
+            {"provider": "local-cli", "custom_handler": handler},
+        ],
+    )
+    frozen = _freeze(prompt_manager, client)
+    judge = PairwiseJudge(
+        cast(Any, SimpleNamespace(prompt_manager=prompt_manager)),
+        client,
+        "azure/judge-deployment",
+        frozen_request_plan=frozen,
+    )
+    monkeypatch.setattr(handler, method, Mock())
+    with pytest.raises(judge_module.FrozenEvaluatorPlanDriftError):
+        judge._assert_frozen_implementation_identities(frozen)
+
+
+def test_native_helper_census_covers_actual_owned_functions_and_aliases():
+    modules = {
+        "native_cli_provider": judge_module.native_cli_provider,
+        "native_model_ref": judge_module.native_model_ref,
+        "opencode": judge_module.opencode_module,
+        "native_stream_parser": judge_module.native_stream_parser,
+        "native_tool_protocol": judge_module.native_tool_protocol,
+    }
+    bindings = judge_module._native_helper_identities()
+    expected = {
+        f"{label}.{name}"
+        for label, module in modules.items()
+        for name, value in vars(module).items()
+        if (inspect.isfunction(value) or inspect.isclass(value))
+        and getattr(value, "__module__", "").startswith("reflexio.")
+    }
+    assert "native_cli_provider._codex_prompt" in expected
+    assert "native_cli_provider.request_timeout_seconds" in expected
+    assert expected <= set(bindings)

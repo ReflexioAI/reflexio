@@ -133,7 +133,9 @@ def _uid(label: str) -> str:
     return f"{label}-{uuid4().hex[:10]}"
 
 
-def _owned_playbook(harness: ExposureHarness, owner: str) -> UserPlaybook:
+def _owned_playbook(
+    harness: ExposureHarness, owner: str, *, trigger: str | None = "synthetic trigger"
+) -> UserPlaybook:
     """A current playbook saved through storage, findable by a unique word."""
     playbook = UserPlaybook(
         user_id=owner,
@@ -141,7 +143,7 @@ def _owned_playbook(harness: ExposureHarness, owner: str) -> UserPlaybook:
         agent_version="v1",
         request_id=_uid("seed"),
         content=f"synthetic guidance zq{uuid4().hex[:12]}",
-        trigger="synthetic trigger",
+        trigger=trigger,
     )
     harness.storage.save_user_playbooks([playbook])
     assert playbook.user_playbook_id

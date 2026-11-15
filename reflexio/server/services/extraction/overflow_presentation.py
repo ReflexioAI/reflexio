@@ -7,7 +7,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import Any
 
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.services.extraction.input_preparation import (
     PreparedChunk,
     PreparedExtractionInput,
@@ -35,7 +35,7 @@ def protected_source_origins(
     for carried in source_spans:
         span = resolve_evidence_span(carried.evidence_ref, approved)
         if span != carried:
-            raise InputBudgetConfigurationError("Carried source origin changed")
+            raise ExtractionInputIntegrityError("Carried source origin changed")
         origins[span.evidence_ref] = span.origin_payload()
     for record in records:
         for item in record.evidence:
@@ -52,7 +52,7 @@ def protected_source_origins(
     }
 
 
-class ProtectedQuoteAmbiguityError(InputBudgetConfigurationError):
+class ProtectedQuoteAmbiguityError(ExtractionInputIntegrityError):
     """A quotation needs a more specific original range before freezing."""
 
 
@@ -75,7 +75,7 @@ def protected_quote_view(
             or (index > 0 and spans[index - 1].end != span.start)
             for index, span in enumerate(spans)
         ):
-            raise InputBudgetConfigurationError("Protected quotation source changed")
+            raise ExtractionInputIntegrityError("Protected quotation source changed")
         original = "".join(span.text for span in spans)
         offset = original.find(item.quote)
         if offset < 0 or original.find(item.quote, offset + 1) >= 0:

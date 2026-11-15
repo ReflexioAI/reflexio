@@ -96,6 +96,7 @@ from ._base import (
     _row_to_user_playbook,
 )
 from ._lineage import _append_event_stmt
+from ._open_world_trigger import POLICY_V2
 
 _OPTIMIZER = OPEN_WORLD_EVIDENCE_OPTIMIZER_KIND
 _PUBLICATION_ACTOR = OPEN_WORLD_EVIDENCE_OPTIMIZER_KIND
@@ -260,7 +261,7 @@ def _authority_payload(request: ProvisionalPublicationRequest) -> dict[str, Any]
             authority.candidate_generator_authorization_digest
         ),
     }
-    if authority.policy_id == RULE_EVIDENCE_POLICY_ID:
+    if authority.policy_id in (RULE_EVIDENCE_POLICY_ID, POLICY_V2):
         payload["policy_id"] = authority.policy_id
     return payload
 
@@ -291,6 +292,8 @@ def staging_digest(request: ProvisionalPublicationRequest) -> str:
         "revised_content": request.revised_content,
         "subject_epochs_json": request.subject_epochs_json,
     }
+    if request.final_revision is not None:
+        immutable["final_revision"] = request.final_revision.model_dump(mode="json")
     return sha256(canonical_json_bytes(immutable)).hexdigest()
 
 
@@ -907,7 +910,10 @@ class SQLiteOpenWorldPublicationMixin:
                 incumbent["request_id"],
                 incumbent["agent_version"],
                 staging["revised_content"],
-                incumbent["trigger"],
+                projection["candidate_trigger"]
+                if projection["schema_version"]
+                == "offline-tuner-candidate-search-projection-v2"
+                else incumbent["trigger"],
                 incumbent["rationale"],
                 incumbent["blocking_issue"],
                 incumbent["source_interaction_ids"],
@@ -1242,7 +1248,10 @@ class SQLiteOpenWorldPublicationMixin:
             str(projection.get("lexical_document", ""))
         ):
             rule.integrity("provisional publication projection binding changed")
-        if request.qualification_authority.policy_id != RULE_EVIDENCE_POLICY_ID:
+        expected_policy = (
+            POLICY_V2 if request.final_revision is not None else RULE_EVIDENCE_POLICY_ID
+        )
+        if request.qualification_authority.policy_id != expected_policy:
             rule.integrity("unsupported publication method policy")
 
     def _lock_governance_locked(
@@ -1299,7 +1308,8 @@ class SQLiteOpenWorldPublicationMixin:
             "provisional publication qualification authority digest is invalid",
         )
         if authority["authority_digest"] != rule.json_digest(method) or (
-            rule.text(rule.get(method, "policy_id")) != RULE_EVIDENCE_POLICY_ID
+            rule.text(rule.get(method, "policy_id"))
+            not in (RULE_EVIDENCE_POLICY_ID, POLICY_V2)
         ):
             rule.refuse(
                 OpenWorldRefusal.AUTHORITY_STALE,
@@ -1359,6 +1369,22 @@ class SQLiteOpenWorldPublicationMixin:
         ):
             rule.conflict("provisional publication durable decision is not accepted")
         candidate_payload = _payload_of(candidate)
+        policy = rule.text(rule.get(method, "policy_id"))
+        if request is not None and (
+            (request.final_revision is not None) != (policy == POLICY_V2)
+            or request.qualification_authority.policy_id != policy
+            or (
+                request.final_revision is not None
+                and (
+                    rule.get(candidate_payload, "schema_version") != "v2"
+                    or rule.path(candidate_payload, "payload", "revised_trigger")
+                    != request.final_trigger
+                    or rule.path(candidate_payload, "payload", "revised_content")
+                    != request.final_revision.revised_content
+                )
+            )
+        ):
+            rule.conflict("publication does not bind the authorized final revision")
         if request is not None and (
             evidence.content_digest != request.evidence_bundle_digest
             or candidate.content_digest != request.candidate_digest
@@ -1479,6 +1505,17 @@ class SQLiteOpenWorldPublicationMixin:
             },
             "governance_subjects": governance_subjects,
         }
+        if rule.get(candidate_payload, "schema_version") == "v2":
+            expected["schema_version"] = (
+                "offline-tuner-rule-evidence-publication-proof-v2"
+            )
+            expected["policy_id"] = POLICY_V2
+            expected["qualification_authority"]["policy_id"] = POLICY_V2
+            for field in (
+                "content_result_artifact_digest",
+                "trigger_result_artifact_digest",
+            ):
+                expected[field] = rule.text_at(candidate_payload, "payload", field)
         if proof != expected:
             rule.refuse(
                 OpenWorldRefusal.AUTHORITY_STALE,

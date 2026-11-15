@@ -116,8 +116,8 @@ provider; a local model uses the separate inference service. The service URL
 owns process attachment: an explicit URL, including loopback, attaches to an
 existing service; an absent URL leaves the launcher responsible for its child.
 Dependency availability advertises capability without loading a model. It never
-authorizes generation or authenticated CLI access. `CLAUDE_SMART_USE_LOCAL_CLI`
-and the OpenClaw CLI opt-in retain their separate credential-access decisions.
+authorizes generation or authenticated CLI access. `REFLEXIO_NATIVE_CLI_MODEL`
+and the OpenClaw CLI opt-in retain separate credential-access decisions.
 
 `CLAUDE_SMART_USE_LOCAL_EMBEDDING` is retired. Normal loading rejects active
 assignments, including empty ones and those alongside a canonical setting.
@@ -408,6 +408,14 @@ not a promise of online speedup.
 | Azure OpenAI | via config | `azure/` | `azure/<deployment>` |
 | Custom endpoint | via config | — | — |
 
+Azure's `v1`, `latest` and `preview` API modes use LiteLLM's standard OpenAI
+client transport. `_azure_transport.py` compiles explicit resource endpoints
+and full `/openai/v1/` endpoints to the same resource base before dispatch and
+request-contract binding, preserving custom path prefixes and deployment IDs.
+Query/fragment-bearing v1 endpoints refuse without logging their values;
+explicit non-Azure transport overrides and dated Azure API versions retain
+their existing behavior. The API-version configuration remains supported.
+
 To change which models Reflexio uses, edit [`reflexio/server/site_var/site_var_sources/llm_model_setting.json`](reflexio/server/site_var/site_var_sources/llm_model_setting.json).
 Use the provider prefix shown above (e.g., `anthropic/` for Anthropic models). Set the corresponding API key in your `.env` file.
 
@@ -538,6 +546,11 @@ Each case still owns its SQLite database, request context, organization binding
 and client. Fixture patches restore dependency overrides and request state even
 on failure; closing the client preserves the suites' existing no-lifespan behavior.
 Tests that exercise app construction or startup configuration need their own app.
+
+The background-failure pairing guard reuses one complete AST traversal per scan.
+Alias, call, stray-reference and decoded-string checks retain the full source;
+enclosing-function ownership is built only when a scoped reporting call needs it.
+The independent token inventory remains a separate coverage check.
 
 - Framework: **pytest** with `pytest-xdist` (parallel via `-n auto`)
 - Timeout: 120 seconds per test
@@ -1740,6 +1753,91 @@ connection lease or introduce a runtime alias.
 
 ### Native provider CLI ownership
 
+The `local-cli/` provider binds one operator-owned native target through
+`REFLEXIO_NATIVE_CLI_MODEL`, such as `local-cli/opencode/provider/model#high`.
+Requests must match that full reference before any native work. See the
+[selection and explicit-upgrade contract](docs/native-cli-model-selection.md).
+Set the existing
+`CLAUDE_SMART_CLI_PATH` to its native executable, or let PATH resolve `opencode`.
+Relative executable paths are anchored before entering the private workdir.
+Windows native execution requires the actual `.exe`; batch shims continue to
+use the existing plugin bridge. No shell is introduced.
+
+All CLI protocols honor a supplied completion timeout: native Claude, Codex,
+OpenCode and the remaining OpenCode compatibility bridge. Native OpenCode also
+charges private-workdir setup to that allowance. A supplied budget must be a
+finite positive number and is checked in SDK preparation before retries/fallback.
+Direct native OpenCode calls must supply it; existing standalone Claude/Codex
+and bridge calls that omit it retain their legacy provider default. Explicit
+constructor or `CLAUDE_SMART_CLI_TIMEOUT` caps remain supported and tighten that
+budget (constructor wins for direct calls); no provider duration default shortens
+a supplied budget. SDK worker admission validates the portable environment cap;
+constructor-only bindings are not carried into spawned workers.
+The explicit native reference carries the physical model selection. A
+host-only reference delegates to that CLI's own default; an explicit suffix
+`/default` remains a literal model ID. The requested reference never proves
+which model physically served the response.
+
+Codex spends its selected deadline on setup, native execution and reading its
+final output. Setup cannot grant a fresh allowance, and a result read after
+expiry is a timeout.
+
+Native Codex (`local-cli/codex[/model]`) forwards an explicit model remainder
+as `codex exec --model`; host-only selection leaves model choice to Codex.
+Legacy `claude-code/*` suffixes were opaque role labels and cannot be converted
+into physical models by guessing. Adopt the new native reference explicitly.
+The requested model does not establish observed model/provider provenance.
+
+An explicitly configured optimizer script/compile result retains its separate
+native authority and saved learning-model selection. Released plugin bundles
+remain on their existing pinned SDK until a matching producer migration is
+qualified; this SDK change does not update or migrate installed plugin files.
+Codex uses the canonical `CLAUDE_SMART_CLI_PATH` or PATH; `CLAUDE_SMART_CODEX_PATH`
+no longer selects an executable, and plugin installation roots no longer
+select a bridge. Active obsolete selection refuses when the native route is
+reached, before dispatch, retries or paid fallback. Move the intended executable
+to the canonical path before removing the old assignment, or deliberately
+remove it to adopt Codex from PATH. A valid canonical override or an explicit
+direct SDK adapter constructor path that previously dominated an unused old
+key remains valid. Client-worker admission uses the portable environment
+binding; a manually registered constructor-only binding is not carried into
+spawned workers. Use the canonical environment path for that client route. Explicit HTTP transports and other CLI hosts ignore that unused key.
+
+Historical `codex-claude-compat`, `.cmd` and `.js` paths refuse with migration
+guidance, including missing files, instead of silently changing wire protocol.
+Enabled obsolete native intent stays selected even without an installed binary;
+provider availability does not claim it is usable. The remaining OpenCode
+bridges retain Claude wire protocol across coding hosts and honor supplied
+caller budgets. Budget-omitting direct calls retain their legacy timeout.
+Their later retirement must preserve model/variant precedence, explicit paths,
+permissions and caller budgets.
+
+The native workdir retains the existing supported V1 agent configuration,
+including denied tools and recursion guards; OpenCode documents V1 config
+compatibility in its [V2 migration guide](https://opencode.ai/docs/migrate-v1/).
+Delegated workdirs remain parent-owned until native retirement. Native OpenCode failure text,
+including partial output alongside error events, stays out of exceptions, logs
+and stored stall messages; auth/billing reasons and parsed reset times survive.
+Neither this path nor its tests claim arbitrary-descendant containment or
+cancellation of work inside OpenCode's shared background server.
+
+OpenClaw uses the selected completion `timeout` as one allowance for CLI
+execution and busy retry waits. Retries receive only the remaining time; they
+cannot restart the allowance. The SDK's outer per-rung deadline may tighten it
+further, and native process ownership/cleanup stays unchanged. A direct
+`OpenClawLLM.completion(...)` call must supply a finite positive numeric timeout;
+ordinary `litellm.completion(...)` and `LiteLLMClient` supply their selected
+request budget. No OpenClaw-specific default duration is installed.
+
+`OPENCLAW_CLI_TIMEOUT` is retired. A nonblank old assignment refuses a selected
+OpenClaw route before dispatch or fallback. Deliberately select the intended
+existing `LiteLLMConfig.timeout` or completion `timeout`, then remove the old
+assignment. The old setting bounded each subprocess separately; the new budget
+includes all busy retries, so copying the number is not a guarantee of identical
+retry timing. Empty/whitespace assignments are unset. HTTP overrides and native
+fallbacks that are never reached do not read it. This does not retire
+`CLAUDE_SMART_CLI_TIMEOUT`, which also controls a separate plugin bridge.
+
 Local Claude, Codex and OpenClaw commands use the shared private controller in
 `reflexio/server/llm/_native_cli.py` and fresh stdlib-only launch owner in
 `_native_cli_process.py`. SDK hooks and interpretation remain in their existing
@@ -2057,3 +2155,15 @@ readable even when its unused automatic stride is larger; ordinary automatic
 admission still refuses that geometry. Existing read/write acceptance, defaults,
 public fields, project inheritance and frozen admission witnesses are unchanged.
 This refactor does not retire a setting or convert stored configuration.
+
+
+### Caller-owned native optimizer execution
+
+The local assistant adapter can accept a compile-only `native_cli_v1` result.
+The script prepares prompts; the SDK owns the actual Claude JSON or Codex
+invocation and spends the existing caller timeout across both phases. The
+private capability/deadline header is generated per invocation, never selected
+from user configuration. Generic content-returning scripts and HTTP payloads
+retain their contract. See [assistant backend protocol](docs/playbook_optimizer_assistant_backends.md#compile-only-native-assistant-results)
+for permission, version-compatibility and immediate-child ownership limits.
+This prerequisite does not retire CLI timeout settings or change OpenCode.

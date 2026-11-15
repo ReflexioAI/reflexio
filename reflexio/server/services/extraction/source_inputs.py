@@ -11,7 +11,7 @@ from typing import Any
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import Interaction, Request
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.services.extraction.input_preparation import source_witness_bytes
 from reflexio.server.services.storage.storage_base import AgentRunRecord, BaseStorage
 from reflexio.server.work_scope import current_project_id
@@ -45,20 +45,20 @@ def capture_source_inputs(
         )
         or len(set(expected)) != len(expected)
     ):
-        raise InputBudgetConfigurationError("Extraction source binding is incomplete")
+        raise ExtractionInputIntegrityError("Extraction source binding is incomplete")
     sources: dict[str, Any] = {}
     for model in models:
         # The outer session_id is a presentation/grouping label (some loaders
         # use request IDs); Request itself owns persisted session qualifiers.
         if not model.interactions or model.request.user_id != run.binding.user_id:
-            raise InputBudgetConfigurationError("Extraction source request changed")
+            raise ExtractionInputIntegrityError("Extraction source request changed")
         first = min(
             model.interactions, key=lambda item: (item.created_at, item.interaction_id)
         )
         if model._fallback_request and model.request != fallback_source_request(
             run, first
         ):
-            raise InputBudgetConfigurationError("Extraction fallback binding changed")
+            raise ExtractionInputIntegrityError("Extraction fallback binding changed")
         for item in model.interactions:
             identifier = str(item.interaction_id)
             if (
@@ -68,7 +68,7 @@ def capture_source_inputs(
                 or item.user_id != run.binding.user_id
                 or item.request_id != model.request.request_id
             ):
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Extraction source interaction changed"
                 )
             sources[identifier] = {
@@ -83,7 +83,7 @@ def capture_source_inputs(
                 ),
             }
     if set(sources) != {str(identifier) for identifier in expected}:
-        raise InputBudgetConfigurationError("Extraction source coverage changed")
+        raise ExtractionInputIntegrityError("Extraction source coverage changed")
     return {"project_id": current_project_id() or "", "sources": sources}
 
 
@@ -100,11 +100,11 @@ def require_source_inputs(frame: Any, run: AgentRunRecord) -> dict[str, dict[str
         or not isinstance(frame["sources"], dict)
         or set(frame["sources"]) != {str(i) for i in expected}
     ):
-        raise InputBudgetConfigurationError("Committed output source proof unavailable")
+        raise ExtractionInputIntegrityError("Committed output source proof unavailable")
     sources = frame["sources"]
     for value in sources.values():
         if not isinstance(value, dict):
-            raise InputBudgetConfigurationError("Committed output source proof invalid")
+            raise ExtractionInputIntegrityError("Committed output source proof invalid")
         origin = value.get("origin")
         fields = {"digest", "origin"}
         if origin == "fallback":
@@ -118,7 +118,7 @@ def require_source_inputs(frame: Any, run: AgentRunRecord) -> dict[str, dict[str
             or len(digest) != 64
             or any(c not in "0123456789abcdef" for c in digest)
         ):
-            raise InputBudgetConfigurationError("Committed output source proof invalid")
+            raise ExtractionInputIntegrityError("Committed output source proof invalid")
         if origin == "fallback":
             anchor = value["fallback_first_interaction_id"]
             anchor_value = sources.get(str(anchor))
@@ -128,7 +128,7 @@ def require_source_inputs(frame: Any, run: AgentRunRecord) -> dict[str, dict[str
                 or anchor_value.get("origin") != "fallback"
                 or anchor_value.get("fallback_first_interaction_id") != anchor
             ):
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Committed fallback source proof invalid"
                 )
     return sources
