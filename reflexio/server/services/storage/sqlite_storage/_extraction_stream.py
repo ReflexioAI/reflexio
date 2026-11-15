@@ -198,6 +198,28 @@ class SQLiteStreamSQL:
             "json_extract(r.committed_output,'$.publication.id') AS output_id"
         )
 
+    def transition_run_witness_columns(self) -> str:
+        return (
+            "json_extract(r.generation_request_snapshot,'$.output_schema_name') AS schema_name,"
+            "json_type(r.generation_request_snapshot,'$.overflow') IS NOT NULL AS overflow,"
+            "json_extract(r.generation_request_snapshot,'$.overflow.checkpoint.extraction_instruction_contract') AS instruction_digest,"
+            "json_extract(r.generation_request_snapshot,'$.overflow.checkpoint.extraction_policy') AS policy_digest"
+        )
+
+    def transition_project_scope(self, source: str) -> tuple[str, str]:  # noqa: ARG002 -- SQLite has no projects.
+        return "'' AS project_id", "? = ''"
+
+    def transition_unbound_project(self) -> str:
+        return "0=1"  # Projects do not exist in OSS SQLite.
+
+    def transition_json_scalar(self, field: str) -> str:
+        values = {
+            "output_id": "json_extract(r.committed_output,'$.publication.id')",
+            "preparation_id": "json_extract(r.preparation,'$.output_id')",
+            "overflow_stage": "json_extract(r.generation_request_snapshot,'$.overflow.checkpoint.stage')",
+        }
+        return values[field]
+
     def input_lock(self) -> str:
         return ""
 

@@ -58,11 +58,13 @@ from .playbook import (
 )
 from .profiles import InteractionStoreMixin, ProfileSearchMixin, ProfileStoreMixin
 from .resume_selection import ResumeSelectionStore
+from .transition_inventory import TransitionInventoryStore
 
 
 class BaseStorage(
     PendingToolExpiryStore,
     ResumeSelectionStore,
+    TransitionInventoryStore,
     PublicationPreparationStore,
     PublicationReceiptStore,
     ExtractionStreamStore,
