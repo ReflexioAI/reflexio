@@ -131,17 +131,20 @@ def authorize_native_model(
 
 
 def native_policy_digest() -> str:
-    """Bind operator native intent and executable selection without disclosing it."""
+    """Bind native intent and launch context without reading account contents."""
     target = configured_native_model()
     policy = {
         "target": target.reference if target else None,
         "cwd": str(Path.cwd()),
+        "home": str(Path.home()),
         "execution": {
             name: os.environ.get(name)
             for name in (
                 "CLAUDE_SMART_CLI_PATH",
                 "CLAUDE_SMART_CLI_TIMEOUT",
                 "CLAUDE_SMART_CODEX_PATH",
+                "CODEX_HOME",
+                "CLAUDE_CONFIG_DIR",
                 "PATH",
                 "PATHEXT",
             )
