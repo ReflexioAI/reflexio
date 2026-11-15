@@ -32,6 +32,11 @@ An explicitly configured fallback ladder may advance after an authorized
 operational failure; authorization and adoption errors are terminal, including
 when LiteLLM or a spawned worker wraps them.
 
+Known OpenCode compatibility bridges receive the selected native model in their
+child environment, with stale bridge model/variant hints cleared. A host-only
+reference delegates to OpenCode's own configuration. The parent environment and
+independently invoked optimizer scripts retain their separate learning policy.
+
 Each native request must match the operator's full reference before role or
 gateway rewriting, before admission, and again inside the provider. An explicit
 `custom_llm_provider` cannot turn a reserved `local-cli/` reference into HTTP.

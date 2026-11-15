@@ -594,3 +594,74 @@ def test_invalid_explicit_override_cannot_retarget_to_default_path(
     assert (
         "CLAUDE_SMART_CLI_PATH" in caplog.text and "private-canary" not in caplog.text
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("suffix", ["", ".cmd", ".js"])
+@pytest.mark.parametrize("model", [None, "default", "opaque", "provider/model#high"])
+def test_known_bridge_child_model_is_owned_by_native_reference(
+    monkeypatch, suffix, model
+):
+    reference = "local-cli/opencode" + ("/" + model if model is not None else "")
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", reference)
+    hints = {
+        "CLAUDE_SMART_LEARNING_MODEL": "provider/stale",
+        "CLAUDE_SMART_OPENCODE_MODEL": "provider/other",
+        "CLAUDE_SMART_OPENCODE_VARIANT": "low",
+    }
+    for name, value in hints.items():
+        monkeypatch.setenv(name, value)
+    run = Mock(
+        return_value=subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps({"type": "result", "subtype": "success", "result": "owned"}),
+            "",
+        )
+    )
+    monkeypatch.setattr(provider, "run_native_cli", run)
+    response = provider.NativeCLILLM(
+        cli_path="/owned/opencode-claude-compat" + suffix
+    ).completion(model=reference, timeout=1)
+    assert response.choices[0].message.content == "owned"
+    argv = run.call_args.args[0]
+    if model is None:
+        assert "--model" not in argv
+    else:
+        assert argv[argv.index("--model") + 1] == model
+    child = run.call_args.kwargs["env"]
+    assert child["CLAUDE_SMART_LEARNING_MODEL"] == (model or "")
+    assert child["CLAUDE_SMART_OPENCODE_MODEL"] == ""
+    assert child["CLAUDE_SMART_OPENCODE_VARIANT"] == ""
+    assert run.call_args.kwargs["timeout"] == 1
+    assert {name: os.environ.get(name) for name in hints} == hints
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("executable", ["claude", "custom-claude-wrapper"])
+def test_nonbridge_claude_transport_preserves_independent_learning_environment(
+    monkeypatch, executable
+):
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code/owned")
+    hints = {
+        "CLAUDE_SMART_LEARNING_MODEL": "provider/optimizer",
+        "CLAUDE_SMART_OPENCODE_MODEL": "provider/independent",
+        "CLAUDE_SMART_OPENCODE_VARIANT": "low",
+    }
+    for name, value in hints.items():
+        monkeypatch.setenv(name, value)
+    run = Mock(
+        return_value=subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps({"type": "result", "subtype": "success", "result": "owned"}),
+            "",
+        )
+    )
+    monkeypatch.setattr(provider, "run_native_cli", run)
+    provider.NativeCLILLM(cli_path="/owned/" + executable).completion(
+        model="local-cli/claude-code/owned", timeout=1
+    )
+    child = run.call_args.kwargs["env"]
+    assert {name: child.get(name) for name in hints} == hints
+    assert {name: os.environ.get(name) for name in hints} == hints
