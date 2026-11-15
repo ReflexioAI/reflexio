@@ -656,15 +656,19 @@ class TestGetCachedRequestContext:
         max_active = 0
         counter_lock = threading.Lock()
 
+        original_migrate = SQLiteStorageBase.migrate
+
         def slow_migrate(_self: SQLiteStorageBase) -> bool:
             nonlocal active, max_active
             with counter_lock:
                 active += 1
                 max_active = max(max_active, active)
-            time.sleep(0.05)
-            with counter_lock:
-                active -= 1
-            return True
+            try:
+                time.sleep(0.05)
+                return original_migrate(_self)
+            finally:
+                with counter_lock:
+                    active -= 1
 
         monkeypatch.setattr(SQLiteStorageBase, "migrate", slow_migrate)
         start = threading.Barrier(len(org_ids))

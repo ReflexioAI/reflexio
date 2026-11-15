@@ -39,6 +39,11 @@ from reflexio.server.services.deferred_learning_plan import (
     PlaybookWritePlan,
     ProfileWritePlan,
 )
+from reflexio.server.services.durable_learning.learning_admission import (
+    LearningWork,
+    learning_work_scope,
+)
+from reflexio.server.services.durable_learning.user_lease import user_extraction_lease
 from reflexio.server.services.playbook.service import (
     PlaybookGenerationService,
     PlaybookGenerationServiceConfig,
@@ -213,6 +218,11 @@ def test_online_learning_bills_survivors_but_telemetry_counts_raw_results(tmp_pa
     configure_usage_event_recorder(events.append)
     try:
         with (
+            user_extraction_lease(storage, _USER_ID),
+            learning_work_scope(
+                storage,
+                LearningWork(storage.org_id, "", _USER_ID, "request", _REQUEST_ID),
+            ),
             patch.object(service, "_prepare_generation_run", return_value=_prepared()),
             patch.object(
                 service, "_execute_extractor", return_value=extracted_profiles
@@ -277,6 +287,11 @@ def test_online_playbook_bills_only_write_plan_survivors(tmp_path):
     configure_usage_event_recorder(events.append)
     try:
         with (
+            user_extraction_lease(storage, _USER_ID),
+            learning_work_scope(
+                storage,
+                LearningWork(storage.org_id, "", _USER_ID, "request", _REQUEST_ID),
+            ),
             patch.object(service, "_prepare_generation_run", return_value=_prepared()),
             patch.object(
                 service, "_execute_extractor", return_value=extracted_playbooks

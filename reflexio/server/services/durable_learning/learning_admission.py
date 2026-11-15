@@ -74,17 +74,14 @@ def current_learning_work() -> LearningWork | None:
 def learning_transition_is_held(error: BaseException) -> bool:
     """Recognize explicit wrappers without inspecting content-bearing text."""
     from reflexio.server.llm.compute_admission import ComputeTransitionInterruptedError
+    from reflexio.server.llm.failure import exception_chain
 
-    seen: set[int] = set()
-    current: BaseException | None = error
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(
-            current, (LearningTransitionBlockedError, ComputeTransitionInterruptedError)
-        ):
-            return True
-        current = current.__cause__
-    return False
+    return any(
+        isinstance(
+            link, (LearningTransitionBlockedError, ComputeTransitionInterruptedError)
+        )
+        for link in exception_chain(error, include_context=False)
+    )
 
 
 def _check_scope(storage: BaseStorage, work: LearningWork) -> None:
