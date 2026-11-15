@@ -94,8 +94,9 @@ def test_durable_enqueue_persists_job_atomically(monkeypatch):
 
 
 @pytest.mark.parametrize("initially_unready", [False, True])
+@pytest.mark.parametrize("contended", [False, True], ids=["natural", "held-tagging"])
 def test_public_publish_to_durable_worker_persists_profile_and_playbook(
-    monkeypatch, initially_unready
+    monkeypatch, initially_unready, contended
 ):
     """The public deferred-publish path survives without the retired service.
 
@@ -103,12 +104,30 @@ def test_public_publish_to_durable_worker_persists_profile_and_playbook(
     enqueue, real durable worker, extraction, and persisted profile/playbook rows.
     The suite-level LiteLLM double is the only mocked external boundary.
     """
+    import threading
+
+    from reflexio.server.services.tagging.service import TaggingService
+
+    tagging_started, release_tagging = threading.Event(), threading.Event()
+    original_tagging = TaggingService._run_owned
+
+    def hold_tagging_lease(service, *args, **kwargs):
+        if contended and not tagging_started.is_set():
+            tagging_started.set()
+            assert release_tagging.wait(30), "Test must release the real tagging lease"
+        return original_tagging(service, *args, **kwargs)
+
+    monkeypatch.setattr(TaggingService, "_run_owned", hold_tagging_lease)
     monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_QUEUE", "true")
     monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "off")
     # This boundary test owns real tagging teardown, not the production debounce.
     monkeypatch.setattr(
         "reflexio.server.services.tagging.tagging_scheduler._EFFECTIVE_DELAY_SECONDS",
         0,
+    )
+    monkeypatch.setattr(
+        "reflexio.server.services.tagging.tagging_scheduler.TAGGING_DELAY_SECONDS",
+        0.01,
     )
 
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -185,10 +204,74 @@ def test_public_publish_to_durable_worker_persists_profile_and_playbook(
                 lambda _requested_org_id: reflexio.request_context,
                 instance_id="durable-boundary-worker",
             )
-            assert worker.drain_org(org_id, batch_size=4, lease_seconds=300) == 4
+            original_turn = worker._reserved_turn
+            turn_count = 0
+            held_turns = []
+
+            def turn_with_tagging_contention(org, lease_seconds):
+                nonlocal turn_count
+                turn_count += 1
+                if contended and turn_count == 3:
+                    assert tagging_started.wait(30), (
+                        "Tagging must hold its actual user lease"
+                    )
+                try:
+                    result = original_turn(org, lease_seconds)
+                    if contended and turn_count == 3:
+                        held_turns.append(result)
+                    return result
+                finally:
+                    if turn_count == 3:
+                        release_tagging.set()
+
+            monkeypatch.setattr(worker, "_reserved_turn", turn_with_tagging_contention)
+
+            def settled_windows():
+                with storage._stream_sql(read_only=True) as db:
+                    return [
+                        (
+                            row["kind"],
+                            row["completed"],
+                            row["effects_done"],
+                            row["invalidated"],
+                        )
+                        for row in db.query(
+                            "SELECT kind,completed,effects_done,invalidated FROM extraction_windows "
+                            "WHERE org_id=? AND user_id=? ORDER BY kind",
+                            (org_id, payload["user_id"]),
+                        )
+                    ]
+
+            expected_windows = [("playbook", 1, 1, 0), ("profile", 1, 1, 0)]
+            # A real tagging callback can own the same user between worker
+            # opportunities. A yielded busy turn is not lost learning; finish
+            # within a bounded number of batches and assert actual native debt.
+            for _ in range(4):
+                worker.drain_org(org_id, batch_size=4, lease_seconds=300)
+                from reflexio.server.services.tagging.tagging_scheduler import (
+                    TaggingScheduler,
+                )
+
+                tagging = TaggingScheduler._instance
+                if tagging is not None:
+                    assert tagging.drain(timeout_seconds=10)
+                if settled_windows() == expected_windows:
+                    break
+            else:
+                pytest.fail(f"Learning windows did not settle: {settled_windows()!r}")
+            if contended:
+                assert held_turns == [0]
+            assert (
+                storage.extraction_status(payload["user_id"], payload["request_id"])[
+                    "status"
+                ]
+                == "done"
+            )
+            assert storage.pending_extraction_effects() == []
             assert storage.count_all_profiles() > 0
             assert storage.count_user_playbooks() > 0
         finally:
+            release_tagging.set()
             # Extraction schedules real aggregation/tagging work. Settle it
             # before deleting the SQLite/config directory it still references.
             from reflexio.server.services.playbook import aggregation_scheduler
