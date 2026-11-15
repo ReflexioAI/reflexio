@@ -109,3 +109,16 @@ def test_failed_original_parent_observation_does_not_clear_admission_streak(
     admission = failure.call_args.kwargs["scope"]
     assert admission.startswith("durable-resume-admission:org:")
     assert all(call.args[0] != admission for call in success.call_args_list)
+
+
+def test_unrelated_handled_transition_does_not_make_a_later_failure_held():
+    from reflexio.server.services.durable_learning.learning_admission import (
+        learning_transition_is_held,
+    )
+
+    hold = LearningTransitionBlockedError("Handled operational hold")
+    failure = RuntimeError("Independent method failure")
+    failure.__context__ = hold
+    assert not learning_transition_is_held(failure)
+    failure.__cause__ = hold
+    assert learning_transition_is_held(failure)

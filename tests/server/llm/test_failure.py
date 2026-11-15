@@ -408,3 +408,13 @@ def test_tool_loop_label_keeps_the_repair_kind_over_availability():
         "StructuredOutputRepairError",
         "semantic",
     )
+
+
+def test_explicit_cause_only_chain_preserves_default_context_semantics():
+    inner = RuntimeError("Handled context")
+    outer = RuntimeError("Independent failure")
+    outer.__context__ = inner
+    assert list(exception_chain(outer)) == [outer, inner]
+    assert list(exception_chain(outer, include_context=False)) == [outer]
+    outer.__cause__ = inner
+    assert list(exception_chain(outer, include_context=False)) == [outer, inner]

@@ -57,6 +57,12 @@ def reflexio_with_config(temp_storage, ensure_mock_env, monkeypatch):
         0,
     )
 
+    # Busy/transition retries retain their real callback. Keep that retry timer
+    # within this fixture's drain budget too, without disabling admission.
+    monkeypatch.setattr(
+        "reflexio.server.services.tagging.tagging_scheduler.TAGGING_DELAY_SECONDS", 0.01
+    )
+
     org_id = "test_org"
     config = Config(storage_config=StorageConfigSQLite())
     configurator = DefaultConfigurator(
