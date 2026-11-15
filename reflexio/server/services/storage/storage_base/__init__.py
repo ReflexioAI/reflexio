@@ -103,9 +103,9 @@ class BaseStorage(
         implementation outside the SDK. None means SDK source covers this
         exact adapter. This hook does not grant learning or call a provider.
         """
-        from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
+        from reflexio.server.llm.input_budget import InputBudgetConfigurationError
 
-        raise ExtractionInputIntegrityError(
+        raise InputBudgetConfigurationError(
             "Unsupported ordinary storage implementation"
         )
 
