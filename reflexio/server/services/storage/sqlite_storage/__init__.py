@@ -82,6 +82,11 @@ class SQLiteStorage(
 ):
     """SQLite-based storage with FTS5 and hybrid search."""
 
+    def ordinary_profile_source_digest(self) -> str | None:
+        if type(self) is not SQLiteStorage:
+            return super().ordinary_profile_source_digest()
+        return None
+
     def clear_user_data(self, user_id: str) -> dict[str, int]:
         # Hold the re-entrant storage lock across the composed clear so a marker
         # cannot land between outcome cleanup and request deletion.

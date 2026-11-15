@@ -10,7 +10,6 @@ No incumbent profile payload or credential descriptor is persisted.
 from __future__ import annotations
 
 import hashlib
-import importlib
 import json
 import platform
 import re
@@ -77,7 +76,8 @@ def _digest(value: Any) -> str:
     ).hexdigest()
 
 
-def _files_digest(root: Path, *, python_only: bool) -> str:
+def ordinary_profile_source_tree_digest(root: Path, *, python_only: bool) -> str:
+    """Hash a strict installed source/resource tree for an adapter witness."""
     if root.is_symlink() or not root.is_dir():
         raise InputBudgetConfigurationError("Ordinary consumer resources unavailable")
     files = {}
@@ -111,18 +111,7 @@ def _installed_source_digest() -> str:
         raise InputBudgetConfigurationError(
             "Ordinary consumer requires installed Python source"
         )
-    return _files_digest(root, python_only=True)
-
-
-@lru_cache(maxsize=1)
-def _installed_native_source_digest() -> str:
-    package = importlib.import_module("reflexio_ext")
-    location = getattr(package, "__file__", None)
-    if not isinstance(location, str) or not Path(location).is_file():
-        raise InputBudgetConfigurationError(
-            "Native ordinary consumer requires installed Enterprise source"
-        )
-    return _files_digest(Path(location).parent, python_only=True)
+    return ordinary_profile_source_tree_digest(root, python_only=True)
 
 
 @lru_cache(maxsize=1)
@@ -237,14 +226,7 @@ def ordinary_profile_preparation(
         },
     }
     stage_clients = dict.fromkeys(options, client)
-    if (type(executor.storage).__module__, type(executor.storage).__name__) not in {
-        ("reflexio.server.services.storage.sqlite_storage", "SQLiteStorage"),
-        ("reflexio_ext.server.services.storage.supabase_storage", "SupabaseStorage"),
-        ("reflexio_ext.server.services.storage.postgres_storage", "PostgresStorage"),
-    }:
-        raise InputBudgetConfigurationError(
-            "Unsupported ordinary storage implementation"
-        )
+    native_source = executor.storage.ordinary_profile_source_digest()
     storage = cast(_NativeProfileStorage, executor.storage)
     expansion_enabled = storage._should_expand_documents()
     if expansion_enabled:
@@ -302,14 +284,15 @@ def ordinary_profile_preparation(
             {
                 "sdk": _installed_source_digest(),
                 "runtime_versions": _installed_runtime_digest(),
-                "native": _installed_native_source_digest()
-                if type(executor.storage).__module__.startswith("reflexio_ext.")
-                else None,
+                "native": native_source,
             }
         ),
         "templates_sha256": _digest(
             {
-                "resources": [_files_digest(path, python_only=False) for path in banks],
+                "resources": [
+                    ordinary_profile_source_tree_digest(path, python_only=False)
+                    for path in banks
+                ],
                 "active": templates,
             }
         ),
