@@ -48,6 +48,7 @@ from ._session_outcomes import (
 from ._shadow_verdicts import ShadowVerdictsMixin
 from ._stall_state import StallStateMixin
 from ._user_work_position import ResumeClass, ResumeCursor, UserWorkPosition
+from .learning_transition import LearningTransitionStore
 from .playbook import (
     AgentEvaluationResultStoreMixin,
     AgentPlaybookStoreMixin,
@@ -66,6 +67,7 @@ class BaseStorage(
     ProfileLifecycleStoreMixin,
     PendingToolExpiryStore,
     ResumeSelectionStore,
+    LearningTransitionStore,
     TransitionInventoryStore,
     PublicationPreparationStore,
     PublicationReceiptStore,

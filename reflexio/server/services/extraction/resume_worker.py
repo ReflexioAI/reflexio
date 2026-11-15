@@ -326,9 +326,12 @@ class ExtractionResumeWorker:
 
     def recover_selected(self, selection: Any, *, operation_id: str) -> AgentRunRecord:
         """Recover one previewed run without opening the scheduler's resume gate."""
+        from reflexio.server.services.durable_learning.learning_admission import (
+            LearningWork,
+            learning_work_scope,
+        )
         from reflexio.server.services.durable_learning.user_lease import (
             UserLeaseBusyError,
-            adopt_agent_run_for_execution,
             fence_explicit_extraction,
             user_extraction_lease,
         )
@@ -350,9 +353,21 @@ class ExtractionResumeWorker:
             try:
                 # Explicit selected work declines busy admission without changing
                 # the previewed run. No logical claim ages while waiting here.
-                with user_extraction_lease(
-                    self.storage, user_id, max_wait_seconds=0
-                ) as owner:
+                with (
+                    user_extraction_lease(
+                        self.storage, user_id, max_wait_seconds=0
+                    ) as owner,
+                    learning_work_scope(
+                        self.storage,
+                        LearningWork(
+                            selection.org_id,
+                            selection.project_id or "",
+                            user_id,
+                            "run",
+                            run.id,
+                        ),
+                    ),
+                ):
                     pending_config = self.request_context.configurator.get_config().pending_tool_call_config
                     with self.storage.commit_scope():
                         fence_explicit_extraction(self.storage)
@@ -369,7 +384,10 @@ class ExtractionResumeWorker:
                         )
                         if claimed is None:
                             raise RecoveryRefusedError("claim_conflict")
-                        claimed = adopt_agent_run_for_execution(self.storage, claimed)
+                        # claim_agent_run_for_recovery already adopts the exact
+                        # inspected revision under this same user owner. The
+                        # normal execution entry re-fences after this transaction;
+                        # do not introduce a second adoption/commit boundary.
                     logger.info(
                         "event=extraction_recovery_claimed run_id=%s operation_id=%s",
                         run.id,
@@ -413,6 +431,26 @@ class ExtractionResumeWorker:
         selection: Any,
     ) -> AgentRunRecord:
         """Process while the caller retains actual lease and capacity ownership."""
+        from reflexio.server.services.durable_learning.user_lease import (
+            agent_run_user_work,
+        )
+
+        with agent_run_user_work(self.storage, run):
+            return self._execute_admitted_claim(
+                run,
+                finalization_retry=finalization_retry,
+                pending_config=pending_config,
+                selection=selection,
+            )
+
+    def _execute_admitted_claim(
+        self,
+        run: AgentRunRecord,
+        *,
+        finalization_retry: bool,
+        pending_config: Any,
+        selection: Any,
+    ) -> AgentRunRecord:
         from reflexio.server.services.durable_learning.user_lease import (
             adopt_agent_run_for_execution,
         )
@@ -783,6 +821,23 @@ class ExtractionResumeWorker:
                 raise LeaseLostError(
                     "Resume failure has no retained execution claim"
                 ) from exc
+            from reflexio.server.services.durable_learning.learning_admission import (
+                learning_transition_is_held,
+            )
+
+            if learning_transition_is_held(exc):
+                # Release only this actual claim; never refund dispatched work,
+                # consume a failure retry or turn a seal into method failure.
+                self._update_claimed_status(
+                    run.id,
+                    AgentRunStatus.FINALIZATION_FAILED
+                    if active.status == AgentRunStatus.AGENT_COMPLETED
+                    and active.committed_output is not None
+                    else AgentRunStatus.RESUME_READY,
+                    next_resume_at=datetime.now(UTC),
+                    last_error="learning_transition_held",
+                )
+                raise
             if execution_input_is_busy(exc):
                 # Keep any admitted attempt charged: absence of a returned
                 # response does not establish that no provider work entered.
@@ -854,6 +909,18 @@ class ExtractionResumeWorker:
         except LeaseLostError:
             raise
         except Exception as exc:
+            from reflexio.server.services.durable_learning.learning_admission import (
+                learning_transition_is_held,
+            )
+
+            if learning_transition_is_held(exc):
+                self._settle_finalization_failure(
+                    run,
+                    exc,
+                    last_error="learning_transition_held",
+                    max_finalization_attempts=pending_config.max_finalization_attempts,
+                )
+                raise
             if isinstance(classify_llm_failure(exc), OutageWait):
                 _log_finalization_provider_wait(run, exc)
             else:
@@ -893,6 +960,18 @@ class ExtractionResumeWorker:
         except LeaseLostError:
             raise
         except Exception as exc:
+            from reflexio.server.services.durable_learning.learning_admission import (
+                learning_transition_is_held,
+            )
+
+            if learning_transition_is_held(exc):
+                self._settle_finalization_failure(
+                    run,
+                    exc,
+                    last_error="learning_transition_held",
+                    max_finalization_attempts=pending_config.max_finalization_attempts,
+                )
+                raise
             if isinstance(classify_llm_failure(exc), OutageWait):
                 _log_finalization_provider_wait(run, exc)
             else:

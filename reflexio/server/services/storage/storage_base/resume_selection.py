@@ -8,6 +8,7 @@ user lease in the subsequent APP writer transaction before any execution.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -419,6 +420,7 @@ class ResumeSelectionStore:
         cursor: ResumeCursor | None = None,
         expected_run: AgentRunRecord | None = None,
         worker_id: str,
+        selected_existing: Any = None,
     ) -> tuple[bool, AgentRunRecord | None]:
         """Consume an opportunity and, when valid, adopt in the SAME APP writer.
 
@@ -432,6 +434,7 @@ class ResumeSelectionStore:
         """
         from reflexio.server.services.durable_learning.user_lease import (
             _require_user_work_owner,
+            agent_run_user_work,
         )
 
         from ._extraction_stream import LeaseLostError
@@ -440,10 +443,33 @@ class ResumeSelectionStore:
         owner = _require_user_work_owner(storage)
         if owner.user_id != user_id or owner.token != token:
             raise LeaseLostError("Selection belongs to a different user-work owner")
-        next_position = expected_position.selected(work_class, cursor=cursor)
+        if selected_existing is not None:
+            from reflexio.server.services.durable_learning.selected_learning import (
+                current_selected_learning,
+            )
+
+            selected = current_selected_learning()
+            if (
+                selected is None
+                or selected != selected_existing
+                or work_class != "finalization"
+                or expected_run is None
+                or selected.kind != "run"
+                or selected.reference != expected_run.id
+                or selected.user_id != user_id
+            ):
+                raise ValueError("Selected work differs from its verified root")
+            # Operator selection is not fleet fairness: retain the exact private
+            # progress while normal eligibility/adoption fences the named run.
+            next_position = expected_position
+        else:
+            next_position = expected_position.selected(work_class, cursor=cursor)
         if work_class == "learning" and expected_run is not None:
             raise ValueError("Learning selection cannot adopt a resumable run")
         with (
+            agent_run_user_work(storage, expected_run)
+            if expected_run is not None
+            else nullcontext(),
             storage._coordination_commit_scope()
             if expected_run is None
             else self.commit_scope(),
@@ -452,6 +478,15 @@ class ResumeSelectionStore:
             if self._owned_user_work_position(db, user_id, token) != expected_position:
                 return False, None
             owner.fence(storage)
+            if expected_run is not None:
+                from reflexio.server.services.durable_learning.learning_admission import (
+                    fence_learning_work,
+                )
+
+                # Join THIS method's actual publication transaction. Wrapping
+                # the whole call in another writer changes ambiguous-commit
+                # recovery and can rotate private progress a second time.
+                fence_learning_work(storage)
             self._store_owned_user_work_position(db, user_id, token, next_position)
             if expected_run is None:
                 owner.fence(storage)
