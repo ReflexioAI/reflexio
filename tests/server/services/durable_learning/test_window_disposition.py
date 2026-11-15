@@ -53,6 +53,9 @@ from reflexio.server.services.extraction.input_preparation import (
 from reflexio.server.services.extraction.overflow_coordinator import (
     OverflowSuspendedError,
 )
+from reflexio.server.services.extraction.overflow_presentation import (
+    ProtectedQuoteAmbiguityError,
+)
 from reflexio.server.services.storage.error import (
     ExecutionInputBusyError,
     ReadinessUnavailableError,
@@ -455,6 +458,14 @@ CASES: list[Case] = [
         storage={"input_parked": True},
     ),
     Case(
+        "protected-quote-ambiguity-is-integrity",
+        lambda: ProtectedQuoteAmbiguityError("x"),
+        "input_budget_failure",
+        [("fail_extraction_input_budget", CONFIG, False)],
+        [(_INPUT_FAILURES[0], {"reason": INTEGRITY})],
+        [_held(INTEGRITY, "ProtectedQuoteAmbiguityError")],
+    ),
+    Case(
         "integrity-beats-outage",
         lambda: _from(
             ExtractionInputIntegrityError("x"), ProviderCapSaturatedError("x")
@@ -715,6 +726,7 @@ DISPOSITIONS: dict[str, WindowDisposition] = {
     "outermost-budget-link-wins-integrity": _HOLD_INTEGRITY,
     "outermost-budget-link-wins-over-integrity": _HOLD_CONFIG,
     "exceeded-beats-inner-integrity": _HOLD_EXCEEDED,
+    "protected-quote-ambiguity-is-integrity": _HOLD_INTEGRITY,
     "integrity-beats-outage": _HOLD_INTEGRITY,
     "exceeded": _HOLD_EXCEEDED,
     "output-truncated-is-exceeded": _HOLD_EXCEEDED,

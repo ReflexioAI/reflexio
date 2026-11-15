@@ -11,7 +11,7 @@ from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.models.config_schema import PlaybookConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.env_utils import env_bool
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_tokens
@@ -111,7 +111,7 @@ def _adopted_playbook_schema(
     }
     schema = schemas.get(schema_name) if isinstance(schema_name, str) else None
     if schema is None:
-        raise InputBudgetConfigurationError("Saved playbook schema is incompatible")
+        raise ExtractionInputIntegrityError("Saved playbook schema is incompatible")
     return schema
 
 
@@ -211,7 +211,7 @@ def _carried_playbook_context(
             or origin.interaction_id != span.interaction_id
             or origin.request_id != span.request_id
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Carried playbook source binding changed"
             )
         previous = sources.get(turn)
@@ -272,7 +272,7 @@ def _validate_legacy_evidence(
     output: StructuredPlaybookList, coordinator: OverflowCoordinator | None
 ) -> list[str]:
     if coordinator is None or coordinator.saved_run is None:
-        raise InputBudgetConfigurationError("Saved playbook source is unavailable")
+        raise ExtractionInputIntegrityError("Saved playbook source is unavailable")
     for index, _entry in enumerate(output.playbooks, 1):
         if not _entry.has_content:
             return ["Saved candidate lacks usable content."]
@@ -595,7 +595,7 @@ class PlaybookExtractor:
             if legacy_output and isinstance(output, StructuredPlaybookList):
                 return _validate_legacy_evidence(output, coordinator)
             if coordinator is None:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Overflow candidate validation lacks its coordinator"
                 )
             if not isinstance(
@@ -1020,7 +1020,7 @@ class PlaybookExtractor:
         if coordinator is not None:
             saved_run = coordinator.saved_run
             if saved_run is None or saved_run.created_at is None:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Overflow candidate lacks its persisted creation time"
                 )
             # Rebuilding a saved candidate must not change proposal prompts on

@@ -8,7 +8,7 @@ consumer contract in its parent. Existing worker selection remains unchanged.
 from dataclasses import dataclass
 from typing import Any
 
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.services.extraction.compression import ExtractionCompressionPlan
 from reflexio.server.services.extraction.overflow_coordinator import OverflowCoordinator
 from reflexio.server.services.extraction.source_package import (
@@ -50,7 +50,7 @@ def compress_source_package(
         or list(plan.native.compression.section_digests)
         != descriptor["section_digests"]
     ):
-        raise InputBudgetConfigurationError("Compression package plan changed")
+        raise ExtractionInputIntegrityError("Compression package plan changed")
 
     def authorize() -> None:
         with coordinator.storage.commit_scope():
@@ -78,7 +78,7 @@ def compress_source_package(
 
         def bindings(key: str) -> dict[str, Any]:
             if active is None or active.key != key:
-                raise InputBudgetConfigurationError("Compression node binding changed")
+                raise ExtractionInputIntegrityError("Compression node binding changed")
             return {
                 "kind": "source_selection",
                 "protocol_version": 1,
@@ -94,12 +94,12 @@ def compress_source_package(
             saved = coordinator.completed_step(key)
             if saved is None:
                 if cache_only:
-                    raise InputBudgetConfigurationError(
+                    raise ExtractionInputIntegrityError(
                         "Source package replay lacks a completed selection"
                     )
                 return None
             if any(saved.get(name) != value for name, value in expected.items()):
-                raise InputBudgetConfigurationError("Saved compression node changed")
+                raise ExtractionInputIntegrityError("Saved compression node changed")
             # The core independently revalidates the canonical choice against
             # actual visible originals and this consumer's exact output size.
             return saved["output"]

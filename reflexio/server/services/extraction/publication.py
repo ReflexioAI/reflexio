@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.metering_events import (
     emit_learnings_generated_records_strict,
     record_window_extraction_finances,
@@ -215,7 +215,7 @@ def _remaining_work(
             (storage.org_id, current_project_id() or "", *ids),
         )
         if {row["id"] for row in answers} != set(ids):
-            raise InputBudgetConfigurationError("Remaining answer dependency changed")
+            raise ExtractionInputIntegrityError("Remaining answer dependency changed")
         resolutions = {
             row["pending_tool_call_id"]: row["resolved_at"] for row in dependencies
         }
@@ -226,7 +226,7 @@ def _remaining_work(
                 or decoded(row["scope"]) != expected_scope
                 or row["tool_name"] != "ask_human"
             ):
-                raise InputBudgetConfigurationError("Remaining answer scope changed")
+                raise ExtractionInputIntegrityError("Remaining answer scope changed")
             state = PendingToolCallStatus(row["status"])
             if row["superseded_by"] is not None:
                 continue
@@ -239,7 +239,7 @@ def _remaining_work(
                     continue
                 expected = _run_revision_time(resolutions[row["id"]])
                 if expected is not None and expected != resolved_at:
-                    raise InputBudgetConfigurationError(
+                    raise ExtractionInputIntegrityError(
                         "Remaining answer resolution changed"
                     )
                 if expected is None:
@@ -325,7 +325,7 @@ def _validate_final_answers(
     _, inputs = require_publication_answer_inputs(run.committed_output)
     observed = storage._lock_extraction_answers(db, sorted(inputs))
     if {key: build_scope_hash(value) for key, value in observed.items()} != inputs:
-        raise InputBudgetConfigurationError("Extraction human answer changed")
+        raise ExtractionInputIntegrityError("Extraction human answer changed")
     now = datetime.fromtimestamp(db.now(), UTC)
     for witness in observed.values():
         require_current_answer(witness, storage.org_id, now)
@@ -446,9 +446,9 @@ def _publish_agent_output(
     retained = deepcopy(run)
     output = retained.committed_output
     if not isinstance(output, dict):
-        raise InputBudgetConfigurationError("Retained publication output unavailable")
+        raise ExtractionInputIntegrityError("Retained publication output unavailable")
     if output_publication_origin(output) != origin:
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Publication adapter changed its original origin"
         )
     publication = output.get("publication")
@@ -532,7 +532,7 @@ def _publish_agent_output(
                     and history_deadline is not None
                     and int(observed_at.timestamp()) > history_deadline
                 ):
-                    raise InputBudgetConfigurationError(
+                    raise ExtractionInputIntegrityError(
                         "Historical profile expired during publication"
                     )
                 if (status, pending) == _remaining_status(remaining, observed_at):
@@ -590,7 +590,7 @@ def prepare_initial_publication(
     with owned_agent_run_write(storage, retained), storage._stream_sql() as db:
         output = retained.committed_output
         if not isinstance(output, dict):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Retained publication output unavailable"
             )
         publication = output.get("publication")
@@ -620,7 +620,7 @@ def prepare_initial_publication(
             bookmark_advance is None
             or bookmark != ExtractorBookmarkPosition.from_advance(bookmark_advance)
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Initial bookmark changed before preparation"
             )
         write_plan = service._resolve_write_plan([items]) if items else None
@@ -641,7 +641,7 @@ def publish_initial_output(
         _run: AgentRunRecord, saved: SavedPublicationPreparation | None
     ) -> PreparedPublication:
         if saved is None:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Initial output preparation is unavailable"
             )
         return PreparedPublication(service, saved.write_plan, saved.bookmark)
@@ -667,7 +667,7 @@ def publish_resumed_output(
     """Worker adapter, including retry of an initial output's unchanged obligation."""
     origin = output_publication_origin(run.committed_output)
     if origin == "initial_window":
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Initial window publication requires its window owner"
         )
 
