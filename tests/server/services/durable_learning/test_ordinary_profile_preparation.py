@@ -150,9 +150,14 @@ def test_source_cache_is_only_for_immutable_source_not_live_resources(
         bank.mkdir()
         resource = bank / "template.txt"
         resource.write_text("one")
-        before = preparation._files_digest(bank, python_only=False)
+        before = preparation.ordinary_profile_source_tree_digest(
+            bank, python_only=False
+        )
         resource.write_text("two")
-        assert preparation._files_digest(bank, python_only=False) != before
+        assert (
+            preparation.ordinary_profile_source_tree_digest(bank, python_only=False)
+            != before
+        )
     finally:
         preparation._installed_source_digest.cache_clear()
 
@@ -173,7 +178,7 @@ def test_unknown_resource_layout_cannot_prove_consumer(tmp_path, kind):
             pytest.skip("FIFO requires POSIX")
         os.mkfifo(root / "stream")
     with pytest.raises(InputBudgetConfigurationError):
-        preparation._files_digest(root, python_only=False)
+        preparation.ordinary_profile_source_tree_digest(root, python_only=False)
 
 
 def test_dynamic_incumbents_are_not_frozen_into_instruction_witness(
@@ -449,3 +454,18 @@ def test_changed_runtime_versions_hold_original_window_without_dispatch(
         assert calls == [1]
     finally:
         preparation._installed_runtime_digest.cache_clear()
+
+
+def test_unqualified_storage_cannot_claim_sdk_only_source() -> None:
+    from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+    from reflexio.server.services.storage.storage_base import BaseStorage
+
+    class CustomSQLite(SQLiteStorage):
+        pass
+
+    storage = SQLiteStorage.__new__(SQLiteStorage)
+    assert storage.ordinary_profile_source_digest() is None
+    with pytest.raises(InputBudgetConfigurationError, match="Unsupported ordinary"):
+        BaseStorage.ordinary_profile_source_digest(storage)
+    with pytest.raises(InputBudgetConfigurationError, match="Unsupported ordinary"):
+        CustomSQLite.__new__(CustomSQLite).ordinary_profile_source_digest()

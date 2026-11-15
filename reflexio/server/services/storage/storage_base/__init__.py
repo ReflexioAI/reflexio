@@ -24,6 +24,8 @@ from ._agent_run import (
 from ._base import BaseStorageCore, matches_status_filter
 from ._commit_scope import CommitScopeMixin
 from ._extraction_stream import (
+    USER_WORK_CLAIM_PROTOCOL,
+    USER_WORK_CLAIM_PROTOCOL_SETTING,
     ExtractionStreamStore,
     LeaseLostError,
     OverflowCheckpointConflictError,
@@ -93,6 +95,19 @@ class BaseStorage(
     BaseStorageCore,
 ):
     """Base class for storage."""
+
+    def ordinary_profile_source_digest(self) -> str | None:
+        """Contribute adapter source to an ordinary continuation witness.
+
+        Maintained adapters must reject unqualified subclasses and bind any
+        implementation outside the SDK. None means SDK source covers this
+        exact adapter. This hook does not grant learning or call a provider.
+        """
+        from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
+
+        raise ExtractionInputIntegrityError(
+            "Unsupported ordinary storage implementation"
+        )
 
     def load_session_judgment_inputs(
         self, user_id: str, session_id: str, *, through_request_id: str | None = None
@@ -300,6 +315,8 @@ class BaseStorage(
 
 
 __all__ = [
+    "USER_WORK_CLAIM_PROTOCOL",
+    "USER_WORK_CLAIM_PROTOCOL_SETTING",
     "StreamSQL",
     "lock_user_work_row",
     "ResumeClass",
