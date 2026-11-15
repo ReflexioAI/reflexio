@@ -1,4 +1,10 @@
-"""Original-v1 persisted protocols survive current config/schema/worker cutover."""
+"""Historical missing-root work retains original publication and ACK debt.
+
+Unknown historical authority never gains a generation claim. These original
+legacy receipts are not the new independently deliverable financial outbox;
+finalization and ACK debt remain pending until supported selected admission.
+Malformed journals and changed sources remain independently invalid.
+"""
 
 import copy
 import json
@@ -17,9 +23,12 @@ from reflexio.models.config_schema import (
     UserPlaybookExtractorConfig,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm.input_budget import InputBudgetConfigurationError
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.metering_events import record_window_extraction_finances
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
+from reflexio.server.services.durable_learning import worker as worker_module
+from reflexio.server.services.durable_learning.window_executor import WindowExecutor
 from reflexio.server.services.durable_learning.worker import DurableLearningWorker
 from reflexio.server.services.extraction.recovery import inspect_run
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
@@ -33,6 +42,10 @@ from reflexio.server.services.storage.storage_base import (
     AgentBinding,
     AgentRunRecord,
     AgentRunStatus,
+)
+from reflexio.server.services.storage.storage_base._extraction_stream import (
+    Window,
+    WindowInputsDeletedError,
 )
 from reflexio.server.usage_metrics import (
     UsageEventDeliveryError,
@@ -89,6 +102,9 @@ def test_current_owner_upgrades_and_drains_original_v1(tmp_path, monkeypatch, ph
     with sqlite3.connect(target) as destination:
         before = _row(destination)
         before_manifest = json.loads(before["generation_request_snapshot"])["overflow"]
+        original_window = dict(
+            destination.execute("SELECT * FROM extraction_windows").fetchone()
+        )
         original_receipts = [
             tuple(row)
             for row in destination.execute(
@@ -194,6 +210,14 @@ def test_current_owner_upgrades_and_drains_original_v1(tmp_path, monkeypatch, ph
         ] == original_receipts
     accepted = {}
     attempts = []
+    health = []
+    real_health = worker_module.record_health
+
+    def record_health(name, *args, **kwargs):
+        health.append(name)
+        return real_health(name, *args, **kwargs)
+
+    monkeypatch.setattr(worker_module, "record_health", record_health)
 
     def record(event):
         if event.event_name not in ("extraction_tokens", "learnings_generated"):
@@ -208,6 +232,28 @@ def test_current_owner_upgrades_and_drains_original_v1(tmp_path, monkeypatch, ph
     configure_usage_event_recorder(record)
     try:
         worker = DurableLearningWorker(lambda _: engine.request_context)
+        if phase == "running":
+            # Unknown historical authority cannot acquire a generation claim.
+            # Typed admission holds preserve original work without a failure log.
+            worker.drain_org("stream-test", 3, 300)
+            assert "learning.transition_held" in health
+            held = storage.get_agent_run(before["id"])
+            assert held.status == before["status"]
+            assert held.committed_output is None
+            assert held.generation_request_snapshot == json.loads(
+                before["generation_request_snapshot"]
+            )
+            assert calls == [] and accepted == {}
+            assert storage.count_all_profiles() == 0
+            assert storage.extraction_status("u", "original-v1")["status"] != "done"
+            with sqlite3.connect(target) as conn:
+                assert [
+                    tuple(row)
+                    for row in conn.execute(
+                        "SELECT * FROM _agent_run_finalization_receipts"
+                    ).fetchall()
+                ] == original_receipts
+            return
         worker.drain_org("stream-test", 3, 300)
         if phase != "completed_erased_acked":
             assert (
@@ -225,12 +271,31 @@ def test_current_owner_upgrades_and_drains_original_v1(tmp_path, monkeypatch, ph
         if phase == "completed_projection_no_body":
             assert len(storage.get_user_playbooks(user_id="u")) == 1
             assert before["committed_output"] is None
-        assert storage.pending_extraction_effects() == []
+        pending = storage.pending_extraction_effects()
+        owes_derived_ack = phase in (
+            "completed_effects",
+            "completed_projection_no_body",
+            "completed_before_ack",
+        )
+        if owes_derived_ack:
+            assert len(pending) == 1
+            assert pending[0][0].window_id == original_window["window_id"]
+            assert pending[0][1] == json.loads(original_window["effects"])
+            with sqlite3.connect(target) as conn:
+                assert conn.execute(
+                    "SELECT effects_done,derived_claimed FROM extraction_windows"
+                ).fetchone() == (
+                    original_window["effects_done"],
+                    original_window["derived_claimed"],
+                )
+        else:
+            assert pending == []
         final = storage.get_agent_run(before["id"])
-        assert final.status == (
-            AgentRunStatus.AGENT_COMPLETED
-            if phase == "completed_erased_acked"
-            else AgentRunStatus.FINALIZED
+        assert final.status == before["status"]
+        assert final.committed_output == (
+            json.loads(before["committed_output"])
+            if before["committed_output"]
+            else None
         )
         final_manifest = final.generation_request_snapshot["overflow"]
         assert final_manifest["attempt_limit"] == before_manifest["attempt_limit"]
@@ -240,9 +305,9 @@ def test_current_owner_upgrades_and_drains_original_v1(tmp_path, monkeypatch, ph
         )
         if phase.startswith("completed"):
             assert calls == [] and final_manifest == before_manifest
-        assert len(accepted) == (
-            0 if phase in ("completed_acked", "completed_erased_acked") else 2
-        )
+        # No new financial receipt is invented from a legacy outbox under a
+        # missing root. Real old billing payload and unacknowledged debt persist.
+        assert accepted == {} and attempts == []
         observed_calls = list(calls)
         observed_events = dict(accepted)
         worker.drain_org("stream-test", 2, 300)
@@ -262,7 +327,7 @@ def test_current_owner_upgrades_and_drains_original_v1(tmp_path, monkeypatch, ph
                 == 0
             )
         print(
-            "DRAFT_ORIGINAL_V1_FULL_OWNER_PROOF="
+            "DRAFT_ORIGINAL_V1_ADMISSION_OBSERVATION="
             + json.dumps(
                 {
                     "phase": phase,
@@ -277,6 +342,7 @@ def test_current_owner_upgrades_and_drains_original_v1(tmp_path, monkeypatch, ph
                     "scripted_model_calls": len(calls),
                     "unique_financial_events": len(accepted),
                     "new_output_receipts": 0,
+                    "derived_dispatch_ack_pending": owes_derived_ack,
                     "second_turn_no_replay": True,
                     "outbound_inference_calls": 0,
                 },
@@ -366,9 +432,7 @@ def test_window_finance_validation_before_first_emit_and_partial_retry(tmp_path)
         "changed_source",
     ],
 )
-def test_preserves_genuine_refusals_before_publication(
-    tmp_path, monkeypatch, caplog, change
-):
+def test_preserves_genuine_refusals_before_publication(tmp_path, monkeypatch, change):
     target = restore_legacy_publication_fixture("running", tmp_path / "negative.sqlite")
     with sqlite3.connect(target) as destination:
         before = _row(destination)
@@ -462,13 +526,29 @@ def test_preserves_genuine_refusals_before_publication(
             worker = DurableLearningWorker(lambda _: engine.request_context)
             worker.drain_org("stream-test", 1, 300)
             assert engine.get_storage().count_all_profiles() == 0
-            if change == "changed_source":
-                assert (
-                    engine.get_storage().get_agent_run(before["id"]).status
-                    == AgentRunStatus.CANCELLED
-                )
-            else:
-                assert any(record.levelno >= 30 for record in caplog.records)
+            # Admission holds before original parsing and source validation.
+            # Its status/journal must not be charged or rewritten as a failure.
+            held = engine.get_storage().get_agent_run(before["id"])
+            assert held.status == before["status"]
+            assert held.committed_output is None
+            if change == "malformed_journal":
+                with pytest.raises(InputBudgetConfigurationError):
+                    WindowExecutor._overflow_manifest(held)
+            elif change == "changed_source":
+                storage = engine.get_storage()
+                with (
+                    pytest.raises(
+                        WindowInputsDeletedError, match="source content was replaced"
+                    ),
+                    storage.commit_scope(),
+                ):
+                    with storage._stream_sql() as db:
+                        window = Window.from_row(
+                            db.query("SELECT * FROM extraction_windows")[0]
+                        )
+                    storage.validate_extraction_source_digest(
+                        window, snapshot["overflow"]["source_digest"]
+                    )
         model.assert_not_called()
         assert not [
             event
