@@ -42,21 +42,21 @@ def _failure_detail(exc: BaseException) -> str:
 
 
 def _report_resume_admission_failure(
-    exc: Exception, *, scope: str, org_id: str
+    exc: Exception, *, org_id: str, descriptor_key: str
 ) -> None:
     from reflexio.server.services.durable_learning.learning_admission import (
         learning_transition_is_held,
     )
 
     if learning_transition_is_held(exc):
-        # The outer worker classifies held work without rotating another class
-        # or treating quiescence as an admission failure.
         raise exc
+    # This owner derives its registered scope, rather than receiving an opaque
+    # scope value that hides attribution from the source-wide reporting guard.
     report_failure_at_interval(
         logger,
         "resume_admission_failed",
         exc,
-        scope=scope,
+        scope=f"durable-resume-admission:{org_id}:{descriptor_key}",
         interval_seconds=None,
         detail=_failure_detail,
         org_id=org_id,
@@ -194,7 +194,7 @@ class ResumeSelection:
                             record_health("resume.selection_refused", 1, kind="counter")
                 except Exception as exc:
                     _report_resume_admission_failure(
-                        exc, scope=admission_scope, org_id=storage.org_id
+                        exc, org_id=storage.org_id, descriptor_key=key
                     )
 
         return None
