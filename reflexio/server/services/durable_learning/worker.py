@@ -128,11 +128,11 @@ def root_cause(exc: BaseException) -> BaseException:
     failure that happened while handling this one, and ``raise ... from None``
     deliberately severs the chain; neither is where the wrapper came from.
     """
-    seen = {id(exc)}
+    from reflexio.server.llm.failure import exception_chain
+
     current = exc
-    while current.__cause__ is not None and id(current.__cause__) not in seen:
-        current = current.__cause__
-        seen.add(id(current))
+    for cause in exception_chain(exc, include_context=False):
+        current = cause
     return current
 
 
