@@ -463,3 +463,185 @@ def test_effects_only_selection_cannot_enter_cached_learning_writer(monkeypatch)
         callback()
     writer.commit_scope.assert_not_called()
     callback.assert_not_called()
+
+
+def _legacy_source_run(storage):
+    from reflexio.models.api_schema.service_schemas import Interaction, Request
+
+    storage.add_request(
+        Request(
+            request_id="legacy-request",
+            user_id="user",
+            created_at=100,
+            source="test",
+            session_id="session",
+        )
+    )
+    for identity in (1, 2):
+        storage._insert_interaction(
+            Interaction(
+                interaction_id=identity,
+                user_id="user",
+                request_id="legacy-request",
+                created_at=identity,
+                role="user",
+                content="Use the stated deployment rule.",
+            )
+        )
+    storage.create_agent_run(
+        AgentRunRecord(
+            id="legacy-run",
+            binding=AgentBinding(
+                org_id=storage.org_id,
+                extractor_kind="playbook",
+                user_id=None,
+                request_id="legacy-request",
+                agent_version="v1",
+                source="test",
+                source_interaction_ids=[1, 2],
+            ),
+            status=AgentRunStatus.RESUME_READY,
+            generation_request_snapshot={},
+        )
+    )
+    return storage.get_agent_run("legacy-run")
+
+
+def test_legacy_admission_reuses_complete_proof_on_actual_fenced_writer(
+    storage, monkeypatch
+):
+    from reflexio.server.services.playbook import review_window
+
+    run = _legacy_source_run(storage)
+    original = review_window.infer_playbook_review_user_id
+    proofs = []
+    with (
+        user_extraction_lease(storage, "user", max_wait_seconds=0) as owner,
+        learning_work_scope(
+            storage, LearningWork(storage.org_id, "", "user", "run", run.id)
+        ),
+    ):
+
+        def observed(**kwargs):
+            assert storage.in_commit_scope
+            owner.fence(storage)
+            proofs.append(tuple(kwargs["source_interaction_ids"]))
+            return original(**kwargs)
+
+        monkeypatch.setattr(review_window, "infer_playbook_review_user_id", observed)
+        require_learning_run(storage, run)
+    assert proofs == [(1, 2)]
+    assert (
+        storage.get_agent_run(run.id).binding.user_id is None
+    )  # Admission isn't adoption.
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "mixed_interactions",
+        "request_owner",
+        "erased_interaction",
+        "missing_request",
+        "empty_source",
+        "profile_null",
+        "new_playbook_null",
+        "other_user",
+        "wrong_project",
+        "wrong_root",
+        "cross_org",
+    ],
+)
+def test_legacy_admission_never_guesses_missing_or_cross_scope_owner(storage, invalid):
+    run = _legacy_source_run(storage)
+    if invalid == "mixed_interactions":
+        storage._execute(
+            "UPDATE interactions SET user_id='other' WHERE interaction_id=2"
+        )
+    elif invalid == "request_owner":
+        storage._execute(
+            "UPDATE requests SET user_id='other' WHERE request_id='legacy-request'"
+        )
+    elif invalid == "erased_interaction":
+        storage._execute("DELETE FROM interactions WHERE interaction_id=2")
+    elif invalid == "missing_request":
+        storage._execute("DELETE FROM requests WHERE request_id='legacy-request'")
+    elif invalid == "empty_source":
+        run = replace(run, binding=replace(run.binding, source_interaction_ids=[]))
+    elif invalid == "profile_null":
+        run = replace(run, binding=replace(run.binding, extractor_kind="profile"))
+    elif invalid == "new_playbook_null":
+        run = replace(run, created_at=None)
+    elif invalid == "wrong_project":
+        run = replace(run, project_id="other")
+    elif invalid == "cross_org":
+        run = replace(run, binding=replace(run.binding, org_id="other"))
+    user = "other" if invalid == "other_user" else "user"
+    reference = "other-run" if invalid == "wrong_root" else run.id
+    before = storage.get_agent_run(run.id)
+    with (
+        user_extraction_lease(storage, user, max_wait_seconds=0),
+        learning_work_scope(
+            storage, LearningWork(storage.org_id, "", user, "run", reference)
+        ),
+        pytest.raises(LearningTransitionIntegrityError),
+    ):
+        require_learning_run(storage, run)
+    assert storage.get_agent_run(run.id) == before
+
+
+def test_legacy_preliminary_proof_cannot_skip_native_adoption_writer(storage):
+    from reflexio.server.services.durable_learning.user_lease import agent_run_user_work
+    from reflexio.server.services.storage.storage_base import LeaseLostError
+
+    run = _legacy_source_run(storage)
+    with (
+        agent_run_user_work(storage, run),
+        pytest.raises(LeaseLostError),
+        owned_agent_run_write(storage, run),
+    ):
+        pytest.fail("Preliminary owner proof must not authorize a run writer")
+    assert storage.get_agent_run(run.id).binding.user_id is None
+
+
+def test_source_erasure_after_preliminary_proof_refuses_real_adoption(
+    storage, monkeypatch
+):
+    from reflexio.server.services.playbook import review_window
+
+    run = _legacy_source_run(storage)
+    storage.update_agent_run_status(
+        run.id, AgentRunStatus.FINALIZATION_FAILED, committed_output={"playbooks": []}
+    )
+    run = storage.get_agent_run(run.id)
+    original = review_window.infer_playbook_review_user_id
+    erased = []
+
+    def prove_then_erase(**kwargs):
+        result = original(**kwargs)
+        if storage.in_commit_scope and not erased:
+            storage._execute("DELETE FROM interactions WHERE interaction_id=2")
+            erased.append(2)
+        return result
+
+    with user_extraction_lease(storage, "user", max_wait_seconds=0) as owner:
+        position = storage._read_owned_work_position("user", owner.token)
+        cursor, descriptor = storage._resume_candidate_page(
+            "finalization", user_id="user", token=owner.token
+        )
+        assert descriptor is not None and descriptor["id"] == run.id
+        monkeypatch.setattr(
+            review_window, "infer_playbook_review_user_id", prove_then_erase
+        )
+        selected, adopted = storage._commit_owned_work_selection(
+            user_id="user",
+            token=owner.token,
+            expected_position=position,
+            work_class="finalization",
+            cursor=cursor,
+            expected_run=run,
+            worker_id="legacy-test",
+        )
+        assert selected and adopted is None
+    assert erased == [2]
+    assert storage.get_agent_run(run.id) == run
