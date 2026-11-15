@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from reflexio.profile_authoring_protocol import (
+    AUTHORING_POLICIES,
     ESTIMATED_LIFETIME_POLICY,
     PROFILE_AUTHORING_POLICY,
 )
@@ -31,6 +32,9 @@ from reflexio.server.services.storage.storage_base.learning_transition import (
 )
 
 pytestmark = pytest.mark.integration
+_OTHER_AUTHORING_POLICY = next(
+    policy for policy in AUTHORING_POLICIES if policy != PROFILE_AUTHORING_POLICY
+)
 
 
 @pytest.fixture
@@ -132,7 +136,7 @@ def test_scope_inherits_new_root_generation_and_old_source_cannot_relabel_it(sto
     with (
         patch(
             "reflexio.server.services.storage.storage_base.learning_transition.PROFILE_AUTHORING_POLICY",
-            ESTIMATED_LIFETIME_POLICY,
+            _OTHER_AUTHORING_POLICY,
         ),
         pytest.raises(LearningTransitionBlockedError),
         storage.commit_scope(),
@@ -160,7 +164,7 @@ def test_sealed_grant_is_exact_scoped_and_revocation_changes_witness(storage):
 def test_armed_prevents_learning_grant_and_abort_until_actual_target_activation(
     storage,
 ):
-    root = transition(storage, "seal", target=ESTIMATED_LIFETIME_POLICY)
+    root = transition(storage, "seal", target=_OTHER_AUTHORING_POLICY)
     armed = transition(storage, "arm")
     assert armed.phase == "armed"
     for action in ("abort", "activate"):
@@ -172,11 +176,11 @@ def test_armed_prevents_learning_grant_and_abort_until_actual_target_activation(
         storage.fence_learning_transition()
     with patch(
         "reflexio.server.services.storage.storage_base.learning_transition.PROFILE_AUTHORING_POLICY",
-        ESTIMATED_LIFETIME_POLICY,
+        _OTHER_AUTHORING_POLICY,
     ):
         active = transition(storage, "activate")
     assert (
-        active.active_policy == ESTIMATED_LIFETIME_POLICY
+        active.active_policy == _OTHER_AUTHORING_POLICY
         and active.generation > root.generation
     )
 
@@ -462,7 +466,7 @@ def test_stale_source_cannot_provision_open_new_policy_scope(storage):
     with (
         patch(
             "reflexio.server.services.storage.storage_base.learning_transition.PROFILE_AUTHORING_POLICY",
-            ESTIMATED_LIFETIME_POLICY,
+            _OTHER_AUTHORING_POLICY,
         ),
         pytest.raises(LearningTransitionBlockedError),
     ):
