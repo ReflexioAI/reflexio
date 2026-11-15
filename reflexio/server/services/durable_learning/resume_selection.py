@@ -41,13 +41,17 @@ def _failure_detail(exc: BaseException) -> str:
     return exception_detail(exc)
 
 
-def _report_resume_admission_failure(
-    exc: Exception, *, org_id: str, descriptor_key: str
+def _report_resume_admission(
+    exc: Exception | None, *, org_id: str, descriptor_key: str
 ) -> None:
     from reflexio.server.services.durable_learning.learning_admission import (
         learning_transition_is_held,
     )
 
+    scope = f"durable-resume-admission:{org_id}:{descriptor_key}"
+    if exc is None:
+        report_background_success(scope)
+        return
     if learning_transition_is_held(exc):
         raise exc
     # This owner derives its registered scope, rather than receiving an opaque
@@ -56,7 +60,7 @@ def _report_resume_admission_failure(
         logger,
         "resume_admission_failed",
         exc,
-        scope=f"durable-resume-admission:{org_id}:{descriptor_key}",
+        scope=scope,
         interval_seconds=None,
         detail=_failure_detail,
         org_id=org_id,
@@ -154,7 +158,6 @@ class ResumeSelection:
                     return claim
             elif item is not None and not failed:
                 key = hashlib.sha256(str(item["id"]).encode()).hexdigest()[:12]
-                admission_scope = f"durable-resume-admission:{storage.org_id}:{key}"
                 try:
                     # Validate configuration before claiming, without using
                     # permission for new pending tools as a backlog veto.
@@ -179,8 +182,10 @@ class ResumeSelection:
                         token = storage.claim_user_extraction(
                             user, worker_id, lease_seconds
                         )
-                        report_background_success(admission_scope)
                         if token is not None:
+                            _report_resume_admission(
+                                None, org_id=storage.org_id, descriptor_key=key
+                            )
                             return user, token
                         try:
                             storage._observe_live_user_work_parent(
@@ -192,8 +197,11 @@ class ResumeSelection:
                             # Independent observation rolled back; no logical
                             # mutation or authority was acquired by inspection.
                             record_health("resume.selection_refused", 1, kind="counter")
+                        _report_resume_admission(
+                            None, org_id=storage.org_id, descriptor_key=key
+                        )
                 except Exception as exc:
-                    _report_resume_admission_failure(
+                    _report_resume_admission(
                         exc, org_id=storage.org_id, descriptor_key=key
                     )
 
