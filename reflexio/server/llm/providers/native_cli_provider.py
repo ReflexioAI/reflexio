@@ -501,6 +501,13 @@ def _run_claude_stream(
     # while bounding the worst-case stall to a few seconds before we
     # surface the failure to reflexio's stall_state table.
     env = os.environ.copy()
+    if _compat_host(cli_path) == _HOST_OPENCODE:
+        # The known wrapper otherwise prefers shared learning hints to --model.
+        # Bind only this child to the native request; independently invoked
+        # optimizer scripts retain their own model and variant environment.
+        env["CLAUDE_SMART_LEARNING_MODEL"] = model or ""
+        env["CLAUDE_SMART_OPENCODE_MODEL"] = ""
+        env["CLAUDE_SMART_OPENCODE_VARIANT"] = ""
     env["CLAUDE_SMART_INTERNAL"] = "1"
     env["CLAUDE_CODE_MAX_RETRIES"] = "3"
 
