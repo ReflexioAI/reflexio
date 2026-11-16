@@ -326,8 +326,15 @@ class TestNativeCLILLMCompletion:
             assert "--model" not in cmd
         assert response._hidden_params["reflexio_served_model"] == "actual-host-model"
 
-    def test_sets_max_retries_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """CLI subprocess env and stdin encoding are pinned for Windows safety."""
+    @pytest.mark.parametrize("retry_policy", [None, "", "0", "1", "3", "7"])
+    def test_host_retry_policy_with_windows_safe_stdin(
+        self, monkeypatch: pytest.MonkeyPatch, retry_policy: str | None
+    ) -> None:
+        """Host retries survive alongside SDK recursion and encoding policy."""
+        if retry_policy is None:
+            monkeypatch.delenv("CLAUDE_CODE_MAX_RETRIES", raising=False)
+        else:
+            monkeypatch.setenv("CLAUDE_CODE_MAX_RETRIES", retry_policy)
         mock_run = self._mock_cli(monkeypatch)
         monkeypatch.setattr(ccp, "_is_windows", lambda: True)
         llm = NativeCLILLM()
@@ -339,7 +346,10 @@ class TestNativeCLILLMCompletion:
 
         kwargs = mock_run.call_args.kwargs
         env = kwargs["env"]
-        assert env["CLAUDE_CODE_MAX_RETRIES"] == "3"
+        if retry_policy is None:
+            assert "CLAUDE_CODE_MAX_RETRIES" not in env
+        else:
+            assert env["CLAUDE_CODE_MAX_RETRIES"] == retry_policy
         assert env["CLAUDE_SMART_INTERNAL"] == "1"
         assert kwargs["text"] is True
         assert kwargs["encoding"] == "utf-8"
