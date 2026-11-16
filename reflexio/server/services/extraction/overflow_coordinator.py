@@ -839,7 +839,9 @@ class OverflowCoordinator:
         # reaches this boundary again, so a late rung yields without dispatch.
         remaining = self._deadline - time.monotonic()
         if hard_timeout <= 0 or hard_timeout + 5 > remaining:
-            logger.warning(
+            # Routine continuation, not a fault: the window resumes next turn,
+            # and one that never finishes surfaces as a failed window.
+            logger.info(
                 "event=extraction_turn_suspended reason=turn_budget kind=%s "
                 "window_id=%s model=%s request_fingerprint=%s "
                 "hard_timeout_seconds=%.1f turn_seconds_left=%.1f",

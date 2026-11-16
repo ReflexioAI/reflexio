@@ -2506,7 +2506,9 @@ class TextGenerationMixin:
                     _validate_attempt(attempt) if validated else (True, (), "")
                 )
                 if valid:
-                    self.logger.warning(
+                    # The resend recovered the answer: an expected path, not
+                    # a fault. Failed resends below stay WARNING.
+                    self.logger.info(
                         "event=llm_reasoning_exhausted_retry model=%s schema=%s "
                         "thinking=disabled outcome=succeeded%s",
                         model,

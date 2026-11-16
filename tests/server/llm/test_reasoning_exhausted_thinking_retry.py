@@ -116,6 +116,10 @@ def _events(caplog: pytest.LogCaptureFixture, event: str) -> list[str]:
     ]
 
 
+def _levels(caplog: pytest.LogCaptureFixture, event: str) -> list[int]:
+    return [r.levelno for r in caplog.records if f"event={event} " in r.getMessage()]
+
+
 def test_exhausted_answer_is_resent_once_without_thinking(caplog):
     calls, result = _run(M3, [EXHAUSTED, (VALID, "stop")], caplog)
 
@@ -131,11 +135,8 @@ def test_exhausted_answer_is_resent_once_without_thinking(caplog):
     (line,) = _events(caplog, "llm_reasoning_exhausted_retry")
     assert "thinking=disabled outcome=succeeded" in line
     assert "reasoning_tokens=8191" in line
-    assert any(
-        r.levelno == logging.WARNING
-        and "event=llm_reasoning_exhausted_retry " in r.getMessage()
-        for r in caplog.records
-    )
+    # A recovered answer is routine: INFO, so it does not count as a warning.
+    assert _levels(caplog, "llm_reasoning_exhausted_retry") == [logging.INFO]
 
 
 def test_answer_cut_off_after_reasoning_is_resent_without_thinking(caplog):
@@ -201,6 +202,8 @@ def test_failed_resend_falls_through_without_another_call(caplog, retry, outcome
     assert not _events(caplog, "llm_structured_repair_attempted")
     (line,) = _events(caplog, "llm_reasoning_exhausted_retry")
     assert f"thinking=disabled outcome={outcome}" in line
+    # A resend that did not recover the answer stays a WARNING.
+    assert _levels(caplog, "llm_reasoning_exhausted_retry") == [logging.WARNING]
 
 
 @pytest.mark.parametrize(
@@ -302,6 +305,7 @@ def test_plain_path_resends_without_thinking(caplog, first):
     assert not _events(caplog, "llm_parse_retry")
     (line,) = _events(caplog, "llm_reasoning_exhausted_retry")
     assert "thinking=disabled outcome=succeeded" in line
+    assert _levels(caplog, "llm_reasoning_exhausted_retry") == [logging.INFO]
 
 
 def test_plain_path_failed_resend_makes_no_further_call(caplog):
@@ -312,6 +316,7 @@ def test_plain_path_failed_resend_makes_no_further_call(caplog):
     assert isinstance(result, LiteLLMClientError)
     (line,) = _events(caplog, "llm_reasoning_exhausted_retry")
     assert "thinking=disabled outcome=parse" in line
+    assert _levels(caplog, "llm_reasoning_exhausted_retry") == [logging.WARNING]
 
 
 def test_plain_path_keeps_identical_reissue_where_thinking_stays_on(caplog):

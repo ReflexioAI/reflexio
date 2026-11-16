@@ -208,8 +208,9 @@ from the start, on routes that can disable thinking
 (`reasoning_exhausted_retry_extra_body`). A request already truncated to the cap
 before that record existed is treated the same way, so re-arming such a window
 sends its thinking-off form instead of holding it again. A turn suspended by its
-budget logs `event=extraction_turn_suspended` at WARNING with the request
-fingerprint.
+budget logs `event=extraction_turn_suspended` at INFO with the request
+fingerprint: suspension is routine continuation, and a window that never
+finishes still surfaces as the worker's `Extraction window failed` WARNING.
 
 ### Resume discovery
 

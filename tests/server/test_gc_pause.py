@@ -62,18 +62,18 @@ def _pause_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
 def test_slow_collection_logs_generation_duration_and_counts(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    gc_pause.install_gc_pause_monitor(clock=_SteppingClock(0.25))
+    gc_pause.install_gc_pause_monitor(clock=_SteppingClock(1.25))
     with caplog.at_level(logging.WARNING, logger=_LOGGER):
         gc.collect(2)
 
     lines = _pause_lines(caplog)
     assert any(
-        "generation=2 duration_ms=250 " in line
+        "generation=2 duration_ms=1250 " in line
         and "collected=" in line
         and "uncollectable=" in line
         for line in lines
     ), lines
-    assert gc_pause.take_worst_gc_pause_ms() == pytest.approx(250)
+    assert gc_pause.take_worst_gc_pause_ms() == pytest.approx(1250)
     # Taking the window maximum resets it.
     assert gc_pause.take_worst_gc_pause_ms() == 0
 
@@ -87,6 +87,22 @@ def test_fast_collection_is_silent_but_still_measured(
 
     assert not _pause_lines(caplog)
     assert gc_pause.take_worst_gc_pause_ms() == pytest.approx(50)
+
+
+@pytest.mark.parametrize(
+    ("pause", "logged"), [(0.9, False), (1.0, True)], ids=["0.9s", "1.0s"]
+)
+def test_default_threshold_logs_only_pauses_of_one_second_or_more(
+    caplog: pytest.LogCaptureFixture, pause: float, logged: bool
+) -> None:
+    # Sub-second pauses are routine on a large heap; the gauge still records
+    # them, so only the per-collection WARNING is suppressed.
+    gc_pause.install_gc_pause_monitor(clock=_SteppingClock(pause))
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        gc.collect(2)
+
+    assert bool(_pause_lines(caplog)) is logged
+    assert gc_pause.take_worst_gc_pause_ms() == pytest.approx(pause * 1000)
 
 
 def test_install_is_idempotent_and_uninstall_removes_the_hook() -> None:
