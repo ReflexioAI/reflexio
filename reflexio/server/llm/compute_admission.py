@@ -21,6 +21,14 @@ class ComputeInterruptedError(RuntimeError):
     """Unretained computation cannot be retried as a free writer-only yield."""
 
 
+class ComputeTransitionInterruptedError(ComputeInterruptedError):
+    """Value-free transition hold after dispatched/unretained computation.
+
+    This is not input-busy authority and cannot refund earlier physical work.
+    It preserves only operational hold classification, never its original cause.
+    """
+
+
 @dataclass
 class _ComputeProgress:
     _entered: bool = False
@@ -76,11 +84,18 @@ def compute_attempt_scope(
     try:
         yield progress
     except Exception as error:
+        from reflexio.server.services.durable_learning.learning_admission import (
+            learning_transition_is_held,
+        )
         from reflexio.server.services.storage.error import (
             ReadinessUnavailableError,
             execution_input_is_busy,
         )
 
+        if progress.unretained and learning_transition_is_held(error):
+            raise ComputeTransitionInterruptedError(
+                "Learning transition interrupted unretained computation"
+            ) from None
         if (progress.unretained and execution_input_is_busy(error)) or (
             progress._completed and isinstance(error, ReadinessUnavailableError)
         ):
@@ -120,9 +135,28 @@ def reserve_compute_attempt() -> None:
         progress.reserve()
 
 
+def check_learning_compute() -> None:
+    """Refuse before extraction/provider guards can reserve their own attempt."""
+    from reflexio.server.services.durable_learning.learning_admission import (
+        fence_learning_compute,
+    )
+    from reflexio.server.services.durable_learning.ordinary_profile_preparation import (
+        check_original_ordinary_instructions,
+    )
+
+    try:
+        fence_learning_compute()
+        check_original_ordinary_instructions()
+    except Exception as error:
+        raise ComputeAdmissionError(error) from error
+
+
 def admit_external_compute() -> None:
     guard = external_compute_admission.get()
     try:
+        # Compose with the publication-preparation guard. Refuse sealed work
+        # before its existing callback or attempt reservation can spend anything.
+        check_learning_compute()
         if guard is not None:
             guard()
         reserve_compute_attempt()

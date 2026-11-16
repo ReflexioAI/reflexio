@@ -826,3 +826,32 @@ def test_integrity_is_held_exactly_like_configuration() -> None:
             right_verdict.reason,
             right_verdict.park,
         )
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_transition_hold_precedes_input_disposition_without_retry(
+    interrupted: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.server.llm.compute_admission import ComputeTransitionInterruptedError
+    from reflexio.server.services.durable_learning.window_disposition import (
+        TransitionHeld,
+    )
+    from reflexio.server.services.storage.storage_base.learning_transition import (
+        LearningTransitionBlockedError,
+    )
+
+    error = (
+        ComputeTransitionInterruptedError("Interrupted learning")
+        if interrupted
+        else LearningTransitionBlockedError("Held learning")
+    )
+    storage = _Storage()
+    monkeypatch.setattr(worker_module, "record_health", lambda *_args, **_kwargs: None)
+    assert classify_window_failure(error) == TransitionHeld()
+    assert (
+        DurableLearningWorker._handle_window_failure(
+            cast(BaseStorage, storage), _window(), "token", error
+        )
+        == "transition_held"
+    )
+    assert storage.calls == [("yield_extraction_turn", "u1")]

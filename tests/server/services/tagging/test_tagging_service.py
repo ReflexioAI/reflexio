@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Any
+
+import pytest
 
 from reflexio.models.api_schema.domain.entities import (
     AgentPlaybook,
@@ -17,6 +20,24 @@ from reflexio.models.config_schema import (
     UserPlaybookExtractorConfig,
 )
 from reflexio.server.services.tagging.service import TaggingService, TagsOutput
+
+
+@pytest.fixture(autouse=True)
+def isolated_content_transforms(monkeypatch):
+    # These fake-storage tests cover prompt/entity transforms. Real database
+    # lease/root/CAS behavior is covered in test_tagging_transition_integration.
+    for name in (
+        "user_extraction_lease",
+        "learning_work_scope",
+        "learning_business_write",
+    ):
+        monkeypatch.setattr(
+            "reflexio.server.services.tagging.service." + name,
+            lambda *_a, **_k: nullcontext(),
+        )
+    monkeypatch.setattr(
+        "reflexio.server.services.tagging.service.fence_learning_compute", lambda: None
+    )
 
 
 class FakeStorage:
@@ -152,6 +173,7 @@ class FakePromptManager:
 
 class FakeRequestContext:
     def __init__(self, config: Config, storage: FakeStorage) -> None:
+        self.org_id = "org"
         self.configurator = FakeConfigurator(config)
         self.storage = storage
         self.prompt_manager = FakePromptManager()

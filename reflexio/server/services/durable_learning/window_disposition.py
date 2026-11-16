@@ -6,6 +6,8 @@ inspects the exception again to decide.
 
 Precedence, highest first:
 
+- :class:`TransitionHeld` -- a policy transition holds existing work; yield
+  without spending another failure or discarding actual compute charges.
 - :class:`YieldTurn` -- an execution input is locked elsewhere
   (``ExecutionInputBusyError`` on an explicit ``__cause__`` link,
   :func:`execution_input_is_busy`). Nothing failed; the turn yields with its
@@ -94,6 +96,11 @@ _CAPACITY_EXCEEDED = (
 
 
 @dataclass(frozen=True)
+class TransitionHeld:
+    """Policy admission is held; saved work and physical charges remain."""
+
+
+@dataclass(frozen=True)
 class YieldTurn:
     """An execution input is locked elsewhere; yield, keeping every budget."""
 
@@ -143,7 +150,14 @@ class Retry:
 
 
 WindowDisposition = (
-    YieldTurn | DeferSetup | Suspend | Recompute | HoldInput | ProviderWait | Retry
+    TransitionHeld
+    | YieldTurn
+    | DeferSetup
+    | Suspend
+    | Recompute
+    | HoldInput
+    | ProviderWait
+    | Retry
 )
 
 
@@ -156,6 +170,12 @@ def classify_window_failure(exc: BaseException) -> WindowDisposition:
     Returns:
         WindowDisposition: The action the worker takes.
     """
+    from reflexio.server.services.durable_learning.learning_admission import (
+        learning_transition_is_held,
+    )
+
+    if learning_transition_is_held(exc):
+        return TransitionHeld()
     if execution_input_is_busy(exc):
         return YieldTurn()
     if isinstance(exc, ReadinessUnavailableError):

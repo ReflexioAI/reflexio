@@ -24,6 +24,8 @@ from ._agent_run import (
 from ._base import BaseStorageCore, matches_status_filter
 from ._commit_scope import CommitScopeMixin
 from ._extraction_stream import (
+    USER_WORK_CLAIM_PROTOCOL,
+    USER_WORK_CLAIM_PROTOCOL_SETTING,
     ExtractionStreamStore,
     LeaseLostError,
     OverflowCheckpointConflictError,
@@ -48,6 +50,7 @@ from ._session_outcomes import (
 from ._shadow_verdicts import ShadowVerdictsMixin
 from ._stall_state import StallStateMixin
 from ._user_work_position import ResumeClass, ResumeCursor, UserWorkPosition
+from .learning_transition import LearningTransitionStore
 from .playbook import (
     AgentEvaluationResultStoreMixin,
     AgentPlaybookStoreMixin,
@@ -59,12 +62,15 @@ from .playbook import (
 from .profiles import InteractionStoreMixin, ProfileSearchMixin, ProfileStoreMixin
 from .profiles._lifecycle import ProfileLifecycleStoreMixin
 from .resume_selection import ResumeSelectionStore
+from .transition_inventory import TransitionInventoryStore
 
 
 class BaseStorage(
     ProfileLifecycleStoreMixin,
     PendingToolExpiryStore,
     ResumeSelectionStore,
+    LearningTransitionStore,
+    TransitionInventoryStore,
     PublicationPreparationStore,
     PublicationReceiptStore,
     ExtractionStreamStore,
@@ -89,6 +95,19 @@ class BaseStorage(
     BaseStorageCore,
 ):
     """Base class for storage."""
+
+    def ordinary_profile_source_digest(self) -> str | None:
+        """Contribute adapter source to an ordinary continuation witness.
+
+        Maintained adapters must reject unqualified subclasses and bind any
+        implementation outside the SDK. None means SDK source covers this
+        exact adapter. This hook does not grant learning or call a provider.
+        """
+        from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
+
+        raise ExtractionInputIntegrityError(
+            "Unsupported ordinary storage implementation"
+        )
 
     def load_session_judgment_inputs(
         self, user_id: str, session_id: str, *, through_request_id: str | None = None
@@ -296,6 +315,8 @@ class BaseStorage(
 
 
 __all__ = [
+    "USER_WORK_CLAIM_PROTOCOL",
+    "USER_WORK_CLAIM_PROTOCOL_SETTING",
     "StreamSQL",
     "lock_user_work_row",
     "ResumeClass",

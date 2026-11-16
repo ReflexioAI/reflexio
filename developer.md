@@ -81,6 +81,34 @@ the model download/warmup timed out. Check the preceding `[embedding]` logs for
 the failing stage. This deadline accommodation is platform-independent; a
 Windows-only model initialization failure still needs its own diagnosis.
 
+### Learning policy authority
+
+Learning admission uses one durable dataset policy authority. A project witness
+inherits the root's nonce/generation and retains only scoped grants and derived
+closure metadata; it never chooses a policy floor or independently reopens.
+Runtime source policy must match the root. Sealing and arming preserve intake,
+search, and required execution/accounting evidence writes through their existing
+owners. No control lock spans model work.
+
+New SQLite files initialize through the maintained path/constructor owner:
+exclusive creation of a private same-directory SQLite file retains a random
+SEALED creation witness, checkpoints/closes it, then atomically publishes the
+actual target without overwrite before ordinary migrations. Local closure is
+verified before activation. A
+matching retained witness may resume an interrupted first installation. Opening
+an existing file with no authority does not establish a floor, even if tables
+are empty: learning remains held for an explicit qualified upgrade/recovery.
+Existing durable authority always wins over the opening SDK's source policy.
+The private `:memory:` connection uses SQLite's guaranteed new-database identity.
+Explicit file paths retain their existing meaning and are never redirected.
+
+SQLite authority semantics require compatible writers using the maintained
+owner. Mixed-version safety against an unpatched process is not qualified;
+SQLite does not install a missing-UDF trigger or claim native protocol parity.
+Native deployments separately require their installed global claim floor and
+privileged provisioning/release authority owner. Ordinary native APP admission
+reads the root under a shared transaction advisory fence and cannot mutate it.
+
 ### Embedding policy and upgrades
 
 The selected embedding model owns execution. An explicit cloud model uses its

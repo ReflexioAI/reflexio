@@ -41,6 +41,32 @@ def _failure_detail(exc: BaseException) -> str:
     return exception_detail(exc)
 
 
+def _report_resume_admission(
+    exc: Exception | None, *, org_id: str, descriptor_key: str
+) -> None:
+    from reflexio.server.services.durable_learning.learning_admission import (
+        learning_transition_is_held,
+    )
+
+    scope = f"durable-resume-admission:{org_id}:{descriptor_key}"
+    if exc is None:
+        report_background_success(scope)
+        return
+    if learning_transition_is_held(exc):
+        raise exc
+    # This owner derives its registered scope, rather than receiving an opaque
+    # scope value that hides attribution from the source-wide reporting guard.
+    report_failure_at_interval(
+        logger,
+        "resume_admission_failed",
+        exc,
+        scope=scope,
+        interval_seconds=None,
+        detail=_failure_detail,
+        org_id=org_id,
+    )
+
+
 @dataclass(frozen=True)
 class _FleetPosition:
     route: object
@@ -57,6 +83,17 @@ def _descriptor_scope(storage: BaseStorage, item: dict[str, Any]) -> WorkScope:
     return WorkScope(storage.org_id, item["project_id"] or None)
 
 
+def _require_ordinary_learning_open(storage: BaseStorage) -> None:
+    from reflexio.server.services.storage.storage_base.learning_transition import (
+        LearningTransitionBlockedError,
+    )
+
+    state = storage.read_learning_transition()
+    if state is not None and state.mode != "open":
+        record_health("learning.transition_held", 1, kind="counter")
+        raise LearningTransitionBlockedError("Learning transition is sealed")
+
+
 class ResumeSelection:
     """Only fleet inspection is local; user/class progress lives in the writer."""
 
@@ -70,6 +107,16 @@ class ResumeSelection:
         storage = context.storage
         if storage is None:
             return None
+        from reflexio.server.services.durable_learning.selected_learning import (
+            claim_selected_user,
+            current_selected_learning,
+        )
+
+        selection = current_selected_learning()
+        if selection is not None:
+            return claim_selected_user(
+                context, worker_id=worker_id, lease_seconds=lease_seconds
+            )
         route = storage._durable_work_route()
         # At most one traversal of the fixed classes. Failed/empty/busy work
         # never blocks an independent class; no DB/local lock spans execution.
@@ -111,11 +158,11 @@ class ResumeSelection:
                     return claim
             elif item is not None and not failed:
                 key = hashlib.sha256(str(item["id"]).encode()).hexdigest()[:12]
-                admission_scope = f"durable-resume-admission:{storage.org_id}:{key}"
                 try:
                     # Validate configuration before claiming, without using
                     # permission for new pending tools as a backlog veto.
                     with bind_work_scope(_descriptor_scope(storage, item)):
+                        _require_ordinary_learning_open(storage)
                         if context.configurator.get_config() is None:
                             raise ValueError("Accepted-work configuration unavailable")
                         run = storage.get_agent_run(str(item["id"]))
@@ -135,8 +182,10 @@ class ResumeSelection:
                         token = storage.claim_user_extraction(
                             user, worker_id, lease_seconds
                         )
-                        report_background_success(admission_scope)
                         if token is not None:
+                            _report_resume_admission(
+                                None, org_id=storage.org_id, descriptor_key=key
+                            )
                             return user, token
                         try:
                             storage._observe_live_user_work_parent(
@@ -148,16 +197,14 @@ class ResumeSelection:
                             # Independent observation rolled back; no logical
                             # mutation or authority was acquired by inspection.
                             record_health("resume.selection_refused", 1, kind="counter")
+                        _report_resume_admission(
+                            None, org_id=storage.org_id, descriptor_key=key
+                        )
                 except Exception as exc:
-                    report_failure_at_interval(
-                        logger,
-                        "resume_admission_failed",
-                        exc,
-                        scope=admission_scope,
-                        interval_seconds=None,
-                        detail=_failure_detail,
-                        org_id=storage.org_id,
+                    _report_resume_admission(
+                        exc, org_id=storage.org_id, descriptor_key=key
                     )
+
         return None
 
     def select_owned(
@@ -171,6 +218,37 @@ class ResumeSelection:
         if storage is None:
             raise ValueError("Owned resume storage unavailable")
         owner = _require_user_work_owner(storage)
+        from reflexio.server.services.durable_learning.learning_admission import (
+            LearningWork,
+            learning_work_scope,
+        )
+        from reflexio.server.services.durable_learning.selected_learning import (
+            current_selected_learning,
+            validate_selected_learning,
+        )
+
+        selection = current_selected_learning()
+        if selection is not None:
+            # Exact selection never rotates into another class, another run or
+            # newly queued work. Revalidate again after the real user wait.
+            validate_selected_learning(context, owner=owner)
+            if selection.kind == "window":
+                return "learning", None
+            run = storage.get_agent_run(selection.reference)
+            if run is None:
+                return None, None
+            position = storage._read_owned_work_position(user_id, token)
+            selected, adopted = storage._commit_owned_work_selection(
+                user_id=user_id,
+                token=token,
+                expected_position=position,
+                work_class="finalization",
+                cursor=position.finalization,
+                expected_run=run,
+                worker_id=worker_id,
+                selected_existing=selection,
+            )
+            return ("finalization" if selected else None), adopted
         for _ in ("learning", "finalization", "continuation"):
             owner.fence(storage)
             position = storage._read_owned_work_position(user_id, token)
@@ -234,15 +312,27 @@ class ResumeSelection:
                         if context.configurator.get_config() is None:
                             raise ValueError("Accepted-work configuration unavailable")
                         run = storage.get_agent_run(str(item["id"]))
-                        selected, adopted = storage._commit_owned_work_selection(
-                            user_id=user_id,
-                            token=token,
-                            expected_position=position,
-                            work_class=kind,
-                            cursor=cursor,
-                            expected_run=run,
-                            worker_id=worker_id,
-                        )
+                        if run is None:
+                            return kind, None
+                        with learning_work_scope(
+                            storage,
+                            LearningWork(
+                                storage.org_id,
+                                run.project_id or "",
+                                user_id,
+                                "run",
+                                run.id,
+                            ),
+                        ):
+                            selected, adopted = storage._commit_owned_work_selection(
+                                user_id=user_id,
+                                token=token,
+                                expected_position=position,
+                                work_class=kind,
+                                cursor=cursor,
+                                expected_run=run,
+                                worker_id=worker_id,
+                            )
                     report_background_success(scope)
                     return kind, adopted
             except Exception as exc:

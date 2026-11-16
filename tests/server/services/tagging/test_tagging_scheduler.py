@@ -189,3 +189,21 @@ def test_an_outage_delay_lengthens_but_never_shortens_the_debounce(
     with scheduler._mutex:
         fire = {key[2]: when for when, _seq, key in scheduler._heap}
     assert fire == {"a": 700.0, "b": 115.0}
+
+
+def test_drain_does_not_report_success_when_a_callback_requeues(monkeypatch):
+    scheduler = TaggingScheduler.__new__(TaggingScheduler)
+    scheduler._mutex = threading.Lock()
+    scheduler._scheduled = {}
+    key = ("org", None, "held-user", "v1")
+
+    def finish_with_retained_retry(*, timeout_seconds):
+        del timeout_seconds
+        scheduler._scheduled[key] = (100.0, 1, lambda: None)
+        return True
+
+    monkeypatch.setattr(
+        tagging_scheduler, "drain_callbacks", finish_with_retained_retry
+    )
+    assert not scheduler.drain(timeout_seconds=0)
+    assert key in scheduler._scheduled

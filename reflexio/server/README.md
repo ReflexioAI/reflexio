@@ -688,8 +688,10 @@ Key files:
 - `storage/storage_base/_pending_tool_expiry.py`: Canonical metadata-only question selection and narrow, atomic APP question/dependency expiry. It never sweeps unrelated runs or changes executing run phases, attempts, ownership or output.
 - `resume_selection.py`: Admitted user/class opportunities with route-bound fleet inspection and persisted per-user cursors. Successful APP adoption and private progress commit together under the actual user lease; owned resume execution reuses the same process permit. The unshipped consolidation still requires telemetry, strict generation and upgrade cutover qualification.
 - `storage/storage_base/_resume_selection.py`: Canonical bounded resume predicates and fixed deferred-work SQL projection reused by per-org and enterprise batched source discovery. Metadata facts never grant execution authority. Selected recovery shares writer-backed owner observations and one exact-revision, fenced APP transition across SQLite and native storage; logical claim age is not authority.
+- `storage/storage_base/transition_inventory.py`: Bounded content-free pages across execution, cursor, dependency, preparation, receipt and work metadata. Unknown attribution stays explicit; inventory alone neither authorizes a drain nor proves transition readiness.
 - `window_executor.py` / `window_codec.py`: Model execution, saved outcomes and frozen window policies.
 - `llm/compute_admission.py`: Independent admission callback at external text/vector dispatch; ordinary preparation binds its actual execution without changing protected provider modes.
+- `learning_admission.py` / `selected_learning.py`: Typed learning roots and exact existing-work selection, composed with the normal user lease, worker and physical-compute admission. The storage-owned transition uses the existing `_operation_state` namespace, not a new schema, executor or capacity budget.
 - `services/write_plan_codec.py`: Shared business-plan JSON for window outcomes and output-bound publication preparation; execution authority remains outside the payload.
 - `user_lease.py`: Shared ownership for automatic, manual and resumed extraction.
 - `waiting.py` / `local.py`: Bounded HTTP coverage waits, standalone-library recovery and post-admission scheduler wake-ups. Pending-tool resolve/answer/N/A callbacks wake the existing server or matching local-directory owner after commit; they no longer create request background resume workers. Missing/stopped owners leave persisted work for restart discovery.
@@ -715,6 +717,42 @@ resetting frozen evidence, output, provider quota or billing receipts; unchanged
 failures park again. Immediate input-budget/incompatible-output holds keep their
 existing stricter recovery path. Other users and sibling extractors retain their
 normal turns.
+
+Learning transition checks serialize user-work → transition → downstream run/window
+locks in short existing transactions. Every bound learning dispatch rechecks its
+admitted revision before the existing preparation/debit callback; publication,
+rerun preprocessing and empty/gate-false window completion recheck in their actual
+business transaction. Returned outputs, usage and preparation/overflow evidence
+can still be retained after sealing. Search and interaction intake remain
+independent. Compatible tag-only work keeps its existing handoff/ACK contract:
+tagging emits only `TagsOutput` and updates existing tags, never content, TTL or
+an erased profile row. This is not an all-model quiescence claim.
+
+The operational API is `preview_learning_work(context, run_id=... | window_id=...)`
+and `run_selected_learning_work(context, selection, operation_id=...,
+expected_nonce=..., expected_revision=...)`. `LearningWorkSelection` has strict
+`from_dict`, `to_dict`, `fingerprint`, `eligible` and `blockers`; the result has
+`to_dict` with content-free `completed`/`held` and a reason code. Preview never
+claims work. Run revalidates the exact source/config/payload revision and granted
+nonce/revision under the actual user owner; `ResumeSelection` cannot rotate to
+another root or new queued work. Existing source-backed saved-output finalization
+is supported. Generation is additionally supported for an existing profile-package
+v2 window whose persisted preparation, templates, schemas, native request contracts,
+source/plan/descriptor and original cursor reconstruct exactly through its existing
+`ProfilePackageWindowExecutor`. The exact selected turn uses that existing executor
+through the normal worker, preserves paid attempts and reuses saved receipts/output;
+it never prepares a new window or selects unrelated effects. It does not enable
+package execution for ordinary fleet work. V1/ordinary missing future-stage instruction
+witnesses remain **held**; an extraction-only policy hash does not prove the gate
+or consolidator's original contract. No generation is relabelled finalization.
+Knowing a digest is not execution authority.
+
+A compatible predecessor publisher must backport the same transition owner and
+runtime fences while retaining its original authoring prompts/output schema.
+Host tooling cannot add those guarantees to an unpatched frozen image, invent
+missing original instructions, or treat a zero-work observation as a durable seal.
+Native inventory, compatible publisher retirement and actual release qualification
+remain separate requirements; local synthetic SQLite checks do not establish them.
 
 ### Async Extraction
 

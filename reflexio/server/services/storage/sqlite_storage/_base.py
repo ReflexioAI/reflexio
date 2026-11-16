@@ -77,6 +77,11 @@ from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 
 from ._dataset_path import resolve_sqlite_db_path
+from ._learning_policy_authority import (
+    complete_sqlite_dataset_creation,
+    reserve_new_sqlite_dataset,
+    retain_private_memory_creation,
+)
 from ._stall_state import init_stall_state_table
 from ._subject_write_gate import (
     backfill_user_playbook_subject_refs,
@@ -1185,8 +1190,11 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         # database path while allowing unrelated SQLite files to initialize in
         # parallel.
         with initialization_lock:
+            reserve_new_sqlite_dataset(db_path, org_id)
             self.conn = sqlite3.connect(db_path, check_same_thread=False)
             self.conn.row_factory = sqlite3.Row
+            if db_path == ":memory:":
+                retain_private_memory_creation(self.conn, org_id)
             register_unicode_lexical_index_function(self.conn)
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA foreign_keys=ON")
@@ -1232,6 +1240,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         # for the same file also need the shared path lock.
         with initialization_lock:
             self.migrate()
+            complete_sqlite_dataset_creation(self.conn, db_path, org_id)
 
     # ------------------------------------------------------------------
     # Transaction scope

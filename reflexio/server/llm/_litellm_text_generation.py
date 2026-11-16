@@ -1843,6 +1843,11 @@ class TextGenerationMixin:
                             )
 
                     check_model_input_budget(turn_params)
+                    from reflexio.server.llm.compute_admission import (
+                        check_learning_compute,
+                    )
+
+                    check_learning_compute()
                     unreserved = extraction_request_identity.get()
                     if provider_request_guard is not None:
                         provider_request_guard(

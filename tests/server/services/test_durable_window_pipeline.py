@@ -2509,6 +2509,9 @@ def pipeline(tmp_path, monkeypatch):
     engine = Reflexio(
         org_id="stream-test", storage_base_dir=str(tmp_path), configurator=config
     )
+    from reflexio.test_support.learning_transition import qualify_empty_learning_scope
+
+    qualify_empty_learning_scope(engine.get_storage())
     monkeypatch.setattr(
         "reflexio.server.cache.reflexio_cache.get_reflexio", lambda **_: engine
     )

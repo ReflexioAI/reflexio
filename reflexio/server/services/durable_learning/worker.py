@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import assert_never
+from typing import TYPE_CHECKING, assert_never
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.background_work import (
@@ -20,6 +20,7 @@ from reflexio.server.background_work import (
     report_background_success,
 )
 from reflexio.server.env_utils import env_str
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.operation_limiter import operation_limit_value
 from reflexio.server.operational_metrics import record_health
 from reflexio.server.services.durable_learning.window_disposition import (
@@ -29,6 +30,7 @@ from reflexio.server.services.durable_learning.window_disposition import (
     Recompute,
     Retry,
     Suspend,
+    TransitionHeld,
     YieldTurn,
     classify_window_failure,
 )
@@ -47,6 +49,10 @@ from reflexio.server.services.storage.storage_base._extraction_stream import (
 from reflexio.server.work_scope import WorkScope, WorkScopeError, bind_work_scope
 
 logger = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from reflexio.server.services.durable_learning.selected_learning import (
+        SelectedLearningResult,
+    )
 _budget_lock = threading.Lock()
 _budget: threading.BoundedSemaphore | None = None
 
@@ -122,11 +128,11 @@ def root_cause(exc: BaseException) -> BaseException:
     failure that happened while handling this one, and ``raise ... from None``
     deliberately severs the chain; neither is where the wrapper came from.
     """
-    seen = {id(exc)}
+    from reflexio.server.llm.failure import exception_chain
+
     current = exc
-    while current.__cause__ is not None and id(current.__cause__) not in seen:
-        current = current.__cause__
-        seen.add(id(current))
+    for cause in exception_chain(exc, include_context=False):
+        current = cause
     return current
 
 
@@ -293,6 +299,37 @@ class DurableLearningWorker:
             completed += self._reserved_turn(org_id, lease_seconds)
         return completed
 
+    def run_selected_turn(self, context: RequestContext) -> SelectedLearningResult:
+        """One exact previewed opportunity using normal capacity/lease owners."""
+        from reflexio import durable_learning_policy
+        from reflexio.server.services.durable_learning.selected_learning import (
+            SelectedLearningResult,
+            current_selected_learning,
+        )
+
+        selection = current_selected_learning()
+        if selection is None:
+            raise ValueError("A selected worker turn requires its preview")
+        digest = selection.fingerprint()
+        if not _reserve():
+            return SelectedLearningResult("held", digest, "execution_capacity_busy")
+        record = _TurnRecord()
+        try:
+            self._turn(
+                context.org_id,
+                durable_learning_policy.resolve_user_lease_seconds(),
+                record,
+            )
+        finally:
+            _release()
+        return SelectedLearningResult(
+            "completed" if record.completed else "held",
+            digest,
+            "selected_work_completed"
+            if record.completed
+            else "selected_work_not_completed",
+        )
+
     @background_work()
     def _reserved_turn(self, org_id: str, lease_seconds: int) -> int:
         # Two units, two streaks. Before a claim the unit is the org's claim
@@ -335,6 +372,11 @@ class DurableLearningWorker:
     ) -> str:
         """Execute :func:`classify_window_failure`'s verdict for ``exc``."""
         match classify_window_failure(exc):
+            case TransitionHeld():
+                # Preserve saved output and actual physical compute charges.
+                storage.yield_extraction_turn(window.user_id, token)
+                record_health("learning.transition_held", 1, kind="counter")
+                return "transition_held"
             case YieldTurn():
                 # Preserve the cached computation/journal and all window budgets.
                 # Existing class/turn scheduling owns the next attempt, not a new
@@ -555,51 +597,116 @@ class DurableLearningWorker:
             record.outcome = "success" if record.completed else "deferred"
             return 1
         record.phase = "prepare"
-        for effect_window, effects in storage.pending_extraction_effects(
-            user_id=user_id, token=token
-        ):
-            record.phase = "effects"
-            record.outcome = "failure"
-            with bind_work_scope(
-                WorkScope(org_id=org_id, project_id=effect_window.project_id or None)
-            ):
-                try:
-                    WindowExecutor(
-                        context, create_generation_litellm_client(context)
-                    ).deliver(effect_window, effects, token=token)
-                    record.outcome = "success"
-                except WindowEffectsDeletedError:
-                    record.outcome = "cancelled"
-                    return 0
-                except Exception as exc:
-                    record.outcome = (
-                        "lease_lost" if isinstance(exc, LeaseLostError) else "failure"
-                    )
-                    storage.retry_extraction_effects(effect_window)
-                    record_health("worker.retries", phase=record.phase)
-                    # Log-only, unlike the window handler below: the effects
-                    # retry has no error column to widen -
-                    # ``retry_extraction_effects`` stores only a due time.
-                    logger.warning(
-                        "Extraction effects will retry org_id=%s error=%s at=%s",
-                        org_id,
-                        type(exc).__name__,
-                        exception_locator(exc),
-                    )
-            # One effect window per turn; it completed only if delivered.
-            record.completed = record.outcome == "success"
+        from reflexio.server.services.durable_learning.selected_learning import (
+            current_selected_learning,
+            selected_existing_window,
+        )
+
+        selection = current_selected_learning()
+        if selection is not None and selection.effects_only:
+            from reflexio.server.services.durable_learning.selected_learning import (
+                selected_existing_effects,
+            )
+
+            effect_window, effects = selected_existing_effects(context)
+            record.phase, record.project_id, record.outcome = (
+                "effects",
+                effect_window.project_id,
+                "failure",
+            )
+            try:
+                WindowExecutor(
+                    context, create_generation_litellm_client(context)
+                ).deliver(effect_window, effects, token=token)
+            except WindowEffectsDeletedError:
+                record.outcome = "cancelled"
+                return 0
+            except Exception:
+                storage.retry_extraction_effects(effect_window)
+                raise
+            record.completed, record.outcome = True, "success"
             return 1
-        window = storage.prepare_extraction(user_id, token)
-        if window is None:
-            record.outcome = "idle"
-            return 0
+        if selection is not None:
+            window = selected_existing_window(context)
+        else:
+            for effect_window, effects in storage.pending_extraction_effects(
+                user_id=user_id, token=token
+            ):
+                record.phase = "effects"
+                record.outcome = "failure"
+                with bind_work_scope(
+                    WorkScope(
+                        org_id=org_id, project_id=effect_window.project_id or None
+                    )
+                ):
+                    try:
+                        WindowExecutor(
+                            context, create_generation_litellm_client(context)
+                        ).deliver(effect_window, effects, token=token)
+                        record.outcome = "success"
+                    except WindowEffectsDeletedError:
+                        record.outcome = "cancelled"
+                        return 0
+                    except Exception as exc:
+                        record.outcome = (
+                            "lease_lost"
+                            if isinstance(exc, LeaseLostError)
+                            else "failure"
+                        )
+                        storage.retry_extraction_effects(effect_window)
+                        record_health("worker.retries", phase=record.phase)
+                        # Log-only, unlike the window handler below: the effects
+                        # retry has no error column to widen -
+                        # ``retry_extraction_effects`` stores only a due time.
+                        logger.warning(
+                            "Extraction effects will retry org_id=%s error=%s at=%s",
+                            org_id,
+                            type(exc).__name__,
+                            exception_locator(exc),
+                        )
+                # One effect window per turn; it completed only if delivered.
+                record.completed = record.outcome == "success"
+                return 1
+            window = storage.prepare_extraction(user_id, token)
+            if window is None:
+                record.outcome = "idle"
+                return 0
         record.phase = "window"
         record.outcome = "failure"
         record.project_id = window.project_id
         with bind_work_scope(
             WorkScope(org_id=org_id, project_id=window.project_id or None)
         ):
-            executor = WindowExecutor(
+            executor_class = WindowExecutor
+            if selection is not None:
+                parent = storage.get_agent_run(f"window:{window.window_id}")
+                version = (
+                    parent.generation_request_snapshot.get("overflow", {}).get(
+                        "version"
+                    )
+                    if parent
+                    else None
+                )
+                if version == 2:
+                    from reflexio.server.services.durable_learning.profile_package_executor import (
+                        ProfilePackageWindowExecutor,
+                    )
+
+                    executor_class = ProfilePackageWindowExecutor
+                # Validated ordinary-v1 selections retain the normal executor;
+                # exact selected admission rechecks the original descriptor.
+                elif version != 1 or not isinstance(
+                    parent.generation_request_snapshot.get(
+                        "ordinary_profile_preparation"
+                    )
+                    if parent
+                    else None,
+                    dict,
+                ):
+                    raise ExtractionInputIntegrityError(
+                        "Selected extraction consumer unavailable"
+                    )
+            executor = executor_class(
                 context, create_generation_litellm_client(context)
             )
             try:
@@ -642,10 +749,36 @@ class DurableLearningWorker:
             return 0
         if context.org_id != org_id or storage.org_id != org_id:
             raise ValueError("Durable work target does not match the requested org")
-        financial_delivered = self._financial_delivery.deliver_one(storage, org_id)
-        claim = self._resume_selection.claim_user(
-            context, worker_id=self._instance_id, lease_seconds=lease_seconds
+        from reflexio.server.services.durable_learning.selected_learning import (
+            current_selected_learning,
+            selected_learning_admission,
         )
+
+        # The selected route never performs unrelated org-wide work. Ordinary
+        # financial delivery remains available independently of learning seals.
+        financial_delivered = (
+            False
+            if current_selected_learning() is not None
+            else self._financial_delivery.deliver_one(storage, org_id)
+        )
+        try:
+            claim = self._resume_selection.claim_user(
+                context, worker_id=self._instance_id, lease_seconds=lease_seconds
+            )
+        except Exception as exc:
+            from reflexio.server.services.durable_learning.learning_admission import (
+                learning_transition_is_held,
+            )
+
+            if not learning_transition_is_held(exc):
+                raise
+            # A queued user remains queued. No user token/model reservation was
+            # created and this is not successful empty/debt clearance. Real
+            # financial delivery above remains independently acknowledged.
+            if record is not None:
+                record.outcome = "transition_held"
+            record_health("learning.transition_held", 1, kind="counter")
+            return int(financial_delivered)
         # The claim query itself succeeded, whether or not it found a user.
         report_background_success(f"durable-learning-claim:{org_id}")
         if claim is None:
@@ -660,7 +793,10 @@ class DurableLearningWorker:
 
         started = time.monotonic()
         try:
-            with owned_user_work_context(storage, user_id, token, lease_seconds):
+            with (
+                owned_user_work_context(storage, user_id, token, lease_seconds),
+                selected_learning_admission(context),
+            ):
                 return self._execute_owned_opportunity(
                     context, storage, user_id, token, record
                 )
@@ -686,6 +822,14 @@ class DurableLearningWorker:
             )
             return 0
         except Exception as exc:
+            from reflexio.server.services.durable_learning.learning_admission import (
+                learning_transition_is_held,
+            )
+
+            if learning_transition_is_held(exc):
+                record.outcome = "transition_held"
+                record_health("learning.transition_held", 1, kind="counter")
+                return 0
             if record.phase.startswith("resume_"):
                 _report_turn_failure(org_id, user_id, exc)
                 return 0

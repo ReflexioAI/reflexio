@@ -541,7 +541,7 @@ def test_billing_drain_ordering_terminal_emitters_and_double_bill_guard(
     # (c) A FAILED extraction emits NO ② Learning billing (money-only-on-success).
     fail_service = _CharService(
         _llm_client(),
-        _request_context(MagicMock()),
+        _request_context(storage),
         results_by_user={"user3": RuntimeError("extractor boom")},
         track=False,  # no queue drain — a single _run_generation via run()
     )
@@ -641,7 +641,7 @@ class _ProcessFailsService(_CharService):
         raise ValueError("process boom")
 
 
-def test_finalize_vs_fail_atomicity(monkeypatch):
+def test_finalize_vs_fail_atomicity(monkeypatch, tmp_path):
     """R6: a _process_results failure marks runs finalization-failed, not finalized.
 
     Inside ``_run_generation``'s try (``:827-833``), a ``_process_results`` failure
@@ -651,9 +651,17 @@ def test_finalize_vs_fail_atomicity(monkeypatch):
     """
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "true")  # bypass the gate deterministically
 
+    storage = _build_sqlite_storage(str(tmp_path / "finalization.db"))
+    _seed_user(
+        storage,
+        user_id="user_r6",
+        request_id="req_r6",
+        interaction_id=1,
+        content="Synthetic profile source",
+    )
     service = _ProcessFailsService(
         _llm_client(),
-        _request_context(MagicMock()),
+        _request_context(storage),
         # A truthy, non-ExtractionOutcome result so _process_results is invoked.
         results_by_user={"user_r6": [{"learning": "boom"}]},
         track=False,
@@ -680,6 +688,7 @@ def test_finalize_vs_fail_atomicity(monkeypatch):
         )
     finally:
         configure_usage_event_recorder(None)
+        storage.conn.close()
 
     # The finalization-failed path took over...
     assert mark_failed_spy.call_count == 1

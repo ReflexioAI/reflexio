@@ -115,6 +115,28 @@ def adopt_agent_run_for_execution(
     storage: BaseStorage, run: AgentRunRecord
 ) -> AgentRunRecord:
     """Reuse an adopted revision or atomically attach the exact inspected one."""
+    from reflexio.server.services.durable_learning.learning_admission import (
+        current_learning_work,
+    )
+
+    if current_learning_work() is None:
+        with agent_run_user_work(storage, run):
+            return adopt_agent_run_for_execution(storage, run)
+    owner = _require_user_work_owner(storage)
+    with storage.commit_scope():
+        owner.fence(storage)
+        from reflexio.server.services.durable_learning.learning_admission import (
+            require_learning_run,
+        )
+
+        require_learning_run(storage, run)
+        return _adopt_agent_run_under_owner(storage, run)
+
+
+def _adopt_agent_run_under_owner(
+    storage: BaseStorage, run: AgentRunRecord
+) -> AgentRunRecord:
+    """Shared exact-revision primitive; callers establish their operation proof."""
     owner = _require_user_work_owner(storage)
     with storage.commit_scope(), storage._stream_sql() as db:
         owner.fence(storage)
@@ -145,13 +167,49 @@ def adopt_agent_run_for_execution(
         return current
 
 
+def adopt_completed_window_for_finalization(
+    storage: BaseStorage, run: AgentRunRecord, window: object
+) -> AgentRunRecord:
+    """Finish already-committed metadata, never dispatch or publish new learning.
+
+    A writer-backed completed-window proof is required. This narrow operation
+    leaves finance and compatible tag-only handoffs available during a seal;
+    the returned run does not bypass ordinary execution/compute admission.
+    """
+    from reflexio.server.services.storage.storage_base import AgentRunStatus
+    from reflexio.server.services.storage.storage_base._extraction_stream import Window
+
+    if not isinstance(window, Window) or run.status not in (
+        AgentRunStatus.AGENT_COMPLETED,
+        AgentRunStatus.FINALIZING,
+    ):
+        raise LeaseLostError("Completed window evidence is unavailable")
+    owner = _require_user_work_owner(storage)
+    with storage.commit_scope():
+        owner.fence(storage)
+        storage._validate_completed_window_execution(window, owner.token, run)
+        return _adopt_agent_run_under_owner(storage, run)
+
+
 def create_owned_agent_run(storage: BaseStorage, run: AgentRunRecord) -> AgentRunRecord:
     """Create and adopt together; failed adoption leaves no unowned new row."""
+    from reflexio.server.services.durable_learning.learning_admission import (
+        current_learning_work,
+    )
+
+    if current_learning_work() is None:
+        with agent_run_user_work(storage, run):
+            return create_owned_agent_run(storage, run)
     owner = _require_user_work_owner(storage)
     if run.binding.user_id != owner.user_id:
         raise LeaseLostError("New agent execution requires its established user")
     with storage.commit_scope():
         owner.fence(storage)
+        from reflexio.server.services.durable_learning.learning_admission import (
+            require_learning_run,
+        )
+
+        require_learning_run(storage, run)
         return adopt_agent_run_for_execution(storage, storage.create_agent_run(run))
 
 
@@ -171,14 +229,38 @@ def agent_run_user_work(storage: BaseStorage, run: AgentRunRecord) -> Iterator[N
             source_interaction_ids=run.binding.source_interaction_ids,
             subject="Agent execution",
         )
+    from reflexio.server.services.durable_learning.learning_admission import (
+        LearningWork,
+        current_learning_work,
+        learning_work_scope,
+        require_learning_run,
+    )
+    from reflexio.server.work_scope import current_project_id
+
+    @contextmanager
+    def bind_run() -> Iterator[None]:
+        if current_learning_work() is not None:
+            require_learning_run(storage, run)
+            yield
+        else:
+            with learning_work_scope(
+                storage,
+                LearningWork(
+                    storage.org_id, current_project_id() or "", user_id, "run", run.id
+                ),
+            ):
+                require_learning_run(storage, run)
+                yield
+
     if _active_lease.get() is not None:
         owner = _require_user_work_owner(storage)
         if owner.user_id != user_id:
             raise LeaseLostError("Agent execution belongs to a different user")
         owner.fence(storage)
-        yield
+        with bind_run():
+            yield
     else:
-        with user_extraction_lease(storage, user_id):
+        with user_extraction_lease(storage, user_id), bind_run():
             yield
 
 

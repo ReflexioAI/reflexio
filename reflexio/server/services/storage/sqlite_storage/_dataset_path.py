@@ -228,6 +228,9 @@ def claim_or_read_identity(path: Path, org_id: str) -> str:
     Returns:
         str: The identity that owns *path* -- *org_id* if the claim succeeded.
     """
+    from ._learning_policy_authority import reserve_new_sqlite_dataset
+
+    reserve_new_sqlite_dataset(str(path), org_id)
     conn = sqlite3.connect(path)
     try:
         # Only the unchanged app-created schema can bypass claim-time validation.
