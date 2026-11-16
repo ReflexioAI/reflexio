@@ -46,32 +46,34 @@ def _seed_rows(org_id: str) -> None:
         ("u1", "sess-1", 11, 110, "user_playbook", "42", 100),
         ("u2", "sess-2", 22, 220, "agent_playbook", "7", 200),
     ]
-    for (
-        user_id,
-        session_id,
-        interaction_id,
-        interaction_created_at,
-        kind,
-        learning_id,
-        created_at,
-    ) in rows:
-        conn.execute(
-            """INSERT INTO retrieved_learning_evaluation
-               (user_id, session_id, agent_version, interaction_id,
-                interaction_created_at, kind, learning_id,
-                is_relevant, relevance_reason, impact, impact_reason, created_at)
-               VALUES (?, ?, 'v1', ?, ?, ?, ?, 1, 'fits', 'positive', 'helped', ?)""",
-            (
-                user_id,
-                session_id,
-                interaction_id,
-                interaction_created_at,
-                kind,
-                learning_id,
-                created_at,
-            ),
-        )
-    conn.commit()
+    # This connection is also used by background metadata readers. Seed under
+    # its writer owner so another thread cannot roll back these fixture rows.
+    with storage.commit_scope():
+        for (
+            user_id,
+            session_id,
+            interaction_id,
+            interaction_created_at,
+            kind,
+            learning_id,
+            created_at,
+        ) in rows:
+            conn.execute(
+                """INSERT INTO retrieved_learning_evaluation
+                   (user_id, session_id, agent_version, interaction_id,
+                    interaction_created_at, kind, learning_id,
+                    is_relevant, relevance_reason, impact, impact_reason, created_at)
+                   VALUES (?, ?, 'v1', ?, ?, ?, ?, 1, 'fits', 'positive', 'helped', ?)""",
+                (
+                    user_id,
+                    session_id,
+                    interaction_id,
+                    interaction_created_at,
+                    kind,
+                    learning_id,
+                    created_at,
+                ),
+            )
 
 
 def test_returns_rows_newest_first_with_filters(isolated_client) -> None:
@@ -129,13 +131,13 @@ def test_result_model_round_trips_none_verdicts(isolated_client) -> None:
     storage = get_reflexio(org_id=org_id).request_context.storage
     assert storage is not None
     conn = storage.conn  # type: ignore[attr-defined]
-    conn.execute(
-        """INSERT INTO retrieved_learning_evaluation
-           (user_id, session_id, agent_version, kind, learning_id,
-            is_relevant, relevance_reason, impact, impact_reason, created_at)
-           VALUES ('u3', 'sess-3', 'v1', 'profile', 'p9', NULL, '', NULL, '', 5)""",
-    )
-    conn.commit()
+    with storage.commit_scope():
+        conn.execute(
+            """INSERT INTO retrieved_learning_evaluation
+               (user_id, session_id, agent_version, kind, learning_id,
+                is_relevant, relevance_reason, impact, impact_reason, created_at)
+               VALUES ('u3', 'sess-3', 'v1', 'profile', 'p9', NULL, '', NULL, '', 5)""",
+        )
     body = client.post(ENDPOINT, json={"session_id": "sess-3"}).json()
     row = body["results"][0]
     assert row["is_relevant"] is None
