@@ -3,7 +3,7 @@
 import time
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import Mock
+from unittest.mock import ANY, Mock
 
 import pytest
 
@@ -41,6 +41,7 @@ def native(monkeypatch):
     storage = SimpleNamespace(
         embedding_model_name="local/multilingual-e5-small",
         supports_embedding=True,
+        record_served_profile_access=Mock(),
         get_source_user_playbook_ids_for_agent_playbooks=Mock(return_value={}),
     )
     phase_a = Mock(
@@ -105,6 +106,13 @@ def run(native, **changes):
 def test_native_secondary_uses_same_scope_and_records_final_only(native):
     result = run(native)
     assert [p.profile_id for p in result.profiles or []] == list("FDABC")
+    native.storage.record_served_profile_access.assert_called_once_with(
+        user_id="u", profile_ids=list("ABCDF"), accessed_at=ANY
+    )
+    assert isinstance(
+        native.storage.record_served_profile_access.call_args.kwargs["accessed_at"],
+        int,
+    )
     assert (
         result.agent_playbooks == native.agents
         and result.user_playbooks == native.users
