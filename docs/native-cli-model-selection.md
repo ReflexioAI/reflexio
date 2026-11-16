@@ -37,6 +37,13 @@ child environment, with stale bridge model/variant hints cleared. A host-only
 reference delegates to OpenCode's own configuration. The parent environment and
 independently invoked optimizer scripts retain their separate learning policy.
 
+The native host owns its internal retry policy. Reflexio inherits its environment
+without forcing a Claude retry count; an unset value delegates to the CLI's
+default. This replaces the former backend-only override of three retries and
+can change default retry behavior. The existing SDK invocation deadline and
+native process owner still bound the managed call. They do not promise a fixed
+number of HTTP requests or a cost cap inside an opaque CLI invocation.
+
 Frozen native judge plans bind the effective home directory and the inherited
 `CODEX_HOME` and `CLAUDE_CONFIG_DIR` overrides, alongside the native target,
 working directory and executable settings. Changing these after job creation

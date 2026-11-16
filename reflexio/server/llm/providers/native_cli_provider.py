@@ -496,10 +496,7 @@ def _run_claude_stream(
     # Stop hook) can detect that this is a reflexio-internal invocation
     # and skip publishing — otherwise extractor system prompts get
     # re-published as user interactions and contaminate the corpus.
-    #
-    # CLAUDE_CODE_MAX_RETRIES=3 keeps short infrastructure blips tolerated
-    # while bounding the worst-case stall to a few seconds before we
-    # surface the failure to reflexio's stall_state table.
+    # The host CLI owns retries; this invocation retains its SDK deadline.
     env = os.environ.copy()
     if _compat_host(cli_path) == _HOST_OPENCODE:
         # The known wrapper otherwise prefers shared learning hints to --model.
@@ -509,7 +506,6 @@ def _run_claude_stream(
         env["CLAUDE_SMART_OPENCODE_MODEL"] = ""
         env["CLAUDE_SMART_OPENCODE_VARIANT"] = ""
     env["CLAUDE_SMART_INTERNAL"] = "1"
-    env["CLAUDE_CODE_MAX_RETRIES"] = "3"
 
     try:
         proc = run_native_cli(  # noqa: S603 — cmd is constructed from validated parts.
