@@ -241,7 +241,9 @@ def test_thinking_disabled_resend_answer_flows_through(pipeline, monkeypatch, ca
             return truncate(params, hard_timeout)
         return _respond(params, hard_timeout)
 
-    storage, _window_id, dispatch = _run(pipeline, monkeypatch, respond)
+    # The recovered resend logs at INFO (a failed one stays WARNING).
+    with caplog.at_level(logging.INFO):
+        storage, _window_id, dispatch = _run(pipeline, monkeypatch, respond)
     assert storage.extraction_status("u", "truncated")["status"] == "done"
     assert storage.count_all_profiles() > 0
     resends = [
@@ -283,7 +285,7 @@ def test_turn_suspended_before_resend_resumes_thinking_disabled(
             return truncate(params, hard_timeout)
         return _respond(params, hard_timeout)
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         storage, _window_id, dispatch = _run(pipeline, monkeypatch, respond)
     extraction = [
         call.args[0]
@@ -302,7 +304,8 @@ def test_turn_suspended_before_resend_resumes_thinking_disabled(
         if "event=extraction_turn_suspended " in record.getMessage()
     ]
     assert suspended
-    assert all(record.levelno == logging.WARNING for record in suspended)
+    # Suspension is routine continuation: INFO, never a warning.
+    assert all(record.levelno == logging.INFO for record in suspended)
     assert "reason=turn_budget" in suspended[0].getMessage()
     assert re.search(r"request_fingerprint=[0-9a-f]{64} ", suspended[0].getMessage())
     assert "first_attempt=skipped_recorded_exhaustion" in caplog.text
