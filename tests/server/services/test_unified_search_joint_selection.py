@@ -475,6 +475,7 @@ def test_joint_widening_retains_scored_profile_population_and_recency(
 
     from reflexio.models.api_schema.retriever_schema import UnifiedSearchRequest
     from reflexio.server.services import unified_search_service as service
+    from reflexio.server.services.profile.lifecycle import KEY
     from reflexio.server.services.retrieval.recency import RecencyConfig, ScoredItem
 
     now = int(time.time())
@@ -484,6 +485,15 @@ def test_joint_widening_retains_scored_profile_population_and_recency(
                 "profile_id": str(i),
                 "last_modified_timestamp": now - (0 if i in {2, 11} else 30 * 86400),
                 "expiration_timestamp": now + 86400,
+                # Qualified origin drives profile attention; modification time
+                # alone must not refresh an unknown-origin legacy memory.
+                "custom_features": {
+                    KEY: {
+                        "created_at": now - (0 if i in {2, 11} else 30 * 86400),
+                        "ancestor_ids": [],
+                        "explicit_storage_deadline": None,
+                    }
+                },
             }
         )
         for i in range(1, 21)
@@ -495,6 +505,7 @@ def test_joint_widening_retains_scored_profile_population_and_recency(
         for i in range(1, 21)
     ]
     storage = native.storage
+    storage.get_profile_access_epochs = Mock(return_value={})
     storage.embedding_model_name = "local/minilm-l6-v2"
     storage.supports_unified_hybrid_search = True
     calls = []
