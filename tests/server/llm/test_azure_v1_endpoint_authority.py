@@ -153,8 +153,18 @@ def _owned_wire_probe():
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             # self.path normalizes a leading //; requestline preserves the wire.
             target = self.requestline.split()[1]
+            # Legacy deployment routes authenticate with Azure's ``api-key``
+            # header; v1 routes use a bearer ``Authorization`` header.
             calls.append(
-                (target, body["model"], bool(self.headers.get("Authorization")))
+                (
+                    target,
+                    body["model"],
+                    frozenset(
+                        name.lower()
+                        for name in self.headers
+                        if name.lower() in {"authorization", "api-key"}
+                    ),
+                )
             )
             if "embeddings" in target:
                 payload = {
@@ -242,7 +252,12 @@ def _owned_wire_probe():
                     else:
                         assert target == f"{prefix}/openai/v1/{operation}"
                     assert model in {"gpt-4o-mini", "text-embedding-3-small"}
-                    assert authenticated
+                    expected_auth = (
+                        "api-key"
+                        if version == "2024-02-15-preview"
+                        else "authorization"
+                    )
+                    assert expected_auth in authenticated
             endpoint = f"http://127.0.0.1:{server.server_port}"
             assert (
                 selected.generate_response(

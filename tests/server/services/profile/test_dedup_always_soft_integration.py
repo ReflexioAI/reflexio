@@ -115,6 +115,18 @@ def _patch_dedup(*, all_new, existing_ids, superseded):
     return mock_dedup, mock_dedup_cls
 
 
+def _mock_storage() -> MagicMock:
+    """Return a mocked storage whose lifecycle-deadline scan has no rows.
+
+    Publication enforces persisted profile deadlines with a keyset scan over
+    ``profile_lifecycle_rows``; an unconfigured MagicMock page is truthy but
+    iterates empty, so the scan would never advance.
+    """
+    storage = MagicMock()
+    storage.profile_lifecycle_rows.return_value = []
+    return storage
+
+
 # ===========================================================================
 # A. Happy-path: REAL sqlite storage + reconstruction MATCH (core invariant)
 # ===========================================================================
@@ -238,7 +250,7 @@ def test_supersede_raises_does_not_hard_delete_or_write_legacy() -> None:
     a half-applied persist must not silently advance the bookmark), still does not
     fall back to a hard-delete, and never writes the (frozen) legacy change-log
     table."""
-    mock_storage = MagicMock()
+    mock_storage = _mock_storage()
     mock_storage.supersede_profiles_by_ids.side_effect = RuntimeError("boom")
 
     p_old = _make_profile("u_B", "old_B")
@@ -269,7 +281,7 @@ def test_supersede_called_with_full_intent_and_no_legacy_write() -> None:
     """The service forwards the deduplicator's full removal intent to
     supersede_profiles_by_ids (the committed-subset semantics now live in storage
     + reconstruction, not the service) and never writes the legacy table."""
-    mock_storage = MagicMock()
+    mock_storage = _mock_storage()
     mock_storage.supersede_profiles_by_ids.return_value = ["old_1"]
 
     superseded = [_make_profile("u_B2", "old_1"), _make_profile("u_B2", "old_2")]
@@ -306,7 +318,7 @@ def test_empty_request_id_skips_removal_and_fires_anomaly() -> None:
     Replaces the old test_empty_request_id_falls_back_to_hard_delete — an empty
     request_id must NEVER trigger a destructive hard-delete.
     """
-    mock_storage = MagicMock()
+    mock_storage = _mock_storage()
 
     p_old = _make_profile("u_C", "old_C")
     p_new = _make_profile("u_C", "new_C")
@@ -338,7 +350,7 @@ def test_empty_request_id_skips_removal_and_fires_anomaly() -> None:
 def test_success_path_supersedes_and_never_hard_deletes() -> None:
     """The dedup removal path calls supersede_profiles_by_ids and NEVER calls
     delete_user_profile (the legitimate hard-delete callers are elsewhere)."""
-    mock_storage = MagicMock()
+    mock_storage = _mock_storage()
     mock_storage.supersede_profiles_by_ids.return_value = ["old_D"]
 
     p_old = _make_profile("u_D", "old_D")

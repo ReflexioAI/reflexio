@@ -391,7 +391,6 @@ def test_resumable_extraction_resumes_after_human_answer(
                 "profiles": [
                     {
                         "content": "User deployment target is AWS ECS.",
-                        "time_to_live": "infinity",
                     }
                 ]
             },

@@ -82,13 +82,15 @@ def test_new_text_uses_saved_protocol_regardless_of_obsolete_rollout_assignment(
 
 
 @pytest.mark.parametrize("kind", ["profile", "playbook"])
-@pytest.mark.parametrize("model", ["claude-code/default", "openclaw/default"])
+@pytest.mark.parametrize("model", ["local-cli/codex", "openclaw/default"])
 def test_opaque_cli_provider_retains_its_existing_extraction_adapter(
     pipeline, monkeypatch, kind, model
 ):
     from reflexio.lib._base import create_generation_litellm_client
     from reflexio.models.config_schema import LLMConfig
 
+    if model.startswith("local-cli/"):
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", model)
     engine, _, http = pipeline
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
