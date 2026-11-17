@@ -19,6 +19,7 @@ from reflexio.models.api_schema.service_schemas import (
     Interaction,
     UserActionType,
 )
+from reflexio.removed_env import reject_removed_env
 from reflexio.server import LLM_PROMPT_LEVEL
 from reflexio.server.prompt.prompt_manager import PromptManager
 
@@ -28,11 +29,6 @@ logger = logging.getLogger(__name__)
 # Already registered in server/__init__.py; import the numeric constant only.
 MODEL_RESPONSE_LEVEL = 25
 
-# Per-interaction content token budget when formatting interactions into an
-# extraction/evaluation prompt. Read from REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS;
-# a value <= 0 disables slicing. See _resolve_max_interaction_content_tokens.
-DEFAULT_MAX_INTERACTION_CONTENT_TOKENS = 512
-_MAX_INTERACTION_CONTENT_TOKENS_ENV = "REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS"
 # Inserted between the head and tail of a sliced interaction so the LLM can see
 # that the middle of the content was elided.
 _CONTENT_TRUNCATION_MARKER = " …[truncated] "
@@ -41,8 +37,6 @@ _CONTENT_TRUNCATION_MARKER = " …[truncated] "
 # good-enough proxy for budgeting prompt content (mirrors the embedding path).
 _CONTENT_ENCODING_NAME = "cl100k_base"
 _content_token_encoding: tiktoken.Encoding | None = None
-# Guards against logging the same malformed env value on every call.
-_INVALID_MAX_TOKENS_WARNED = False
 
 
 def _image_mime_type_from_bytes(image_bytes: bytes) -> str | None:
@@ -82,33 +76,6 @@ def _get_content_token_encoding() -> tiktoken.Encoding:
     if _content_token_encoding is None:
         _content_token_encoding = tiktoken.get_encoding(_CONTENT_ENCODING_NAME)
     return _content_token_encoding
-
-
-def _resolve_max_interaction_content_tokens() -> int | None:
-    """Resolve the per-interaction content token budget from the environment.
-
-    Returns:
-        int | None: The positive token budget, or None when slicing is
-            disabled (env value <= 0). Unset or malformed values fall back to
-            ``DEFAULT_MAX_INTERACTION_CONTENT_TOKENS``.
-    """
-    global _INVALID_MAX_TOKENS_WARNED
-    raw = os.getenv(_MAX_INTERACTION_CONTENT_TOKENS_ENV, "").strip()
-    if not raw:
-        return DEFAULT_MAX_INTERACTION_CONTENT_TOKENS
-    try:
-        value = int(raw)
-    except ValueError:
-        if not _INVALID_MAX_TOKENS_WARNED:
-            logger.warning(
-                "Invalid %s=%r; falling back to default %d",
-                _MAX_INTERACTION_CONTENT_TOKENS_ENV,
-                raw,
-                DEFAULT_MAX_INTERACTION_CONTENT_TOKENS,
-            )
-            _INVALID_MAX_TOKENS_WARNED = True
-        return DEFAULT_MAX_INTERACTION_CONTENT_TOKENS
-    return value if value > 0 else None
 
 
 def slice_content_by_tokens(content: str, max_tokens: int | None) -> str:
@@ -314,61 +281,63 @@ def format_interactions_to_history_string(interactions: list[Interaction]) -> st
         user: I love sushi
         user: click menu item
     """
-    max_content_tokens = _resolve_max_interaction_content_tokens()
-    formatted_interactions = []
+    parts = []
     for interaction in interactions:
-        # Add text content with tools_used prefix if present
-        if interaction.content:
-            content = slice_content_by_tokens(interaction.content, max_content_tokens)
-            if interaction.tools_used:
-                tool_prefix = " ".join(
-                    f"[used tool: {t.tool_name}({json.dumps(t.tool_data)})]"
-                    for t in interaction.tools_used
-                )
-                formatted_interactions.append(
-                    f"{interaction.role}: ```{tool_prefix} {content}```"
-                )
-            else:
-                formatted_interactions.append(f"{interaction.role}: ```{content}```")
+        view = render_interaction(interaction)
+        if view.text:
+            parts.append(view.text)
+    return "\n".join(parts)
 
-        # Add user action
-        if interaction.user_action != UserActionType.NONE:
-            formatted_interactions.append(
-                f"{interaction.role}: ```{interaction.user_action.value} {interaction.user_action_description}```"
-            )
 
-    return "\n".join(formatted_interactions)
+@dataclass(frozen=True)
+class RenderedInteraction:
+    """One prompt view and the original text segments visible in that view."""
+
+    text: str
+    evidence_texts: tuple[str, ...]
+
+
+def render_interaction(
+    interaction: Interaction, *, include_expert_correction: bool = False
+) -> RenderedInteraction:
+    """Render complete turn text and its identical original evidence.
+
+    Args:
+        interaction: The turn to render.
+        include_expert_correction: Also show the turn's expert correction, when it
+            has one, and bind it as evidence. Consumers that read evidence of
+            expert-reviewed turns (reconciliation) need it; ordinary extraction
+            prompts keep it hidden because expert sessions use comparison pairs.
+    """
+    reject_removed_env(os.environ, {"REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS": ""})
+    lines: list[str] = []
+    evidence: list[str] = []
+    if interaction.content:
+        content = interaction.content
+        tool_prefixes = [
+            f"[used tool: {tool.tool_name}({json.dumps(tool.tool_data)})]"
+            for tool in interaction.tools_used or []
+        ]
+        evidence.extend(tool_prefixes)
+        evidence.append(content)
+        prefix = " ".join(tool_prefixes)
+        shown_content = f"{prefix} {content}" if prefix else content
+        lines.append(f"{interaction.role}: ```{shown_content}```")
+    if include_expert_correction and interaction.expert_content:
+        lines.append(f"expert correction: ```{interaction.expert_content}```")
+        evidence.append(interaction.expert_content)
+    if interaction.user_action != UserActionType.NONE:
+        action = (
+            f"{interaction.user_action.value} {interaction.user_action_description}"
+        )
+        lines.append(f"{interaction.role}: ```{action}```")
+        evidence.append(action.strip())
+    return RenderedInteraction("\n".join(lines), tuple(evidence))
 
 
 def visible_interaction_evidence_texts(interaction: Interaction) -> tuple[str, ...]:
-    """Return the source-backed pieces of a turn that its prompt rendering exposes.
-
-    The text uses the same content budget as ``format_interactions_to_history_string``.
-    A truncated head and tail are separate values so the synthetic truncation marker
-    is never persisted as evidence. Models cite only the turn id; code retains these
-    bounded values for reviewer context and provenance metadata.
-    """
-    values: list[str] = []
-    if interaction.content:
-        values.extend(
-            f"[used tool: {tool.tool_name}({json.dumps(tool.tool_data)})]"
-            for tool in interaction.tools_used
-        )
-        visible_content = slice_content_by_tokens(
-            interaction.content, _resolve_max_interaction_content_tokens()
-        )
-        values.extend(
-            segment
-            for segment in visible_content.split(_CONTENT_TRUNCATION_MARKER)
-            if segment
-        )
-    if interaction.expert_content:
-        values.append(interaction.expert_content)
-    if interaction.user_action != UserActionType.NONE:
-        values.append(
-            f"{interaction.user_action.value} {interaction.user_action_description}".strip()
-        )
-    return tuple(values)
+    """Return the original source segments of the ordinary prompt view."""
+    return render_interaction(interaction).evidence_texts
 
 
 def format_sessions_to_history_string(

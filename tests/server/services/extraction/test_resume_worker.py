@@ -492,7 +492,7 @@ def test_resume_worker_resumes_profile_run_and_consumes_dependency(
                 "profiles": [
                     {
                         "content": "User deployment target is AWS ECS.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                     }
                 ]
             }
@@ -545,7 +545,7 @@ def test_resume_worker_retries_finalization_without_rerunning_agent(
                 "profiles": [
                     {
                         "content": "User deployment target is AWS ECS.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                     }
                 ]
             }
@@ -716,7 +716,7 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
             "profiles": [
                 {
                     "content": "User deployment target is AWS ECS.",
-                    "time_to_live": "infinity",
+                    "explicit_storage_deadline": None,
                 }
             ]
         }
@@ -1063,7 +1063,7 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
                 "profiles": [
                     {
                         "content": "User deployment target is AWS ECS.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                     }
                 ]
             },
@@ -1239,6 +1239,7 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
 
 
 def _seed_completed_output(storage, run, payload):
+    """Author a fresh receipt; historical TTL replay uses saved bytes separately."""
     from reflexio.server.services.playbook.playbook_service_utils import (
         StructuredPlaybookList,
     )
@@ -1270,7 +1271,7 @@ def _commit_resumed_output(
     *,
     before_model: Callable[[AgentRunRecord], AgentRunRecord] | None = None,
 ):
-    """Script output; retain the active caller's attempt and real output writer."""
+    """Author fresh schema-valid output through the active caller's real writer."""
     from dataclasses import asdict
 
     from reflexio.server.llm.tools import ToolLoopResult, ToolLoopTrace
@@ -1826,7 +1827,9 @@ def test_readiness_defers_committed_finalization_without_spending_budget(
 
     _seed_interactions(storage)
     output = {
-        "profiles": [{"content": "Deploy to AWS ECS.", "time_to_live": "infinity"}]
+        "profiles": [
+            {"content": "Deploy to AWS ECS.", "explicit_storage_deadline": None}
+        ]
     }
     initial_resume = stage != "retry"
     _seed_ready_run(storage)
@@ -2530,7 +2533,7 @@ def test_normal_finalization_uses_actual_committed_output_witness(
         else StructuredPlaybookList
     )
     stored_entry = (
-        {"content": "Committed content", "time_to_live": "infinity"}
+        {"content": "Committed content", "explicit_storage_deadline": None}
         if field == "profiles"
         else {
             "content": "Committed content",
@@ -2647,7 +2650,9 @@ def test_conversion_failure_retries_saved_output_without_another_agent_call(
         lambda _self, **kw: kw["messages"],
     )
     calls = []
-    payload = {"profiles": [{"content": "Saved content", "time_to_live": "infinity"}]}
+    payload = {
+        "profiles": [{"content": "Saved content", "explicit_storage_deadline": None}]
+    }
 
     def resume(_agent, *, run, before_model, **_kwargs):
         calls.append(run.id)
@@ -2717,10 +2722,24 @@ def test_profile_output_conversion_does_not_construct_runtime_extractor(
     request_context.configurator.get_agent_context.side_effect = AssertionError(
         "pure conversion loaded agent context"
     )
+    from reflexio.server.services.extraction.resume_worker import (
+        _request_interaction_models_from_ids,
+    )
+
+    saved_output = {
+        "profiles": [{"content": "Saved content", "time_to_live": "infinity"}]
+    }
+    run = replace(run, committed_output=saved_output)
     items, pending = worker._profile_items_from_output(
         run,
         request_context.configurator.get_config().profile_extractor_config,
-        {"profiles": [{"content": "Saved content", "time_to_live": "infinity"}]},
+        saved_output,
+        request_interaction_data_models=_request_interaction_models_from_ids(
+            storage,
+            run.binding.source_interaction_ids,
+            fallback_source=run.binding.source,
+            fallback_agent_version=run.binding.agent_version,
+        ),
     )
     assert [item.content for item in items] == ["Saved content"]
     assert items[0].user_id == run.binding.user_id

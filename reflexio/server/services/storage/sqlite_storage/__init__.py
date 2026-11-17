@@ -15,6 +15,7 @@ from ._open_world_attempt import SQLiteOpenWorldAttemptMixin
 from ._open_world_evidence import SQLiteOpenWorldEvidenceMixin
 from ._open_world_publication import SQLiteOpenWorldPublicationMixin
 from ._operations import OperationMixin
+from ._profile_lifecycle import SQLiteProfileLifecycleMixin
 from ._requests import RequestMixin
 from ._session_outcomes import SessionOutcomeStoreMixin
 from ._shadow_verdicts import ShadowVerdictsMixin as SQLiteShadowVerdictsMixin
@@ -44,9 +45,12 @@ from .playbook import (
     UserPlaybookStoreMixin,
 )
 from .profiles import InteractionStoreMixin, ProfileSearchMixin, ProfileStoreMixin
+from .profiles._attention import ProfileAttentionStoreMixin
 
 
 class SQLiteStorage(
+    SQLiteProfileLifecycleMixin,
+    ProfileAttentionStoreMixin,
     SQLiteExtractionStreamMixin,
     SQLiteAgentRunStoreMixin,
     SQLitePendingToolCallStoreMixin,
@@ -77,6 +81,11 @@ class SQLiteStorage(
     SQLiteStorageBase,
 ):
     """SQLite-based storage with FTS5 and hybrid search."""
+
+    def ordinary_profile_source_digest(self) -> str | None:
+        if type(self) is not SQLiteStorage:
+            return super().ordinary_profile_source_digest()
+        return None
 
     def clear_user_data(self, user_id: str) -> dict[str, int]:
         # Hold the re-entrant storage lock across the composed clear so a marker

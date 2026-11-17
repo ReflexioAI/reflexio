@@ -61,14 +61,14 @@ class TestConfigStorageContract:
     def test_save_and_load_round_trip(self, config_storage: ConfigStorage) -> None:
         """A saved config can be loaded back with key fields intact."""
         original = config_storage.get_default_config()
-        original.window_size = 20
-        original.stride_size = 10
+        original.profile_window_size = 20
+        original.profile_stride_size = 10
 
         config_storage.save_config(original)
         loaded = config_storage.load_config()
 
-        assert loaded.window_size == original.window_size
-        assert loaded.stride_size == original.stride_size
+        assert loaded.profile_window_size == original.profile_window_size
+        assert loaded.profile_stride_size == original.profile_stride_size
         assert loaded.storage_config == original.storage_config
 
     def test_load_without_save_returns_default(
@@ -80,7 +80,7 @@ class TestConfigStorageContract:
 
         assert isinstance(loaded, Config)
         assert loaded.storage_config == default.storage_config
-        assert loaded.window_size == default.window_size
+        assert loaded.profile_window_size == default.profile_window_size
 
     def test_load_ignores_retired_fields_without_resetting_user_values(
         self, tmp_path: Path
@@ -108,10 +108,17 @@ class TestConfigStorageContract:
             encoding="utf-8",
         )
 
+        from reflexio.cli.config_upgrade import prepare_local_config
+
+        original = config_path.read_bytes()
+        with pytest.raises(ValueError, match="generation15"):
+            local_storage.load_config()
+        assert config_path.read_bytes() == original
+        assert prepare_local_config("legacy-config-org", base_dir=str(tmp_path))
         loaded = local_storage.load_config()
 
         assert loaded.agent_context_prompt == "preserve this"
-        assert loaded.window_size == 23
+        assert loaded.profile_window_size == 23
         assert loaded.profile_extractor_config is not None
         assert (
             loaded.profile_extractor_config.extraction_definition_prompt
@@ -171,8 +178,8 @@ class TestConfigStorageContract:
         """
         storage = LocalFileConfigStorage(org_id="atomic-org", base_dir=str(tmp_path))
         cfg = storage.get_default_config()
-        cfg.window_size = 7
-        cfg.stride_size = 7
+        cfg.profile_window_size = 7
+        cfg.profile_stride_size = 7
         storage.save_config(cfg)
 
         final = Path(storage.config_file)
@@ -181,8 +188,8 @@ class TestConfigStorageContract:
         assert not leaked, f"atomic write should not leak a .tmp sidecar: {leaked}"
 
         loaded = storage.load_config()
-        assert loaded.window_size == 7
-        assert loaded.stride_size == 7
+        assert loaded.profile_window_size == 7
+        assert loaded.profile_stride_size == 7
 
     def test_save_config_propagates_write_failure(self, tmp_path, monkeypatch) -> None:
         """save_config must raise on OSError; callers must not see a false success.
@@ -230,7 +237,7 @@ class TestConfigStorageContract:
         # File backends key on mtime, so we sleep enough to cross the
         # filesystem's 1-second resolution on common Linux distros.
         time.sleep(1.1)
-        cfg.window_size = (cfg.window_size or 0) + 1
+        cfg.profile_window_size = (cfg.profile_window_size or 0) + 1
         config_storage.save_config(cfg)
         second = config_storage.get_version()
 
@@ -250,16 +257,19 @@ def test_legacy_shadow_file_load_patch_save_roundtrip(tmp_path: Path) -> None:
         "stride_size": 7,
     }
     path.write_text(json.dumps(original))
+    from reflexio.cli.config_upgrade import prepare_local_config
+
+    assert prepare_local_config("legacy-org", base_dir=str(tmp_path))
     loaded = storage.load_config()
     assert loaded.agent_context_prompt == "customer prompt"
-    assert loaded.window_size == 23
-    assert loaded.stride_size == 7
+    assert loaded.profile_window_size == 23
+    assert loaded.profile_stride_size == 7
     loaded.enable_document_expansion = True
     storage.save_config(loaded)
     saved = json.loads(path.read_text())
     assert "shadow_mode_enabled" not in saved
-    assert saved["window_size"] == 23
-    assert saved["stride_size"] == 7
+    assert saved["profile_window_size"] == 23
+    assert saved["profile_stride_size"] == 7
     assert storage.load_config().enable_document_expansion is True
 
 

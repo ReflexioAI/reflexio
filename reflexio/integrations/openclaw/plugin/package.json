@@ -1,6 +1,6 @@
 {
   "name": "@reflexioai/openclaw-smart",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Self-improving OpenClaw plugin — learns from corrections across sessions via Reflexio.",
   "type": "module",
   "license": "Apache-2.0",

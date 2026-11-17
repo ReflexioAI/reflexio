@@ -30,6 +30,19 @@ from reflexio.server.llm.model_defaults import (
 # tests/server/llm/conftest.py and by the repo's heavy-skill preflight docs.
 _PLACEHOLDER_KEY = "sk-placeholder-mock"
 
+# Providers Reflexio supports through offline adapter tests but cannot call
+# live: there is no subscription behind them, so a live call can only fail
+# (Z.ai answers 429 "Insufficient balance or no resource package").
+NOT_LIVE_QUALIFIED_PROVIDERS: dict[str, str] = {
+    "zai": "Reflexio holds no Z.ai subscription; zai/* is covered by offline adapter tests only",
+}
+# Append to a ``real_generation_provider`` skip reason so the skip names both causes.
+UNQUALIFIED_SELECTION_NOTE = (
+    ", or model resolution would select a provider that is not live-qualified ("
+    + "; ".join(f"{p}: {why}" for p, why in NOT_LIVE_QUALIFIED_PROVIDERS.items())
+    + ")"
+)
+
 
 def ensure_provider_credential() -> None:
     """Pin a placeholder provider key when the environment offers none.
@@ -103,6 +116,12 @@ def real_generation_provider(
     placeholder string can still diverge; the caller sees a skip reason rather
     than a wrong model in that case.
 
+    A provider in :data:`NOT_LIVE_QUALIFIED_PROVIDERS` is never returned. When
+    resolution would select one (it holds a real key and no higher-priority
+    provider does), the result is None rather than a lower-priority provider,
+    because the live test would still be routed to the unqualified provider.
+    Unset that provider's key to run such a test against another provider.
+
     Args:
         allowed (Collection[str] | None): Restrict to these provider keys, e.g.
             ``{"openai", "anthropic", "minimax"}`` for a test whose assertions
@@ -116,12 +135,20 @@ def real_generation_provider(
     env_by_provider = {
         provider: env_var for env_var, provider in provider_env_vars().items()
     }
+    real_key_seen = False
     for provider in detect_available_providers():
         if provider not in GENERATION_CAPABLE_PROVIDERS:
             continue
+        env_var = env_by_provider.get(provider)
+        if not (env_var and real_provider_key(env_var)):
+            continue
+        if provider in NOT_LIVE_QUALIFIED_PROVIDERS:
+            if not real_key_seen:
+                # Resolution would route the live test to this provider.
+                return None
+            continue
+        real_key_seen = True
         if allowed is not None and provider not in allowed:
             continue
-        env_var = env_by_provider.get(provider)
-        if env_var and real_provider_key(env_var):
-            return provider
+        return provider
     return None

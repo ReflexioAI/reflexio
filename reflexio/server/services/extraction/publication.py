@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.metering_events import (
     emit_learnings_generated_records_strict,
     record_window_extraction_finances,
@@ -92,11 +92,16 @@ def settle_finalization_failure(
     """One allowance/deferral rule for initial and resumed publication owners.
 
     Input contention, unavailable readiness and a provider outage (the charging
-    invariant in ``provider_circuit``) defer without spending an attempt; every
-    other failure is charged against ``max_attempts``.
+    invariant in ``provider_circuit``) defer without spending an attempt. Typed
+    transition holds additionally preserve pending physical preparation entries
+    for their existing next-owner reconciliation; they neither refund work nor
+    add a method-failure debit. Other failures spend ``max_attempts``.
     """
     from reflexio.server.llm.compute_admission import ComputeAdmissionError
     from reflexio.server.llm.failure import OutageWait, classify_llm_failure
+    from reflexio.server.services.durable_learning.learning_admission import (
+        learning_transition_is_held,
+    )
     from reflexio.server.services.storage.error import (
         ReadinessUnavailableError,
         execution_input_is_busy,
@@ -106,18 +111,23 @@ def settle_finalization_failure(
     if isinstance(reason, LeaseLostError):
         raise reason
     with owned_agent_run_write(storage, run):
+        held = learning_transition_is_held(reason)
         busy = execution_input_is_busy(reason)
-        # Do not settle or replace a prepared result on input contention.
-        entry = None if busy else storage.pending_agent_preparation_attempt(run)
+        # Holds preserve the exact physical preparation entry and any returned
+        # evidence. Do not refund/delete it or call a seal a method failure;
+        # its existing owner still settles abandoned physical work later.
+        entry = None if busy or held else storage.pending_agent_preparation_attempt(run)
         readiness = isinstance(reason, ReadinessUnavailableError) and entry is None
         # Preparation calls the model; a route that is down for everyone is
         # not this run's failure, whether or not preparation had started.
-        verdict = None if busy else classify_llm_failure(reason)
+        verdict = None if busy or held else classify_llm_failure(reason)
         outage_wait = verdict.delay_seconds if isinstance(verdict, OutageWait) else None
-        charge = not (busy or readiness or outage_wait is not None)
+        charge = not (held or busy or readiness or outage_wait is not None)
         count = run.finalization_attempts + int(charge)
         now = datetime.now(UTC)
-        if busy:
+        if held:
+            next_at, last_error = now, "learning_transition_held"
+        elif busy:
             next_at, last_error = now, "ExecutionInputBusyError"
         elif readiness:
             next_at, last_error = (
@@ -215,7 +225,7 @@ def _remaining_work(
             (storage.org_id, current_project_id() or "", *ids),
         )
         if {row["id"] for row in answers} != set(ids):
-            raise InputBudgetConfigurationError("Remaining answer dependency changed")
+            raise ExtractionInputIntegrityError("Remaining answer dependency changed")
         resolutions = {
             row["pending_tool_call_id"]: row["resolved_at"] for row in dependencies
         }
@@ -226,7 +236,7 @@ def _remaining_work(
                 or decoded(row["scope"]) != expected_scope
                 or row["tool_name"] != "ask_human"
             ):
-                raise InputBudgetConfigurationError("Remaining answer scope changed")
+                raise ExtractionInputIntegrityError("Remaining answer scope changed")
             state = PendingToolCallStatus(row["status"])
             if row["superseded_by"] is not None:
                 continue
@@ -239,7 +249,7 @@ def _remaining_work(
                     continue
                 expected = _run_revision_time(resolutions[row["id"]])
                 if expected is not None and expected != resolved_at:
-                    raise InputBudgetConfigurationError(
+                    raise ExtractionInputIntegrityError(
                         "Remaining answer resolution changed"
                     )
                 if expected is None:
@@ -325,7 +335,7 @@ def _validate_final_answers(
     _, inputs = require_publication_answer_inputs(run.committed_output)
     observed = storage._lock_extraction_answers(db, sorted(inputs))
     if {key: build_scope_hash(value) for key, value in observed.items()} != inputs:
-        raise InputBudgetConfigurationError("Extraction human answer changed")
+        raise ExtractionInputIntegrityError("Extraction human answer changed")
     now = datetime.fromtimestamp(db.now(), UTC)
     for witness in observed.values():
         require_current_answer(witness, storage.org_id, now)
@@ -441,14 +451,32 @@ def _publish_agent_output(
     origin: Literal["initial_inline", "resume"],
 ) -> tuple[AgentRunRecord, FinalizationResult, PreparedPublication | None]:
     """Own replay/preparation, atomic publication and postcommit obligations."""
+    from reflexio.server.services.durable_learning.user_lease import agent_run_user_work
+
+    with agent_run_user_work(storage, run):
+        return _publish_admitted_output(
+            storage, run, prepare=prepare, on_published=on_published, origin=origin
+        )
+
+
+def _publish_admitted_output(
+    storage: BaseStorage,
+    run: AgentRunRecord,
+    *,
+    prepare: Callable[
+        [AgentRunRecord, SavedPublicationPreparation | None], PreparedPublication
+    ],
+    on_published: Callable[[AgentRunRecord, PreparedPublication | None], None],
+    origin: Literal["initial_inline", "resume"],
+) -> tuple[AgentRunRecord, FinalizationResult, PreparedPublication | None]:
     if storage.in_commit_scope:
         raise RuntimeError("Agent output publication requires its own outer writer")
     retained = deepcopy(run)
     output = retained.committed_output
     if not isinstance(output, dict):
-        raise InputBudgetConfigurationError("Retained publication output unavailable")
+        raise ExtractionInputIntegrityError("Retained publication output unavailable")
     if output_publication_origin(output) != origin:
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Publication adapter changed its original origin"
         )
     publication = output.get("publication")
@@ -480,7 +508,15 @@ def _publish_agent_output(
     receipt: PublicationReceipt | None = None
     history_deadline: int | None = None
     try:
-        with owned_agent_run_write(storage, retained), storage._stream_sql() as db:
+        from reflexio.server.services.durable_learning.learning_admission import (
+            learning_business_write,
+        )
+
+        with (
+            learning_business_write(storage),
+            owned_agent_run_write(storage, retained),
+            storage._stream_sql() as db,
+        ):
             storage._require_current_agent_output(db, retained, output)
             receipt = storage._get_output_publication_receipt(
                 db, retained.id, output_id
@@ -532,7 +568,7 @@ def _publish_agent_output(
                     and history_deadline is not None
                     and int(observed_at.timestamp()) > history_deadline
                 ):
-                    raise InputBudgetConfigurationError(
+                    raise ExtractionInputIntegrityError(
                         "Historical profile expired during publication"
                     )
                 if (status, pending) == _remaining_status(remaining, observed_at):
@@ -590,7 +626,7 @@ def prepare_initial_publication(
     with owned_agent_run_write(storage, retained), storage._stream_sql() as db:
         output = retained.committed_output
         if not isinstance(output, dict):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Retained publication output unavailable"
             )
         publication = output.get("publication")
@@ -620,7 +656,7 @@ def prepare_initial_publication(
             bookmark_advance is None
             or bookmark != ExtractorBookmarkPosition.from_advance(bookmark_advance)
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Initial bookmark changed before preparation"
             )
         write_plan = service._resolve_write_plan([items]) if items else None
@@ -641,7 +677,7 @@ def publish_initial_output(
         _run: AgentRunRecord, saved: SavedPublicationPreparation | None
     ) -> PreparedPublication:
         if saved is None:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Initial output preparation is unavailable"
             )
         return PreparedPublication(service, saved.write_plan, saved.bookmark)
@@ -667,7 +703,7 @@ def publish_resumed_output(
     """Worker adapter, including retry of an initial output's unchanged obligation."""
     origin = output_publication_origin(run.committed_output)
     if origin == "initial_window":
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Initial window publication requires its window owner"
         )
 

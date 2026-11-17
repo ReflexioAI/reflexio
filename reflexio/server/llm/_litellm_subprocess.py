@@ -17,6 +17,11 @@ re-exported by import binding from the facade — they must be the SAME class/ob
 the worker constructs and tests ``isinstance``-check. Bodies moved VERBATIM.
 """
 
+# Complete provider initialization before importing the third-party library.
+import reflexio.provider_bootstrap  # noqa: F401
+
+# isort: split
+
 import logging
 import multiprocessing
 import pickle
@@ -32,6 +37,7 @@ from litellm.exceptions import ContextWindowExceededError
 from reflexio.server.llm._litellm_types import (
     LiteLLMClientError,
     LLMHardTimeoutError,
+    ProviderRequestGuardError,
     completion_metadata,
 )
 from reflexio.server.llm._model_compat import model_completion
@@ -39,6 +45,10 @@ from reflexio.server.llm._native_cli import (
     NativeCLIContext,
     NativeCLIOwner,
     native_cli_worker,
+)
+from reflexio.server.llm._native_model_ref import (
+    authorize_native_model,
+    native_request_authority,
 )
 from reflexio.server.llm._provider_concurrency import retain_current_provider_slot
 
@@ -191,6 +201,7 @@ class _CompletionErrorSnapshot:
     input_capacity_exceeded: bool = False
     status_code: int | None = None
     hard_timeout: bool = False
+    request_guard_error: bool = False
 
 
 def _snapshot_completion_error(
@@ -202,6 +213,7 @@ def _snapshot_completion_error(
     return _CompletionErrorSnapshot(
         type_name=type(exc).__name__,
         hard_timeout=isinstance(exc, LLMHardTimeoutError),
+        request_guard_error=isinstance(exc, ProviderRequestGuardError),
         message=str(exc),
         model=str(model) if model else None,
         llm_provider=str(llm_provider) if llm_provider else None,
@@ -214,6 +226,8 @@ def _raise_completion_error(payload: _CompletionErrorSnapshot) -> NoReturn:
     """Restore typed local expiry before treating provider failures generically."""
     from reflexio.server.llm.input_budget import extraction_provider_guard
 
+    if payload.request_guard_error:
+        raise ProviderRequestGuardError(payload.message)
     if payload.hard_timeout:
         raise LLMHardTimeoutError(payload.message)
     if payload.input_capacity_exceeded and extraction_provider_guard.get() is not None:
@@ -350,24 +364,25 @@ def _reset_llm_client_state_after_fork() -> None:
 
 
 def _register_local_cli_providers() -> None:
-    """Register the opt-in CLI providers in this child, if enabled.
+    """Register native name resolution and the independently opted-in OpenClaw.
 
     Under ``fork`` the child inherits the parent's ``custom_provider_map``. But
     uvicorn starts its workers with ``spawn``, and a spawned process inherits
     ``spawn`` as its default start method, so the completion child in a
     multi-worker server re-imports only this module and never runs the
     registration ``litellm_client`` does at import. Every ``openclaw/...`` or
-    ``claude-code/...`` call then failed with "LLM Provider NOT provided".
-    Both registrations are idempotent and no-ops unless their env opt-in is set.
+    ``local-cli/...`` call then failed with "LLM Provider NOT provided".
+    Both registrations are idempotent. Native registration grants no execution;
+    exact operator authorization is repeated inside the handler.
     """
-    from reflexio.server.llm.providers.claude_code_provider import (
-        register_if_enabled as register_claude_code,
+    from reflexio.server.llm.providers.native_cli_provider import (
+        register_native_provider as register_native_cli,
     )
     from reflexio.server.llm.providers.openclaw_provider import (
         register_if_enabled as register_openclaw,
     )
 
-    register_claude_code()
+    register_native_cli()
     register_openclaw()
 
 
@@ -378,19 +393,29 @@ def _litellm_completion_worker(
     native_context: NativeCLIContext | None = None,
 ) -> None:
     _reset_llm_client_state_after_fork()
-    _register_local_cli_providers()
-    try:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise LLMHardTimeoutError(
-                "LLM request deadline expired during child startup"
+    with native_request_authority() as authority:
+        try:
+            if deadline <= time.monotonic():
+                raise LLMHardTimeoutError(
+                    "LLM request deadline expired during child startup"
+                )
+            authorize_native_model(params["model"], params.get("custom_llm_provider"))
+            _register_local_cli_providers()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise LLMHardTimeoutError(
+                    "LLM request deadline expired during child startup"
+                )
+            # Child startup spends the same accepted-work budget as provider IO.
+            params = {
+                **params,
+                "timeout": min(float(params.get("timeout", remaining)), remaining),
+            }
+            native_cli_worker(native_context, result_queue, deadline)
+            response = model_completion(params)
+            authority.raise_if_rejected()
+            result_queue.put(("ok", _picklable_completion_result(response)))
+        except BaseException as exc:
+            result_queue.put(
+                ("error", _snapshot_completion_error(authority.error or exc, params))
             )
-        # Child startup spends the same accepted-work budget as provider IO.
-        params = {
-            **params,
-            "timeout": min(float(params.get("timeout", remaining)), remaining),
-        }
-        native_cli_worker(native_context, result_queue, deadline)
-        result_queue.put(("ok", _picklable_completion_result(model_completion(params))))
-    except BaseException as exc:
-        result_queue.put(("error", _snapshot_completion_error(exc, params)))

@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+# Complete provider initialization before importing the third-party library.
+import reflexio.provider_bootstrap  # noqa: F401
+
+# isort: split
+
+import ast
 import inspect
 import json
 import logging
 from collections.abc import Mapping
 from hashlib import sha256
+from types import ModuleType
 from typing import Any, cast
 
 import litellm
@@ -16,8 +23,14 @@ from reflexio.server.llm import _litellm_subprocess as worker_module
 from reflexio.server.llm import _litellm_text_generation as text_generation_module
 from reflexio.server.llm import _native_cli as native_cli_module
 from reflexio.server.llm import _native_cli_process as native_process_module
+from reflexio.server.llm import _native_model_ref as native_model_ref
 from reflexio.server.llm.litellm_client import LiteLLMClient
-from reflexio.server.llm.providers import claude_code_provider, openclaw_provider
+from reflexio.server.llm.providers import _opencode_cli as opencode_module
+from reflexio.server.llm.providers import (
+    claude_code_stream_parser as native_stream_parser,
+)
+from reflexio.server.llm.providers import cli_tool_protocol as native_tool_protocol
+from reflexio.server.llm.providers import native_cli_provider, openclaw_provider
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.service_utils import log_model_response
 
@@ -136,6 +149,11 @@ def build_pairwise_judge_request_plan(
         "judge_output_schema_code_digest": _code_digest(JudgeOutput),
         "judge_output_schema_digest": _json_digest(JudgeOutput.model_json_schema()),
         "implementation_callables": callables,
+        "native_policy_digest": (
+            native_model_ref.native_policy_digest()
+            if any(model.startswith("local-cli/") for model in ladder)
+            else None
+        ),
         "judge_generation_settings": {
             "requested_model": requested_model,
             "resolved_primary_model": ladder[0],
@@ -173,7 +191,7 @@ def _pairwise_judge_rung(
         "temperature": _decimal_string(provider_params["temperature"]),
         "top_p": _decimal_string(provider_params.get("top_p", 1.0)),
         "max_tokens": provider_params.get("max_tokens"),
-        "seed": provider_params["seed"],
+        "seed": provider_params.get("seed"),
         "timeout_seconds": _decimal_string(timeout_seconds),
         "hard_timeout_seconds": _decimal_string(timeout_seconds),
         "provider_kind": client._provider_for_model(resolved_model) or "unconfigured",
@@ -292,6 +310,13 @@ class PairwiseJudge:
             self.request_context.prompt_manager,
             self.llm_client,
         )
+        expected_policy = frozen_plan.get("native_policy_digest")
+        if expected_policy is not None and (
+            native_model_ref.native_policy_digest() != expected_policy
+        ):
+            raise FrozenEvaluatorPlanDriftError(
+                "PairwiseJudge operator native policy drifted after job creation"
+            )
         if current != frozen_plan["implementation_callables"]:
             raise FrozenEvaluatorPlanDriftError(
                 "PairwiseJudge evaluator implementation drifted after job creation"
@@ -363,6 +388,7 @@ def _pairwise_judge_implementation_identities(
         f"llm_client.{name}": _bound_callable_identity(client, name)
         for name in _LLM_IMPLEMENTATION_METHODS
     }
+    callables["registered_native_handler"] = _registered_native_handler_identity()
     callables.update(
         {
             f"prompt_manager.{name}": _bound_callable_identity(prompt_manager, name)
@@ -389,8 +415,42 @@ def _pairwise_judge_implementation_identities(
     return callables
 
 
+def _registered_native_handler_identity() -> dict[str, str]:
+    """Freeze the actual registered handler, including trusted path overrides."""
+    bindings = []
+    for entry in getattr(litellm, "custom_provider_map", None) or []:
+        if entry.get("provider") != native_model_ref.PROVIDER_KEY:
+            continue
+        handler = entry.get("custom_handler")
+        bindings.append(
+            {
+                "class": _callable_identity(type(handler)),
+                "methods": {
+                    name: {
+                        **_callable_identity(getattr(handler, name, None)),
+                        "instance_override": name in vars(handler)
+                        if hasattr(handler, "__dict__")
+                        else False,
+                    }
+                    for name, function in vars(native_cli_provider.NativeCLILLM).items()
+                    if inspect.isfunction(function) and name != "__init__"
+                },
+                "path": getattr(handler, "_explicit_cli_path", None),
+                "timeout": getattr(handler, "_explicit_timeout", None),
+            }
+        )
+    return {
+        "identity": "registered_native_handler",
+        "code_digest": _json_digest(bindings),
+    }
+
+
 def _implementation_helper_identities() -> dict[str, dict[str, str]]:
     helpers = {
+        "judge._registered_native_handler_identity": _registered_native_handler_identity,
+        "worker.authorize_native_model": worker_module.authorize_native_model,
+        "worker.native_request_authority": worker_module.native_request_authority,
+        "text_generation.authorize_native_model": text_generation_module.authorize_native_model,
         "litellm.completion": litellm.completion,
         "text_generation._run_isolated_completion": text_generation_module._run_isolated_completion,
         "litellm.get_llm_provider": litellm.get_llm_provider,
@@ -432,14 +492,12 @@ def _implementation_helper_identities() -> dict[str, dict[str, str]]:
         "native_cli.run_native_cli": native_cli_module.run_native_cli,
         "native_cli.native_cli_worker": native_cli_module.native_cli_worker,
         "worker.native_cli_worker": worker_module.native_cli_worker,
-        "claude_code_provider.native_cli_directory": claude_code_provider.native_cli_directory,
         "native_cli.native_cli_directory": native_cli_module.native_cli_directory,
-        "native_cli._remaining": native_cli_module._remaining,
+        "native_cli.remaining_native_time": native_cli_module.remaining_native_time,
         "native_cli._publish": native_cli_module._publish,
         "native_cli.NativeCLIContext": native_cli_module.NativeCLIContext,
         "native_cli._WorkerContext": native_cli_module._WorkerContext,
         "native_cli._NativeTask": native_cli_module._NativeTask,
-        "claude_code_provider.run_native_cli": claude_code_provider.run_native_cli,
         "openclaw_provider.run_native_cli": openclaw_provider.run_native_cli,
         **{
             f"native_cli.NativeCLIOwner.{name}": getattr(
@@ -463,13 +521,65 @@ def _implementation_helper_identities() -> dict[str, dict[str, str]]:
         ),
         "text_generation.resolve_model_name": text_generation_module.resolve_model_name,
     }
-    return {name: _callable_identity(value) for name, value in helpers.items()} | {
-        "native_cli.owner_script": native_cli_module.native_owner_identity()
+    return (
+        {name: _callable_identity(value) for name, value in helpers.items()}
+        | _native_helper_identities()
+        | {"native_cli.owner_script": native_cli_module.native_owner_identity()}
+    )
+
+
+def _native_helper_identities() -> dict[str, dict[str, str]]:
+    """Bind declared native code and SDK aliases without a drifting hand-list."""
+    result: dict[str, dict[str, str]] = {}
+    modules = {
+        "native_cli_provider": native_cli_provider,
+        "native_model_ref": native_model_ref,
+        "opencode": opencode_module,
+        "native_stream_parser": native_stream_parser,
+        "native_tool_protocol": native_tool_protocol,
     }
+    for label, module in modules.items():
+        names, classes = _native_binding_declarations(module)
+        for name in names:
+            value = getattr(module, name, None)
+            if callable(value):
+                result[f"{label}.{name}"] = _callable_identity(value)
+        for name in classes:
+            cls = getattr(module, name, None)
+            if not inspect.isclass(cls):
+                continue
+            for member, descriptor in vars(cls).items():
+                value = getattr(cls, member)
+                if isinstance(descriptor, property):
+                    for accessor in ("fget", "fset", "fdel"):
+                        result[f"{label}.{name}.{member}.{accessor}"] = (
+                            _callable_identity(getattr(descriptor, accessor))
+                        )
+                elif callable(value):
+                    result[f"{label}.{name}.{member}"] = _callable_identity(value)
+    return result
+
+
+def _native_binding_declarations(module: ModuleType) -> tuple[set[str], set[str]]:
+    """Source declares eligible names; current values never decide eligibility."""
+    names: set[str] = set()
+    classes: set[str] = set()
+    for node in ast.parse(inspect.getsource(module)).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+            if isinstance(node, ast.ClassDef):
+                classes.add(node.name)
+        elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+            "reflexio."
+        ):
+            names.update(alias.asname or alias.name for alias in node.names)
+    return names, classes
 
 
 def _judge_helper_identities() -> dict[str, dict[str, str]]:
     helpers = {
+        "judge._native_helper_identities": _native_helper_identities,
+        "judge._native_binding_declarations": _native_binding_declarations,
         "judge.build_pairwise_judge_request_plan": build_pairwise_judge_request_plan,
         "judge.canonicalize_pairwise_judge_request_plan": (
             canonicalize_pairwise_judge_request_plan

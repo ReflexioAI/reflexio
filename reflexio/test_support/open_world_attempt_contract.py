@@ -223,10 +223,28 @@ class GroundedTransport:
         self.calls.append(kwargs)
         payload = json.loads(kwargs["messages"][-1].content)
         schema = kwargs["response_format"]
-        if issubclass(schema, Diagnostic):
+        if schema.__name__ == "TriggerGate":
+            value: Any = {
+                "contrast": {
+                    "gap": "none",
+                    "missed_task": "",
+                    "original_excludes_because": "",
+                    "content_actually_provides": "",
+                    "revision_admits_because": "",
+                    "support": [],
+                    "missing_facts": [],
+                },
+                "revision": {
+                    "action": "keep",
+                    "trigger": payload["source"]["trigger"],
+                    "reason": "The synthetic Trigger is unchanged.",
+                    "support": [],
+                },
+            }
+        elif issubclass(schema, Diagnostic):
             turn = next(m["turn"] for m in payload["messages"] if m["role"] == "agent")
             clauses = payload["incumbent"]["content_clauses"]
-            value: Any = {
+            value = {
                 "user_id": payload["user_id"],
                 "session_id": payload["session_id"],
                 "observations": [
@@ -272,6 +290,68 @@ class GroundedTransport:
             )
         return ObservedStructuredCompletion(
             value=schema.model_validate_json(json.dumps(value)),
+            observed_provider="contract-provider",
+            observed_model_revision=self.transport_identity.model_revision,
+            called_at=self.called_at,
+            latency_ms=5,
+            usage_json=None,
+        )
+
+
+class TriggerRepairTransport(GroundedTransport):
+    """Script a source-bound Trigger repair; this is a structural fixture only."""
+
+    def complete(self, **kwargs: Any) -> ObservedStructuredCompletion:
+        schema = kwargs["response_format"]
+        if schema.__name__ not in ("TriggerGate", "TriggerBatch"):
+            return super().complete(**kwargs)
+        self.calls.append(kwargs)
+        payload = json.loads(kwargs["messages"][-1].content)
+        if schema.__name__ == "TriggerGate":
+            trigger, content = (
+                payload["source"]["trigger"],
+                payload["source"]["content"],
+            )
+            value = {
+                "contrast": {
+                    "gap": "promised_help_absent",
+                    "missed_task": "Consult synthetic guidance",
+                    "original_excludes_because": "The authored fixture has no matching consultation cue",
+                    "content_actually_provides": "The original synthetic source content",
+                    "revision_admits_because": "Name the provided synthetic guidance",
+                    "support": [
+                        {"field": "trigger", "quote": trigger},
+                        {"field": "content", "quote": content},
+                    ],
+                    "missing_facts": [],
+                },
+                "revision": {
+                    "action": "rewrite",
+                    "trigger": "Gate suggestion must not reach builder",
+                    "reason": "The structural fixture requests a rewrite.",
+                    "support": [{"field": "content", "quote": content}],
+                },
+            }
+        else:
+            source = payload["sources"][0]
+            assert set(source) == {"index", "original_trigger", "content", "gap"}
+            value = {
+                "revisions": [
+                    {
+                        "index": 0,
+                        "revision": {
+                            "action": "rewrite",
+                            "trigger": "When consulting the synthetic guidance",
+                            "reason": "Use the provided synthetic guidance.",
+                            "support": [
+                                {"field": "content", "quote": source["content"]}
+                            ],
+                        },
+                    }
+                ]
+            }
+        return ObservedStructuredCompletion(
+            value=schema.model_validate(value),
             observed_provider="contract-provider",
             observed_model_revision=self.transport_identity.model_revision,
             called_at=self.called_at,
@@ -410,11 +490,13 @@ def _attempt(
     *,
     transport: GroundedTransport | None = None,
     store_type: type[RuleEvidenceAnalysisStore] = RuleEvidenceAnalysisStore,
+    v2: bool = False,
+    original_trigger: str | None = "synthetic trigger",
 ) -> Attempt:
     """A frozen attempt on a fresh owned playbook, with the authority reconciled."""
     storage = harness.storage
     owner = _uid("owner")
-    playbook = _owned_playbook(harness, owner)
+    playbook = _owned_playbook(harness, owner, trigger=original_trigger)
     incumbent = storage.get_user_playbook_by_id(playbook.user_playbook_id)
     assert incumbent is not None
     subject_ref = harness.register_subject(owner)
@@ -426,9 +508,13 @@ def _attempt(
     )
     assert frozen.claim is not None
     transport = transport or GroundedTransport(called_at=now)
-    store = store_type(
-        storage, qualify_rule_evidence_method(transport), transport, lambda: now
-    )
+    method = qualify_rule_evidence_method(transport)
+    if not v2:
+        # Keep historical v1 receipts/forgeries as executable compatibility tests.
+        method = type(method)(
+            method.diagnostic, method.proposal, method.qualification_receipt
+        )
+    store = store_type(storage, method, transport, lambda: now)
     store.reconcile_authority()
     return Attempt(
         harness,
@@ -646,6 +732,205 @@ _FORGERIES = [
 
 class OpenWorldAttemptContract:
     """The attempt store's behaviour, asserted identically on every backend."""
+
+    def test_v2_trigger_only_candidate_and_resume(
+        self, port_harness: AttemptHarness
+    ) -> None:
+        attempt = _attempt(
+            port_harness,
+            transport=TriggerRepairTransport(
+                called_at=port_harness.now(), abstain=True
+            ),
+            v2=True,
+        )
+        decision = attempt.run()
+        assert decision.decision.decision == "accept"
+        content = attempt.payload("open_world_content_result")["payload"]
+        trigger = attempt.payload("open_world_trigger_result")["payload"]
+        candidate = attempt.payload(_CANDIDATE)["payload"]
+        assert content["final_content"] == attempt.incumbent.content
+        assert content["content_diff"]["unified_diff"] == ""
+        assert candidate["revised_content"] == attempt.incumbent.content
+        assert candidate["revised_trigger"] == "When consulting the synthetic guidance"
+        assert candidate["change_fields"] == ["trigger"]
+        assert (
+            trigger["source_frame"]["final_content_artifact_digest"]
+            == candidate["content_result_artifact_digest"]
+        )
+        calls = len(attempt.transport.calls)
+        assert calls == _SESSIONS + 3
+        assert dataclasses.asdict(attempt.run()) == dataclasses.asdict(decision)
+        assert len(attempt.transport.calls) == calls
+        assert port_harness.attempt_rows(attempt.job_id).artifacts == 6
+
+    def test_v2_noop_saves_both_preparation_results(
+        self, port_harness: AttemptHarness
+    ) -> None:
+        saved: dict[str, dict[str, Any]] = {}
+
+        class CapturingStore(RuleEvidenceAnalysisStore):
+            def write(self, kind: str, payload: dict[str, Any], claim: Any) -> Any:
+                result = super().write(kind, payload, claim)
+                saved[kind] = copy.deepcopy(payload["payload"])
+                return result
+
+        attempt = _attempt(
+            port_harness,
+            transport=GroundedTransport(called_at=port_harness.now(), abstain=True),
+            store_type=CapturingStore,
+            v2=True,
+        )
+        result = attempt.run()
+        assert result.decision.decision == "abstain"
+        assert (
+            saved["open_world_content_result"]["final_content"]
+            == attempt.incumbent.content
+        )
+        assert (
+            saved["open_world_trigger_result"]["resolved_result"]["status"]
+            == "gate_keep"
+        )
+        assert _CANDIDATE not in saved
+        assert port_harness.attempt_rows(attempt.job_id).artifacts == 5
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "owner_id",
+            "incumbent_version",
+            "final_content",
+            "final_content_artifact_digest",
+        ],
+    )
+    def test_v2_source_frame_cannot_be_rebound(
+        self, port_harness: AttemptHarness, field: str
+    ) -> None:
+        attempt = _attempt(
+            port_harness,
+            transport=TriggerRepairTransport(
+                called_at=port_harness.now(), abstain=True
+            ),
+            v2=True,
+        )
+        attempt.run()
+        original = attempt.payload("open_world_trigger_result")
+        forged = copy.deepcopy(original)
+        forged["payload"]["source_frame"][field] = "f" * 64
+        from reflexio.server.services.playbook.rule_evidence.trigger_maintenance import (
+            TriggerSourceFrame,
+        )
+
+        forged["payload"]["source_frame_digest"] = TriggerSourceFrame.model_validate(
+            forged["payload"]["source_frame"]
+        ).digest
+        with pytest.raises(StorageError):
+            attempt.write("open_world_trigger_result", forged)
+        assert attempt.payload("open_world_trigger_result") == original
+
+    @pytest.mark.parametrize(
+        "kind",
+        [
+            "open_world_content_result",
+            "open_world_trigger_result",
+            _CANDIDATE,
+            _DECISION,
+        ],
+    )
+    def test_v2_artifacts_require_current_exact_authority(
+        self, port_harness: AttemptHarness, kind: str
+    ) -> None:
+        attempt = _attempt(
+            port_harness,
+            transport=TriggerRepairTransport(
+                called_at=port_harness.now(), abstain=True
+            ),
+            v2=True,
+        )
+        attempt.run()
+        original = attempt.payload(kind)
+        forged = copy.deepcopy(original)
+        forged["payload"]["authority_digest"] = "f" * 64
+        with pytest.raises(StorageError):
+            attempt.write(kind, forged)
+        assert attempt.payload(kind) == original
+
+    def test_v2_missing_trigger_is_not_explicit_null(
+        self, port_harness: AttemptHarness
+    ) -> None:
+        attempt = _attempt(
+            port_harness,
+            transport=TriggerRepairTransport(
+                called_at=port_harness.now(), abstain=True
+            ),
+            v2=True,
+        )
+        attempt.run()
+        forged = attempt.payload(_CANDIDATE)
+        del forged["payload"]["revised_trigger"]
+        with pytest.raises(StorageError):
+            attempt.write(_CANDIDATE, forged)
+
+    @pytest.mark.parametrize(
+        "damage", ["missing_builder", "raw_output", "provenance", "extra_receipt"]
+    )
+    def test_v2_trigger_requires_actual_stage_receipts(
+        self, port_harness: AttemptHarness, damage: str
+    ) -> None:
+        attempt = _attempt(
+            port_harness,
+            transport=TriggerRepairTransport(
+                called_at=port_harness.now(), abstain=True
+            ),
+            v2=True,
+        )
+        attempt.run()
+        original = attempt.payload("open_world_trigger_result")
+        forged = copy.deepcopy(original)
+        payload = forged["payload"]
+        if damage == "missing_builder":
+            payload["builder_receipt"] = None
+        elif damage == "raw_output":
+            payload["gate_receipt"]["observed_output"]["revision"]["reason"] = (
+                "Other raw output"
+            )
+        elif damage == "provenance":
+            payload["builder_receipt"]["invocation"]["observed_model_revision"] = (
+                "other-model"
+            )
+        else:
+            payload["builder_receipt"]["unadmitted"] = True
+        with pytest.raises(StorageError):
+            attempt.write("open_world_trigger_result", forged)
+        assert attempt.payload("open_world_trigger_result") == original
+
+    def test_v2_rejected_builder_response_is_saved_and_not_rerolled(
+        self, port_harness: AttemptHarness
+    ) -> None:
+        class WrongIndexTransport(TriggerRepairTransport):
+            def complete(self, **kwargs: Any) -> ObservedStructuredCompletion:
+                result = super().complete(**kwargs)
+                if kwargs["response_format"].__name__ == "TriggerBatch":
+                    raw = result.value.model_dump(mode="json")
+                    raw["revisions"][0]["index"] = 1
+                    result = dataclasses.replace(
+                        result, value=kwargs["response_format"].model_validate(raw)
+                    )
+                return result
+
+        attempt = _attempt(
+            port_harness,
+            transport=WrongIndexTransport(called_at=port_harness.now(), abstain=True),
+            v2=True,
+        )
+        with pytest.raises(ValueError, match="index 0"):
+            attempt.run()
+        calls = len(attempt.transport.calls)
+        assert calls == _SESSIONS + 3
+        assert port_harness.attempt_rows(attempt.job_id).artifacts == 3
+        with pytest.raises(ValueError, match="index 0"):
+            attempt.run()
+        assert len(attempt.transport.calls) == calls
+        assert port_harness.attempt_rows(attempt.job_id).invocations == calls
 
     # ------------------------------------------------------------------ I5
 
@@ -977,8 +1262,14 @@ class OpenWorldAttemptContract:
         moved = GroundedTransport(
             called_at=attempt.now, model_revision="contract-model-2"
         )
+        moved_method = qualify_rule_evidence_method(moved)
+        moved_method = type(moved_method)(
+            moved_method.diagnostic,
+            moved_method.proposal,
+            moved_method.qualification_receipt,
+        )
         newer = RuleEvidenceAnalysisStore(
-            storage, qualify_rule_evidence_method(moved), moved, lambda: attempt.now
+            storage, moved_method, moved, lambda: attempt.now
         ).reconcile_authority()
         assert newer.epoch == authority.epoch + 1
 

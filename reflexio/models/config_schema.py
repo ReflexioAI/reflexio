@@ -23,6 +23,7 @@ from reflexio.config_env import (
 from reflexio.housekeeping_policy import strip_legacy_housekeeping_fields
 from reflexio.pending_tool_policy import (
     RETIRED_PENDING_TOOL_TIMING_FIELDS,
+    strip_retired_pending_dedup_duration,
     strip_retired_pending_followup_warning,
 )
 
@@ -30,6 +31,10 @@ from .api_schema.validators import (
     NonEmptyStr,
     SafeHttpUrl,
     SanitizedNonEmptyStr,
+)
+from .extraction_window import (
+    DEFAULT_STRIDE_SIZE,
+    DEFAULT_WINDOW_SIZE,
 )
 
 DEFAULT_MAX_MERGE_INVOCATIONS = 5
@@ -51,10 +56,6 @@ _DEFAULT_OPTIMIZER_SCHEDULING_POLICY = OptimizerSchedulingPolicy()
 # Embedding vector dimensions. Changing this requires a DB migration and re-embedding,
 # so it is intentionally a constant rather than a configurable setting.
 EMBEDDING_DIMENSIONS = 512
-
-# Default sliding window parameters for extraction
-DEFAULT_WINDOW_SIZE = 10
-DEFAULT_STRIDE_SIZE = 8
 
 
 def _reject_obsolete_fields(data: Any, fields: tuple[str, ...]) -> Any:
@@ -87,6 +88,8 @@ def reject_obsolete_config_names(data: Any) -> Any:
         (
             "batch_size",
             "batch_interval",
+            "window_size",
+            "stride_size",
             "extraction_window_size",
             "extraction_window_stride",
             "extraction_preset",
@@ -457,8 +460,6 @@ class ProfileExtractorConfig(BaseModel):
         None  # default enabled for all sources, if set, only extract profiles from the enabled request sources
     )
     manual_trigger: bool = False  # require manual triggering (rerun) to run extraction and skip auto extraction if set to True
-    window_size_override: int | None = Field(default=None, gt=0)
-    stride_size_override: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="before")
     @classmethod
@@ -469,6 +470,8 @@ class ProfileExtractorConfig(BaseModel):
                 "profile_content_definition_prompt",
                 "batch_size_override",
                 "batch_interval_override",
+                "window_size_override",
+                "stride_size_override",
                 "extraction_window_size_override",
                 "extraction_window_stride_override",
             ),
@@ -521,8 +524,6 @@ class UserPlaybookExtractorConfig(BaseModel):
     request_sources_enabled: list[str] | None = (
         None  # default enabled for all sources, if set, only extract user playbooks from the enabled request sources
     )
-    window_size_override: int | None = Field(default=None, gt=0)
-    stride_size_override: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="before")
     @classmethod
@@ -538,6 +539,8 @@ class UserPlaybookExtractorConfig(BaseModel):
                 "feedback_name",
                 "batch_size_override",
                 "batch_interval_override",
+                "window_size_override",
+                "stride_size_override",
                 "extraction_window_size_override",
                 "extraction_window_stride_override",
             ),
@@ -809,7 +812,6 @@ class EffectivePendingToolCallConfig:
     """Resolved pending-tool-call settings after applying tool overrides."""
 
     pending_ttl_seconds: int
-    dedup_cache_seconds: int
     prior_answer_valid_seconds: int
     similarity_threshold: float
 
@@ -818,7 +820,6 @@ class PendingToolCallToolOverrideConfig(BaseModel):
     """Optional per-tool pending-call limits."""
 
     pending_ttl_seconds: int | None = Field(default=None, gt=0)
-    dedup_cache_seconds: int | None = Field(default=None, gt=0)
     prior_answer_valid_seconds: int | None = Field(default=None, gt=0)
     similarity_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
 
@@ -831,7 +832,6 @@ class PendingToolCallConfig(BaseModel):
         ge=0,
         description="Lifetime of new pending calls; zero disables their creation.",
     )
-    dedup_cache_seconds: int = Field(default=300, gt=0)
     prior_answer_valid_seconds: int = Field(default=2_592_000, gt=0)
     similarity_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
     max_resume_attempts: int = Field(default=3, ge=0)
@@ -844,9 +844,11 @@ class PendingToolCallConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def discard_retired_execution_policy(cls, data: Any) -> Any:
-        return strip_retired_pending_followup_warning(
-            _reject_obsolete_fields(
-                data, (*RETIRED_PENDING_TOOL_TIMING_FIELDS, "enabled")
+        return strip_retired_pending_dedup_duration(
+            strip_retired_pending_followup_warning(
+                _reject_obsolete_fields(
+                    data, (*RETIRED_PENDING_TOOL_TIMING_FIELDS, "enabled")
+                )
             )
         )
 
@@ -872,7 +874,6 @@ class PendingToolCallConfig(BaseModel):
 
         return EffectivePendingToolCallConfig(
             pending_ttl_seconds=self.creation_lifetime_seconds(tool_name),
-            dedup_cache_seconds=_value("dedup_cache_seconds"),
             prior_answer_valid_seconds=_value("prior_answer_valid_seconds"),
             similarity_threshold=_value("similarity_threshold"),
         )
@@ -975,8 +976,10 @@ class Config(BaseModel):
         default_factory=_default_agent_success_config
     )
     # extraction parameters
-    window_size: int = Field(default=DEFAULT_WINDOW_SIZE, gt=0)
-    stride_size: int = Field(default=DEFAULT_STRIDE_SIZE, gt=0)
+    profile_window_size: int = Field(default=DEFAULT_WINDOW_SIZE, gt=0)
+    profile_stride_size: int = Field(default=DEFAULT_STRIDE_SIZE, gt=0)
+    playbook_window_size: int = Field(default=DEFAULT_WINDOW_SIZE, gt=0)
+    playbook_stride_size: int = Field(default=DEFAULT_STRIDE_SIZE, gt=0)
     # Captured at admission; 0 disables idle finalization for new publications.
     extraction_idle_timeout_seconds: int = Field(default=21600, ge=0)
     # Prospective maximum batching delay; qualify a positive value before enabling.
@@ -1045,8 +1048,10 @@ class Config(BaseModel):
             data = dict(data)
         if isinstance(data, dict):
             for key in (
-                "window_size",
-                "stride_size",
+                "profile_window_size",
+                "profile_stride_size",
+                "playbook_window_size",
+                "playbook_stride_size",
                 "playbook_optimizer_config",
                 "lineage_gc",
                 "expiry_reclamation",
@@ -1057,13 +1062,6 @@ class Config(BaseModel):
                 if key in data and data[key] is None:
                     del data[key]
         return data
-
-    @model_validator(mode="after")
-    def check_stride_size_le_window_size(self) -> Self:
-        """Validate that stride_size <= window_size."""
-        if self.stride_size > self.window_size:
-            raise ValueError("stride_size must be <= window_size")
-        return self
 
     @model_validator(mode="after")
     def check_custom_endpoint_model_authority(self) -> Self:

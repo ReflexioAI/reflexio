@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC
 from typing import Any
 
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.services.deferred_learning_plan import (
     ExtractorBookmarkPosition,
     PlaybookWritePlan,
@@ -65,18 +65,18 @@ def bookmark_from_output(run: AgentRunRecord) -> ExtractorBookmarkPosition:
         not isinstance(output, dict)
         or output_publication_origin(output) != "initial_inline"
     ):
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Bookmark requires an initial inline output"
         )
     try:
         publication = output["publication"]
         bookmark = _require_bookmark(run, publication["bookmark"])
     except (ValueError, TypeError, KeyError) as error:
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Original initial bookmark is unavailable"
         ) from error
     if bookmark is None:
-        raise InputBudgetConfigurationError("Original initial bookmark is unavailable")
+        raise ExtractionInputIntegrityError("Original initial bookmark is unavailable")
     return bookmark
 
 
@@ -89,11 +89,11 @@ class SavedPublicationPreparation:
     def payload(self, run: AgentRunRecord) -> dict[str, Any]:
         output = run.committed_output
         if not isinstance(output, dict):
-            raise InputBudgetConfigurationError("Preparation requires retained output")
+            raise ExtractionInputIntegrityError("Preparation requires retained output")
         bookmark = asdict(self.bookmark) if self.bookmark is not None else None
         position = _require_bookmark(run, bookmark)
         if position is not None and position != bookmark_from_output(run):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Prepared bookmark changed its original position"
             )
         return {
@@ -119,10 +119,10 @@ class SavedPublicationPreparation:
             "history_inputs",
             "bookmark",
         }:
-            raise InputBudgetConfigurationError("Saved publication preparation invalid")
+            raise ExtractionInputIntegrityError("Saved publication preparation invalid")
         output = run.committed_output
         if not isinstance(output, dict):
-            raise InputBudgetConfigurationError("Preparation requires retained output")
+            raise ExtractionInputIntegrityError("Preparation requires retained output")
         if (
             type(data["version"]) is not int
             or data["version"] != 1
@@ -131,7 +131,7 @@ class SavedPublicationPreparation:
             or data["output_digest"] != build_scope_hash(output)
             or data["kind"] != run.binding.extractor_kind
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Saved publication preparation binding changed"
             )
         try:
@@ -156,7 +156,7 @@ class SavedPublicationPreparation:
                 ):
                     raise ValueError("Publication subjects changed")
         except (ValueError, TypeError, KeyError, AttributeError) as exc:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Saved publication preparation invalid"
             ) from exc
         return cls(plan, history, bookmark)
@@ -164,7 +164,7 @@ class SavedPublicationPreparation:
 
 def preparation_claim_digest(run: AgentRunRecord) -> str:
     if run.claimed_by is None or run.claimed_at is None:
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Preparation requires an actual execution claim"
         )
     stamp = run.claimed_at
@@ -184,12 +184,12 @@ class PendingPreparationAttempt:
     @classmethod
     def begin(cls, run: AgentRunRecord) -> "PendingPreparationAttempt":
         if type(run.finalization_attempts) is not int or run.finalization_attempts < 0:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Preparation failure budget unavailable"
             )
         output = run.committed_output
         if not isinstance(output, dict):
-            raise InputBudgetConfigurationError("Preparation requires retained output")
+            raise ExtractionInputIntegrityError("Preparation requires retained output")
         return cls(
             uuid.uuid4().hex,
             require_output_id(output.get("publication", {}).get("id")),
@@ -223,7 +223,7 @@ class PendingPreparationAttempt:
             or type(data["failures_at_entry"]) is not int
             or data["failures_at_entry"] < 0
         ):
-            raise InputBudgetConfigurationError("Pending preparation entry invalid")
+            raise ExtractionInputIntegrityError("Pending preparation entry invalid")
         require_output_id(data["identity"])
         require_output_id(data["output_id"])
         if any(
@@ -232,7 +232,7 @@ class PendingPreparationAttempt:
             or any(c not in "0123456789abcdef" for c in data[key])
             for key in ("output_digest", "claim_digest")
         ):
-            raise InputBudgetConfigurationError("Pending preparation entry invalid")
+            raise ExtractionInputIntegrityError("Pending preparation entry invalid")
         output = run.committed_output
         if (
             not isinstance(output, dict)
@@ -240,7 +240,7 @@ class PendingPreparationAttempt:
             or data["output_digest"] != build_scope_hash(output)
             or data["kind"] != run.binding.extractor_kind
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Pending preparation output binding changed"
             )
         return cls(**{key: value for key, value in data.items() if key != "version"})

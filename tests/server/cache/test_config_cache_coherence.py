@@ -162,13 +162,18 @@ def test_stable_cold_start_probes_once_and_constructs_once(policy):
     assert len(policy.builds) == 1
 
 
-def test_unsupported_version_remains_cacheable(policy):
+def test_unsupported_version_loads_current_policy_without_caching(policy):
     policy.storage.get_version.side_effect = None
     policy.storage.get_version.return_value = None
     first = cache.get_reflexio("unsupported-org")
-    assert cache.get_reflexio("unsupported-org") is first
-    policy.storage.get_version.assert_called_once()
-    assert len(policy.builds) == 1
+    policy.durable["value"] = True
+    second = cache.get_reflexio("unsupported-org")
+    assert first is not second
+    assert first.get_config().enable_document_expansion is False
+    assert second.get_config().enable_document_expansion is True
+    assert policy.storage.get_version.call_count == 2
+    assert cache.get_cache_stats()["current_size"] == 0
+    assert len(policy.builds) == 2
 
 
 def test_failed_preload_probe_retries_and_preserves_later_eviction(policy):

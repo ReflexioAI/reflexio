@@ -5,11 +5,13 @@ from __future__ import annotations
 import os
 import tempfile
 from collections.abc import Generator
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
 
-from reflexio.server.services.storage.storage_base import BaseStorage
+if TYPE_CHECKING:
+    from reflexio.server.services.storage.storage_base import BaseStorage
 
 # ``reflexio.server`` loads ``./.env`` + ``~/.reflexio/.env`` into os.environ at
 # import time (and litellm's import-time dotenv walk-up can pull in a parent

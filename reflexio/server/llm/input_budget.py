@@ -1,9 +1,15 @@
 """Complete-request admission at the existing provider dispatch boundary."""
 
+# Complete provider initialization before importing the third-party library.
+import reflexio.provider_bootstrap  # noqa: F401
+
+# isort: split
+
 import json
 import math
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Protocol
 
@@ -11,6 +17,7 @@ import litellm
 
 from reflexio.native_compute import configure_tokenizer_compute
 from reflexio.removed_env import reject_removed_env
+from reflexio.server.env_utils import env_str
 from reflexio.server.llm._litellm_types import (
     ModelProvenance,
     ProviderRequestGuard,
@@ -24,6 +31,58 @@ from reflexio.server.llm.token_accounting import RunTokenTotals
 extraction_provider_guard: ContextVar[ProviderRequestGuard | None] = ContextVar(
     "extraction_provider_guard", default=None
 )
+
+
+# Complete-request capacity for consumers that previously clipped their own text.
+# Unlike the durable extraction guard, this scope does not reserve attempts.
+_model_capacity_limits: ContextVar[dict[str, int] | None] = ContextVar(
+    "model_capacity_limits", default=None
+)
+
+
+@contextmanager
+def model_input_budget() -> Iterator[None]:
+    """Admit native requests by their complete model capacity, without slicing.
+
+    Host CLI transports own opaque model selection and cannot honor an output
+    cap. They retain that transport contract; no native-capacity proof is claimed.
+    Every native fallback and corrective repair is checked independently.
+    """
+    limits = declared_context_limits(env_str("REFLEXIO_LLM_CONTEXT_LIMITS_JSON", "{}"))
+    token = _model_capacity_limits.set(limits)
+    try:
+        yield
+    finally:
+        _model_capacity_limits.reset(token)
+
+
+def _native_capacity_limits(params: Mapping[str, Any]) -> dict[str, int] | None:
+    limits = _model_capacity_limits.get()
+    if limits is None or params["model"].partition("/")[0] in {
+        "local-cli",
+        "openclaw",
+    }:
+        return None
+    return limits
+
+
+def prepare_model_input_budget(
+    params: dict[str, Any], *, explicit_output_policy: bool
+) -> None:
+    """Reserve native output without treating provider defaults as tenant policy."""
+    if _native_capacity_limits(params) is not None:
+        if _is_custom_endpoint(params) and not explicit_output_policy:
+            raise InputBudgetConfigurationError(
+                "Custom endpoint requires an explicit output reservation"
+            )
+        reserve_model_output_tokens(params)
+
+
+def check_model_input_budget(params: dict[str, Any]) -> None:
+    """Check the final physical request, including schema, tools and repairs."""
+    limits = _native_capacity_limits(params)
+    if limits is not None:
+        check_request_input_budget(params, context_limits=limits, prompt_target=None)
 
 
 class ExtractionUsageObserver(Protocol):
@@ -54,6 +113,27 @@ extraction_request_identity: ContextVar[dict[str, Any] | None] = ContextVar(
 extraction_failure_observer: ContextVar[Callable[[str, BaseException], None] | None] = (
     ContextVar("extraction_failure_observer", default=None)
 )
+
+
+class ReasoningExhaustionJournal(Protocol):
+    """Durable memory of requests whose hidden reasoning spent the output limit.
+
+    ``record_reasoning_exhausted`` marks the request the scoped guard last admitted (the one whose
+    reply was just classified ``reasoning_exhausted``); ``reasoning_exhausted`` answers
+    whether freshly built ``params`` are such a request. The client then sends
+    that request with thinking disabled from its first dispatch, so a turn that
+    ends before the in-turn resend cannot make the next turn repeat the
+    thinking-on request that already exhausted its budget.
+    """
+
+    def record_reasoning_exhausted(self) -> None: ...
+
+    def reasoning_exhausted(self, params: Mapping[str, Any]) -> bool: ...
+
+
+extraction_reasoning_exhaustion: ContextVar[ReasoningExhaustionJournal | None] = (
+    ContextVar("extraction_reasoning_exhaustion", default=None)
+)
 # Only audited reconciliation opts in around its physical provider calls.
 extraction_use_model_capacity: ContextVar[bool] = ContextVar(
     "extraction_use_model_capacity", default=False
@@ -61,17 +141,37 @@ extraction_use_model_capacity: ContextVar[bool] = ContextVar(
 
 
 class InputBudgetConfigurationError(ProviderRequestGuardError):
-    """A safe effective model/endpoint capacity could not be established."""
+    """A safe effective model/endpoint capacity could not be established.
+
+    Raise it only where capacity is being established (this module). An
+    extraction whose frozen inputs are unavailable, changed or malformed raises
+    :class:`ExtractionInputIntegrityError` instead;
+    ``tests/server/llm/test_capacity_error_raise_guard.py`` enforces the split.
+    """
 
 
-class SavedOutputIncompatibleError(InputBudgetConfigurationError):
+class ExtractionInputIntegrityError(InputBudgetConfigurationError):
+    """An extraction's frozen inputs are unavailable, changed or malformed.
+
+    Not a capacity failure: a binding, scope, witness, answer or saved output
+    no longer matches what the extraction was admitted with. It subclasses
+    :class:`InputBudgetConfigurationError` so every existing handler treats it
+    the same way: the window retries with backoff to the attempt ceiling, and
+    the cursor's ``last_error`` and the public learning-status ``reason`` stay
+    ``input_budget_configuration_error``. Only the internal label differs:
+    ``classify_window_failure`` reports it as ``input_integrity_error`` in logs
+    and metrics.
+    """
+
+
+class SavedOutputIncompatibleError(ExtractionInputIntegrityError):
     """Saved extraction output fails the current contract; retrying cannot fix it.
 
     The worker holds the window for an operator instead of retrying it.
     """
 
 
-class ComputationEvidenceChangedError(InputBudgetConfigurationError):
+class ComputationEvidenceChangedError(ExtractionInputIntegrityError):
     """Evidence a cached extraction computation was based on has changed.
 
     The refusal is correct, but retrying the same cached computation cannot
@@ -137,7 +237,7 @@ def _is_custom_endpoint(params: Mapping[str, Any]) -> bool:
     )
 
 
-def supply_extraction_output_reservation(params: dict[str, Any]) -> None:
+def reserve_model_output_tokens(params: dict[str, Any]) -> None:
     """Bound uncapped native requests without replacing configured output caps.
 
     Reserve and request the advertised native output maximum. Custom endpoints
@@ -200,6 +300,10 @@ def measure_request_input_tokens(params: Mapping[str, Any]) -> int:
             tool_choice=params.get("tool_choice"),
         )
         response_format = params.get("response_format")
+        # Native Claude normalization moves the schema to this GA field.
+        # Count the actual built form, not only the OpenAI-style spelling.
+        if not response_format and isinstance(params.get("output_config"), Mapping):
+            response_format = params["output_config"].get("format")
         if response_format:
             if hasattr(response_format, "model_json_schema"):
                 response_format = response_format.model_json_schema()

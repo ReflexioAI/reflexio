@@ -56,12 +56,13 @@ def test_fresh_publication_is_current_and_create_only_never_clobbers(tmp_path):
     owner = LocalConfigFile(path)
     assert owner.prepare() is False
     assert not path.exists()
-    document = '{"storage_config":{"type":"sqlite"},"window_size":7,"stride_size":1}'
+    document = '{"storage_config":{"type":"sqlite"},"profile_window_size":7,"profile_stride_size":1,"playbook_window_size":7,"playbook_stride_size":1}'
     assert owner.publish_document(document, create_only=True) is True
     original = path.read_bytes()
     assert owner.publish_document(document.replace("7", "8"), create_only=True) is False
     assert path.read_bytes() == original
-    assert owner.read_document()["window_size"] == 7
+    assert owner.read_document()["profile_window_size"] == 7
+    assert owner.read_document()["playbook_window_size"] == 7
     assert owner.prepare() is False
 
 
@@ -210,7 +211,8 @@ def test_concurrent_startup_has_one_conversion_and_one_original(tmp_path):
     ) as pool:
         changed = list(pool.map(_prepare_file_in_process, [path, path]))
     assert sorted(changed) == [False, True]
-    assert LocalConfigFile(path).read_document()["window_size"] == 31
+    assert LocalConfigFile(path).read_document()["profile_window_size"] == 31
+    assert LocalConfigFile(path).read_document()["playbook_window_size"] == 31
     backups = list((tmp_path / ".config-migrations/config.json").glob("*.json"))
     assert len(backups) == 1 and backups[0].read_bytes() == original
 
@@ -226,7 +228,8 @@ def test_frozen_generation_one_file_has_an_ordinary_upgrade_path(tmp_path):
     config = validate_stored_config(logical)
     assert isinstance(config.storage_config, StorageConfigSQLite)
     assert config.storage_config.db_path == "generation1-owned.sqlite"
-    assert (config.window_size, config.stride_size) == (11, 3)
+    assert (config.profile_window_size, config.profile_stride_size) == (11, 3)
+    assert (config.playbook_window_size, config.playbook_stride_size) == (11, 3)
     assert config.playbook_optimizer_config.metric_call_budget == 7
     assert config.playbook_optimizer_config.min_commit_windows == 4
     assert config.playbook_optimizer_config.allows_target("agent_playbook") is False
@@ -397,7 +400,9 @@ def test_automatic_upgrade_never_adopts_previously_ignored_consent(tmp_path, leg
         LocalConfigFile(path).prepare()
     assert path.read_bytes() == original
     with pytest.raises(StoredConfigurationError, match="previous schema"):
-        LocalConfigFile(path).edit_document(lambda data: data.update(window_size=12))
+        LocalConfigFile(path).edit_document(
+            lambda data: data.update(profile_window_size=12)
+        )
     assert path.read_bytes() == original
     assert not (tmp_path / ".config-migrations").exists()
     # A deliberately selected conversion can keep canonical precedence, and
@@ -414,7 +419,13 @@ def test_automatic_upgrade_never_adopts_previously_ignored_consent(tmp_path, leg
 
 def test_schema_owner_validation_does_not_materialize_implicit_storage(tmp_path):
     path = tmp_path / "config.json"
-    data = {"window_size": 23, "stride_size": 7, "opaque": {"preserve": "extension"}}
+    data = {
+        "profile_window_size": 23,
+        "profile_stride_size": 7,
+        "playbook_window_size": 23,
+        "playbook_stride_size": 7,
+        "opaque": {"preserve": "extension"},
+    }
     document = encode_config_document(data)
     # Default SDK storage still requires an explicit logical storage field.
     with pytest.raises(StoredConfigurationError):
@@ -429,14 +440,16 @@ def test_schema_owner_validation_does_not_materialize_implicit_storage(tmp_path)
     assert owner.read_document() == data
     assert "storage_config" not in decode_config_document(path.read_text())
     assert owner.prepare() is False
-    owner.edit_document(lambda raw: raw.update(window_size=25))
-    assert owner.read_document() == {**data, "window_size": 25}
+    owner.edit_document(lambda raw: raw.update(profile_window_size=25))
+    assert owner.read_document() == {**data, "profile_window_size": 25}
     before = path.read_bytes()
     with pytest.raises(StoredConfigurationError):
-        owner.edit_document(lambda raw: raw.update(window_size=0))
+        owner.edit_document(lambda raw: raw.update(profile_window_size=0))
     assert path.read_bytes() == before
     with pytest.raises(StoredConfigurationError):
-        owner.publish_document(encode_config_document({**data, "window_size": 0}))
+        owner.publish_document(
+            encode_config_document({**data, "profile_window_size": 0})
+        )
     assert path.read_bytes() == before
 
 
@@ -453,8 +466,10 @@ def test_schema_owner_validates_targeted_upgrade_without_changing_storage_identi
     owner = LocalConfigFile(path, validator=validate_enterprise_shape)
     assert owner.prepare() is True
     assert owner.read_document() == {
-        "window_size": 23,
-        "stride_size": 7,
+        "profile_window_size": 23,
+        "profile_stride_size": 7,
+        "playbook_window_size": 23,
+        "playbook_stride_size": 7,
         "playbook_optimizer_config": {"agent_playbooks_enabled": False},
     }
     assert "storage_config" not in decode_config_document(path.read_text())
@@ -540,7 +555,9 @@ def test_old_generation_cannot_treat_ignored_candidate_key_as_authority(
         if operation == "prepare":
             owner.prepare()
         else:
-            owner.edit_document(lambda document: document.update(window_size=19))
+            owner.edit_document(
+                lambda document: document.update(profile_window_size=19)
+            )
     assert path.read_bytes() == original
     assert not (tmp_path / ".config-migrations").exists()
 
@@ -736,7 +753,7 @@ def test_output_budget_file_upgrade_is_sparse_and_current_writes_preserve_policy
     document["llm_config"]["generation_max_output_tokens"] = 1024
     owner.publish_document(encode_config_document(document))
     document = owner.read_document()
-    document["window_size"] = 15
+    document["profile_window_size"] = 15
     owner.publish_document(encode_config_document(document))
     assert owner.read_document()["llm_config"]["generation_max_output_tokens"] == 1024
     assert not owner.prepare()
@@ -907,9 +924,13 @@ def test_current_preparation_edits_fence_intervening_source_changes(tmp_path, ch
     path = tmp_path / "config.json"
     owner = LocalConfigFile(path)
     owner.publish_document(
-        '{"storage_config":{"type":"sqlite"},"window_size":23,"stride_size":7}'
+        '{"storage_config":{"type":"sqlite"},"profile_window_size":23,"profile_stride_size":7,"playbook_window_size":23,"playbook_stride_size":7}'
     )
-    later = path.read_text().replace('"window_size": 23', '"window_size": 31').encode()
+    later = (
+        path.read_text()
+        .replace('"profile_window_size": 23', '"profile_window_size": 31')
+        .encode()
+    )
     assert later != path.read_bytes()
 
     def race(document, generation):
@@ -977,6 +998,12 @@ def test_preparation_retires_timing_and_preserves_creation_optout_and_original(
     }
     assert payload["pending_tool_call_config"]["enabled"] is False
     expected["pending_tool_call_config"]["pending_ttl_seconds"] = 0
+    expected.update(
+        profile_window_size=10,
+        profile_stride_size=8,
+        playbook_window_size=10,
+        playbook_stride_size=8,
+    )
     assert owner.read_document() == expected
     assert (
         json.loads(path.read_text())["_reflexio_config_file"]["version"]

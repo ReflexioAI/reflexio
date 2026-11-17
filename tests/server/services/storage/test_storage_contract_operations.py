@@ -74,8 +74,24 @@ class TestOperationStateCRUD:
         storage.create_operation_state("svc_x", {"status": "x"})
         storage.create_operation_state("svc_y", {"status": "y"})
 
-        all_states = storage.get_all_operation_states()
-        assert len(all_states) == 2
+        from reflexio.server.services.storage.storage_base.learning_transition import (
+            learning_transition_key,
+        )
+
+        control = storage.read_learning_transition()
+        assert control is not None and control.project is not None
+        key = learning_transition_key(
+            control.project.org_id, control.project.project_id
+        )
+        all_states = {
+            row["service_name"]: row["operation_state"]
+            for row in storage.get_all_operation_states()
+        }
+        assert all_states == {
+            "svc_x": {"status": "x"},
+            "svc_y": {"status": "y"},
+            key: control.project.to_dict(),
+        }
 
 
 # ---------------------------------------------------------------------------

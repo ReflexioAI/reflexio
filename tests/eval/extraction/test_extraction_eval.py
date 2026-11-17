@@ -211,18 +211,18 @@ def test_real_judge_smoke():  # pragma: no cover - manual, costs money
 # below.
 #
 # Mock level: we use a *real* ``LiteLLMClient`` and patch ``litellm.completion``
-# to return canned ``finish_extraction`` tool-call turns — mirroring
+# to return canned native structured final responses — mirroring
 # ``tests/server/services/{playbook,profile}/test_*_extractor.py``. We mock at
 # this seam (rather than ``client.generate_chat_response``) because the
 # extractors route through ``run_resumable_extraction_agent`` ->
-# ``run_tool_loop``, which calls ``generate_chat_response(tools=...)`` and reads
-# ``resp.tool_calls``; ``litellm.completion`` is the lowest no-network seam that
-# leaves the full agent loop + RIDM + config + ctor wiring under test.
+# the native structured-output loop; ``litellm.completion`` is the lowest
+# no-network seam that leaves the full agent loop + RIDM + config + ctor
+# wiring and source-evidence validation under test.
 #
 # Pending-tool-calls: the auto-wired ``Config`` has
 # ``pending_tool_call_config.pending_ttl_seconds == 0`` by default, so only
-# ``finish_extraction`` is registered and the loop runs a single forced-tool
-# pass — exactly two ``litellm.completion`` calls total (one per extractor).
+# a structured final response is sufficient — exactly two
+# ``litellm.completion`` calls total (one per extractor).
 
 
 def test_live_extraction_provider_returns_canned_items(tmp_path):
@@ -240,8 +240,8 @@ def test_live_extraction_provider_returns_canned_items(tmp_path):
     )
 
     # The playbook extractor runs first (one completion), then the profile
-    # extractor (one completion). Default config => single forced-tool pass
-    # per extractor, so exactly two completion turns are consumed.
+    # extractor (one completion). Both final responses must satisfy the native
+    # schema and evidence validators without a repair call.
     playbook_turn = make_structured_finish(
         {
             "playbooks": [
@@ -258,7 +258,11 @@ def test_live_extraction_provider_returns_canned_items(tmp_path):
     profile_turn = make_structured_finish(
         {
             "profiles": [
-                {"content": "User prefers dark mode.", "time_to_live": "infinity"}
+                {
+                    "content": "User prefers dark mode.",
+                    "explicit_storage_deadline": None,
+                    "source_span": "I prefer dark mode.",
+                }
             ]
         },
     )
@@ -270,7 +274,9 @@ def test_live_extraction_provider_returns_canned_items(tmp_path):
     case = {"id": "t", "sessions": [{"role": "user", "content": "I prefer dark mode."}]}
 
     with (
-        patch("litellm.completion", side_effect=[playbook_turn, profile_turn]),
+        patch(
+            "litellm.completion", side_effect=[playbook_turn, profile_turn]
+        ) as completion,
         patch.dict(
             os.environ,
             {"ANTHROPIC_API_KEY": "test-key", "MOCK_LLM_RESPONSE": "false"},
@@ -279,6 +285,7 @@ def test_live_extraction_provider_returns_canned_items(tmp_path):
         os.environ.pop("CLAUDE_SMART_USE_LOCAL_CLI", None)
         profiles, playbooks = provider(case)
 
+    assert completion.call_count == 2
     # Both halves of the extraction returned the canned items as lists.
     assert isinstance(profiles, list)
     assert isinstance(playbooks, list)
@@ -291,6 +298,7 @@ def test_live_extraction_provider_returns_canned_items(tmp_path):
     assert playbooks[0].source_interaction_ids == [1]
     assert len(profiles) == 1
     assert profiles[0].content == "User prefers dark mode."
+    assert profiles[0].source_span == "I prefer dark mode."
 
 
 @skip_low_priority

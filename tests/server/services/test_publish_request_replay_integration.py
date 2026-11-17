@@ -12,6 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from reflexio import defaults
 from reflexio.lib.reflexio_lib import Reflexio
 from reflexio.models.api_schema.service_schemas import (
     InteractionData,
@@ -87,6 +88,11 @@ def test_identical_retry_replays_original_ids_without_new_rows(
     monkeypatch.setattr(
         "reflexio.server.services.generation_service.record_usage_event", metered
     )
+    metered_batch = Mock()
+    monkeypatch.setattr(
+        "reflexio.server.services.generation_service.record_usage_event_batch",
+        metered_batch,
+    )
     # A retry whose client re-stamped created_at is still the same publish.
     replay = svc.run(_request(created_at=1_700_000_999), defer_learning=True)
 
@@ -95,6 +101,11 @@ def test_identical_retry_replays_original_ids_without_new_rows(
     assert replay.interaction_ids == first.interaction_ids
     assert _counts(store) == rows
     events = [c.kwargs["event_name"] for c in metered.call_args_list]
+    events += [
+        event.event_name
+        for call in metered_batch.call_args_list
+        for event in call.args[0]
+    ]
     assert "publish_request_succeeded" not in events
     assert "publish_request_failed" not in events
 
@@ -250,17 +261,17 @@ def test_retry_omitting_agent_version_replays_after_default_changes(
 ):
     """An omitted agent_version is the server's choice, not the caller's.
 
-    The server resolves it from its configuration, which a restart can change
-    between the attempt and its retry. The retry is still the same publish.
+    A software release may change the omitted-label sentinel between an attempt
+    and its retry. Persisted request attribution must still win on replay.
     """
     svc = _service(tmp_path, worker_id)
     store = svc.storage
     assert isinstance(store, SQLiteStorage)
-    monkeypatch.setenv("REFLEXIO_AGENT_VERSION", "before-restart")
+    monkeypatch.setattr(defaults, "DEFAULT_AGENT_VERSION", "before-restart")
     first = svc.run(_request(), defer_learning=True)
     rows = _counts(store)
 
-    monkeypatch.setenv("REFLEXIO_AGENT_VERSION", "after-restart")
+    monkeypatch.setattr(defaults, "DEFAULT_AGENT_VERSION", "after-restart")
     replay = svc.run(_request(), defer_learning=True)
 
     assert replay.replayed
@@ -397,3 +408,95 @@ def test_large_exact_retry_skips_embeddings_and_admission(
         svc.run(_large_tools_request(marker="OUT"), defer_learning=True)
     prepare.assert_not_called()
     insert.assert_not_called()
+
+
+def _many_tools_request(
+    *, changed: dict[str, object] | None = None
+) -> PublishUserInteractionRequest:
+    """Fourteen turns of many small tool calls, the shape of the prod retry.
+
+    The 6.6 MB production retry carried 12,945 tool calls of ~500 bytes each,
+    not a few large outputs; per-entry costs dominate that shape. ``changed``
+    overrides one field of a single tool call in the middle of the payload.
+    """
+    from reflexio.models.api_schema.common import ToolUsed
+
+    def tool(turn: int, index: int) -> ToolUsed:
+        fields: dict = {
+            "tool_name": "Bash",
+            "tool_data": {"input": {"command": f"ls {turn}/{index}"}, "output": "x"},
+            "status": "success",
+        }
+        if changed is not None and (turn, index) == (7, 100):
+            fields.update(changed)
+        return ToolUsed(**fields)
+
+    return PublishUserInteractionRequest(
+        request_id="caller-id",
+        user_id="u1",
+        session_id="s1",
+        interaction_data_list=[
+            InteractionData(
+                role="Agent" if turn % 2 else "User",
+                content=f"turn {turn}",
+                created_at=1_700_000_000,
+                tools_used=[tool(turn, index) for index in range(200)],
+            )
+            for turn in range(14)
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"tool_data": {"input": {"command": "ls 7/100"}, "output": "y"}},
+        {"tool_name": "Read"},
+        {"status": "error"},
+    ],
+    ids=["tool_data", "tool_name", "status"],
+)
+def test_many_tool_call_retry_replays_and_any_changed_tool_conflicts(
+    tmp_path, worker_id, changed
+):
+    """The decision is unchanged at prod shape: exact replays, any edit refuses."""
+    svc = _service(tmp_path, worker_id)
+    store = svc.storage
+    assert isinstance(store, SQLiteStorage)
+    first = svc.run(_many_tools_request(), defer_learning=True)
+    rows = _counts(store)
+
+    replay = svc.run(_many_tools_request(), defer_learning=True)
+    assert replay.replayed and replay.interaction_ids == first.interaction_ids
+
+    with pytest.raises(PublishRequestIdConflictError):
+        svc.run(_many_tools_request(changed=changed), defer_learning=True)
+    assert _counts(store) == rows
+
+
+def test_shared_process_preserves_each_callers_agent_identity(tmp_path, worker_id):
+    svc = _service(tmp_path, worker_id)
+    store = svc.storage
+    assert isinstance(store, SQLiteStorage)
+    for version in ("agent-one", "agent-two"):
+        request = _request().model_copy(
+            update={"request_id": version, "agent_version": version}
+        )
+        result = svc.run(request, defer_learning=True)
+        assert not result.replayed
+        assert store.get_request(version).agent_version == version
+    assert _counts(store)[0] == 2
+
+
+def test_retired_host_identity_refuses_before_persistence(
+    tmp_path, worker_id, monkeypatch
+):
+    svc = _service(tmp_path, worker_id)
+    store = svc.storage
+    assert isinstance(store, SQLiteStorage)
+    before = _counts(store)
+    monkeypatch.setenv("REFLEXIO_AGENT_VERSION", "private-server-agent")
+    with pytest.raises(ValueError, match="REFLEXIO_AGENT_VERSION") as error:
+        svc.run(_request(), defer_learning=True)
+    assert "private-server-agent" not in str(error.value)
+    assert _counts(store) == before

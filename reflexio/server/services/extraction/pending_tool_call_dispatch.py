@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
@@ -144,7 +144,6 @@ def _build_async_request_spec(
             "answer_format": args.answer_format,
         },
         tags=args.tags,
-        cache_until_seconds=tool_config.dedup_cache_seconds,
         valid_until_seconds=tool_config.prior_answer_valid_seconds,
     )
 
@@ -179,7 +178,6 @@ def handle_ask_human(
     require_pending_tool_admission(ctx.config, ctx.storage)
     execution_run = _execution_run(ctx)
 
-    current = datetime.now(UTC)
     spec = _build_async_request_spec(args=args, ctx=ctx)
     tool_config = ctx.config.for_tool(spec.tool_name)
     record = PendingToolCallRecord(
@@ -196,8 +194,6 @@ def handle_ask_human(
         tags=spec.tags,
         answer_format=spec.answer_format,
         embedding=_question_embedding(ctx.storage, spec.question_text),
-        expires_at=current + timedelta(seconds=tool_config.pending_ttl_seconds),
-        cache_until=current + timedelta(seconds=spec.cache_until_seconds),
     )
     from reflexio.server.services.durable_learning.user_lease import (
         owned_agent_run_write,
@@ -207,6 +203,9 @@ def handle_ask_human(
         ctx.storage._lock_pending_tool_execution_inputs(
             record, run_id=ctx.run_id, deduplicate=True
         )
+        current = datetime.now(UTC)
+        expires_at = current + timedelta(seconds=tool_config.pending_ttl_seconds)
+        record = replace(record, expires_at=expires_at, cache_until=expires_at)
         upsert = ctx.storage.create_or_attach_pending_tool_call(
             record=record,
             dependency=RunToolDependencyRecord(

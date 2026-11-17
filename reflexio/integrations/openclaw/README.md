@@ -64,7 +64,35 @@ OpenClaw's configured model; `openclaw/<provider>/<model>` picks one). The
 server calls `openclaw infer model run`. Extraction is a tool loop and the CLI
 returns text, so tool calls travel in the prompt, the same protocol the Claude
 Code provider uses (`server/llm/providers/cli_tool_protocol.py`). Prompts above
-~120 KB are refused because the CLI only accepts the prompt as an argument.
+~120 KB are refused by this adapter’s existing argv transport; the native CLI
+transport/version contract is unchanged.
+Selected `openclaw/...` request/client models now remain authoritative when a
+completion role is supplied, including the resumable extraction agent. Generic
+role detection cannot switch that selected route to a cloud provider just because
+another API key is present. An explicit per-call cloud model still uses standard
+provider resolution; omit `model_role` when that exact cloud model must win.
+An explicit `custom_llm_provider` transport override takes precedence over the
+model prefix. Embedding APIs keep their separate selection path.
+
+`OPENCLAW_DEFAULT_MODEL` no longer selects a model. Preserve a Reflexio-specific
+choice in the existing role model fields, such as
+`llm_config.generation_model_name="openclaw/anthropic/claude-sonnet-4-6"`.
+Alternatively, remove the old assignment to deliberately use OpenClaw's native
+default. Unused stale assignments do not block explicit models or unrelated
+startup. A default native request with a nonblank old override refuses before
+Reflexio retries or dispatches any fallback; no old value is copied or logged.
+The native CLI permission, executable, timeout and fallback controls remain.
+
+This corrects selection precedence; it does not rewrite frozen work or claim
+transparent continuation for an old recipe whose role selected another provider.
+Existing frozen-binding checks keep refusing changed recipes before dispatch.
+The request-derived response model label is not proof of the model actually
+served. Observed model/provider attribution stays unknown until independently
+established by the native bridge; it is never filled from that request echo.
+Offline shared compaction requires an observed model in its dispatch journal.
+It therefore refuses native OpenClaw calls before spending a CLI call or
+debiting a journal attempt; explicit HTTP transport overrides remain eligible.
+
 Run a Gateway alongside: two embedded OpenClaw processes on one state directory
 contend for it.
 

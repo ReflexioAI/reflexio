@@ -202,6 +202,14 @@ Apply to all three modes:
 | `--force-extraction`| Bypass all extraction gates (`stride_size`, cheap pre-filter, LLM `should_run`) and always run extractors. |
 | `--evaluation-only` | Store the request for session-level evaluation only; requires `--session-id` and skips profile/playbook extraction. |
 
+Agent attribution comes from `--agent-version` or a payload's explicit
+`agent_version`; SDK callers pass `agent_version` to publishing/filtering calls.
+An omitted publishing label keeps the existing `agent-v0` sentinel. Filtering and
+regeneration require their explicit target. `REFLEXIO_AGENT_VERSION` is retired:
+remove its assignment (including blanks) and supply the intended label at the
+caller. A host process serving several agents no longer chooses their identity.
+Existing persisted labels and retry identities are not rewritten.
+
 Full options via `uv run reflexio interactions publish --help`.
 
 ## Search & context

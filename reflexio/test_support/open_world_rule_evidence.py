@@ -499,7 +499,16 @@ def runtime(source):
             )
 
     transport = Transport()
-    method = qualify_rule_evidence_method(transport)
+    qualified = qualify_rule_evidence_method(transport)
+    # These fixtures preserve historical v1 envelope/forgery tests. Real current
+    # v2 execution is exercised by the cross-backend OpenWorldPortContract.
+    from reflexio.server.services.offline_tuner.open_world.rule_evidence_authority import (
+        RuleEvidenceMethod,
+    )
+
+    method = RuleEvidenceMethod(
+        qualified.diagnostic, qualified.proposal, qualified.qualification_receipt
+    )
     storage = MemoryStore(method, source["incumbent"])
     # This in-memory double implements the promoted runner's exercised storage
     # operations; unrelated evidence-loading/publication methods are intentional

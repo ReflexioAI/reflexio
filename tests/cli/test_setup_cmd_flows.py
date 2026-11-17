@@ -556,6 +556,22 @@ class TestOpenclawInstallSteps:
             setup_cmd._install_openclaw_integration(tmp_path / ".env", "/plugin")
         assert ("plugins", "install") not in fake.subcommands()
 
+    @pytest.mark.parametrize("old_value", [0, 5, 100, "private-value"])
+    def test_retired_search_policy_stops_before_settings_or_install_mutation(
+        self, old_value, tmp_path, monkeypatch, capsys
+    ):
+        fake = _FakeOpenclaw(
+            monkeypatch,
+            config_get=_Proc(json.dumps({"search": {"min_prompt_length": old_value}})),
+        )
+        with pytest.raises(typer.Exit) as error:
+            setup_cmd._install_openclaw_integration(tmp_path / ".env", "/plugin")
+        assert error.value.exit_code == 1
+        assert fake.subcommands() == [("config", "get")]
+        output = capsys.readouterr().out
+        assert "search.min_prompt_length is retired; remove it" in output
+        assert "private-value" not in output
+
     def test_non_object_policy_section_stops_install(self, tmp_path, monkeypatch):
         properties = json.loads(
             (setup_cmd._OPENCLAW_PLUGIN_DIR / "openclaw.plugin.json").read_text()

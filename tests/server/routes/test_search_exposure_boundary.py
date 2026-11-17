@@ -920,3 +920,48 @@ def test_legacy_recording_waits_for_response_acceptance(path: str) -> None:
     assert len(exposure) == 1 and exposure[0][2] == 0
     exposure[0][1]()
     recorder.record.assert_called_once()
+
+
+@pytest.mark.parametrize("caller_type", ["production_agent", "dashboard"])
+@pytest.mark.parametrize("expired", [False, True])
+def test_direct_profile_attention_records_only_accepted_agent_returns(
+    caller_type, expired, monkeypatch
+):
+    import time
+
+    from reflexio.models.api_schema.domain.entities import UserProfile
+    from reflexio.server.routes import search as routes
+
+    final = UserProfile(
+        profile_id="final",
+        user_id="user-1",
+        content="likes tea",
+        last_modified_timestamp=100,
+        generated_from_request_id="source",
+    )
+    convert = routes.to_profile_view
+
+    def profile_view(row):
+        view = convert(row)
+        if expired:
+            scope = search_runtime.current()
+            assert scope is not None
+            scope.deadline = time.monotonic() - 1
+        return view
+
+    monkeypatch.setattr(routes, "to_profile_view", profile_view)
+    with _search_results([]) as reflexio:
+        reflexio.search_user_profiles.return_value = SimpleNamespace(
+            success=True, user_profiles=[final], msg="OK"
+        )
+        response = _client(caller_type).post(
+            "/api/search_profiles", json={"query": "tea", "user_id": "user-1"}
+        )
+        recorder = reflexio.get_storage.return_value.record_served_profile_access
+        assert recorder.call_count == (
+            1 if caller_type == "production_agent" and not expired else 0
+        )
+        if recorder.called:
+            assert recorder.call_args.kwargs["profile_ids"] == ["final"]
+            assert recorder.call_args.kwargs["user_id"] == "user-1"
+    assert response.status_code == (504 if expired else 200), response.text

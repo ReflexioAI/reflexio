@@ -81,6 +81,34 @@ the model download/warmup timed out. Check the preceding `[embedding]` logs for
 the failing stage. This deadline accommodation is platform-independent; a
 Windows-only model initialization failure still needs its own diagnosis.
 
+### Learning policy authority
+
+Learning admission uses one durable dataset policy authority. A project witness
+inherits the root's nonce/generation and retains only scoped grants and derived
+closure metadata; it never chooses a policy floor or independently reopens.
+Runtime source policy must match the root. Sealing and arming preserve intake,
+search, and required execution/accounting evidence writes through their existing
+owners. No control lock spans model work.
+
+New SQLite files initialize through the maintained path/constructor owner:
+exclusive creation of a private same-directory SQLite file retains a random
+SEALED creation witness, checkpoints/closes it, then atomically publishes the
+actual target without overwrite before ordinary migrations. Local closure is
+verified before activation. A
+matching retained witness may resume an interrupted first installation. Opening
+an existing file with no authority does not establish a floor, even if tables
+are empty: learning remains held for an explicit qualified upgrade/recovery.
+Existing durable authority always wins over the opening SDK's source policy.
+The private `:memory:` connection uses SQLite's guaranteed new-database identity.
+Explicit file paths retain their existing meaning and are never redirected.
+
+SQLite authority semantics require compatible writers using the maintained
+owner. Mixed-version safety against an unpatched process is not qualified;
+SQLite does not install a missing-UDF trigger or claim native protocol parity.
+Native deployments separately require their installed global claim floor and
+privileged provisioning/release authority owner. Ordinary native APP admission
+reads the root under a shared transaction advisory fence and cannot mutate it.
+
 ### Embedding policy and upgrades
 
 The selected embedding model owns execution. An explicit cloud model uses its
@@ -88,8 +116,8 @@ provider; a local model uses the separate inference service. The service URL
 owns process attachment: an explicit URL, including loopback, attaches to an
 existing service; an absent URL leaves the launcher responsible for its child.
 Dependency availability advertises capability without loading a model. It never
-authorizes generation or authenticated CLI access. `CLAUDE_SMART_USE_LOCAL_CLI`
-and the OpenClaw CLI opt-in retain their separate credential-access decisions.
+authorizes generation or authenticated CLI access. `REFLEXIO_NATIVE_CLI_MODEL`
+and the OpenClaw CLI opt-in retain separate credential-access decisions.
 
 `CLAUDE_SMART_USE_LOCAL_EMBEDDING` is retired. Normal loading rejects active
 assignments, including empty ones and those alongside a canonical setting.
@@ -226,6 +254,7 @@ curl http://localhost:$BACKEND_PORT/...
 Or with the Python client:
 ```python
 from reflexio import ReflexioClient
+
 client = ReflexioClient(url_endpoint=f"http://localhost:{BACKEND_PORT}")
 ```
 
@@ -321,6 +350,15 @@ cleanup; ordinary upgrades remain image replacement and restart.
 Existing protocol journals and legacy continuations retain their original
 recovery contracts; image and mock execution are unchanged.
 
+Committed pre-upgrade profile outputs use a dedicated reader for their required
+legacy `time_to_live` enum. New model responses remain strictly TTL-free. Replay
+preserves the original receipt fields and scope evidence; the saved completion
+clock (or recorded preparation clock for older rows) fixes the legacy visibility
+bound across retries. Legacy profiles have unknown lifecycle origin and neutral
+attention: their guessed TTL never grants deletion authority. Missing clocks,
+malformed enums, or legacy payloads carrying new storage authority remain held
+for recovery rather than being re-extracted or silently rewritten.
+
 Custom model endpoints must declare their actual context capacity in
 `REFLEXIO_LLM_CONTEXT_LIMITS_JSON` and set the tenant
 `llm_config.generation_max_output_tokens` to a positive integer. Unset preserves
@@ -370,6 +408,14 @@ not a promise of online speedup.
 | Azure OpenAI | via config | `azure/` | `azure/<deployment>` |
 | Custom endpoint | via config | — | — |
 
+Azure's `v1`, `latest` and `preview` API modes use LiteLLM's standard OpenAI
+client transport. `_azure_transport.py` compiles explicit resource endpoints
+and full `/openai/v1/` endpoints to the same resource base before dispatch and
+request-contract binding, preserving custom path prefixes and deployment IDs.
+Query/fragment-bearing v1 endpoints refuse without logging their values;
+explicit non-Azure transport overrides and dated Azure API versions retain
+their existing behavior. The API-version configuration remains supported.
+
 To change which models Reflexio uses, edit [`reflexio/server/site_var/site_var_sources/llm_model_setting.json`](reflexio/server/site_var/site_var_sources/llm_model_setting.json).
 Use the provider prefix shown above (e.g., `anthropic/` for Anthropic models). Set the corresponding API key in your `.env` file.
 
@@ -379,6 +425,13 @@ not attest logical completion: a failed primary can still succeed on backup.
 Unrecovered exceptions continue to the existing caller, which owns durable
 waiting, retry exhaustion and terminal failure reporting; this does not add a
 global error for a provider outage.
+
+Truncated structured responses may retain complete, valid list items, but the
+combined result must still satisfy the full schema, including list bounds and
+model validators. Aggregate validation failures enter the existing bounded
+structured-output repair path with field/error-code diagnostics. They do not
+become provider errors or silently discard excess items. Salvage is logged only
+after the whole result validates; exhausted repair remains a typed failure.
 
 Optionally set `MINIMAX_BACKUP_API_KEY` to another subscription's key. On explicit
 MiniMax plan exhaustion (2056), text generation retries the same request/model
@@ -395,7 +448,8 @@ other users. Logs identify the backup slot without logging credentials.
 
 ### Current model compatibility
 
-LiteLLM `>=1.108.4,<2` is required. Releases 1.106.0 through 1.108.3 import the
+LiteLLM `>=1.109.1,<2` is required; 1.109.1 is the release the suite is
+qualified against. Releases 1.106.0 through 1.108.3 import the
 proxy-only `mcp` package for every completion that passes `tools`, so tool calls
 fail on a base install
 ([upstream issue](https://github.com/BerriAI/litellm/issues/46045)); 1.108.4 is
@@ -430,24 +484,31 @@ are supplied only for the explicitly qualified IDs, without fabricated pricing
 or persistent overrides of subsequently downloaded metadata.
 
 MiniMax `minimax/MiniMax-M3.1-Flash-Preview` and Z.ai `zai/glm-5.3`,
-`zai/glm-5.3-flash`, and `zai/glm-5.3-flashx` are also qualified. Their tests
+`zai/glm-5.3-flash`, and `zai/glm-5.3-flashx` are also supported. Their tests
 cover prompt-schema output, explicit reasoning-effort forwarding, rejection of
 disabled thinking, and real subprocess tool exchanges against a local HTTP
 server. These providers retain sampling settings and existing defaults.
 FlashX routes to the general API and requires a corresponding key; the other
 GLM models retain the existing coding-plan endpoint.
 
-Live subscription smoke tests are opt-in, capped at 4096 output tokens per call
-and two tool-loop steps, with no fallback ladder. Load `MINIMAX_API_KEY` and
-`ZAI_API_KEY` into the process before running:
+Z.ai models, including the `zai/glm-5.2` default, are supported through these
+offline adapter tests but are not live-qualified: Reflexio holds no Z.ai
+subscription, so no test calls the Z.ai API. Users who supply their own
+`ZAI_API_KEY` remain supported. A live test whose model comes from
+`resolve_model_name` skips when that resolution would select Z.ai
+(`NOT_LIVE_QUALIFIED_PROVIDERS` in `reflexio/test_support/llm_credentials.py`).
+
+Live MiniMax subscription smoke tests are opt-in, capped at 4096 output tokens
+per call and two tool-loop steps, with no fallback ladder. Load
+`MINIMAX_API_KEY` into the process before running:
 
 ```bash
 RUN_LOW_PRIORITY=1 uv run pytest tests/e2e_tests/test_latest_secondary_providers_real_llm.py -q -o addopts= -rs
 ```
 
-This file checks MiniMax M3/M3.1 Preview and GLM 5.2/5.3/5.3 Flash text, JSON,
-and tool calls with `assert_litellm_unpatched()` and actual process isolation.
-The tests intentionally consume provider quota; normal offline suites skip them.
+This file checks MiniMax M3 and M3.1 Preview text, JSON, and tool calls with
+`assert_litellm_unpatched()` and actual process isolation. The tests
+intentionally consume provider quota; normal offline suites skip them.
 
 ## Modifying API Schemas
 
@@ -486,6 +547,11 @@ Each case still owns its SQLite database, request context, organization binding
 and client. Fixture patches restore dependency overrides and request state even
 on failure; closing the client preserves the suites' existing no-lifespan behavior.
 Tests that exercise app construction or startup configuration need their own app.
+
+The background-failure pairing guard reuses one complete AST traversal per scan.
+Alias, call, stray-reference and decoded-string checks retain the full source;
+enclosing-function ownership is built only when a scoped reporting call needs it.
+The independent token inventory remains a separate coverage check.
 
 - Framework: **pytest** with `pytest-xdist` (parallel via `-n auto`)
 - Timeout: 120 seconds per test
@@ -698,6 +764,20 @@ construction and other middleware/framework work remain in the remainder.
 `body_received_ms` (with `body_bytes`) is the part of `before_handler_ms` until
 the app holds the complete request body, mostly client upload;
 `body_to_handler_ms` is the rest: JSON parsing, validation and dependencies.
+The publish body (and every body whose model has a top-level list of models)
+is declared with `off_loop_body(Model)`, so its model validation runs in a
+worker thread rather than on the event loop that also serves `/health/live`;
+the OpenAPI schema and 422 bodies are unchanged. Loop stalls are visible as the
+`event_loop.lag` gauge (worst lag per minute, milliseconds) and a WARNING
+`event=event_loop_lag` line for any stall of 1 s or more. Garbage-collector
+pauses, which hold the GIL and so stall every thread at once, are reported
+beside it: a `gc.pause.max` gauge (longest collection in the same window,
+milliseconds) and a WARNING `event=gc_pause` line (generation, duration,
+collected and uncollectable counts) for any collection of 100 ms or more. The
+app lifespan calls `gc.freeze()` once per process, after imports and app
+construction and before any scheduler thread, capability startup or forked LLM
+worker, so startup objects leave later full collections and forked children do
+not dirty their pages by collecting them. Collection thresholds are unchanged.
 
 A publish whose `request_id` is already committed is answered before embedding
 preparation: `replay_check` is the existence read every non-receipt publish
@@ -785,6 +865,22 @@ the scheduler emits it on pre-claim failures and when skipping existing backoff.
 The provider should retain the scope until that remaining delay expires.
 
 
+### Preference corrections and explicit forgetting
+
+The profile author and deduplicator distinguish a changed fact from an instruction
+about stored memory. "I'm not into this band anymore" updates a preference;
+"forget my preference for this band" authorizes scoped forgetting. An assistant's
+unanswered offer to update/delete, a polite thanks, negated forgetting, and
+uncertainty do not authorize deletion. Preserve useful history and unrelated facts.
+
+The author emits `explicit_forget_quote=null` for corrections. The consolidator
+checks the meaning of original User evidence before selecting deletion; generated
+"Requested removal of" content and a quote appearing in User text do not themselves
+establish intent. Runtime quote validation binds provenance and owner/version/native
+erasure handling; it is not a semantic intent classifier. Prompt examples and
+mechanics tests do not prove model reliability: that requires recorded contrasting
+model/native cases. Earlier frozen prompt identities remain loadable for recovery.
+
 ### Profile search selection
 
 Multilingual E5 unified search uses Profile Fusion V2 for user-scoped hybrid
@@ -804,6 +900,29 @@ Secondary retrieval uses the original storage/executor and request deadline.
 Failure or expiry refuses the search before served-state recording. Existing
 agent and user playbook selection remain independent. The selected method is
 one production path, without an experiment flag or a second engine.
+
+### Joint playbook selection
+
+A deployment may install `JOINT_PLAYBOOK_SELECTOR` for unified `/api/search`.
+Native retrieval keeps its existing scope and filters, then supplies up to twenty
+candidates per playbook type after native temporal ordering. The provider receives
+the same resolved standalone query used by native retrieval. The selected provider
+orders or removes those original objects while preserving their native
+identifiers. Unified search finalization caps the
+selected agents at five, suppresses their source user playbooks, then caps the
+remaining users at five. Finalization respects a smaller caller `top_k`. Profile retrieval and Profile Fusion retain their
+existing limits and policy. When a mixed request needs scored recency retrieval
+and different profile/playbook pool sizes, two bounded scored storage calls
+preserve each arm's original SQL candidate population. This adds a storage round
+trip that staging latency qualification measures. Other search endpoints keep
+their existing behavior.
+
+The joint provider replaces the per-type selectors on this path. A provider
+failure raises `ReadinessUnavailableError`, which the API reports as unavailable.
+An accepted selection may legitimately return empty lists. Joint selection also
+refuses unavailable source linkage before accepting the result. Session dedup records
+only the final response after acceptance. A deployment without the joint provider
+uses the existing native/per-type selection path.
 
 ### Search request deadlines
 
@@ -1424,9 +1543,7 @@ keys = APIKeyConfig(
 client = LiteLLMClient(
     LiteLLMConfig(model="openai/orcarouter/auto", api_key_config=keys)
 )
-response = client.generate_chat_response(
-    [{"role": "user", "content": "Hello"}]
-)
+response = client.generate_chat_response([{"role": "user", "content": "Hello"}])
 ```
 
 For Reflexio's backend, store this `keys` object in the existing
@@ -1653,6 +1770,91 @@ connection lease or introduce a runtime alias.
 
 ### Native provider CLI ownership
 
+The `local-cli/` provider binds one operator-owned native target through
+`REFLEXIO_NATIVE_CLI_MODEL`, such as `local-cli/opencode/provider/model#high`.
+Requests must match that full reference before any native work. See the
+[selection and explicit-upgrade contract](docs/native-cli-model-selection.md).
+Set the existing
+`CLAUDE_SMART_CLI_PATH` to its native executable, or let PATH resolve `opencode`.
+Relative executable paths are anchored before entering the private workdir.
+Windows native execution requires the actual `.exe`; batch shims continue to
+use the existing plugin bridge. No shell is introduced.
+
+All CLI protocols honor a supplied completion timeout: native Claude, Codex,
+OpenCode and the remaining OpenCode compatibility bridge. Native OpenCode also
+charges private-workdir setup to that allowance. A supplied budget must be a
+finite positive number and is checked in SDK preparation before retries/fallback.
+Direct native OpenCode calls must supply it; existing standalone Claude/Codex
+and bridge calls that omit it retain their legacy provider default. Explicit
+constructor or `CLAUDE_SMART_CLI_TIMEOUT` caps remain supported and tighten that
+budget (constructor wins for direct calls); no provider duration default shortens
+a supplied budget. SDK worker admission validates the portable environment cap;
+constructor-only bindings are not carried into spawned workers.
+The explicit native reference carries the physical model selection. A
+host-only reference delegates to that CLI's own default; an explicit suffix
+`/default` remains a literal model ID. The requested reference never proves
+which model physically served the response.
+
+Codex spends its selected deadline on setup, native execution and reading its
+final output. Setup cannot grant a fresh allowance, and a result read after
+expiry is a timeout.
+
+Native Codex (`local-cli/codex[/model]`) forwards an explicit model remainder
+as `codex exec --model`; host-only selection leaves model choice to Codex.
+Legacy `claude-code/*` suffixes were opaque role labels and cannot be converted
+into physical models by guessing. Adopt the new native reference explicitly.
+The requested model does not establish observed model/provider provenance.
+
+An explicitly configured optimizer script/compile result retains its separate
+native authority and saved learning-model selection. Released plugin bundles
+remain on their existing pinned SDK until a matching producer migration is
+qualified; this SDK change does not update or migrate installed plugin files.
+Codex uses the canonical `CLAUDE_SMART_CLI_PATH` or PATH; `CLAUDE_SMART_CODEX_PATH`
+no longer selects an executable, and plugin installation roots no longer
+select a bridge. Active obsolete selection refuses when the native route is
+reached, before dispatch, retries or paid fallback. Move the intended executable
+to the canonical path before removing the old assignment, or deliberately
+remove it to adopt Codex from PATH. A valid canonical override or an explicit
+direct SDK adapter constructor path that previously dominated an unused old
+key remains valid. Client-worker admission uses the portable environment
+binding; a manually registered constructor-only binding is not carried into
+spawned workers. Use the canonical environment path for that client route. Explicit HTTP transports and other CLI hosts ignore that unused key.
+
+Historical `codex-claude-compat`, `.cmd` and `.js` paths refuse with migration
+guidance, including missing files, instead of silently changing wire protocol.
+Enabled obsolete native intent stays selected even without an installed binary;
+provider availability does not claim it is usable. The remaining OpenCode
+bridges retain Claude wire protocol across coding hosts and honor supplied
+caller budgets. Budget-omitting direct calls retain their legacy timeout.
+Their later retirement must preserve model/variant precedence, explicit paths,
+permissions and caller budgets.
+
+The native workdir retains the existing supported V1 agent configuration,
+including denied tools and recursion guards; OpenCode documents V1 config
+compatibility in its [V2 migration guide](https://opencode.ai/docs/migrate-v1/).
+Delegated workdirs remain parent-owned until native retirement. Native OpenCode failure text,
+including partial output alongside error events, stays out of exceptions, logs
+and stored stall messages; auth/billing reasons and parsed reset times survive.
+Neither this path nor its tests claim arbitrary-descendant containment or
+cancellation of work inside OpenCode's shared background server.
+
+OpenClaw uses the selected completion `timeout` as one allowance for CLI
+execution and busy retry waits. Retries receive only the remaining time; they
+cannot restart the allowance. The SDK's outer per-rung deadline may tighten it
+further, and native process ownership/cleanup stays unchanged. A direct
+`OpenClawLLM.completion(...)` call must supply a finite positive numeric timeout;
+ordinary `litellm.completion(...)` and `LiteLLMClient` supply their selected
+request budget. No OpenClaw-specific default duration is installed.
+
+`OPENCLAW_CLI_TIMEOUT` is retired. A nonblank old assignment refuses a selected
+OpenClaw route before dispatch or fallback. Deliberately select the intended
+existing `LiteLLMConfig.timeout` or completion `timeout`, then remove the old
+assignment. The old setting bounded each subprocess separately; the new budget
+includes all busy retries, so copying the number is not a guarantee of identical
+retry timing. Empty/whitespace assignments are unset. HTTP overrides and native
+fallbacks that are never reached do not read it. This does not retire
+`CLAUDE_SMART_CLI_TIMEOUT`, which also controls a separate plugin bridge.
+
 Local Claude, Codex and OpenClaw commands use the shared private controller in
 `reflexio/server/llm/_native_cli.py` and fresh stdlib-only launch owner in
 `_native_cli_process.py`. SDK hooks and interpretation remain in their existing
@@ -1867,3 +2069,124 @@ unreceived provider usage cannot be inferred. Frozen optimizer plans from older
 execution implementations remain historical and fail drift checks rather than
 being rewritten. Unit-test inline transport is selected explicitly by test support;
 production dispatch always isolates physical calls.
+
+### Provider import initialization
+
+Database and environment helpers can import the server package without loading
+provider clients. Module-level LiteLLM consumers first import the shared
+`reflexio.provider_bootstrap` module. Its single import lock completes the OpenAI
+resource preload before another thread enters LiteLLM. Keep that explicit import
+ahead of the dependency, including in consumers outside the LLM package.
+The eager test mock enters the same bootstrap; collection-only mocking retains
+its post-import activation. Fresh-process tests cover ordering, concurrent first
+imports and completion restoration.
+
+Provider discovery skips importing a CLI execution adapter when its existing
+opt-in is disabled. This retains enabled-provider availability checks and
+priority. Distributed pytest controllers use the collection-only deferred mock
+hook; executing workers and serial runs still initialize mocks eagerly. Keep
+fixture imports used only in annotations under `TYPE_CHECKING`, so controller
+configuration does not load execution code through those definitions.
+
+### Retrieved-learning judge input admission
+
+The relevance and impact judges render the complete available bounded snapshot
+and attached learning bodies, without independent 8,000-token transcript or
+256-token body cuts. The snapshot's storage truncation flag still prevents
+claiming complete evidence when the loaded source projection was incomplete.
+Per-session candidate and per-call work bounds remain unchanged.
+
+The shared completion client owns native model input admission. It reserves the
+effective output budget before normalizing parameters, then counts the complete
+physical request (templates, schemas, tools and corrective messages) before every
+attempt, including fallback models. Existing explicit output caps are preserved;
+native defaults use advertised model headroom. Custom gateways need their actual
+`REFLEXIO_LLM_CONTEXT_LIMITS_JSON` declaration and positive tenant
+`llm_config.generation_max_output_tokens`. Unknown or excessive native input
+fails before provider dispatch instead of discarding evidence. Failed/degraded
+judges retain the runner's existing fenced publication behavior. More source
+text can increase input usage or expose a capacity failure previously hidden by
+clipping; this is not a model-quality or deployment qualification claim.
+
+Opaque host CLI providers retain their own capacity handling; they do not honor
+native output caps and no native-capacity guarantee is claimed for them. Their
+renderer likewise receives the complete available projection.
+
+Evaluation recipe version 3 invalidates version-2 terminal reuse on normal
+triggers; it does not rewrite old rows or force a fleet sweep. Generation and
+snapshot fencing remain authoritative, and a failed refresh preserves prior
+results. The ordinary extraction/evaluation consumers now share complete-request
+admission as described below.
+
+Refresh startup advances its generation without changing the recipe version of
+previously published results. An interrupted version-3 refresh therefore cannot
+make version-2 rows satisfy current freshness checks; atomic replacement publishes
+the new terminal certificate. Native provider defaults remain availability policy,
+not an explicit tenant output cap for a custom endpoint.
+
+### Complete ordinary interaction evidence
+
+Ordinary profile/playbook prompts and agent-success evaluation preserve all
+available interaction content and exact source evidence, including middle text
+and literal truncation-marker strings. The independent per-turn512-token and
+agent-success64,000-token cuts are removed. Direct extraction (initial and
+pending-tool resume), ordinary pre-extraction gates and agent-success requests
+use the existing native complete-request capacity owner. Durable overflow keeps
+its own prepared-source, attempt, compression and publication controls; completed
+journals are not rewritten or replayed to apply this change.
+
+`REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS` is retired. Remove its assignment from
+the selected environment file and process exports, including empty or nonpositive
+assignments. Startup and direct rendering reject it without copying its value
+into another policy. Preserve existing model choices, output caps and actual
+custom-gateway context declarations. No local or customer environment is rewritten.
+The former per-turn limit never covered templates, tool data or schema overhead;
+capacity now applies to the complete native request. Unknown or excessive native
+input fails before dispatch; direct pre-extraction gate failures retain their
+existing proceed-to-extractor policy, and the extractor admits its own request.
+More complete evidence may increase usage or cause capacity refusal. Host CLI
+capacity remains delegated to its host. Explicit offline retrospective-judge
+slicing still uses the standalone slicing utility, independently of ordinary
+evidence rendering. Historical storage projections retain their existing limits.
+
+### MiniMax endpoint authority
+
+The shared completion builder resolves existing MiniMax endpoint overrides before
+output/input admission and provider-circuit selection. Request overrides take
+precedence over configured endpoints, then `litellm.api_base`, then nonblank
+`MINIMAX_API_BASE`. The resolved override travels with each physical attempt, so
+spawn/fork workers cannot select a different ambient route after admission.
+Absent overrides retain LiteLLM's native default and existing MiniMax backup-key
+eligibility. Overridden routes retain their backup-key exclusion and require
+endpoint-specific context declarations and explicit output caps when using
+scoped native input admission. No endpoint choice or configuration knob retires.
+
+### Effective extraction window authority
+
+`reflexio.models.extraction_window` selects the current configuration's direct
+`profile_window_size` / `profile_stride_size` or `playbook_window_size` /
+`playbook_stride_size`. Each independent pair defaults to 10/8. Project overlays
+replace individual top-level leaves; extractor objects carry no geometry overrides.
+Only eligible automatic durable admission applies the stride-at-most-width check.
+Config reads, publication and manual/source-filtered work retain positive pairs
+without enrolling those operations in automatic cadence.
+
+The current interface replaces six shared/override selectors with four direct
+fields. Old selectors reject even null; `extraction_window_migration` owns their
+explicit historical projection. File generation 15 retains originals, refuses
+ignored future-field collisions and requires storage admission before preparation
+publishes. Configuration conversion does not grant retained-dataset authority.
+Frozen windows and snapshots retain captured policy, identities and original
+hashes rather than being rewritten as fresh configuration.
+
+
+### Caller-owned native optimizer execution
+
+The local assistant adapter can accept a compile-only `native_cli_v1` result.
+The script prepares prompts; the SDK owns the actual Claude JSON or Codex
+invocation and spends the existing caller timeout across both phases. The
+private capability/deadline header is generated per invocation, never selected
+from user configuration. Generic content-returning scripts and HTTP payloads
+retain their contract. See [assistant backend protocol](docs/playbook_optimizer_assistant_backends.md#compile-only-native-assistant-results)
+for permission, version-compatibility and immediate-child ownership limits.
+This prerequisite does not retire CLI timeout settings or change OpenCode.

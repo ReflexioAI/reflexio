@@ -342,6 +342,7 @@ def _activate_litellm_mock(module: Any) -> None:
 
 def inline_test_completion(params: dict[str, Any], _deadline: float) -> Any:
     """Explicit unit-test transport; production always owns an isolated worker."""
+    import_module("reflexio.provider_bootstrap")
     from litellm.exceptions import ContextWindowExceededError
 
     from reflexio.server.llm._model_compat import model_completion
@@ -382,8 +383,15 @@ def configure_llm_mock(config: Any) -> None:
         return
     os.environ["MOCK_LLM_RESPONSE"] = "true"
     _litellm_mock_requested = True
-    if not getattr(getattr(config, "option", None), "collectonly", False):
-        # Executing tests retain the existing eager module-initialization context.
+    option = getattr(config, "option", None)
+    distributed_controller = (
+        not hasattr(config, "workerinput")
+        and getattr(option, "dist", "no") != "no"
+        and bool(getattr(option, "numprocesses", None) or getattr(option, "tx", None))
+    )
+    if not getattr(option, "collectonly", False) and not distributed_controller:
+        # Executing workers and serial tests retain eager initialization.
+        import_module("reflexio.provider_bootstrap")
         module = import_module("litellm")
         _activate_litellm_mock(module)
         return
@@ -418,6 +426,7 @@ def litellm_is_patched() -> bool:
     Returns:
         bool: True when a patcher has replaced ``litellm.completion``.
     """
+    import_module("reflexio.provider_bootstrap")
     import litellm
 
     return isinstance(litellm.completion, NonCallableMock | MagicMock)
@@ -450,6 +459,7 @@ def unpatched_litellm() -> Iterator[None]:
     global _litellm_mock_requested
     requested = _litellm_mock_requested
     if requested:
+        import_module("reflexio.provider_bootstrap")
         import_module("litellm")
     patcher = _litellm_patcher if requested else None
     previous_flag = os.environ.get("MOCK_LLM_RESPONSE")

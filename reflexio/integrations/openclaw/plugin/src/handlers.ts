@@ -14,7 +14,6 @@ import type { Settings } from "./config.js";
 import { requestIdFor, resolveUserId } from "./identity.js";
 import { renderInjection, resolveCitations, retrievedLearnings } from "./render.js";
 import { type SessionState, Sessions } from "./sessions.js";
-import { characterPrefix } from "./text.js";
 import { currentTurn, runStartIn } from "./transcript.js";
 
 export interface Logger {
@@ -79,7 +78,9 @@ export class ReflexioHooks {
     // words; search on what the user actually wrote when the host gives it.
     const query = (event.currentUserMessage ?? event.prompt ?? "").trim();
     if (Array.isArray(event.messages)) run.start = runStartIn(event.messages, query);
-    if (!query || characterPrefix(query, this.settings.minPromptLength).count < this.settings.minPromptLength) return undefined;
+    // Query validity and relevance belong to the search service; character
+    // count cannot distinguish a meaningful short request from an acknowledgment.
+    if (!query) return undefined;
     try {
       const hits = await this.client.search({
         query,

@@ -96,8 +96,10 @@ def _configure_context(
         ),
         pending_tool_call_config=PendingToolCallConfig(pending_ttl_seconds=86_400),
         tool_can_use=_tool_can_use(case),
-        window_size=max(len(case.sessions), 1),
-        stride_size=1,
+        profile_window_size=max(len(case.sessions), 1),
+        playbook_window_size=max(len(case.sessions), 1),
+        profile_stride_size=1,
+        playbook_stride_size=1,
     )
     request_context.configurator.get_config = lambda: config  # type: ignore[method-assign]
 

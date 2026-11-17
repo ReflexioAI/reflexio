@@ -396,14 +396,14 @@ def test_native_worker_none_cap_is_explicit_before_actual_scoped_dispatch(
     "override", [{"max_tokens": 4096}, {"max_completion_tokens": 12000}]
 )
 def test_explicit_output_caps_are_not_replaced_by_native_metadata(override):
-    from reflexio.server.llm.input_budget import supply_extraction_output_reservation
+    from reflexio.server.llm.input_budget import reserve_model_output_tokens
 
     request = {
         "model": "unknown-model",
         "api_base": "https://custom.invalid",
         **override,
     }
-    supply_extraction_output_reservation(request)
+    reserve_model_output_tokens(request)
     assert request == {
         "model": "unknown-model",
         "api_base": "https://custom.invalid",
@@ -412,7 +412,7 @@ def test_explicit_output_caps_are_not_replaced_by_native_metadata(override):
 
 
 def test_custom_none_output_cap_cannot_inherit_native_maximum(counter, monkeypatch):
-    from reflexio.server.llm.input_budget import supply_extraction_output_reservation
+    from reflexio.server.llm.input_budget import reserve_model_output_tokens
 
     lookup = Mock(return_value={"max_output_tokens": 16384})
     monkeypatch.setattr(
@@ -421,7 +421,7 @@ def test_custom_none_output_cap_cannot_inherit_native_maximum(counter, monkeypat
     with pytest.raises(
         InputBudgetConfigurationError, match="explicit output reservation"
     ):
-        supply_extraction_output_reservation(
+        reserve_model_output_tokens(
             params(max_tokens=None, api_base="https://custom.invalid")
         )
     lookup.assert_not_called()
@@ -464,3 +464,27 @@ def test_nonrejecting_measurement_keeps_counting_failure_typed(counter):
     counter.side_effect = RuntimeError("counter unavailable")
     with pytest.raises(InputBudgetConfigurationError, match="counting failed"):
         measure_request_input_tokens(params())
+
+
+def test_native_output_config_schema_counts_before_quota(counter):
+    counter.side_effect = lambda **kwargs: 900 if "text" in kwargs else 100
+    reserve = Mock()
+    guard = extraction_request_guard(
+        context_limits={"test-model": 1000}, reserve_attempt=reserve
+    )
+    request = params(
+        max_tokens=20,
+        output_config={
+            "format": {
+                "type": "json_schema",
+                "schema": {
+                    "type": "object",
+                    "properties": {"answer": {"type": "string"}},
+                },
+            }
+        },
+    )
+    with pytest.raises(InputBudgetExceededError):
+        guard(request, 120, (), True)
+    reserve.assert_not_called()
+    assert any("text" in call.kwargs for call in counter.call_args_list)

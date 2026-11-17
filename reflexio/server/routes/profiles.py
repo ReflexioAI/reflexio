@@ -49,6 +49,7 @@ from reflexio.server.auth import (
     default_get_org_id,
 )
 from reflexio.server.cache import reflexio_cache
+from reflexio.server.offloop_body import off_loop_body
 from reflexio.server.rate_limit import limiter
 from reflexio.server.services.operation_state_utils import OperationStateManager
 
@@ -64,8 +65,8 @@ router = APIRouter()
 @limiter.limit("60/minute")  # Rate limit for write operations
 def add_user_profile_endpoint(
     request: Request,
-    payload: AddUserProfileRequest,
     org_id: str = Depends(default_get_org_id),
+    payload: AddUserProfileRequest = off_loop_body(AddUserProfileRequest),
 ) -> AddUserProfileResponse:
     """Add user profile directly to storage, bypassing inference.
 
@@ -362,8 +363,8 @@ def manual_profile_generation_endpoint(
     """Manually trigger profile generation with window-sized interactions and CURRENT output.
 
     Runs with auto_run=False, which bypasses the regular stride/should_run
-    gates. Only profile extraction is triggered. Each extractor uses its own
-    window_size_override when present, falling back to the global window_size.
+    gates. Only profile extraction is triggered, using profile_window_size
+    from the current configuration without an automatic stride gate.
     Output is CURRENT profiles only.
 
     Args:

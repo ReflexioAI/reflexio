@@ -27,7 +27,7 @@ it("carries retained policy through hooks and real loopback HTTP", async () => {
       {
         url: `http://127.0.0.1:${address.port}`,
         apiKey: "test-only",
-        search: { top_k: 7, min_prompt_length: 1, timeout_ms: 1700 },
+        search: { top_k: 7, timeout_ms: 1700 },
         publish: { max_content_length: 4 },
       },
       {},

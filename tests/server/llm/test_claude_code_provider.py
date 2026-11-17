@@ -6,19 +6,18 @@ import json
 import logging
 import subprocess
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
 
-from reflexio.server.llm.providers import claude_code_provider as ccp
-from reflexio.server.llm.providers.claude_code_provider import (
+from reflexio.server.llm._native_model_ref import NativeCLISelectionError
+from reflexio.server.llm.providers import native_cli_provider as ccp
+from reflexio.server.llm.providers.native_cli_provider import (
     ClaudeCodeCLIError,
-    ClaudeCodeLLM,
+    NativeCLILLM,
     _split_system_and_dialogue,
-    is_claude_code_available,
-    register_if_enabled,
+    register_native_provider,
 )
 
 
@@ -38,9 +37,11 @@ def _stream_json_with_model(result_text: str, model: str) -> str:
 
 
 @pytest.fixture(autouse=True)
-def _reset_module_state() -> None:
+def _reset_module_state(monkeypatch) -> None:
     """Each test starts with fresh registration and warn-once flags."""
-    ccp._REGISTERED = False
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_CLI_MODEL", raising=False)
     ccp._HANDLER = None
     ccp._IMAGE_WARNED = False
     ccp._MULTITURN_WARNED = False
@@ -149,7 +150,7 @@ class TestSplitSystemAndDialogue:
             },
         ]
         with caplog.at_level(
-            logging.WARNING, logger="reflexio.server.llm.providers.claude_code_provider"
+            logging.WARNING, logger="reflexio.server.llm.providers.native_cli_provider"
         ):
             _, dialogue = _split_system_and_dialogue(msgs)
         assert "User: describe" in dialogue
@@ -167,7 +168,7 @@ class TestSplitSystemAndDialogue:
             {"role": "user", "content": "q2"},
         ]
         with caplog.at_level(
-            logging.WARNING, logger="reflexio.server.llm.providers.claude_code_provider"
+            logging.WARNING, logger="reflexio.server.llm.providers.native_cli_provider"
         ):
             _split_system_and_dialogue(msgs)
             _split_system_and_dialogue(msgs)
@@ -175,7 +176,7 @@ class TestSplitSystemAndDialogue:
         assert len(multiturn_warns) == 1
 
 
-class TestClaudeCodeLLMCompletion:
+class TestNativeCLILLMCompletion:
     def _mock_cli(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -190,7 +191,9 @@ class TestClaudeCodeLLMCompletion:
         )
         mock_run = MagicMock(return_value=_fake_completed_process(stream))
         monkeypatch.setattr(ccp.subprocess, "run", mock_run)
-        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/claude")
+        monkeypatch.setattr(
+            ccp, "_resolve_cli_path", lambda _host: "/usr/local/bin/claude"
+        )
         return mock_run
 
     def test_basic_completion_shapes_model_response(
@@ -201,20 +204,20 @@ class TestClaudeCodeLLMCompletion:
             result_text="hello world",
             served_model="claude-sonnet-5-20260701",
         )
-        llm = ClaudeCodeLLM()
+        llm = NativeCLILLM()
 
         response = llm.completion(
-            model="claude-code/default",
+            model="local-cli/claude-code",
             messages=[{"role": "user", "content": "ping"}],
         )
 
         assert response.choices[0].message.content == "hello world"  # type: ignore[union-attr]
-        assert response.model == "claude-code/default"
+        assert response.model == "local-cli/claude-code"
         assert (
             response._hidden_params["reflexio_served_model"]
             == "claude-sonnet-5-20260701"
         )
-        assert response._hidden_params["reflexio_provider"] == "claude-code"
+        assert response._hidden_params["reflexio_provider"] == "local-cli"
         assert response._hidden_params["reflexio_cli_binary"] == "claude"
         # stream-json does not surface usage tokens at terminal event.
         assert response.usage.prompt_tokens == 0  # type: ignore[attr-defined]
@@ -233,14 +236,16 @@ class TestClaudeCodeLLMCompletion:
             "run",
             MagicMock(return_value=_fake_completed_process(stream)),
         )
-        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/claude")
+        monkeypatch.setattr(
+            ccp, "_resolve_cli_path", lambda _host: "/usr/local/bin/claude"
+        )
 
-        response = ClaudeCodeLLM().completion(
-            model="claude-code/default",
+        response = NativeCLILLM().completion(
+            model="local-cli/claude-code",
             messages=[{"role": "user", "content": "ping"}],
         )
 
-        assert response.model == "claude-code/default"
+        assert response.model == "local-cli/claude-code"
         assert response._hidden_params["reflexio_served_model"] == "MiniMax-M3"
         assert response._hidden_params["reflexio_served_provider"] == "minimax"
 
@@ -253,8 +258,8 @@ class TestClaudeCodeLLMCompletion:
             served_model="claude-sonnet-5-20260701",
         )
 
-        response = ClaudeCodeLLM().completion(
-            model="claude-code/default",
+        response = NativeCLILLM().completion(
+            model="local-cli/claude-code",
             messages=[{"role": "user", "content": "finish"}],
             optional_params={
                 "tools": [
@@ -270,12 +275,12 @@ class TestClaudeCodeLLMCompletion:
             },
         )
 
-        assert response.model == "claude-code/default"
+        assert response.model == "local-cli/claude-code"
         assert (
             response._hidden_params["reflexio_served_model"]
             == "claude-sonnet-5-20260701"
         )
-        assert response._hidden_params["reflexio_provider"] == "claude-code"
+        assert response._hidden_params["reflexio_provider"] == "local-cli"
         assert response._hidden_params["reflexio_cli_binary"] == "claude"
 
     def test_uses_stream_json_output_format(
@@ -284,10 +289,10 @@ class TestClaudeCodeLLMCompletion:
         """The provider must invoke the CLI with stream-json, not the legacy json envelope."""
         monkeypatch.delenv("CLAUDE_SMART_CLI_MODEL", raising=False)
         mock_run = self._mock_cli(monkeypatch)
-        llm = ClaudeCodeLLM()
+        llm = NativeCLILLM()
 
         llm.completion(
-            model="claude-code/default",
+            model="local-cli/claude-code",
             messages=[{"role": "user", "content": "hi"}],
         )
 
@@ -306,13 +311,12 @@ class TestClaudeCodeLLMCompletion:
         self, monkeypatch: pytest.MonkeyPatch, override: str | None
     ) -> None:
         mock_run = self._mock_cli(monkeypatch, served_model="actual-host-model")
-        if override is None:
-            monkeypatch.delenv("CLAUDE_SMART_CLI_MODEL", raising=False)
-        else:
-            monkeypatch.setenv("CLAUDE_SMART_CLI_MODEL", override)
+        selected = override.strip() if override and override.strip() else None
+        reference = "local-cli/claude-code" + (f"/{selected}" if selected else "")
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", reference)
 
-        response = ClaudeCodeLLM().completion(
-            messages=[{"role": "user", "content": "hello"}]
+        response = NativeCLILLM().completion(
+            model=reference, messages=[{"role": "user", "content": "hello"}]
         )
 
         cmd = mock_run.call_args.args[0]
@@ -322,20 +326,30 @@ class TestClaudeCodeLLMCompletion:
             assert "--model" not in cmd
         assert response._hidden_params["reflexio_served_model"] == "actual-host-model"
 
-    def test_sets_max_retries_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """CLI subprocess env and stdin encoding are pinned for Windows safety."""
+    @pytest.mark.parametrize("retry_policy", [None, "", "0", "1", "3", "7"])
+    def test_host_retry_policy_with_windows_safe_stdin(
+        self, monkeypatch: pytest.MonkeyPatch, retry_policy: str | None
+    ) -> None:
+        """Host retries survive alongside SDK recursion and encoding policy."""
+        if retry_policy is None:
+            monkeypatch.delenv("CLAUDE_CODE_MAX_RETRIES", raising=False)
+        else:
+            monkeypatch.setenv("CLAUDE_CODE_MAX_RETRIES", retry_policy)
         mock_run = self._mock_cli(monkeypatch)
         monkeypatch.setattr(ccp, "_is_windows", lambda: True)
-        llm = ClaudeCodeLLM()
+        llm = NativeCLILLM()
 
         llm.completion(
-            model="claude-code/default",
+            model="local-cli/claude-code",
             messages=[{"role": "user", "content": "Use an em dash — in the prompt."}],
         )
 
         kwargs = mock_run.call_args.kwargs
         env = kwargs["env"]
-        assert env["CLAUDE_CODE_MAX_RETRIES"] == "3"
+        if retry_policy is None:
+            assert "CLAUDE_CODE_MAX_RETRIES" not in env
+        else:
+            assert env["CLAUDE_CODE_MAX_RETRIES"] == retry_policy
         assert env["CLAUDE_SMART_INTERNAL"] == "1"
         assert kwargs["text"] is True
         assert kwargs["encoding"] == "utf-8"
@@ -346,10 +360,10 @@ class TestClaudeCodeLLMCompletion:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         mock_run = self._mock_cli(monkeypatch)
-        llm = ClaudeCodeLLM()
+        llm = NativeCLILLM()
 
         llm.completion(
-            model="claude-code/default",
+            model="local-cli/claude-code",
             messages=[
                 {"role": "system", "content": "Be terse."},
                 {"role": "user", "content": "hello"},
@@ -369,11 +383,11 @@ class TestClaudeCodeLLMCompletion:
     ) -> None:
         mock_run = self._mock_cli(monkeypatch)
         monkeypatch.setattr(ccp, "_is_windows", lambda: True)
-        llm = ClaudeCodeLLM()
+        llm = NativeCLILLM()
         long_system_prompt = "Use JSON only. " + ("schema-field " * 900)
 
         llm.completion(
-            model="claude-code/default",
+            model="local-cli/claude-code",
             messages=[
                 {"role": "system", "content": long_system_prompt},
                 {"role": "user", "content": "Extract playbooks."},
@@ -390,10 +404,10 @@ class TestClaudeCodeLLMCompletion:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         mock_run = self._mock_cli(monkeypatch)
-        llm = ClaudeCodeLLM()
+        llm = NativeCLILLM()
 
         llm.completion(
-            model="claude-code/default",
+            model="local-cli/claude-code",
             messages=[{"role": "user", "content": "hello"}],
         )
 
@@ -404,10 +418,10 @@ class TestClaudeCodeLLMCompletion:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         mock_run = self._mock_cli(monkeypatch, result_text='{"name":"Yi","age":31}')
-        llm = ClaudeCodeLLM()
+        llm = NativeCLILLM()
 
         response = llm.completion(
-            model="claude-code/default",
+            model="local-cli/claude-code",
             messages=[{"role": "user", "content": "Extract"}],
             optional_params={"response_format": _Person},
         )
@@ -426,10 +440,10 @@ class TestClaudeCodeLLMCompletion:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         mock_run = self._mock_cli(monkeypatch, result_text="{}")
-        llm = ClaudeCodeLLM()
+        llm = NativeCLILLM()
 
         llm.completion(
-            model="claude-code/default",
+            model="local-cli/claude-code",
             messages=[
                 {"role": "system", "content": "Be terse."},
                 {"role": "user", "content": "go"},
@@ -447,10 +461,10 @@ class TestClaudeCodeLLMCompletion:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         mock_run = self._mock_cli(monkeypatch, result_text="{}")
-        llm = ClaudeCodeLLM()
+        llm = NativeCLILLM()
 
         llm.completion(
-            model="claude-code/default",
+            model="local-cli/claude-code",
             messages=[{"role": "user", "content": "go"}],
             optional_params={
                 "response_format": {
@@ -474,14 +488,14 @@ class TestClaudeCodeLLMCompletion:
     ) -> None:
         mock_run = self._mock_cli(monkeypatch, result_text="{}")
         monkeypatch.setattr(ccp, "_is_windows", lambda: True)
-        llm = ClaudeCodeLLM()
+        llm = NativeCLILLM()
         properties = {
             f"field_{idx}": {"type": "string", "description": "required output"}
             for idx in range(120)
         }
 
         llm.completion(
-            model="claude-code/default",
+            model="local-cli/claude-code",
             messages=[{"role": "user", "content": "Extract"}],
             optional_params={
                 "response_format": {
@@ -505,19 +519,19 @@ class TestClaudeCodeLLMCompletion:
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         self._mock_cli(monkeypatch)
-        llm = ClaudeCodeLLM()
+        llm = NativeCLILLM()
 
         with caplog.at_level(
             logging.WARNING,
-            logger="reflexio.server.llm.providers.claude_code_provider",
+            logger="reflexio.server.llm.providers.native_cli_provider",
         ):
             llm.completion(
-                model="claude-code/default",
+                model="local-cli/claude-code",
                 messages=[{"role": "user", "content": "hi"}],
                 optional_params={"temperature": 0.0, "max_tokens": 512},
             )
             llm.completion(
-                model="claude-code/default",
+                model="local-cli/claude-code",
                 messages=[{"role": "user", "content": "hi"}],
                 optional_params={"temperature": 0.0, "max_tokens": 512},
             )
@@ -537,12 +551,14 @@ class TestClaudeCodeLLMCompletion:
                 )
             ),
         )
-        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/claude")
-        llm = ClaudeCodeLLM()
+        monkeypatch.setattr(
+            ccp, "_resolve_cli_path", lambda _host: "/usr/local/bin/claude"
+        )
+        llm = NativeCLILLM()
 
         with pytest.raises(ClaudeCodeCLIError, match="stream failed"):
             llm.completion(
-                model="claude-code/default",
+                model="local-cli/claude-code",
                 messages=[{"role": "user", "content": "hi"}],
             )
 
@@ -560,12 +576,14 @@ class TestClaudeCodeLLMCompletion:
                 )
             ),
         )
-        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/claude")
-        llm = ClaudeCodeLLM()
+        monkeypatch.setattr(
+            ccp, "_resolve_cli_path", lambda _host: "/usr/local/bin/claude"
+        )
+        llm = NativeCLILLM()
 
         with pytest.raises(ClaudeCodeCLIError) as exc:
             llm.completion(
-                model="claude-code/default",
+                model="local-cli/claude-code",
                 messages=[{"role": "user", "content": "hi"}],
             )
 
@@ -579,12 +597,14 @@ class TestClaudeCodeLLMCompletion:
             "run",
             MagicMock(side_effect=subprocess.TimeoutExpired(cmd=["claude"], timeout=1)),
         )
-        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/claude")
-        llm = ClaudeCodeLLM(timeout_seconds=1)
+        monkeypatch.setattr(
+            ccp, "_resolve_cli_path", lambda _host: "/usr/local/bin/claude"
+        )
+        llm = NativeCLILLM(timeout_seconds=1)
 
         with pytest.raises(ClaudeCodeCLIError, match="timed out"):
             llm.completion(
-                model="claude-code/default",
+                model="local-cli/claude-code",
                 messages=[{"role": "user", "content": "hi"}],
             )
 
@@ -596,24 +616,26 @@ class TestClaudeCodeLLMCompletion:
             "run",
             MagicMock(return_value=_fake_completed_process(stdout="not json at all")),
         )
-        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/claude")
-        llm = ClaudeCodeLLM()
+        monkeypatch.setattr(
+            ccp, "_resolve_cli_path", lambda _host: "/usr/local/bin/claude"
+        )
+        llm = NativeCLILLM()
 
         with pytest.raises(ClaudeCodeCLIError, match="stream failed"):
             llm.completion(
-                model="claude-code/default",
+                model="local-cli/claude-code",
                 messages=[{"role": "user", "content": "hi"}],
             )
 
     def test_cli_missing_raises_on_completion(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: None)
-        llm = ClaudeCodeLLM()
+        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda _host: None)
+        llm = NativeCLILLM()
 
         with pytest.raises(ClaudeCodeCLIError, match="not found"):
             llm.completion(
-                model="claude-code/default",
+                model="local-cli/claude-code",
                 messages=[{"role": "user", "content": "hi"}],
             )
 
@@ -622,16 +644,21 @@ class TestClaudeCodeLLMCompletion:
     ) -> None:
         """LiteLLM sometimes passes extra positional args; they must be tolerated."""
         self._mock_cli(monkeypatch)
-        llm = ClaudeCodeLLM()
+        llm = NativeCLILLM()
 
         response = llm.completion(
             "some-positional-model-response-arg",
-            model="claude-code/default",
+            model="local-cli/claude-code",
             messages=[{"role": "user", "content": "hi"}],
         )
         assert response.choices[0].message.content == "ok"  # type: ignore[union-attr]
 
-    def test_codex_host_uses_codex_exec(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize(
+        "override", [None, "", " \t", "chosen-model", " opaque/model#variant "]
+    )
+    def test_codex_host_uses_codex_exec(
+        self, monkeypatch: pytest.MonkeyPatch, override: str | None
+    ) -> None:
         """Codex runs generation through ``codex exec`` instead of Claude flags."""
 
         def fake_run(cmd, **kwargs):
@@ -640,13 +667,17 @@ class TestClaudeCodeLLMCompletion:
             return _fake_completed_process(stdout="", returncode=0)
 
         mock_run = MagicMock(side_effect=fake_run)
-        monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
+        selected = override.strip() if override and override.strip() else None
+        reference = "local-cli/codex" + (f"/{selected}" if selected else "")
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", reference)
         monkeypatch.setattr(ccp, "_is_windows", lambda: True)
         monkeypatch.setattr(ccp.subprocess, "run", mock_run)
-        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/codex")
+        monkeypatch.setattr(
+            ccp, "_resolve_cli_path", lambda _host: "/usr/local/bin/codex"
+        )
 
-        response = ClaudeCodeLLM().completion(
-            model="claude-code/default",
+        response = NativeCLILLM().completion(
+            model=reference,
             messages=[
                 {"role": "system", "content": "Be terse."},
                 {"role": "user", "content": "ping — now"},
@@ -655,6 +686,14 @@ class TestClaudeCodeLLMCompletion:
 
         cmd = mock_run.call_args.args[0]
         assert cmd[:2] == ["/usr/local/bin/codex", "exec"]
+        if override and override.strip():
+            assert cmd[cmd.index("--model") + 1] == override.strip()
+        else:
+            assert "--model" not in cmd
+        assert cmd[-1] == "-"
+        assert cmd[cmd.index("--sandbox") + 1] == "read-only"
+        assert response._hidden_params.get("reflexio_served_model") is None
+        assert response._hidden_params.get("reflexio_served_provider") is None
         assert "-p" not in cmd
         assert "--append-system-prompt" not in cmd
         kwargs = mock_run.call_args.kwargs
@@ -664,8 +703,8 @@ class TestClaudeCodeLLMCompletion:
         assert kwargs["input"] == "Be terse.\n\n## Task\nUser: ping — now"
         assert kwargs["env"]["CLAUDE_SMART_HOST"] == "codex"
         assert response.choices[0].message.content == "codex reply"  # type: ignore[union-attr]
-        assert response.model == "claude-code/default"
-        assert response._hidden_params["reflexio_provider"] == "claude-code"
+        assert response.model == reference
+        assert response._hidden_params["reflexio_provider"] == "local-cli"
         assert response._hidden_params["reflexio_cli_binary"] == "codex"
 
     def test_windows_extensionless_cli_override_prefers_adjacent_cmd(
@@ -677,11 +716,9 @@ class TestClaudeCodeLLMCompletion:
         bridge_cmd.chmod(0o755)
 
         monkeypatch.setattr(ccp, "_is_windows", lambda: True)
-        monkeypatch.setenv(ccp.ENV_ENABLE, "1")
         monkeypatch.setenv(ccp._ENV_CLI_PATH, str(bridge))
 
-        assert ccp._resolve_cli_path() == str(bridge_cmd)  # noqa: SLF001
-        assert is_claude_code_available()
+        assert ccp._resolve_cli_path("claude-code") == str(bridge_cmd)  # noqa: SLF001
 
     @pytest.mark.parametrize("suffix", [".exe", ".bat"])
     def test_windows_extensionless_cli_override_tries_common_shims(
@@ -693,10 +730,9 @@ class TestClaudeCodeLLMCompletion:
         bridge_shim.chmod(0o755)
 
         monkeypatch.setattr(ccp, "_is_windows", lambda: True)
-        monkeypatch.setenv(ccp.ENV_ENABLE, "1")
         monkeypatch.setenv(ccp._ENV_CLI_PATH, str(bridge))
 
-        assert ccp._resolve_cli_path() == str(bridge_shim)  # noqa: SLF001
+        assert ccp._resolve_cli_path("claude-code") == str(bridge_shim)  # noqa: SLF001
 
     def test_windows_extensionless_cli_override_skips_powershell_shim(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -710,15 +746,15 @@ class TestClaudeCodeLLMCompletion:
         bridge_cmd.chmod(0o755)
 
         monkeypatch.setattr(ccp, "_is_windows", lambda: True)
-        monkeypatch.setenv(ccp.ENV_ENABLE, "1")
         monkeypatch.setenv(ccp._ENV_CLI_PATH, str(bridge))
         monkeypatch.setenv("PATHEXT", "PS1;.CMD")
 
-        assert ccp._resolve_cli_path() == str(bridge_cmd)  # noqa: SLF001
+        assert ccp._resolve_cli_path("claude-code") == str(bridge_cmd)  # noqa: SLF001
 
     def test_windows_extensionless_cli_override_executes_adjacent_cmd(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/opencode")
         bridge = tmp_path / "opencode-claude-compat"
         bridge_cmd = tmp_path / "opencode-claude-compat.cmd"
         bridge_cmd.write_text("@echo off\n")
@@ -729,150 +765,90 @@ class TestClaudeCodeLLMCompletion:
         monkeypatch.setenv(ccp._ENV_CLI_PATH, str(bridge))
         monkeypatch.setattr(ccp.subprocess, "run", mock_run)
 
-        ClaudeCodeLLM().completion(
-            model="claude-code/default",
+        NativeCLILLM().completion(
+            model="local-cli/opencode",
             messages=[{"role": "user", "content": "hi"}],
         )
 
         cmd = mock_run.call_args.args[0]
         assert cmd[0] == str(bridge_cmd)
 
-    def test_codex_host_uses_compat_wrapper_with_claude_flags(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The bundled Codex compatibility wrapper keeps the Claude CLI contract."""
-        mock_run = MagicMock(return_value=_fake_completed_process(_stream_json("ok")))
+    @pytest.mark.parametrize("suffix", ["", ".cmd", ".js"])
+    def test_codex_wrapper_refuses_before_legacy_dispatch(self, monkeypatch, suffix):
+        mock_run = MagicMock(side_effect=AssertionError("retired bridge executed"))
         monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
         monkeypatch.setattr(ccp.subprocess, "run", mock_run)
         monkeypatch.setattr(
             ccp,
             "_resolve_cli_path",
-            lambda: "/plugin/scripts/codex-claude-compat",
+            lambda _host: f"/plugin/codex-claude-compat{suffix}",
         )
-
-        response = ClaudeCodeLLM().completion(
-            model="claude-code/default",
-            messages=[{"role": "user", "content": "ping"}],
-        )
-
-        cmd = mock_run.call_args.args[0]
-        assert cmd[:3] == [
-            "/plugin/scripts/codex-claude-compat",
-            "-p",
-            "--output-format",
-        ]
-        assert "exec" not in cmd
-        assert "--include-partial-messages" in cmd
-        assert response.choices[0].message.content == "ok"  # type: ignore[union-attr]
-
-    def test_codex_host_uses_windows_compat_wrapper_with_claude_flags(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Windows .cmd wrapper is also treated as a Claude-compatible shim."""
-        mock_run = MagicMock(return_value=_fake_completed_process(_stream_json("ok")))
-        monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
-        monkeypatch.setattr(ccp.subprocess, "run", mock_run)
-        monkeypatch.setattr(
-            ccp,
-            "_resolve_cli_path",
-            lambda: "/plugin/scripts/codex-claude-compat.cmd",
-        )
-
-        ClaudeCodeLLM().completion(
-            model="claude-code/default",
-            messages=[{"role": "user", "content": "ping"}],
-        )
-
-        cmd = mock_run.call_args.args[0]
-        assert cmd[0] == "/plugin/scripts/codex-claude-compat.cmd"
-        assert "-p" in cmd
-        assert "exec" not in cmd
+        with pytest.raises(NativeCLISelectionError, match="bridge.*retired"):
+            NativeCLILLM().completion(
+                model="local-cli/claude-code",
+                messages=[{"role": "user", "content": "synthetic"}],
+            )
+        mock_run.assert_not_called()
 
 
-class TestIsClaudeCodeAvailable:
-    def test_requires_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
-        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/claude")
-        assert is_claude_code_available() is False
+class TestExecutableResolution:
+    def test_explicit_path_is_honored(self, monkeypatch, tmp_path):
+        executable = tmp_path / "owned-claude"
+        executable.write_text("#!/bin/sh\nexit 1\n")
+        executable.chmod(0o755)
+        monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", str(executable))
+        assert ccp._resolve_cli_path("claude-code") == str(executable)
 
-    def test_requires_cli_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "1")
-        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: None)
-        assert is_claude_code_available() is False
-
-    def test_both_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "1")
-        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/claude")
-        assert is_claude_code_available() is True
-
-    def test_respects_cli_path_override(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
-    ) -> None:
-        """An executable at CLAUDE_SMART_CLI_PATH should be honoured."""
-        fake_cli = tmp_path / "claude"
-        fake_cli.write_text("#!/bin/sh\necho hi\n")
-        fake_cli.chmod(0o755)
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "1")
-        monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", str(fake_cli))
-        # Force PATH lookup to fail so the override is what matters.
-        monkeypatch.setattr(ccp.shutil, "which", lambda _: None)
-        assert is_claude_code_available() is True
-
-    def test_codex_host_resolves_codex_cli(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "1")
-        monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
+    def test_explicit_host_resolves_matching_binary(self, monkeypatch):
         monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
-        monkeypatch.delenv("PLUGIN_ROOT", raising=False)
-        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
-        monkeypatch.setattr(ccp.shutil, "which", lambda name: f"/usr/local/bin/{name}")
-
-        assert is_claude_code_available() is True
-        assert ccp._resolve_cli_path() == "/usr/local/bin/codex"  # noqa: SLF001
+        monkeypatch.setattr(ccp.shutil, "which", lambda name: f"/owned/{name}")
+        assert ccp._resolve_cli_path("codex") == "/owned/codex"
+        assert ccp._resolve_cli_path("claude-code") == "/owned/claude"
 
 
 class TestRegisterIfEnabled:
     def test_disabled_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
-        assert register_if_enabled() is False
+        assert register_native_provider() is True
 
     def test_enabled_but_cli_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "1")
-        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: None)
-        assert register_if_enabled() is False
+        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda _host: None)
+        assert register_native_provider() is True
 
     def test_enabled_with_cli_registers(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "1")
-        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/claude")
+        monkeypatch.setattr(
+            ccp, "_resolve_cli_path", lambda _host: "/usr/local/bin/claude"
+        )
         with patch.object(ccp.litellm, "custom_provider_map", None):
-            assert register_if_enabled() is True
+            assert register_native_provider() is True
             providers = [entry["provider"] for entry in ccp.litellm.custom_provider_map]
-            assert "claude-code" in providers
+            assert "local-cli" in providers
 
     def test_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "1")
-        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/claude")
+        monkeypatch.setattr(
+            ccp, "_resolve_cli_path", lambda _host: "/usr/local/bin/claude"
+        )
         with patch.object(ccp.litellm, "custom_provider_map", None):
-            register_if_enabled()
-            register_if_enabled()
+            register_native_provider()
+            register_native_provider()
             providers = [entry["provider"] for entry in ccp.litellm.custom_provider_map]
-            assert providers.count("claude-code") == 1
+            assert providers.count("local-cli") == 1
 
     def test_no_duplicate_when_preexisting_entry(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """If something else already registered claude-code, don't add a second."""
-        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "1")
-        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/claude")
-        existing_handler = ClaudeCodeLLM()
-        preexisting = [{"provider": "claude-code", "custom_handler": existing_handler}]
+        monkeypatch.setattr(
+            ccp, "_resolve_cli_path", lambda _host: "/usr/local/bin/claude"
+        )
+        existing_handler = NativeCLILLM()
+        preexisting = [{"provider": "local-cli", "custom_handler": existing_handler}]
         with patch.object(ccp.litellm, "custom_provider_map", preexisting):
-            assert register_if_enabled() is True
+            assert register_native_provider() is True
             entries = [
                 e
                 for e in ccp.litellm.custom_provider_map
-                if e.get("provider") == "claude-code"
+                if e.get("provider") == "local-cli"
             ]
             assert len(entries) == 1
             assert entries[0]["custom_handler"] is existing_handler

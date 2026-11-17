@@ -125,10 +125,14 @@ class Terminal:
 LLMFailureVerdict = OutageWait | Transient | RepairExhausted | Truncated | Terminal
 
 
-def exception_chain(exc: BaseException) -> Iterator[BaseException]:
+def exception_chain(
+    exc: BaseException, *, include_context: bool = True
+) -> Iterator[BaseException]:
     """Yield ``exc`` and the exceptions it was raised from (module docstring).
 
     The one chain walk. A caller adding detail to a verdict reads links here.
+    Admission callers may exclude incidental handled context while retaining
+    explicit causes. The default preserves normal traceback/verdict semantics.
     """
     seen: set[int] = set()
     current: BaseException | None = exc
@@ -139,7 +143,7 @@ def exception_chain(exc: BaseException) -> Iterator[BaseException]:
         yield current
         if current.__cause__ is not None:
             current = current.__cause__
-        elif current.__suppress_context__:
+        elif current.__suppress_context__ or not include_context:
             current = None
         else:
             current = current.__context__

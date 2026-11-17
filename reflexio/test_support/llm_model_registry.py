@@ -92,7 +92,7 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
             model_class=StructuredProfilesOutput,
             minimal_valid={
                 "profiles": [
-                    {"content": "likes sushi", "time_to_live": "one_month"},
+                    {"content": "likes sushi", "explicit_storage_deadline": None},
                 ],
             },
         ),
@@ -100,7 +100,7 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
             model_class=ProfileUpdateOutput,
             minimal_valid={
                 "add": [
-                    {"content": "prefers dark mode", "time_to_live": "one_month"},
+                    {"content": "prefers dark mode", "explicit_storage_deadline": None},
                 ],
                 "delete": [],
                 "mention": [],

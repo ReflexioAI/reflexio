@@ -1,5 +1,6 @@
 """Privacy regressions for pre-retrieval model-response logging."""
 
+import logging
 from unittest.mock import MagicMock, patch
 
 from reflexio.models.api_schema.retriever_schema import ReformulationResult
@@ -46,3 +47,18 @@ def test_non_structured_reformulation_is_not_logged() -> None:
 
     assert result == ReformulationResult(standalone_query="original query")
     log_model_response.assert_not_called()
+
+
+def test_reformulation_prompt_is_metadata_only(caplog) -> None:
+    llm_client, prompt_manager = _dependencies()
+    prompt_manager.render_prompt.return_value = (
+        "private rendered query and conversation"
+    )
+    llm_client.generate_chat_response.return_value = None
+    with caplog.at_level(
+        logging.DEBUG,
+        logger="reflexio.server.services.pre_retrieval._query_reformulator",
+    ):
+        QueryReformulator(llm_client, prompt_manager).rewrite("original query")
+    assert "request prepared" in caplog.text
+    assert prompt_manager.render_prompt.return_value not in caplog.text

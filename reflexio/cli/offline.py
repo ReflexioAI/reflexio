@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated
 
-import click
 import typer
+from typer.core import TyperCommand
 from typer.main import get_command
 
 from reflexio.cli.errors import EXIT_VALIDATION, CliError, render_error
@@ -52,8 +52,9 @@ def upgrade_file(
 def dispatch_offline(argv: list[str]) -> bool:
     """Run the explicit converter without loading dotenv, services, or clients.
 
-    Click parses the shared global option definitions before selecting a route;
-    option values that happen to equal command names never become commands.
+    Typer's command parser reads the shared global option definitions before
+    selecting a route; option values that happen to equal command names never
+    become commands.
     Other routes retain their usual operator environment bootstrap.
     """
     app = create_root_app()
@@ -61,7 +62,9 @@ def dispatch_offline(argv: list[str]) -> bool:
     config_app.command(name="upgrade-file")(upgrade_file)
     app.add_typer(config_app, name="config")
     root = get_command(app)
-    parser = click.Command(
+    # Build the parser from Typer's own command class: Typer 0.26+ vendors
+    # click, so its parameters are not interchangeable with click.Command's.
+    parser = TyperCommand(
         "reflexio",
         params=root.params,
         context_settings={"allow_extra_args": True, "allow_interspersed_args": False},

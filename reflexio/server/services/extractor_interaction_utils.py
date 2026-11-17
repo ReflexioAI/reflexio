@@ -8,54 +8,12 @@ to handle per-extractor stride checking, source filtering, and sliding window it
 import logging
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
-from reflexio.models.config_schema import DEFAULT_STRIDE_SIZE, DEFAULT_WINDOW_SIZE
+from reflexio.models.extraction_window import (
+    get_extractor_window_params as get_extractor_window_params,
+)
 from reflexio.server.services.extractor_config_utils import get_extractor_name
 
 logger = logging.getLogger(__name__)
-
-
-def get_extractor_window_params(
-    extractor_config: object,
-    global_window_size: int | None,
-    global_stride_size: int | None,
-) -> tuple[int, int]:
-    """
-    Get effective window_size and stride_size for a specific extractor.
-
-    Uses extractor's override values if set, otherwise falls back to global values,
-    then to defaults (DEFAULT_WINDOW_SIZE / DEFAULT_STRIDE_SIZE from config_schema).
-
-    Args:
-        extractor_config: Extractor configuration object
-        global_window_size: Global window_size from config
-        global_stride_size: Global stride_size from config
-
-    Returns:
-        Tuple of (window_size, stride_size) for this extractor
-    """
-    window_size_override = getattr(extractor_config, "window_size_override", None)
-    stride_size_override = getattr(extractor_config, "stride_size_override", None)
-
-    window_size = (
-        window_size_override
-        if window_size_override is not None
-        else (
-            global_window_size
-            if global_window_size is not None
-            else DEFAULT_WINDOW_SIZE
-        )
-    )
-    stride_size = (
-        stride_size_override
-        if stride_size_override is not None
-        else (
-            global_stride_size
-            if global_stride_size is not None
-            else DEFAULT_STRIDE_SIZE
-        )
-    )
-
-    return window_size, stride_size
 
 
 def get_effective_source_filter(

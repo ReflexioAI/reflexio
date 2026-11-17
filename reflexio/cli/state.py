@@ -13,7 +13,8 @@ from typing import TYPE_CHECKING
 
 import typer
 
-from reflexio.defaults import DEFAULT_AGENT_VERSION, DEFAULT_SERVER_URL, DEFAULT_USER_ID
+from reflexio.defaults import DEFAULT_SERVER_URL, DEFAULT_USER_ID
+from reflexio.defaults import resolve_agent_version as resolve_agent_version
 
 if TYPE_CHECKING:
     from reflexio import ReflexioClient
@@ -145,30 +146,10 @@ def require_user_id(user_id: str | None = None, *, command_hint: str = "") -> st
     )
 
 
-def resolve_agent_version(agent_version: str | None = None) -> str:
-    """Resolve agent_version from flag, env var, or default.
-
-    Use this for commands that need to **assign** an agent_version to
-    stored data (e.g., ``publish``). For commands that **filter** by
-    agent_version (e.g., ``regenerate``), use :func:`require_agent_version`.
-
-    Args:
-        agent_version: Explicit agent_version from CLI flag
-
-    Returns:
-        str: Resolved agent version
-    """
-    if agent_version:
-        return agent_version
-    if env_val := os.environ.get("REFLEXIO_AGENT_VERSION"):
-        return env_val
-    return DEFAULT_AGENT_VERSION
-
-
 def require_agent_version(
     agent_version: str | None = None, *, command_hint: str = ""
 ) -> str:
-    """Resolve agent_version from flag or env var — no silent default.
+    """Require caller-supplied agent_version — no silent default.
 
     Like :func:`resolve_agent_version` but raises ``CliError`` instead
     of falling back to ``DEFAULT_AGENT_VERSION``. Use this in commands
@@ -185,20 +166,18 @@ def require_agent_version(
         str: Resolved agent version.
 
     Raises:
-        CliError: If no agent_version can be resolved from flag or env var.
+        CliError: If no explicit agent_version was supplied.
     """
     from reflexio.cli.errors import EXIT_VALIDATION, CliError
 
+    resolved = resolve_agent_version(agent_version)
     if agent_version:
-        return agent_version
-    if env_val := os.environ.get("REFLEXIO_AGENT_VERSION"):
-        return env_val
+        return resolved
     hint = f" for {command_hint}" if command_hint else ""
     raise CliError(
         error_type="validation",
         message=(
-            f"--agent-version is required{hint}. Set it via --agent-version "
-            "flag or REFLEXIO_AGENT_VERSION env var."
+            f"--agent-version is required{hint}. Set it via the --agent-version flag."
         ),
         exit_code=EXIT_VALIDATION,
     )

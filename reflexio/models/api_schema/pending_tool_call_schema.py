@@ -61,7 +61,7 @@ class PendingToolCallResponse(BaseModel):
             created_at=record.created_at,
             resolved_at=record.resolved_at,
             expires_at=record.expires_at,
-            cache_until=record.cache_until,
+            cache_until=record.expires_at or record.cache_until,
             valid_until=record.valid_until,
         )
 

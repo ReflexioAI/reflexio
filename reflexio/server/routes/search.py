@@ -45,9 +45,14 @@ from reflexio.server.auth import (
 from reflexio.server.cache import reflexio_cache
 from reflexio.server.extensions import get_service
 from reflexio.server.llm.rerank.common import CrossEncoderUnavailableError
+from reflexio.server.offloop_body import off_loop_body
 from reflexio.server.rate_limit import limiter
 from reflexio.server.routes._common import _run_limited_api
 from reflexio.server.routes._metering import _stamp_search_dependencies_done
+from reflexio.server.services.profile.attention import (
+    access_recording,
+    record_accepted_profiles,
+)
 from reflexio.server.services.retrieval_experiment import (
     active_retrieval_experiment_assignment,
 )
@@ -115,13 +120,19 @@ def search_user_profiles(
             experiment=assignment,
         )
     else:
-        response = _run_limited_api(
-            org_id,
-            "search",
-            lambda: reflexio_cache.get_reflexio(org_id=org_id).search_user_profiles(
-                payload
-            ),
-        )
+        storage: Any = None
+
+        def run_profile_search() -> Any:
+            nonlocal storage
+            reflexio = reflexio_cache.get_reflexio(org_id=org_id)
+            storage = reflexio.get_storage()
+            return reflexio.search_user_profiles(payload)
+
+        response = _run_limited_api(org_id, "search", run_profile_search)
+        if response.success and caller_type == "production_agent":
+            record_accepted_profiles(
+                storage, response.user_profiles, user_id=payload.user_id
+            )
         resp = SearchProfilesViewResponse(
             success=response.success,
             user_profiles=[to_profile_view(p) for p in response.user_profiles],
@@ -417,11 +428,11 @@ def search_agent_playbooks_endpoint(
 @limiter.limit("120/minute")
 def unified_search_endpoint(
     request: Request,
-    payload: UnifiedSearchRequest,
     org_id: str = Depends(default_get_org_id),
     caller_type: str = Depends(default_get_caller_type),
     _gate: None = Depends(default_billing_gate("application")),  # noqa: B008
     _deps_done: None = Depends(_stamp_search_dependencies_done),
+    payload: UnifiedSearchRequest = off_loop_body(UnifiedSearchRequest),
 ) -> UnifiedSearchViewResponse:
     """Search across all entity types (profiles, agent playbooks, user playbooks).
 
@@ -496,7 +507,8 @@ def unified_search_endpoint(
             with profile_step("search.reflexio_cache"):
                 reflexio = reflexio_cache.get_reflexio(org_id=org_id)
             search_runtime.remember_search_storage(org_id, reflexio.get_storage())
-            return reflexio.unified_search(payload, org_id=org_id)
+            with access_recording(caller_type == "production_agent"):
+                return reflexio.unified_search(payload, org_id=org_id)
 
         response = _run_limited_api(org_id, "search", run_search)
         with profile_step("search.response_view"):

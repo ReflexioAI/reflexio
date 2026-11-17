@@ -205,9 +205,7 @@ workflow. See the [CLI reference](reflexio/cli/README.md) for all input modes
 ```python
 import reflexio
 
-client = reflexio.ReflexioClient(
-    url_endpoint="http://localhost:8061/"
-)
+client = reflexio.ReflexioClient(url_endpoint="http://localhost:8061/")
 
 # A conversation is a session. Bind it once, then every call you make
 # through `session` carries it — so the searches that fed the agent and
@@ -220,9 +218,12 @@ session = client.for_session("deploy-demo-1")
 session.publish_interaction(
     user_id="alice",
     interactions=[
-        {"role": "user",      "content": "Deploy the new service."},
+        {"role": "user", "content": "Deploy the new service."},
         {"role": "assistant", "content": "Starting deployment to us-east-1..."},
-        {"role": "user",      "content": "Wait — we never deploy production to us-east-1. Always use us-west-2."},
+        {
+            "role": "user",
+            "content": "Wait — we never deploy production to us-east-1. Always use us-west-2.",
+        },
         {"role": "assistant", "content": "Understood. Switching to us-west-2."},
     ],
 )
@@ -271,7 +272,7 @@ See [`client_ts/`](client_ts/README.md) for the full TypeScript client guide.
 
 - Extracts stable facts about users and their environments with one configurable profile extractor
 - Supports versioning (current → pending → archived) with upgrade/downgrade workflows
-- Supports global extraction windows and strides with profile-specific overrides
+- Supports independent profile and playbook extraction windows and strides
 
 [Read more about user profiles →](https://www.reflexio.ai/docs/concepts/user-profiles)
 
@@ -341,6 +342,7 @@ cost improvements; measure those separately.
 
 - OpenAI and Azure OpenAI, Anthropic, OpenRouter, Google Gemini, MiniMax, DeepSeek, DashScope/Qwen, Zhipu AI/GLM, Moonshot/Kimi, xAI/Grok, and custom OpenAI-compatible endpoints
 - Powered by LiteLLM — configure your preferred provider via API keys or custom endpoints
+- [Native CLI model selection and explicit upgrades](docs/native-cli-model-selection.md)
 - [OpenAI-compatible gateway configuration and verified limits](developer.md#openai-compatible-gateways-including-orcarouter-492)
 
 DashScope's optional `api_key_config.dashscope.api_base` uses the same HTTP URL
@@ -367,9 +369,7 @@ pip install reflexio-ai
 ```python
 import reflexio
 
-client = reflexio.ReflexioClient(
-    url_endpoint="http://localhost:8061/"
-)
+client = reflexio.ReflexioClient(url_endpoint="http://localhost:8061/")
 
 # Bind the conversation's session id once. Recommended: it keeps the
 # searches that retrieve context and the turns you publish correlated,
@@ -383,10 +383,10 @@ context = session.search(query="deployment region preference", user_id="user-123
 session.publish_interaction(
     user_id="user-123",
     interactions=[
-        {"role": "user",      "content": "..."},
+        {"role": "user", "content": "..."},
         {"role": "assistant", "content": "..."},
     ],
-    agent_version="v1",       # optional: track agent versions
+    agent_version="v1",  # optional: track agent versions
 )
 
 # Search profiles
@@ -403,14 +403,34 @@ playbooks = client.get_agent_playbooks(agent_version="v1")
 
 ```python
 # Apply a targeted configuration change without resending the full Config.
-client.update_config({
-    "window_size": 20,
-    "stride_size": 10,
-})
+client.update_config(
+    {
+        "profile_window_size": 20,
+        "profile_stride_size": 10,
+        "playbook_window_size": 20,
+        "playbook_stride_size": 10,
+    }
+)
 ```
 
 Use `set_config()` only when replacing the complete configuration, including
 its required `storage_config`.
+
+Profiles and playbooks each own a window size (history per extraction) and a
+stride (new interactions before the next extraction). Both pairs default to
+10/8 and can be adjusted independently. Automatic extraction requires a positive
+stride no greater than its window at admission, after source/manual eligibility
+is resolved. Configuration reads and manual operations retain positive pairs
+without imposing automatic cadence on those operations.
+
+This replaces the shared `window_size` / `stride_size` and each extractor's
+`window_size_override` / `stride_size_override`. Fresh configuration rejects
+those names, including null values. Stop older writers before preparing a saved
+local file with the current launcher. File generation 15 converts each old
+pair to its effective per-kind values and requires the storage upgrade owner's
+admission before startup can publish the prepared file. An offline copy can be
+created with `reflexio config upgrade-file SOURCE --output DESTINATION`; keep the
+original. File conversion does not authorize a retained database upgrade.
 
 ## Integrations
 
@@ -431,6 +451,7 @@ pip install 'reflexio-ai[mem0]'
 ```python
 # Before
 from mem0 import MemoryClient
+
 # After
 from reflexio.mem0 import MemoryClient
 
@@ -588,8 +609,9 @@ expired records. Window completion timestamps are recorded inside the fenced
 commit transaction and survive acknowledgement; older receipts stay unknown.
 
 ```python
-client.publish_interaction(user_id="u", session_id="s", interactions=messages,
-                           session_finished=True)
+client.publish_interaction(
+    user_id="u", session_id="s", interactions=messages, session_finished=True
+)
 # Or signal completion after messages were already saved:
 client.finalize_session(user_id="u", session_id="s")
 ```
@@ -652,7 +674,7 @@ new input can close. It returns as soon as every eligible cursor is either cover
 or waiting for input, reporting `learning_status="deferred"` with
 `learning_reason="waiting_for_window"`. Poll `GET /api/learning_status` with the
 returned `request_id` to see coverage complete later. Note the practical
-consequence of the default `window_size` of 10: a brand-new user's first window
+consequence of the default per-kind window size of 10: a brand-new user's first window
 normally needs ten eligible interactions, so an incomplete first publish returns
 uncovered until more input, an optional completion hint, or its idle deadline.
 Reserve `force_extraction` for an explicit manual bypass of the judge.

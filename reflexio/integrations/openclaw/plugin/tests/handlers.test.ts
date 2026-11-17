@@ -209,11 +209,11 @@ describe("ReflexioHooks", () => {
     expect(hooks.stats.failures["publish rejected"]).toBe(1);
   });
 
-  it("skips heartbeat runs, failed runs, short prompts and incognito sessions", async () => {
+  it("skips heartbeat runs, failed runs, empty prompts and incognito sessions", async () => {
     const { client, hooks } = setup((key) => key.includes(":incognito-"));
     await hooks.beforePromptBuild({ prompt: "check inbox" }, ctx("hb", { trigger: "heartbeat" }));
     await hooks.agentEnd({ runId: "hb", success: true, messages: turn("x", "y") }, ctx("hb", { trigger: "heartbeat" }));
-    await hooks.beforePromptBuild({ prompt: "hi" }, ctx("short"));
+    await hooks.beforePromptBuild({ currentUserMessage: "  \n ", prompt: "channel context" }, ctx("empty"));
     await hooks.agentEnd({ runId: "bad", success: false, messages: turn("x", "y") }, ctx("bad"));
     const incognito = ctx("inc", { sessionKey: "agent:main:dashboard:incognito-abc" });
     await hooks.beforePromptBuild({ prompt: "a private question" }, incognito);
@@ -382,11 +382,13 @@ describe("host deadline ownership", () => {
   });
 });
 
-it("measures prompt admission in Unicode code points", async () => {
-  const client = new FakeClient();
-  const hooks = new ReflexioHooks(resolveSettings({ search: { min_prompt_length: 2 } }, {}), client as unknown as ReflexioClient, {});
-  await hooks.beforePromptBuild({ prompt: "😀" }, ctx("short-unicode"));
-  expect(client.searches).toHaveLength(0);
-  await hooks.beforePromptBuild({ prompt: "😀x" }, ctx("long-unicode"));
+
+
+
+it.each(["CI", "继续", "J", "😀"])("retrieves meaningful short query %s without a local character gate", async (prompt) => {
+  const { client, hooks } = setup();
+  const injected = await hooks.beforePromptBuild({ currentUserMessage: prompt }, ctx("short-query"));
   expect(client.searches).toHaveLength(1);
+  expect(client.searches[0]!.query).toBe(prompt);
+  expect(injected?.prependContext).toContain("Answer in one sentence.");
 });

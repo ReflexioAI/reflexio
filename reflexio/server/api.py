@@ -22,6 +22,8 @@ from reflexio.native_compute import configure_tokenizer_compute
 block_implicit_dotenv_walkup()
 configure_tokenizer_compute()
 
+import asyncio
+import contextlib
 import inspect
 import logging
 import math
@@ -54,6 +56,12 @@ from reflexio.server.auth import (
     default_get_org_id,
 )
 from reflexio.server.env_utils import env_str
+from reflexio.server.event_loop_lag import monitor_event_loop_lag
+from reflexio.server.gc_pause import (
+    freeze_startup_heap,
+    install_gc_pause_monitor,
+    uninstall_gc_pause_monitor,
+)
 from reflexio.server.middleware import (
     BodySizeLimitMiddleware,
     BotProtectionMiddleware,
@@ -490,8 +498,21 @@ def create_app(  # noqa: C901
             )
 
             configure_usage_event_recorder(exempt_usage_event_recorder)
+        # Imports and app construction are complete, and nothing below has
+        # started a thread or a forked LLM worker yet (the schedulers, capability
+        # startup and served requests all come later). Freezing here leaves
+        # every startup object out of later full collections and out of the
+        # pages a forked child would dirty by collecting.
+        install_gc_pause_monitor()
+        freeze_startup_heap()
+        lag_monitor = asyncio.create_task(
+            monitor_event_loop_lag(), name="event_loop_lag_monitor"
+        )
         try:
             if mounts_data_plane:
+                from reflexio.server.services.retrieval.judge_client import judge_mode
+
+                judge_mode()  # Validate the explicit mode without constructing a client.
                 log_publish_hardware_capacity()
                 validate_llm_availability()
                 # Window execution and deferred recovery share the durable owner
@@ -556,6 +577,11 @@ def create_app(  # noqa: C901
             start_search_metering_worker()
             yield
         finally:
+            # First, so no later shutdown failure can leave it running.
+            lag_monitor.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await lag_monitor
+            uninstall_gc_pause_monitor()
             # Drain search metering while enterprise tracing and usage recorders
             # are still installed. Capability shutdown clears both hooks.
             from reflexio.server.services.search_metering_worker import (
@@ -563,6 +589,15 @@ def create_app(  # noqa: C901
             )
 
             stop_search_metering_worker(timeout=5.0)
+            if mounts_data_plane:
+                from reflexio.server.services.retrieval.judge_client import (
+                    close_judge_client,
+                )
+
+                try:
+                    close_judge_client()
+                except Exception:
+                    logger.warning("Search judge HTTP cleanup failed", exc_info=True)
             if capabilities is None:
                 from reflexio.server.usage_metrics import (
                     configure_usage_event_recorder,

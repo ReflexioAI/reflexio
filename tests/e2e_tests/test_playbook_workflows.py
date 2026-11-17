@@ -1641,8 +1641,8 @@ def test_playbook_pipeline_preserves_structured_fields(
     # overlapping windows per publish when the fixture's stride is one.
     configurator = reflexio_instance_playbook_only.request_context.configurator
     config = configurator.get_org_config().model_copy(deep=True)
-    config.window_size = len(sample_interaction_requests)
-    config.stride_size = len(sample_interaction_requests)
+    config.playbook_window_size = len(sample_interaction_requests)
+    config.playbook_stride_size = len(sample_interaction_requests)
     configurator.set_config(config)
     # Generated playbooks are stored under the singleton name regardless of the
     # configured extractor_name, so query by the singleton to retrieve them.

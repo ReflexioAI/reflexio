@@ -28,7 +28,6 @@ Bodies moved VERBATIM from the former monolithic ``litellm_client.py``.
 """
 
 import base64
-import functools
 import hashlib
 import logging
 import multiprocessing
@@ -39,13 +38,14 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
 from reflexio.removed_env import reject_removed_env
 from reflexio.server import search_runtime
 from reflexio.server.error_reporting import set_error_tags
+from reflexio.server.llm._azure_transport import normalize_azure_v1_endpoints
 from reflexio.server.llm._litellm_subprocess import (
     _litellm_completion_worker,
     _raise_completion_error,
@@ -63,13 +63,21 @@ from reflexio.server.llm._litellm_types import (
     ToolCallingChatResponse,
     completion_metadata,
 )
-from reflexio.server.llm._minimax_quota import backup_credentials, quota_exhausted
+from reflexio.server.llm._minimax_quota import (
+    backup_credentials,
+    implicit_api_base,
+    quota_exhausted,
+)
 from reflexio.server.llm._model_compat import (
     apply_model_request_policy,
     ensure_model_capabilities,
     reasoning_exhausted_retry_extra_body,
 )
-from reflexio.server.llm._native_cli import NATIVE_CLI_REQUEST, NativeCLIOwner
+from reflexio.server.llm._native_cli import (
+    NATIVE_CLI_REQUEST,
+    NativeCLIOwner,
+)
+from reflexio.server.llm._native_model_ref import NativeModelRef, authorize_native_model
 from reflexio.server.llm._provider_concurrency import (
     ProviderCapSaturatedError,
     provider_slot,
@@ -89,11 +97,14 @@ from reflexio.server.llm.image_utils import (
     encode_image_to_base64 as _encode_image_to_base64,
 )
 from reflexio.server.llm.input_budget import (
+    check_model_input_budget,
     extraction_failure_observer,
     extraction_provider_guard,
+    extraction_reasoning_exhaustion,
     extraction_request_identity,
     extraction_usage_observer,
-    supply_extraction_output_reservation,
+    prepare_model_input_budget,
+    reserve_model_output_tokens,
 )
 from reflexio.server.llm.llm_utils import is_pydantic_model
 from reflexio.server.llm.model_defaults import (
@@ -168,21 +179,13 @@ class LadderBudgetExhaustedError(LiteLLMClientError):
     """
 
 
-# Config values read per call but only worth reporting once. The env is still
-# re-read every call (tests and operators change it at runtime); the PARSE is
-# cached by the raw string, so an invalid value warns once per distinct value
-# rather than on every LLM request.
-@functools.lru_cache(maxsize=16)
-def _parse_seed(raw: str, default: int) -> int:
-    try:
-        return int(raw)
-    except ValueError:
-        logging.getLogger(__name__).warning(
-            "REFLEXIO_LLM_SEED=%r is not an int; falling back to default seed=%d",
-            raw,
-            default,
-        )
-        return default
+def _uses_native_transport(
+    model: str, custom_llm_provider: str | None, provider_key: str
+) -> bool:
+    """Respect LiteLLM's explicit transport before interpreting a model prefix."""
+    if custom_llm_provider:
+        return custom_llm_provider == provider_key
+    return model.startswith(f"{provider_key}/")
 
 
 def _bounded_repair_errors(errors: Sequence[str]) -> tuple[str, ...]:
@@ -888,9 +891,9 @@ class TextGenerationMixin:
                 When provided, the return type is ``ToolCallingChatResponse``.
             tool_choice: Optional tool choice control ("auto", "none", "required",
                 or a dict specifying a particular tool). Forwarded to the provider.
-            model_role: Optional ``ModelRole`` to override the model selected for
-                this request. The role is resolved via ``resolve_model_name`` using
-                the client's ``api_key_config``.
+            model_role: Role-based selection for standard provider requests.
+                Selected custom gateways and native OpenClaw routes keep their
+                request/client model; the role does not retarget those routes.
             max_retries (int | None): Optional per-call override for the number of
                 retry attempts. When ``None`` (the default), the value falls back to
                 ``LiteLLMConfig.max_retries``.
@@ -1039,9 +1042,56 @@ class TextGenerationMixin:
         # custom_endpoint precedence the fallback ladder resolution uses, so the
         # two never drift.
         actual_model = self._resolve_primary_model(
-            kwargs.pop("model", None), model_role
+            kwargs.pop("model", None),
+            model_role,
+            custom_llm_provider=kwargs.get("custom_llm_provider"),
         )
+        if _uses_native_transport(
+            actual_model, kwargs.get("custom_llm_provider"), "openclaw"
+        ):
+            from reflexio.server.llm.providers.openclaw_provider import (
+                reject_retired_openclaw_timeout,
+                resolve_openclaw_model,
+            )
+
+            # Parameter preparation is outside provider retry/fallback catches.
+            # An ambiguous retired default must never dispatch another model.
+            resolve_openclaw_model(actual_model)
+            reject_retired_openclaw_timeout()
+        if _uses_native_transport(
+            actual_model, kwargs.get("custom_llm_provider"), "local-cli"
+        ):
+            from reflexio.server.llm.providers.native_cli_provider import (
+                resolve_cli_request_timeout,
+                validate_native_selection,
+            )
+
+            # Preparation errors stop the walk before retries or paid fallback.
+            target = cast(
+                NativeModelRef,
+                authorize_native_model(actual_model, kwargs.get("custom_llm_provider")),
+            )
+            validate_native_selection(target.host)
+            resolve_cli_request_timeout(kwargs.get("timeout", self.config.timeout))
         ensure_model_capabilities(actual_model)
+
+        if actual_model != self.config.model:
+            api_key, api_base, api_version = self._resolve_api_key(actual_model)
+        else:
+            api_key, api_base, api_version = (
+                self._api_key,
+                self._api_base,
+                self._api_version,
+            )
+        # LiteLLM otherwise resolves these inside the child, after admission.
+        # Freeze the effective override per attempt without replacing native
+        # defaults or changing caller > configured > global > environment order.
+        if (
+            actual_model.lower().startswith("minimax/")
+            and not (api_base or kwargs.get("api_base") or kwargs.get("base_url"))
+            and (implicit_base := implicit_api_base())
+        ):
+            kwargs["api_base"] = implicit_base
 
         params: dict[str, Any] = {
             "model": actual_model,
@@ -1061,30 +1111,23 @@ class TextGenerationMixin:
             if m != actual_model and not m.startswith("local/")
         ]
 
+        from reflexio.removed_env import reject_removed_env
+
+        reject_removed_env(os.environ, {"REFLEXIO_LLM_SEED": ""})
         temperature = kwargs.pop("temperature", self.config.temperature)
         if self._is_temperature_restricted_model(actual_model):
             params["temperature"] = 1.0
         else:
             params["temperature"] = temperature
 
-        # Determinism knob: `seed` is always injected (defaulting to 42) on
-        # providers that honor it, since seed alone is cheap and harmless.
-        # The companion temperature=0 override is opt-in via an explicit
-        # REFLEXIO_LLM_SEED env var so that caller-configured temperature
-        # flows through by default — silently clobbering a user's configured
-        # temperature was surprising. Current-gen reasoning models (gpt-5-*)
-        # ignore both knobs; the seed is best-effort.
-        default_seed = 42
-        seed_explicit = "REFLEXIO_LLM_SEED" in os.environ
-        seed_raw = os.environ.get("REFLEXIO_LLM_SEED", str(default_seed))
-        params["seed"] = _parse_seed(seed_raw, default_seed)
-        # Keep seed best-effort without mutating LiteLLM's process-wide
-        # drop_params setting. Providers that do not support seed can ignore it.
+        # Sampling belongs to the request. Explicit seed kwargs are forwarded
+        # below, independently of the configured or request temperature.
         params["drop_params"] = True
-        if seed_explicit and not self._is_temperature_restricted_model(actual_model):
-            params["temperature"] = 0.0
 
         max_tokens = kwargs.pop("max_tokens", self.config.max_tokens)
+        explicit_output_policy = (
+            max_tokens is not None or kwargs.get("max_completion_tokens") is not None
+        )
         # An opaque gateway cannot inherit a native provider output/cost policy.
         custom_extraction = extraction_provider_guard.get() is not None and (
             (self.config.api_key_config and self.config.api_key_config.custom_endpoint)
@@ -1116,14 +1159,6 @@ class TextGenerationMixin:
         if tool_choice is not None:
             params["tool_choice"] = tool_choice
 
-        if actual_model != self.config.model:
-            api_key, api_base, api_version = self._resolve_api_key(actual_model)
-        else:
-            api_key, api_base, api_version = (
-                self._api_key,
-                self._api_base,
-                self._api_version,
-            )
         if api_key:
             params["api_key"] = api_key
         if api_base:
@@ -1136,6 +1171,7 @@ class TextGenerationMixin:
             params["api_version"] = api_version
 
         params.update(kwargs)
+        normalize_azure_v1_endpoints(params)
 
         # Braintrust metadata for observability (no-op if callback not registered)
         if os.environ.get("BRAINTRUST_API_KEY"):
@@ -1149,8 +1185,11 @@ class TextGenerationMixin:
         # Apply only to scoped extraction, after endpoint/caller resolution.
         # Every fallback rung is rebuilt independently and reserves its own cap.
         if extraction_provider_guard.get() is not None:
-            supply_extraction_output_reservation(params)
-        # Apply after caller overrides and the seed temperature override.
+            reserve_model_output_tokens(params)
+        prepare_model_input_budget(
+            params, explicit_output_policy=explicit_output_policy
+        )
+        # Apply after caller overrides.
         apply_model_request_policy(params)
 
         return (
@@ -1177,26 +1216,36 @@ class TextGenerationMixin:
         return final_messages
 
     def _resolve_primary_model(
-        self, model: str | None, model_role: ModelRole | None
+        self,
+        model: str | None,
+        model_role: ModelRole | None,
+        *,
+        custom_llm_provider: str | None = None,
     ) -> str:
         """Resolve work separately from the endpoint supplying its credentials.
 
         Applies the same precedence used by ``_build_completion_params`` so the
         ladder walker and the per-rung param builder never disagree on which
         model is the primary: an explicit ``model`` (or the config default),
-        overridden by ``model_role`` resolution on standard providers. A custom
-        gateway has opaque model IDs: its selected client/request model owns
-        dispatch, not provider autodetection or a second endpoint model pin.
+        overridden by ``model_role`` resolution on standard providers. Custom
+        gateways and selected OpenClaw routes retain their client/request model;
+        generic role detection must not retarget that opaque native selection.
 
         Args:
             model: Explicit per-call model, or ``None`` for the config default.
-            model_role: Optional role whose resolution overrides ``model``.
+            model_role: Role override for standard provider selection.
+            custom_llm_provider: Existing per-call explicit transport override.
 
         Returns:
             str: The resolved primary model name.
         """
         actual_model = model or self.config.model
+        native_target = authorize_native_model(actual_model, custom_llm_provider)
+        if native_target is not None:
+            return native_target.reference
         if self.config.api_key_config and self.config.api_key_config.custom_endpoint:
+            return actual_model
+        if _uses_native_transport(actual_model, custom_llm_provider, "openclaw"):
             return actual_model
         if model_role is not None:
             actual_model = resolve_model_name(
@@ -1227,7 +1276,9 @@ class TextGenerationMixin:
             list[str]: The ordered, deduped rung list beginning with the primary.
         """
         primary = self._resolve_primary_model(
-            kwargs.get("model"), kwargs.get("model_role")
+            kwargs.get("model"),
+            kwargs.get("model_role"),
+            custom_llm_provider=kwargs.get("custom_llm_provider"),
         )
         ce = (
             self.config.api_key_config.custom_endpoint
@@ -1466,9 +1517,8 @@ class TextGenerationMixin:
         intentionally ignored: LiteLLM often echoes the requested model there, which
         would record a configured route as if it had been observed.
 
-        The claude-code LiteLLM route can execute different local host CLIs. Its
-        public ``ModelResponse.model`` is the *requested* route string (same as
-        other providers). Observed model is only the bridge stamp
+        Native CLI routes construct ``ModelResponse.model`` from the requested
+        route. Observed model is only an independently established bridge stamp
         ``reflexio_served_model`` — never ``response.model``, which would launder
         the requested route as observed when the CLI does not report a served model.
         """
@@ -1477,7 +1527,7 @@ class TextGenerationMixin:
         served_provider = _nonempty_string(hidden.get("reflexio_served_provider"))
         stamped_served = _nonempty_string(hidden.get("reflexio_served_model"))
 
-        if route_provider == "claude-code":
+        if route_provider in {"local-cli", "openclaw"}:
             provider = served_provider
             model_name = stamped_served
         else:
@@ -1792,6 +1842,12 @@ class TextGenerationMixin:
                                 "LLM completion exceeded its attempt deadline"
                             )
 
+                    check_model_input_budget(turn_params)
+                    from reflexio.server.llm.compute_admission import (
+                        check_learning_compute,
+                    )
+
+                    check_learning_compute()
                     unreserved = extraction_request_identity.get()
                     if provider_request_guard is not None:
                         provider_request_guard(
@@ -2204,6 +2260,18 @@ class TextGenerationMixin:
             params, rf, parse_so, hard_timeout = _prepare_turn(
                 rung_messages, rung_kwargs
             )
+            schema_name = getattr(rf, "__name__", "structured output")
+            if _known_reasoning_exhausted(params):
+                retried = _retry_without_thinking(
+                    rung_messages=rung_messages,
+                    rung_kwargs=rung_kwargs,
+                    params=params,
+                    exc=None,
+                    schema_name=schema_name,
+                    validated=False,
+                )
+                if retried is not None:
+                    return retried
             try:
                 return _finish(
                     _call_and_parse(
@@ -2211,6 +2279,20 @@ class TextGenerationMixin:
                     )
                 )
             except StructuredOutputParseError as exc:
+                if exc.failure_kind == "reasoning_exhausted":
+                    # The plain path's one retry, sent thinking-off: an
+                    # identical re-issue at the same cap reasons the budget
+                    # away again.
+                    retried = _retry_without_thinking(
+                        rung_messages=rung_messages,
+                        rung_kwargs=rung_kwargs,
+                        params=params,
+                        exc=exc,
+                        schema_name=schema_name,
+                        validated=False,
+                    )
+                    if retried is not None:
+                        return retried
                 if not exc.validation_errors:
                     # Empty and truncated bodies carry no validation errors:
                     # nothing written can be corrected, so re-issue instead.
@@ -2260,7 +2342,6 @@ class TextGenerationMixin:
                             detect_refusal=False,
                         )
                     )
-                schema_name = getattr(rf, "__name__", "structured output")
                 # The errors go into the retry prompt verbatim, back to the
                 # provider that produced them. This LOG line reaches external
                 # telemetry via the logging bridge, and an ``extra_forbidden``
@@ -2309,28 +2390,53 @@ class TextGenerationMixin:
                     )
                 )
 
+        def _known_reasoning_exhausted(params: dict[str, Any]) -> bool:
+            """Whether an earlier turn found ``params`` reasoning-exhausted.
+
+            Only a scoped extraction keeps that durable journal; any other
+            caller always sends its request as built.
+            """
+            journal = extraction_reasoning_exhaustion.get()
+            return (
+                journal is not None
+                and reasoning_exhausted_retry_extra_body(params) is not None
+                and journal.reasoning_exhausted(params)
+            )
+
         def _retry_without_thinking(
             *,
             rung_messages: list[dict[str, Any]],
             rung_kwargs: dict[str, Any],
             params: dict[str, Any],
-            exc: StructuredOutputParseError,
+            exc: StructuredOutputParseError | None,
             schema_name: str,
+            validated: bool = True,
         ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse] | None:
             """Resend a reasoning-exhausted request ONCE with thinking disabled.
 
-            Replaces the same-cap repair turn for this one failure kind: a
-            body cut off by the output limit after hidden reasoning spent the
-            budget (blank, or a barely started answer), and echoing it back at
-            the same cap does not change that. Returns None when the route cannot
-            disable thinking (``reasoning_exhausted_retry_extra_body``), so the
-            caller keeps its existing repair turn. Otherwise this IS the
-            rung's one extra turn: a valid answer returns, and any failure
-            raises the rung's repair-exhausted error with no further call.
+            Replaces the same-cap repair turn (or the plain path's identical
+            re-issue) for this one failure kind: a body cut off by the output
+            limit after hidden reasoning spent the budget (blank, or a barely
+            started answer), and echoing it back at the same cap does not
+            change that. Returns None when the route cannot disable thinking
+            (``reasoning_exhausted_retry_extra_body``), so the caller keeps its
+            existing retry. Otherwise this IS the rung's one extra turn: a valid
+            answer returns, and any failure raises the rung's error with no
+            further call -- ``_repair_error`` when ``validated``, the resend's
+            own parse error on the plain path.
+
+            ``exc`` is the first attempt's failure; it is first recorded in the
+            scoped extraction's journal, durably, so a turn that ends before
+            this resend is dispatched resumes with it. ``exc=None`` means the
+            journal already holds that record and the thinking-on request is
+            not sent again.
             """
             retry_body = reasoning_exhausted_retry_extra_body(params)
             if retry_body is None:
                 return None
+            journal = extraction_reasoning_exhaustion.get()
+            if exc is not None and journal is not None:
+                journal.record_reasoning_exhausted()
             # Re-keyed: the resend is a different request, and a provider
             # honouring attempt 1's key could replay the empty answer.
             retry_params, retry_rf, retry_parse, retry_timeout = _prepare_turn(
@@ -2338,16 +2444,31 @@ class TextGenerationMixin:
                 {**_corrective_kwargs(rung_kwargs), "extra_body": retry_body},
             )
             model = str(retry_params.get("model"))
-            diagnostics = f" first_attempt {exc.log_fields()}"
+            diagnostics = (
+                f" first_attempt {exc.log_fields()}"
+                if exc is not None
+                else " first_attempt=skipped_recorded_exhaustion"
+            )
             try:
                 attempt = _call_and_parse(
                     retry_params,
                     retry_rf,
                     retry_parse,
                     retry_timeout,
-                    detect_refusal=True,
+                    detect_refusal=validated,
                 )
             except StructuredOutputParseError as retry_exc:
+                if not validated:
+                    self.logger.warning(
+                        "event=llm_reasoning_exhausted_retry model=%s schema=%s "
+                        "thinking=disabled outcome=%s%s retry %s",
+                        model,
+                        schema_name,
+                        retry_exc.failure_kind,
+                        diagnostics,
+                        retry_exc.log_fields(),
+                    )
+                    raise
                 attempt = _StructuredAttempt(
                     value="",
                     raw_content=retry_exc.raw_content,
@@ -2380,9 +2501,14 @@ class TextGenerationMixin:
                 )
                 raise
             else:
-                valid, errors, failure_kind = _validate_attempt(attempt)
+                # The plain path has no validator: a body that parsed is valid.
+                valid, errors, failure_kind = (
+                    _validate_attempt(attempt) if validated else (True, (), "")
+                )
                 if valid:
-                    self.logger.warning(
+                    # The resend recovered the answer: an expected path, not
+                    # a fault. Failed resends below stay WARNING.
+                    self.logger.info(
                         "event=llm_reasoning_exhausted_retry model=%s schema=%s "
                         "thinking=disabled outcome=succeeded%s",
                         model,
@@ -2428,6 +2554,16 @@ class TextGenerationMixin:
                 rung_messages, rung_kwargs
             )
             schema_name = getattr(rf, "__name__", "structured output")
+            if _known_reasoning_exhausted(params):
+                retried = _retry_without_thinking(
+                    rung_messages=rung_messages,
+                    rung_kwargs=rung_kwargs,
+                    params=params,
+                    exc=None,
+                    schema_name=schema_name,
+                )
+                if retried is not None:
+                    return retried
             latest_parsed_output: BaseModel | None
             first_parsed_provenance: ModelProvenance | None = None
             try:
@@ -2720,9 +2856,11 @@ class TextGenerationMixin:
             list[dict]: Messages with cache control applied where appropriate.
         """
         model_lower = model.lower()
-        # The claude-code/* custom provider routes through the Claude Code CLI,
-        # which does not accept Anthropic API cache_control content blocks.
-        if model_lower.startswith("claude-code/"):
+        # Native CLI messages have no Anthropic HTTP cache-control protocol.
+        # An old label passed explicitly through HTTP remains opaque and keeps
+        # its previous wire shape; native execution under that label is denied
+        # before parameter preparation, independently of this formatting rule.
+        if model_lower.startswith(("local-cli/", "claude-code/")):
             return messages
         is_anthropic = "claude" in model_lower or "anthropic" in model_lower
 

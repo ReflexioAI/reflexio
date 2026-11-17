@@ -100,6 +100,7 @@ def test_owner_uses_untruncated_clone_raw_activation_and_preserves_overlength(
     pairs = model.predict.call_args.args[0]
     assert pairs == [("q", "d " * 511)]
     assert isinstance(model.predict.call_args.kwargs["activation_fn"], nn.Identity)
+    assert backend.truncation is not None
     assert backend.truncation["max_length"] == 5
 
 

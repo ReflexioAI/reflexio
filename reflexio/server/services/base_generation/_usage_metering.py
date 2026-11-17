@@ -12,10 +12,6 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.token_accounting import RunTokenTotals
-from reflexio.server.services.extractor_interaction_utils import (
-    get_effective_source_filter,
-    get_extractor_window_params,
-)
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.usage_metrics import record_usage_event
 
@@ -59,9 +55,10 @@ class UsageBillingMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
         # pyright can resolve the ``self._get_service_name()`` call. No runtime
         # attribute is added, so ``__abstractmethods__`` is unaffected.
         def _get_service_name(self) -> str: ...
-        # Concrete on ``ShouldRunPrecheckMixin`` (resolved via MRO); declared type-only
-        # so pyright can resolve the ``self._get_precheck_interaction_query_kwargs()`` call.
-        def _get_precheck_interaction_query_kwargs(self) -> dict: ...
+        # Concrete on ShouldRunPrecheckMixin, with service-specific overrides.
+        def _collect_scoped_interactions_for_precheck(
+            self, extractor_config: TExtractorConfig
+        ) -> tuple[list[Any], TExtractorConfig]: ...
 
     def _usage_pipeline(self) -> str | None:
         service_name = self._get_service_name()
@@ -113,8 +110,9 @@ class UsageBillingMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
     def _extraction_input_text(self, prepared: "PreparedGenerationRun[Any]") -> str:
         """Return the interaction content fed to the extractor as a single string.
 
-        Replays the same storage query the extractor uses (same user_id, source,
-        window params) so ``count_input_tokens`` sees the same text the LLM saw.
+        Reuses the precheck's collected input, or invokes that same selection
+        interface when the gate was bypassed. Window/source policy stays with
+        the collector, including services that receive a fixed session slice.
         Returns an empty string when storage is unavailable or no interactions exist.
 
         Args:
@@ -135,33 +133,11 @@ class UsageBillingMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
         # so the token count is byte-identical — and we avoid a second storage read.
         if self._last_precheck_sessions is not None:
             return format_sessions_to_history_string(self._last_precheck_sessions)
-        # Fallback storage read: used ONLY when the gate did not pre-fetch
-        # (bypass paths: auto_run=False, force_extraction, skip_should_run_check,
-        # mock mode). Re-fetches the extractor's input window so billing token
-        # counting sees exactly the text the LLM saw.
+        # Bypassing the gate must not select input through a second copy of its
+        # window/source rules. The collector also retains the selected slice.
         try:
-            root_config = self.request_context.configurator.get_config()
-            global_window_size = (
-                getattr(root_config, "window_size", None) if root_config else None
-            )
-            global_stride_size = (
-                getattr(root_config, "stride_size", None) if root_config else None
-            )
-            window_size, _ = get_extractor_window_params(
-                prepared.extractor_config, global_window_size, global_stride_size
-            )
-            should_skip, effective_source = get_effective_source_filter(
-                prepared.extractor_config, getattr(self.service_config, "source", None)
-            )
-            if should_skip:
-                return ""
-            session_data_models, _ = self.storage.get_last_k_interactions_grouped(
-                user_id=getattr(self.service_config, "user_id", None),
-                k=window_size,
-                sources=effective_source,
-                start_time=getattr(self.service_config, "rerun_start_time", None),
-                end_time=getattr(self.service_config, "rerun_end_time", None),
-                **self._get_precheck_interaction_query_kwargs(),
+            session_data_models, _ = self._collect_scoped_interactions_for_precheck(
+                prepared.extractor_config
             )
             return format_sessions_to_history_string(session_data_models)
         except Exception:

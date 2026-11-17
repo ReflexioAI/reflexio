@@ -47,8 +47,6 @@ def test_retired_names_are_input_only(model, field, prompt, identity):
     payload = {
         field: "old customer label",
         prompt: "Keep customer instructions",
-        "window_size_override": 23,
-        "stride_size_override": 7,
     }
     before = deepcopy(payload)
     config = model.model_validate(payload)
@@ -60,8 +58,8 @@ def test_retired_names_are_input_only(model, field, prompt, identity):
         assert "window_size_override" not in config.model_dump()
         assert "stride_size_override" not in config.model_dump()
     else:
-        assert config.window_size_override == 23
-        assert config.stride_size_override == 7
+        assert "window_size_override" not in config.model_dump()
+        assert "stride_size_override" not in config.model_dump()
     assert get_extractor_name(config) == identity
 
 

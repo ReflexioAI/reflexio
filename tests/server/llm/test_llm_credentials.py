@@ -112,3 +112,28 @@ def test_existing_key_still_rejects_retired_embedding_setting(
     monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", value)
     with pytest.raises(ValueError, match="REFLEXIO_EMBEDDING_PROVIDER"):
         ensure_provider_credential()
+
+
+def test_generation_provider_refuses_a_resolved_zai_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No Z.ai subscription: a live test that resolution would route to zai skips.
+
+    ``zai`` outranks ``openai`` in resolution, so returning ``openai`` here
+    would let the test run while the call still went to Z.ai.
+    """
+    monkeypatch.setenv("ZAI_API_KEY", "zai-real")
+    assert real_generation_provider() is None
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-real")
+    assert real_generation_provider() is None
+    assert real_generation_provider({"openai"}) is None
+
+
+def test_generation_provider_ignores_zai_below_a_resolved_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A higher-priority real key wins resolution, so the zai key is inert."""
+    monkeypatch.setenv("ZAI_API_KEY", "zai-real")
+    monkeypatch.setenv("MINIMAX_API_KEY", "mm-real")
+    assert real_generation_provider() == "minimax"
+    assert real_generation_provider({"minimax"}) == "minimax"

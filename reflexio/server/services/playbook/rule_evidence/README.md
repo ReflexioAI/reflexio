@@ -32,6 +32,47 @@ outputs are retired. Observed raw wire output remains separate from this project
 The caller still owns durable invocation, publication and lifecycle authority.
 Invalid execution raises; it is not a successful abstention.
 
+## Source-bound Trigger maintenance and final-version publication
+
+The native v2 `RuleEvidenceAttemptRunner` keeps the same diagnostic and global
+Content-audit method. It then saves the accepted Content result (including an
+explicit no-edit result), runs the bounded Trigger component, and resolves one
+final Content+Trigger pair. The portable `run_rule_evidence` API still returns its
+Content audit; `run_trigger_maintenance(frame, invoke)` is the independently usable
+metadata component. No baseline router or second tuner is introduced.
+
+The frame binds owner/id, incumbent full-version fingerprint, original Content
+and Trigger, evidence bundle, and accepted final Content plus its stored artifact
+digest. These fields are claims until independently verified by storage. The
+builder sees only original Trigger, accepted final Content and the bounded gap
+category, with no query probes, gate proposal or free-form reasoning. Support
+quotes refer to this frame, not automatically to historical conversation evidence.
+Null/blank and over320character original Triggers are preserved without inference;
+missing-Trigger creation is outside this component. Invalid quotes, changed KEEP
+values, wrong inventories and oversized requests raise; they are not successful
+abstentions. Completed responses, including uncertain/poor answers, are reused.
+
+The v2 authority records separate gate/builder identities and executed structural
+controls. Each real call uses the existing invocation/usage ledger and native
+request admission. The portable request builders own the actual sizing/dispatch
+envelopes. Code identity includes validator, sizing and canonicalization owners;
+validation-only changes cannot silently reuse an old component identity.
+
+Two immutable artifacts, `open_world_content_result` then
+`open_world_trigger_result`, precede the final candidate/decision. SQLite and
+Postgres reconstruct this source/receipt graph independently. A no-op requires
+both original fields unchanged. Trigger-only, Content-only and joint edits are
+published through one atomic successor/vector/lexical-index/lifecycle transaction.
+If a required stage fails, the incumbent is unchanged. Historical v1 records and
+GEPA retain their original Content-only/preserved-Trigger contracts and bytes.
+Enterprise requires the additive v2 contract/readiness migration before new calls.
+
+The native input profile `trigger-maintenance-native-source-only-v1` omits the
+lab's authored query probes and uses single-source construction. Structural and
+recorded-output qualification establish execution/source integrity, not fresh
+model quality or population performance. Live profile/quality confirmation remains
+a separate finite experiment; no such claim follows from scripted backend tests.
+
 Original-turn slots accept exact integer IDs from decoded provider JSON as well as
 JSON-mode validation. Strings, booleans, floats and IDs absent from the supplied
 session are rejected. This conversion is local to the source-bound enum and keeps

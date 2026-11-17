@@ -291,7 +291,9 @@ def test_generate_playbook(mock_chat_completion):
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
         )
-        playbook_generation_service.configurator.set_config_by_name("window_size", 100)
+        playbook_generation_service.configurator.set_config_by_name(
+            "playbook_window_size", 100
+        )
 
         # Store interactions in storage first
         request_obj = Request(
@@ -1029,7 +1031,9 @@ def test_run_manual_regular_no_interactions(mock_chat_completion):
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
         )
-        playbook_generation_service.configurator.set_config_by_name("window_size", 100)
+        playbook_generation_service.configurator.set_config_by_name(
+            "playbook_window_size", 100
+        )
 
         from reflexio.models.api_schema.service_schemas import (
             ManualPlaybookGenerationRequest,
@@ -1074,7 +1078,9 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
         )
-        playbook_generation_service.configurator.set_config_by_name("window_size", 100)
+        playbook_generation_service.configurator.set_config_by_name(
+            "playbook_window_size", 100
+        )
 
         # First, add some interactions to storage
         interaction = Interaction(
@@ -1137,7 +1143,9 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
         )
-        playbook_generation_service.configurator.set_config_by_name("window_size", 100)
+        playbook_generation_service.configurator.set_config_by_name(
+            "playbook_window_size", 100
+        )
 
         # Add interactions with source_a
         interaction_a = Interaction(
@@ -1227,7 +1235,9 @@ def test_run_manual_regular_output_pending_status_false(mock_chat_completion):
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
         )
-        playbook_generation_service.configurator.set_config_by_name("window_size", 100)
+        playbook_generation_service.configurator.set_config_by_name(
+            "playbook_window_size", 100
+        )
 
         # Add interaction
         interaction = Interaction(
@@ -1489,7 +1499,7 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
         )
 
-        service.configurator.set_config_by_name("window_size", 200)
+        service.configurator.set_config_by_name("playbook_window_size", 200)
         service.service_config = service._load_generation_service_config(
             PlaybookGenerationRequest(
                 request_id="request-1",
@@ -1523,11 +1533,11 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
                 "extractor_name": "api_playbook",
                 "extraction_definition_prompt": "extract api-related playbook",
                 "request_sources_enabled": ["api"],
-                "window_size_override": 120,
                 "aggregation_config": PlaybookAggregatorConfig(min_cluster_size=2),
             }
         )
 
+        service.configurator.set_config_by_name("playbook_window_size", 120)
         (
             scoped_groups,
             scoped_config,

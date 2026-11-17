@@ -24,6 +24,9 @@ from reflexio.server.services.offline_tuner.search_projection import (
     CandidateSearchProjection,
     CandidateSearchProjectionRequest,
     CandidateSearchProjector,
+    FinalVersionSearchProjection,
+    FinalVersionSearchProjectionRequest,
+    FinalVersionSearchProjector,
     publication_search_projection,
 )
 from reflexio.server.services.playbook.publication import (
@@ -34,6 +37,7 @@ from reflexio.server.services.playbook.publication import (
     QualificationAuthorityRef,
     canonical_json_bytes,
 )
+from reflexio.server.services.playbook.revision import FinalPlaybookRevision
 from reflexio.server.services.search_exposure import (
     user_playbook_full_version_fingerprint,
 )
@@ -87,7 +91,10 @@ def _authority_payload(authority: QualificationAuthorityRef) -> dict[str, object
             authority.candidate_generator_authorization_digest
         ),
     }
-    if authority.policy_id == "evidence-grounded-exact-edit-v1":
+    if authority.policy_id in {
+        "evidence-grounded-exact-edit-v1",
+        "evidence-grounded-playbook-revision-v2",
+    }:
         payload["policy_id"] = authority.policy_id
     return payload
 
@@ -102,9 +109,17 @@ def open_world_decision_proof_envelope(
     }:
         raise TypeError("inputs must be validated native publication inputs")
     new_method = isinstance(inputs, RuleEvidencePublicationInputs)
+    final_version = (
+        inputs.qualification_authority.policy_id
+        == "evidence-grounded-playbook-revision-v2"
+    )
+    if final_version and not new_method:
+        raise OpenWorldPublicationError("v2 publication requires rule-evidence inputs")
     payload = {
         "schema_version": (
-            "offline-tuner-rule-evidence-publication-proof-v1"
+            "offline-tuner-rule-evidence-publication-proof-v2"
+            if final_version
+            else "offline-tuner-rule-evidence-publication-proof-v1"
             if new_method
             else _PROOF_SCHEMA_VERSION
         ),
@@ -139,6 +154,21 @@ def open_world_decision_proof_envelope(
         payload["held_out_population_digest"] = (
             inputs.decision.held_out_population_digest
         )
+    if final_version:
+        for name in (
+            "content_result_artifact_digest",
+            "trigger_result_artifact_digest",
+        ):
+            digest = getattr(inputs, name, None)
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(char not in "0123456789abcdef" for char in digest)
+            ):
+                raise OpenWorldPublicationError(
+                    "v2 publication lacks prerequisite artifact digests"
+                )
+            payload[name] = digest
     canonical_json = canonical_json_bytes(payload).decode("utf-8")
     return DecisionProofEnvelope(
         optimizer_kind="offline_tuner_open_world",
@@ -180,7 +210,7 @@ class OpenWorldProvisionalPublisher:
     analysis_store: RuleEvidenceAnalysisStore
     publication_store: OpenWorldProvisionalPublicationStore
     playbook_loader: UserPlaybookLoader
-    projector: CandidateSearchProjector
+    projector: CandidateSearchProjector | FinalVersionSearchProjector
     clock: Callable[[], int]
 
     def publish(
@@ -238,16 +268,9 @@ class OpenWorldProvisionalPublisher:
         ):
             raise OpenWorldPublicationError("incumbent snapshot fingerprint changed")
 
-        projection_request = CandidateSearchProjectionRequest(
-            incumbent_user_playbook_id=incumbent.user_playbook_id,
-            incumbent_content_digest=sha256(
-                incumbent.content.encode("utf-8")
-            ).hexdigest(),
-            candidate_content=inputs.candidate.revision.revised_content,
-            preserved_trigger=incumbent.trigger,
+        final_revision, projection = self._project_candidate(
+            incumbent=incumbent, inputs=inputs
         )
-        projection = self.projector.build(projection_request)
-        self._validate_projection(projection, projection_request)
 
         try:
             publication_claim = (
@@ -291,6 +314,7 @@ class OpenWorldProvisionalPublisher:
             qualification_authority=inputs.qualification_authority,
             evidence_bundle_digest=inputs.evidence_bundle_digest,
             candidate_digest=inputs.candidate_digest,
+            final_revision=final_revision,
         )
         try:
             staged = self.publication_store.stage_user_playbook_provisional_publication(
@@ -341,21 +365,91 @@ class OpenWorldProvisionalPublisher:
                 return self._resolve_stale(job_id=job_id, claim=claim, cause=exc)
             raise
 
+    def _project_candidate(
+        self,
+        *,
+        incumbent: UserPlaybook,
+        inputs: PublicationInputs,
+    ) -> tuple[
+        FinalPlaybookRevision | None,
+        CandidateSearchProjection | FinalVersionSearchProjection,
+    ]:
+        final_revision = None
+        projection_request: (
+            CandidateSearchProjectionRequest | FinalVersionSearchProjectionRequest
+        )
+        if (
+            inputs.qualification_authority.policy_id
+            == "evidence-grounded-playbook-revision-v2"
+        ):
+            if not isinstance(inputs, RuleEvidencePublicationInputs):
+                raise OpenWorldPublicationError(
+                    "v2 publication requires rule-evidence inputs"
+                )
+            if type(inputs.candidate.revision) is not FinalPlaybookRevision:
+                raise OpenWorldPublicationError(
+                    "v2 publication requires an explicit final revision"
+                )
+            final_revision = FinalPlaybookRevision.model_validate_json(
+                inputs.candidate.revision.model_dump_json()
+            )
+            if getattr(self.projector, "final_version_key_identity", None) is None:
+                raise OpenWorldPublicationError(
+                    "candidate projector does not support final-version projection"
+                )
+            projection_request = FinalVersionSearchProjectionRequest(
+                incumbent_user_playbook_id=incumbent.user_playbook_id,
+                incumbent_content_digest=sha256(
+                    incumbent.content.encode("utf-8")
+                ).hexdigest(),
+                candidate_content=final_revision.revised_content,
+                candidate_trigger=final_revision.revised_trigger,
+            )
+            projection = cast(FinalVersionSearchProjector, self.projector).build(
+                projection_request
+            )
+        else:
+            projection_request = CandidateSearchProjectionRequest(
+                incumbent_user_playbook_id=incumbent.user_playbook_id,
+                incumbent_content_digest=sha256(
+                    incumbent.content.encode("utf-8")
+                ).hexdigest(),
+                candidate_content=inputs.candidate.revision.revised_content,
+                preserved_trigger=incumbent.trigger,
+            )
+            projection = self.projector.build(projection_request)
+        self._validate_projection(projection, projection_request)
+        return final_revision, projection
+
     def _validate_projection(
         self,
-        projection: CandidateSearchProjection,
-        request: CandidateSearchProjectionRequest,
+        projection: CandidateSearchProjection | FinalVersionSearchProjection,
+        request: CandidateSearchProjectionRequest | FinalVersionSearchProjectionRequest,
     ) -> None:
-        if type(projection) is not CandidateSearchProjection:
-            raise OpenWorldPublicationError(
-                "candidate projector returned an invalid projection"
-            )
-        if projection.key_identity != self.projector.key_identity:
-            raise OpenWorldPublicationError("candidate projector identity changed")
+        if type(request) is FinalVersionSearchProjectionRequest:
+            if type(projection) is not FinalVersionSearchProjection:
+                raise OpenWorldPublicationError(
+                    "candidate projector returned an invalid final-version projection"
+                )
+            if projection.key_identity != getattr(
+                self.projector, "final_version_key_identity", None
+            ):
+                raise OpenWorldPublicationError("candidate projector identity changed")
+            if projection.candidate_trigger != request.candidate_trigger:
+                raise OpenWorldPublicationError("candidate projection trigger changed")
+        elif type(request) is CandidateSearchProjectionRequest:
+            if type(projection) is not CandidateSearchProjection:
+                raise OpenWorldPublicationError(
+                    "candidate projector returned an invalid projection"
+                )
+            if projection.key_identity != self.projector.key_identity:
+                raise OpenWorldPublicationError("candidate projector identity changed")
+            if projection.preserved_trigger != request.preserved_trigger:
+                raise OpenWorldPublicationError("candidate projection trigger changed")
+        else:
+            raise OpenWorldPublicationError("candidate projector request is invalid")
         if projection.candidate_content_digest != request.candidate_content_digest:
             raise OpenWorldPublicationError("candidate projection content changed")
-        if projection.preserved_trigger != request.preserved_trigger:
-            raise OpenWorldPublicationError("candidate projection trigger changed")
 
     def _load_inputs(
         self, *, job_id: int, claim: OptimizationJobClaim, now: int

@@ -239,8 +239,8 @@ def judge_schema(data: models.RuleEvidenceInput, source: models.Session) -> Any:
         __base__=BoundedSlotAssessment,
         evidence_refs=(support, ...),
         counterevidence_refs=(contrary, ...),
-        clause_start=(clause | None, ...),
-        clause_end=(clause | None, ...),
+        clause_start=(cast(Any, clause | None), ...),
+        clause_end=(cast(Any, clause | None), ...),
     )
 
     def validate(value: Any) -> Any:
@@ -250,7 +250,7 @@ def judge_schema(data: models.RuleEvidenceInput, source: models.Session) -> Any:
     return create_model(
         "BoundedTargetDiagnostic",
         __base__=BoundedTargetDiagnostic,
-        observations=(list[observation], Field(max_length=8)),
+        observations=(cast(Any, list)[observation], Field(max_length=8)),
         rule_assessment=(assessment, ...),
         __validators__=cast(
             dict[str, Any], {"validate_source": model_validator(mode="after")(validate)}
@@ -376,7 +376,7 @@ def tune_schema(data: models.RuleEvidenceInput) -> Any:
     return create_model(
         "GlobalRuleAudit",
         __base__=GlobalRuleAudit,
-        edits=(list[edit], Field(max_length=4)),
+        edits=(cast(Any, list)[edit], Field(max_length=4)),
         __validators__=cast(
             dict[str, Any], {"validate_audit": model_validator(mode="after")(validate)}
         ),

@@ -88,7 +88,13 @@ class CapturesUnknownFields(BaseModel):
         extra="allow", json_schema_extra={"additionalProperties": False}
     )
 
-    _unknown_field_names: list[str] = PrivateAttr(default_factory=list)
+    # An immutable default, never ``default_factory``: pydantic < 2.14 inspects
+    # a private factory's signature on EVERY instance (~100us each for
+    # ``list``). A publish carries one ``ToolUsed`` per tool call -- 12,945 in
+    # one 6.6 MB production body -- so that per-instance cost made parsing the
+    # body, and re-parsing the stored rows for an exact-retry replay, take
+    # seconds of GIL-holding work each.
+    _unknown_field_names: tuple[str, ...] = PrivateAttr(default=())
 
     @model_validator(mode="after")
     def capture_and_strip_unknown_fields(self) -> Self:
@@ -98,13 +104,13 @@ class CapturesUnknownFields(BaseModel):
             Self: this model, with unknown keys recorded and removed.
         """
         if extra := self.__pydantic_extra__:
-            self._unknown_field_names = sorted(extra)
+            self._unknown_field_names = tuple(sorted(extra))
             self.__pydantic_extra__ = {}
         return self
 
     def unknown_field_names(self) -> list[str]:
         """Names of unrecognised keys the caller sent, if any."""
-        return self._unknown_field_names
+        return list(self._unknown_field_names)
 
 
 class BlockingIssueKind(StrEnum):

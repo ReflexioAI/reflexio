@@ -88,10 +88,10 @@ class _Module:
     string_mentions: list[int]  # lines of string constants naming a function
 
 
-def _aliases(tree: ast.Module) -> dict[str, str]:
+def _aliases(tree: ast.Module, nodes: list[ast.AST] | None = None) -> dict[str, str]:
     """Local name -> canonical function name, from ``from ... import``."""
     names = {name: _FAILURE if name == _INTERVAL else name for name in _CANONICAL}
-    for node in ast.walk(tree):
+    for node in nodes if nodes is not None else ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             for alias in node.names:
                 if alias.name in _CANONICAL:
@@ -364,11 +364,12 @@ def _shape(expr: ast.expr) -> Shape | None:
 
 def _scan(source: str) -> _Module:
     tree = ast.parse(source)
-    owner = _enclosing_functions(tree)
-    aliases = _aliases(tree)
+    nodes = list(ast.walk(tree))
+    owner = None
+    aliases = _aliases(tree, nodes)
     calls: list[_Call] = []
     accounted: set[int] = set()  # id() of reference nodes that are analysed
-    for node in ast.walk(tree):
+    for node in nodes:
         if not isinstance(node, ast.Call):
             continue
         kind = _canonical(node.func, aliases)
@@ -378,7 +379,11 @@ def _scan(source: str) -> _Module:
             continue
         accounted.add(id(reference))
         arg = _scope_arg(args, keywords, kind)
-        resolved = _resolve(arg, tree, owner) if arg is not None else None
+        resolved = None
+        if arg is not None:
+            if owner is None:
+                owner = _enclosing_functions(tree)
+            resolved = _resolve(arg, tree, owner)
         calls.append(
             _Call(
                 kind=kind,
@@ -389,14 +394,14 @@ def _scan(source: str) -> _Module:
         )
     stray = [
         node.lineno
-        for node in ast.walk(tree)
+        for node in nodes
         if isinstance(node, ast.Name | ast.Attribute)
         and _canonical(node, aliases) is not None
         and id(node) not in accounted
     ]
     strings = [
         node.lineno
-        for node in ast.walk(tree)
+        for node in nodes
         if isinstance(node, ast.Constant)
         and isinstance(node.value, str)
         and node.value.strip() in _CANONICAL
@@ -520,6 +525,78 @@ def test_the_scan_accounts_for_every_mention() -> None:
 
 
 # --- the rules fail on the shapes they exist to catch ------------------------
+
+
+@pytest.mark.parametrize(
+    "source,stray,strings,calls",
+    [
+        (r'"\x72eport_background_failure"' + "\n", [], [1], 0),
+        ('"report_background_" "failure"\n', [], [1], 0),
+        (
+            "from policy import report_background_failure as fail\nsaved = fail\n",
+            [2],
+            [],
+            0,
+        ),
+        ("ｒｅｐｏｒｔ_background_failure\n", [1], [], 0),
+        ("report_background_failure(log, 'event', exc)\n", [], [], 1),
+    ],
+    ids=["escaped", "concatenated", "alias", "normalized-name", "missing-scope"],
+)
+def test_scan_retains_full_reach_without_unneeded_owner_walks(
+    monkeypatch, source, stray, strings, calls
+) -> None:
+    walks = []
+    original_walk = ast.walk
+
+    def walk(tree: ast.AST):
+        walks.append(tree)
+        return original_walk(tree)
+
+    def unexpected_owner(_tree: ast.Module) -> dict[ast.AST, ast.AST]:
+        pytest.fail("no scope argument requires an enclosing-function map")
+
+    monkeypatch.setattr(ast, "walk", walk)
+    monkeypatch.setattr(f"{__name__}._enclosing_functions", unexpected_owner)
+    result = _scan(source)
+    assert len(walks) == 1 and isinstance(walks[0], ast.Module)
+    assert result.stray_references == stray
+    assert result.string_mentions == strings
+    assert len(result.calls) == calls
+    assert all(call.shape is None for call in result.calls)
+    with pytest.raises(SyntaxError):
+        _scan("def invalid(:")
+
+
+def test_named_scope_owners_are_shared_only_within_one_scan(monkeypatch) -> None:
+    source = (
+        "inner_scope = 'decoy:'\n"
+        "def outer(inner_scope):\n"
+        "    outer_scope = 'outer:'\n"
+        "    report_background_failure(log, 'event', exc, scope=outer_scope)\n"
+        "    report_background_success(outer_scope)\n"
+        "    async def nested():\n"
+        "        inner_scope = 'inner:'\n"
+        "        report_background_failure(log, 'event', exc, scope=inner_scope)\n"
+        "        report_background_success(inner_scope)\n"
+    )
+    trees = []
+    original_owner = _enclosing_functions
+
+    def owner(tree: ast.Module) -> dict[ast.AST, ast.AST]:
+        trees.append(tree)
+        return original_owner(tree)
+
+    monkeypatch.setattr(f"{__name__}._enclosing_functions", owner)
+    for prefix in ("inner:", "other:", "inner:"):
+        result = _scan(source.replace("inner:", prefix))
+        assert [call.shape for call in result.calls] == [
+            (("c", "outer:"),),
+            (("c", "outer:"),),
+            (("c", prefix),),
+            (("c", prefix),),
+        ]
+    assert len(trees) == len({id(tree) for tree in trees}) == 3
 
 
 def test_missing_success_is_reported() -> None:

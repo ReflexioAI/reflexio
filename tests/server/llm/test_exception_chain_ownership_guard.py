@@ -70,14 +70,6 @@ CHAIN_READS: dict[str, str] = {
         "failed corrective retry carries the earlier HANDLED rejection as its "
         "__context__ and must not be relabelled as the model's answer"
     ),
-    "server/services/durable_learning/worker.py::root_cause": (
-        "log-only: names the innermost explicit cause in a failure locator"
-    ),
-    "server/services/durable_learning/worker.py::_cause_chain": (
-        "classifies our own input-budget, evidence-changed and saved-output "
-        "errors (parking decisions), not provider failures; the verdict has no "
-        "answer for them"
-    ),
     "server/services/generation_service.py::callback": (
         "log-only: the agent-success log line names the wrapped error's type"
     ),

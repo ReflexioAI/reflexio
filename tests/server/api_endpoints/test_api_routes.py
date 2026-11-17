@@ -773,7 +773,7 @@ class TestSetConfigRoute:
 
         response = client.post(
             "/api/set_config",
-            json={"storage_config": {}, "window_size": 25},
+            json={"storage_config": {}, "profile_window_size": 25},
         )
 
         assert response.status_code == 200, response.text
@@ -831,7 +831,7 @@ class TestUpdateConfigRoute:
         ) as mock_invalidate:
             response = client.post(
                 "/api/update_config",
-                json={"window_size": 25},
+                json={"profile_window_size": 25},
             )
 
         assert response.status_code == 200, response.text
@@ -843,10 +843,12 @@ class TestUpdateConfigRoute:
         assert mock_reflexio.set_config.call_count == 1
         merged = mock_reflexio.set_config.call_args.args[0]
         assert isinstance(merged, Config)
-        assert merged.window_size == 25
+        assert merged.profile_window_size == 25
         assert merged.storage_config == existing.storage_config
         configurator = mock_reflexio.request_context.configurator
-        configurator.prepare_config_patch.assert_called_once_with({"window_size": 25})
+        configurator.prepare_config_patch.assert_called_once_with(
+            {"profile_window_size": 25}
+        )
 
         # Cache invalidated on success.
         mock_invalidate.assert_called_once_with(org_id="test-org")
@@ -911,12 +913,12 @@ class TestUpdateConfigRoute:
         existing = self._existing_config()
         self._wire_mock(mock_reflexio, existing)
         configurator = mock_reflexio.request_context.configurator
-        prepared = existing.model_copy(update={"window_size": 31})
+        prepared = existing.model_copy(update={"profile_window_size": 31})
         object.__setattr__(prepared, "_patch_marker", "prepared")
         configurator.prepare_config_patch.return_value = prepared
         configurator.prepare_config_patch.side_effect = None
 
-        response = client.post("/api/update_config", json={"window_size": 31})
+        response = client.post("/api/update_config", json={"profile_window_size": 31})
 
         assert response.status_code == 200, response.text
         assert mock_reflexio.set_config.call_args.args[0] is prepared
@@ -932,7 +934,7 @@ class TestUpdateConfigRoute:
         ) as mock_invalidate:
             response = client.post(
                 "/api/update_config",
-                json={"window_size": existing.window_size},
+                json={"profile_window_size": existing.profile_window_size},
             )
 
         assert response.status_code == 200, response.text
@@ -957,13 +959,13 @@ class TestUpdateConfigRoute:
         ) as mock_invalidate:
             response = client.post(
                 "/api/update_config",
-                json={"window_size": existing.window_size},
+                json={"profile_window_size": existing.profile_window_size},
             )
 
         assert response.status_code == 200, response.text
         assert mock_reflexio.set_config.call_count == 1
-        assert mock_reflexio.set_config.call_args.args[0].window_size == (
-            existing.window_size
+        assert mock_reflexio.set_config.call_args.args[0].profile_window_size == (
+            existing.profile_window_size
         )
         mock_invalidate.assert_called_once_with(org_id="test-org")
 
@@ -988,14 +990,14 @@ class TestUpdateConfigRoute:
         existing = self._existing_config()
         self._wire_mock(mock_reflexio, existing)
         configurator = mock_reflexio.request_context.configurator
-        normalized = existing.model_copy(update={"window_size": 25})
+        normalized = existing.model_copy(update={"profile_window_size": 25})
         object.__setattr__(normalized, "_overlay_marker", "normalized")
         configurator.normalize_config_payload.return_value = normalized
         configurator.normalize_config_payload.side_effect = None
 
         response = client.post(
             "/api/update_config",
-            json={"offline_tuner_config": {"enabled": True}, "window_size": 25},
+            json={"offline_tuner_config": {"enabled": True}, "profile_window_size": 25},
         )
 
         assert response.status_code == 200, response.text
@@ -1032,7 +1034,7 @@ class TestUpdateConfigRoute:
             "Configuration changed while writing"
         )
 
-        response = client.post("/api/update_config", json={"window_size": 25})
+        response = client.post("/api/update_config", json={"profile_window_size": 25})
 
         assert response.status_code == 409, response.text
         assert response.json()["detail"] == {
@@ -1072,7 +1074,7 @@ class TestUpdateConfigRoute:
         ) as mock_invalidate:
             response = client.post(
                 "/api/update_config",
-                json={"window_size": 25},
+                json={"profile_window_size": 25},
             )
 
         assert response.status_code == 200
@@ -1188,14 +1190,14 @@ class TestUpdateConfigRoute:
         with patch("reflexio.server.cache.reflexio_cache.invalidate_reflexio_cache"):
             response = client.post(
                 "/api/update_config",
-                json={"window_size": 25},
+                json={"profile_window_size": 25},
             )
 
         assert response.status_code == 200, response.text
         merged = mock_reflexio.set_config.call_args.args[0]
         assert isinstance(merged, Config)
         # The partial-touched field changed
-        assert merged.window_size == 25
+        assert merged.profile_window_size == 25
         assert merged.user_playbook_extractor_config is not None
         agg = merged.user_playbook_extractor_config.aggregation_config
         assert agg is not None

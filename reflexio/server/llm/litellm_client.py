@@ -6,6 +6,11 @@ using LiteLLM. It maintains the same interface as the existing LLMClient for eas
 CompletionResult and ModelProvenance expose the provenance-bearing return contract.
 """
 
+# Complete provider initialization before importing the third-party library.
+import reflexio.provider_bootstrap  # noqa: F401
+
+# isort: split
+
 import hashlib
 import json
 import logging
@@ -99,8 +104,8 @@ from reflexio.server.llm._litellm_types import (
     StructuredOutputParseError as StructuredOutputParseError,
 )
 from reflexio.server.llm.llm_utils import is_pydantic_model
-from reflexio.server.llm.providers.claude_code_provider import (
-    register_if_enabled as _register_claude_code,
+from reflexio.server.llm.providers.native_cli_provider import (
+    register_native_provider as _register_native_cli,
 )
 from reflexio.server.llm.providers.openclaw_provider import (
     register_if_enabled as _register_openclaw,
@@ -109,9 +114,9 @@ from reflexio.server.llm.providers.openclaw_provider import (
 # Suppress LiteLLM's verbose logging
 litellm.suppress_debug_info = True
 
-# Opt-in registration of local CLI providers. All no-ops unless the
-# matching env var is set. Safe to call at import.
-_register_claude_code()
+# Native name registration is safe at import: every call still authorizes
+# its exact operator target. OpenClaw retains its independent opt-in.
+_register_native_cli()
 _register_openclaw()
 
 # Public importer surface (the #1 invariant of the Tier-2.5 decomposition). These
@@ -209,13 +214,18 @@ class LiteLLMClient(TextGenerationMixin, EmbeddingMixin, StructuredOutputMixin):
         if not self.config.api_key_config:
             return None, None, None
 
+        model_to_check = model or self.config.model
+        # A reserved native reference cannot inherit gateway credentials or
+        # endpoint routing. Explicit HTTP roles retain gateway precedence.
+        if model_to_check.startswith("local-cli/"):
+            return None, None, None
+
         # Custom endpoint takes priority for non-embedding calls
         if not for_embedding:
             ce = self.config.api_key_config.custom_endpoint
             if ce and ce.api_key and ce.api_base:
                 return ce.api_key, str(ce.api_base), None
 
-        model_to_check = model or self.config.model
         model_lower = model_to_check.lower()
 
         return self._resolve_by_prefix(model_lower)
@@ -235,9 +245,10 @@ class LiteLLMClient(TextGenerationMixin, EmbeddingMixin, StructuredOutputMixin):
         if not akc:
             return None, None, None
 
-        # claude-code/* routes through the Claude Code CLI (custom provider);
-        # it has no API key config — auth comes from the CLI itself.
-        if model_lower.startswith("claude-code/"):
+        # Native routes have no API credential. Explicit HTTP requests may
+        # still carry an opaque old label: preserve its previous exclusion,
+        # rather than inferring an Anthropic key from the word "claude".
+        if model_lower.startswith(("local-cli/", "claude-code/")):
             return None, None, None
 
         for prefix, attr in self._SIMPLE_PROVIDER_PREFIXES.items():

@@ -77,6 +77,11 @@ from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 
 from ._dataset_path import resolve_sqlite_db_path
+from ._learning_policy_authority import (
+    complete_sqlite_dataset_creation,
+    reserve_new_sqlite_dataset,
+    retain_private_memory_creation,
+)
 from ._stall_state import init_stall_state_table
 from ._subject_write_gate import (
     backfill_user_playbook_subject_refs,
@@ -1185,8 +1190,11 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         # database path while allowing unrelated SQLite files to initialize in
         # parallel.
         with initialization_lock:
+            reserve_new_sqlite_dataset(db_path, org_id)
             self.conn = sqlite3.connect(db_path, check_same_thread=False)
             self.conn.row_factory = sqlite3.Row
+            if db_path == ":memory:":
+                retain_private_memory_creation(self.conn, org_id)
             register_unicode_lexical_index_function(self.conn)
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA foreign_keys=ON")
@@ -1221,6 +1229,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             temperature=0.0,
             api_key_config=self.api_key_config,
         )
+        if llm_config and llm_config.generation_max_output_tokens is not None:
+            litellm_config.max_tokens = llm_config.generation_max_output_tokens
         self.llm_client = LiteLLMClient(litellm_config)
 
         # Optionally load sqlite-vec for native KNN vector search
@@ -1230,6 +1240,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         # for the same file also need the shared path lock.
         with initialization_lock:
             self.migrate()
+            complete_sqlite_dataset_creation(self.conn, db_path, org_id)
 
     # ------------------------------------------------------------------
     # Transaction scope
@@ -1432,6 +1443,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             init_playbook_aggregation_tables(self.conn)
             self.conn.commit()
             backfill_user_playbook_subject_refs(self.conn, self.org_id)
+        from .profiles._attention import ATTENTION_DDL
+
+        with self._lock:
+            self.conn.executescript(ATTENTION_DDL)
         self._migrate_session_outcomes_schema()
         if self._has_sqlite_vec:
             self._create_vec_tables()
@@ -2898,6 +2913,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "'open_world_evidence_bundle'",
             "'open_world_discovery_memo'",
             "'open_world_candidate'",
+            "'open_world_content_result'",
+            "'open_world_trigger_result'",
             "'open_world_attempt_decision'",
         )
         if all(
@@ -2935,6 +2952,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                         'open_world_evidence_bundle',
                         'open_world_discovery_memo',
                         'open_world_candidate',
+                        'open_world_content_result',
+                        'open_world_trigger_result',
                         'open_world_attempt_decision'
                     )),
                     content_json TEXT NOT NULL,
@@ -3727,6 +3746,14 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 self.purge_content(entity_type="profile", entity_id=str(pid))
             for upid in purge_upb_ids:
                 self.purge_content(entity_type="user_playbook", entity_id=str(upid))
+            # Another SQLiteStorage connection has a different Python lock.
+            # Sweep access history only after preserved profile payloads are
+            # blank, so an in-flight accepted access cannot leave old epochs.
+            with self.commit_scope():
+                self.conn.execute(
+                    "DELETE FROM profile_access_epochs WHERE org_id=? AND user_id=?",
+                    (self.org_id, user_id),
+                )
 
         return {
             "session_outcomes": session_outcomes_cur.rowcount,
@@ -4080,6 +4107,8 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_artifacts (
         'open_world_evidence_bundle',
         'open_world_discovery_memo',
         'open_world_candidate',
+                        'open_world_content_result',
+                        'open_world_trigger_result',
         'open_world_attempt_decision'
     )),
     content_json TEXT NOT NULL,

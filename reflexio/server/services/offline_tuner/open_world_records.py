@@ -33,6 +33,8 @@ OPEN_WORLD_EVIDENCE_ARTIFACT_KIND = "open_world_evidence_bundle"
 OPEN_WORLD_EVIDENCE_OPTIMIZER_KIND = "offline_tuner_open_world"
 OPEN_WORLD_DISCOVERY_MEMO_ARTIFACT_KIND = "open_world_discovery_memo"
 OPEN_WORLD_CANDIDATE_ARTIFACT_KIND = "open_world_candidate"
+OPEN_WORLD_CONTENT_RESULT_ARTIFACT_KIND = "open_world_content_result"
+OPEN_WORLD_TRIGGER_RESULT_ARTIFACT_KIND = "open_world_trigger_result"
 OPEN_WORLD_ATTEMPT_DECISION_ARTIFACT_KIND = "open_world_attempt_decision"
 
 #: The terminal outcomes an open-world ``failed`` stage advance accepts: every
@@ -180,6 +182,43 @@ INVOCATION_ERROR_BY_REFUSAL: dict[OpenWorldRefusal, type[StorageError]] = {
 }
 
 
+#: The snapshot read refused a source whose consumed rows exceed the whole-read
+#: byte budget. Spelled here, not in ``evidence.open_world_models``, because
+#: storage raises it and this module is what storage may import without the
+#: ``evidence`` package; ``EVIDENCE_FAULT_REASONS`` re-uses these spellings.
+EVIDENCE_SOURCE_READ_BUDGET_EXCEEDED = "evidence_source_read_budget_exceeded"
+#: The snapshot read refused a source it could not finish inside the whole-read
+#: wall-clock deadline. Usually the same oversized source as the budget reason
+#: (the deadline is reached first on a slow stream); kept distinct because a
+#: deadline can also mean a slow database, and the operator must tell the two
+#: apart from the tick line alone.
+EVIDENCE_SOURCE_READ_DEADLINE_EXCEEDED = "evidence_source_read_deadline_exceeded"
+EVIDENCE_SOURCE_READ_LIMIT_REASONS: frozenset[str] = frozenset(
+    {EVIDENCE_SOURCE_READ_BUDGET_EXCEEDED, EVIDENCE_SOURCE_READ_DEADLINE_EXCEEDED}
+)
+
+
+class OpenWorldEvidenceSourceReadLimitError(StorageError):
+    """A snapshot read refused because its source exceeds a whole-read limit.
+
+    An eligibility answer about THIS playbook's evidence, not an infrastructure
+    fault: the same source is just as oversized on the next tick, so a caller
+    that lets it propagate unrecorded re-selects the same playbook forever. The
+    sweep maps it to ``ineligible_<reason>``, which spends the playbook's turn
+    under the ordinary same-day re-attempt bounds. No partial snapshot is ever
+    returned beside it.
+
+    Args:
+        reason (str): One of ``EVIDENCE_SOURCE_READ_LIMIT_REASONS``.
+    """
+
+    def __init__(self, reason: str) -> None:
+        if reason not in EVIDENCE_SOURCE_READ_LIMIT_REASONS:
+            raise ValueError(f"unknown evidence source read limit: {reason!r}")
+        super().__init__(reason)
+        self.reason = reason
+
+
 class OpenWorldOutcomeContractUnavailableError(StorageError):
     """A persisted outcome contract cannot be rebuilt into its descriptor.
 
@@ -221,7 +260,14 @@ class OpenWorldInvocationRow:
     state: Literal["prepared", "completed"]
     component_identity_digest: str
     input_digest: str
-    component_role: Literal["discovery", "candidate", "held_out"]
+    component_role: Literal[
+        "discovery",
+        "candidate",
+        "held_out",
+        "confirmation",
+        "trigger_gate",
+        "trigger_builder",
+    ]
     manifest_role: Literal["held_out", "safety_only"] | None
     user_id: str | None
     session_id: str | None
@@ -486,6 +532,7 @@ __all__ = [
     "OpenWorldInvocationIntegrityError",
     "OpenWorldEvidenceGovernanceError",
     "OpenWorldEvidenceLeaseConflictError",
+    "OpenWorldEvidenceSourceReadLimitError",
     "OpenWorldEvidenceStorageRecord",
     "OpenWorldAttemptContextRow",
     "OpenWorldEvidenceTargetStaleError",
@@ -500,6 +547,9 @@ __all__ = [
     "OpenWorldQualificationAuthorityStaleError",
     "OpenWorldSessionMemoRow",
     "StorageError",
+    "EVIDENCE_SOURCE_READ_BUDGET_EXCEEDED",
+    "EVIDENCE_SOURCE_READ_DEADLINE_EXCEEDED",
+    "EVIDENCE_SOURCE_READ_LIMIT_REASONS",
     "EVIDENCE_REATTEMPT_COOLDOWN_SECONDS",
     "EVIDENCE_REATTEMPT_LOOKBACK_SECONDS",
     "EVIDENCE_REATTEMPT_PREFIX",

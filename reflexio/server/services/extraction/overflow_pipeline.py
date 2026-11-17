@@ -13,7 +13,7 @@ from reflexio.server.llm._litellm_types import (
     ProviderRequestGuardError,
 )
 from reflexio.server.llm.input_budget import (
-    InputBudgetConfigurationError,
+    ExtractionInputIntegrityError,
     SavedOutputIncompatibleError,
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -39,6 +39,9 @@ from reflexio.server.services.extraction.resumable_agent import (
 )
 from reflexio.server.services.playbook.playbook_evidence import (
     resolve_verbatim_source_span,
+)
+from reflexio.server.services.profile.committed_output import (
+    read_saved_structured_output,
 )
 from reflexio.server.services.storage.storage_base import AgentRunStatus
 
@@ -118,10 +121,15 @@ def _candidate_source_spans(
     selected = {}
     for candidate in candidates:
         if field == "profiles":
-            spans = resolve_visible_quote(
-                candidate["source_span"], visible, require_unique=False
-            )
-            selected.update({span.evidence_ref: span for span in spans})
+            quotes = [candidate["source_span"]]
+            deadline = candidate.get("explicit_storage_deadline")
+            if deadline is not None:
+                quotes.append(deadline["source_quote"])
+            if candidate.get("explicit_forget_quote") is not None:
+                quotes.append(candidate["explicit_forget_quote"])
+            for quote in quotes:
+                spans = resolve_visible_quote(quote, visible, require_unique=False)
+                selected.update({span.evidence_ref: span for span in spans})
         else:
             for ref in candidate.get("evidence_refs", []):
                 span = resolve_evidence_span(ref.strip(), visible)
@@ -165,14 +173,16 @@ def _saved_raw_candidates(
             coordinator.require_prepared(), chunk, coordinator.record
         ):
             call = build_call()
-            output = call.schema.model_validate(receipt["output"]["output"])
+            output = read_saved_structured_output(
+                call.schema, receipt["output"]["output"]
+            )
             if call.validator is not None and call.validator(output):
                 raise ProviderRequestGuardError(
                     "Saved child lacks visible original evidence"
                 )
             presentation = current_overflow_presentation.get()
             if presentation is None:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Saved child presentation is unavailable"
                 )
             raw = output.model_dump(mode="json").get(field) or []
@@ -201,9 +211,9 @@ def _recover_saved_output(
     field = "profiles" if coordinator.window.kind == "profile" else "playbooks"
     saved_run = coordinator.saved_run
     if saved_run is None or saved_run.committed_output is None:
-        raise InputBudgetConfigurationError("Saved extraction output is unavailable")
+        raise ExtractionInputIntegrityError("Saved extraction output is unavailable")
     if not prepared.chunks:
-        raise InputBudgetConfigurationError("Extraction has no prepared chunks")
+        raise ExtractionInputIntegrityError("Extraction has no prepared chunks")
     with present_extraction_chunk(prepared, prepared.chunks[0], coordinator.record):
         cached_call = build_call()
     stored_schema = saved_run.generation_request_snapshot.get("output_schema_name")
@@ -212,7 +222,7 @@ def _recover_saved_output(
         and stored_schema is None
         and cached_call.schema.__name__ == "StructuredProfilesOutput"
     ):
-        raise InputBudgetConfigurationError("Saved extraction schema is incompatible")
+        raise ExtractionInputIntegrityError("Saved extraction schema is incompatible")
     checkpoint = coordinator.checkpoint
     saved_policy = checkpoint.get("extraction_policy")
     protocol_output = bool(saved_policy)
@@ -222,7 +232,7 @@ def _recover_saved_output(
             current_policy = _extraction_policy(coordinator, cached_call)
     try:
         payload, cached_provenance = decode_committed_output(saved_run.committed_output)
-        output = cached_call.schema.model_validate(payload)
+        output = read_saved_structured_output(cached_call.schema, payload)
         coverage = [coordinator.candidate_key(chunk.text) for chunk in prepared.chunks]
         evidence = checkpoint.get("candidate_evidence", {})
         if protocol_output:
@@ -266,7 +276,7 @@ def _recover_saved_output(
             "candidate_models" in checkpoint
             and set(checkpoint["candidate_models"]) != keys
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Saved candidate attribution contract changed"
             )
     except (ProviderRequestGuardError, ValueError) as exc:
@@ -335,7 +345,7 @@ def _instruction_contract(
     if call.context_free_messages is None:
         return None
     if call.template_identities is None:
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Extraction template identities unavailable"
         )
     return coordinator.step_key(
@@ -362,15 +372,15 @@ def _pin_extraction_policy(
     instructions = _instruction_contract(coordinator, call)
     saved_instructions = checkpoint.get("extraction_instruction_contract")
     if saved_instructions is not None and saved_instructions != instructions:
-        raise InputBudgetConfigurationError("Extraction instructions changed")
+        raise ExtractionInputIntegrityError("Extraction instructions changed")
     changed = previous != policy
     if previous is not None and changed:
         if instructions is None or saved_instructions != instructions:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Extraction policy changed after checkpoint"
             )
         if checkpoint.get("active_child") or checkpoint.get("waiting_child"):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Extraction context changed during an active continuation"
             )
         # Old outputs stay immutable and content-addressed in completed_steps.
@@ -409,13 +419,13 @@ def extract_overflow_window(
         with present_extraction_chunk(prepared, chunk, coordinator.record):
             call = build_call()
             if schema is not None and schema is not call.schema:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Extraction schema changed between chunks"
                 )
             schema = call.schema
             current_policy = _extraction_policy(coordinator, call)
             if policy_key is not None and policy_key != current_policy:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Extraction policy changed after checkpoint"
                 )
             _pin_extraction_policy(coordinator, call, current_policy)
@@ -435,7 +445,7 @@ def extract_overflow_window(
             if result.output is not None:
                 presentation = current_overflow_presentation.get()
                 if presentation is None:
-                    raise InputBudgetConfigurationError(
+                    raise ExtractionInputIntegrityError(
                         "Extraction child presentation is unavailable"
                     )
                 spans = _candidate_source_spans(
@@ -453,7 +463,7 @@ def extract_overflow_window(
                 result.model_provenance or ModelProvenance(),
             )
     if schema is None:
-        raise InputBudgetConfigurationError("Extraction has no prepared chunks")
+        raise ExtractionInputIntegrityError("Extraction has no prepared chunks")
     protected, protected_spans = protected_quote_view(prepared, coordinator.record)
     coordinator.carried_source_spans = (*carried.values(), *protected_spans)
 
@@ -473,7 +483,7 @@ def extract_overflow_window(
         output = schema.model_validate({field: []})
         provenance = ModelProvenance()
     elif len(prepared.chunks) == 1:
-        output = schema.model_validate({field: candidates})
+        output = read_saved_structured_output(schema, {field: candidates})
         provenance = next(iter(models.values()))
     else:
         messages = [
@@ -530,7 +540,7 @@ def extract_overflow_window(
                 )
             coordinator.complete_step(key, output.model_dump(mode="json"), provenance)
         else:
-            output = schema.model_validate(saved["output"])
+            output = read_saved_structured_output(schema, saved["output"])
             provenance = ModelProvenance(**saved["model_provenance"])
     if validate_final(output):
         raise ProviderRequestGuardError("Reconciled candidates lack original evidence")
@@ -573,7 +583,7 @@ def extract_overflow_window(
     payload, observed = decode_committed_output(envelope)
     return AgentRunResult(
         run_id=run_id,
-        output=schema.model_validate(payload),
+        output=read_saved_structured_output(schema, payload),
         pending_tool_call_ids=[],
         messages=[],
         trace=ToolLoopTrace(finished=True),
@@ -589,7 +599,7 @@ def _extraction_policy(
     """Use the same complete prompt contract for fresh and cached output."""
     presentation = current_overflow_presentation.get()
     if presentation is None or not presentation.is_present_in(call.messages):
-        raise InputBudgetConfigurationError("Extraction template omits prepared source")
+        raise ExtractionInputIntegrityError("Extraction template omits prepared source")
     return coordinator.step_key(
         "extraction-policy-v1",
         {

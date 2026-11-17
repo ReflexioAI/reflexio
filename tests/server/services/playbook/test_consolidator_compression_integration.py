@@ -157,10 +157,13 @@ def run(client, coordinator, data, references):
         return actor, result
 
 
-@pytest.mark.parametrize("model", ["claude-code/default", "openclaw/default"])
+@pytest.mark.parametrize("model", ["local-cli/codex", "openclaw/default"])
 def test_opaque_cli_consolidation_retains_audit_and_existing_owner(model, monkeypatch):
     from reflexio.server.llm.input_budget import extraction_provider_guard
     from reflexio.server.services.playbook.components import context_compression
+
+    if model.startswith("local-cli/"):
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", model)
 
     def reject_native_capacity(*args, **kwargs):
         raise AssertionError("Opaque CLI adapters must not claim native capacity")

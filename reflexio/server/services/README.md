@@ -36,6 +36,14 @@ strings before deleting old import paths in the same PR.
 
 ### Generation Services
 
+Prechecks and inline metering select input through
+`_collect_scoped_interactions_for_precheck`. When a gate is bypassed, metering
+uses that same collector rather than duplicating its window, source and rerun
+rules. A collected slice, including an empty one, is retained for the run.
+Durable generation already seeds its frozen slice before the gate; session
+evaluation's collector uses its supplied trajectory and still emits no Learning
+billing events. This does not change extraction configuration or billing consent.
+
 
 | Directory | Entry class | Key files |
 |-----------|-------------|-----------|
@@ -67,7 +75,8 @@ strings before deleting old import paths in the same PR.
 | `governance/` | Subject-reference and retention/barrier policy contracts: `config.py`, `service.py`, `subject_refs.py`. Storage and lineage code use these helpers to preserve governance constraints during writes, supersedes, and cleanup. |
 | `pre_retrieval/` | `QueryReformulator` (`_query_reformulator.py`) + `DocumentExpander` (`_document_expander.py`) - query rewrite and doc expansion for recall. Compact by design; see [README](pre_retrieval/README.md). |
 | `tagging/` | `TaggingService` (`service.py`) + deferred `tagging_scheduler.py` - post-generation profile/playbook tagging. Compact by design; see [README](tagging/README.md). |
-| `unified_search_service.py` | `run_unified_search()` — two-phase parallel search across profiles / agent playbooks / user playbooks. |
+| `unified_search_service.py` | `run_unified_search()` — native retrieval and typed selection across all three memory types, optional bounded judge evidence, then one final response and accepted-result owner. Preserves snapshot, scope, floors, recency, session and source-link ownership. |
+| `retrieval/native_selection.py`, `judge_payload.py`, `judge_client.py` | Immutable native plan and one pure selection rule; exact Jev 1.14 request/Trigger-only playbook evidence; explicit optional direct transport. `REFLEXIO_SEARCH_JUDGE=off` is the default and needs no client/key. `jev` enhances only supported default-five hybrid E5 requests with default recency and no session, explicit floor/threshold, reformulation/history or query-derived time signal. PROFILE-only requests remain native. Enabled failures propagate; no provider retry or native fallback. |
 | `search_observer.py` | Optional best-effort observer of final successful unified searches; carries correlation and learning IDs without response content. Uses the shared bounded callback executor with drop-oldest overflow and explicit tenant scope rebinding; observer latency/failure does not block retrieval. |
 | `search_exposure.py` | Optional synchronous recorder contract for final user-playbook result sets. Enterprise capability registration installs the recorder, which authenticated unified/direct search invokes before metering/response. A recorder failure does NOT fail the search: it is logged, reported as `search_exposure.recorder_failed`, and returned as `RECORDER_FAILED`. An uncorrelated batch is recorded and flagged `integrity_state=incomplete`, not refused. Shared `create_app()` has no default recorder; other constructions persist exposures only when they register one. Direct search omits empty batches. Batch-size and scoped-owner validation happens before recorder lookup and before unified-response acceptance; invalid results are not contained as recorder failures. Unscoped searches may include multiple owners. |
 | `retrieval/` | `agent_selection.py` — optional installed capability that selects a stable subsequence of final native agent results before accepted-response callbacks; bare OSS has no provider. `relevance_floor.py` — result relevance thresholding. `temporal.py` — temporal post-processing driven by reformulation signals: query time windows → per-arm SQL filters, near-duplicate freshness collapse for current-value questions, timestamp ordering for latest-value questions. `user_context_guard.py` — high-precision detection of explicit personalization opt-outs, including Simplified and Traditional Chinese, before user-context retrieval. (Superseded/expired rows are already excluded by storage search SQL.) |
@@ -92,6 +101,16 @@ the default temporal working-pool minimum is not an intermediate result ceiling.
 
 ## Architecture Pattern
 
+
+Profiles and playbooks implement `_get_extraction_window()` explicitly, reading
+their own two fields from the current request configuration. The generic pipeline
+does not infer a kind from an extractor's Python class or apply shared/override
+precedence. Session evaluation keeps its supplied trajectory. Durable admission
+captures the resolved pair in `Window.policy`; recovery uses that captured pair
+and the authenticated original extractor snapshot. Old snapshot geometry slots
+are inert hash/lookup metadata, never current policy inputs. Profile package
+preparation and parent records share the same snapshot encoder so a retry cannot
+invent a configuration change.
 
 Generation uses configured actors and fenced persistence; deferred workers rebuild request context rather than retaining request objects. Search composes reformulation, parallel entity retrieval, filtering, optional exposure recording, and asynchronous metering. Keep service-owned implementations behind their public entry points.
 

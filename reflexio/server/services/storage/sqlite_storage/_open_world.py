@@ -221,7 +221,7 @@ CREATE TABLE IF NOT EXISTS offline_tuner_open_world_invocations (
     candidate_artifact_digest TEXT,
     candidate_analyst_input_identity TEXT,
     CHECK (
-        (component_role IN ('discovery', 'candidate') AND manifest_role IS NULL
+        (component_role IN ('discovery', 'candidate', 'trigger_gate', 'trigger_builder') AND manifest_role IS NULL
          AND user_id IS NULL AND session_id IS NULL
          AND trajectory_digest IS NULL AND candidate_artifact_digest IS NULL
          AND candidate_analyst_input_identity IS NULL)
@@ -313,7 +313,7 @@ def _exposure_row(event: UserPlaybookExposureEvent) -> tuple[object, ...]:
 
 
 def migrate_open_world(conn: sqlite3.Connection) -> None:
-    """Create the open-world tables and indexes when absent. Idempotent.
+    """Create open-world tables/indexes and expand checked roles. Idempotent.
 
     Args:
         conn (sqlite3.Connection): An open SQLite connection.
@@ -325,7 +325,58 @@ def migrate_open_world(conn: sqlite3.Connection) -> None:
         conn.executescript("BEGIN;\n" + _EXPOSURE_DDL + "\nCOMMIT;")
     with conn:
         conn.executescript("BEGIN;\n" + _ATTEMPT_DDL + "\nCOMMIT;")
+    _upgrade_trigger_invocation_roles(conn)
     migrate_open_world_publication(conn)
+
+
+def _upgrade_trigger_invocation_roles(conn: sqlite3.Connection) -> None:
+    """Expand the invocation CHECK without losing existing rows or indexes.
+
+    No child table references invocation identities. A transaction rebuilds only
+    this table and recreates its exact maintained indexes; old receipts survive.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table'"
+        " AND name='offline_tuner_open_world_invocations'"
+    ).fetchone()
+    if row is None or "'trigger_gate'" in row[0]:
+        return
+    start = _ATTEMPT_DDL.index(
+        "CREATE TABLE IF NOT EXISTS offline_tuner_open_world_invocations"
+    )
+    end = _ATTEMPT_DDL.index(
+        "CREATE TABLE IF NOT EXISTS offline_tuner_session_compactions", start
+    )
+    definition = _ATTEMPT_DDL[start:end]
+    table_end = definition.index(";", definition.index("CREATE TABLE")) + 1
+    table_sql = definition[:table_end].replace(
+        "IF NOT EXISTS offline_tuner_open_world_invocations",
+        "offline_tuner_open_world_invocations_new",
+        1,
+    )
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(table_sql)
+        conn.execute(
+            "INSERT INTO offline_tuner_open_world_invocations_new"
+            " SELECT * FROM offline_tuner_open_world_invocations"
+        )
+        conn.execute("DROP TABLE offline_tuner_open_world_invocations")
+        conn.execute(
+            "ALTER TABLE offline_tuner_open_world_invocations_new"
+            " RENAME TO offline_tuner_open_world_invocations"
+        )
+        # executescript would commit before recreating the indexes. Keep all DDL
+        # inside this transaction and roll back the old table on any failure.
+        conn.execute(
+            "CREATE UNIQUE INDEX uq_open_world_invocations_manifest_slot"
+            " ON offline_tuner_open_world_invocations(job_id, component_role,"
+            " COALESCE(manifest_role, ''), COALESCE(user_id, ''), COALESCE(session_id, ''))"
+        )
+        conn.execute(
+            "CREATE INDEX idx_open_world_invocations_user"
+            " ON offline_tuner_open_world_invocations(user_id)"
+        )
 
 
 def _rebuild_exposure_ledger_without_integrity(conn: sqlite3.Connection) -> None:

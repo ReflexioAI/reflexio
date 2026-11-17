@@ -97,7 +97,7 @@ def test_corrected_context_declaration_resumes_only_the_original_contract(
                 "profiles": [
                     {
                         "content": "The user prefers concise answers.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                         "source_span": "I prefer concise answers with details 0",
                     }
                 ]

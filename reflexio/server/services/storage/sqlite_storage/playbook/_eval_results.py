@@ -427,12 +427,13 @@ class AgentEvaluationResultStoreMixin:
                 self._assert_subject_writable_locked(subject_ref)
                 state = self._rle_state_row(state_key)
                 generation = int(state.get("generation") or 0) + 1
+                # A refresh attempt must not relabel the prior result recipe.
+                # Only replacement publishes a new terminal certificate.
                 state.update(
                     {
                         "user_id": user_id,
                         "session_id": session_id,
                         "generation": generation,
-                        "evaluation_version": RETRIEVED_LEARNING_EVALUATION_VERSION,
                         "attempted_at": int(self._current_epoch()),
                     }
                 )

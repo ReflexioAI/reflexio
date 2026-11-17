@@ -102,8 +102,10 @@ def harness(tmp_path, monkeypatch):
     configurator.set_config(
         Config(
             storage_config=StorageConfigSQLite(db_path=str(tmp_path / "prov.db")),
-            window_size=10,
-            stride_size=5,
+            profile_window_size=10,
+            playbook_window_size=10,
+            profile_stride_size=5,
+            playbook_stride_size=5,
             profile_extractor_config=None,
             user_playbook_extractor_config=None,
             agent_success_config=None,

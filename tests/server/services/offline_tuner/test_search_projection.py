@@ -7,9 +7,72 @@ import pytest
 from reflexio.server.services.offline_tuner.search_projection import (
     CandidateSearchProjection,
     CandidateSearchProjectionRequest,
+    FinalVersionSearchProjection,
+    FinalVersionSearchProjectionRequest,
     SearchProjectorKeyIdentity,
     publication_search_projection,
 )
+
+
+@pytest.mark.parametrize("trigger", ["Unknown refund result", None, "", " \t"])
+def test_final_version_projection_has_explicit_trigger_and_separate_schema(trigger):
+    projection = FinalVersionSearchProjection(
+        projector_id="user-playbook-search",
+        projector_version="v2",
+        projector_code_digest="a" * 64,
+        candidate_content_digest="b" * 64,
+        candidate_trigger=trigger,
+        embedding_model_id="synthetic-embedding-v1",
+        embedding=("0.25",),
+        expanded_terms=("return",),
+        lexical_document="refund guidance",
+    )
+    assert (
+        FinalVersionSearchProjection.from_canonical_bytes(projection.canonical_bytes())
+        == projection
+    )
+    shared = publication_search_projection(projection)
+    assert shared.candidate_trigger == trigger
+    assert shared.canonical_json.encode() == projection.canonical_bytes()
+    assert b'"candidate_trigger":' in projection.canonical_bytes()
+    assert b'"preserved_trigger":' not in projection.canonical_bytes()
+    with pytest.raises(ValueError):
+        CandidateSearchProjection.from_canonical_bytes(projection.canonical_bytes())
+    with pytest.raises(ValueError):
+        FinalVersionSearchProjection.from_canonical_bytes(
+            _projection().canonical_bytes()
+        )
+
+
+def test_final_version_projection_request_preserves_blank_and_checks_other_inputs():
+    request = FinalVersionSearchProjectionRequest(
+        incumbent_user_playbook_id=1,
+        incumbent_content_digest="a" * 64,
+        candidate_content="The accepted final Content",
+        candidate_trigger=" \t",
+    )
+    assert request.candidate_trigger == " \t"
+    with pytest.raises(ValueError):
+        replace(request, candidate_trigger=3)
+    with pytest.raises(ValueError):
+        replace(request, candidate_content=" ")
+
+
+def test_final_version_publication_projection_cannot_disagree_with_its_bytes():
+    candidate = FinalVersionSearchProjection(
+        projector_id="user-playbook-search",
+        projector_version="v2",
+        projector_code_digest="a" * 64,
+        candidate_content_digest="b" * 64,
+        candidate_trigger="new trigger",
+        embedding_model_id="synthetic-embedding-v1",
+        embedding=("0.25",),
+        expanded_terms=(),
+        lexical_document="refund guidance",
+    )
+    shared = publication_search_projection(candidate)
+    with pytest.raises(ValueError, match="fields do not match"):
+        replace(shared, candidate_trigger="unbound trigger")
 
 
 def _projection() -> CandidateSearchProjection:
