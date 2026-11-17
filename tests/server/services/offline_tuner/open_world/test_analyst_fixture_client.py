@@ -468,3 +468,14 @@ def test_a_composed_transport_attests_a_matching_production_identity() -> None:
         )
         is client
     )
+
+
+@pytest.mark.parametrize("role", ["candidate", "trigger_gate", "trigger_builder"])
+def test_analyst_reducer_refuses_non_analyst_components(role):
+    from reflexio.server.services.offline_tuner.open_world.qualification import (
+        reduce_qualification_results,
+    )
+
+    identity = replace(_gate_identity("discovery"), component_role=role)
+    with pytest.raises(ValueError, match="only analyst components"):
+        reduce_qualification_results(load_qualification_suite(), (), identity)

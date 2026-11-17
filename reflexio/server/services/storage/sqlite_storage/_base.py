@@ -46,16 +46,10 @@ from reflexio.models.config_schema import (
     LLMConfig,
     SearchMode,
 )
-from reflexio.server import publish_timing, search_runtime
+from reflexio.server import initialize_server_runtime, publish_timing, search_runtime
 from reflexio.server.background_work import is_background_work
-from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-from reflexio.server.llm.model_defaults import (
-    ModelRole,
-    resolve_model_name,
-)
 from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
-    resolve_service_configured_model,
 )
 from reflexio.server.services.embedding_text import embedding_input
 from reflexio.server.services.storage.error import (
@@ -74,7 +68,6 @@ from reflexio.server.services.storage.session_outcome_identity import (
     outcome_contract_digest,
 )
 from reflexio.server.services.storage.storage_base import BaseStorage
-from reflexio.server.site_var.site_var_manager import SiteVarManager
 
 from ._dataset_path import resolve_sqlite_db_path
 from ._learning_policy_authority import (
@@ -1144,6 +1137,14 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         llm_config: LLMConfig | None = None,
         enable_document_expansion: bool = False,
     ) -> None:
+        initialize_server_runtime()
+        from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+        from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
+        from reflexio.server.llm.providers.embedding_service_provider import (
+            resolve_service_configured_model,
+        )
+        from reflexio.server.site_var.site_var_manager import SiteVarManager
+
         super().__init__(org_id)
         self.api_key_config = api_key_config
         self._enable_document_expansion = enable_document_expansion

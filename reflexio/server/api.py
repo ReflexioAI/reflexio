@@ -14,10 +14,16 @@ iterates (e.g. the QPS billable-endpoint scan over ``core_router.routes``).
 ``reflexio.server.middleware`` for backwards-compatible imports.
 """
 
+from reflexio.server import initialize_server_runtime
+
+initialize_server_runtime()
+
+# isort: split
+
 from reflexio.cli.env_loader import block_implicit_dotenv_walkup
 from reflexio.native_compute import configure_tokenizer_compute
 
-# Explicit serving startup, after parent-package env loading and before native
+# Explicit serving startup, after explicit runtime initialization and before native
 # imports. Direct SDK users still configure at each actual operation.
 block_implicit_dotenv_walkup()
 configure_tokenizer_compute()

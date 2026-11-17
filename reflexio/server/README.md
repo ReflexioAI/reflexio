@@ -46,6 +46,14 @@ than every 300s, background failures stay at WARNING; request-path errors and
 health alarms still page in that case.
 
 
+Runtime startup is explicit: `initialize_server_runtime()` in `__init__.py`
+loads operator policy and configures logging once. API, inference, launcher,
+library and direct SQLite-construction entrypoints call it before runtime work.
+Importing control/schema or pure logging modules stays passive; the existing
+server constants lazily use the same startup owner. SQLite metadata code imports
+capacity/integrity exception types from `_litellm_types.py`, keeping provider
+setup in actual model-client construction.
+
 - [Main Entry Points](#main-entry-points)
 - [Cache](#cache)
 - [API Endpoints](#api-endpoints)

@@ -66,7 +66,7 @@ CAPACITY_RAISES: frozenset[tuple[str, str]] = frozenset(
 
 #: Classes deriving directly from the capacity class.
 CAPACITY_SUBCLASSES: frozenset[tuple[str, str]] = frozenset(
-    {(INPUT_BUDGET, "ExtractionInputIntegrityError")}
+    {("reflexio/server/llm/_litellm_types.py", "ExtractionInputIntegrityError")}
 )
 
 

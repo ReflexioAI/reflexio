@@ -144,6 +144,12 @@ def test_selected_target_is_admitted_even_without_a_generation_change(
     def select(document, _version):
         document["storage_config"]["db_path"] = str(selected)
 
+    if operation == "publish":
+        # Publication consumes the prepared current file, not an old physical
+        # generation. Retargeting must still admit the selected dataset.
+        storage.prepare_for_startup()
+        original = path.read_bytes()
+
     with pytest.raises(ValueError, match="Legacy publication cutover refused"):
         if operation == "prepare":
             storage.prepare_for_startup(edit=select)

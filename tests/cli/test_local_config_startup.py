@@ -150,6 +150,19 @@ def test_ordinary_restart_preserves_database_and_unrelated_raw_fields(
     assert pending["pending_ttl_seconds"] == 86_400
     pending["pending_ttl_seconds"] = 0
     expected["pending_tool_call_config"] = pending
+    assert expected.pop("window_size") == 11
+    assert expected.pop("stride_size") == 3
+    for kind in ("profile_extractor_config", "user_playbook_extractor_config"):
+        extractor = dict(expected[kind])
+        assert extractor.pop("window_size_override") is None
+        assert extractor.pop("stride_size_override") is None
+        expected[kind] = extractor
+    expected.update(
+        profile_window_size=11,
+        profile_stride_size=3,
+        playbook_window_size=11,
+        playbook_stride_size=3,
+    )
     assert logical == expected
     first = saved_local_config.read_bytes()
     run_services.execute(args, storage=explicit_storage)

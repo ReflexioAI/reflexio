@@ -317,7 +317,9 @@ def test_required_profile_deadlines_start_with_all_optional_gc_disabled(monkeypa
     )
     ctx = _make_ctx("org_1", lineage_gc=LineageGCConfig(tombstone_grace_window_days=0))
     with patch.object(LineageGCScheduler, "start") as start:
-        result = maybe_start_lineage_gc(lambda _: ctx, bootstrap_org_id="org_1")
+        result = maybe_start_lineage_gc(
+            MagicMock(return_value=ctx), bootstrap_org_id="org_1"
+        )
     assert result is not None
     start.assert_called_once()
 

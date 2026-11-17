@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC
 from typing import Any
 
-from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
+from reflexio.server.llm._litellm_types import ExtractionInputIntegrityError
 from reflexio.server.services.deferred_learning_plan import (
     ExtractorBookmarkPosition,
     PlaybookWritePlan,

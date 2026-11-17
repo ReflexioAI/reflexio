@@ -139,6 +139,10 @@ def test_publish_success_events_are_delivered_as_one_batch(publish_fixture):
     assert len(recorder.batches) == 1
     (batch,) = recorder.batches
     assert [e.event_name for e in batch] == ["publish_request_succeeded"] * 3
-    assert sorted(e.event_key for e in batch) == ["pub:1", "pub:2", "pub:3"]
+    keys = []
+    for event in batch:
+        assert event.event_key is not None
+        keys.append(event.event_key)
+    assert sorted(keys) == ["pub:1", "pub:2", "pub:3"]
     assert {e.org_id for e in batch} == {"publish_events_test_org"}
     assert all(e.count_value == 1 for e in batch)

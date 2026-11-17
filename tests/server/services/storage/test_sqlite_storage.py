@@ -1396,9 +1396,7 @@ def test_embedding_input_formatting_is_model_specific():
 
     with (
         tempfile.TemporaryDirectory() as temp_dir,
-        patch(
-            "reflexio.server.services.storage.sqlite_storage._base.LiteLLMClient"
-        ) as mock_cls,
+        patch("reflexio.server.llm.litellm_client.LiteLLMClient") as mock_cls,
     ):
         mock_cls.return_value.get_embedding = mock_llm_get_embedding
         with patch.object(SQLiteStorage, "_try_load_sqlite_vec", return_value=False):
@@ -1433,9 +1431,7 @@ def test_embedding_unavailable_degrades_to_empty_vector():
 
     with (
         tempfile.TemporaryDirectory() as temp_dir,
-        patch(
-            "reflexio.server.services.storage.sqlite_storage._base.LiteLLMClient"
-        ) as mock_cls,
+        patch("reflexio.server.llm.litellm_client.LiteLLMClient") as mock_cls,
     ):
         mock_cls.return_value.get_embedding = mock_llm_get_embedding
         with patch.object(SQLiteStorage, "_try_load_sqlite_vec", return_value=False):

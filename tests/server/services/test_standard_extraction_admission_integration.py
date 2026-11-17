@@ -172,11 +172,24 @@ def test_native_only_provider_keeps_existing_adapter_without_agent_role(
                     {provider: {"api_key": "synthetic-native-provider-key"}}
                 ),
                 "llm_config": LLMConfig(
-                    generation_model_name=model, should_run_model_name=model
+                    generation_model_name=model,
+                    should_run_model_name=model,
+                    generation_max_output_tokens=256,
                 ),
             }
         )
     )
+    # This synthetic adapter-selection test does not qualify a provider's live
+    # model catalog. Supply the selected fixture model's capacity while keeping
+    # the real reservation and input-budget checks in the execution path.
+    real_model_info = litellm.get_model_info
+
+    def fixture_model_info(name, *args, **kwargs):
+        if name == model:
+            return {"max_input_tokens": 16384, "max_output_tokens": 256}
+        return real_model_info(name, *args, **kwargs)
+
+    monkeypatch.setattr(litellm, "get_model_info", fixture_model_info)
     calls = []
 
     def respond(_client, params, _timeout):
@@ -204,6 +217,7 @@ def test_native_only_provider_keeps_existing_adapter_without_agent_role(
         engine.request_context, create_generation_litellm_client(engine.request_context)
     ).execute(window, token)
     assert len(calls) == 1 and calls[0]["model"] == model
+    assert calls[0]["max_tokens"] == 256
     parent = storage.get_agent_run(f"window:{window.window_id}")
     assert parent is None or "overflow" not in parent.generation_request_snapshot
     assert storage.extraction_status("u", "native-only-gate") == {

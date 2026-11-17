@@ -1,7 +1,7 @@
 """Shared types + exceptions for the ``litellm_client`` facade (Tier-2.5 leaf).
 
 Stateless leaf module: the config dataclass, the tool-calling response dataclass,
-and the three client exceptions. Both the facade and the concern mixins import
+and shared client/capacity/integrity exceptions. The facade and concern mixins import
 these, so keeping them in a dependency-free leaf prevents a mixin<->facade cycle.
 
 Bodies are moved VERBATIM from the former monolithic ``litellm_client.py`` — no
@@ -22,6 +22,46 @@ from reflexio.models.config_schema import APIKeyConfig
 
 class ProviderRequestGuardError(RuntimeError):
     """Raised when a caller rejects built params at the provider boundary."""
+
+
+class InputBudgetConfigurationError(ProviderRequestGuardError):
+    """A safe effective model/endpoint capacity could not be established.
+
+    Raise it only where capacity is established in the input-budget dispatcher. An
+    extraction whose frozen inputs are unavailable, changed or malformed raises
+    :class:`ExtractionInputIntegrityError` instead;
+    ``tests/server/llm/test_capacity_error_raise_guard.py`` enforces the split.
+    """
+
+
+class ExtractionInputIntegrityError(InputBudgetConfigurationError):
+    """An extraction's frozen inputs are unavailable, changed or malformed.
+
+    Not a capacity failure: a binding, scope, witness, answer or saved output
+    no longer matches what the extraction was admitted with. It subclasses
+    :class:`InputBudgetConfigurationError` so every existing handler treats it
+    the same way: the window retries with backoff to the attempt ceiling, and
+    the cursor's ``last_error`` and the public learning-status ``reason`` stay
+    ``input_budget_configuration_error``. Only the internal label differs:
+    ``classify_window_failure`` reports it as ``input_integrity_error`` in logs
+    and metrics.
+    """
+
+
+class SavedOutputIncompatibleError(ExtractionInputIntegrityError):
+    """Saved extraction output fails the current contract; retrying cannot fix it.
+
+    The worker holds the window for an operator instead of retrying it.
+    """
+
+
+class ComputationEvidenceChangedError(ExtractionInputIntegrityError):
+    """Evidence a cached extraction computation was based on has changed.
+
+    The refusal is correct, but retrying the same cached computation cannot
+    pass. The worker discards that computation and recomputes it against
+    current evidence, consuming the window's existing provider attempt budget.
+    """
 
 
 ProviderRequestGuard = Callable[[dict[str, Any], float, tuple[str, ...], bool], None]
