@@ -148,7 +148,10 @@ def test_selected_target_is_admitted_even_without_a_generation_change(
         if operation == "prepare":
             storage.prepare_for_startup(edit=select)
         else:
+            # A full replacement selects current policy; it cannot carry the
+            # old file's generation envelope, which is refused before admission.
             candidate = json.loads(original)
+            candidate.pop("_reflexio_config_file")
             candidate["storage_config"]["db_path"] = str(selected)
             storage._publish_config_document(json.dumps(candidate))
     assert path.read_bytes() == original

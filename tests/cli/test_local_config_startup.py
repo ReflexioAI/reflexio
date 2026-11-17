@@ -150,6 +150,18 @@ def test_ordinary_restart_preserves_database_and_unrelated_raw_fields(
     assert pending["pending_ttl_seconds"] == 86_400
     pending["pending_ttl_seconds"] = 0
     expected["pending_tool_call_config"] = pending
+    # Generation 15 gives each extractor its own window policy: the shared
+    # window/stride become per-kind leaves and the null overrides are removed.
+    window = expected.pop("window_size")
+    stride = expected.pop("stride_size")
+    for kind in ("profile", "playbook"):
+        expected[f"{kind}_window_size"] = window
+        expected[f"{kind}_stride_size"] = stride
+    for extractor in ("profile_extractor_config", "user_playbook_extractor_config"):
+        settings = dict(expected[extractor])
+        assert settings.pop("window_size_override") is None
+        assert settings.pop("stride_size_override") is None
+        expected[extractor] = settings
     assert logical == expected
     first = saved_local_config.read_bytes()
     run_services.execute(args, storage=explicit_storage)

@@ -41,10 +41,10 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "playbook_consolidation": ("v2.6.0", "playbook_consolidation"),
     "playbook_optimizer_judge": ("v1.2.0", None),
     "profile_update_main": ("v1.0.0", "profile_extraction"),
-    "profile_update_instruction_start": ("v1.4.0", None),
+    "profile_update_instruction_start": ("v1.5.0", None),
     "profile_should_generate": ("v1.1.0", "boolean_evaluation"),
     "profile_should_generate_override": ("v1.0.0", "boolean_evaluation"),
-    "profile_deduplication": ("v1.2.0", "profile_deduplication"),
+    "profile_deduplication": ("v1.3.0", "profile_deduplication"),
     "tagging": ("v1.0.0", "tagging"),
     "agent_success_evaluation": ("v1.3.0", "agent_success_evaluation"),
     # Retrieved-learning judges — per-learning relevance/impact verdicts for
