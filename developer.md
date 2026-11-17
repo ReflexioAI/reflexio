@@ -119,6 +119,32 @@ Existing durable authority always wins over the opening SDK's source policy.
 The private `:memory:` connection uses SQLite's guaranteed new-database identity.
 Explicit file paths retain their existing meaning and are never redirected.
 
+For the qualified retained SDK70daf32c SQLite schema, first stop affected services
+and coding-host sessions and keep the selected file quiescent. Then run
+`reflexio --json data upgrade-local /absolute/path/to/existing.sqlite`. This
+explicit offline command proves the retained identity, exact supported schema,
+neutral scope and durable execution/financial closure on its existing writer;
+it publishes only the current future-policy authority atomically. It never
+constructs normal storage, loads operator `.env`, migrates business data, clears
+work or changes configuration. Authentic queued, unstarted intake is preserved.
+Both shared metadata page readers reject NULL key components over the full
+scoped source before applying keyset boundaries. A NULL historical text primary
+key must never be mistaken for an empty page or disappear from closure.
+
+The first supported cohort additionally requires the enumerated independent
+tuner/aggregation/control tables to be empty and learning not to be stalled.
+Unknown schemas, claims, work or debt remain held for their existing recovery
+owner; there is no force option. The inspectable
+`sqlite_storage/_historical_schema_70daf32c.json` contract is bound to actual
+predecessor-produced fixtures. Virtual parents and their auxiliaries are proved
+by exact catalog ownership, not by a name prefix or SQLite's shadow label.
+Successful JSON includes the new provenance descriptor. A retry returns the
+retained authority/origin/digest and explicitly reports the original descriptor
+unavailable; fresh observations never masquerade as original provenance.
+This action establishes policy for future work, not unchanged historical policy.
+Native databases, automatic plugin activation, mixed-version operation and
+Windows adoption are separate qualifications.
+
 SQLite authority semantics require compatible writers using the maintained
 owner. Mixed-version safety against an unpatched process is not qualified;
 SQLite does not install a missing-UDF trigger or claim native protocol parity.

@@ -51,6 +51,16 @@ def _pages(
     *,
     prefix_params: tuple = (),
 ) -> Iterator[dict[str, Any]]:
+    # NULL tuple keys are not ordered by SQL comparisons and can vanish below
+    # the upper key or after cursor. They are unproven retained source, never an
+    # empty source, even if the current schema normally forbids such keys.
+    if db.query(
+        f"SELECT EXISTS(SELECT 1 FROM {db.table(table)} r WHERE {predicate} AND ("
+        + " OR ".join(f"{key} IS NULL" for key in keys)
+        + ")) AS present",
+        params,
+    )[0]["present"]:
+        raise _ObservationRefusedError("source_key_unproven")
     # A fixed DB-ordered upper key prevents a steady stream of new higher IDs
     # extending this observation. Compare keys in SQL, never Python collation.
     top = db.query(

@@ -8,7 +8,7 @@ Description: Typer command layer for local service management and typed calls to
 
 - **`root_app.py`** — shared global options without service imports
 - **`app.py`** — full command-group registration after environment bootstrap
-- **`offline.py`** — explicit file-command dispatch before environment bootstrap
+- **`offline.py`** — explicit config-copy and existing local-dataset upgrade dispatch before environment bootstrap
 - **`config_upgrade.py`** — explicit current-generation JSON-copy publication and selected-org pre-launch preparation
 - **`commands/`** — domain command handlers
 - **`_client.py`** — configured SDK client construction
@@ -61,6 +61,7 @@ Most common commands at a glance:
 | List profiles | `reflexio user-profiles list --user-id USER` |
 | List playbooks | `reflexio agent-playbooks list` |
 | Check health | `reflexio status check` |
+| Qualify a stopped, supported retained SQLite dataset | `reflexio --json data upgrade-local /absolute/existing.sqlite` |
 | Stop server | `reflexio services stop` |
 
 ## Install & invoke

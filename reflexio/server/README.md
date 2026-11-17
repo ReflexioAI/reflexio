@@ -881,6 +881,13 @@ deadline or cancellation policy and retains its existing waits and cleanup.
 | `retention.py`, `retention_mixin.py` | Data retention and cleanup helpers |
 | `constants.py`, `error.py` | Storage constants and shared errors |
 
+`sqlite_storage/_learning_policy_authority.py` also owns the explicit
+`reflexio data upgrade-local` operation. It uses an existing-only metadata
+connection and the inspectable `_historical_schema_70daf32c.json` contract,
+never the normal constructor or business migrations. Unknown schema, scope,
+independent work and financial debt remain held. See developer.md's learning
+policy authority section for its stopped-host prerequisite and bounded cohort.
+
 SQLite bootstrap executes the base schema in one explicit transaction, avoiding
 a durable commit per CREATE statement. A base-schema failure rolls back that
 transaction so startup can retry; legacy upgrade ordering and later migration
