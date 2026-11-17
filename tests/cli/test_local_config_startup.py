@@ -187,6 +187,12 @@ def test_real_server_upgrades_before_serving_and_keeps_owned_dataset(
     original = saved_local_config.read_bytes()
     document = decode_config_document(original.decode())
     database = document["storage_config"]["db_path"]
+    from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+
+    # This test upgrades saved settings around an already qualified dataset.
+    # Historical data without authority requires explicit maintenance first.
+    storage = SQLiteStorage(org_id="startup-owner", db_path=database)
+    storage.conn.close()
     with sqlite3.connect(database) as connection:
         connection.execute("CREATE TABLE upgrade_identity (value TEXT)")
         connection.execute("INSERT INTO upgrade_identity VALUES ('same-owned-dataset')")

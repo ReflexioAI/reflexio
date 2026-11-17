@@ -23,6 +23,148 @@ CONTRACT = json.loads(
 )
 
 
+def historical_settings(tmp_path, database):
+    from reflexio.server.services.configurator.local_file_config_storage import (
+        LocalFileConfigStorage,
+    )
+
+    settings = LocalFileConfigStorage("historical_http", base_dir=str(tmp_path))
+    path = Path(settings.config_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original = json.dumps(
+        {
+            "_reflexio_config_file": {"version": 14},
+            "storage_config": {"type": "sqlite", "db_path": str(database)},
+            "window_size": 23,
+            "stride_size": 7,
+            "opaque": {"preserve": "original"},
+        }
+    ).encode()
+    path.write_bytes(original)
+    return settings, path, original
+
+
+@pytest.mark.parametrize(
+    "cohort",
+    [
+        "empty",
+        "completed",
+        "eligible_queued",
+        "filtered_queued",
+        "filtered_drained",
+        "billing_pending",
+        "window_pending",
+        "unclaimed_empty",
+        "unclaimed_completed",
+    ],
+)
+def test_settings_upgrade_cannot_publish_before_retained_dataset_qualification(
+    tmp_path, cohort
+):
+    database = retained(tmp_path, cohort)
+    settings, path, original = historical_settings(tmp_path, database)
+    before = database.read_bytes()
+    with pytest.raises(LearningTransitionBlockedError, match="upgrade-local"):
+        settings.prepare_for_startup()
+    assert path.read_bytes() == original
+    assert database.read_bytes() == before
+    assert not (path.parent / ".config-migrations").exists()
+
+
+@pytest.mark.parametrize("cohort", ["completed", "eligible_queued"])
+def test_explicit_dataset_upgrade_precedes_real_settings_publication(tmp_path, cohort):
+    from reflexio.config_file import FILE_FORMAT_VERSION
+
+    database = retained(tmp_path, cohort)
+    settings, path, original = historical_settings(tmp_path, database)
+    result = owner.upgrade_existing_sqlite_dataset(database)
+    before = database.read_bytes()
+    assert settings.prepare_for_startup()
+    current = json.loads(path.read_bytes())
+    assert current["_reflexio_config_file"]["version"] == FILE_FORMAT_VERSION
+    assert (current["profile_window_size"], current["profile_stride_size"]) == (23, 7)
+    assert current["storage_config"]["db_path"] == str(database)
+    assert current["opaque"] == {"preserve": "original"}
+    originals = list((path.parent / ".config-migrations" / path.name).glob("*.json"))
+    assert len(originals) == 1 and originals[0].read_bytes() == original
+    prepared = path.read_bytes()
+    assert not settings.prepare_for_startup()
+    assert path.read_bytes() == prepared
+    assert database.read_bytes() == before
+    assert owner.upgrade_existing_sqlite_dataset(database).authority == result.authority
+
+
+@pytest.mark.parametrize("state", ["sealed", "armed", "different_policy", "malformed"])
+def test_settings_publication_cannot_bypass_a_held_or_invalid_root(tmp_path, state):
+    from dataclasses import replace
+
+    from reflexio.profile_authoring_protocol import (
+        AUTHORING_POLICIES,
+        PROFILE_AUTHORING_POLICY,
+    )
+
+    database = retained(tmp_path)
+    root = owner.upgrade_existing_sqlite_dataset(database).authority
+    if state in {"sealed", "armed"}:
+        payload = replace(
+            root,
+            phase=state,
+            operation_id="owned-cutover-operation",
+            target_policy=PROFILE_AUTHORING_POLICY,
+        ).to_dict()
+    elif state == "different_policy":
+        payload = replace(
+            root,
+            active_policy=next(
+                p for p in AUTHORING_POLICIES if p != PROFILE_AUTHORING_POLICY
+            ),
+        ).to_dict()
+    else:
+        payload = {}
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute(
+            "UPDATE _learning_policy_authority SET authority=? WHERE singleton=1",
+            (json.dumps(payload),),
+        )
+    settings, path, original = historical_settings(tmp_path, database)
+    before = database.read_bytes()
+    with pytest.raises((LearningTransitionBlockedError, ValueError)):
+        settings.prepare_for_startup()
+    assert path.read_bytes() == original
+    assert database.read_bytes() == before
+    assert not (path.parent / ".config-migrations").exists()
+
+
+@pytest.mark.parametrize("unqualified", ["source", "destination"])
+def test_storage_retarget_checks_both_existing_datasets(tmp_path, unqualified):
+    from reflexio.config_file import FILE_FORMAT_VERSION
+    from reflexio.models.config_schema import Config, StorageConfigSQLite
+
+    source = retained(tmp_path)
+    destination_dir = tmp_path / "destination"
+    destination_dir.mkdir()
+    destination = retained(destination_dir)
+    owner.upgrade_existing_sqlite_dataset(
+        destination if unqualified == "source" else source
+    )
+    settings, path, _ = historical_settings(tmp_path, source)
+    # A strict current file can still refer to a previously held dataset.
+    # Retargeting must check it as well as the newly selected destination.
+    document = Config(
+        storage_config=StorageConfigSQLite(db_path=str(source))
+    ).model_dump(mode="json")
+    document["_reflexio_config_file"] = {"version": FILE_FORMAT_VERSION}
+    original = json.dumps(document).encode()
+    path.write_bytes(original)
+    before = {p: p.read_bytes() for p in (source, destination)}
+    with pytest.raises(LearningTransitionBlockedError, match="upgrade-local"):
+        settings.save_config(
+            Config(storage_config=StorageConfigSQLite(db_path=str(destination)))
+        )
+    assert path.read_bytes() == original
+    assert all(p.read_bytes() == raw for p, raw in before.items())
+
+
 def retained(tmp_path, cohort="completed"):
     target = tmp_path / "retained.sqlite"
     raw = gzip.decompress((FIXTURES / f"{cohort}.sqlite.gz").read_bytes())
