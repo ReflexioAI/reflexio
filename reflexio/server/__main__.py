@@ -22,6 +22,7 @@ import sys
 import uvicorn
 
 from reflexio.removed_env import reject_removed_env
+from reflexio.server import initialize_server_runtime
 from reflexio.server.uvicorn_logging import UVICORN_LOG_CONFIG
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,7 @@ def main(argv: list[str] | None = None) -> None:
         SystemExit: When ``--reload`` is combined with ``--workers > 1``, or when
             ``--workers < 1`` is specified.
     """
+    initialize_server_runtime()
     parser = _build_parser()
     args = parser.parse_args(argv)
     reject_removed_env(os.environ, canonical="server --workers N")

@@ -179,7 +179,11 @@ def test_oss_startup_ignores_obsolete_value_with_diagnostic(tmp_path, name):
     home = tmp_path / "home"
     home.mkdir()
     result = subprocess.run(  # noqa: S603 -- Fixed interpreter/script, isolated HOME/env.
-        [sys.executable, "-c", "import reflexio.server; print('startup-ready')"],
+        [
+            sys.executable,
+            "-c",
+            "from reflexio.server import initialize_server_runtime; initialize_server_runtime(); print('startup-ready')",
+        ],
         env={
             "PATH": os.environ["PATH"],
             "HOME": str(home),

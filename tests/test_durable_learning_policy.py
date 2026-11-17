@@ -102,7 +102,9 @@ def test_discovery_wait_and_epoch_boundaries_are_enforced():
 @pytest.mark.parametrize(
     "value,accepted", [("10", True), ("private-invalid-input", False)]
 )
-def test_server_import_validates_policy_before_workers_start(tmp_path, value, accepted):
+def test_server_startup_validates_policy_before_workers_start(
+    tmp_path, value, accepted
+):
     env = {
         **os.environ,
         "REFLEXIO_DURABLE_LEARNING_POLL_SECONDS": value,
@@ -111,7 +113,12 @@ def test_server_import_validates_policy_before_workers_start(tmp_path, value, ac
         "LOCAL_STORAGE_PATH": str(tmp_path),
     }
     result = subprocess.run(  # noqa: S603 - fixed interpreter and literal import; no shell.
-        [sys.executable, "-c", "import reflexio.server"],
+        [
+            sys.executable,
+            "-c",
+            "from reflexio.server import initialize_server_runtime; "
+            "initialize_server_runtime()",
+        ],
         env=env,
         text=True,
         capture_output=True,
@@ -192,7 +199,12 @@ def test_invalid_aggregation_policy_rejected_before_scheduler_or_admission(
 def test_aggregation_startup_rejects_custom_timing(tmp_path, key):
     env = {**os.environ, key: "private-value", "LOCAL_STORAGE_PATH": str(tmp_path)}
     result = subprocess.run(  # noqa: S603 - literal import with the current interpreter.
-        [sys.executable, "-c", "import reflexio.server"],
+        [
+            sys.executable,
+            "-c",
+            "from reflexio.server import initialize_server_runtime; "
+            "initialize_server_runtime()",
+        ],
         env=env,
         text=True,
         capture_output=True,

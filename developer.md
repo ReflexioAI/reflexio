@@ -43,6 +43,23 @@ skill or rule below them is reachable. Clone with `git clone -c core.symlinks=tr
 existing checkout.
 
 
+## Runtime initialization
+
+Importing server control/schema modules does not load operator environment files,
+validate serving-only settings, configure logging or construct provider clients.
+`reflexio.server.initialize_server_runtime()` owns that process startup once.
+The API, standalone inference server, server launcher, Reflexio library facade
+and direct SQLite storage constructor call it before their runtime work.
+Existing server constants initialize through the same owner when first accessed.
+Pure logging helpers remain callable without starting a runtime.
+
+Concurrent callers share one successful initialization. Reentrant startup from a
+logging callback refuses rather than deadlocking; failed startup can retry without
+publishing partial cached values or duplicating managed logging handlers.
+SQLite metadata imports use shared failure types without importing provider
+capacity dispatch. This separation does not grant retained datasets authority or
+make normal storage construction a maintenance upgrade operation.
+
 ## Services
 
 Two services, started together via `./run_services.sh`:

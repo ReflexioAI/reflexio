@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from threading import Lock
 from typing import TYPE_CHECKING, Any
 
-from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
+from reflexio.server.llm._litellm_types import ExtractionInputIntegrityError
 from reflexio.server.work_scope import current_project_id
 
 if TYPE_CHECKING:

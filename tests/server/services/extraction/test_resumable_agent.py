@@ -141,14 +141,14 @@ def _agent_run(run_id: str, extractor_kind: str = "profile") -> AgentRunRecord:
 
 def test_profile_instruction_prompt_delivers_structured_response():
     """The extraction agent now delivers its result as a structured response,
-    so the active ``profile_update_instruction_start`` version (v1.4.0) frames
+    so the active ``profile_update_instruction_start`` version (v1.5.0) frames
     the output as a direct JSON response rather than a ``finish_extraction``
     tool call. ``attach_pending_info_request`` remains a real intermediate tool;
     the profile extractor does not offer ``ask_human``."""
     prompt_manager = PromptManager()
 
     assert prompt_manager.get_active_version("profile_update_instruction_start") == (
-        "1.4.0"
+        "1.5.0"
     )
     rendered = prompt_manager.render_prompt(
         "profile_update_instruction_start",

@@ -8,7 +8,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from reflexio.models.api_schema.service_schemas import Status, UserProfile
-from reflexio.models.config_schema import LineageGCConfig
+from reflexio.models.config_schema import (
+    Config,
+    ExpiryReclamationConfig,
+    LineageGCConfig,
+    StorageConfigSQLite,
+)
 from reflexio.server.services.lineage import gc_scheduler
 from reflexio.server.services.profile.lifecycle import (
     ExplicitStorageDeadline,
@@ -69,9 +74,10 @@ def test_idle_deadline_payload_is_maintained_with_all_optional_gc_off(
     monkeypatch.setattr(
         gc_scheduler, "sweep_retention_caps", lambda *_: SimpleNamespace(failed=False)
     )
-    cfg = SimpleNamespace(
+    cfg = Config(
+        storage_config=StorageConfigSQLite(db_path=storage.db_path),
         lineage_gc=LineageGCConfig(tombstone_grace_window_days=0),
-        expiry_reclamation=SimpleNamespace(enabled=False),
+        expiry_reclamation=ExpiryReclamationConfig(enabled=False),
     )
     owner = gc_scheduler.LineageGCScheduler(
         request_context_factory=MagicMock(), bootstrap_org_id="maintenance"

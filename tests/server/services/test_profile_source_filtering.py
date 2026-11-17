@@ -83,7 +83,7 @@ def test_profile_extractor_filters_by_source_api(mock_chat_completion):
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
         )
 
-        # Set up two profile extractor configs with window_size
+        # Set up two profile extractor configs with profile_window_size
         # Config 1: only enabled for "api" source
         config1 = ProfileExtractorConfig(
             extraction_definition_prompt="API config",
@@ -93,7 +93,9 @@ def test_profile_extractor_filters_by_source_api(mock_chat_completion):
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", config1
         )
-        profile_generation_service.configurator.set_config_by_name("window_size", 100)
+        profile_generation_service.configurator.set_config_by_name(
+            "profile_window_size", 100
+        )
 
         # Create a PublishUserInteractionRequest
         publish_request = PublishUserInteractionRequest(
@@ -152,7 +154,7 @@ def test_profile_extractor_filters_by_source_webhook(mock_chat_completion):
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
         )
 
-        # Set up config only enabled for "api" source with window_size
+        # Set up config only enabled for "api" source with profile_window_size
         config = ProfileExtractorConfig(
             extraction_definition_prompt="API only config",
             request_sources_enabled=["api"],
@@ -161,7 +163,9 @@ def test_profile_extractor_filters_by_source_webhook(mock_chat_completion):
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", config
         )
-        profile_generation_service.configurator.set_config_by_name("window_size", 100)
+        profile_generation_service.configurator.set_config_by_name(
+            "profile_window_size", 100
+        )
 
         publish_request = PublishUserInteractionRequest(
             user_id=user_id,
@@ -219,7 +223,7 @@ def test_profile_extractor_none_enables_all_sources(mock_chat_completion):
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
         )
 
-        # Config with request_sources_enabled=None (default) and window_size
+        # Config with request_sources_enabled=None (default) and profile_window_size
         config = ProfileExtractorConfig(
             extraction_definition_prompt="All sources config",
             request_sources_enabled=None,
@@ -228,7 +232,9 @@ def test_profile_extractor_none_enables_all_sources(mock_chat_completion):
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", config
         )
-        profile_generation_service.configurator.set_config_by_name("window_size", 100)
+        profile_generation_service.configurator.set_config_by_name(
+            "profile_window_size", 100
+        )
 
         publish_request = PublishUserInteractionRequest(
             user_id=user_id,
@@ -286,7 +292,7 @@ def test_profile_extractor_empty_list_enables_all_sources(mock_chat_completion):
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
         )
 
-        # Config with request_sources_enabled=[] and window_size
+        # Config with request_sources_enabled=[] and profile_window_size
         config = ProfileExtractorConfig(
             extraction_definition_prompt="All sources config",
             request_sources_enabled=[],
@@ -295,7 +301,9 @@ def test_profile_extractor_empty_list_enables_all_sources(mock_chat_completion):
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", config
         )
-        profile_generation_service.configurator.set_config_by_name("window_size", 100)
+        profile_generation_service.configurator.set_config_by_name(
+            "profile_window_size", 100
+        )
 
         publish_request = PublishUserInteractionRequest(
             user_id=user_id,

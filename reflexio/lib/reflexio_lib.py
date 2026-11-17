@@ -1,5 +1,11 @@
 """Reflexio facade — assembled from domain mixins."""
 
+from reflexio.server import initialize_server_runtime
+
+initialize_server_runtime()
+
+# isort: split
+
 from reflexio.lib._agent_playbook import AgentPlaybookMixin
 from reflexio.lib._config import ConfigMixin
 from reflexio.lib._dashboard import DashboardMixin

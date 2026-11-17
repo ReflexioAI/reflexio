@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock
 
 import httpx
@@ -142,7 +143,7 @@ def test_endpoint_uses_existing_owner_search_queue_and_returns_revision():
     client = TestClient(
         create_embedding_app(
             reranker_model=MULTILINGUAL_RERANK_MODEL,
-            reranker_runner=runner,
+            reranker_runner=cast(CrossEncoderRunner, runner),
             inference_submit=submit,
         )
     )
@@ -170,7 +171,7 @@ def test_query_worker_refuses_activation_without_dispatch():
     client = TestClient(
         create_embedding_app(
             reranker_model=MULTILINGUAL_RERANK_MODEL,
-            reranker_runner=runner,
+            reranker_runner=cast(CrossEncoderRunner, runner),
             query_only=True,
         )
     )
