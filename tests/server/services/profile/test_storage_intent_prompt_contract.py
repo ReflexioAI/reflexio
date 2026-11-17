@@ -16,6 +16,8 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
     StructuredProfilesOutput,
 )
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.mark.parametrize("kind", ["author", "consolidator"])
 def test_active_production_prompt_examples_render_into_current_output_contract(kind):
