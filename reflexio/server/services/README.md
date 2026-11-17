@@ -102,6 +102,16 @@ the default temporal working-pool minimum is not an intermediate result ceiling.
 ## Architecture Pattern
 
 
+Profiles and playbooks implement `_get_extraction_window()` explicitly, reading
+their own two fields from the current request configuration. The generic pipeline
+does not infer a kind from an extractor's Python class or apply shared/override
+precedence. Session evaluation keeps its supplied trajectory. Durable admission
+captures the resolved pair in `Window.policy`; recovery uses that captured pair
+and the authenticated original extractor snapshot. Old snapshot geometry slots
+are inert hash/lookup metadata, never current policy inputs. Profile package
+preparation and parent records share the same snapshot encoder so a retry cannot
+invent a configuration change.
+
 Generation uses configured actors and fenced persistence; deferred workers rebuild request context rather than retaining request objects. Search composes reformulation, parallel entity retrieval, filtering, optional exposure recording, and asynchronous metering. Keep service-owned implementations behind their public entry points.
 
 ## Requirements / Problems to Avoid

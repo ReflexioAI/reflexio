@@ -137,8 +137,10 @@ def test_public_publish_to_durable_worker_persists_profile_and_playbook(
         configurator.set_config(
             Config(
                 storage_config=StorageConfigSQLite(db_path=db_path),
-                window_size=1,
-                stride_size=1,
+                profile_window_size=1,
+                playbook_window_size=1,
+                profile_stride_size=1,
+                playbook_stride_size=1,
                 agent_context_prompt="A customer-support assistant.",
                 profile_extractor_config=ProfileExtractorConfig(
                     extraction_definition_prompt=(

@@ -68,8 +68,10 @@ def reflexio_instance(tmp_path: pathlib.Path, worker_id: str) -> Reflexio:
     config = Config(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "expiry_test.db")),
         agent_context_prompt="test agent for expiry regression",
-        window_size=1,
-        stride_size=1,
+        profile_window_size=1,
+        playbook_window_size=1,
+        profile_stride_size=1,
+        playbook_stride_size=1,
         profile_extractor_config=ProfileExtractorConfig(
             context_prompt="extract user facts",
             extraction_definition_prompt="name, intent",

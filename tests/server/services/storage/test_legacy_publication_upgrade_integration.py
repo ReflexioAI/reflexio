@@ -182,8 +182,10 @@ def test_original_v1_cutover_replays_completed_and_holds_changed_instructions(
     config.set_config(
         Config(
             storage_config=StorageConfigSQLite(db_path=str(target)),
-            window_size=10,
-            stride_size=5,
+            profile_window_size=10,
+            playbook_window_size=10,
+            profile_stride_size=5,
+            playbook_stride_size=5,
             profile_extractor_config=None
             if phase == "completed_projection_no_body"
             else ProfileExtractorConfig(
@@ -496,8 +498,10 @@ def test_preserves_genuine_refusals_before_publication(tmp_path, monkeypatch, ch
         config = DefaultConfigurator(org_id="stream-test", base_dir=str(tmp_path))
         settings = Config(
             storage_config=StorageConfigSQLite(db_path=str(target)),
-            window_size=10,
-            stride_size=5,
+            profile_window_size=10,
+            playbook_window_size=10,
+            profile_stride_size=5,
+            playbook_stride_size=5,
             profile_extractor_config=ProfileExtractorConfig(
                 extraction_definition_prompt="Extract user preferences"
             ),

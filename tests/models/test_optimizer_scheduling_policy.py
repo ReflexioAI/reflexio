@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from reflexio.cli.bootstrap_config import load_storage_from_config
+from reflexio.cli.config_upgrade import prepare_local_config
 from reflexio.config_migration import strip_retired_config_fields
 from reflexio.models.config_schema import PlaybookOptimizerConfig
 from reflexio.server.services.configurator.local_file_config_storage import (
@@ -84,6 +85,7 @@ def test_local_saved_default_policy_is_canonicalized(tmp_path):
             }
         )
     )
+    assert prepare_local_config("scheduler-defaults", base_dir=str(tmp_path))
     for _ in range(2):
         assert storage.load_config().playbook_optimizer_config.metric_call_budget == 0
     saved = json.loads(path.read_text())["playbook_optimizer_config"]
@@ -103,11 +105,15 @@ def test_invalid_saved_policy_is_not_rewritten(tmp_path):
         }
     )
     path.write_text(original)
-    with pytest.raises(ValueError, match="playbook_optimizer_config"):
+    with pytest.raises(ValueError, match="generation15"):
         storage.load_config()
     assert path.read_text() == original
 
     with pytest.raises(ValueError, match="playbook_optimizer_config"):
+        prepare_local_config("scheduler-custom", base_dir=str(tmp_path))
+    assert path.read_text() == original
+
+    with pytest.raises(ValueError, match="generation15"):
         load_storage_from_config(org_id="scheduler-custom", base_dir=str(tmp_path))
     assert path.read_text() == original
 
@@ -128,6 +134,7 @@ def test_custom_scheduling_policy_is_supported_and_saved(tmp_path):
             }
         )
     )
+    assert prepare_local_config("supported-scheduler", base_dir=str(tmp_path))
     for _ in range(2):
         loaded = storage.load_config()
         assert {

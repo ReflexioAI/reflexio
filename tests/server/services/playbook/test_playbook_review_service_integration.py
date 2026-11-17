@@ -132,15 +132,11 @@ def _playbook(
 
 def _service(storage: SQLiteStorage) -> UserPlaybookReviewService:
     playbook_config = SimpleNamespace(
-        window_size_override=10,
-        stride_size_override=8,
         deduplication_config=None,
         extraction_definition_prompt="Extract reusable agent guidance.",
     )
     root_config = SimpleNamespace(
         user_playbook_extractor_config=playbook_config,
-        window_size=10,
-        stride_size=8,
         tool_can_use=None,
         api_key_config=None,
         llm_config=LLMConfig(),

@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 import litellm
 import pytest
-from pydantic import create_model
+from pydantic import Field, create_model
 
 from reflexio.models.config_schema import (
     DeduplicationConfig,
@@ -215,6 +215,10 @@ def test_retired_playbook_name_readmits_original_parent_without_refunding_calls(
         legacy_fields[name] = (field.annotation, copy.deepcopy(field))
         if name == "extraction_definition_prompt":
             legacy_fields["context_prompt"] = (str | None, None)
+    # These were the historical schema's final fields. Keep the old shape
+    # explicit when the current public model no longer declares them.
+    legacy_fields["window_size_override"] = (int | None, Field(default=None, gt=0))
+    legacy_fields["stride_size_override"] = (int | None, Field(default=None, gt=0))
     dedup_fields: dict[str, Any] = {}
     if historical_strategy is not None:
         dedup_fields["strategy"] = (str, historical_strategy)

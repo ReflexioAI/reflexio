@@ -45,6 +45,10 @@ from reflexio.models.config_schema import (
     ProfileExtractorConfig,
     StorageConfigSQLite,
 )
+from reflexio.models.extraction_window import (
+    ExtractionWindow,
+    get_extractor_window_params,
+)
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.token_accounting import RunTokenTotals
@@ -181,6 +185,11 @@ class _CharService(BaseGenerationService):  # type: ignore[type-arg]
         super().__init__(llm_client, request_context)
         self._results_by_user = results_by_user
         self._track = track
+
+    def _get_extraction_window(self) -> ExtractionWindow:
+        return get_extractor_window_params(
+            self.request_context.configurator.get_config(), "profile"
+        )
 
     def _load_extractor_config(self):
         return ProfileExtractorConfig(

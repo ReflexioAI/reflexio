@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
+from reflexio.models.extraction_window import ExtractionWindow
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -298,6 +299,12 @@ class BaseGenerationService(
         Returns:
             Base service name (e.g., "profile_generation", "playbook_generation")
         """
+
+    def _get_extraction_window(self) -> ExtractionWindow:
+        """Windowed services select their own policy; generic pipelines do not."""
+        raise NotImplementedError(
+            "This service must select its extraction-window policy"
+        )
 
     @abstractmethod
     def _process_results(self, results: list) -> None:

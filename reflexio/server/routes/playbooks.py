@@ -584,8 +584,8 @@ def manual_playbook_generation_endpoint(
     """Manually trigger playbook generation with window-sized interactions and CURRENT output.
 
     Runs with auto_run=False, which bypasses the regular stride/should_run
-    gates. Only playbook extraction is triggered. Each extractor uses its own
-    window_size_override when present, falling back to the global window_size.
+    gates. Only playbook extraction is triggered, using playbook_window_size
+    from the current configuration without an automatic stride gate.
     Output is CURRENT playbooks only.
 
     Args:

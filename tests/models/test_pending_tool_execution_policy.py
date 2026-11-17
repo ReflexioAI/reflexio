@@ -125,7 +125,14 @@ def test_file_and_cli_propagate_new_migration_error_families(tmp_path):
     storage = LocalFileConfigStorage("future-policy", base_dir=str(tmp_path))
     path = Path(storage.config_file)
     path.parent.mkdir(parents=True)
-    before = json.dumps({"storage_config": {"type": "sqlite"}})
+    from reflexio.config_file import FILE_FORMAT_VERSION
+
+    before = json.dumps(
+        {
+            "_reflexio_config_file": {"version": FILE_FORMAT_VERSION},
+            "storage_config": {"type": "sqlite"},
+        }
+    )
     path.write_text(before)
     with patch(
         "reflexio.server.services.configurator.local_file_config_storage.validate_stored_config",

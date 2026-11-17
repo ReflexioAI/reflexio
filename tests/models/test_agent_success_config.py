@@ -24,7 +24,7 @@ def test_legacy_agent_success_metadata_is_ignored_only_for_stored_config() -> No
         {
             "storage_config": {"db_path": None},
             "agent_context_prompt": "preserve me",
-            "window_size": 23,
+            "profile_window_size": 23,
             "agent_success_config": {
                 "success_definition_prompt": "preserve success rules",
                 "metadata_definition_prompt": "do not migrate me",
@@ -34,7 +34,7 @@ def test_legacy_agent_success_metadata_is_ignored_only_for_stored_config() -> No
     )
 
     assert stored.agent_context_prompt == "preserve me"
-    assert stored.window_size == 23
+    assert stored.profile_window_size == 23
     assert stored.agent_success_config is not None
     assert (
         stored.agent_success_config.success_definition_prompt

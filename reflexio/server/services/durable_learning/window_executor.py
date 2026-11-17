@@ -122,7 +122,11 @@ class WindowExecutor:
         if window.kind == "profile":
             service = self._profile_service()
             request = ProfileGenerationRequest(**common)
-            config = ProfileExtractorConfig.model_validate(window.policy["extractor"])
+            config = ProfileExtractorConfig.model_validate(
+                effective_frozen_extractor_config(
+                    window.policy["extractor"], extractor_kind="profile"
+                )
+            )
         else:
             service = PlaybookGenerationService(
                 self.client, self.context, skip_aggregation=window.skip_aggregation
@@ -807,7 +811,9 @@ class WindowExecutor:
                 coordinator.window,
                 service,
                 ProfileExtractorConfig.model_validate(
-                    coordinator.window.policy["extractor"]
+                    effective_frozen_extractor_config(
+                        coordinator.window.policy["extractor"], extractor_kind="profile"
+                    )
                 ),
                 coordinator.saved_run,
             )

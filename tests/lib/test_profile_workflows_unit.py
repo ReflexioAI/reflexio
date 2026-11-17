@@ -64,7 +64,11 @@ def reflexio_with_config(temp_storage, ensure_mock_env, monkeypatch):
     )
 
     org_id = "test_org"
-    config = Config(storage_config=StorageConfigSQLite())
+    config = Config(
+        storage_config=StorageConfigSQLite(),
+        profile_window_size=1,
+        profile_stride_size=1,
+    )
     configurator = DefaultConfigurator(
         org_id=org_id, base_dir=temp_storage, config=config
     )
@@ -74,7 +78,7 @@ def reflexio_with_config(temp_storage, ensure_mock_env, monkeypatch):
 
     # Configure profile extractor.
     #
-    # ``window_size_override=1`` is what makes ``stride_size_override=1`` mean
+    # ``profile_window_size=1`` is what makes ``profile_stride_size=1`` mean
     # what it says here: "extract on every interaction". Automatic extraction is
     # window-driven, and a cursor that has never started requires a FULL window
     # before it selects anything (``_select``: ``needed = width`` while
@@ -85,8 +89,6 @@ def reflexio_with_config(temp_storage, ensure_mock_env, monkeypatch):
         context_prompt="Extract user preferences",
         extraction_definition_prompt="User likes and dislikes",
         tagging_definition_prompt="Metadata about preferences",
-        stride_size_override=1,
-        window_size_override=1,
     )
     reflexio.request_context.configurator.set_config_by_name(
         "profile_extractor_config", profile_extractor_config

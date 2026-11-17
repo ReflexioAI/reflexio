@@ -35,7 +35,6 @@ from .api_schema.validators import (
 from .extraction_window import (
     DEFAULT_STRIDE_SIZE,
     DEFAULT_WINDOW_SIZE,
-    get_extractor_window_params,
 )
 
 DEFAULT_MAX_MERGE_INVOCATIONS = 5
@@ -89,6 +88,8 @@ def reject_obsolete_config_names(data: Any) -> Any:
         (
             "batch_size",
             "batch_interval",
+            "window_size",
+            "stride_size",
             "extraction_window_size",
             "extraction_window_stride",
             "extraction_preset",
@@ -459,8 +460,6 @@ class ProfileExtractorConfig(BaseModel):
         None  # default enabled for all sources, if set, only extract profiles from the enabled request sources
     )
     manual_trigger: bool = False  # require manual triggering (rerun) to run extraction and skip auto extraction if set to True
-    window_size_override: int | None = Field(default=None, gt=0)
-    stride_size_override: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="before")
     @classmethod
@@ -471,6 +470,8 @@ class ProfileExtractorConfig(BaseModel):
                 "profile_content_definition_prompt",
                 "batch_size_override",
                 "batch_interval_override",
+                "window_size_override",
+                "stride_size_override",
                 "extraction_window_size_override",
                 "extraction_window_stride_override",
             ),
@@ -523,8 +524,6 @@ class UserPlaybookExtractorConfig(BaseModel):
     request_sources_enabled: list[str] | None = (
         None  # default enabled for all sources, if set, only extract user playbooks from the enabled request sources
     )
-    window_size_override: int | None = Field(default=None, gt=0)
-    stride_size_override: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="before")
     @classmethod
@@ -540,6 +539,8 @@ class UserPlaybookExtractorConfig(BaseModel):
                 "feedback_name",
                 "batch_size_override",
                 "batch_interval_override",
+                "window_size_override",
+                "stride_size_override",
                 "extraction_window_size_override",
                 "extraction_window_stride_override",
             ),
@@ -975,8 +976,10 @@ class Config(BaseModel):
         default_factory=_default_agent_success_config
     )
     # extraction parameters
-    window_size: int = Field(default=DEFAULT_WINDOW_SIZE, gt=0)
-    stride_size: int = Field(default=DEFAULT_STRIDE_SIZE, gt=0)
+    profile_window_size: int = Field(default=DEFAULT_WINDOW_SIZE, gt=0)
+    profile_stride_size: int = Field(default=DEFAULT_STRIDE_SIZE, gt=0)
+    playbook_window_size: int = Field(default=DEFAULT_WINDOW_SIZE, gt=0)
+    playbook_stride_size: int = Field(default=DEFAULT_STRIDE_SIZE, gt=0)
     # Captured at admission; 0 disables idle finalization for new publications.
     extraction_idle_timeout_seconds: int = Field(default=21600, ge=0)
     # Prospective maximum batching delay; qualify a positive value before enabling.
@@ -1045,8 +1048,10 @@ class Config(BaseModel):
             data = dict(data)
         if isinstance(data, dict):
             for key in (
-                "window_size",
-                "stride_size",
+                "profile_window_size",
+                "profile_stride_size",
+                "playbook_window_size",
+                "playbook_stride_size",
                 "playbook_optimizer_config",
                 "lineage_gc",
                 "expiry_reclamation",
@@ -1057,14 +1062,6 @@ class Config(BaseModel):
                 if key in data and data[key] is None:
                     del data[key]
         return data
-
-    @model_validator(mode="after")
-    def check_stride_size_le_window_size(self) -> Self:
-        """Validate default automatic geometry through the shared owner."""
-        get_extractor_window_params(
-            None, self.window_size, self.stride_size
-        ).require_automatic()
-        return self
 
     @model_validator(mode="after")
     def check_custom_endpoint_model_authority(self) -> Self:

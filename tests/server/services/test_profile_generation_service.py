@@ -174,7 +174,9 @@ def test_refresh_profiles_for_user(mock_chat_completion):
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", profile_extractor_config
         )
-        profile_generation_service.configurator.set_config_by_name("window_size", 100)
+        profile_generation_service.configurator.set_config_by_name(
+            "profile_window_size", 100
+        )
 
         # Create a PublishUserInteractionRequest first
         publish_request = PublishUserInteractionRequest(
@@ -247,7 +249,9 @@ def test_test_refresh_profiles_for_user_with_image_encoding(mock_chat_completion
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", profile_extractor_config
         )
-        profile_generation_service.configurator.set_config_by_name("window_size", 100)
+        profile_generation_service.configurator.set_config_by_name(
+            "profile_window_size", 100
+        )
 
         # Create a PublishUserInteractionRequest first
         publish_request = PublishUserInteractionRequest(
@@ -336,7 +340,7 @@ def test_profile_extraction_message_construction():
                 "profile_extractor_config", profile_extractor_config
             )
             profile_generation_service.configurator.set_config_by_name(
-                "window_size", 100
+                "profile_window_size", 100
             )
 
             # Create a PublishUserInteractionRequest
@@ -519,7 +523,9 @@ def test_refresh_profiles_with_output_pending_status(mock_chat_completion):
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", profile_extractor_config
         )
-        profile_generation_service.configurator.set_config_by_name("window_size", 100)
+        profile_generation_service.configurator.set_config_by_name(
+            "profile_window_size", 100
+        )
 
         # First, create CURRENT profiles (output_pending_status=False)
         publish_request1 = PublishUserInteractionRequest(
@@ -719,7 +725,9 @@ def test_run_manual_regular_no_interactions(mock_chat_completion):
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", profile_extractor_config
         )
-        profile_generation_service.configurator.set_config_by_name("window_size", 100)
+        profile_generation_service.configurator.set_config_by_name(
+            "profile_window_size", 100
+        )
 
         from reflexio.models.api_schema.service_schemas import (
             ManualProfileGenerationRequest,
@@ -759,7 +767,9 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", profile_extractor_config
         )
-        profile_generation_service.configurator.set_config_by_name("window_size", 100)
+        profile_generation_service.configurator.set_config_by_name(
+            "profile_window_size", 100
+        )
 
         # First, add some interactions to storage
         interaction = InteractionData(
@@ -835,7 +845,9 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", profile_extractor_config
         )
-        profile_generation_service.configurator.set_config_by_name("window_size", 100)
+        profile_generation_service.configurator.set_config_by_name(
+            "profile_window_size", 100
+        )
 
         # Add interactions with source_a
         interaction_a = InteractionData(
@@ -1184,7 +1196,7 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
         )
 
-        service.configurator.set_config_by_name("window_size", 240)
+        service.configurator.set_config_by_name("profile_window_size", 240)
         service.service_config = service._load_generation_service_config(
             ProfileGenerationRequest(
                 user_id=user_id,
@@ -1224,9 +1236,9 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
         api_config = ProfileExtractorConfig(
             extraction_definition_prompt="communication preferences",
             request_sources_enabled=["api"],
-            window_size_override=150,
         )
 
+        service.configurator.set_config_by_name("profile_window_size", 150)
         scoped_groups, scoped_config = (
             service._collect_scoped_interactions_for_precheck(api_config)
         )
@@ -1247,9 +1259,9 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
         web_config = ProfileExtractorConfig(
             extraction_definition_prompt="shopping preferences",
             request_sources_enabled=["web"],
-            window_size_override=90,
         )
 
+        service.configurator.set_config_by_name("profile_window_size", 90)
         empty_groups, web_scoped_config = (
             service._collect_scoped_interactions_for_precheck(web_config)
         )

@@ -83,15 +83,22 @@ def test_saved_evaluation_windows_canonicalize_without_losing_policy(tmp_path):
         )
     )
     original = path.read_bytes()
-    for _ in range(2):
-        config = storage.load_config().agent_success_config
-        assert config is not None
-        assert config.success_definition_prompt == "Keep"
+    with pytest.raises(ValueError, match="generation15"):
+        storage.load_config()
     assert path.read_bytes() == original
     from reflexio.cli.config_upgrade import convert_config_file
 
     canonical = tmp_path / "canonical.json"
     convert_config_file(path, canonical)
     assert path.read_bytes() == original
+    from reflexio.config_document import decode_config_document
+    from reflexio.models.config_schema import validate_stored_config
+
+    for _ in range(2):
+        config = validate_stored_config(
+            decode_config_document(canonical.read_text())
+        ).agent_success_config
+        assert config is not None
+        assert config.success_definition_prompt == "Keep"
     saved = json.loads(canonical.read_text())["agent_success_config"]
     assert not set(LEGACY_FIELDS).intersection(saved)

@@ -56,7 +56,7 @@ def test_document_conversion_preserves_policy_identity_and_opaque_metadata():
     assert payload == before
     assert canonicalize_config_document(result) == result
     typed = validate_stored_config(result)
-    assert (typed.window_size, typed.stride_size) == (23, 13)
+    assert (typed.profile_window_size, typed.profile_stride_size) == (23, 13)
     assert typed.user_playbook_extractor_config is not None
     assert typed.user_playbook_extractor_config.aggregation_config.min_cluster_size == 9
     assert typed.playbook_optimizer_config.max_merge_invocations == 0
@@ -263,7 +263,13 @@ def test_conversion_keeps_storage_policy_without_materializing_defaults(
     storage, expected
 ):
     result = canonicalize_config_document({"storage_config": storage})
-    assert result == {"storage_config": expected}
+    assert result == {
+        "storage_config": expected,
+        "profile_window_size": 10,
+        "profile_stride_size": 8,
+        "playbook_window_size": 10,
+        "playbook_stride_size": 8,
+    }
     loaded = validate_stored_config(result)
     if expected is not None:
         assert loaded.storage_config is not None
@@ -372,7 +378,7 @@ runpy.run_module("reflexio.cli.__main__", run_name="__main__")
     assert proc.returncode == 0, proc.stderr
     if "--json" in global_args:
         assert json.loads(proc.stdout) == {"ok": True, "data": {"output": str(output)}}
-    assert json.loads(output.read_text())["window_size"] == 23
+    assert json.loads(output.read_text())["profile_window_size"] == 23
     assert json.loads(source.read_text()) == _payload()
     assert (
         dotenv.read_text()

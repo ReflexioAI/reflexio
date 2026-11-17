@@ -225,7 +225,11 @@ def _extractor_snapshot(
 ) -> dict[str, Any]:
     current = config.model_dump(mode="json")
     if frozen is None:
-        return current
+        from reflexio.server.services.extraction.agent_run_records import (
+            snapshot_extractor_config,
+        )
+
+        return snapshot_extractor_config(config)
     # Reproduce the admitted contract without changing the validated config
     # used for native requests. The caller also verifies parent/window hashes.
     from reflexio.server.services.extraction.agent_run_records import (

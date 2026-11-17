@@ -2497,8 +2497,10 @@ def pipeline(tmp_path, monkeypatch):
     config.set_config(
         Config(
             storage_config=StorageConfigSQLite(db_path=str(tmp_path / "stream.db")),
-            window_size=10,
-            stride_size=5,
+            profile_window_size=10,
+            profile_stride_size=5,
+            playbook_window_size=10,
+            playbook_stride_size=5,
             profile_extractor_config=ProfileExtractorConfig(
                 extraction_definition_prompt="Extract user preferences"
             ),
