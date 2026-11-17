@@ -2,7 +2,6 @@
 
 from datetime import UTC, datetime
 from hashlib import sha256
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -280,17 +279,18 @@ def test_real_native_bounded_score_seam_uses_attention_before_top_k(monkeypatch)
 
 
 def test_active_prompts_have_no_guessed_lifetime_or_rendered_ttl():
-    bank = Path(policy.__file__).resolve().parents[2] / "prompt/prompt_bank"
-    for relative in [
-        "profile_update_instruction_start/v1.4.0.prompt.md",
-        "profile_deduplication/v1.2.0.prompt.md",
-    ]:
-        text = (bank / relative).read_text()
-        assert "active: true" in text
-        assert "time_to_live" not in text and "TTL" not in text
-    extraction = (
-        bank / "profile_update_instruction_start/v1.4.0.prompt.md"
-    ).read_text()
+    from reflexio.server.prompt.prompt_manager import PromptManager
+
+    manager = PromptManager()
+    prompts = {}
+    for identity in ["profile_update_instruction_start", "profile_deduplication"]:
+        version = manager.get_active_version(identity)
+        assert version is not None
+        prompt = manager._get_prompt(identity, version)
+        assert prompt is not None
+        prompts[identity] = prompt.content
+        assert "time_to_live" not in prompt.content and "TTL" not in prompt.content
+    extraction = prompts["profile_update_instruction_start"]
     assert "Requested removal of" in extraction
     assert "explicit_storage_deadline" in extraction
 

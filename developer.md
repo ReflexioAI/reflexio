@@ -864,6 +864,22 @@ the scheduler emits it on pre-claim failures and when skipping existing backoff.
 The provider should retain the scope until that remaining delay expires.
 
 
+### Preference corrections and explicit forgetting
+
+The profile author and deduplicator distinguish a changed fact from an instruction
+about stored memory. "I'm not into this band anymore" updates a preference;
+"forget my preference for this band" authorizes scoped forgetting. An assistant's
+unanswered offer to update/delete, a polite thanks, negated forgetting, and
+uncertainty do not authorize deletion. Preserve useful history and unrelated facts.
+
+The author emits `explicit_forget_quote=null` for corrections. The consolidator
+checks the meaning of original User evidence before selecting deletion; generated
+"Requested removal of" content and a quote appearing in User text do not themselves
+establish intent. Runtime quote validation binds provenance and owner/version/native
+erasure handling; it is not a semantic intent classifier. Prompt examples and
+mechanics tests do not prove model reliability: that requires recorded contrasting
+model/native cases. Earlier frozen prompt identities remain loadable for recovery.
+
 ### Profile search selection
 
 Multilingual E5 unified search uses Profile Fusion V2 for user-scoped hybrid
