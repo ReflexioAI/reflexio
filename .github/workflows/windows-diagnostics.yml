@@ -15,6 +15,7 @@ on:
       - tests/test_data/sqlite_70daf32c/**
       - tests/server/llm/test_native_cli_ownership.py
       - tests/server/llm/test_native_opencode.py
+      - tests/fixtures/opencode_*_run_help.*
       - tests/server/llm/test_native_model_reference.py
       - tests/server/llm/test_codex_path_authority.py
       - tests/server/services/playbook_optimizer/test_native_assistant.py

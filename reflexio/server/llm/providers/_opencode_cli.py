@@ -211,7 +211,7 @@ def run_opencode(
             )
             if discovery.returncode != 0:
                 raise OpenCodeCLIError("OpenCode CLI capability discovery failed")
-            private = _uses_private_server(discovery.stdout)
+            private = _uses_private_server(discovery.stdout + "\n" + discovery.stderr)
             argv = [
                 str(executable),
                 "run",
@@ -225,7 +225,15 @@ def run_opencode(
             if private:
                 argv.append("--standalone")
             if model:
-                argv += ["--model", model]
+                if not private and "#" in model:
+                    selected, variant = model.split("#", 1)
+                    if not selected.strip() or not variant.strip():
+                        raise OpenCodeCLIError(
+                            "OpenCode model variant reference is invalid"
+                        )
+                    argv += ["--model", selected, "--variant", variant]
+                else:
+                    argv += ["--model", model]
             result = run_native_cli(
                 argv,
                 input=prompt,

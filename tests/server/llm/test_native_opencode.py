@@ -443,7 +443,10 @@ def test_unknown_help_cannot_become_a_protocol_fallback(help_text):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("private", [False, True])
-def test_discovery_and_execution_spend_one_original_deadline(monkeypatch, private):
+@pytest.mark.parametrize("model", [None, "opaque/nested/model", "opaque/model#variant"])
+def test_discovery_and_execution_spend_one_original_deadline(
+    monkeypatch, private, model
+):
     clock = [10.0]
     calls = []
     monkeypatch.setattr(native.time, "monotonic", lambda: clock[0])
@@ -465,7 +468,7 @@ def test_discovery_and_execution_spend_one_original_deadline(monkeypatch, privat
         cli_path=sys.executable,
         system_prompt="owned context",
         dialogue="owned task",
-        model="opaque/model#variant",
+        model=model,
         timeout_seconds=1,
     )
     assert result.success and result.terminal_text == "owned reply"
@@ -474,11 +477,38 @@ def test_discovery_and_execution_spend_one_original_deadline(monkeypatch, privat
     argv, kwargs = calls[1]
     assert kwargs["timeout"] == pytest.approx(0.4)
     assert kwargs["input"] == "owned context\n\n## Task\nowned task"
-    assert argv[-2:] == ["--model", "opaque/model#variant"]
+    if model is None:
+        assert "--model" not in argv and "--variant" not in argv
+    elif model == "opaque/nested/model":
+        assert argv[-2:] == ["--model", "opaque/nested/model"]
+        assert "--variant" not in argv
+    elif private:
+        assert argv[-2:] == ["--model", "opaque/model#variant"]
+    else:
+        assert argv[-4:] == ["--model", "opaque/model", "--variant", "variant"]
     assert ("--standalone" in argv) is private
     assert argv[argv.index("--title") + 1] == native._AGENT
     assert calls[0][1]["cwd"] == kwargs["cwd"]
     assert not Path(kwargs["cwd"]).exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ["private-canary#", "#private-canary", "model# \t"])
+def test_legacy_empty_variant_components_refuse_before_generation(monkeypatch, model):
+    dispatch = Mock(return_value=subprocess.CompletedProcess([], 0, "", LEGACY))
+    monkeypatch.setattr(native, "run_native_cli", dispatch)
+    with pytest.raises(native.OpenCodeCLIError, match="variant reference") as failure:
+        native.run_opencode(
+            cli_path=sys.executable,
+            system_prompt="owned context",
+            dialogue="owned task",
+            model=model,
+            timeout_seconds=1,
+        )
+    assert "private-canary" not in str(failure.value)
+    assert dispatch.call_count == 1
+    assert dispatch.call_args.args[0][-2:] == ["run", "--help"]
+    assert not Path(dispatch.call_args.kwargs["cwd"]).exists()
 
 
 @pytest.mark.unit
