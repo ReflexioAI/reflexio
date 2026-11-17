@@ -1,10 +1,11 @@
 from fastapi.testclient import TestClient
 
 from reflexio.server.api import create_app
+from reflexio.server.route_inventory import api_route_contexts
 
 
 def _paths(app) -> set[str]:
-    return {r.path for r in app.routes}
+    return {r.path for r in api_route_contexts(app)}
 
 
 def test_mount_data_plane_true_includes_core_routes():
@@ -17,6 +18,9 @@ def test_mount_data_plane_true_includes_core_routes():
 def test_mount_data_plane_false_excludes_core_routes_keeps_scaffolding():
     app = create_app(mount_data_plane=False)
     paths = _paths(app)
+    assert (
+        "/meta/version" in paths
+    )  # enumeration is live, so absence below means something
     assert "/api/search_profiles" not in paths  # data-plane routes gone
     assert "/meta/version" in paths  # scaffolding stays
 

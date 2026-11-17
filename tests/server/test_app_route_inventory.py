@@ -39,9 +39,9 @@ import re
 
 import pytest
 from fastapi import FastAPI
-from fastapi.routing import APIRoute
 
 from reflexio.server.api import create_app
+from reflexio.server.route_inventory import api_route_contexts
 
 # ── Golden: create_app() (full, data-plane mounted) ─────────────────────
 # Response headers must also wrap search admission and deadline responses.
@@ -1103,8 +1103,7 @@ def _route_inventory(app: FastAPI) -> list[tuple]:
             route.name,
             tuple(_dep_qualnames(route.dependant)),
         )
-        for route in app.routes
-        if isinstance(route, APIRoute)
+        for route in api_route_contexts(app)
     ]
 
 
@@ -1162,13 +1161,13 @@ def test_no_duplicate_path_method(build) -> None:
     app = build()
     seen: set[tuple[str, str]] = set()
     dups: list[tuple[str, str]] = []
-    for route in app.routes:
-        if isinstance(route, APIRoute):
-            for method in route.methods or ():
-                key = (route.path, method)
-                if key in seen:
-                    dups.append(key)
-                seen.add(key)
+    for route in api_route_contexts(app):
+        for method in route.methods or ():
+            key = (route.path, method)
+            if key in seen:
+                dups.append(key)
+            seen.add(key)
+    assert seen, "route enumeration found nothing; the check below would be vacuous"
     assert not dups, f"duplicate (path, method) registrations: {dups}"
 
 
@@ -1188,10 +1187,10 @@ def test_no_overlapping_path_templates(build) -> None:
     absent is what licenses the set-based (order-insensitive) route golden."""
     app = build()
     by_shape: dict[tuple[str, str], set[str]] = {}
-    for route in app.routes:
-        if isinstance(route, APIRoute):
-            normalized = _PARAM.sub("{}", route.path)
-            for method in route.methods or ():
-                by_shape.setdefault((normalized, method), set()).add(route.path)
+    for route in api_route_contexts(app):
+        normalized = _PARAM.sub("{}", route.path)
+        for method in route.methods or ():
+            by_shape.setdefault((normalized, method), set()).add(route.path)
+    assert by_shape, "route enumeration found nothing; the check below would be vacuous"
     overlaps = {k: v for k, v in by_shape.items() if len(v) > 1}
     assert not overlaps, f"overlapping path templates: {overlaps}"
