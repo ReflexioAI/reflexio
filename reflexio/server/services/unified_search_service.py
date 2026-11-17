@@ -620,7 +620,9 @@ def _apply_optional_judge(
                     fingerprint = (
                         identity,
                         item.content,
-                        None if kind == "profiles" else getattr(item, "trigger"),
+                        None
+                        if kind == "profiles"
+                        else cast(AgentPlaybook | UserPlaybook, item).trigger,
                     )
                     if identity in local or (
                         identity in by_id and by_id[identity] != fingerprint
@@ -636,7 +638,9 @@ def _apply_optional_judge(
                 {
                     "id": getattr(item, field),
                     "text" if kind == "profiles" else "trigger": (
-                        item.content if kind == "profiles" else getattr(item, "trigger")
+                        item.content
+                        if kind == "profiles"
+                        else cast(AgentPlaybook | UserPlaybook, item).trigger
                     ),
                 }
                 for item in union
@@ -655,7 +659,9 @@ def _apply_optional_judge(
                 (
                     getattr(item, field),
                     item.content,
-                    None if kind == "profiles" else getattr(item, "trigger"),
+                    None
+                    if kind == "profiles"
+                    else cast(AgentPlaybook | UserPlaybook, item).trigger,
                 )
                 for item in items
             ]
