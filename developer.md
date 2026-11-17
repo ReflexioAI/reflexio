@@ -448,7 +448,8 @@ other users. Logs identify the backup slot without logging credentials.
 
 ### Current model compatibility
 
-LiteLLM `>=1.108.4,<2` is required. Releases 1.106.0 through 1.108.3 import the
+LiteLLM `>=1.109.1,<2` is required; 1.109.1 is the release the suite is
+qualified against. Releases 1.106.0 through 1.108.3 import the
 proxy-only `mcp` package for every completion that passes `tools`, so tool calls
 fail on a base install
 ([upstream issue](https://github.com/BerriAI/litellm/issues/46045)); 1.108.4 is
