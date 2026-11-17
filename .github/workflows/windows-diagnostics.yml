@@ -10,6 +10,9 @@ on:
       - uv.lock
       - tests/conftest.py
       - tests/cli/test_utils.py
+      - tests/cli/test_upgrade_local.py
+      - tests/server/services/storage/test_qualified_sqlite_upgrade.py
+      - tests/test_data/sqlite_70daf32c/**
       - tests/server/llm/test_native_cli_ownership.py
       - tests/server/llm/test_native_opencode.py
       - tests/server/llm/test_native_model_reference.py
@@ -44,6 +47,8 @@ jobs:
           tests/e2e_tests/test_local_model_cold_start_diagnostic.py
           tests/e2e_tests/test_local_publish_concurrency_diagnostic.py
           tests/cli/test_utils.py
+          tests/cli/test_upgrade_local.py
+          tests/server/services/storage/test_qualified_sqlite_upgrade.py
           tests/server/llm/test_native_cli_ownership.py
           tests/server/llm/test_native_opencode.py
           tests/server/llm/test_native_model_reference.py

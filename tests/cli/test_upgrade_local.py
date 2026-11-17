@@ -32,7 +32,8 @@ def test_real_offline_cli_ignores_operator_env_and_reports_honest_retry(
     environment = {
         k: v
         for k, v in os.environ.items()
-        if k in {"PATH", "TMPDIR", "LANG", "SystemRoot"}
+        if k.upper()
+        in {"PATH", "TMPDIR", "TEMP", "TMP", "LANG", "SYSTEMROOT", "WINDIR"}
     }
     environment.update(
         HOME=str(home),

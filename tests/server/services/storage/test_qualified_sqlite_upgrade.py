@@ -5,6 +5,7 @@ import hashlib
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -111,7 +112,7 @@ def test_missing_or_relative_target_is_never_created(tmp_path):
 
 def test_unexpected_authority_trigger_cannot_mutate_business_data(tmp_path):
     path = retained(tmp_path)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(owner.AUTHORITY_DDL)
         connection.execute(
             "CREATE TRIGGER unsafe_authority AFTER INSERT ON _learning_policy_authority BEGIN DELETE FROM profiles; END"
@@ -139,7 +140,7 @@ def test_failure_after_arm_rolls_back_control_ddl_and_business_state(
     monkeypatch.setattr(owner, "_change_learning_policy_authority_db", fail_after_arm)
     with pytest.raises(RuntimeError, match="owned arm failure"):
         owner.upgrade_existing_sqlite_dataset(path)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         assert not connection.execute(
             "SELECT 1 FROM sqlite_schema WHERE name='_learning_policy_authority'"
         ).fetchall()
@@ -199,7 +200,7 @@ def test_unsupported_scope_or_independent_state_is_not_repaired(tmp_path, mutati
         "extra_table": ("CREATE TABLE unknown_owner(value TEXT)", ()),
         "missing_stall": ("DELETE FROM stall_state", ()),
     }
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(*changes[mutation])
     before = business_snapshot(path)
     with pytest.raises(LearningTransitionBlockedError):
@@ -242,19 +243,20 @@ def test_observed_file_replacement_refuses_without_granting_either_file(
     connect = sqlite3.connect
 
     def replaced_connection(database, *args, **kwargs):
-        result = connect(database, *args, **kwargs)
         if database == path.as_uri() + "?mode=rw":
+            # Real replacement between selection and open, without relying on
+            # platform-specific permission to rename a live SQLite handle.
             path.rename(displaced)
             path.write_bytes(
                 gzip.decompress((FIXTURES / "empty.sqlite.gz").read_bytes())
             )
-        return result
+        return connect(database, *args, **kwargs)
 
     monkeypatch.setattr(owner.sqlite3, "connect", replaced_connection)
     with pytest.raises(LearningTransitionBlockedError, match="file changed"):
         owner.upgrade_existing_sqlite_dataset(path)
     for selected in [path, displaced]:
-        with connect(selected) as connection:
+        with closing(connect(selected)) as connection, connection:
             assert not connection.execute(
                 "SELECT 1 FROM sqlite_schema WHERE name='_learning_policy_authority'"
             ).fetchall()
@@ -300,7 +302,7 @@ def test_bad_retained_claim_is_refused_without_exposing_or_repairing_it(
     tmp_path, identity
 ):
     path = retained(tmp_path)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         if identity is None:
             connection.execute("DELETE FROM _dataset_identity")
         else:
@@ -317,7 +319,7 @@ def test_null_historical_execution_key_cannot_disappear_from_upgrade_closure(
     tmp_path, source
 ):
     path = retained(tmp_path, "empty")
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         org = connection.execute(
             "SELECT org_id FROM _dataset_identity WHERE k=1"
         ).fetchone()[0]
@@ -339,7 +341,7 @@ def test_null_historical_execution_key_cannot_disappear_from_upgrade_closure(
     with pytest.raises(LearningTransitionBlockedError, match="closure"):
         owner.upgrade_existing_sqlite_dataset(path)
     assert business_snapshot(path) == before
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         assert not connection.execute(
             "SELECT 1 FROM sqlite_schema WHERE name='_learning_policy_authority'"
         ).fetchall()
@@ -351,7 +353,7 @@ def test_normal_existing_file_preparation_does_not_grant_then_explicit_upgrade_d
     from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
     path = retained(tmp_path, "empty")
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         org = connection.execute(
             "SELECT org_id FROM _dataset_identity WHERE k=1"
         ).fetchone()[0]
@@ -397,7 +399,7 @@ def test_existing_incompatible_authority_is_never_repaired_or_reopened(tmp_path,
     else:
         payload = {}
     encoded = json.dumps(payload)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(
             "UPDATE _learning_policy_authority SET authority=? WHERE singleton=1",
             (encoded,),
@@ -405,7 +407,7 @@ def test_existing_incompatible_authority_is_never_repaired_or_reopened(tmp_path,
     before = business_snapshot(path)
     with pytest.raises((LearningTransitionBlockedError, ValueError)):
         owner.upgrade_existing_sqlite_dataset(path)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         assert (
             connection.execute(
                 "SELECT authority FROM _learning_policy_authority WHERE singleton=1"
