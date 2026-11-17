@@ -367,7 +367,7 @@ def test_should_run_skip_emits_no_learning_billing(tmp_path, monkeypatch):
                 profile_extractor_config=ProfileExtractorConfig(
                     extraction_definition_prompt="Extract durable preferences.",
                 ),
-                stride_size=1,
+                profile_stride_size=1,
             )
             ctx.configurator.get_agent_context.return_value = "Billing skip test"
             ctx.prompt_manager = MagicMock()

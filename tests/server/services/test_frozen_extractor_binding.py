@@ -15,6 +15,7 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.services.extraction.agent_run_records import (
     build_extractor_agent_run_record,
+    effective_frozen_extractor_config,
     matches_frozen_extractor_binding,
     matches_frozen_window_binding,
     snapshot_extractor_config,
@@ -393,7 +394,9 @@ def test_first_parent_created_from_retired_label_window_keeps_its_binding(kind):
         config_type(extraction_definition_prompt="Preserve explicit safeguards")
     )
     frozen["extractor_name"] = "historical-label"
-    current = config_type.model_validate(frozen)
+    current = config_type.model_validate(
+        effective_frozen_extractor_config(frozen, extractor_kind=kind)
+    )
     parent = build_extractor_agent_run_record(
         org_id="org-1",
         extractor_kind=kind,

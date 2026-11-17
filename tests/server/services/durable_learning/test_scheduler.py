@@ -60,8 +60,10 @@ def test_library_recovers_persisted_backlog_without_new_publish(tmp_path, monkey
     config.set_config(
         Config(
             storage_config=StorageConfigSQLite(db_path=str(tmp_path / "restart.db")),
-            window_size=1,
-            stride_size=1,
+            profile_window_size=1,
+            playbook_window_size=1,
+            profile_stride_size=1,
+            playbook_stride_size=1,
             profile_extractor_config=ProfileExtractorConfig(
                 extraction_definition_prompt="Preferences"
             ),

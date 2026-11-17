@@ -301,9 +301,9 @@ class TestGetInteractions:
     ):
         """Test that window size is used to fetch interactions."""
         # Configure extractor with window size
+        request_context.configurator.set_config_by_name("profile_window_size", 50)
         config = ProfileExtractorConfig(
             extraction_definition_prompt="Extract user preferences",
-            window_size_override=50,
         )
 
         # Mock storage

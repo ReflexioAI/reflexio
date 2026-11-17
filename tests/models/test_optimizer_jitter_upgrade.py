@@ -70,7 +70,7 @@ def test_local_startup_owner_upgrades_saved_timer_before_strict_read(tmp_path):
         }
     )
     path.write_text(original)
-    with pytest.raises(ValueError, match="playbook_optimizer_config"):
+    with pytest.raises(ValueError, match="generation15"):
         storage.load_config()
     assert path.read_text() == original
     assert prepare_local_config("timer-upgrade", base_dir=str(tmp_path))

@@ -21,9 +21,6 @@ from reflexio.models.api_schema.ui.converters import (
     to_interaction_view,
     to_user_playbook_view,
 )
-from reflexio.models.config_schema import (
-    DEFAULT_WINDOW_SIZE,
-)
 from reflexio.server.auth import (
     default_get_org_id,
 )
@@ -82,13 +79,9 @@ def _effective_profile_provenance_window(
     config = reflexio.request_context.configurator.get_config()
     profile_config = getattr(config, "profile_extractor_config", None)
     if profile_config is None:
-        return getattr(config, "window_size", DEFAULT_WINDOW_SIZE), None
+        return config.profile_window_size, None
 
-    window_size, _ = get_extractor_window_params(
-        profile_config,
-        getattr(config, "window_size", None),
-        getattr(config, "stride_size", None),
-    )
+    window_size, _ = get_extractor_window_params(config, "profile")
     should_skip, source_filter = get_effective_source_filter(
         profile_config,
         trigger_source,

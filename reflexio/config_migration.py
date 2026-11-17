@@ -656,8 +656,10 @@ def _normalize_storage_backend(data: Any) -> Any:
 def canonicalize_stored_config_fields(data: dict[str, Any]) -> dict[str, Any]:
     """Rewrite legacy policy names without serializing away opaque metadata.
 
-    This is a raw migration, not validation or default materialization. Callers
-    must still use ``validate_stored_config`` before persisting or executing it.
+    This rewrites historical spellings; it does not produce a current Config.
+    Complete-document owners use ``canonicalize_config_document`` for the
+    remaining policy projections before validation/publication. Explicit
+    historical readers retain this raw intermediate and the untouched original.
     Storage identity/credentials retain their separate strict validation path.
     """
     payload = strip_retired_config_fields(normalize_legacy_config_shape(data))
@@ -691,10 +693,32 @@ def canonicalize_config_document(payload: dict[str, Any]) -> dict[str, Any]:
     new backend. Persist the validated backend tag before dropping historical
     HTTP selectors, whose presence otherwise influences untagged storage.
     """
+    from reflexio.extraction_window_migration import (
+        EXTRACTION_WINDOW_FIELDS,
+        convert_canonical_legacy_extraction_windows,
+    )
     from reflexio.models.config_schema import validate_stored_config
 
     try:
         converted = canonicalize_stored_config_fields(payload)
+        if EXTRACTION_WINDOW_FIELDS.intersection(converted):
+            # Storage owners must reject ignored new names in an older physical
+            # generation before reaching this logical canonicalizer. Explicit
+            # current documents retain their sparse current policy.
+            legacy = {"window_size", "stride_size"}.intersection(converted)
+            for field in ("profile_extractor_config", "user_playbook_extractor_config"):
+                extractor = converted.get(field)
+                if isinstance(extractor, dict):
+                    legacy |= {
+                        "window_size_override",
+                        "stride_size_override",
+                    }.intersection(extractor)
+            if legacy:
+                raise ConfigurationMigrationError(
+                    "Conflicting current and historical extraction-window policy."
+                )
+        else:
+            converted = convert_canonical_legacy_extraction_windows(converted)
         raw_storage = converted.get("storage_config")
         if isinstance(raw_storage, dict):
             storage = dict(raw_storage)

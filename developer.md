@@ -2146,15 +2146,21 @@ scoped native input admission. No endpoint choice or configuration knob retires.
 
 ### Effective extraction window authority
 
-`reflexio.models.extraction_window` owns resolution of extractor overrides,
-workspace/project window values and schema defaults. Its tuple-compatible value
-has an explicit automatic-admission check, shared by root geometry validation
-and durable admission. Resolution itself does not enroll a manual/window-only
-operation in automatic cadence. In particular, a saved small-width policy remains
-readable even when its unused automatic stride is larger; ordinary automatic
-admission still refuses that geometry. Existing read/write acceptance, defaults,
-public fields, project inheritance and frozen admission witnesses are unchanged.
-This refactor does not retire a setting or convert stored configuration.
+`reflexio.models.extraction_window` selects the current configuration's direct
+`profile_window_size` / `profile_stride_size` or `playbook_window_size` /
+`playbook_stride_size`. Each independent pair defaults to 10/8. Project overlays
+replace individual top-level leaves; extractor objects carry no geometry overrides.
+Only eligible automatic durable admission applies the stride-at-most-width check.
+Config reads, publication and manual/source-filtered work retain positive pairs
+without enrolling those operations in automatic cadence.
+
+The current interface replaces six shared/override selectors with four direct
+fields. Old selectors reject even null; `extraction_window_migration` owns their
+explicit historical projection. File generation 15 retains originals, refuses
+ignored future-field collisions and requires storage admission before preparation
+publishes. Configuration conversion does not grant retained-dataset authority.
+Frozen windows and snapshots retain captured policy, identities and original
+hashes rather than being rewritten as fresh configuration.
 
 
 ### Caller-owned native optimizer execution

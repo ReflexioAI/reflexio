@@ -557,33 +557,13 @@ class TestNumericConstraints:
         with pytest.raises(ValidationError):
             PlaybookAggregatorConfig(reaggregation_trigger_count=0)
 
-    def test_window_override_must_be_positive(self):
-        """Batch size/interval overrides must be > 0 when set."""
-        with pytest.raises(ValidationError):
+    @pytest.mark.parametrize("field", ["window_size_override", "stride_size_override"])
+    @pytest.mark.parametrize("value", [0, -1, None, 10])
+    def test_retired_window_overrides_are_rejected(self, field, value):
+        with pytest.raises(ValidationError, match="Obsolete configuration fields"):
             ProfileExtractorConfig.model_validate(
-                {
-                    "extractor_name": "test",
-                    "extraction_definition_prompt": "test",
-                    "window_size_override": 0,
-                }
+                {"extraction_definition_prompt": "test", field: value}
             )
-        with pytest.raises(ValidationError):
-            ProfileExtractorConfig.model_validate(
-                {
-                    "extractor_name": "test",
-                    "extraction_definition_prompt": "test",
-                    "stride_size_override": -1,
-                }
-            )
-        # None is allowed (use global setting)
-        config = ProfileExtractorConfig.model_validate(
-            {
-                "extractor_name": "test",
-                "extraction_definition_prompt": "test",
-                "window_size_override": None,
-            }
-        )
-        assert config.window_size_override is None
 
 
 # =============================================================================
@@ -728,31 +708,41 @@ class TestCrossFieldValidators:
         )
         assert config.azure_config is not None
 
-    def test_config_stride_le_window(self):
-        """Config: stride_size must be <= window_size."""
-        with pytest.raises(ValidationError, match="stride_size"):
-            Config(
-                storage_config=StorageConfigSQLite(),
-                window_size=10,
-                stride_size=20,
-            )
+    def test_extraction_stride_le_window_at_automatic_admission(self):
+        """Reading configuration does not enroll manual or filtered work."""
+        from reflexio.server.services.durable_learning.admission import (
+            extraction_admission,
+        )
+
+        config = Config(
+            storage_config=StorageConfigSQLite(),
+            profile_window_size=10,
+            profile_stride_size=20,
+        )
+        request = PublishUserInteractionRequest(
+            user_id="synthetic",
+            session_id="synthetic",
+            interaction_data_list=[InteractionData(content="source")],
+        )
+        with pytest.raises(ValueError, match="stride_size"):
+            extraction_admission(config, request)
 
     def test_config_stride_equal_window_ok(self):
         """Config: stride_size == window_size is OK."""
         config = Config(
             storage_config=StorageConfigSQLite(),
-            window_size=10,
-            stride_size=10,
+            profile_window_size=10,
+            profile_stride_size=10,
         )
-        assert config.stride_size == 10
+        assert config.profile_stride_size == 10
 
     def test_config_stride_default_ok(self):
         """Config: omitting stride_size uses DEFAULT_STRIDE_SIZE."""
         config = Config(
             storage_config=StorageConfigSQLite(),
-            window_size=10,
+            profile_window_size=10,
         )
-        assert config.stride_size == DEFAULT_STRIDE_SIZE
+        assert config.profile_stride_size == DEFAULT_STRIDE_SIZE
 
     def test_config_defaults_extractors_when_omitted(self):
         """Config: omitted extractor fields still get singleton extractors."""
@@ -967,7 +957,7 @@ class TestBackwardCompatibility:
     """Historical field names require explicit conversion before validation."""
 
     def test_config_accepts_old_window_names(self):
-        """Config: extraction_window_size/stride still accepted as aliases."""
+        """Config: extraction_window_size/stride translate through the explicit historical upgrade."""
         config = _explicit_upgrade_model(
             Config,
             {
@@ -976,11 +966,11 @@ class TestBackwardCompatibility:
                 "extraction_window_stride": 7,
             },
         )
-        assert config.window_size == 15
-        assert config.stride_size == 7
+        assert config.profile_window_size == 15
+        assert config.profile_stride_size == 7
 
     def test_config_accepts_current_legacy_names(self):
-        """Config: batch_size/batch_interval still accepted as aliases."""
+        """Config: batch_size/batch_interval translate through the explicit historical upgrade."""
         config = _explicit_upgrade_model(
             Config,
             {
@@ -989,18 +979,18 @@ class TestBackwardCompatibility:
                 "batch_interval": 8,
             },
         )
-        assert config.window_size == 20
-        assert config.stride_size == 8
+        assert config.profile_window_size == 20
+        assert config.profile_stride_size == 8
 
     def test_config_new_names_preferred(self):
-        """Config: new field names window_size/stride_size work directly."""
+        """Config: current per-kind fields work directly."""
         config = Config(
             storage_config=StorageConfigSQLite(),
-            window_size=20,
-            stride_size=8,
+            profile_window_size=20,
+            profile_stride_size=8,
         )
-        assert config.window_size == 20
-        assert config.stride_size == 8
+        assert config.profile_window_size == 20
+        assert config.profile_stride_size == 8
 
     def test_config_prefers_new_names_when_both_present(self):
         """Config: new names win if old and new field names are both present."""
@@ -1016,11 +1006,11 @@ class TestBackwardCompatibility:
                 "extraction_window_stride": 1,
             },
         )
-        assert config.window_size == 20
-        assert config.stride_size == 8
+        assert config.profile_window_size == 20
+        assert config.profile_stride_size == 8
 
     def test_config_model_dump_uses_only_new_names(self):
-        """Config: serialization emits window_size/stride_size only."""
+        """Config: serialization emits current per-kind fields only."""
         config = _explicit_upgrade_model(
             Config,
             {
@@ -1030,24 +1020,26 @@ class TestBackwardCompatibility:
             },
         )
         dumped = config.model_dump()
-        assert dumped["window_size"] == 20
-        assert dumped["stride_size"] == 8
+        assert dumped["profile_window_size"] == 20
+        assert dumped["profile_stride_size"] == 8
         assert "batch_size" not in dumped
         assert "batch_interval" not in dumped
 
     def test_config_deprecated_properties_are_removed(self):
         config = Config(
-            storage_config=StorageConfigSQLite(), window_size=22, stride_size=11
+            storage_config=StorageConfigSQLite(),
+            profile_window_size=22,
+            profile_stride_size=11,
         )
         for name in ("batch_size", "batch_interval"):
             assert not hasattr(config, name)
             with pytest.raises(ValueError):
                 setattr(config, name, 99)
-        assert (config.window_size, config.stride_size) == (22, 11)
+        assert (config.profile_window_size, config.profile_stride_size) == (22, 11)
 
     def test_profile_extractor_old_override_names(self):
-        """ProfileExtractorConfig: old extraction_window_*_override names still work."""
-        config = _explicit_upgrade_model(
+        """ProfileExtractorConfig: old extraction_window_*_override names translate through the explicit historical upgrade."""
+        config = _explicit_upgrade_window_config(
             ProfileExtractorConfig,
             {
                 "extractor_name": "test",
@@ -1056,12 +1048,12 @@ class TestBackwardCompatibility:
                 "extraction_window_stride_override": 10,
             },
         )
-        assert config.window_size_override == 30
-        assert config.stride_size_override == 10
+        assert config.profile_window_size == 30
+        assert config.profile_stride_size == 10
 
     def test_profile_extractor_current_legacy_override_names(self):
-        """ProfileExtractorConfig: batch_*_override names still work."""
-        config = _explicit_upgrade_model(
+        """ProfileExtractorConfig: batch_*_override names translate through the explicit historical upgrade."""
+        config = _explicit_upgrade_window_config(
             ProfileExtractorConfig,
             {
                 "extractor_name": "test",
@@ -1070,14 +1062,14 @@ class TestBackwardCompatibility:
                 "batch_interval_override": 10,
             },
         )
-        assert config.window_size_override == 30
-        assert config.stride_size_override == 10
+        assert config.profile_window_size == 30
+        assert config.profile_stride_size == 10
         assert not hasattr(config, "batch_size_override")
         assert not hasattr(config, "batch_interval_override")
 
     def test_profile_extractor_override_model_dump_uses_only_new_names(self):
         """ProfileExtractorConfig: serialization emits window/stride override names."""
-        config = _explicit_upgrade_model(
+        config = _explicit_upgrade_window_config(
             ProfileExtractorConfig,
             {
                 "extractor_name": "test",
@@ -1087,14 +1079,14 @@ class TestBackwardCompatibility:
             },
         )
         dumped = config.model_dump()
-        assert dumped["window_size_override"] == 30
-        assert dumped["stride_size_override"] == 10
+        assert dumped["profile_window_size"] == 30
+        assert dumped["profile_stride_size"] == 10
         assert "batch_size_override" not in dumped
         assert "batch_interval_override" not in dumped
 
     def test_playbook_config_old_override_names(self):
-        """PlaybookConfig: old extraction_window_*_override names still work."""
-        config = _explicit_upgrade_model(
+        """PlaybookConfig: old extraction_window_*_override names translate through the explicit historical upgrade."""
+        config = _explicit_upgrade_window_config(
             PlaybookConfig,
             {
                 "extractor_name": "test",
@@ -1103,12 +1095,12 @@ class TestBackwardCompatibility:
                 "extraction_window_stride_override": 5,
             },
         )
-        assert config.window_size_override == 25
-        assert config.stride_size_override == 5
+        assert config.playbook_window_size == 25
+        assert config.playbook_stride_size == 5
 
     def test_playbook_config_current_legacy_override_names(self):
-        """PlaybookConfig: batch_*_override names still work."""
-        config = _explicit_upgrade_model(
+        """PlaybookConfig: batch_*_override names translate through the explicit historical upgrade."""
+        config = _explicit_upgrade_window_config(
             PlaybookConfig,
             {
                 "extractor_name": "test",
@@ -1117,8 +1109,8 @@ class TestBackwardCompatibility:
                 "batch_interval_override": 5,
             },
         )
-        assert config.window_size_override == 25
-        assert config.stride_size_override == 5
+        assert config.playbook_window_size == 25
+        assert config.playbook_stride_size == 5
 
     def test_success_config_old_override_names(self):
         """AgentSuccessConfig: old extraction-window inputs remain readable but ignored."""
@@ -1219,3 +1211,13 @@ def _explicit_upgrade_model[UpgradeModel: BaseModel](
         if model is not PlaybookAggregatorConfig
         else converted["aggregation_config"]
     )
+
+
+def _explicit_upgrade_window_config(model, payload) -> Config:
+    """Geometry is owned by the document, never an isolated extractor model."""
+    root = (
+        "profile_extractor_config"
+        if model is ProfileExtractorConfig
+        else "user_playbook_extractor_config"
+    )
+    return _explicit_upgrade_model(Config, {"storage_config": None, root: payload})

@@ -286,7 +286,8 @@ class ProfileExtractor:
         Get interactions for this extractor based on its config.
 
         Handles:
-        - Getting window parameters (extractor override or global fallback)
+        - Returning supplied frozen window interactions without a new lookup
+        - Reading the explicit profile window size for direct collection
         - Source filtering based on extractor config
         - Time range filtering for rerun flows
 
@@ -299,17 +300,8 @@ class ProfileExtractor:
         if self.service_config.window_interactions is not None:
             return self.service_config.window_interactions
 
-        # Get global config values
         config = self.request_context.configurator.get_config()
-        global_window_size = getattr(config, "window_size", None) if config else None
-        global_stride_size = getattr(config, "stride_size", None) if config else None
-
-        # Get effective window_size for this extractor
-        window_size, _ = get_extractor_window_params(
-            self.config,
-            global_window_size,
-            global_stride_size,
-        )
+        window_size, _ = get_extractor_window_params(config, "profile")
 
         # Get effective source filter (None = get ALL sources)
         should_skip, effective_source = get_effective_source_filter(

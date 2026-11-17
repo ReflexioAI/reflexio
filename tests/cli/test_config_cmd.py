@@ -169,21 +169,21 @@ class TestConfigUpdate:
         ):
             result = runner.invoke(
                 cli_app,
-                ["config", "update", "--data", '{"window_size":8}'],
+                ["config", "update", "--data", '{"profile_window_size":8}'],
             )
         assert result.exit_code == 0, result.output
-        mock_client.update_config.assert_called_once_with({"window_size": 8})
+        mock_client.update_config.assert_called_once_with({"profile_window_size": 8})
 
     def test_file_partial(self, runner: CliRunner, cli_app, tmp_path) -> None:
         cfg = tmp_path / "partial.json"
-        cfg.write_text('{"window_size": 8}')
+        cfg.write_text('{"profile_window_size": 8}')
         mock_client = self._mock_client_with_success()
         with patch(
             "reflexio.cli.commands.config_cmd.get_client", return_value=mock_client
         ):
             result = runner.invoke(cli_app, ["config", "update", "--file", str(cfg)])
         assert result.exit_code == 0, result.output
-        mock_client.update_config.assert_called_once_with({"window_size": 8})
+        mock_client.update_config.assert_called_once_with({"profile_window_size": 8})
 
     def test_field_pairs(self, runner: CliRunner, cli_app) -> None:
         mock_client = self._mock_client_with_success()
@@ -196,14 +196,14 @@ class TestConfigUpdate:
                     "config",
                     "update",
                     "--field",
-                    "window_size=:json:8",
+                    "profile_window_size=:json:8",
                     "--field",
-                    "stride_size=:json:4",
+                    "profile_stride_size=:json:4",
                 ],
             )
         assert result.exit_code == 0, result.output
         mock_client.update_config.assert_called_once_with(
-            {"window_size": 8, "stride_size": 4}
+            {"profile_window_size": 8, "profile_stride_size": 4}
         )
 
     def test_field_json_value_int(self, runner: CliRunner, cli_app) -> None:
@@ -214,13 +214,13 @@ class TestConfigUpdate:
         ):
             result = runner.invoke(
                 cli_app,
-                ["config", "update", "--field", "window_size=:json:10"],
+                ["config", "update", "--field", "profile_window_size=:json:10"],
             )
         assert result.exit_code == 0, result.output
-        mock_client.update_config.assert_called_once_with({"window_size": 10})
+        mock_client.update_config.assert_called_once_with({"profile_window_size": 10})
         # The value must be a real int, not the string "10".
         sent = mock_client.update_config.call_args.args[0]
-        assert isinstance(sent["window_size"], int)
+        assert isinstance(sent["profile_window_size"], int)
 
     def test_field_json_value_bool(self, runner: CliRunner, cli_app) -> None:
         mock_client = self._mock_client_with_success()
@@ -349,7 +349,7 @@ class TestConfigUpdate:
                     "config",
                     "update",
                     "--field",
-                    "window_size=:json:8",
+                    "profile_window_size=:json:8",
                 ],
             )
         assert result.exit_code == 0, result.output
@@ -388,23 +388,25 @@ class TestConfigSet:
         client.set_config.assert_not_called()
 
     def test_inline_data(self, runner: CliRunner, cli_app) -> None:
-        result, client = self._invoke(runner, cli_app, ["--data", '{"window_size":4}'])
+        result, client = self._invoke(
+            runner, cli_app, ["--data", '{"profile_window_size":4}']
+        )
         assert result.exit_code == 0, result.output
-        client.set_config.assert_called_once_with({"window_size": 4})
+        client.set_config.assert_called_once_with({"profile_window_size": 4})
         assert "Configuration updated" in result.output
 
     def test_at_file_data(self, runner: CliRunner, cli_app, tmp_path) -> None:
         cfg = tmp_path / "c.json"
-        cfg.write_text('{"window_size": 6}')
+        cfg.write_text('{"profile_window_size": 6}')
         result, client = self._invoke(runner, cli_app, ["--data", f"@{cfg}"])
         assert result.exit_code == 0, result.output
-        client.set_config.assert_called_once_with({"window_size": 6})
+        client.set_config.assert_called_once_with({"profile_window_size": 6})
 
     def test_file_option_json_mode(self, runner: CliRunner, cli_app, tmp_path) -> None:
         import json as _json
 
         cfg = tmp_path / "c.json"
-        cfg.write_text('{"window_size": 2}')
+        cfg.write_text('{"profile_window_size": 2}')
         mock_client = MagicMock()
         mock_client.set_config.return_value = {"success": True}
         with patch(_GET_CLIENT, return_value=mock_client):
@@ -412,7 +414,7 @@ class TestConfigSet:
                 cli_app, ["--json", "config", "set", "--file", str(cfg)]
             )
         assert result.exit_code == 0, result.output
-        mock_client.set_config.assert_called_once_with({"window_size": 2})
+        mock_client.set_config.assert_called_once_with({"profile_window_size": 2})
         assert _json.loads(result.stdout)["data"] == {"success": True}
 
     @pytest.mark.parametrize("bad", ["{not json", "@/nonexistent/reflexio-cfg.json"])
@@ -438,7 +440,7 @@ class TestConfigUpdateValidation:
     @pytest.mark.parametrize(
         ("fields", "message"),
         [
-            (["window_size=:json:{bad"], "invalid JSON value"),
+            (["profile_window_size=:json:{bad"], "invalid JSON value"),
             (
                 ["storage_config=x", "storage_config.type=sqlite"],
                 "conflicts with prior",

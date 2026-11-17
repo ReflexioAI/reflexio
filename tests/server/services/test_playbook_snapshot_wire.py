@@ -12,6 +12,7 @@ from reflexio.models.config_schema import Config, UserPlaybookExtractorConfig
 from reflexio.server.services.durable_learning.admission import extraction_admission
 from reflexio.server.services.extraction.agent_run_records import (
     build_extractor_agent_run_record,
+    effective_frozen_extractor_config,
     snapshot_extractor_config,
 )
 from reflexio.server.services.storage.storage_base import build_scope_hash
@@ -57,7 +58,9 @@ def test_new_admission_and_parent_keep_the_deployed_v1_job_layout() -> None:
 def test_historical_parent_keeps_its_witnessed_snapshot_value(context) -> None:
     original = {**deepcopy(V1), "context_prompt": context}
     before = deepcopy(original)
-    config = UserPlaybookExtractorConfig.model_validate(original)
+    config = UserPlaybookExtractorConfig.model_validate(
+        effective_frozen_extractor_config(original, extractor_kind="playbook")
+    )
     run = build_extractor_agent_run_record(
         org_id="org",
         extractor_kind="playbook",

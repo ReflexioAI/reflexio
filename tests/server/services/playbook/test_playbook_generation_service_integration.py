@@ -121,7 +121,7 @@ def mock_request_context(tmp_path, monkeypatch):
         )
     )
     # Mock window_size for extractor
-    context.configurator.get_config.return_value.window_size = 100
+    context.configurator.get_config.return_value.playbook_window_size = 100
     # Pin the pending-tool-call config to the real default (disabled). Without
     # this, the auto-generated MagicMock makes the resumable-agent path think
     # pending tools are enabled and feeds a MagicMock similarity_threshold into
@@ -437,7 +437,7 @@ def test_playbook_generation_with_should_not_generate(
     # Exercise the automatic judge; manual runs deliberately bypass it.
     root_config = mock_request_context.configurator.get_config.return_value
     root_config.skip_should_run_check = False
-    root_config.stride_size = 1
+    root_config.playbook_stride_size = 1
 
     # Create request interaction data model
     request_interaction_data_model = create_request_interaction_data_model(

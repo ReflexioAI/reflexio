@@ -28,6 +28,10 @@ from reflexio.models.api_schema.service_schemas import (
     UserProfile,
 )
 from reflexio.models.config_schema import ProfileExtractorConfig
+from reflexio.models.extraction_window import (
+    ExtractionWindow,
+    get_extractor_window_params,
+)
 from reflexio.server.error_reporting import capture_anomaly, error_tags
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.services.base_generation_service import (
@@ -503,6 +507,11 @@ class ProfileGenerationService(
             str: "profile_extractor" for OperationStateManager stride_size checks
         """
         return "profile_extractor"
+
+    def _get_extraction_window(self) -> ExtractionWindow:
+        return get_extractor_window_params(
+            self.request_context.configurator.get_config(), "profile"
+        )
 
     def _get_service_name(self) -> str:
         """

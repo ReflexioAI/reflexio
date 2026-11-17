@@ -55,7 +55,13 @@ def test_old_saved_context_is_inert_and_raw_upgrade_preserves_opaque_data() -> N
     converted = canonicalize_config_document(raw)
     assert raw == before
     # Raw upgrades preserve ignored data, including frozen historical alias cases.
-    assert converted == raw
+    assert converted == {
+        **raw,
+        "profile_window_size": 10,
+        "profile_stride_size": 8,
+        "playbook_window_size": 10,
+        "playbook_stride_size": 8,
+    }
     assert canonicalize_config_document(converted) == converted
     assert (
         Config.model_validate(converted).agent_context_prompt

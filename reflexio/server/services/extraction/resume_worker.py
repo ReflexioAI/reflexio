@@ -25,7 +25,10 @@ from reflexio.server.llm.compute_admission import (
 from reflexio.server.llm.failure import OutageWait, classify_llm_failure
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
-from reflexio.server.services.extraction.agent_run_records import build_scope_hash
+from reflexio.server.services.extraction.agent_run_records import (
+    build_scope_hash,
+    snapshot_extractor_config,
+)
 from reflexio.server.services.extraction.answer_inputs import answer_input_scope
 from reflexio.server.services.extraction.history_inputs import HistoricalInputs
 from reflexio.server.services.extraction.pending_tool_admission import (
@@ -238,7 +241,12 @@ def _log_config_hash_drift(
     run: AgentRunRecord,
     extractor_config: BaseModel,
 ) -> None:
-    current_hash = build_scope_hash(extractor_config.model_dump(mode="json"))
+    frozen = run.generation_request_snapshot.get("extractor_config")
+    current_hash = build_scope_hash(
+        snapshot_extractor_config(
+            extractor_config, frozen=frozen if isinstance(frozen, dict) else None
+        )
+    )
     if run.binding.extractor_config_hash and (
         current_hash != run.binding.extractor_config_hash
     ):

@@ -705,9 +705,9 @@ class TestGetInteractions:
         sample_request_interaction_models,
     ):
         """Test that window size and required user scope are passed together."""
+        request_context.configurator.set_config_by_name("playbook_window_size", 50)
         config = PlaybookConfig(
             extraction_definition_prompt="Evaluate agent quality",
-            window_size_override=50,
         )
 
         request_context.storage.get_last_k_interactions_grouped.return_value = (
