@@ -81,7 +81,7 @@ def test_dashscope_default_and_regional_endpoint_survive_save_and_dispatch(
     )
     restored = APIKeyConfig.model_validate_json(config.model_dump_json())
     client = LiteLLMClient(
-        LiteLLMConfig(model="dashscope/qwen-turbo", api_key_config=restored)
+        LiteLLMConfig(model="dashscope/qwen3.8-flash", api_key_config=restored)
     )
     key, target, version = client._resolve_api_key()
     assert key == "synthetic-provider-key"

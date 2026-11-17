@@ -363,7 +363,7 @@ class TestResolveApiKey:
     @pytest.mark.parametrize(
         ("model", "cfg_attr", "cfg_cls", "expected_key"),
         [
-            ("deepseek/deepseek-chat", "deepseek", DeepSeekConfig, "ds-key"),
+            ("deepseek/deepseek-flash", "deepseek", DeepSeekConfig, "ds-key"),
             ("zai/glm-4", "zai", ZAIConfig, "zai-key"),
             ("moonshot/moonshot-v1", "moonshot", MoonshotConfig, "ms-key"),
             ("xai/grok-1", "xai", XAIConfig, "xai-key"),
@@ -391,7 +391,7 @@ class TestResolveApiKey:
             )
         )
         config = LiteLLMConfig(
-            model="dashscope/qwen-turbo", api_key_config=api_key_config
+            model="dashscope/qwen3.8-flash", api_key_config=api_key_config
         )
         client = LiteLLMClient(config)
 
@@ -404,7 +404,7 @@ class TestResolveApiKey:
         """DashScope prefix with no dashscope config returns all Nones."""
         api_key_config = APIKeyConfig(openai=CommonsOpenAIConfig(api_key="sk-openai"))
         config = LiteLLMConfig(
-            model="dashscope/qwen-turbo", api_key_config=api_key_config
+            model="dashscope/qwen3.8-flash", api_key_config=api_key_config
         )
         client = LiteLLMClient(config)
 
@@ -416,7 +416,7 @@ class TestResolveApiKey:
     @pytest.mark.parametrize(
         ("model", "prefix"),
         [
-            ("deepseek/deepseek-chat", "deepseek"),
+            ("deepseek/deepseek-flash", "deepseek"),
             ("zai/glm-4", "zai"),
             ("moonshot/moonshot-v1", "moonshot"),
             ("xai/grok-1", "xai"),
