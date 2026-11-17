@@ -49,12 +49,8 @@ from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.embedding_text import resolve_retrieval_threshold
 from reflexio.server.services.pre_retrieval import QueryReformulator
 from reflexio.server.services.retrieval.agent_selection import select_agent_playbooks
-from reflexio.server.services.retrieval.playbook_selection import (
-    PLAYBOOK_CANDIDATE_LIMIT,
-    PLAYBOOK_RESULT_LIMIT,
-    joint_playbook_selector,
-    select_playbooks,
-)
+from reflexio.server.services.retrieval.judge_client import call_jev, judge_mode
+from reflexio.server.services.retrieval.native_selection import NativePlan, select
 from reflexio.server.services.retrieval.profile_selection import select_profiles
 from reflexio.server.services.retrieval.recency import (
     RecencyConfig,
@@ -181,7 +177,6 @@ def run_unified_search(
         )
 
     top_k = request.top_k if request.top_k is not None else 5
-    joint_selector = joint_playbook_selector(request)
     threshold = resolve_retrieval_threshold(
         request.threshold,
         model_name=storage.embedding_model_name,
@@ -258,15 +253,19 @@ def run_unified_search(
     # Preserve every admitted temporal candidate until freshness/recency has
     # ordered the working pool. The joint selector's twenty-item limit applies
     # only after that native post-processing.
-    playbook_cap = (
-        max(PLAYBOOK_CANDIDATE_LIMIT, result_cap)
-        if joint_selector is not None
-        else result_cap
-    )
-    playbook_fetch_k = (
-        max(fetch_k, PLAYBOOK_CANDIDATE_LIMIT + session_fetch_bump)
-        if joint_selector is not None
-        else fetch_k
+    playbook_cap = result_cap
+    playbook_fetch_k = fetch_k
+    # Capture only the qualified working pool already admitted by native
+    # retrieval. Unsupported caller shapes keep their complete native contract.
+    enhance = judge_mode() == "jev" and _judge_applicable(
+        request,
+        storage=storage,
+        floor_cfg=floor_cfg,
+        recency=recency,
+        temporal_reorder=temporal_reorder,
+        query=reformulated_query,
+        embedding=embedding,
+        embedding_failed=embedding_failed,
     )
 
     # --- Phase B: parallel searches across all entity types ---
@@ -305,6 +304,12 @@ def run_unified_search(
         # an answer.
         return UnifiedSearchResponse(success=False, msg="Search failed")
 
+    # Unrequested native arms are empty lists, never missing measurements.
+    if enhance and (
+        profiles is None or agent_playbooks is None or user_playbooks is None
+    ):
+        raise ReadinessUnavailableError("Search judge requires complete native results")
+
     # PARTIAL failure: the profiles arm failed while a requested playbook arm
     # answered. Serve what we have, but say so, rather than letting a storage
     # outage read as "this user has no profile" (the pooled-connection incident).
@@ -328,6 +333,7 @@ def run_unified_search(
             user_playbooks or [], "user_playbook", seen_keys
         )
 
+    raw_pools = None
     if floor_on:
         profiles, agent_playbooks, user_playbooks = _apply_floors(
             query=reformulated_query,
@@ -340,21 +346,29 @@ def run_unified_search(
             playbook_top_k=playbook_cap,
         )
     elif recency_on and recency is not None:
+        # Ranking once to twenty preserves the exact native top-five prefix,
+        # without a second retrieval/scoring pass.
+        rank_cap = 20 if enhance else result_cap
         profiles = _apply_combined_score_recency(
-            profiles or [], entity_type="profiles", top_k=result_cap, cfg=recency
+            profiles or [], entity_type="profiles", top_k=rank_cap, cfg=recency
         )
         agent_playbooks = _apply_combined_score_recency(
             agent_playbooks or [],
             entity_type="agent_playbooks",
-            top_k=playbook_cap,
+            top_k=rank_cap,
             cfg=recency,
         )
         user_playbooks = _apply_combined_score_recency(
             user_playbooks or [],
             entity_type="user_playbooks",
-            top_k=playbook_cap,
+            top_k=rank_cap,
             cfg=recency,
         )
+        if enhance:
+            raw_pools = (profiles, agent_playbooks, user_playbooks)
+            profiles = profiles[:result_cap]
+            agent_playbooks = agent_playbooks[:playbook_cap]
+            user_playbooks = user_playbooks[:playbook_cap]
     else:
         profiles = _unwrap_items(profiles or [])[:result_cap]
         agent_playbooks = _unwrap_items(agent_playbooks or [])[:playbook_cap]
@@ -369,7 +383,7 @@ def run_unified_search(
             arms = [sort_by_recency(arm) for arm in arms]
         # Final cut to top_k only after the temporal pass, so items promoted
         # from the wider pool can take the top slots.
-        temporal_playbook_cap = top_k if joint_selector is None else playbook_cap
+        temporal_playbook_cap = top_k
         profiles = arms[0][:top_k]
         agent_playbooks = arms[1][:temporal_playbook_cap]
         user_playbooks = arms[2][:temporal_playbook_cap]
@@ -377,93 +391,57 @@ def run_unified_search(
     # Reranking can fail open after consuming the request budget. Do not enter
     # a fresh storage lookup after that; transport guards are the final barrier.
     search_runtime.checkpoint()
-    if joint_selector is not None:
-        with profile_step("search.playbook_selection"):
-            agent_playbooks, user_playbooks = select_playbooks(
-                provider=joint_selector,
-                agent_playbooks=(agent_playbooks or [])[:PLAYBOOK_CANDIDATE_LIMIT],
-                user_playbooks=(user_playbooks or [])[:PLAYBOOK_CANDIDATE_LIMIT],
-                request=request.model_copy(update={"query": reformulated_query}),
-                org_id=org_id,
-                storage=storage,
-                degraded=embedding_failed or profiles_degraded,
-            )
-        search_runtime.checkpoint()
-        agent_playbooks = agent_playbooks[: min(top_k, PLAYBOOK_RESULT_LIMIT)]
-        user_playbooks = _suppress_source_user_playbooks(
-            storage=storage,
-            agent_playbooks=agent_playbooks,
-            user_playbooks=user_playbooks,
-            strict=True,
-        )[: min(top_k, PLAYBOOK_RESULT_LIMIT)]
-    else:
-        user_playbooks = _suppress_source_user_playbooks(
-            storage=storage,
-            agent_playbooks=agent_playbooks or [],
-            user_playbooks=user_playbooks or [],
-        )
-
-    response = UnifiedSearchResponse(
-        success=True,
-        profiles=profiles,
-        agent_playbooks=agent_playbooks,  # type: ignore[reportArgumentType]
-        user_playbooks=user_playbooks,  # type: ignore[reportArgumentType]
-        reformulated_query=reformulated_query
-        if reformulated_query != request.query
-        else None,
-        degraded=embedding_failed or profiles_degraded,
-        search_mode_effective=effective_search_mode.value if embedding_failed else None,
+    user_playbooks, raw_pools = _native_user_candidates(
+        storage=storage,
+        agent_playbooks=agent_playbooks or [],
+        user_playbooks=user_playbooks or [],
+        raw=raw_pools,
     )
+
     # Selection sees the exact vector used by native retrieval, after all native
-    # finalization/source suppression but before served-state callbacks. A
-    # provider refusal propagates; failed selection cannot serve native agents
-    # as a successful substitute or consume their session-dedup identities.
+    # source suppression, before constructing a response or recording acceptance.
+    degraded = embedding_failed or profiles_degraded
     search_runtime.checkpoint()
-    if joint_selector is None:
-        with profile_step("search.agent_selection") as selection_span:
-            native_agents = response.agent_playbooks
-            selected_agents = select_agent_playbooks(
-                items=native_agents,
-                query_embedding=embedding,
-                storage=storage,
-                request=request,
-                org_id=org_id,
-                degraded=response.degraded,
-            )
-            response = response.model_copy(update={"agent_playbooks": selected_agents})
-            selection_span.set_data("input_count", len(native_agents))
-            selection_span.set_data("returned_count", len(selected_agents))
-        with profile_step("search.user_selection") as selection_span:
-            native_users = response.user_playbooks
-            selected_users = select_user_playbooks(
-                items=native_users,
-                storage=storage,
-                request=request,
-                org_id=org_id,
-                degraded=response.degraded,
-                created_after=window_start,
-                created_before=window_end,
-                excluded_ids=frozenset(
-                    int(key) for kind, key in seen_keys if kind == "user_playbook"
-                ),
-            )
-            response = response.model_copy(update={"user_playbooks": selected_users})
-            selection_span.set_data("input_count", len(native_users))
-            selection_span.set_data("returned_count", len(selected_users))
+    with profile_step("search.agent_selection") as selection_span:
+        native_agents = agent_playbooks or []
+        agent_playbooks = select_agent_playbooks(
+            items=native_agents,
+            query_embedding=embedding,
+            storage=storage,
+            request=request,
+            org_id=org_id,
+            degraded=degraded,
+        )
+        selection_span.set_data("input_count", len(native_agents))
+        selection_span.set_data("returned_count", len(agent_playbooks))
+    with profile_step("search.user_selection") as selection_span:
+        native_users = user_playbooks or []
+        user_playbooks = select_user_playbooks(
+            items=native_users,
+            storage=storage,
+            request=request,
+            org_id=org_id,
+            degraded=degraded,
+            created_after=window_start,
+            created_before=window_end,
+            excluded_ids=frozenset(
+                int(key) for kind, key in seen_keys if kind == "user_playbook"
+            ),
+        )
+        selection_span.set_data("input_count", len(native_users))
+        selection_span.set_data("returned_count", len(user_playbooks))
     # The qualified source/threshold contract is multilingual E5. Other model
     # policies retain their existing profile behavior.
-    if response.profiles is not None and is_multilingual_e5_model(
-        storage.embedding_model_name
-    ):
+    if is_multilingual_e5_model(storage.embedding_model_name):
         with profile_step("search.profile_selection") as selection_span:
-            native_profiles = response.profiles
-            selected_profiles = select_profiles(
+            native_profiles = profiles or []
+            profiles = select_profiles(
                 items=native_profiles,
                 request=request,
                 query=reformulated_query,
                 effective_mode=effective_search_mode,
                 query_embedding=embedding,
-                degraded=response.degraded,
+                degraded=degraded,
                 floor_on=floor_on,
                 temporal_reorder=temporal_reorder,
                 retrieve=lambda **kwargs: _retrieve_profile_selection(
@@ -479,9 +457,25 @@ def run_unified_search(
                     end_time=window_end,
                 ),
             )
-            response = response.model_copy(update={"profiles": selected_profiles})
             selection_span.set_data("input_count", len(native_profiles))
-            selection_span.set_data("returned_count", len(selected_profiles))
+            selection_span.set_data("returned_count", len(profiles))
+    profiles, agent_playbooks, user_playbooks = _apply_optional_judge(
+        query=request.query,
+        raw=raw_pools,
+        anchors=(profiles or [], agent_playbooks, user_playbooks),
+        storage=storage,
+    )
+    response = UnifiedSearchResponse(
+        success=True,
+        profiles=profiles,
+        agent_playbooks=agent_playbooks,
+        user_playbooks=user_playbooks,
+        reformulated_query=reformulated_query
+        if reformulated_query != request.query
+        else None,
+        degraded=degraded,
+        search_mode_effective=effective_search_mode.value if embedding_failed else None,
+    )
     # Post-processing may perform a remote lookup. Expired results were never
     # served and must remain available to a retry in the same session.
     search_runtime.checkpoint()
@@ -492,6 +486,170 @@ def run_unified_search(
             lambda: session_seen_cache.record(org_id, session_id, keys),
         )
     return response
+
+
+def _judge_applicable(
+    request: UnifiedSearchRequest,
+    *,
+    storage: BaseStorage,
+    floor_cfg: RetrievalFloorConfig,
+    recency: RecencyConfig | None,
+    temporal_reorder: bool,
+    query: str,
+    embedding: list[float] | None,
+    embedding_failed: bool,
+) -> bool:
+    """Qualified default native view, not a fallback after a judge failure."""
+    return (
+        bool(
+            {"agent_playbooks", "user_playbooks"}.intersection(
+                request.entity_types or _DEFAULT_ENTITY_TYPES
+            )
+        )
+        and request.top_k in (None, 5)
+        and request.threshold is None
+        and not (request.session_id or "").strip()
+        and not request.conversation_history
+        and request.enable_reformulation is False
+        and request.search_mode == SearchMode.HYBRID
+        and storage.embedding_model_name == "local/multilingual-e5-small"
+        and floor_cfg.candidate_pool_size == 0
+        and recency == RecencyConfig()
+        and not temporal_reorder
+        and query == request.query
+        and embedding is not None
+        and not embedding_failed
+    )
+
+
+_NativeResults = tuple[list[UserProfile], list[AgentPlaybook], list[UserPlaybook]]
+_NATIVE_KINDS = ("profiles", "agent_playbooks", "user_playbooks")
+_NATIVE_ID_FIELDS = ("profile_id", "agent_playbook_id", "user_playbook_id")
+
+
+def _native_user_candidates(
+    *,
+    storage: BaseStorage,
+    agent_playbooks: list[AgentPlaybook],
+    user_playbooks: list[UserPlaybook],
+    raw: _NativeResults | None,
+) -> tuple[list[UserPlaybook], _NativeResults | None]:
+    """Filter the working pool without backfilling native USER anchors."""
+    if raw is None:
+        return (
+            _suppress_source_user_playbooks(
+                storage=storage,
+                agent_playbooks=agent_playbooks,
+                user_playbooks=user_playbooks,
+            ),
+            None,
+        )
+    allowed = _suppress_source_user_playbooks(
+        storage=storage,
+        agent_playbooks=agent_playbooks,
+        user_playbooks=raw[2],
+        strict=True,
+    )
+    ids = {item.user_playbook_id for item in allowed}
+    return (
+        [item for item in user_playbooks if item.user_playbook_id in ids],
+        (raw[0], raw[1], allowed),
+    )
+
+
+def _apply_optional_judge(
+    *,
+    query: str,
+    raw: _NativeResults | None,
+    anchors: _NativeResults,
+    storage: BaseStorage,
+) -> _NativeResults:
+    """One bounded immutable decision over original native object instances."""
+    if raw is None:
+        return anchors
+    try:
+        unions: dict[str, list[Any]] = {}
+        projections: dict[str, list[dict[str, Any]]] = {}
+        preferred: dict[str, list[str | int]] = {}
+        fingerprints: dict[str, list[tuple[Any, ...]]] = {}
+        for kind, field, first, rest in zip(
+            _NATIVE_KINDS, _NATIVE_ID_FIELDS, anchors, raw, strict=True
+        ):
+            if len(first) > 5 or len(rest) > 20:
+                raise ValueError("Native decision pool exceeds qualified bounds")
+            by_id: dict[str | int, tuple[Any, ...]] = {}
+            union: list[Any] = []
+            for bank in (first, rest):
+                local: set[str | int] = set()
+                for item in bank:
+                    identity = getattr(item, field)
+                    if type(identity) not in (str, int):
+                        raise ValueError("Original native identity required")
+                    fingerprint = (
+                        identity,
+                        item.content,
+                        None
+                        if kind == "profiles"
+                        else cast(AgentPlaybook | UserPlaybook, item).trigger,
+                    )
+                    if identity in local or (
+                        identity in by_id and by_id[identity] != fingerprint
+                    ):
+                        raise ValueError("Duplicate or changed native source")
+                    local.add(identity)
+                    if identity not in by_id and len(union) < 20:
+                        union.append(item)
+                    by_id[identity] = fingerprint
+            unions[kind] = union
+            preferred[kind] = [getattr(item, field) for item in first]
+            projections[kind] = [
+                {
+                    "id": getattr(item, field),
+                    "text" if kind == "profiles" else "trigger": (
+                        item.content
+                        if kind == "profiles"
+                        else cast(AgentPlaybook | UserPlaybook, item).trigger
+                    ),
+                }
+                for item in union
+            ]
+            fingerprints[kind] = [by_id[getattr(item, field)] for item in union]
+        plan = NativePlan(query, pools=projections, anchors=preferred)
+        search_runtime.checkpoint()
+        with profile_step("search.judge_selection") as span:
+            decision = select(plan, judge=call_jev)
+            span.set_data("mode", decision.mode)
+        search_runtime.checkpoint()
+        output: list[list[Any]] = []
+        for kind, field in zip(_NATIVE_KINDS, _NATIVE_ID_FIELDS, strict=True):
+            items = unions[kind]
+            actual = [
+                (
+                    getattr(item, field),
+                    item.content,
+                    None
+                    if kind == "profiles"
+                    else cast(AgentPlaybook | UserPlaybook, item).trigger,
+                )
+                for item in items
+            ]
+            if actual != fingerprints[kind]:
+                raise ValueError("Native source changed during judgment")
+            available = {getattr(item, field): item for item in items}
+            output.append([available[identity] for identity in decision.ids[kind]])
+        profiles, agents, users = cast(_NativeResults, tuple(output))
+        # A promoted AGENT may represent a USER outside the old anchor set.
+        users = _suppress_source_user_playbooks(
+            storage=storage,
+            agent_playbooks=agents,
+            user_playbooks=users,
+            strict=True,
+        )
+        return profiles, agents, users
+    except (ValueError, TypeError, KeyError, AttributeError) as error:
+        raise ReadinessUnavailableError(
+            "Search judge evidence is unavailable"
+        ) from error
 
 
 def _retrieve_profile_selection(
