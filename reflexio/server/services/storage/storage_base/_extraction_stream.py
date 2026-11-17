@@ -524,6 +524,11 @@ class ExtractionStreamStore:
             now = self._live_user_work_clock(db, user_id, token)
             if now is None:
                 return False
+            origin_guard = getattr(
+                db, "require_learning_operation_renewal_origin", None
+            )
+            if origin_guard is not None:
+                origin_guard()
             return bool(
                 db.query(
                     f"UPDATE {db.table('learning_work')} SET lease_until=? "
