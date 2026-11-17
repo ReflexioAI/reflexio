@@ -36,6 +36,14 @@ strings before deleting old import paths in the same PR.
 
 ### Generation Services
 
+Prechecks and inline metering select input through
+`_collect_scoped_interactions_for_precheck`. When a gate is bypassed, metering
+uses that same collector rather than duplicating its window, source and rerun
+rules. A collected slice, including an empty one, is retained for the run.
+Durable generation already seeds its frozen slice before the gate; session
+evaluation's collector uses its supplied trajectory and still emits no Learning
+billing events. This does not change extraction configuration or billing consent.
+
 
 | Directory | Entry class | Key files |
 |-----------|-------------|-----------|

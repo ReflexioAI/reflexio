@@ -607,6 +607,63 @@ def test_billing_reuses_precheck_window_without_refetch(tmp_path):
     service.storage.get_last_k_interactions_grouped.assert_not_called()
 
 
+@pytest.mark.parametrize("empty", [False, True])
+def test_input_text_respects_the_session_collector_when_precheck_is_bypassed(
+    tmp_path, empty
+):
+    """The real session adapter must not fall back to an unrelated history read.
+
+    Evaluation does not emit Learning billing events. Its actual collector is
+    nevertheless a concrete adapter of the shared input-selection interface:
+    the supplied trajectory, including an empty one, owns the input text.
+    """
+    from reflexio.models.config_schema import AgentSuccessConfig
+    from reflexio.server.services.agent_success_evaluation.service import (
+        AgentSuccessEvaluationService,
+        AgentSuccessGenerationServiceConfig,
+    )
+
+    storage = _build_sqlite_storage(tmp_path)
+    history = _known_sessions(storage)
+    selected = (
+        []
+        if empty
+        else [
+            history[0].model_copy(update={"interactions": history[0].interactions[:1]})
+        ]
+    )
+    assert format_sessions_to_history_string(
+        selected
+    ) != format_sessions_to_history_string(history)
+    service = AgentSuccessEvaluationService(
+        llm_client=LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini")),
+        request_context=_request_context(storage),
+    )
+    service.service_config = AgentSuccessGenerationServiceConfig(
+        user_id=_USER_ID,
+        session_id="selected-session",
+        agent_version="v1",
+        request_interaction_data_models=selected,
+        source="api",
+    )
+    prepared = PreparedGenerationRun(
+        extractor_config=AgentSuccessConfig(
+            success_definition_prompt="Evaluate success"
+        ),
+        extractor_name="session-evaluator",
+        identifier=_USER_ID,
+    )
+    with patch.object(
+        storage,
+        "get_last_k_interactions_grouped",
+        wraps=storage.get_last_k_interactions_grouped,
+    ) as read:
+        assert service._extraction_input_text(
+            prepared
+        ) == format_sessions_to_history_string(selected)
+        read.assert_not_called()
+
+
 def test_billing_refetches_when_no_precheck_window(tmp_path):
     """When the gate did NOT pre-fetch, billing falls back to its own storage read.
 
