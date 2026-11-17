@@ -13,9 +13,7 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.server.services.service_utils import (
     _CONTENT_TRUNCATION_MARKER,
-    DEFAULT_MAX_INTERACTION_CONTENT_TOKENS,
     _get_content_token_encoding,
-    _resolve_max_interaction_content_tokens,
     format_interactions_to_history_string,
     format_sessions_to_history_string,
     slice_content_by_tokens,
@@ -23,6 +21,15 @@ from reflexio.server.services.service_utils import (
 )
 
 _ENV_MAX_TOKENS = "REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS"
+
+
+def test_complete_turn_preserves_middle_evidence_and_literal_marker():
+    content = "head " * 1000 + "MIDDLE_证据 …[truncated] <|endoftext|>" + " tail" * 1000
+    interaction = _create_interaction(1, content, "user", 1_700_000_000)
+    assert (
+        format_interactions_to_history_string([interaction]) == f"user: ```{content}```"
+    )
+    assert visible_interaction_evidence_texts(interaction) == (content,)
 
 
 def test_format_interactions_to_history_string_with_content():
@@ -442,6 +449,18 @@ def test_format_sessions_to_history_string_preserves_order_within_group():
     assert result == expected
 
 
+@pytest.mark.parametrize("raw", ["", "0", "512", "invalid-secret-value"])
+def test_old_per_turn_budget_is_rejected_without_exposing_values(monkeypatch, raw):
+    monkeypatch.setenv(_ENV_MAX_TOKENS, raw)
+    interaction = _create_interaction(1, "source evidence", "user", 1_700_000_000)
+    with pytest.raises(
+        ValueError, match="REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS"
+    ) as error:
+        format_interactions_to_history_string([interaction])
+    assert "invalid-secret-value" not in str(error.value)
+    assert "model-owned request capacity" in str(error.value)
+
+
 @pytest.mark.parametrize(
     "content",
     [
@@ -483,102 +502,6 @@ def test_slice_content_by_tokens_keeps_head_and_tail(prefix):
     assert _CONTENT_TRUNCATION_MARKER in result
     # The sliced result is materially shorter than the original.
     assert len(encoding.encode_ordinary(result)) < len(tokens)
-
-
-@pytest.mark.parametrize("max_tokens", [16, 512])
-def test_literal_token_markers_in_prompt_and_evidence(monkeypatch, max_tokens):
-    """Prompt text and grounded evidence share literal-safe content slicing."""
-    monkeypatch.setenv(_ENV_MAX_TOKENS, str(max_tokens))
-    content = "<|endoftext|> " + "ordinary text " * 30 + "<|fim_prefix|>"
-    interaction = _create_interaction(1, content, "user", 1_700_000_000)
-    encoding = _get_content_token_encoding()
-    tokens = encoding.encode_ordinary(content)
-    expected_parts = (
-        (encoding.decode(tokens[:8]), encoding.decode(tokens[-8:]))
-        if max_tokens == 16
-        else (content,)
-    )
-
-    history = format_interactions_to_history_string([interaction])
-    evidence = visible_interaction_evidence_texts(interaction)
-
-    assert history == f"user: ```{_CONTENT_TRUNCATION_MARKER.join(expected_parts)}```"
-    assert evidence == expected_parts
-
-
-def test_resolve_max_tokens_unset_uses_default(monkeypatch):
-    """Unset env falls back to the 512 default."""
-    monkeypatch.delenv(_ENV_MAX_TOKENS, raising=False)
-    assert (
-        _resolve_max_interaction_content_tokens()
-        == DEFAULT_MAX_INTERACTION_CONTENT_TOKENS
-    )
-
-
-def test_resolve_max_tokens_valid_override(monkeypatch):
-    """A positive integer env value is used as-is."""
-    monkeypatch.setenv(_ENV_MAX_TOKENS, "1024")
-    assert _resolve_max_interaction_content_tokens() == 1024
-
-
-@pytest.mark.parametrize("raw", ["0", "-1", "-512"])
-def test_resolve_max_tokens_non_positive_disables(monkeypatch, raw):
-    """A value <= 0 disables slicing (returns None)."""
-    monkeypatch.setenv(_ENV_MAX_TOKENS, raw)
-    assert _resolve_max_interaction_content_tokens() is None
-
-
-def test_resolve_max_tokens_invalid_falls_back_to_default(monkeypatch):
-    """A malformed env value falls back to the default."""
-    monkeypatch.setenv(_ENV_MAX_TOKENS, "not-an-int")
-    assert (
-        _resolve_max_interaction_content_tokens()
-        == DEFAULT_MAX_INTERACTION_CONTENT_TOKENS
-    )
-
-
-def test_format_interactions_slices_long_content(monkeypatch):
-    """format_interactions_to_history_string slices content over the budget."""
-    monkeypatch.setenv(_ENV_MAX_TOKENS, "8")
-    long_content = " ".join(str(i) for i in range(500))
-    interactions = [
-        _create_interaction(1, long_content, "user", 1_700_000_000),
-    ]
-
-    result = format_interactions_to_history_string(interactions)
-
-    assert _CONTENT_TRUNCATION_MARKER in result
-    assert long_content not in result  # full content was not emitted verbatim
-    assert result.startswith("user: ```")
-    assert result.endswith("```")
-
-
-def test_visible_interaction_evidence_excludes_synthetic_truncation_marker(monkeypatch):
-    """Turn references resolve only to source-backed prompt-visible text."""
-    monkeypatch.setenv(_ENV_MAX_TOKENS, "8")
-    interaction = _create_interaction(
-        1, " ".join(str(i) for i in range(500)), "user", 1_700_000_000
-    )
-
-    evidence_texts = visible_interaction_evidence_texts(interaction)
-
-    assert len(evidence_texts) == 2
-    assert all(_CONTENT_TRUNCATION_MARKER not in value for value in evidence_texts)
-    assert all(value in interaction.content for value in evidence_texts)
-
-
-def test_format_interactions_no_slice_when_disabled(monkeypatch):
-    """Disabling via <=0 leaves content verbatim."""
-    monkeypatch.setenv(_ENV_MAX_TOKENS, "0")
-    long_content = " ".join(str(i) for i in range(500))
-    interactions = [
-        _create_interaction(1, long_content, "user", 1_700_000_000),
-    ]
-
-    result = format_interactions_to_history_string(interactions)
-
-    assert _CONTENT_TRUNCATION_MARKER not in result
-    assert long_content in result
 
 
 if __name__ == "__main__":

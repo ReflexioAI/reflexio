@@ -291,6 +291,12 @@ class TestSchemaCompliance:
         data = json.loads(content)
         entry = get_model_registry()[model_key]
         assert entry.model_class is not None
+        if fixture_name == "profile_extraction":
+            # Historical recorded output remains raw evidence of the old author
+            # contract. It must not be misrepresented as current native output.
+            with pytest.raises(ValueError, match="cannot author estimated lifetime"):
+                entry.model_class.model_validate(data)
+            return
         result = entry.model_class.model_validate(data)
         assert isinstance(result, entry.model_class)
 

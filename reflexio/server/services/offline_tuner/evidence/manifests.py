@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 
 
@@ -49,8 +50,17 @@ def _canonical_json(value: object) -> str:
     raise TypeError(f"Unsupported RFC 8785 value: {type(value).__name__}")
 
 
+_SURROGATE_CODEPOINT = re.compile(r"[\ud800-\udfff]")
+
+
 def _reject_surrogates(value: str) -> None:
-    if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+    # Scan ordinary strings in C without retaining the signed payload. Preserve
+    # iteration semantics for str subclasses, which can override __iter__.
+    if type(value) is str:
+        has_surrogate = _SURROGATE_CODEPOINT.search(value) is not None
+    else:
+        has_surrogate = any(0xD800 <= ord(char) <= 0xDFFF for char in value)
+    if has_surrogate:
         raise ValueError("RFC 8785 strings cannot contain surrogate code points")
 
 

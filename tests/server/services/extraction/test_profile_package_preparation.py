@@ -83,7 +83,13 @@ def empty_prior_capture(monkeypatch, *, groups=None):
 
 
 @pytest.mark.parametrize(
-    "model", ["gpt-4o-mini", "minimax/MiniMax-M3", "anthropic/claude-sonnet-4-5"]
+    "model",
+    [
+        "gpt-4o-mini",
+        "minimax/MiniMax-M3",
+        "anthropic/claude-sonnet-4-5",
+        "openclaw/anthropic/claude-sonnet-4-6",
+    ],
 )
 @pytest.mark.parametrize("with_tools", [False, True])
 def test_pure_build_matches_scoped_native_build_and_restores_guard(
@@ -425,7 +431,13 @@ def test_signing_secret_rotation_changes_only_its_frozen_digest(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "model", ["gpt-4o-mini", "minimax/MiniMax-M3", "anthropic/claude-sonnet-4-5"]
+    "model",
+    [
+        "gpt-4o-mini",
+        "minimax/MiniMax-M3",
+        "anthropic/claude-sonnet-4-5",
+        "openclaw/anthropic/claude-sonnet-4-6",
+    ],
 )
 @pytest.mark.parametrize("long_echo", [False, True])
 def test_actual_native_agent_and_semantic_repair_pass_the_frozen_checker(
@@ -449,7 +461,11 @@ def test_actual_native_agent_and_semantic_repair_pass_the_frozen_checker(
         seen.append(copy.deepcopy(params))
         content = (
             json.dumps(
-                {"profiles": [{"content": "x" * 5000, "time_to_live": "infinity"}]}
+                {
+                    "profiles": [
+                        {"content": "x" * 5000, "explicit_storage_deadline": None}
+                    ]
+                }
             )
             if long_echo and len(seen) == 1
             else '{"profiles":[]}'
@@ -690,7 +706,7 @@ def test_fitting_initial_request_refuses_oversized_native_repair_before_reservat
                                 "profiles": [
                                     {
                                         "content": "unsupported preference",
-                                        "time_to_live": "infinity",
+                                        "explicit_storage_deadline": None,
                                         "source_span": "absent quotation",
                                     }
                                 ]
@@ -1147,3 +1163,32 @@ def test_frozen_pending_policy_cannot_hide_non_timing_or_invalid_changes(mutatio
         pending_tool_policy_snapshot(config, frozen)
     assert "PRIVATE_INVALID_TIMING" not in str(failure.value)
     assert frozen == before
+
+
+def test_retired_pending_dedup_duration_preserves_frozen_witness():
+    from reflexio.server.services.extraction.profile_package_preparation import (
+        pending_tool_policy_snapshot,
+    )
+
+    saved = {
+        "pending_ttl_seconds": 37,
+        "dedup_cache_seconds": 12,
+        "tool_overrides": {"ask_human": {"dedup_cache_seconds": 4}},
+    }
+    config = PendingToolCallConfig.model_validate(saved)
+    current = pending_tool_policy_snapshot(config)
+    frozen = copy.deepcopy(current)
+    frozen["dedup_cache_seconds"] = 12
+    frozen["tool_overrides"]["ask_human"]["dedup_cache_seconds"] = 4
+    original = copy.deepcopy(frozen)
+
+    assert "dedup_cache_seconds" not in config.model_dump()
+    assert "dedup_cache_seconds" not in config.tool_overrides["ask_human"].model_dump()
+    assert (
+        pending_tool_policy_snapshot(
+            PendingToolCallConfig(pending_ttl_seconds=37), frozen
+        )
+        == original
+    )
+    assert frozen == original
+    assert saved["tool_overrides"]["ask_human"] == {"dedup_cache_seconds": 4}

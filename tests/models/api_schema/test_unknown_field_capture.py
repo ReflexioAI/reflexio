@@ -112,6 +112,42 @@ class TestEveryMixinSubclassCapturesAndStrips:
         assert "zzz" not in instance.model_dump()
 
 
+def _mixin_subclasses() -> list[type[CapturesUnknownFields]]:
+    found: list[type[CapturesUnknownFields]] = []
+    pending = list(CapturesUnknownFields.__subclasses__())
+    while pending:
+        cls = pending.pop()
+        found.append(cls)
+        pending.extend(cls.__subclasses__())
+    return found
+
+
+class TestCaptureStateCostsNothingPerInstance:
+    """A 6.6 MB production publish carried 12,945 ``ToolUsed`` entries.
+
+    With a ``default_factory`` on the capture state, pydantic < 2.14 inspected
+    the factory's signature on every instance (~100us each). Parsing that body,
+    and re-parsing its stored rows to answer an exact-retry replay, then took
+    seconds of GIL-holding work each (prod: replay_read 17.2s, event loop
+    stalled 2993ms). The pydantic version cannot be pinned for every consumer,
+    so the mixin must not ask for per-instance default work at all.
+    """
+
+    def test_no_capture_state_uses_a_default_factory(self):
+        subclasses = _mixin_subclasses()
+        assert ToolUsed in subclasses
+        for cls in [CapturesUnknownFields, *subclasses]:
+            for name in CapturesUnknownFields.__private_attributes__:
+                attribute = cls.__private_attributes__[name]
+                assert attribute.default_factory is None, (cls.__name__, name)
+
+    def test_returned_names_do_not_alias_instance_state(self):
+        instance = _Sample.model_validate({"zzz": 1})
+        instance.unknown_field_names().append("leak")
+        assert instance.unknown_field_names() == ["zzz"]
+        assert _Sample().unknown_field_names() == []
+
+
 class TestBoundedRendering:
     def test_names_per_entry_are_capped_with_a_suffix(self):
         rendered = _summarise_unknown_names([f"k{i}" for i in range(9)])

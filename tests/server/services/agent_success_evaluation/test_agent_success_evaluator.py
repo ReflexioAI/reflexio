@@ -158,6 +158,41 @@ def service_config(sample_request_interaction_models):
 # ===============================
 
 
+def test_native_evaluation_refuses_capacity_before_dispatch(
+    monkeypatch, request_context, extractor_config, service_config, tool_call_completion
+):
+    from reflexio.server.llm import input_budget
+    from reflexio.server.llm.litellm_client import LiteLLMConfig
+
+    monkeypatch.setattr(input_budget.litellm, "token_counter", lambda **_: 2000)
+    monkeypatch.setattr(
+        input_budget.litellm,
+        "get_model_info",
+        lambda *_: {"max_input_tokens": 1000, "max_output_tokens": 20},
+    )
+    client = LiteLLMClient(
+        LiteLLMConfig(model="gpt-4o", max_tokens=20, fallback_models=[])
+    )
+    evaluator = AgentSuccessEvaluator(
+        request_context=request_context,
+        llm_client=client,
+        extractor_config=extractor_config,
+        service_config=service_config,
+        agent_context="fixture agent",
+    )
+    evaluator.default_evaluate_model_name = "gpt-4o"
+    _, make_stop = tool_call_completion
+    response = make_stop('{"is_success": true, "number_of_correction_per_session": 0}')
+    with (
+        patch.object(
+            client, "_completion_with_hard_timeout", return_value=response
+        ) as dispatch,
+        pytest.raises(input_budget.InputBudgetExceededError),
+    ):
+        evaluator.run()
+    dispatch.assert_not_called()
+
+
 class TestRun:
     """Tests for the run() method."""
 

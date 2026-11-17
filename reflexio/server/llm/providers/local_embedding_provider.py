@@ -142,7 +142,7 @@ class ONNXMiniLM:
                 shutil.rmtree(target)
             extracted.replace(target)
 
-    def _load_model(self) -> None:
+    def _load_model(self) -> Any:
         cache = Path(self.DOWNLOAD_PATH)
         with _exclusive_file_lock(_minilm_cache_lock_path(cache)):
             if not _minilm_cache_complete(type(self), cache):
@@ -168,13 +168,15 @@ class ONNXMiniLM:
                 providers=["CPUExecutionProvider"],
             )
             self._tokenizer = tokenizer
+        return self._session
 
     def __call__(self, documents: list[str]) -> list[list[float]]:
         if not documents:
             return []
         configure_tokenizer_compute()
-        if self._session is None:
-            self._load_model()
+        session = self._session
+        if session is None:
+            session = self._load_model()
         np = self._np
         vectors: list[list[float]] = []
         batch_size = embedding_batch_size(32)
@@ -187,7 +189,7 @@ class ONNXMiniLM:
             attention = np.array(
                 [item.attention_mask for item in encoded], dtype=np.int64
             )
-            hidden = self._session.run(
+            hidden = session.run(
                 None,
                 {
                     "input_ids": ids,

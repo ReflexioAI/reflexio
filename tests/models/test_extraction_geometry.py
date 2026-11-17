@@ -37,7 +37,7 @@ def test_legacy_shortcuts_resolve_once_without_persisted_authority(
     with pytest.raises(ValueError):
         loader(payload)
     config = loader(canonicalize_config_document(payload))
-    assert (config.window_size, config.stride_size) == geometry
+    assert (config.profile_window_size, config.profile_stride_size) == geometry
     assert payload == before
     dumped = config.model_dump(mode="json")
     assert "extraction_preset" not in dumped
@@ -61,7 +61,7 @@ def test_explicit_geometry_and_old_field_aliases_keep_precedence(fields, geometr
             {"storage_config": None, "extraction_preset": "long_form", **fields}
         )
     )
-    assert (config.window_size, config.stride_size) == geometry
+    assert (config.profile_window_size, config.profile_stride_size) == geometry
 
 
 @pytest.mark.parametrize("preset", ["unknown", 42, {}, False])
@@ -114,7 +114,7 @@ def test_real_config_file_load_patch_save_and_reload(tmp_path: Path):
     convert_config_file(legacy, path)
     assert legacy.read_bytes() == original
     configurator = DefaultConfigurator("geometry", base_dir=str(tmp_path))
-    assert configurator.get_config().window_size == 25
+    assert configurator.get_config().profile_window_size == 25
     # Shallow patches already contain explicit geometry: an old label alone
     # must not gain new authority over it.
     before = path.read_bytes()
@@ -124,16 +124,18 @@ def test_real_config_file_load_patch_save_and_reload(tmp_path: Path):
         configurator.set_config_by_name("extraction_preset", "standard")
     assert path.read_bytes() == before
     assert (
-        configurator.get_config().window_size,
-        configurator.get_config().stride_size,
+        configurator.get_config().profile_window_size,
+        configurator.get_config().profile_stride_size,
     ) == (25, 10)
     assert "extraction_preset" not in json.loads(path.read_text())
     reloaded = store.load_config()
     assert reloaded is not None
-    assert (reloaded.window_size, reloaded.stride_size) == (25, 10)
+    assert (reloaded.profile_window_size, reloaded.profile_stride_size) == (25, 10)
     configurator.set_config(
-        configurator.prepare_config_patch({"window_size": 31, "stride_size": 7})
+        configurator.prepare_config_patch(
+            {"profile_window_size": 31, "profile_stride_size": 7}
+        )
     )
     reloaded = store.load_config()
     assert reloaded is not None
-    assert (reloaded.window_size, reloaded.stride_size) == (31, 7)
+    assert (reloaded.profile_window_size, reloaded.profile_stride_size) == (31, 7)

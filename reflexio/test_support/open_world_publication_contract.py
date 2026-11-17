@@ -43,7 +43,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
-from typing import Any, NamedTuple, Protocol, cast
+from typing import Any, NamedTuple, Protocol, cast, overload
 
 import pytest
 
@@ -64,7 +64,10 @@ from reflexio.server.services.offline_tuner.open_world_records import (
 from reflexio.server.services.offline_tuner.search_projection import (
     CandidateSearchProjection,
     CandidateSearchProjectionRequest,
+    FinalVersionSearchProjection,
+    FinalVersionSearchProjectionRequest,
     SearchProjectorKeyIdentity,
+    publication_search_projection,
 )
 from reflexio.server.services.playbook.publication import (
     DecisionProofEnvelope,
@@ -77,9 +80,12 @@ from reflexio.server.services.search_exposure import (
 )
 from reflexio.server.services.storage.error import StorageError
 from reflexio.test_support.open_world_attempt_contract import (
+    _SESSIONS,
     Attempt,
     AttemptHarness,
+    TriggerRepairTransport,
     _accepted,
+    _attempt,
 )
 from reflexio.test_support.open_world_evidence_contract import JobRow
 
@@ -166,12 +172,43 @@ class ContractProjector:
     """A deterministic search projector: no embedding provider is called."""
 
     key_identity: SearchProjectorKeyIdentity = _PROJECTOR
-    calls: list[CandidateSearchProjectionRequest] = field(default_factory=list)
+    final_version_key_identity: SearchProjectorKeyIdentity = SearchProjectorKeyIdentity(
+        projector_id="contract-final-version-projector",
+        projector_version="contract-final-version-projector-v2",
+        code_digest=sha256(b"contract-final-version-projector-v2").hexdigest(),
+    )
+    calls: list[
+        CandidateSearchProjectionRequest | FinalVersionSearchProjectionRequest
+    ] = field(default_factory=list)
 
+    @overload
     def build(
         self, request: CandidateSearchProjectionRequest
-    ) -> CandidateSearchProjection:
+    ) -> CandidateSearchProjection: ...
+
+    @overload
+    def build(
+        self, request: FinalVersionSearchProjectionRequest
+    ) -> FinalVersionSearchProjection: ...
+
+    def build(
+        self,
+        request: CandidateSearchProjectionRequest | FinalVersionSearchProjectionRequest,
+    ) -> CandidateSearchProjection | FinalVersionSearchProjection:
         self.calls.append(request)
+        if isinstance(request, FinalVersionSearchProjectionRequest):
+            identity = self.final_version_key_identity
+            return FinalVersionSearchProjection(
+                projector_id=identity.projector_id,
+                projector_version=identity.projector_version,
+                projector_code_digest=identity.code_digest,
+                candidate_content_digest=request.candidate_content_digest,
+                candidate_trigger=request.candidate_trigger,
+                embedding_model_id="contract-embedding-v1",
+                embedding=("1",) + ("0",) * (_DIMENSIONS - 1),
+                expanded_terms=("synthetic guidance",),
+                lexical_document=f"{request.candidate_trigger or ''} {request.candidate_content}".strip(),
+            )
         return CandidateSearchProjection(
             projector_id=self.key_identity.projector_id,
             projector_version=self.key_identity.projector_version,
@@ -354,6 +391,142 @@ _PROOF_FORGERIES = [
 
 class OpenWorldPublicationContract:
     """Provisional publication's behaviour, asserted identically on every backend."""
+
+    def test_v2_trigger_only_publication_and_retry(
+        self, port_harness: PublicationHarness
+    ) -> None:
+        attempt = _attempt(
+            port_harness,
+            transport=TriggerRepairTransport(
+                called_at=port_harness.now(), abstain=True
+            ),
+            v2=True,
+        )
+        attempt.run()
+        expected = attempt.payload("open_world_candidate")["payload"]
+        first = publish(attempt)
+        successor = attempt.storage.get_user_playbook_by_id(
+            first.successor_user_playbook_id
+        )
+        assert successor is not None
+        assert successor.content == attempt.incumbent.content
+        assert successor.trigger == expected["revised_trigger"]
+        # Public playbook reads intentionally omit embeddings. Prove that the
+        # successor's NEW Trigger is indexed through the actual search API.
+        served = attempt.storage.search_user_playbooks(
+            SearchUserPlaybookRequest(
+                query="consulting", user_id=attempt.owner, search_mode=SearchMode.FTS
+            )
+        )
+        assert [item.user_playbook_id for item in served] == [
+            first.successor_user_playbook_id
+        ]
+        assert publish(attempt) == first
+        assert port_harness.publication_rows(attempt.job_id).results == 1
+        assert port_harness.publication_rows(attempt.job_id).lifecycles == 1
+        assert len(port_harness.playbook_ids(attempt.owner)) == 2
+
+    def test_v2_trigger_only_publication_failure_is_atomic(
+        self, port_harness: PublicationHarness
+    ) -> None:
+        attempt = _attempt(
+            port_harness,
+            transport=TriggerRepairTransport(
+                called_at=port_harness.now(), abstain=True
+            ),
+            v2=True,
+        )
+        attempt.run()
+        with port_harness.fail_result_writes(), pytest.raises(StorageError):
+            publish(attempt)
+        _no_publication(port_harness, attempt)
+        result = publish(attempt)
+        assert result.successor_user_playbook_id is not None
+        assert port_harness.publication_rows(attempt.job_id).results == 1
+
+    @pytest.mark.parametrize(
+        "trigger", [None, "", "  ", "x" * 321], ids=["null", "empty", "blank", "long"]
+    )
+    def test_v2_content_only_preserves_uninferred_trigger(
+        self, port_harness: PublicationHarness, trigger: str | None
+    ) -> None:
+        attempt = _attempt(port_harness, v2=True, original_trigger=trigger)
+        attempt.run()
+        prepared = attempt.payload("open_world_trigger_result")["payload"]
+        assert prepared["resolved_result"]["status"] == "preserved_without_inference"
+        assert prepared["gate_receipt"] is None and prepared["builder_receipt"] is None
+        assert len(attempt.transport.calls) == _SESSIONS + 1
+        result = publish(attempt)
+        successor = attempt.storage.get_user_playbook_by_id(
+            result.successor_user_playbook_id
+        )
+        assert successor is not None
+        assert successor.trigger == trigger
+        assert successor.content != attempt.incumbent.content
+
+    def test_v2_joint_revision_uses_accepted_final_content(
+        self, port_harness: PublicationHarness
+    ) -> None:
+        attempt = _attempt(
+            port_harness,
+            transport=TriggerRepairTransport(called_at=port_harness.now()),
+            v2=True,
+        )
+        attempt.run()
+        candidate = attempt.payload("open_world_candidate")["payload"]
+        frame = attempt.payload("open_world_trigger_result")["payload"]["source_frame"]
+        assert candidate["change_fields"] == ["content", "trigger"]
+        assert frame["original_content"] == attempt.incumbent.content
+        assert (
+            frame["final_content"]
+            == candidate["revised_content"]
+            != attempt.incumbent.content
+        )
+        result = publish(attempt)
+        successor = attempt.storage.get_user_playbook_by_id(
+            result.successor_user_playbook_id
+        )
+        assert successor is not None
+        assert (successor.content, successor.trigger) == (
+            candidate["revised_content"],
+            candidate["revised_trigger"],
+        )
+
+    def test_v2_self_consistent_projection_cannot_change_authorized_trigger(
+        self, port_harness: PublicationHarness
+    ) -> None:
+        attempt = _attempt(
+            port_harness,
+            transport=TriggerRepairTransport(
+                called_at=port_harness.now(), abstain=True
+            ),
+            v2=True,
+        )
+        attempt.run()
+        request = request_until(attempt, "stage")
+        assert request.final_revision is not None
+        forged_revision = type(request.final_revision)(
+            revised_content=request.revised_content,
+            revised_trigger="A different Trigger",
+        )
+        projection = ContractProjector().build(
+            FinalVersionSearchProjectionRequest(
+                incumbent_user_playbook_id=attempt.incumbent.user_playbook_id,
+                incumbent_content_digest=sha256(
+                    attempt.incumbent.content.encode()
+                ).hexdigest(),
+                candidate_content=request.revised_content,
+                candidate_trigger=forged_revision.revised_trigger,
+            )
+        )
+        forged = replace(
+            request,
+            final_revision=forged_revision,
+            projection=publication_search_projection(projection),
+        )
+        with pytest.raises(StorageError):
+            attempt.storage.stage_user_playbook_provisional_publication(forged)
+        _no_publication(port_harness, attempt)
 
     # ----------------------------------------------------------------- I14
 

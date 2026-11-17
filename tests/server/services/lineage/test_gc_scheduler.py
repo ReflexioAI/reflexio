@@ -37,6 +37,7 @@ from reflexio.server.services.lineage.gc_scheduler import (
 def _make_storage(*, gc_return: int = 0) -> MagicMock:
     """Return a mock storage whose gc_expired_tombstones returns ``gc_return``."""
     storage = MagicMock()
+    storage.profile_lifecycle_due_users.return_value = []
     storage.gc_expired_tombstones.return_value = gc_return
     # expire_active_profiles is now called at the start of each tick; default to 0
     # so existing tests that don't exercise the sweep see a clean integer return.
@@ -310,22 +311,15 @@ def test_lineage_gc_enabled_default_is_true():
 # ---------------------------------------------------------------------------
 
 
-def test_maybe_start_lineage_gc_returns_none_when_disabled(monkeypatch):
-    """No configured work of ANY class means no scheduler.
-
-    Row-count retention became a third start condition when the sweep moved off
-    the publish path, so ``lineage_gc.enabled=False`` alone no longer implies
-    None -- the caps are unconditional and would otherwise stop being enforced
-    anywhere. Disabling every row limit here keeps this test asserting what it
-    always meant, rather than asserting the old set of conditions.
-    """
+def test_required_profile_deadlines_start_with_all_optional_gc_disabled(monkeypatch):
     monkeypatch.setattr(
         gc_scheduler, "get_row_retention_limits", lambda: {"interactions": 0}
     )
-    cfg = LineageGCConfig(tombstone_grace_window_days=0)
-    ctx = _make_ctx("org_1", lineage_gc=cfg)
-    result = maybe_start_lineage_gc(lambda _: ctx, bootstrap_org_id="org_1")  # type: ignore[arg-type]
-    assert result is None
+    ctx = _make_ctx("org_1", lineage_gc=LineageGCConfig(tombstone_grace_window_days=0))
+    with patch.object(LineageGCScheduler, "start") as start:
+        result = maybe_start_lineage_gc(lambda _: ctx, bootstrap_org_id="org_1")
+    assert result is not None
+    start.assert_called_once()
 
 
 def test_maybe_start_lineage_gc_starts_for_retention_alone():
@@ -377,23 +371,18 @@ def test_gc_scheduler_recovers_when_first_org_appears():
     scheduler._gc_tick.assert_called_once()  # type: ignore[attr-defined]
 
 
-def test_maybe_start_lineage_gc_returns_none_on_factory_error(monkeypatch):
-    """A factory error yields no scheduler when there is no other work either.
-
-    Row-count retention does NOT depend on the bootstrap context or its config,
-    so it deliberately survives this failure — see
-    `test_retention_still_starts_when_the_bootstrap_config_read_fails`. Disabling
-    every row limit here keeps this test on the factory error it is named for.
-    """
+def test_required_profile_deadlines_start_despite_bootstrap_factory_error(monkeypatch):
     monkeypatch.setattr(
         gc_scheduler, "get_row_retention_limits", lambda: {"interactions": 0}
     )
 
-    def bad_factory(org_id: str):
+    def bad_factory(org_id):
         raise RuntimeError("can't build context")
 
-    result = maybe_start_lineage_gc(bad_factory, bootstrap_org_id="org_1")
-    assert result is None
+    with patch.object(LineageGCScheduler, "start") as start:
+        result = maybe_start_lineage_gc(bad_factory, bootstrap_org_id="org_1")
+    assert result is not None
+    start.assert_called_once()
 
 
 def test_maybe_start_lineage_gc_starts_when_config_unreadable_but_sweeps_registered(

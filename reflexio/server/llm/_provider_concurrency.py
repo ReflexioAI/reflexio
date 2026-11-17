@@ -6,6 +6,11 @@ raises ProviderCapSaturatedError; the generation fallback walk may advance to
 another independently admitted provider. Capacity is never bypassed.
 """
 
+# Complete provider initialization before importing the third-party library.
+import reflexio.provider_bootstrap  # noqa: F401
+
+# isort: split
+
 import logging
 import os
 import threading
@@ -153,7 +158,7 @@ def _registered_custom_provider(model: str) -> str | None:
     provider has registered itself into ``litellm.custom_provider_map`` --
     verified against a registered handler, not assumed. So the cap silently
     skipped every custom provider, and both of ours are CLI bridges that shell
-    out to a local binary: ``claude-code`` and ``openclaw``. The providers least
+    out to a local binary: ``local-cli`` and ``openclaw``. The providers least
     able to tolerate concurrency were the only ones the gate could not see
     (claude-smart#162).
 
@@ -208,11 +213,27 @@ def provider_slot(model: str, *, max_wait: float | None = None) -> Iterator[None
             of the usual bound -- the caller's remaining deadline (the LLM
             ladder walk's budget).
     """
+    with _provider_slot(_provider_key(model), max_wait=max_wait):
+        yield
+
+
+@contextmanager
+def named_provider_slot(
+    provider: str, *, max_wait: float | None = None
+) -> Iterator[None]:
+    """Admit a named non-LiteLLM transport through the same provider owner."""
+    if not provider or provider != provider.strip():
+        raise ValueError("An explicit provider name is required")
+    with _provider_slot(provider, max_wait=max_wait):
+        yield
+
+
+@contextmanager
+def _provider_slot(provider: str | None, *, max_wait: float | None) -> Iterator[None]:
     from reflexio.server import search_runtime
 
     search_runtime.checkpoint()
     remaining_call_time()
-    provider = _provider_key(model)
     if provider is None:
         token = _current_provider_lease.set(None)
         try:

@@ -3,6 +3,10 @@
 from collections.abc import Mapping
 
 REMOVED_ENV_ALIASES = {
+    "REFLEXIO_EMBEDDING_REGENERATION_BATCH_SIZE": "regeneration request batch_size",
+    "REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS": "",
+    "REFLEXIO_LLM_SEED": "",
+    "REFLEXIO_AGENT_VERSION": "",
     "REFLEXIO_INSTANCE_ID": "",
     "REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS": "",
     "REFLEXIO_LEARNING_ALARM_SUPPRESS_SECONDS": "",
@@ -44,6 +48,20 @@ REMOVED_ENV_ALIASES = {
 }
 
 
+_REMOVED_ENV_GUIDANCE = {
+    "REFLEXIO_EMBEDDING_REGENERATION_BATCH_SIZE": (
+        "; preserve the intended size in the existing regeneration request "
+        "batch_size field before removing this assignment. The request owns "
+        "job paging; existing jobs retain their stored batch size"
+    ),
+    "REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS": (
+        "; complete interaction evidence now uses model-owned request capacity. "
+        "Remove the old per-turn slicing assignment; preserve existing model, "
+        "context declaration and output policy. No stored source is rewritten"
+    ),
+}
+
+
 def reject_removed_env(
     env: Mapping[str, object],
     aliases: Mapping[str, str] = REMOVED_ENV_ALIASES,
@@ -64,9 +82,18 @@ def reject_removed_env(
     if obsolete:
         source_cap = "REFLEXIO_ROW_LIMIT_AGENT_PLAYBOOK_SOURCE_USER_PLAYBOOKS"
         migration = "; ".join(
-            f"{name} (remove assignment)"
-            if name == source_cap or not aliases[name]
-            else f"{name} -> {aliases[name]}"
+            (
+                f"{name} (remove assignment): sampling belongs to the "
+                "request. Pass seed explicitly when needed and temperature=0 "
+                "to retain the former temperature override. Model restrictions "
+                "still apply; existing evaluation records are preserved"
+            )
+            if name == "REFLEXIO_LLM_SEED"
+            else (
+                f"{name} (remove assignment)"
+                if name == source_cap or not aliases[name]
+                else f"{name} -> {aliases[name]}"
+            )
             for name in obsolete
         )
         if "REFLEXIO_INSTANCE_ID" in obsolete:
@@ -76,6 +103,15 @@ def reject_removed_env(
                 "existing resolved WAL leaf; preserve its files and instance_id. "
                 "Do not move or reinitialize pending usage"
             )
+        if "REFLEXIO_AGENT_VERSION" in obsolete:
+            migration += (
+                "; agent identity belongs to the caller: use explicit agent_version "
+                "in SDK calls or --agent-version in the CLI, then remove the "
+                "process assignment. Omitted publish identity keeps agent-v0; "
+                "filter/regeneration commands require an explicit target. "
+                "No stored request identity is rewritten"
+            )
+        migration += "".join(_REMOVED_ENV_GUIDANCE.get(name, "") for name in obsolete)
         if "REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS" in obsolete:
             migration += (
                 "; LLM attempts now use one accepted-work deadline, including startup. "

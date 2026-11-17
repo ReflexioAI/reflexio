@@ -14,7 +14,7 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Protocol, cast
 
 from pydantic import TypeAdapter
 
@@ -80,7 +80,12 @@ from reflexio.server.services.offline_tuner.open_world_records import (
     OpenWorldQualificationAuthorityStaleError,
 )
 from reflexio.server.services.playbook.publication import QualificationAuthorityRef
+from reflexio.server.services.playbook.revision import FinalPlaybookRevision
 from reflexio.server.services.playbook.rule_evidence import run_rule_evidence
+from reflexio.server.services.playbook.rule_evidence.trigger_maintenance import (
+    TriggerBatch,
+    TriggerGate,
+)
 from reflexio.server.services.playbook.rule_evidence.wire import (
     BoundedTargetDiagnostic as Diagnostic,
 )
@@ -120,6 +125,58 @@ def _json(value: object) -> str:
 
 def _digest(value: object) -> str:
     return sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def _method_output_bytes(value: StrictStructuredOutput) -> bytes:
+    if isinstance(value, (TriggerGate, TriggerBatch)):
+        return canonical_json_bytes(
+            {
+                "contract_type": "rule_evidence_trigger_gate"
+                if isinstance(value, TriggerGate)
+                else "rule_evidence_trigger_builder",
+                "schema_version": "v2",
+                "payload": value.model_dump(mode="json"),
+            }
+        )
+    return observed_output_bytes(cast(Diagnostic | Proposal, value))
+
+
+def _receipt_request(
+    *,
+    bundle: OpenWorldEvidenceBundle,
+    identity: Any,
+    system: str,
+    payload: dict[str, object],
+    schema: type[StrictStructuredOutput],
+    source_frame_digest: str | None = None,
+    content_result_artifact_digest: str | None = None,
+) -> dict[str, Any]:
+    request: dict[str, Any] = {
+        "bundle_digest": bundle.digest,
+        "task_context_digest": bundle.task_context.digest,
+        "component_identity_digest": identity.digest,
+        "system": system,
+        "payload": payload,
+        "output_schema": schema.model_json_schema(),
+    }
+    trigger = schema in (TriggerGate, TriggerBatch)
+    if trigger:
+        for digest in (source_frame_digest, content_result_artifact_digest):
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(c not in "0123456789abcdef" for c in digest)
+            ):
+                raise ValueError(
+                    "Trigger receipt requires complete source/result digests"
+                )
+        request.update(
+            source_frame_digest=source_frame_digest,
+            content_result_artifact_digest=content_result_artifact_digest,
+        )
+    elif source_frame_digest is not None or content_result_artifact_digest is not None:
+        raise ValueError("Content invocation cannot claim a Trigger source frame")
+    return request
 
 
 #: Bound on the exception-chain walk; the client's wrapping is two levels deep.
@@ -200,9 +257,33 @@ class ContentRevision:
 
 
 @dataclass(frozen=True)
+class FinalContentDiff:
+    """V2 diff permits exact Content preservation for a Trigger-only repair."""
+
+    incumbent_content_digest: str
+    candidate_content_digest: str
+    unified_diff: str
+
+    def __post_init__(self) -> None:
+        for value in (self.incumbent_content_digest, self.candidate_content_digest):
+            if (
+                not isinstance(value, str)
+                or len(value) != 64
+                or any(c not in "0123456789abcdef" for c in value)
+            ):
+                raise ValueError("content diff digests must be SHA-256")
+        if not isinstance(self.unified_diff, str):
+            raise ValueError("Content diff presentation must be text")
+        if (self.incumbent_content_digest == self.candidate_content_digest) != (
+            self.unified_diff == ""
+        ):
+            raise ValueError("Content diff is empty exactly when Content is unchanged")
+
+
+@dataclass(frozen=True)
 class RuleEvidenceCandidate:
-    revision: ContentRevision
-    content_diff: CandidateContentDiff
+    revision: ContentRevision | FinalPlaybookRevision
+    content_diff: CandidateContentDiff | FinalContentDiff
 
 
 @dataclass(frozen=True)
@@ -223,6 +304,8 @@ class RuleEvidencePublicationInputs:
     subject_epochs: tuple[tuple[str, int], ...]
     qualification_authority: QualificationAuthorityRef
     claim: OptimizationJobClaim
+    content_result_artifact_digest: str | None = None
+    trigger_result_artifact_digest: str | None = None
 
 
 @dataclass
@@ -313,7 +396,12 @@ class RuleEvidenceAnalysisStore:
         return artifact
 
     def read(
-        self, kind: str, contract: str, claim: OptimizationJobClaim
+        self,
+        kind: str,
+        contract: str,
+        claim: OptimizationJobClaim,
+        *,
+        schema_version: str = "v1",
     ) -> tuple[PlaybookOptimizationArtifact, dict[str, Any]] | None:
         artifact = self.storage.read_open_world_artifact(
             job_id=claim.job_id, artifact_kind=kind, fence=claim.fence, now=self.clock()
@@ -321,7 +409,10 @@ class RuleEvidenceAnalysisStore:
         if artifact is None:
             return None
         raw = json.loads(artifact.content_json)
-        if raw.get("contract_type") != contract or raw.get("schema_version") != "v1":
+        if (
+            raw.get("contract_type") != contract
+            or raw.get("schema_version") != schema_version
+        ):
             raise OpenWorldEvidenceSchemaUnsupportedError(
                 "unsupported rule-evidence artifact schema"
             )
@@ -398,28 +489,35 @@ class RuleEvidenceAnalysisStore:
         system: str,
         payload: dict[str, object],
         schema: type[StrictStructuredOutput],
+        source_frame_digest: str | None = None,
+        content_result_artifact_digest: str | None = None,
     ) -> tuple[StrictStructuredOutput, dict[str, Any]]:
         self.bind_context(bundle, claim)
         diagnostic = issubclass(schema, Diagnostic)
-        output_kind(schema)
-        identity = self.method.diagnostic if diagnostic else self.method.proposal
+        identity = self.method.component_for_schema(schema)
+        bound_schema = (
+            schema
+            if schema in (TriggerGate, TriggerBatch)
+            else contract_schema(output_kind(schema))
+        )
         if (
             sha256(system.encode()).hexdigest() != identity.prompt_template_digest
-            or _digest(contract_schema(output_kind(schema)).model_json_schema())
+            or _digest(bound_schema.model_json_schema())
             != identity.output_schema_digest
         ):
             raise OpenWorldQualificationAuthorityStaleError(
                 "prompt/schema identity drift"
             )
         request_json = _json(
-            {
-                "bundle_digest": bundle.digest,
-                "task_context_digest": bundle.task_context.digest,
-                "component_identity_digest": identity.digest,
-                "system": system,
-                "payload": payload,
-                "output_schema": schema.model_json_schema(),
-            }
+            _receipt_request(
+                bundle=bundle,
+                identity=identity,
+                system=system,
+                payload=payload,
+                schema=schema,
+                source_frame_digest=source_frame_digest,
+                content_result_artifact_digest=content_result_artifact_digest,
+            )
         )
         input_digest = sha256(request_json.encode()).hexdigest()
         session = None
@@ -437,14 +535,8 @@ class RuleEvidenceAnalysisStore:
                 raise OpenWorldInvocationConflictError(
                     "diagnostic source is not frozen"
                 )
-        role: Literal["discovery", "candidate"] = (
-            "discovery" if diagnostic else "candidate"
-        )
-        qualification = (
-            self.method.result_digest
-            if diagnostic
-            else self.method.proposal_authorization_digest
-        )
+        role = identity.component_role
+        qualification = self.method.authorization_for_schema(schema)
         expected = ExpectedProvenance(
             expected_provider=identity.provider,
             expected_model_revision=identity.immutable_model_revision,
@@ -506,9 +598,9 @@ class RuleEvidenceAnalysisStore:
                 idempotency_key=binding.analyst_input_identity,
             )
             value = schema.model_validate_json(completion.value.model_dump_json())
-            if not isinstance(value, (Diagnostic, Proposal)):
+            if not isinstance(value, (Diagnostic, Proposal, TriggerGate, TriggerBatch)):
                 raise TypeError("provider output did not match rule-evidence schema")
-            output = observed_output_bytes(cast(Diagnostic | Proposal, value)).decode()
+            output = _method_output_bytes(value).decode()
             row = self.storage.complete_open_world_invocation(
                 binding=binding,
                 completion=CompletionRecord(
@@ -526,10 +618,7 @@ class RuleEvidenceAnalysisStore:
         self._check_row(row, binding, expected)
         raw = json.loads(cast(str, row.output_json))
         value = schema.model_validate_json(json.dumps(raw["payload"]))
-        if (
-            observed_output_bytes(cast(Diagnostic | Proposal, value)).decode()
-            != row.output_json
-        ):
+        if _method_output_bytes(value).decode() != row.output_json:
             raise OpenWorldInvocationConflictError("observed output contract changed")
         return value, {
             "prepared": {
@@ -552,32 +641,27 @@ class RuleEvidenceAnalysisStore:
         schema: type[StrictStructuredOutput],
         system: str,
         payload: dict[str, object],
+        source_frame_digest: str | None = None,
+        content_result_artifact_digest: str | None = None,
     ) -> StrictStructuredOutput:
         """Recheck canonical request, actual output and exact durable invocation."""
         prepared = receipt["prepared"]
-        identity = (
-            self.method.diagnostic
-            if issubclass(schema, Diagnostic)
-            else self.method.proposal
-        )
+        identity = self.method.component_for_schema(schema)
         if prepared["component_identity"] != dataclasses.asdict(identity):
             raise OpenWorldQualificationAuthorityStaleError("receipt component changed")
         question = AnalystInputIdentity(**prepared["analyst_input_identity"])
         binding = OpenWorldInvocationBinding(**prepared["binding"])
         expected = ExpectedProvenance(**prepared["expected"])
-        request = {
-            "bundle_digest": bundle.digest,
-            "task_context_digest": bundle.task_context.digest,
-            "component_identity_digest": identity.digest,
-            "system": system,
-            "payload": payload,
-            "output_schema": schema.model_json_schema(),
-        }
-        qualification = (
-            self.method.result_digest
-            if issubclass(schema, Diagnostic)
-            else self.method.proposal_authorization_digest
+        request = _receipt_request(
+            bundle=bundle,
+            identity=identity,
+            system=system,
+            payload=payload,
+            schema=schema,
+            source_frame_digest=source_frame_digest,
+            content_result_artifact_digest=content_result_artifact_digest,
         )
+        qualification = self.method.authorization_for_schema(schema)
         if (
             prepared["request_json"] != _json(request)
             or expected.input_digest != _digest(request)
@@ -605,10 +689,7 @@ class RuleEvidenceAnalysisStore:
                 "receipt differs from durable invocation"
             )
         output = schema.model_validate_json(json.dumps(receipt["observed_output"]))
-        if (
-            observed_output_bytes(cast(Diagnostic | Proposal, output)).decode()
-            != row.output_json
-        ):
+        if _method_output_bytes(output).decode() != row.output_json:
             raise OpenWorldInvocationConflictError(
                 "receipt differs from observed output"
             )
@@ -740,6 +821,10 @@ class RuleEvidenceAnalysisStore:
     def load_accepted_publication_inputs(
         self, *, job_id: int, claim: OptimizationJobClaim, now: int
     ) -> RuleEvidencePublicationInputs:
+        if self.method.is_v2:
+            from .rule_evidence_v2 import load_publication_inputs
+
+            return load_publication_inputs(self, job_id=job_id, claim=claim, now=now)
         job = self.storage.get_playbook_optimization_job(job_id)
         if (
             claim.job_id != job_id
@@ -898,8 +983,14 @@ def decision_payload(
     }
 
 
-def artifact_payload(contract: str, payload: dict[str, Any]) -> dict[str, Any]:
-    return {"contract_type": contract, "schema_version": "v1", "payload": payload}
+def artifact_payload(
+    contract: str, payload: dict[str, Any], *, schema_version: str = "v1"
+) -> dict[str, Any]:
+    return {
+        "contract_type": contract,
+        "schema_version": schema_version,
+        "payload": payload,
+    }
 
 
 @dataclass
@@ -1069,6 +1160,7 @@ class RuleEvidenceAttemptRunner:
                 "open_world_attempt_decision",
                 "rule_evidence_decision",
                 self.lease.claim,
+                schema_version="v2" if self.store.method.is_v2 else "v1",
             )
             if persisted is None:
                 raise OpenWorldInvocationConflictError("terminal decision is missing")
@@ -1078,7 +1170,7 @@ class RuleEvidenceAttemptRunner:
                 or job.lease_fence != self.lease.claim.fence
                 or job.terminal_outcome != "no_grounded_hypothesis"
                 or payload["bundle_digest"] != bundle.digest
-                or payload["policy_id"] != RULE_EVIDENCE_POLICY_ID
+                or payload["policy_id"] != self.store.method.policy_id
                 or payload["candidate_digest"] is not None
                 or payload["decision"]
                 != {"decision": "abstain", "reason": "no_grounded_hypothesis"}
@@ -1207,6 +1299,27 @@ class RuleEvidenceAttemptRunner:
             diagnostics=diagnostics,
             proposal=proposal,
         )
+        if self.store.method.is_v2:
+            from reflexio.server.services.offline_tuner.evidence.shared_compaction_checkpoint import (
+                protocol_from_metadata,
+            )
+
+            from .rule_evidence_v2 import finish_attempt
+
+            return finish_attempt(
+                self,
+                bundle=bundle,
+                incumbent=incumbent,
+                diagnostics_artifact=diagnostics_artifact,
+                diagnostics=diagnostics,
+                result=result,
+                validation=validation,
+                proposal_receipt=cast(dict[str, Any], proposal_receipt),
+                shared_protocol=protocol_from_metadata(
+                    json.loads(frozen.job.metadata_json or "{}")
+                )
+                is not None,
+            )
         candidate_digest = None
         if result.decision == "proposal":
             candidate = self.store.write(

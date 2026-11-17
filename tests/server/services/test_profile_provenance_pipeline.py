@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import pytest
 
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.services.profile.lifecycle import KEY, metadata
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.test_support.skip_decorators import skip_in_precommit
 from tests.server.services.test_durable_window_pipeline import (
@@ -56,7 +57,6 @@ def test_http_profile_provenance_survives_mixed_merge_and_storage_reopen(
                         {
                             "item_ids": ["NEW-0", "EXISTING-0"],
                             "merged_content": "The user prefers concise answers with examples.",
-                            "merged_time_to_live": "infinity",
                         }
                     ],
                     "unique_ids": [],
@@ -73,7 +73,7 @@ def test_http_profile_provenance_survives_mixed_merge_and_storage_reopen(
                 "profiles": [
                     {
                         "content": "The user prefers concise answers.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                         "source_span": quotes[index],
                         "notes": notes[index],
                         "reader_angle": "preferences",
@@ -116,7 +116,7 @@ def test_http_profile_provenance_survives_mixed_merge_and_storage_reopen(
         notes[0],
         "preferences",
     )
-    assert old.custom_features == {"topic": "answer-style"}
+    assert old.custom_features == {"topic": "answer-style", KEY: metadata(old)}
     phase["index"] = 1
     request = payload("profile-second", count=5, force=True)
     for interaction in request["interaction_data_list"]:
@@ -140,7 +140,10 @@ def test_http_profile_provenance_survives_mixed_merge_and_storage_reopen(
     assert all(quote in survivor.source_span for quote in quotes)
     assert all(note in survivor.notes for note in notes)
     assert survivor.reader_angle == "preferences"
-    assert survivor.custom_features == {"topic": "answer-style"}
+    assert survivor.custom_features == {
+        "topic": "answer-style",
+        KEY: metadata(survivor),
+    }
     assert len(survivor.source_interaction_ids) == 15
     assert set(survivor.source_interaction_ids) == set(range(1, 16))
     lineage = storage.get_lineage_events(

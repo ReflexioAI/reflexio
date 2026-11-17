@@ -131,7 +131,11 @@ FULL_ROUTES = [
         None,
         (),
         "publish_user_interaction",
-        ("default_get_org_id", "default_billing_gate.<locals>._noop"),
+        (
+            "default_get_org_id",
+            "default_billing_gate.<locals>._noop",
+            "_dependency.<locals>.validated_body",
+        ),
     ),
     (
         "/api/finalize_session",
@@ -176,7 +180,7 @@ FULL_ROUTES = [
         None,
         (),
         "add_user_playbook_endpoint",
-        ("default_get_org_id",),
+        ("default_get_org_id", "_dependency.<locals>.validated_body"),
     ),
     (
         "/api/playbook_aggregation_operations",
@@ -203,7 +207,7 @@ FULL_ROUTES = [
         None,
         (),
         "add_agent_playbook_endpoint",
-        ("default_get_org_id",),
+        ("default_get_org_id", "_dependency.<locals>.validated_body"),
     ),
     (
         "/api/add_user_profile",
@@ -212,7 +216,7 @@ FULL_ROUTES = [
         None,
         (),
         "add_user_profile_endpoint",
-        ("default_get_org_id",),
+        ("default_get_org_id", "_dependency.<locals>.validated_body"),
     ),
     (
         "/api/search_profiles",
@@ -292,6 +296,7 @@ FULL_ROUTES = [
             "default_get_caller_type",
             "default_billing_gate.<locals>._noop",
             "_stamp_search_dependencies_done",
+            "_dependency.<locals>.validated_body",
         ),
     ),
     (
@@ -755,7 +760,7 @@ FULL_ROUTES = [
         None,
         (),
         "get_evaluation_overview",
-        ("default_get_org_id",),
+        ("default_get_org_id", "_dependency.<locals>.validated_body"),
     ),
     (
         "/api/evaluations/regenerate",
@@ -1091,7 +1096,7 @@ def _route_inventory(app: FastAPI) -> list[tuple]:
     return [
         (
             route.path,
-            tuple(sorted(route.methods)),
+            tuple(sorted(route.methods or ())),
             route.response_model.__name__ if route.response_model else None,
             route.status_code,
             tuple(route.tags),
@@ -1159,7 +1164,7 @@ def test_no_duplicate_path_method(build) -> None:
     dups: list[tuple[str, str]] = []
     for route in app.routes:
         if isinstance(route, APIRoute):
-            for method in route.methods:
+            for method in route.methods or ():
                 key = (route.path, method)
                 if key in seen:
                     dups.append(key)
@@ -1186,7 +1191,7 @@ def test_no_overlapping_path_templates(build) -> None:
     for route in app.routes:
         if isinstance(route, APIRoute):
             normalized = _PARAM.sub("{}", route.path)
-            for method in route.methods:
+            for method in route.methods or ():
                 by_shape.setdefault((normalized, method), set()).add(route.path)
     overlaps = {k: v for k, v in by_shape.items() if len(v) > 1}
     assert not overlaps, f"overlapping path templates: {overlaps}"

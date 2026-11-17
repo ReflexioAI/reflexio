@@ -72,6 +72,7 @@ from reflexio.server.auth import (
     default_get_org_id,
 )
 from reflexio.server.cache import reflexio_cache
+from reflexio.server.offloop_body import off_loop_body
 from reflexio.server.rate_limit import limiter
 from reflexio.server.routes._common import _run_limited_api
 from reflexio.server.services.operation_state_utils import OperationStateManager
@@ -155,8 +156,8 @@ def review_user_playbooks_endpoint(
 @limiter.limit("60/minute")  # Rate limit for write operations
 def add_user_playbook_endpoint(
     request: Request,
-    payload: AddUserPlaybookRequest,
     org_id: str = Depends(default_get_org_id),
+    payload: AddUserPlaybookRequest = off_loop_body(AddUserPlaybookRequest),
 ) -> AddUserPlaybookResponse:
     """Add user playbook directly to storage.
 
@@ -179,8 +180,8 @@ def add_user_playbook_endpoint(
 @limiter.limit("60/minute")  # Rate limit for write operations
 def add_agent_playbook_endpoint(
     request: Request,
-    payload: AddAgentPlaybookRequest,
     org_id: str = Depends(default_get_org_id),
+    payload: AddAgentPlaybookRequest = off_loop_body(AddAgentPlaybookRequest),
 ) -> AddAgentPlaybookResponse:
     """Add agent playbook directly to storage.
 
@@ -583,8 +584,8 @@ def manual_playbook_generation_endpoint(
     """Manually trigger playbook generation with window-sized interactions and CURRENT output.
 
     Runs with auto_run=False, which bypasses the regular stride/should_run
-    gates. Only playbook extraction is triggered. Each extractor uses its own
-    window_size_override when present, falling back to the global window_size.
+    gates. Only playbook extraction is triggered, using playbook_window_size
+    from the current configuration without an automatic stride gate.
     Output is CURRENT playbooks only.
 
     Args:

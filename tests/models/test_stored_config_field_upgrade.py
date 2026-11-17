@@ -4,7 +4,10 @@ from copy import deepcopy
 
 import pytest
 
-from reflexio.config_migration import canonicalize_stored_config_fields
+from reflexio.config_migration import (
+    canonicalize_config_document,
+    canonicalize_stored_config_fields,
+)
 from reflexio.models.config_schema import (
     StoredConfigurationError,
     validate_stored_config,
@@ -46,10 +49,10 @@ def test_raw_alias_upgrade_is_idempotent_and_does_not_mutate(legacy):
     assert child["aggregation_config"]["extension"] == {"refresh_count": "opaque"}
     assert child["extension"] == {"batch_size": "opaque"}
     assert result["extension"] == {"batch_size": "opaque"}
-    config = validate_stored_config(result)
-    assert (config.window_size, config.stride_size) == (23, 13)
+    config = validate_stored_config(canonicalize_config_document(result))
+    assert (config.profile_window_size, config.profile_stride_size) == (23, 13)
     assert config.user_playbook_extractor_config is not None
-    assert config.user_playbook_extractor_config.window_size_override == 17
+    assert (config.playbook_window_size, config.playbook_stride_size) == (17, 13)
     assert (
         config.user_playbook_extractor_config.aggregation_config.min_cluster_size == 9
     )

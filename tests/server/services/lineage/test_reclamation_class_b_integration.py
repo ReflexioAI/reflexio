@@ -181,16 +181,19 @@ def test_scheduler_does_not_start_when_both_disabled(tmp_path, org_id, monkeypat
     """maybe_start_lineage_gc returns None when NO class of work is configured.
 
     Row-count retention became a third start condition when the sweep moved off
-    the publish path (Class C), so the two flags below no longer decide this on
-    their own -- the caps are unconditional and would otherwise stop being
-    enforced anywhere at all. Disabling every row limit keeps this test on its
-    original subject instead of on the old list of conditions.
+    the publish path (Class C), and required source-authorized profile deadlines
+    became an unconditional one, so the two flags below no longer decide this on
+    their own. Disabling every row limit and removing the required sweeps keeps
+    this test on its original subject instead of on the old list of conditions;
+    ``test_required_profile_deadlines_start_scheduler_without_optional_work``
+    pins the unconditional start.
     """
     from reflexio.server.services.lineage import gc_scheduler
 
     monkeypatch.setattr(
         gc_scheduler, "get_row_retention_limits", lambda: {"interactions": 0}
     )
+    monkeypatch.setattr(gc_scheduler, "_REQUIRED_PROJECT_SWEEPS", ())
     _, factory = _make_ctx_factory(
         tmp_path,
         lineage_gc_enabled=False,
@@ -199,8 +202,34 @@ def test_scheduler_does_not_start_when_both_disabled(tmp_path, org_id, monkeypat
     result = maybe_start_lineage_gc(factory, bootstrap_org_id=org_id)
     assert result is None, (
         "Scheduler must not start when lineage_gc.enabled=False, "
-        "expiry_reclamation.enabled=False and every row limit is 0"
+        "expiry_reclamation.enabled=False, every row limit is 0 and no "
+        "required sweep exists"
     )
+
+
+def test_required_profile_deadlines_start_scheduler_without_optional_work(
+    tmp_path, org_id, monkeypatch
+):
+    """Explicit profile deadlines are binding, so their sweep always starts the owner."""
+    from reflexio.server.services.lineage import gc_scheduler
+
+    assert [name for name, _ in gc_scheduler._REQUIRED_PROJECT_SWEEPS] == [
+        "profile_deadlines"
+    ]
+    monkeypatch.setattr(
+        gc_scheduler, "get_row_retention_limits", lambda: {"interactions": 0}
+    )
+    _, factory = _make_ctx_factory(
+        tmp_path,
+        lineage_gc_enabled=False,
+        expiry_reclamation_enabled=False,
+    )
+    sched = maybe_start_lineage_gc(factory, bootstrap_org_id=org_id)
+    assert sched is not None, (
+        "Required profile-deadline enforcement must start the scheduler even "
+        "when every optional reclamation class is disabled"
+    )
+    sched.stop(timeout_seconds=1.0)
 
 
 # ---------------------------------------------------------------------------

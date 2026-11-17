@@ -10,6 +10,7 @@ from hashlib import sha256
 from typing import Any
 
 from reflexio.server.llm import StructuredOutputRepairError
+from reflexio.server.llm._litellm_text_generation import _uses_native_transport
 from reflexio.server.llm.input_budget import extraction_provider_guard
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
@@ -130,6 +131,15 @@ class SharedCompactionJournal:
 
     def guard(self, params: dict[str, Any], *_args: Any) -> None:
         self.authorize()
+        # These receipts require an observed model. This native adapter only
+        # echoes the requested route, so refuse before charging an attempt or
+        # spending a CLI call. An explicit HTTP transport remains eligible.
+        if _uses_native_transport(
+            params.get("model", ""), params.get("custom_llm_provider"), "openclaw"
+        ):
+            raise ProviderRequestGuardError(
+                "Shared compaction cannot observe the served OpenClaw model"
+            )
         if self.plan is None or self.node is None:
             raise ProviderRequestGuardError(
                 "Shared compaction dispatch lacks its frozen node"

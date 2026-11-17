@@ -118,7 +118,7 @@ def test_http_mixed_image_keeps_native_prompt_and_persistence_without_overflow(
                 "profiles": [
                     {
                         "content": "The user requires separate deployment approval.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                         "source_span": CAPTION,
                     }
                 ]

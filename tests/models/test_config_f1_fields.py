@@ -44,8 +44,8 @@ def test_explicit_upgrade_removes_only_the_valid_label(value):
     original = {
         "storage_config": {"type": "sqlite"},
         _LABEL: value,
-        "window_size": 25,
-        "stride_size": 8,
+        "profile_window_size": 25,
+        "profile_stride_size": 8,
         "opaque_extension": {"keep": [1, "unchanged"]},
     }
     before = deepcopy(original)

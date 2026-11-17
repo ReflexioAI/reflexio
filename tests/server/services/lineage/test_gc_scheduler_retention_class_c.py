@@ -90,7 +90,7 @@ def _ctx():
     ungated, so this also proves it does not depend on either flag.
     """
     return types.SimpleNamespace(
-        storage=types.SimpleNamespace(),
+        storage=types.SimpleNamespace(profile_lifecycle_due_users=lambda **_: []),
         configurator=types.SimpleNamespace(
             get_config=lambda: types.SimpleNamespace(
                 lineage_gc=LineageGCConfig(tombstone_grace_window_days=0),
@@ -192,7 +192,7 @@ def _bootstrap_ctx(
     *, lineage_gc: bool, expiry: bool, governance: bool
 ) -> RequestContext:
     context = create_autospec(RequestContext, instance=True)
-    context.storage = types.SimpleNamespace()
+    context.storage = types.SimpleNamespace(profile_lifecycle_due_users=lambda **_: [])
     context.configurator = types.SimpleNamespace(
         get_config=lambda: types.SimpleNamespace(
             lineage_gc=LineageGCConfig(
@@ -231,7 +231,7 @@ def test_the_scheduler_starts_for_retention_with_every_other_gate_off(monkeypatc
     assert started == [scheduler]
 
 
-def test_the_scheduler_still_declines_when_every_retention_cap_is_disabled(
+def test_the_scheduler_declines_when_caps_and_required_sweeps_are_absent(
     monkeypatch,
 ):
     """The converse, so the new start condition is not a rubber stamp.
@@ -239,6 +239,9 @@ def test_the_scheduler_still_declines_when_every_retention_cap_is_disabled(
     With every row limit set to 0 there is no retention work either, and the
     pre-existing "nothing to do" answer must survive.
     """
+    # Isolate optional retention startup; the default required profile duty
+    # is separately proven to start with every optional policy switched off.
+    monkeypatch.setattr(gc_scheduler, "_REQUIRED_PROJECT_SWEEPS", ())
     monkeypatch.setattr(
         gc_scheduler, "get_row_retention_limits", lambda: {"interactions": 0}
     )
@@ -284,7 +287,7 @@ def test_the_scheduler_still_declines_when_every_retention_cap_is_disabled(
 def _failing_ctx():
     """A bootstrap context whose per-org sweep raises inside Class C."""
     return types.SimpleNamespace(
-        storage=types.SimpleNamespace(),
+        storage=types.SimpleNamespace(profile_lifecycle_due_users=lambda **_: []),
         configurator=types.SimpleNamespace(
             get_config=lambda: types.SimpleNamespace(
                 lineage_gc=LineageGCConfig(tombstone_grace_window_days=0),
@@ -372,7 +375,7 @@ def test_internal_interval_shorter_than_retry_is_not_lengthened(monkeypatch):
     monkeypatch.setenv("REFLEXIO_MAINTENANCE_INTERVAL_SECONDS", "60")
     sched = _tick_scheduler()
     sched.request_context_factory = lambda _org: types.SimpleNamespace(  # type: ignore[assignment]
-        storage=types.SimpleNamespace(),
+        storage=types.SimpleNamespace(profile_lifecycle_due_users=lambda **_: []),
         configurator=types.SimpleNamespace(
             get_config=lambda: types.SimpleNamespace(
                 lineage_gc=LineageGCConfig(tombstone_grace_window_days=0),

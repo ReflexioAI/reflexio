@@ -436,7 +436,10 @@ def test_new_execution_requires_the_established_user_before_insertion(store, use
     assert token is not None
     with (
         owned_user_work_context(store, "one", token, 300),
-        pytest.raises(LeaseLostError, match="established user"),
+        pytest.raises(
+            LeaseLostError,
+            match="established user" if user_id is None else "different user",
+        ),
     ):
         create_owned_agent_run(
             store,

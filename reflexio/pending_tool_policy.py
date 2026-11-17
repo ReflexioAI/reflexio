@@ -94,6 +94,25 @@ def strip_retired_pending_followup_warning(data: Any) -> Any:
     return cleaned
 
 
+def strip_retired_pending_dedup_duration(data: Any) -> Any:
+    """Discard the old duration at its two known configuration paths."""
+    if not isinstance(data, dict):
+        return data
+    duration = "dedup_cache_seconds"
+    cleaned = {key: value for key, value in data.items() if key != duration}
+    overrides = data.get("tool_overrides")
+    if isinstance(overrides, dict):
+        cleaned["tool_overrides"] = {
+            name: (
+                {key: value for key, value in override.items() if key != duration}
+                if isinstance(override, dict)
+                else override
+            )
+            for name, override in overrides.items()
+        }
+    return cleaned
+
+
 def strip_legacy_pending_tool_timing(data: Any) -> Any:
     """Validate historical values and retire their mechanism during conversion.
 

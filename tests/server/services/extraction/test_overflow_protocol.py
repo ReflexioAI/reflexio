@@ -31,6 +31,7 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
     StructuredProfilesOutput,
 )
 from reflexio.server.services.storage.storage_base._extraction_stream import (
+    LeaseLostError,
     OverflowAttemptBudgetExceededError,
     OverflowCheckpointConflictError,
     validate_extraction_overflow_manifest,
@@ -665,13 +666,15 @@ def test_frozen_old_reader_failure_preserves_new_journal_and_cached_output(
         "reason": "input_budget_configuration_error",
     }
     # The unchanged CURRENT executor also refuses prep4 before legacy geometry.
+    # The failure released the lease, so the learning-work fence refuses the
+    # stale token before any input preparation can run.
     monkeypatch.setattr(
         window_executor,
         "prepare_extraction_input",
         lambda *_a, **_k: pytest.fail("Cannot prepare package as legacy chunks"),
     )
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
-    with pytest.raises(InputBudgetConfigurationError):
+    with pytest.raises(LeaseLostError):
         executor.execute(window, token)
     # Failure releases ownership and applies the existing bounded config
     # backoff. Resume must win a NEW real lease after that delay.

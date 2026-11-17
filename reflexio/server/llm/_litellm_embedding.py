@@ -23,6 +23,11 @@ Bodies moved VERBATIM; only the ``self``-typing (per-mixin TYPE_CHECKING stubs o
 foreign members, Tier-1b idiom) is added.
 """
 
+# Complete provider initialization before importing the third-party library.
+import reflexio.provider_bootstrap  # noqa: F401
+
+# isort: split
+
 import logging
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -32,6 +37,7 @@ import tiktoken
 
 from reflexio.native_compute import configure_tokenizer_compute
 from reflexio.server import search_runtime
+from reflexio.server.llm._azure_transport import normalize_azure_v1_endpoints
 from reflexio.server.llm._litellm_types import LiteLLMClientError
 from reflexio.server.llm._provider_concurrency import provider_slot
 from reflexio.server.llm.call_deadline import (
@@ -396,6 +402,7 @@ class EmbeddingMixin:
                 params["api_base"] = api_base
             if api_version:
                 params["api_version"] = api_version
+            normalize_azure_v1_endpoints(params)
 
             search_scope = search_runtime.current()
             with provider_slot(params["model"]):

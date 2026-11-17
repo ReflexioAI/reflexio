@@ -16,7 +16,7 @@ from pydantic import BaseModel, ValidationError
 from reflexio.models.api_schema.service_schemas import UserProfile
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.deduplication_utils import EXTRACTION_CONTROL_ERRORS
 from reflexio.server.services.extraction.overflow_coordinator import OverflowCoordinator
@@ -69,7 +69,7 @@ class PackageProfileConsolidator(ProfileConsolidator):
         self, new_profiles: list[UserProfile], user_id: str
     ) -> list[UserProfile]:
         if user_id != self.coordinator.window.user_id:
-            raise InputBudgetConfigurationError("Profile deduplication owner changed")
+            raise ExtractionInputIntegrityError("Profile deduplication owner changed")
         key = self.coordinator.candidate_key(
             [profile.model_dump(mode="json") for profile in new_profiles]
         )
@@ -77,7 +77,7 @@ class PackageProfileConsolidator(ProfileConsolidator):
         if saved is None:
             old = super()._retrieve_existing_profiles(new_profiles, user_id)
             if any(profile.user_id != user_id for profile in old):
-                raise InputBudgetConfigurationError("Historical profile owner changed")
+                raise ExtractionInputIntegrityError("Historical profile owner changed")
             checkpoint = self.coordinator.checkpoint
             witnesses = checkpoint.setdefault("historical_profiles", {})
             for profile in old:
@@ -85,7 +85,7 @@ class PackageProfileConsolidator(ProfileConsolidator):
                     profile.profile_id, profile_witness(profile)
                 )
                 if previous != profile_witness(profile):
-                    raise InputBudgetConfigurationError("Historical profile changed")
+                    raise ExtractionInputIntegrityError("Historical profile changed")
             checkpoint["profile_dedup_inputs"] = {
                 "new_digest": key,
                 "old": [
@@ -100,7 +100,7 @@ class PackageProfileConsolidator(ProfileConsolidator):
                 saved["new_digest"] != key
                 or saved["template"] != self.template_identity
             ):
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Frozen profile dedup inputs changed"
                 )
             old = [UserProfile.model_validate(row) for row in saved["old"]]
@@ -108,7 +108,7 @@ class PackageProfileConsolidator(ProfileConsolidator):
             if any(
                 witnesses.get(row.profile_id) != profile_witness(row) for row in old
             ):
-                raise InputBudgetConfigurationError("Frozen historical profile changed")
+                raise ExtractionInputIntegrityError("Frozen historical profile changed")
         self._validate_old()
         return old
 
@@ -123,7 +123,7 @@ class PackageProfileConsolidator(ProfileConsolidator):
             template_identity is not None
             and dict(template_identity) != self.template_identity
         ):
-            raise InputBudgetConfigurationError("Profile dedup template changed")
+            raise ExtractionInputIntegrityError("Profile dedup template changed")
         return super()._render_dedup_prompt(
             new_profiles, existing_profiles, template_identity=self.template_identity
         )
@@ -148,11 +148,11 @@ class PackageProfileConsolidator(ProfileConsolidator):
                 "output",
                 "provenance",
             }:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Malformed saved deduplication decision"
                 )
             if saved["key"] != key:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Frozen profile dedup prompt changed"
                 )
             self.coordinator.validate_profile_attempts(
@@ -170,17 +170,17 @@ class PackageProfileConsolidator(ProfileConsolidator):
                     else None
                 )
             except (TypeError, ValueError, ValidationError) as exc:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Malformed saved deduplication decision"
                 ) from exc
             if saved["disposition"] == "validated":
                 if output is None or validator(output) or provenance is None:
-                    raise InputBudgetConfigurationError(
+                    raise ExtractionInputIntegrityError(
                         "Invalid saved deduplication decision"
                     )
                 return CompletionResult(output, provenance)
             if saved["disposition"] != "host_fallback":
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Unknown saved deduplication decision"
                 )
             if output is not None:
@@ -223,7 +223,7 @@ class PackageProfileConsolidator(ProfileConsolidator):
             self._save_decision(key, attempts, "host_fallback", None, None)
             raise _SavedDedupFallbackError(None)
         if capture(completion.value):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Native deduplication bypassed validation"
             )
         self._save_decision(

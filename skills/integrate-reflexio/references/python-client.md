@@ -163,7 +163,9 @@ Local validation failures are permanent and should not be retried. Raw HTTP does
 When `REFLEXIO_API_KEY` is available, check it with one search that publishes nothing:
 
 ```python
-check = client.search(query="connection check", user_id="reflexio-connection-check", top_k=1)
+check = client.search(
+    query="connection check", user_id="reflexio-connection-check", top_k=1
+)
 ```
 
 A raised exception or `check.success` being false means the key cannot serve the runtime loop. Do not rely on `client.whoami()` alone: it succeeds for limited keys, which search and publish reject. An empty result is expected on a new project. Do not print the API key.

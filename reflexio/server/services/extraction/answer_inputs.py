@@ -9,7 +9,7 @@ from dataclasses import asdict
 from threading import Lock
 from typing import TYPE_CHECKING, Any
 
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.work_scope import current_project_id
 
 if TYPE_CHECKING:
@@ -52,13 +52,13 @@ def require_publication_answer_inputs(
         )
         or any(answers.get(key) != digest for key, digest in dependencies.items())
     ):
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Committed output publication inputs unavailable"
         )
     try:
         require_output_id(publication.get("id"))
     except ValueError as exc:
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Committed output publication identity invalid"
         ) from exc
     return dependencies, answers
@@ -81,12 +81,12 @@ class _AnswerInputs:
             or current_project_id() != self.project_id
             or (run_id is not None and self.run_id != run_id)
         ):
-            raise InputBudgetConfigurationError("Answer capture target changed")
+            raise ExtractionInputIntegrityError("Answer capture target changed")
 
     def snapshot(self) -> dict[str, str]:
         with self.lock:
             if not self.active:
-                raise InputBudgetConfigurationError("Answer input capture ended")
+                raise ExtractionInputIntegrityError("Answer input capture ended")
             return dict(self.values)
 
 
@@ -144,9 +144,9 @@ def record_answer_input(record: PendingToolCallRecord) -> None:
     digest = build_scope_hash(witness)
     with current.lock:
         if not current.active:
-            raise InputBudgetConfigurationError("Answer input capture ended")
+            raise ExtractionInputIntegrityError("Answer input capture ended")
         if record.id in current.values and current.values[record.id] != digest:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Answer changed within extraction input"
             )
         current.values[record.id] = digest
@@ -155,6 +155,6 @@ def record_answer_input(record: PendingToolCallRecord) -> None:
 def snapshot_answer_inputs(storage: BaseStorage, run_id: str) -> dict[str, str]:
     current = _capture.get()
     if current is None:
-        raise InputBudgetConfigurationError("Answer input capture is unavailable")
+        raise ExtractionInputIntegrityError("Answer input capture is unavailable")
     current.require_target(storage, run_id)
     return current.snapshot()

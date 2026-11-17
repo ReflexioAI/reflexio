@@ -526,8 +526,16 @@ def test_deferred_presence_distinguishes_expiry_and_uses_one_clock(store):
         store.conn.set_trace_callback(None)
     assert presence.expiry and not presence.resume and not presence.financial
     assert not presence.needs_turn
-    assert len(statements) == 2
-    assert all(statement.lstrip().startswith("SELECT ") for statement in statements)
+    # The independent read owner now frames its snapshot explicitly; only
+    # the two SELECTs count as metadata queries, with no write hidden inside.
+    queries = [
+        statement
+        for statement in statements
+        if statement.lstrip().startswith("SELECT ")
+    ]
+    framing = [statement for statement in statements if statement not in queries]
+    assert len(queries) == 2
+    assert framing == ["BEGIN", "ROLLBACK"]
     assert (
         store.get_pending_tool_call(expired.id).status == PendingToolCallStatus.PENDING
     )

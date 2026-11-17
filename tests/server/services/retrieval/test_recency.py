@@ -16,15 +16,25 @@ def test_decay_half_life_is_half():
     assert decay(100, 100) == pytest.approx(0.5)
 
 
-def test_profile_decay_uses_ttl_lifespan():
-    profile = SimpleNamespace(
-        last_modified_timestamp=100,
-        expiration_timestamp=300,
-    )
+def test_profile_decay_uses_original_lifecycle_not_ttl_lifespan():
+    from reflexio.server.services.profile.lifecycle import KEY
 
-    assert decay_for_item(profile, entity_type="profiles", now=200) == pytest.approx(
-        0.5
+    profile = SimpleNamespace(
+        profile_id="p",
+        user_id="u",
+        last_modified_timestamp=999,
+        expiration_timestamp=300,
+        custom_features={
+            KEY: {
+                "created_at": 100,
+                "ancestor_ids": [],
+                "explicit_storage_deadline": None,
+            }
+        },
     )
+    assert decay_for_item(
+        profile, entity_type="profiles", now=100 + 30 * 86400
+    ) == pytest.approx(0.5)
 
 
 def test_missing_timestamps_are_noop():

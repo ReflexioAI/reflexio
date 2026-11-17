@@ -487,11 +487,11 @@ class MemoryClient(_WrapperState, _Mem0MemoryClient):
         result = _Mem0MemoryClient.add(self, messages, options, **kwargs)
         if self._reflexio_client is None:
             return result
-        prepared = self._prepare_publish(messages, options, kwargs)
-        if prepared is None:
-            return result
-        user_id, interactions, agent_version, session_id = prepared
         try:
+            prepared = self._prepare_publish(messages, options, kwargs)
+            if prepared is None:
+                return result
+            user_id, interactions, agent_version, session_id = prepared
             response = self._reflexio_client.publish_interaction(
                 user_id=user_id,
                 interactions=interactions,
@@ -522,12 +522,12 @@ class MemoryClient(_WrapperState, _Mem0MemoryClient):
                 "mem0 search result already contains the reserved 'reflexio' key"
             )
         augmented = dict(result)
-        prepared = self._prepare_search(query, options, kwargs)
-        if isinstance(prepared, dict):
-            augmented["reflexio"] = prepared
-            return augmented
-        user_id, agent_version = prepared
         try:
+            prepared = self._prepare_search(query, options, kwargs)
+            if isinstance(prepared, dict):
+                augmented["reflexio"] = prepared
+                return augmented
+            user_id, agent_version = prepared
             # No session_id: see _prepare_search. It would correlate the serve
             # AND arm the server's session-scoped result dedup, and mem0's
             # search contract does not permit silently withholding results.
@@ -582,11 +582,11 @@ class AsyncMemoryClient(_WrapperState, _Mem0AsyncMemoryClient):
         result = await _Mem0AsyncMemoryClient.add(self, messages, options, **kwargs)
         if self._reflexio_client is None:
             return result
-        prepared = self._prepare_publish(messages, options, kwargs)
-        if prepared is None:
-            return result
-        user_id, interactions, agent_version, session_id = prepared
         try:
+            prepared = self._prepare_publish(messages, options, kwargs)
+            if prepared is None:
+                return result
+            user_id, interactions, agent_version, session_id = prepared
             response = await self._reflexio_client.publish_interaction_async(
                 user_id=user_id,
                 interactions=interactions,
@@ -617,12 +617,12 @@ class AsyncMemoryClient(_WrapperState, _Mem0AsyncMemoryClient):
                 "mem0 search result already contains the reserved 'reflexio' key"
             )
         augmented = dict(result)
-        prepared = self._prepare_search(query, options, kwargs)
-        if isinstance(prepared, dict):
-            augmented["reflexio"] = prepared
-            return augmented
-        user_id, agent_version = prepared
         try:
+            prepared = self._prepare_search(query, options, kwargs)
+            if isinstance(prepared, dict):
+                augmented["reflexio"] = prepared
+                return augmented
+            user_id, agent_version = prepared
             # No session_id: same reason as the sync path above.
             response = await self._reflexio_client.search_async(  # type: ignore[union-attr]
                 query=query,

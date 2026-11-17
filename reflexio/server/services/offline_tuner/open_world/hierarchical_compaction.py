@@ -60,7 +60,7 @@ def compress_session_evidence(
     document: EvidenceDocument,
     *,
     project_id: str,
-    through_request_id: str,
+    through_request_id: str | None,
     frozen_trajectory: CanonicalSessionTrajectory,
     governance_epochs: tuple[tuple[str, int], ...],
     budget: CompressionBudget,

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
+from reflexio.models.extraction_window import ExtractionWindow
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -299,6 +300,12 @@ class BaseGenerationService(
             Base service name (e.g., "profile_generation", "playbook_generation")
         """
 
+    def _get_extraction_window(self) -> ExtractionWindow:
+        """Windowed services select their own policy; generic pipelines do not."""
+        raise NotImplementedError(
+            "This service must select its extraction-window policy"
+        )
+
     @abstractmethod
     def _process_results(self, results: list) -> None:
         """
@@ -439,18 +446,36 @@ class BaseGenerationService(
     def run(self, request: TRequest) -> None:
         user_id = getattr(request, "user_id", None)
         if self.EMITS_LEARNING_BILLING and self.storage is not None and user_id:
+            from reflexio.server.services.durable_learning.learning_admission import (
+                LearningWork,
+                learning_business_write,
+                learning_work_scope,
+            )
             from reflexio.server.services.durable_learning.user_lease import (
                 user_extraction_lease,
             )
+            from reflexio.server.work_scope import current_project_id
 
-            with user_extraction_lease(self.storage, user_id):
+            with (
+                user_extraction_lease(self.storage, user_id),
+                learning_work_scope(
+                    self.storage,
+                    LearningWork(
+                        self.storage.org_id,
+                        current_project_id() or "",
+                        user_id,
+                        "request",
+                        getattr(request, "request_id", ""),
+                    ),
+                ),
+            ):
                 rerun_request = getattr(self, "_rerun_preprocess_request", None)
                 if rerun_request is not None:
                     from reflexio.server.services.durable_learning.user_lease import (
                         fence_explicit_extraction,
                     )
 
-                    with self.storage.commit_scope():
+                    with learning_business_write(self.storage):
                         fence_explicit_extraction(self.storage)
                         self._pre_process_rerun(rerun_request, user_id=user_id)
                 return self._run_generation(request)
@@ -577,6 +602,12 @@ class BaseGenerationService(
                 raise
             self.emit_generation_side_effects(plan)
         except Exception as e:
+            from reflexio.server.services.durable_learning.learning_admission import (
+                learning_transition_is_held,
+            )
+
+            if learning_transition_is_held(e):
+                raise  # Held work is neither completed nor a successful empty run.
             self._record_generation_event(
                 event_name="generation_failed",
                 outcome="failed",
@@ -750,6 +781,9 @@ class BaseGenerationService(
         The caller retains its actual user-work owner through this short unit.
         Cached business IDs require explicit validated adoption before entering.
         """
+        from reflexio.server.services.durable_learning.learning_admission import (
+            learning_business_write,
+        )
         from reflexio.server.services.durable_learning.user_lease import (
             fence_explicit_extraction,
             owned_agent_run_write,
@@ -780,7 +814,11 @@ class BaseGenerationService(
             self._last_extraction_run = finalized
             self._last_extraction_run_ids = list(plan.extraction_run_ids)
             return
-        with self.storage.commit_scope():
+        with (
+            learning_business_write(self.storage)
+            if self.EMITS_LEARNING_BILLING
+            else self.storage.commit_scope()
+        ):
             fence_explicit_extraction(self.storage)
             with (
                 owned_agent_run_write(self.storage, run)

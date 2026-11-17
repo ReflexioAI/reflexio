@@ -1132,3 +1132,183 @@ class TestConsolidationSearchKeys:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def _evidence_context(interactions, *, expert=False, include_expert_corrections=False):
+    request = Request(
+        request_id="evidence-request",
+        user_id="user",
+        source="test",
+        agent_version="v1",
+        session_id="session",
+    )
+    return build_playbook_prompt_context(
+        [
+            RequestInteractionDataModel(
+                session_id="session",
+                request=request,
+                interactions=interactions,
+            )
+        ],
+        expert=expert,
+        label_turns=True,
+        include_expert_corrections=include_expert_corrections,
+    )
+
+
+def test_ordinary_evidence_omits_unshown_expert_content():
+    context = _evidence_context(
+        [
+            Interaction(
+                interaction_id=1,
+                request_id="evidence-request",
+                user_id="user",
+                role="assistant",
+                content="Visible reply.",
+                expert_content="Unshown expert correction.",
+            ),
+        ]
+    )
+    assert "Unshown expert correction." not in context.text
+    assert context.evidence_sources["T1"].evidence_texts == ("Visible reply.",)
+
+
+def test_expert_evidence_matches_complete_comparison_fields():
+    content = "start " * 20 + "VISIBLE_MIDDLE" + " end" * 20
+    context = _evidence_context(
+        [
+            Interaction(
+                interaction_id=1,
+                request_id="evidence-request",
+                user_id="user",
+                role="assistant",
+                content="Unshown old reply.",
+                created_at=1,
+            ),
+            Interaction(
+                interaction_id=2,
+                request_id="evidence-request",
+                user_id="user",
+                role="user",
+                content=content,
+                created_at=2,
+            ),
+            Interaction(
+                interaction_id=3,
+                request_id="evidence-request",
+                user_id="user",
+                role="assistant",
+                content=content,
+                expert_content="Full correction.",
+                created_at=3,
+                user_action=UserActionType.CLICK,
+                user_action_description="Unshown action.",
+            ),
+        ],
+        expert=True,
+    )
+    assert content in context.text
+    assert set(context.evidence_sources) == {"T2", "T3"}
+    assert context.evidence_sources["T2"].evidence_texts == (content,)
+    assert context.evidence_sources["T3"].evidence_texts == (
+        content,
+        "Full correction.",
+    )
+
+
+def test_prompt_and_evidence_preserve_complete_turn():
+    content = "start " * 1000 + "MIDDLE …[truncated]" + " end" * 1000
+    context = _evidence_context(
+        [
+            Interaction(
+                interaction_id=1,
+                request_id="evidence-request",
+                user_id="user",
+                role="user",
+                content=content,
+            )
+        ]
+    )
+    assert content in context.text
+    assert context.evidence_sources["T1"].evidence_texts == (content,)
+
+
+def test_repeated_expert_question_keeps_every_displayed_source_segment():
+    context = _evidence_context(
+        [
+            Interaction(
+                interaction_id=1,
+                request_id="evidence-request",
+                user_id="user",
+                role="user",
+                content="Visible question.",
+                expert_content="Visible correction to the question.",
+                created_at=1,
+            ),
+            Interaction(
+                interaction_id=2,
+                request_id="evidence-request",
+                user_id="user",
+                role="assistant",
+                content="Visible agent response.",
+                expert_content="Visible corrected response.",
+                created_at=2,
+            ),
+        ],
+        expert=True,
+    )
+    assert context.text.count("Visible question.") == 2
+    assert "Visible correction to the question." in context.text
+    assert context.evidence_sources["T1"].evidence_texts == (
+        "Visible question.",
+        "Visible correction to the question.",
+    )
+    assert context.evidence_units["T1"].source_span == (
+        "Visible question.\n\nVisible correction to the question."
+    )
+
+
+def test_reconciliation_view_shows_and_binds_expert_correction():
+    """Reconciliation renders expert corrections and binds evidence to that view."""
+    interactions = [
+        Interaction(
+            interaction_id=1,
+            request_id="evidence-request",
+            user_id="user",
+            role="user",
+            content="Submit the form.",
+            created_at=1,
+        ),
+        Interaction(
+            interaction_id=2,
+            request_id="evidence-request",
+            user_id="user",
+            role="assistant",
+            content="Check authorization before submitting.",
+            expert_content="Report authorization result.",
+            created_at=2,
+        ),
+    ]
+    ordinary = _evidence_context(interactions)
+    context = _evidence_context(interactions, include_expert_corrections=True)
+
+    assert "Report authorization result." not in ordinary.text
+    assert "[T2] expert correction: ```Report authorization result.```" in (
+        context.text
+    )
+    assert context.evidence_sources["T2"].evidence_texts == (
+        "Check authorization before submitting.",
+        "Report authorization result.",
+    )
+    for source in context.evidence_sources.values():
+        for segment in source.evidence_texts:
+            assert segment in context.text
+    assert context.evidence_units["T2"].source_span == (
+        "Check authorization before submitting.\n\nReport authorization result."
+    )
+    # A turn without expert content renders and binds exactly as the ordinary view.
+    assert context.evidence_sources["T1"] == ordinary.evidence_sources["T1"]
+    assert context.evidence_units["T1"] == ordinary.evidence_units["T1"]
+    assert [line for line in context.text.splitlines() if "[T1]" in line] == [
+        line for line in ordinary.text.splitlines() if "[T1]" in line
+    ]

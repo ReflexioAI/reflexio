@@ -9,6 +9,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from reflexio.extraction_window_migration import (
+    LEGACY_EXTRACTOR_WINDOW_FIELDS,
+    project_legacy_extractor_window_metadata,
+)
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import Interaction
 from reflexio.models.config_schema import UserPlaybookExtractorConfig
@@ -102,6 +106,14 @@ def snapshot_extractor_config(
     historical continuation retains its witnessed value for hashes/lookups.
     """
     snapshot = config.model_dump(mode="json")
+    # The deployed v1 job layout has these two inert slots. Current selection
+    # lives in the separately recorded per-kind window policy; these nulls are
+    # wire metadata, never a fallback value or a supported configuration alias.
+    for name in LEGACY_EXTRACTOR_WINDOW_FIELDS:
+        if frozen is None:
+            snapshot[name] = None
+        elif name in frozen:
+            snapshot[name] = deepcopy(frozen[name])
     if isinstance(config, UserPlaybookExtractorConfig):
         snapshot["context_prompt"] = (
             deepcopy(frozen.get("context_prompt")) if frozen else None
@@ -119,7 +131,7 @@ def effective_frozen_extractor_config(
     an old consolidation proposal: that phase retains its own exact bindings.
     Never round-trip the witness through a model or erase unknown fields.
     """
-    effective = deepcopy(frozen)
+    effective = project_legacy_extractor_window_metadata(frozen)
     effective.pop("extractor_name", None)
     if extractor_kind == "playbook":
         effective.pop("context_prompt", None)
@@ -146,6 +158,13 @@ def matches_frozen_extractor_config(
         comparison.pop("context_prompt", None)
     if build_scope_hash(frozen) != original_hash:
         return False
+    for name in LEGACY_EXTRACTOR_WINDOW_FIELDS:
+        if name in comparison:
+            if name not in frozen or build_scope_hash(
+                comparison[name]
+            ) != build_scope_hash(frozen[name]):
+                return False
+            comparison.pop(name)
     try:
         effective = effective_frozen_extractor_config(
             frozen, extractor_kind=extractor_kind
@@ -195,6 +214,11 @@ def frozen_extractor_config_identity(config: BaseModel, frozen: dict[str, Any]) 
         ):
             # Reconstruct only the witnessed old lookup key, never live policy.
             fields.append(f"context_prompt={frozen['context_prompt']!r}")
+    fields.extend(
+        f"{name}={frozen[name]!r}"
+        for name in LEGACY_EXTRACTOR_WINDOW_FIELDS
+        if name in frozen and name not in type(config).model_fields
+    )
     return " ".join(fields)
 
 

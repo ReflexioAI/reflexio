@@ -9,6 +9,9 @@ Tests the shared utility functions used by all extractors for:
 
 from dataclasses import dataclass
 
+import pytest
+
+from reflexio.models.config_schema import Config
 from reflexio.server.services.extractor_interaction_utils import (
     get_effective_source_filter,
     get_extractor_window_params,
@@ -25,8 +28,6 @@ class MockExtractorConfig:
     """Mock extractor config for testing."""
 
     extractor_name: str
-    window_size_override: int | None = None
-    stride_size_override: int | None = None
     request_sources_enabled: list[str] | None = None
 
 
@@ -35,8 +36,6 @@ class MockPlaybookConfig:
     """Mock playbook config with playbook_name."""
 
     playbook_name: str
-    window_size: int | None = None
-    stride_size: int | None = None
     request_sources_enabled: list[str] | None = None
 
 
@@ -46,84 +45,40 @@ class MockPlaybookConfig:
 
 
 class TestGetExtractorWindowParams:
-    """Tests for window/stride parameter extraction."""
+    """Each extraction kind consumes its own explicit pair."""
 
-    def test_extractor_override_takes_precedence(self):
-        """Test that extractor-level overrides take precedence over globals."""
-        config = MockExtractorConfig(
-            extractor_name="test",
-            window_size_override=50,
-            stride_size_override=10,
+    def test_profile_policy(self):
+        config = Config(
+            storage_config=None, profile_window_size=50, profile_stride_size=10
         )
+        assert get_extractor_window_params(config, "profile") == (50, 10)
 
-        window, stride = get_extractor_window_params(
-            config,
-            global_window_size=100,
-            global_stride_size=20,
+    def test_playbook_policy(self):
+        config = Config(
+            storage_config=None, playbook_window_size=100, playbook_stride_size=20
         )
+        assert get_extractor_window_params(config, "playbook") == (100, 20)
 
-        assert window == 50
-        assert stride == 10
-
-    def test_global_fallback_when_extractor_not_set(self):
-        """Test fallback to global values when extractor doesn't override."""
-        config = MockExtractorConfig(extractor_name="test")
-
-        window, stride = get_extractor_window_params(
-            config,
-            global_window_size=100,
-            global_stride_size=20,
+    def test_partial_policy_keeps_its_own_default(self):
+        config = Config(
+            storage_config=None, profile_window_size=50, playbook_stride_size=2
         )
-
-        assert window == 100
-        assert stride == 20
-
-    def test_partial_override(self):
-        """Test partial override - only window size set on extractor."""
-        config = MockExtractorConfig(
-            extractor_name="test",
-            window_size_override=50,
-        )
-
-        window, stride = get_extractor_window_params(
-            config,
-            global_window_size=100,
-            global_stride_size=20,
-        )
-
-        assert window == 50
-        assert stride == 20
+        assert get_extractor_window_params(config, "profile") == (50, 8)
 
     def test_defaults_when_nothing_set(self):
-        """Test defaults (window=10, stride=8) are returned when no values are set anywhere."""
-        config = MockExtractorConfig(extractor_name="test")
+        config = Config(storage_config=None)
+        assert get_extractor_window_params(config, "profile") == (10, 8)
+        assert get_extractor_window_params(config, "playbook") == (10, 8)
 
-        window, stride = get_extractor_window_params(
-            config,
-            global_window_size=None,
-            global_stride_size=None,
-        )
-
-        assert window == 10
-        assert stride == 8
-
-    def test_zero_values_respected(self):
-        """Test that zero values ARE respected (0 is a valid override value)."""
-        config = MockExtractorConfig(
-            extractor_name="test",
-            window_size_override=0,
-            stride_size_override=0,
-        )
-
-        window, stride = get_extractor_window_params(
-            config,
-            global_window_size=100,
-            global_stride_size=20,
-        )
-
-        # 0 should be treated as a valid override value (not None)
-        assert window == 0
-        assert stride == 0
+    def test_zero_values_are_invalid(self):
+        for field in (
+            "profile_window_size",
+            "profile_stride_size",
+            "playbook_window_size",
+            "playbook_stride_size",
+        ):
+            with pytest.raises(ValueError):
+                Config.model_validate({"storage_config": None, field: 0})
 
 
 # ===============================
@@ -264,3 +219,39 @@ class TestShouldExtractorRunByStride:
         )
         # No interactions means nothing to process - always skip
         assert result is False
+
+
+def test_small_manual_window_does_not_authorize_automatic_admission():
+    import pytest
+
+    from reflexio.models.api_schema.domain.entities import PublishUserInteractionRequest
+    from reflexio.models.config_schema import Config
+    from reflexio.server.services.durable_learning.admission import extraction_admission
+
+    # A small window remains readable for manual use. The larger retained
+    # stride must refuse at automatic admission, after eligibility is resolved.
+    config = Config.model_validate(
+        {
+            "storage_config": None,
+            "profile_window_size": 2,
+            "profile_extractor_config": {
+                "extraction_definition_prompt": "Extract direct evidence",
+                "manual_trigger": True,
+            },
+        }
+    )
+    window = get_extractor_window_params(config, "profile")
+    assert window == (2, 8)
+    request = PublishUserInteractionRequest.model_validate(
+        {
+            "user_id": "user",
+            "session_id": "session",
+            "interaction_data_list": [{"role": "user", "content": "source"}],
+        }
+    )
+    assert not extraction_admission(config, request)["profile"]["eligible"]
+    automatic = config.model_dump()
+    automatic["profile_extractor_config"]["manual_trigger"] = False
+    automatic_config = Config.model_validate(automatic)
+    with pytest.raises(ValueError, match="stride_size must be <= window_size"):
+        extraction_admission(automatic_config, request)

@@ -282,10 +282,7 @@ class TestAutoDetection:
         monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
         for env_var in md._ENV_TO_PROVIDER:
             monkeypatch.delenv(env_var, raising=False)
-        monkeypatch.setattr(
-            "reflexio.server.llm.providers.claude_code_provider.is_claude_code_available",
-            lambda: False,
-        )
+        monkeypatch.delenv("REFLEXIO_NATIVE_CLI_MODEL", raising=False)
 
         providers = md.detect_available_providers()
         assert "openclaw" in providers
@@ -305,7 +302,9 @@ class TestAutoDetection:
         monkeypatch.delenv(ocp.ENV_DEFAULT_MODEL, raising=False)
         with patch.object(ocp, "_call_cli", return_value="ok") as call:
             ocp.OpenClawLLM().completion(
-                model="openclaw/default", messages=[{"role": "user", "content": "hi"}]
+                timeout=5,
+                model="openclaw/default",
+                messages=[{"role": "user", "content": "hi"}],
             )
         assert call.call_args.kwargs["model"] is None
 
@@ -388,6 +387,7 @@ class TestToolCalling:
         reply = 'Sure.\n{"tool": "finish", "args": {"items": ["x"]}}'
         with patch.object(ocp, "_call_cli", return_value=reply) as call:
             response = ocp.OpenClawLLM().completion(
+                timeout=5,
                 model="openclaw/default",
                 messages=[
                     {"role": "system", "content": "Extract."},
@@ -424,6 +424,7 @@ class TestToolCalling:
     def test_unparsable_reply_stays_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
         with patch.object(ocp, "_call_cli", return_value="I cannot help"):
             response = ocp.OpenClawLLM().completion(
+                timeout=5,
                 model="openclaw/default",
                 messages=[{"role": "user", "content": "hi"}],
                 optional_params={"tools": self.TOOLS},
@@ -438,6 +439,7 @@ class TestToolCalling:
 
         with patch.object(ocp, "_call_cli", return_value='{"answer": "4"}') as call:
             ocp.OpenClawLLM().completion(
+                timeout=5,
                 model="openclaw/default",
                 messages=[{"role": "user", "content": "2+2"}],
                 optional_params={"response_format": Out},

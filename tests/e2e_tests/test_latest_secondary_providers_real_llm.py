@@ -1,7 +1,11 @@
 """Opt-in, bounded provider smoke tests; every call uses Reflexio's worker.
 
-Set RUN_LOW_PRIORITY=1 and load MINIMAX_API_KEY/ZAI_API_KEY into the process
-before pytest starts. Never run this file as part of an ordinary offline gate.
+Set RUN_LOW_PRIORITY=1 and load MINIMAX_API_KEY into the process before pytest
+starts. Never run this file as part of an ordinary offline gate.
+
+Z.ai (``zai/*``) is deliberately absent: Reflexio holds no Z.ai subscription,
+so its models are covered only by the offline adapter tests under
+``tests/server/llm/`` and are not live-qualified here.
 """
 
 import pytest
@@ -20,12 +24,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.requires_credentials]
 MODELS = [
     "minimax/MiniMax-M3",
     "minimax/MiniMax-M3.1-Flash-Preview",
-    "zai/glm-5.2",
-    "zai/glm-5.3",
-    "zai/glm-5.3-flash",
 ]
-# FlashX requires the general API rather than the coding-plan endpoint. Its
-# transport is qualified offline; this smoke matrix targets subscription keys.
 
 
 class Answer(BaseModel):
@@ -42,9 +41,8 @@ class LookupArgs(BaseModel):
 @pytest.fixture(params=MODELS)
 def client(request, monkeypatch):
     model = request.param
-    key_name = "MINIMAX_API_KEY" if model.startswith("minimax/") else "ZAI_API_KEY"
-    if not real_provider_key(key_name):
-        pytest.skip(f"{key_name} is not populated with a real key")
+    if not real_provider_key("MINIMAX_API_KEY"):
+        pytest.skip("MINIMAX_API_KEY is not populated with a real key")
     assert_litellm_unpatched()
     monkeypatch.delenv("BRAINTRUST_API_KEY", raising=False)
     monkeypatch.setattr(
@@ -55,9 +53,9 @@ def client(request, monkeypatch):
         LiteLLMConfig(model=model, max_tokens=4096, timeout=60, fallback_models=[])
     )
     assert result._run_completion is _run_isolated_completion
-    # Limit thinking on models that document effort. The legacy baselines keep
-    # their existing behavior, and the runtime provider defaults stay intact.
-    if model not in {"minimax/MiniMax-M3", "zai/glm-5.2"}:
+    # Limit thinking on models that document effort. The legacy baseline keeps
+    # its existing behavior, and the runtime provider defaults stay intact.
+    if model != "minimax/MiniMax-M3":
         generate = result.generate_chat_response_with_provenance
 
         def with_low_effort(*args, **kwargs):

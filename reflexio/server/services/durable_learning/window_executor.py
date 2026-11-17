@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from dataclasses import replace
 from typing import Any
 
@@ -18,6 +18,7 @@ from reflexio.server.env_utils import env_bool, env_str
 from reflexio.server.llm.compute_admission import compute_attempt_scope
 from reflexio.server.llm.failure import exception_chain
 from reflexio.server.llm.input_budget import (
+    ExtractionInputIntegrityError,
     InputBudgetConfigurationError,
     ProviderInputOverflowError,
     declared_context_limits,
@@ -121,7 +122,11 @@ class WindowExecutor:
         if window.kind == "profile":
             service = self._profile_service()
             request = ProfileGenerationRequest(**common)
-            config = ProfileExtractorConfig.model_validate(window.policy["extractor"])
+            config = ProfileExtractorConfig.model_validate(
+                effective_frozen_extractor_config(
+                    window.policy["extractor"], extractor_kind="profile"
+                )
+            )
         else:
             service = PlaybookGenerationService(
                 self.client, self.context, skip_aggregation=window.skip_aggregation
@@ -175,7 +180,7 @@ class WindowExecutor:
             if known is not None:
                 # A mode toggle must not replace durable real work with fake
                 # results, fabricate source coverage, or refund its quota.
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Mock mode cannot replace an existing extraction agent run"
                 )
             # Simulations have no provider input to budget. Keep their established
@@ -187,7 +192,7 @@ class WindowExecutor:
             for item in group.interactions
         ):
             if manifest is not None:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Admitted textual extraction cannot consume image evidence"
                 )
             # Preserve the established multimodal prompt and evidence contract.
@@ -200,7 +205,7 @@ class WindowExecutor:
         # adapter, including committed output. Never re-admit historical work.
         if known is not None and manifest is None:
             if known.status == AgentRunStatus.FAILED and known.committed_output is None:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Failed legacy extraction needs explicit recovery; historical quota is unknown"
                 )
             return True
@@ -217,7 +222,7 @@ class WindowExecutor:
                 known.generation_request_snapshot["overflow"]
             )
         except OverflowCheckpointConflictError as exc:
-            raise InputBudgetConfigurationError(str(exc)) from exc
+            raise ExtractionInputIntegrityError(str(exc)) from exc
 
     @staticmethod
     def _prepare_coordinator_sources(
@@ -230,10 +235,10 @@ class WindowExecutor:
         # retain their original partition and cannot reclaim consumed slots.
         chunk_tokens = manifest.get("input_chunk_tokens", 8192) if manifest else 10000
         if type(chunk_tokens) is not int or chunk_tokens not in {8192, 10000, 20000}:
-            raise InputBudgetConfigurationError("Extraction partition changed")
+            raise ExtractionInputIntegrityError("Extraction partition changed")
         preparation_version = manifest.get("preparation_version", 1) if manifest else 3
         if type(preparation_version) is not int or preparation_version not in {1, 2, 3}:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Unknown extraction preparation version"
             )
         if known is None:
@@ -289,8 +294,7 @@ class WindowExecutor:
                 *agent_models,
             )
             if any(
-                model.partition("/")[0] in {"claude-code", "openclaw"}
-                for model in models
+                model.partition("/")[0] in {"local-cli", "openclaw"} for model in models
             ):
                 return None
         # The coordinator owns eligible native text work. Existing CLI, image,
@@ -300,7 +304,7 @@ class WindowExecutor:
         )
         if not prepared.chunks:
             if manifest is not None:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Prepared extraction lost textual evidence"
                 )
             # Image-only requests use the established multimodal extractor.
@@ -316,7 +320,7 @@ class WindowExecutor:
         if manifest is not None and manifest.get("chunk_digests") != [
             OverflowCoordinator.candidate_key(chunk.text) for chunk in prepared.chunks
         ]:
-            raise InputBudgetConfigurationError("Admitted extraction partition changed")
+            raise ExtractionInputIntegrityError("Admitted extraction partition changed")
         replan = manifest.get("checkpoint", {}).get("repartition") if manifest else None
         if replan is not None:
             prepared = repartition_extraction_input(
@@ -328,7 +332,7 @@ class WindowExecutor:
                 OverflowCoordinator.candidate_key(chunk.text)
                 for chunk in prepared.chunks
             ]:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Frozen extraction repartition changed"
                 )
         expected_run = build_extractor_agent_run_record(
@@ -351,7 +355,7 @@ class WindowExecutor:
             window.policy["extractor"],
             project_id=window.project_id,
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Extraction coordinator parent binding changed"
             )
         if manifest is None:
@@ -362,13 +366,28 @@ class WindowExecutor:
                 OverflowCoordinator.candidate_key(chunk.text)
                 for chunk in prepared.chunks
             ]
+            run = replace(expected_run, id=f"window:{window.window_id}")
+            run.generation_request_snapshot["overflow"] = manifest
+            if window.kind == "profile":
+                from reflexio.server.services.durable_learning.ordinary_profile_preparation import (
+                    KEY,
+                    ordinary_profile_preparation,
+                )
+
+                # Unsupported layouts/adapters retain ordinary execution but
+                # acquire no selective continuation authority. Capture outside
+                # the short owner transaction and before any provider call.
+                with suppress(
+                    OSError, ValueError, TypeError, InputBudgetConfigurationError
+                ):
+                    run.generation_request_snapshot[KEY] = ordinary_profile_preparation(
+                        self, window, service, config
+                    )
             with self.storage.commit_scope():
                 self.storage.fence_user_extraction(window.user_id, token)
                 self.storage.validate_extraction_source_digest(
                     window, prepared.source_digest
                 )
-                run = replace(expected_run, id=f"window:{window.window_id}")
-                run.generation_request_snapshot["overflow"] = manifest
                 known = create_owned_agent_run(self.storage, run)
         elif known is not None:
             with self.storage.commit_scope():
@@ -538,6 +557,27 @@ class WindowExecutor:
             self._execute_owned_window(window, token)
 
     def _execute_owned_window(self, window: Window, token: str) -> None:
+        from reflexio.server.services.durable_learning.learning_admission import (
+            LearningWork,
+            learning_work_scope,
+        )
+
+        with learning_work_scope(
+            self.storage,
+            LearningWork(
+                self.storage.org_id,
+                window.project_id,
+                window.user_id,
+                "window",
+                window.window_id,
+            ),
+        ):
+            self._execute_admitted_window(window, token)
+
+    def _execute_admitted_window(self, window: Window, token: str) -> None:
+        from reflexio.server.services.durable_learning.learning_admission import (
+            learning_business_write,
+        )
         from reflexio.server.services.durable_learning.user_lease import (
             owned_agent_run_write,
         )
@@ -582,7 +622,7 @@ class WindowExecutor:
                 )
             except (ValueError, KeyError, TypeError, AttributeError) as exc:
                 if coordinator is not None and is_source_quoted_window(coordinator):
-                    raise InputBudgetConfigurationError(
+                    raise ExtractionInputIntegrityError(
                         "Cached source projection plan is malformed"
                     ) from exc
                 raise
@@ -601,7 +641,7 @@ class WindowExecutor:
             plan.execution_run = coordinator.saved_run
             service._last_extraction_run = coordinator.saved_run
         self._preserve_ordinary_plan_notes(window, coordinator, plan)
-        with self.storage.commit_scope():
+        with learning_business_write(self.storage):
             if coordinator is not None and coordinator.saved_run is None:
                 raise OverflowCheckpointConflictError(
                     "Extraction parent execution unavailable"
@@ -749,19 +789,51 @@ class WindowExecutor:
             return adopt_agent_run_for_execution(self.storage, known)
 
     def _validate_overflow_plan(
-        self, coordinator: OverflowCoordinator, service: Any, plan: Any
+        self,
+        coordinator: OverflowCoordinator,
+        service: Any,
+        plan: Any,  # noqa: ARG002
     ) -> None:
         """Scoped consumers may fence additional frozen decision inputs."""
+        from reflexio.server.services.durable_learning.ordinary_profile_preparation import (
+            require_original_ordinary_profile_preparation,
+        )
+        from reflexio.server.services.durable_learning.selected_learning import (
+            current_selected_learning,
+        )
+
+        if (
+            current_selected_learning() is not None
+            and coordinator.saved_run is not None
+        ):
+            require_original_ordinary_profile_preparation(
+                self,
+                coordinator.window,
+                service,
+                ProfileExtractorConfig.model_validate(
+                    effective_frozen_extractor_config(
+                        coordinator.window.policy["extractor"], extractor_kind="profile"
+                    )
+                ),
+                coordinator.saved_run,
+            )
 
     def _compute_overflow_window(
         self, coordinator: OverflowCoordinator, service: Any, request: Any, config: Any
     ) -> Any:
+        from reflexio.server.services.durable_learning.ordinary_profile_preparation import (
+            original_ordinary_instruction_scope,
+        )
+
         try:
-            self._prepare_overflow_context(coordinator, config)
-            with coordinator.provider_scope():
-                if is_source_quoted_window(coordinator):
-                    return compute_source_quoted_plan(coordinator, service, config)
-                return service.compute_generation(request)
+            with original_ordinary_instruction_scope(
+                self, coordinator, service, config
+            ):
+                self._prepare_overflow_context(coordinator, config)
+                with coordinator.provider_scope():
+                    if is_source_quoted_window(coordinator):
+                        return compute_source_quoted_plan(coordinator, service, config)
+                    return service.compute_generation(request)
         except Exception as exc:
             for link in exception_chain(exc):
                 if isinstance(link, ProviderInputOverflowError):
@@ -788,7 +860,7 @@ class WindowExecutor:
         if run_ids != [f"window:{window.window_id}"]:
             raise OverflowCheckpointConflictError("Completed window changed its parent")
         from reflexio.server.services.durable_learning.user_lease import (
-            adopt_agent_run_for_execution,
+            adopt_completed_window_for_finalization,
         )
 
         with self.storage.commit_scope():
@@ -817,7 +889,7 @@ class WindowExecutor:
                 raise OverflowCheckpointConflictError(
                     "Completed window finalization receipt unavailable"
                 )
-            run = adopt_agent_run_for_execution(self.storage, run)
+            run = adopt_completed_window_for_finalization(self.storage, run, window)
             from reflexio.server.services.extraction.publication import (
                 finalize_window_execution,
             )

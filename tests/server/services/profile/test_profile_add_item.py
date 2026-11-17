@@ -6,16 +6,17 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
 
 
 def test_profile_add_item_new_fields_default_to_none() -> None:
-    item = ProfileAddItem(content="x", time_to_live="infinity")
+    item = ProfileAddItem(content="x")
     assert item.source_span is None
     assert item.notes is None
     assert item.reader_angle is None
+    assert item.explicit_storage_deadline is None
+    assert item.explicit_forget_quote is None
 
 
 def test_profile_add_item_accepts_optional_fields() -> None:
     item = ProfileAddItem(
         content="x",
-        time_to_live="infinity",
         source_span="exact quote",
         notes="high confidence",
         reader_angle="facts",

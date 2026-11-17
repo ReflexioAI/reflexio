@@ -439,3 +439,18 @@ def test_repeat_failures_warn_once_then_debug(wrapped_cls, reflexio_mock, caplog
         if "failed" in r.getMessage() and "Reflexio" in r.getMessage()
     ]
     assert [r.levelname for r in failures] == ["WARNING", "DEBUG", "DEBUG"]
+
+
+@pytest.mark.parametrize("value", ["", "private-ambient-agent"])
+def test_identity_preparation_failure_preserves_successful_mem0_add(
+    wrapped_cls, reflexio_mock, monkeypatch, caplog, value
+):
+    client = _client(wrapped_cls, reflexio_mock)
+    monkeypatch.setenv("REFLEXIO_AGENT_VERSION", value)
+    result = client.add("hello", user_id="u1")
+    assert result is client.add_result
+    assert len(client.calls) == 1
+    assert client.calls[0][0] == "add"
+    reflexio_mock.publish_interaction.assert_not_called()
+    assert "Best-effort Reflexio publish failed" in caplog.text
+    assert "private-ambient-agent" not in caplog.text

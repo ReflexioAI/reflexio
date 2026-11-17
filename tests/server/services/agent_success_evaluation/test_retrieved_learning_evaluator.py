@@ -526,7 +526,7 @@ def test_verdict_coverage_error_names_all_problems() -> None:
     [
         "complete",
         "application_failure",
-        "body_truncated",
+        "long_body",
         "transcript_truncated",
         "invalid_citation",
         "profile",
@@ -541,7 +541,7 @@ def test_diagnosis_is_bounded_and_bound_to_the_evaluated_playbook(storage, evide
     )
 
     profile_id, target_id, _ = _seed_all_kinds(storage)
-    if evidence == "body_truncated":
+    if evidence == "long_body":
         storage.update_user_playbook(target_id, content="Validate deployments. " * 400)
     kind, learning_id = (
         ("profile", profile_id)
@@ -580,7 +580,7 @@ def test_diagnosis_is_bounded_and_bound_to_the_evaluated_playbook(storage, evide
     elif evidence == "invalid_citation":
         assert row.diagnosis is not None
         assert row.diagnosis.category == "unknown"
-    elif evidence in {"body_truncated", "transcript_truncated"}:
+    elif evidence == "transcript_truncated":
         assert not row.diagnosis_evidence_complete
     else:
         assert row.diagnosis_evidence_complete
@@ -591,3 +591,34 @@ def test_diagnosis_is_bounded_and_bound_to_the_evaluated_playbook(storage, evide
             content_digest=hashlib.sha256(target.content.encode()).hexdigest(),
             trigger=target.trigger,
         )
+
+
+def test_judge_transcript_keeps_middle_evidence_beyond_former_8k_budget(storage):
+    _, target, _ = _seed_all_kinds(storage)
+    snapshot = _snapshot({1: [("user_playbook", str(target))]})
+    snapshot.interactions[0].content = (
+        "prefix " * 9000 + "MIDDLE_DECISION_EVIDENCE" + " tail" * 9000
+    )
+    llm = _echoing_llm()
+    result = _make_evaluator(storage, llm).evaluate(USER, SESSION, "v1", snapshot)
+    assert result.outcome == "evaluated"
+    for call in llm.generate_chat_response.call_args_list:
+        assert "MIDDLE_DECISION_EVIDENCE" in call.kwargs["messages"][0]["content"]
+    assert result.rows[0].diagnosis_evidence_complete
+
+
+def test_judge_learning_payload_keeps_complete_middle_content_and_trigger(storage):
+    _, target, _ = _seed_all_kinds(storage)
+    content = "prefix " * 400 + "MIDDLE_BODY_EVIDENCE" + " tail" * 400
+    trigger = "when " * 400 + "MIDDLE_TRIGGER_EVIDENCE" + " then" * 400
+    storage.update_user_playbook(target, content=content, trigger=trigger)
+    llm = _echoing_llm()
+    result = _make_evaluator(storage, llm).evaluate(
+        USER, SESSION, "v1", _snapshot({1: [("user_playbook", str(target))]})
+    )
+    assert result.outcome == "evaluated"
+    for call in llm.generate_chat_response.call_args_list:
+        shown = call.kwargs["messages"][0]["content"]
+        assert "MIDDLE_BODY_EVIDENCE" in shown
+        assert "MIDDLE_TRIGGER_EVIDENCE" in shown
+    assert result.rows[0].diagnosis_evidence_complete

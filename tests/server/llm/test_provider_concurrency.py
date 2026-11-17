@@ -195,7 +195,7 @@ def _declared_custom_provider_keys() -> set[str]:
     lands -- a list here would be silent about provider N+1, which is the exact
     failure this guard exists to stop.
     """
-    import ast
+    import importlib
     import pathlib
 
     providers_dir = pathlib.Path(pc.__file__).resolve().parent / "providers"
@@ -205,17 +205,10 @@ def _declared_custom_provider_keys() -> set[str]:
         # Only modules that actually register into litellm carry a cap-relevant key.
         if "custom_provider_map" not in source:
             continue
-        for node in ast.parse(source).body:
-            if not isinstance(node, ast.Assign):
-                continue
-            for target in node.targets:
-                if (
-                    isinstance(target, ast.Name)
-                    and target.id == "PROVIDER_KEY"
-                    and isinstance(node.value, ast.Constant)
-                    and isinstance(node.value.value, str)
-                ):
-                    keys.add(node.value.value)
+        module = importlib.import_module("reflexio.server.llm.providers." + path.stem)
+        key = getattr(module, "PROVIDER_KEY", None)
+        assert isinstance(key, str), f"Missing provider identity in {path.name}"
+        keys.add(key)
     return keys
 
 
@@ -223,7 +216,7 @@ def test_declared_custom_providers_are_discoverable() -> None:
     """The scan must find something, or the guard below proves nothing."""
     keys = _declared_custom_provider_keys()
     assert keys, "found no custom-provider PROVIDER_KEY; the guard is measuring nothing"
-    assert "claude-code" in keys
+    assert "local-cli" in keys
 
 
 def test_registered_custom_provider_is_visible_to_the_cap(monkeypatch) -> None:
@@ -493,3 +486,38 @@ def test_contended_provider_records_queue_before_execution(monkeypatch):
         "retirement",
     }
     assert sem.acquire(blocking=False)
+
+
+def test_named_http_transport_shares_provider_capacity(monkeypatch):
+    monkeypatch.setattr(pc, "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(pc, "_per_provider_cap", {})
+    monkeypatch.setattr(pc, "_semaphores", {})
+    monkeypatch.setattr(pc, "_provider_key", lambda _: "typesafe")
+    with (
+        pc.named_provider_slot("typesafe"),
+        pytest.raises(pc.ProviderCapSaturatedError),
+        pc.provider_slot("registered-model", max_wait=0.001),
+    ):
+        pytest.fail("another transport bypassed Typesafe capacity")
+    with (
+        pc.provider_slot("registered-model"),
+        pytest.raises(pc.ProviderCapSaturatedError),
+        pc.named_provider_slot("typesafe", max_wait=0.001),
+    ):
+        pytest.fail("named transport bypassed existing capacity")
+    assert pc._get_semaphore("typesafe")._value == 1
+
+
+def test_named_transport_retains_capacity_until_work_retires(monkeypatch):
+    monkeypatch.setattr(pc, "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(pc, "_per_provider_cap", {})
+    monkeypatch.setattr(pc, "_semaphores", {})
+    with pc.named_provider_slot("typesafe"):
+        release = pc.retain_current_provider_slot()
+    with (
+        pytest.raises(pc.ProviderCapSaturatedError),
+        pc.named_provider_slot("typesafe", max_wait=0.001),
+    ):
+        pytest.fail("retiring work lost its permit")
+    release()
+    assert pc._get_semaphore("typesafe")._value == 1

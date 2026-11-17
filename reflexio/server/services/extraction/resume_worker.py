@@ -25,7 +25,10 @@ from reflexio.server.llm.compute_admission import (
 from reflexio.server.llm.failure import OutageWait, classify_llm_failure
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
-from reflexio.server.services.extraction.agent_run_records import build_scope_hash
+from reflexio.server.services.extraction.agent_run_records import (
+    build_scope_hash,
+    snapshot_extractor_config,
+)
 from reflexio.server.services.extraction.answer_inputs import answer_input_scope
 from reflexio.server.services.extraction.history_inputs import HistoricalInputs
 from reflexio.server.services.extraction.pending_tool_admission import (
@@ -68,9 +71,14 @@ from reflexio.server.services.playbook.service import (
     PlaybookGenerationService,
     PlaybookGenerationServiceConfig,
 )
+from reflexio.server.services.profile.committed_output import (
+    read_saved_structured_output,
+)
 from reflexio.server.services.profile.components.extractor import (
     MAX_EXISTING_PROFILES_FOR_CONTEXT,
     ProfileExtractor,
+    profile_forget_authority_texts,
+    profile_source_evidence_texts,
 )
 from reflexio.server.services.profile.profile_generation_service_utils import (
     StructuredProfilesOutput,
@@ -233,7 +241,12 @@ def _log_config_hash_drift(
     run: AgentRunRecord,
     extractor_config: BaseModel,
 ) -> None:
-    current_hash = build_scope_hash(extractor_config.model_dump(mode="json"))
+    frozen = run.generation_request_snapshot.get("extractor_config")
+    current_hash = build_scope_hash(
+        snapshot_extractor_config(
+            extractor_config, frozen=frozen if isinstance(frozen, dict) else None
+        )
+    )
     if run.binding.extractor_config_hash and (
         current_hash != run.binding.extractor_config_hash
     ):
@@ -321,9 +334,12 @@ class ExtractionResumeWorker:
 
     def recover_selected(self, selection: Any, *, operation_id: str) -> AgentRunRecord:
         """Recover one previewed run without opening the scheduler's resume gate."""
+        from reflexio.server.services.durable_learning.learning_admission import (
+            LearningWork,
+            learning_work_scope,
+        )
         from reflexio.server.services.durable_learning.user_lease import (
             UserLeaseBusyError,
-            adopt_agent_run_for_execution,
             fence_explicit_extraction,
             user_extraction_lease,
         )
@@ -345,9 +361,21 @@ class ExtractionResumeWorker:
             try:
                 # Explicit selected work declines busy admission without changing
                 # the previewed run. No logical claim ages while waiting here.
-                with user_extraction_lease(
-                    self.storage, user_id, max_wait_seconds=0
-                ) as owner:
+                with (
+                    user_extraction_lease(
+                        self.storage, user_id, max_wait_seconds=0
+                    ) as owner,
+                    learning_work_scope(
+                        self.storage,
+                        LearningWork(
+                            selection.org_id,
+                            selection.project_id or "",
+                            user_id,
+                            "run",
+                            run.id,
+                        ),
+                    ),
+                ):
                     pending_config = self.request_context.configurator.get_config().pending_tool_call_config
                     with self.storage.commit_scope():
                         fence_explicit_extraction(self.storage)
@@ -364,7 +392,10 @@ class ExtractionResumeWorker:
                         )
                         if claimed is None:
                             raise RecoveryRefusedError("claim_conflict")
-                        claimed = adopt_agent_run_for_execution(self.storage, claimed)
+                        # claim_agent_run_for_recovery already adopts the exact
+                        # inspected revision under this same user owner. The
+                        # normal execution entry re-fences after this transaction;
+                        # do not introduce a second adoption/commit boundary.
                     logger.info(
                         "event=extraction_recovery_claimed run_id=%s operation_id=%s",
                         run.id,
@@ -408,6 +439,26 @@ class ExtractionResumeWorker:
         selection: Any,
     ) -> AgentRunRecord:
         """Process while the caller retains actual lease and capacity ownership."""
+        from reflexio.server.services.durable_learning.user_lease import (
+            agent_run_user_work,
+        )
+
+        with agent_run_user_work(self.storage, run):
+            return self._execute_admitted_claim(
+                run,
+                finalization_retry=finalization_retry,
+                pending_config=pending_config,
+                selection=selection,
+            )
+
+    def _execute_admitted_claim(
+        self,
+        run: AgentRunRecord,
+        *,
+        finalization_retry: bool,
+        pending_config: Any,
+        selection: Any,
+    ) -> AgentRunRecord:
         from reflexio.server.services.durable_learning.user_lease import (
             adopt_agent_run_for_execution,
         )
@@ -778,6 +829,23 @@ class ExtractionResumeWorker:
                 raise LeaseLostError(
                     "Resume failure has no retained execution claim"
                 ) from exc
+            from reflexio.server.services.durable_learning.learning_admission import (
+                learning_transition_is_held,
+            )
+
+            if learning_transition_is_held(exc):
+                # Release only this actual claim; never refund dispatched work,
+                # consume a failure retry or turn a seal into method failure.
+                self._update_claimed_status(
+                    run.id,
+                    AgentRunStatus.FINALIZATION_FAILED
+                    if active.status == AgentRunStatus.AGENT_COMPLETED
+                    and active.committed_output is not None
+                    else AgentRunStatus.RESUME_READY,
+                    next_resume_at=datetime.now(UTC),
+                    last_error="learning_transition_held",
+                )
+                raise
             if execution_input_is_busy(exc):
                 # Keep any admitted attempt charged: absence of a returned
                 # response does not establish that no provider work entered.
@@ -849,6 +917,18 @@ class ExtractionResumeWorker:
         except LeaseLostError:
             raise
         except Exception as exc:
+            from reflexio.server.services.durable_learning.learning_admission import (
+                learning_transition_is_held,
+            )
+
+            if learning_transition_is_held(exc):
+                self._settle_finalization_failure(
+                    run,
+                    exc,
+                    last_error="learning_transition_held",
+                    max_finalization_attempts=pending_config.max_finalization_attempts,
+                )
+                raise
             if isinstance(classify_llm_failure(exc), OutageWait):
                 _log_finalization_provider_wait(run, exc)
             else:
@@ -888,6 +968,18 @@ class ExtractionResumeWorker:
         except LeaseLostError:
             raise
         except Exception as exc:
+            from reflexio.server.services.durable_learning.learning_admission import (
+                learning_transition_is_held,
+            )
+
+            if learning_transition_is_held(exc):
+                self._settle_finalization_failure(
+                    run,
+                    exc,
+                    last_error="learning_transition_held",
+                    max_finalization_attempts=pending_config.max_finalization_attempts,
+                )
+                raise
             if isinstance(classify_llm_failure(exc), OutageWait):
                 _log_finalization_provider_wait(run, exc)
             else:
@@ -1240,6 +1332,7 @@ class ExtractionResumeWorker:
                 run,
                 extractor_config,
                 output,
+                request_interaction_data_models=request_interaction_data_models,
             )
             return items, pending_ids, model_provenance
         if run.binding.extractor_kind == "playbook":
@@ -1259,12 +1352,16 @@ class ExtractionResumeWorker:
         run: AgentRunRecord,
         extractor_config: ProfileExtractorConfig | PlaybookConfig,
         committed_output: dict[str, Any],
+        *,
+        request_interaction_data_models: list[RequestInteractionDataModel],
     ) -> tuple[list[Any], list[str]]:
         if not isinstance(extractor_config, ProfileExtractorConfig):
             raise ResumeWorkerError("Expected profile extractor config")
         if run.binding.user_id is None:
             raise ResumeWorkerError("Profile finalization retry requires user_id")
-        output = StructuredProfilesOutput.model_validate(committed_output)
+        output = read_saved_structured_output(
+            StructuredProfilesOutput, committed_output
+        )
         raw_profiles = [profile.model_dump() for profile in output.profiles or []]
         return (
             ProfileExtractor._convert_raw_to_user_profiles(
@@ -1272,6 +1369,13 @@ class ExtractionResumeWorker:
                 user_id=run.binding.user_id,
                 request_id=run.binding.request_id,
                 source_interaction_ids=list(run.binding.source_interaction_ids),
+                committed_run=run,
+                source_texts=profile_source_evidence_texts(
+                    request_interaction_data_models
+                ),
+                user_source_texts=profile_forget_authority_texts(
+                    request_interaction_data_models
+                ),
             ),
             run.pending_tool_call_ids,
         )

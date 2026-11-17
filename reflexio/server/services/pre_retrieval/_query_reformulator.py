@@ -185,7 +185,9 @@ class QueryReformulator:
                 "today_iso": datetime.now(UTC).date().isoformat(),
             },
         )
-        logger.debug("Query reformulation prompt: %s", prompt)
+        logger.debug(
+            "Query reformulation request prepared (prompt_chars=%d)", len(prompt)
+        )
         model_kwargs = {}
         if self.model_name:
             model_kwargs["model"] = self.model_name

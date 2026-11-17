@@ -24,8 +24,9 @@ from reflexio.server.llm.compute_admission import (
 )
 from reflexio.server.llm.failure import OutageWait, Transient, classify_llm_failure
 from reflexio.server.llm.input_budget import (
-    InputBudgetConfigurationError,
+    ExtractionInputIntegrityError,
     InputBudgetExceededError,
+    model_input_budget,
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
@@ -74,6 +75,9 @@ from reflexio.server.services.extraction.publication_receipts import Publication
 from reflexio.server.services.extraction.source_inputs import (
     capture_source_inputs,
     require_source_inputs,
+)
+from reflexio.server.services.profile.committed_output import (
+    read_saved_structured_output,
 )
 from reflexio.server.services.storage.storage_base import (
     AgentRunRecord,
@@ -310,7 +314,7 @@ def run_resumable_extraction_agent(
     coordinator = current_overflow_coordinator.get()
     if coordinator is not None and current_overflow_presentation.get() is None:
         if overflow_call_factory is None:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Extraction requires a prepared-source call factory"
             )
         from reflexio.server.services.extraction.overflow_pipeline import (
@@ -490,13 +494,13 @@ class ResumableExtractionAgent:
 
         witness = validate_profile_package(preparation, package, coordinator)
         if self.max_steps != preparation.snapshot["agent_max_steps"]:
-            raise InputBudgetConfigurationError("Profile package step limit changed")
+            raise ExtractionInputIntegrityError("Profile package step limit changed")
         if coordinator.checkpoint.get("package_processing") != witness:
-            raise InputBudgetConfigurationError("Profile package was not processed")
+            raise ExtractionInputIntegrityError("Profile package was not processed")
         if [tool.openai_spec() for tool in extra_tools] != preparation.snapshot[
             "tools"
         ]:
-            raise InputBudgetConfigurationError("Profile package tools changed")
+            raise ExtractionInputIntegrityError("Profile package tools changed")
         with coordinator.provider_scope():
             return self._start_overflow_step(
                 run=run,
@@ -614,7 +618,7 @@ class ResumableExtractionAgent:
                     )
                     return AgentRunResult(
                         run_id=existing.id,
-                        output=output_schema.model_validate(payload),
+                        output=read_saved_structured_output(output_schema, payload),
                         pending_tool_call_ids=existing.pending_tool_call_ids,
                         messages=[],
                         trace=ToolLoopTrace.model_validate(
@@ -723,19 +727,19 @@ class ResumableExtractionAgent:
         ):
             raise RuntimeError("Overflow extraction presentation binding changed")
         if not presentation.is_present_in(messages):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Extraction template omits prepared source"
             )
         _require_overflow_parent(self.storage, coordinator, run)
         checkpoint = coordinator.checkpoint
         selected_schema = checkpoint.get("output_schema_name")
         if selected_schema is not None and selected_schema != output_schema.__name__:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Overflow extraction output schema changed"
             )
         if selected_schema is None:
             if cache_only:
-                raise InputBudgetConfigurationError("Profile package schema is missing")
+                raise ExtractionInputIntegrityError("Profile package schema is missing")
             checkpoint["output_schema_name"] = output_schema.__name__
             coordinator.save_checkpoint(checkpoint)
         registry = ToolRegistry(list(extra_tools or []))
@@ -760,10 +764,10 @@ class ResumableExtractionAgent:
             }
             previous = checkpoint.get("package_child")
             if previous is not None and previous != child:
-                raise InputBudgetConfigurationError("Profile package child changed")
+                raise ExtractionInputIntegrityError("Profile package child changed")
             if previous is None:
                 if cache_only:
-                    raise InputBudgetConfigurationError(
+                    raise ExtractionInputIntegrityError(
                         "Profile package child is missing"
                     )
                 checkpoint["package_child"] = child
@@ -775,13 +779,13 @@ class ResumableExtractionAgent:
                 coordinator.validate_profile_attempts(
                     "profile_agent", payload.get("attempt_ids"), key
                 )
-            output = output_schema.model_validate(payload["output"])
+            output = read_saved_structured_output(output_schema, payload["output"])
             if (
                 package_request is not None
                 and structured_output_validator is not None
                 and structured_output_validator(output)
             ):
-                raise InputBudgetConfigurationError("Saved profile quotes changed")
+                raise ExtractionInputIntegrityError("Saved profile quotes changed")
             return AgentRunResult(
                 run_id=run.id,
                 output=output,
@@ -793,7 +797,7 @@ class ResumableExtractionAgent:
                 execution_run=coordinator.saved_run,
             )
         if cache_only:
-            raise InputBudgetConfigurationError("Profile package child is unfinished")
+            raise ExtractionInputIntegrityError("Profile package child is unfinished")
         return self._run_overflow_child(
             coordinator=coordinator,
             run=run,
@@ -834,7 +838,7 @@ class ResumableExtractionAgent:
         resume_waiting_child(coordinator, key)
         active = coordinator.checkpoint.get("active_child")
         if active is not None and active["key"] != key:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Overflow extraction active child binding changed"
             )
         remaining = active["max_steps_remaining"] if active else self.max_steps
@@ -847,7 +851,7 @@ class ResumableExtractionAgent:
             or not 0 <= remaining <= self.max_steps
             or current_messages[: len(messages)] != messages
         ):
-            raise InputBudgetConfigurationError("Profile package continuation changed")
+            raise ExtractionInputIntegrityError("Profile package continuation changed")
         trace = (
             ToolLoopTrace.model_validate(active["trace"]) if active else ToolLoopTrace()
         )
@@ -863,7 +867,7 @@ class ResumableExtractionAgent:
             ) as attempts:
                 execution_run = coordinator.saved_run
                 if execution_run is None:
-                    raise InputBudgetConfigurationError(
+                    raise ExtractionInputIntegrityError(
                         "Pending tools require the admitted overflow parent"
                     )
                 result = run_tool_loop(
@@ -884,7 +888,7 @@ class ResumableExtractionAgent:
                 )
             if preparation is not None:
                 if attempts is None:
-                    raise InputBudgetConfigurationError(
+                    raise ExtractionInputIntegrityError(
                         "Profile turn lacks an attempt scope"
                     )
                 child_attempts.extend(attempts)
@@ -1084,18 +1088,19 @@ class ResumableExtractionAgent:
         extra_tool_context = bind_pending_tool_execution(
             extra_tool_context, storage=self.storage, run=run
         )
-        result = run_tool_loop(
-            client=self.client,
-            messages=messages,
-            registry=registry,
-            model_role=self.model_role,
-            max_steps=max_steps,
-            ctx=extra_tool_context,
-            response_format=output_schema,
-            structured_output_validator=structured_output_validator,
-            tool_choice="auto",
-            log_label=log_label,
-        )
+        with model_input_budget():
+            result = run_tool_loop(
+                client=self.client,
+                messages=messages,
+                registry=registry,
+                model_role=self.model_role,
+                max_steps=max_steps,
+                ctx=extra_tool_context,
+                response_format=output_schema,
+                structured_output_validator=structured_output_validator,
+                tool_choice="auto",
+                log_label=log_label,
+            )
         record_compute_result()
 
         output = result.structured_output

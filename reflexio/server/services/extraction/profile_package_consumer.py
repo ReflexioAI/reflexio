@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from reflexio.models.config_schema import PendingToolCallConfig
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.llm.tools import Tool
 from reflexio.server.services.extraction.overflow_coordinator import OverflowCoordinator
 from reflexio.server.services.extraction.package_compression import (
@@ -84,7 +84,7 @@ def _validate_parent(
             )
         )
     ):
-        raise InputBudgetConfigurationError("Profile package consumer binding changed")
+        raise ExtractionInputIntegrityError("Profile package consumer binding changed")
     with coordinator.storage.commit_scope():
         coordinator.validate_current_parent()
         coordinator.storage.validate_extraction_inputs(coordinator.window)
@@ -116,7 +116,7 @@ def validate_profile_package(
         or package.result.covered_source_ids
         != tuple(span.evidence_ref for span in preparation.compression.sources.spans)
     ):
-        raise InputBudgetConfigurationError("Profile package source binding changed")
+        raise ExtractionInputIntegrityError("Profile package source binding changed")
     return {
         "version": 1,
         "source_digest": coordinator.source_digest,
@@ -139,7 +139,7 @@ def _pending_tools(
     if tools_config is None:
         return [], None
     if pending_tool_config is None:
-        raise InputBudgetConfigurationError("Profile pending tool secrets unavailable")
+        raise ExtractionInputIntegrityError("Profile pending tool secrets unavailable")
     pending_tool_policy_snapshot(pending_tool_config, tools_config)
     require_pending_tool_admission(pending_tool_config, coordinator.storage)
     return create_pending_info_tools_for_extractor_kind(
@@ -184,10 +184,10 @@ def consume_profile_package(
     checkpoint = coordinator.checkpoint
     previous = checkpoint.get("package_processing")
     if previous is not None and previous != witness:
-        raise InputBudgetConfigurationError("Processed profile package changed")
+        raise ExtractionInputIntegrityError("Processed profile package changed")
     if previous is None:
         if cache_only:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Profile package lacks processing receipt"
             )
         checkpoint["package_processing"] = witness
@@ -202,7 +202,7 @@ def consume_profile_package(
         saved = coordinator.completed_step(key)
         if saved is None:
             if cache_only:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Profile package lacks gate receipt"
                 )
             with coordinator.profile_request(
@@ -215,7 +215,7 @@ def consume_profile_package(
             if not isinstance(completion.value, str) or (
                 completion.value.strip().lower() not in {"true", "false"}
             ):
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Profile package gate is not boolean"
                 )
             decision = completion.value.strip().lower() == "true"
@@ -232,7 +232,7 @@ def consume_profile_package(
                 or set(output) != {"decision", "attempt_ids"}
                 or type(output["decision"]) is not bool
             ):
-                raise InputBudgetConfigurationError("Saved profile gate is not boolean")
+                raise ExtractionInputIntegrityError("Saved profile gate is not boolean")
             coordinator.validate_profile_attempts("gate", output["attempt_ids"], key)
             decision = output["decision"]
     if not decision:
@@ -240,7 +240,7 @@ def consume_profile_package(
 
     parent = coordinator.storage.get_agent_run(f"window:{coordinator.window.window_id}")
     if parent is None:
-        raise InputBudgetConfigurationError("Profile package parent unavailable")
+        raise ExtractionInputIntegrityError("Profile package parent unavailable")
     agent = ResumableExtractionAgent(client=client, storage=coordinator.storage)
     result = agent.start_profile_package(
         run=parent,

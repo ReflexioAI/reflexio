@@ -6,12 +6,12 @@ AND the tombstone GC — so it leaked indefinitely until the ``expire_active_pro
 sweep was added.
 
 Why integration (not e2e):
-    The e2e test conftest bypasses the global LLM mock so historical e2e tests can
-    hit real APIs.  Under ``tests/server/`` the global mock IS active (no paid key
-    needed).  The LLM mock returns ``time_to_live: "one_month"`` for every profile
-    extraction call, so ``calculate_expiration_timestamp`` runs in the real extractor
-    code-path and stores a non-NEVER expiration_timestamp — the real computation path
-    is exercised without any hand-crafted literal on the row.
+    The sweep, read filter and tombstone GC run against real SQLite storage.
+    Extraction no longer authors a lifetime: ordinary new facts carry the
+    ``NEVER_EXPIRES`` compatibility value, and only an explicit storage deadline
+    (or a legacy stored TTL) is finite. The fixture therefore seeds one active
+    profile carrying a finite deadline through the storage write owner rather than
+    expecting the mocked extractor to produce one.
 
 Time control:
     ``expire_active_profiles`` and ``gc_expired_tombstones`` accept explicit ``now``
@@ -24,6 +24,7 @@ Time control:
 from __future__ import annotations
 
 import pathlib
+import time
 from unittest.mock import patch
 
 import pytest
@@ -32,7 +33,6 @@ from reflexio.lib.reflexio_lib import Reflexio
 from reflexio.models.api_schema.common import NEVER_EXPIRES_TIMESTAMP
 from reflexio.models.api_schema.domain.entities import UserProfile
 from reflexio.models.api_schema.domain.enums import Status
-from reflexio.models.api_schema.service_schemas import InteractionData
 from reflexio.models.config_schema import (
     Config,
     ProfileExtractorConfig,
@@ -68,8 +68,10 @@ def reflexio_instance(tmp_path: pathlib.Path, worker_id: str) -> Reflexio:
     config = Config(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "expiry_test.db")),
         agent_context_prompt="test agent for expiry regression",
-        window_size=1,
-        stride_size=1,
+        profile_window_size=1,
+        playbook_window_size=1,
+        profile_stride_size=1,
+        playbook_stride_size=1,
         profile_extractor_config=ProfileExtractorConfig(
             context_prompt="extract user facts",
             extraction_definition_prompt="name, intent",
@@ -80,40 +82,38 @@ def reflexio_instance(tmp_path: pathlib.Path, worker_id: str) -> Reflexio:
     return Reflexio(org_id=org_id, configurator=configurator)
 
 
-def _publish_and_get_profile(reflexio: Reflexio) -> UserProfile:
-    """Publish one interaction through the real extraction path and return the profile.
+def _seed_profile_with_deadline(reflexio: Reflexio) -> UserProfile:
+    """Seed one active profile carrying a finite deadline and return the stored row.
 
-    The mock LLM returns ``time_to_live: "one_month"`` for profile extraction,
-    so ``calculate_expiration_timestamp`` runs in the extractor and stores a real
-    (non-NEVER) ``expiration_timestamp`` on the persisted row.
+    Extraction is TTL-free, so a published interaction yields a ``NEVER_EXPIRES``
+    profile that no sweep may reclaim. A finite deadline comes only from explicit
+    retention or a legacy stored TTL; this seeds that state through the storage
+    write owner and returns the row as persisted.
 
     Args:
         reflexio: A configured Reflexio instance.
 
     Returns:
-        UserProfile: The first profile created by ``publish_interaction``.
-
-    Raises:
-        AssertionError: If publication fails or no profile is created.
+        UserProfile: The stored active profile with a finite expiration.
     """
     user_id = "u_expiry_test"
-    response = reflexio.publish_interaction(
-        {
-            "user_id": user_id,
-            "session_id": "sess_expiry_regression",
-            "interaction_data_list": [
-                InteractionData(content="User shared their preferences.", role="user"),
-            ],
-            "source": "expiry_regression_test",
-        }
-    )
-    assert response.success, f"publish_interaction failed: {response.message}"
+    now = int(time.time())
     storage = require_storage(reflexio)
-    profiles = storage.get_user_profile(user_id)
-    assert len(profiles) == 1, (
-        "publish_interaction must produce exactly one profile via the real "
-        f"calculate_expiration_timestamp path; got {len(profiles)}"
+    storage.add_user_profile(
+        user_id,
+        [
+            UserProfile(
+                profile_id="expiry_regression_profile",
+                user_id=user_id,
+                content="User shared their preferences.",
+                last_modified_timestamp=now,
+                generated_from_request_id="expiry_regression_request",
+                expiration_timestamp=now + 30 * 86400,
+            )
+        ],
     )
+    profiles = storage.get_user_profile(user_id)
+    assert len(profiles) == 1, f"expected one seeded profile; got {len(profiles)}"
     return profiles[0]
 
 
@@ -125,23 +125,20 @@ def _publish_and_get_profile(reflexio: Reflexio) -> UserProfile:
 def test_ttl_expired_active_profile_is_physically_reclaimed(
     reflexio_instance: Reflexio,
 ) -> None:
-    """Faithful path: a profile created with a real TTL is swept to EXPIRED then hard-deleted.
+    """Faithful path: a profile with a finite deadline is swept to EXPIRED then hard-deleted.
 
     Guards the full reclamation pipeline:
-      1. publish_interaction → mock LLM emits one_month TTL → calculate_expiration_timestamp
-         stores a non-NEVER expiration_timestamp.
+      1. An active profile carries a finite (non-NEVER) expiration_timestamp.
       2. expire_active_profiles(now=past_expiry) tombstones the row (status → EXPIRED).
       3. gc_expired_tombstones(older_than_epoch=past_expiry+1) hard-deletes the tombstone.
       4. get_profile_by_id(include_tombstones=True) → None (row is gone).
       5. Lineage events contain both ``status_change`` (reason ttl-expired) and ``hard_delete``.
     """
     storage = require_storage(reflexio_instance)
-    profile = _publish_and_get_profile(reflexio_instance)
+    profile = _seed_profile_with_deadline(reflexio_instance)
 
-    # The mock LLM returns one_month TTL → real expiration_timestamp, not the sentinel.
     assert profile.expiration_timestamp != NEVER_EXPIRES_TIMESTAMP, (
-        "expiration_timestamp must be a real finite value produced by "
-        "calculate_expiration_timestamp, not the NEVER_EXPIRES sentinel"
+        "the seeded deadline must be finite, not the NEVER_EXPIRES sentinel"
     )
 
     past_expiry = profile.expiration_timestamp + 1
@@ -201,7 +198,7 @@ def test_pre_fix_pathology_active_expired_is_not_gc_eligible_until_swept(
     to simulate being past the profile's expiration, without touching the wall clock.
     """
     storage = require_storage(reflexio_instance)
-    profile = _publish_and_get_profile(reflexio_instance)
+    profile = _seed_profile_with_deadline(reflexio_instance)
 
     assert profile.expiration_timestamp != NEVER_EXPIRES_TIMESTAMP
 
@@ -272,7 +269,7 @@ def test_expiry_sweep_does_not_break_concurrent_supersede(
     Guards spec RD-ADV-005: the sweep must not corrupt dedup lineage.
     """
     storage = require_storage(reflexio_instance)
-    profile = _publish_and_get_profile(reflexio_instance)
+    profile = _seed_profile_with_deadline(reflexio_instance)
 
     assert profile.expiration_timestamp != NEVER_EXPIRES_TIMESTAMP
 

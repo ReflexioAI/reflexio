@@ -36,6 +36,9 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookList,
     StructuredReferencedExtractedPlaybookList,
 )
+from reflexio.server.services.profile.committed_output import (
+    read_saved_structured_output,
+)
 from reflexio.server.services.profile.profile_generation_service_utils import (
     StructuredProfilesOutput,
 )
@@ -99,7 +102,9 @@ def _validate_saved_output(model: type[BaseModel], output: dict[str, Any]) -> No
     collection = "profiles" if model is StructuredProfilesOutput else "playbooks"
     if not isinstance(output.get(collection), list):
         raise ValueError("Saved output must explicitly contain its collection")
-    _require_preserved_output_fields(output, model.model_validate(output))
+    _require_preserved_output_fields(
+        output, read_saved_structured_output(model, output)
+    )
 
 
 def _require_preserved_output_fields(raw: Any, parsed: Any) -> None:

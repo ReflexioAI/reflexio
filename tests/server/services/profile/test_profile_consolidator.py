@@ -44,6 +44,7 @@ from reflexio.server.services.profile.components.consolidator import (
     _format_profile_timestamp,
     validate_profile_dedup_output,
 )
+from reflexio.server.services.profile.lifecycle import KEY, metadata
 
 
 @pytest.mark.parametrize("phase", ["embedding", "search"])
@@ -119,7 +120,6 @@ def test_merged_profiles_preserve_all_canonical_evidence_and_perspectives(
             ProfileDuplicateGroup(
                 item_ids=labels,
                 merged_content="Concise answers with examples",
-                merged_time_to_live="infinity",
             )
         ]
     )
@@ -148,7 +148,8 @@ def test_merged_profiles_preserve_all_canonical_evidence_and_perspectives(
         if group_kind == "mixed"
         else {"topic": "answers", "format": "examples"}
     )
-    assert merged.custom_features == expected_customs
+    assert expected_customs is not None
+    assert merged.custom_features == {**expected_customs, KEY: metadata(merged)}
     # Repeated merges preserve complete values without repeatedly JSON-escaping
     # a prior collection or losing perspectives of consumed NEW-only members.
     initial_length = len(merged.source_span)
@@ -163,7 +164,6 @@ def test_merged_profiles_preserve_all_canonical_evidence_and_perspectives(
                     ProfileDuplicateGroup(
                         item_ids=["EXISTING-0", "NEW-0"],
                         merged_content="Concise answers",
-                        merged_time_to_live="infinity",
                     )
                 ]
             ),
@@ -218,6 +218,19 @@ def mock_request_context():
     context.prompt_manager.render_prompt.return_value = "test prompt"
     context.storage = MagicMock()
     context.storage.search_user_profile.return_value = []
+
+    def selected_native_rows(user_id, profile_ids, status_filter):
+        # This fake search uses full native profiles. Hydrate exactly the
+        # requested scoped IDs; missing/foreign/stale rows still fail closed.
+        return [
+            profile.model_copy(deep=True)
+            for profile in context.storage.search_user_profile.return_value
+            if profile.user_id == user_id
+            and profile.profile_id in profile_ids
+            and profile.status in status_filter
+        ]
+
+    context.storage.get_profiles_by_ids.side_effect = selected_native_rows
     # Set up configurator chain for model resolution
     mock_config = MagicMock()
     mock_config.api_key_config = None
@@ -283,11 +296,10 @@ class TestPydanticModels:
         group = ProfileDuplicateGroup(
             item_ids=["NEW-0", "NEW-1", "EXISTING-0"],
             merged_content="User prefers dark mode",
-            merged_time_to_live="one_month",
         )
         assert group.item_ids == ["NEW-0", "NEW-1", "EXISTING-0"]
         assert group.merged_content == "User prefers dark mode"
-        assert group.merged_time_to_live == "one_month"
+        assert group.erase_replaced_payloads is False
 
     def test_duplicate_group_forbids_extra_fields(self):
         """Test that ProfileDuplicateGroup allows extra fields at runtime (for LLM robustness)
@@ -296,7 +308,6 @@ class TestPydanticModels:
         group = ProfileDuplicateGroup(
             item_ids=["NEW-0"],
             merged_content="test",
-            merged_time_to_live="one_day",
             extra_field="not allowed",  # pyright: ignore[reportCallIssue]
         )
         assert group.item_ids == ["NEW-0"]
@@ -311,7 +322,6 @@ class TestPydanticModels:
                 ProfileDuplicateGroup(
                     item_ids=["NEW-0", "NEW-1"],
                     merged_content="merged",
-                    merged_time_to_live="one_week",
                 )
             ],
             unique_ids=["NEW-2", "NEW-3"],
@@ -382,7 +392,6 @@ class TestPydanticModels:
                 {
                     "item_ids": ["NEW-0", "NEW-1", "EXISTING-0"],
                     "merged_content": "test",
-                    "merged_time_to_live": "one_day",
                 }
             ],
             "unique_ids": ["NEW-2"],
@@ -489,15 +498,16 @@ class TestFormatProfilesForPrompt:
         assert "[NEW-2]" in result
         assert "User prefers dark mode for coding" in result
         assert "User likes dark theme in their IDE" in result
-        assert "one_month" in result
-        assert "one_week" in result
+        assert "one_month" not in result
+        assert "TTL:" not in result
+        assert "one_week" not in result
         assert "extractor_a" in result
         assert "extractor_b" in result
 
-    def test_format_profiles_uses_ttl_value(
+    def test_format_profiles_omits_legacy_estimated_ttl(
         self, mock_request_context, mock_llm_client, mock_site_var_manager
     ):
-        """Test formatting shows TTL value from profile."""
+        """Legacy stored TTL is not presented as authoring or retention authority."""
         timestamp = int(datetime.now(UTC).timestamp())
         profiles = [
             UserProfile(
@@ -514,7 +524,7 @@ class TestFormatProfilesForPrompt:
             llm_client=mock_llm_client,
         )
         result = deduplicator._format_items_for_prompt(profiles)
-        assert "TTL: one_quarter" in result
+        assert "TTL:" not in result
 
     def test_format_profiles_with_missing_source(
         self, mock_request_context, mock_llm_client, mock_site_var_manager
@@ -743,7 +753,6 @@ class TestBuildDeduplicatedResults:
                 ProfileDuplicateGroup(
                     item_ids=["NEW-0", "NEW-1"],
                     merged_content="User prefers dark mode in their IDE",
-                    merged_time_to_live="one_month",
                 )
             ],
             unique_ids=["NEW-2"],
@@ -779,7 +788,7 @@ class TestBuildDeduplicatedResults:
         assert merged_profile is not None
         assert uuid.UUID(merged_profile.profile_id).version == 4
         assert str(uuid.UUID(merged_profile.profile_id)) == merged_profile.profile_id
-        assert merged_profile.profile_time_to_live == ProfileTimeToLive.ONE_MONTH
+        assert merged_profile.profile_time_to_live == ProfileTimeToLive.INFINITY
 
     @pytest.mark.parametrize(
         ("item_ids", "expected_source_ids"),
@@ -826,7 +835,6 @@ class TestBuildDeduplicatedResults:
                 ProfileDuplicateGroup(
                     item_ids=item_ids,
                     merged_content="Merged profile",
-                    merged_time_to_live="one_month",
                 )
             ],
         )
@@ -878,44 +886,16 @@ class TestBuildDeduplicatedResults:
 
         assert len(result_profiles) == 3
 
-    def test_build_deduplicated_results_handles_invalid_ttl(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        sample_profiles,
-    ):
-        """Test that invalid TTL from LLM falls back to template TTL."""
-        dedup_output = ProfileDeduplicationOutput(
-            duplicate_groups=[
-                ProfileDuplicateGroup(
-                    item_ids=["NEW-0", "NEW-1"],
-                    merged_content="merged content",
-                    merged_time_to_live="invalid_ttl",
-                )
-            ],
-            unique_ids=["NEW-2"],
-        )
-
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        result_profiles, _, _ = deduplicator._build_deduplicated_results(
-            new_profiles=sample_profiles,
-            existing_profiles=[],
-            dedup_output=dedup_output,
-            user_id="test_user",
-            request_id="test_request",
-        )
-
-        merged_profile = next(
-            (p for p in result_profiles if p.content == "merged content"),
-            None,
-        )
-        assert merged_profile is not None
-        # Should fall back to template profile's TTL (first profile in group)
-        assert merged_profile.profile_time_to_live == ProfileTimeToLive.ONE_MONTH
+    def test_build_deduplicated_results_rejects_estimated_ttl(self):
+        """Old model-authored estimated TTL is rejected, never repaired by a fallback."""
+        with pytest.raises(ValueError, match="cannot author estimated lifetime"):
+            ProfileDuplicateGroup.model_validate(
+                {
+                    "item_ids": ["NEW-0", "NEW-1"],
+                    "merged_content": "merged content",
+                    "merged_time_to_live": "invalid_ttl",
+                }
+            )
 
     def test_build_deduplicated_results_handles_unmentioned_profiles(
         self,
@@ -931,7 +911,6 @@ class TestBuildDeduplicatedResults:
                 ProfileDuplicateGroup(
                     item_ids=["NEW-0", "NEW-1"],
                     merged_content="merged",
-                    merged_time_to_live="one_week",
                 )
             ],
             unique_ids=[],  # LLM forgot to mention index 2
@@ -974,7 +953,6 @@ class TestBuildDeduplicatedResults:
                 ProfileDuplicateGroup(
                     item_ids=["NEW-0", "EXISTING-0"],
                     merged_content="User prefers dark mode (updated)",
-                    merged_time_to_live="one_month",
                 )
             ],
             unique_ids=["NEW-1", "NEW-2"],
@@ -1210,7 +1188,6 @@ class TestDeduplicate:
                     ProfileDuplicateGroup(
                         item_ids=["NEW-0", "NEW-1"],
                         merged_content="User prefers dark mode",
-                        merged_time_to_live="one_month",
                     )
                 ],
                 unique_ids=["NEW-2"],
@@ -1259,7 +1236,6 @@ class TestDeduplicate:
                     ProfileDuplicateGroup(
                         item_ids=["NEW-0", "EXISTING-0"],
                         merged_content="User prefers dark mode (updated)",
-                        merged_time_to_live="one_month",
                     )
                 ],
                 unique_ids=["NEW-1", "NEW-2"],
@@ -1517,7 +1493,6 @@ class TestIntegration:
                     ProfileDuplicateGroup(
                         item_ids=["NEW-0", "NEW-1"],
                         merged_content="User works in the financial services industry",
-                        merged_time_to_live="one_year",
                     )
                 ],
                 unique_ids=["NEW-2"],
@@ -1545,9 +1520,13 @@ class TestIntegration:
         )
         assert merged is not None
         assert merged.user_id == "user"
-        assert merged.profile_time_to_live == ProfileTimeToLive.ONE_YEAR
+        assert merged.profile_time_to_live == ProfileTimeToLive.INFINITY
         # Custom features should be merged
-        assert merged.custom_features == {"sector": "finance", "job_type": "analyst"}
+        assert merged.custom_features == {
+            "sector": "finance",
+            "job_type": "analyst",
+            KEY: metadata(merged),
+        }
 
         # Find unique profile
         unique = next((p for p in result_profiles if "Python" in p.content), None)
@@ -1766,7 +1745,6 @@ class TestSupersedeAlwaysHasReplacement:
                 ProfileDuplicateGroup(
                     item_ids=item_ids,
                     merged_content="MERGED",
-                    merged_time_to_live="one_month",
                 )
             ],
         )
@@ -1818,7 +1796,6 @@ class TestSupersedeAlwaysHasReplacement:
                 ProfileDuplicateGroup(
                     item_ids=["EXISTING-0", "EXISTING-1"],
                     merged_content="MERGED",
-                    merged_time_to_live="one_year",
                 )
             ],
         )
@@ -1836,9 +1813,9 @@ class TestSupersedeAlwaysHasReplacement:
         assert len(result_profiles) == 1
         merged = result_profiles[0]
         assert merged.content == "MERGED"
-        assert merged.custom_features == {"theme": "dark"}
+        assert merged.custom_features == {"theme": "dark", KEY: metadata(merged)}
         assert merged.extractor_names == ["extractor_a", "extractor_b"]
-        assert merged.profile_time_to_live == ProfileTimeToLive.ONE_YEAR
+        assert merged.profile_time_to_live == ProfileTimeToLive.INFINITY
         # Both originals superseded, one replacement written.
         assert set(delete_ids) == {"p-existing-0", "p-existing-1"}
 
@@ -1913,7 +1890,6 @@ class TestValidateProfileDedupOutput:
                 ProfileDuplicateGroup(
                     item_ids=["NEW-0", "EXISTING-1"],
                     merged_content="merged",
-                    merged_time_to_live="one_month",
                 )
             ],
             unique_ids=["NEW-1", "NEW-2"],
@@ -1926,7 +1902,6 @@ class TestValidateProfileDedupOutput:
                 ProfileDuplicateGroup(
                     item_ids=["NEW-7", "EXISTING-9"],
                     merged_content="merged",
-                    merged_time_to_live="one_month",
                 )
             ],
             unique_ids=["NEW-0", "NEW-1", "NEW-2"],
@@ -1953,7 +1928,6 @@ class TestValidateProfileDedupOutput:
                 ProfileDuplicateGroup(
                     item_ids=["NEW-0", "NEW-1"],
                     merged_content="merged",
-                    merged_time_to_live="one_month",
                 )
             ],
             unique_ids=["NEW-0", "NEW-2"],
@@ -2046,7 +2020,6 @@ class TestDedupFailureHandling:
                 ProfileDuplicateGroup(
                     item_ids=["NEW-0", "NEW-1"],
                     merged_content="MERGED",
-                    merged_time_to_live="one_month",
                 )
             ],
             # NEW-2 deliberately uncovered — the semantic error the validator

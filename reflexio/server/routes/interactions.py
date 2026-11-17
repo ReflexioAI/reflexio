@@ -56,6 +56,7 @@ from reflexio.server.auth import (
     default_get_org_id,
 )
 from reflexio.server.cache import reflexio_cache
+from reflexio.server.offloop_body import off_loop_body
 from reflexio.server.rate_limit import limiter
 
 logger = logging.getLogger(__name__)
@@ -158,10 +159,12 @@ def _detached_publish_done(
 @limiter.limit("60/minute")  # Rate limit for write operations
 async def publish_user_interaction(
     request: Request,
-    payload: PublishUserInteractionRequest,
     org_id: str = Depends(default_get_org_id),
     wait_for_response: bool = False,
     _gate: None = Depends(default_billing_gate("learnings_generated")),  # noqa: B008
+    payload: PublishUserInteractionRequest = off_loop_body(
+        PublishUserInteractionRequest
+    ),
 ) -> PublishUserInteractionResponse:
     from reflexio.server.services.durable_learning.waiting import (
         AdmissionDeadlineExceededError,

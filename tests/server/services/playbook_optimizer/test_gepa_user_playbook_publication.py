@@ -685,12 +685,23 @@ def test_gepa_user_authority_freezes_non_secret_provider_identity(tmp_path):
     assert endpoint not in _canonical_authority(authority)
 
 
-def test_gepa_user_authority_changes_with_effective_request_seed(tmp_path, monkeypatch):
-    monkeypatch.setenv("REFLEXIO_LLM_SEED", "42")
-    first = _canonical_authority(_judge_authority(tmp_path / "first"))
-    monkeypatch.setenv("REFLEXIO_LLM_SEED", "43")
-    second = _canonical_authority(_judge_authority(tmp_path / "second"))
-
+def test_gepa_user_authority_changes_with_effective_request_temperature(tmp_path):
+    first = _canonical_authority(
+        _judge_authority(
+            tmp_path / "first",
+            llm_client=LiteLLMClient(
+                LiteLLMConfig(model="fake-model", temperature=0.2)
+            ),
+        )
+    )
+    second = _canonical_authority(
+        _judge_authority(
+            tmp_path / "second",
+            llm_client=LiteLLMClient(
+                LiteLLMConfig(model="fake-model", temperature=0.4)
+            ),
+        )
+    )
     assert first != second
 
 
@@ -1776,6 +1787,12 @@ def test_gepa_recovery_reuses_canonical_projection_without_regeneration(tmp_path
     optimizer._run_gepa = Mock(  # type: ignore[method-assign]
         side_effect=AssertionError("GEPA search reran")
     )
+    optimizer.llm_client._build_completion_params = Mock(
+        side_effect=AssertionError("publication recovery rebuilt model policy")
+    )
+    original_metadata = storage.conn.execute(
+        "SELECT metadata_json FROM playbook_optimization_jobs"
+    ).fetchone()["metadata_json"]
     status = optimizer.optimize(
         PlaybookOptimizationTarget(
             kind="user_playbook", target_id=incumbent.user_playbook_id
@@ -1783,6 +1800,12 @@ def test_gepa_recovery_reuses_canonical_projection_without_regeneration(tmp_path
     )
 
     assert status == "completed"
+    assert (
+        storage.conn.execute(
+            "SELECT metadata_json FROM playbook_optimization_jobs"
+        ).fetchone()["metadata_json"]
+        == original_metadata
+    )
     staged = storage.conn.execute(
         "SELECT projection_json FROM user_playbook_publication_staging"
     ).fetchone()

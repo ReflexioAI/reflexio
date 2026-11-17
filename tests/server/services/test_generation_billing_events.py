@@ -97,3 +97,48 @@ def test_publish_emits_one_event_per_interaction(publish_fixture):
 
     assert all(e.count_value == 1 for e in pub)
     assert sum(e.count_value for e in pub) == 3  # total unchanged vs old count_value=3
+
+
+class _BatchCapturingRecorder:
+    """A recorder exposing ``record_batch``, as the enterprise recorder does."""
+
+    def __init__(self) -> None:
+        self.single: list[UsageEvent] = []
+        self.batches: list[list[UsageEvent]] = []
+
+    def __call__(self, event: UsageEvent) -> None:
+        self.single.append(event)
+
+    def record_batch(self, events):
+        self.batches.append(list(events))
+        return [None] * len(events)
+
+
+def test_publish_success_events_are_delivered_as_one_batch(publish_fixture):
+    """Issue #2731: one recorder batch per publish, not one write per interaction."""
+    recorder = _BatchCapturingRecorder()
+    request = PublishUserInteractionRequest(
+        user_id="publish_events_test_user",
+        interaction_data_list=[
+            InteractionData(
+                content=f"interaction {label}",
+                created_at=int(datetime.datetime.now(UTC).timestamp()),
+            )
+            for label in ("a", "b", "c")
+        ],
+        session_id="publish_events_test_session",
+        evaluation_only=True,
+    )
+    configure_usage_event_recorder(recorder)
+    try:
+        publish_fixture.generation_service.run(request)
+    finally:
+        configure_usage_event_recorder(None)
+
+    assert not any(e.event_name == "publish_request_succeeded" for e in recorder.single)
+    assert len(recorder.batches) == 1
+    (batch,) = recorder.batches
+    assert [e.event_name for e in batch] == ["publish_request_succeeded"] * 3
+    assert sorted(e.event_key for e in batch) == ["pub:1", "pub:2", "pub:3"]
+    assert {e.org_id for e in batch} == {"publish_events_test_org"}
+    assert all(e.count_value == 1 for e in batch)

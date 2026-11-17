@@ -141,14 +141,14 @@ def _agent_run(run_id: str, extractor_kind: str = "profile") -> AgentRunRecord:
 
 def test_profile_instruction_prompt_delivers_structured_response():
     """The extraction agent now delivers its result as a structured response,
-    so the active ``profile_update_instruction_start`` version (v1.2.0) frames
+    so the active ``profile_update_instruction_start`` version (v1.4.0) frames
     the output as a direct JSON response rather than a ``finish_extraction``
     tool call. ``attach_pending_info_request`` remains a real intermediate tool;
     the profile extractor does not offer ``ask_human``."""
     prompt_manager = PromptManager()
 
     assert prompt_manager.get_active_version("profile_update_instruction_start") == (
-        "1.2.0"
+        "1.4.0"
     )
     rendered = prompt_manager.render_prompt(
         "profile_update_instruction_start",
@@ -183,6 +183,61 @@ def test_playbook_pending_info_tools_still_include_ask_human():
     ]
 
 
+@pytest.mark.parametrize("resume", [False, True])
+def test_direct_native_extraction_refuses_capacity_before_publication(
+    monkeypatch, storage, tool_call_completion, resume
+):
+    from reflexio.server.llm import input_budget
+
+    monkeypatch.setattr(input_budget.litellm, "token_counter", lambda **_: 2000)
+    monkeypatch.setattr(
+        input_budget.litellm,
+        "get_model_info",
+        lambda *_: {"max_input_tokens": 1000, "max_output_tokens": 20},
+    )
+    client = LiteLLMClient(
+        LiteLLMConfig(model="gpt-4o", max_tokens=20, fallback_models=[])
+    )
+    _, make_stop = tool_call_completion
+    response = make_stop('{"profiles": []}')
+    agent = ResumableExtractionAgent(client=client, storage=storage)
+    run = _agent_run(f"capacity-{resume}")
+    source = _source_inputs(storage, run)
+    with (
+        patch.object(
+            client, "_completion_with_hard_timeout", return_value=response
+        ) as dispatch,
+        pytest.raises(input_budget.InputBudgetExceededError),
+    ):
+        if resume:
+            ready = storage.create_agent_run(
+                replace(run, status=AgentRunStatus.RESUME_READY)
+            )
+            with user_extraction_lease(storage, "user_1", max_wait_seconds=0):
+                claimed = _adopt_continuation(storage, ready)
+                agent.resume(
+                    run=claimed,
+                    source_inputs=source,
+                    messages=[{"role": "user", "content": "full resumed evidence"}],
+                    history_inputs=HistoricalInputs(),
+                    output_schema=StructuredProfilesOutput,
+                    resolved_tool_calls=[],
+                )
+        else:
+            agent.start(
+                run=run,
+                source_inputs=source,
+                messages=[{"role": "user", "content": "full initial evidence"}],
+                history_inputs=HistoricalInputs(),
+                output_schema=StructuredProfilesOutput,
+            )
+    dispatch.assert_not_called()
+    stored = storage.get_agent_run(run.id)
+    assert stored is not None
+    assert stored.committed_output is None
+    assert stored.status != AgentRunStatus.AGENT_COMPLETED
+
+
 def test_resumable_agent_finishes_profile_output(
     monkeypatch,
     storage,
@@ -198,7 +253,7 @@ def test_resumable_agent_finishes_profile_output(
                 "profiles": [
                     {
                         "content": "User prefers AWS ECS deployments.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                     }
                 ]
             }
@@ -228,7 +283,8 @@ def test_resumable_agent_finishes_profile_output(
         "profiles": [
             {
                 "content": "User prefers AWS ECS deployments.",
-                "time_to_live": "infinity",
+                "explicit_storage_deadline": None,
+                "explicit_forget_quote": None,
                 "source_span": None,
                 "notes": None,
                 "reader_angle": None,
@@ -255,7 +311,7 @@ def test_resumable_agent_discards_late_output_after_timeout_failure(
                 "profiles": [
                     {
                         "content": "User prefers AWS ECS deployments.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                     }
                 ]
             }
@@ -557,7 +613,7 @@ def test_resumable_agent_resume_injects_resolved_tool_result(
                 "profiles": [
                     {
                         "content": "User deployment standard is AWS ECS.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                     }
                 ]
             }
@@ -1261,3 +1317,139 @@ def test_resume_turn_with_a_saturated_provider_cap_stays_resumable(
     assert stored is not None
     assert stored.status == AgentRunStatus.RESUMING
     assert stored.max_steps_remaining == 3
+
+
+@pytest.mark.integration
+def test_window_replays_preupgrade_ttl_output_without_model_call(storage):
+    payload = {
+        "profiles": [{"content": "Saved preference", "time_to_live": "one_week"}]
+    }
+    admitted = replace(
+        _agent_run("window:legacy_profile"),
+        status=AgentRunStatus.AGENT_COMPLETED,
+        committed_output=payload,
+    )
+    storage.create_agent_run(admitted)
+    original = storage.get_agent_run(admitted.id)
+    client = MagicMock()
+    client.generate_chat_response_with_provenance.side_effect = AssertionError(
+        "saved receipt must not call a model"
+    )
+    agent = ResumableExtractionAgent(client=client, storage=storage)
+    result = agent.start(
+        source_inputs=_source_inputs(storage, admitted),
+        run=admitted,
+        messages=[],
+        history_inputs=HistoricalInputs(),
+        output_schema=StructuredProfilesOutput,
+    )
+    assert isinstance(result.output, StructuredProfilesOutput)
+    assert result.output.model_dump(mode="json") == payload
+    assert (
+        storage.get_agent_run(admitted.id).committed_output == original.committed_output
+    )
+    client.generate_chat_response_with_provenance.assert_not_called()
+
+
+@pytest.mark.integration
+def test_openclaw_selected_route_survives_tool_yield_and_fresh_worker_resume(
+    monkeypatch, storage, tool_call_completion
+):
+    """The real durable agent must retain the selected native route, not a key guess."""
+    from unittest.mock import Mock
+
+    from reflexio.server.llm import input_budget
+
+    target = "openclaw/anthropic/claude-sonnet-4-6"
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+    monkeypatch.setenv("OPENCLAW_DEFAULT_MODEL", "private-unused-model")
+    monkeypatch.setattr(input_budget.litellm, "token_counter", lambda **_: 100)
+    monkeypatch.setattr(
+        input_budget.litellm,
+        "get_model_info",
+        lambda *_args: {"max_input_tokens": 8000, "max_output_tokens": 32},
+    )
+    make_tool, make_stop = tool_call_completion
+    dispatch = Mock(
+        side_effect=[
+            make_tool("ask_human", {"question": "Which synthetic policy applies?"}),
+            make_stop('{"playbooks": []}'),
+            make_stop('{"playbooks": []}'),
+        ]
+    )
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
+
+    def fresh_agent():
+        return ResumableExtractionAgent(
+            client=LiteLLMClient(
+                LiteLLMConfig(model=target, max_tokens=32, fallback_models=[])
+            ),
+            storage=storage,
+        )
+
+    run = _agent_run("openclaw_route", extractor_kind="playbook")
+    context = PendingToolCallToolContext(
+        storage=storage,
+        run_id=run.id,
+        org_id="org_1",
+        extractor_kind="playbook",
+        user_id="user_1",
+        config=PendingToolCallConfig(pending_ttl_seconds=3600),
+    )
+    from reflexio.server.services.extraction.publication import (
+        prepare_initial_publication,
+        publish_initial_output,
+    )
+
+    with user_extraction_lease(storage, "user_1", max_wait_seconds=0):
+        initial = fresh_agent().start(
+            run=run,
+            source_inputs=_source_inputs(storage, run),
+            messages=[{"role": "user", "content": "synthetic extraction evidence"}],
+            history_inputs=HistoricalInputs(),
+            output_schema=StructuredPlaybookList,
+            extra_tools=[create_ask_human_tool()],
+            extra_tool_context=context,
+        )
+        [pending_id] = initial.pending_tool_call_ids
+        stored = storage.get_agent_run(run.id)
+        assert stored is not None and stored.status == AgentRunStatus.AGENT_COMPLETED
+        # Empty output needs no business service calls, but still publishes the
+        # real receipt and reconciles live tool dependencies atomically.
+        service = object()
+        prepare_initial_publication(storage, stored, service, None, None)
+        finalized, _receipt, _prepared = publish_initial_output(
+            storage, stored, service
+        )
+    assert finalized.status == AgentRunStatus.FINALIZED_PENDING_TOOL
+    resolved = storage.resolve_pending_tool_call(
+        pending_id,
+        result={"answer": "Use the synthetic policy."},
+        resolved_at=datetime.now(UTC),
+        valid_for_seconds=3600,
+    )
+    assert resolved is not None
+    ready = storage.get_agent_run(run.id)
+    assert ready is not None and ready.status == AgentRunStatus.RESUME_READY
+    restarted = fresh_agent()
+    with user_extraction_lease(storage, "user_1", max_wait_seconds=0):
+        claimed = _adopt_continuation(storage, ready)
+        result = restarted.resume(
+            run=claimed,
+            source_inputs=_source_inputs(storage, claimed),
+            messages=initial.messages,
+            history_inputs=HistoricalInputs(),
+            output_schema=StructuredPlaybookList,
+            resolved_tool_calls=[resolved],
+        )
+    assert result.finished_reason == "structured_output"
+    assert dispatch.call_count == 3
+    assert {call.args[0]["model"] for call in dispatch.call_args_list} == {target}
+    completed = storage.get_agent_run(run.id)
+    assert completed is not None
+    assert completed.status == AgentRunStatus.AGENT_COMPLETED
+    assert completed.committed_output["output"] == {"playbooks": []}
+    assert any(
+        "Use the synthetic policy." in str(message.get("content"))
+        for message in result.messages
+    )

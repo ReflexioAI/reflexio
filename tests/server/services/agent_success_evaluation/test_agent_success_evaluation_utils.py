@@ -291,41 +291,25 @@ def _build(models: list[RequestInteractionDataModel]) -> str:
     )
 
 
-def test_long_session_transcript_is_bounded_keeping_task_and_outcome(monkeypatch):
-    """41 in-budget interactions must not build an unbounded prompt.
-
-    Regression for claude-smart#162: each interaction was capped, the SUM was
-    not, and a 41-interaction session was rejected with 'Prompt is too long'.
-    Every interaction here is far below the 512-token per-interaction cap, so
-    only the aggregate budget can be what bounds the result.
-    """
-    import reflexio.server.services.agent_success_evaluation.agent_success_evaluation_utils as utils
-    from reflexio.server.services.service_utils import (
-        _CONTENT_TRUNCATION_MARKER,
-        _get_content_token_encoding,
-    )
-
-    monkeypatch.setattr(utils, "EVALUATION_TRANSCRIPT_TOKEN_LIMIT", 1_000)
-    models = _session_of(41, filler_words=60)
-
+def test_long_session_preserves_middle_evidence():
+    """Capacity belongs to the complete model request, never a64k text cut."""
+    models = _session_of(200, filler_words=400)
     rendered = _build(models)
-    unbounded = utils.format_sessions_to_history_string(models)
-    encoding = _get_content_token_encoding()
-    assert len(encoding.encode(unbounded)) > 1_000, "fixture must exceed the budget"
+    from reflexio.server.services.service_utils import format_sessions_to_history_string
 
-    assert _CONTENT_TRUNCATION_MARKER.strip() in rendered
-    assert "FIRST-TASK-STATEMENT" in rendered, "the task at the head was dropped"
-    assert "FINAL-OUTCOME-STATEMENT" in rendered, "the outcome at the tail was dropped"
-    assert "MIDDLE-OF-SESSION-STATEMENT" not in rendered
+    assert format_sessions_to_history_string(models) in rendered
+    for marker in (
+        "FIRST-TASK-STATEMENT",
+        "MIDDLE-OF-SESSION-STATEMENT",
+        "FINAL-OUTCOME-STATEMENT",
+    ):
+        assert marker in rendered
 
 
 def test_session_within_budget_is_unchanged():
     """A normal session must reach the judge verbatim, with no truncation marker."""
-    from reflexio.server.services.service_utils import _CONTENT_TRUNCATION_MARKER
-
     rendered = _build(_session_of(4, filler_words=5))
 
-    assert _CONTENT_TRUNCATION_MARKER.strip() not in rendered
     for marker in (
         "FIRST-TASK-STATEMENT",
         "MIDDLE-OF-SESSION-STATEMENT",

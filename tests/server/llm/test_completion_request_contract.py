@@ -37,6 +37,7 @@ KEYS = (
         {"max_tokens": None},
         {"fallback_models": None},
         {"fallback_models": []},
+        {"seed": 19, "temperature": 0.3},
     ],
 )
 def test_contract_matches_actual_builder_and_preserves_none_keys(
@@ -48,7 +49,6 @@ def test_contract_matches_actual_builder_and_preserves_none_keys(
 
     dispatch = Mock(side_effect=AssertionError("Identity resolution cannot dispatch"))
     monkeypatch.setattr(litellm, "completion", dispatch)
-    monkeypatch.setenv("REFLEXIO_LLM_SEED", "19")
     client = LiteLLMClient(
         LiteLLMConfig(
             model=model,
@@ -71,7 +71,7 @@ def test_contract_matches_actual_builder_and_preserves_none_keys(
     }
     assert tuple(identity) == (*KEYS, "generation_policy_digest")
     assert len(identity["generation_policy_digest"]) == 64
-    assert identity["seed"] == 19
+    assert identity["seed"] == overrides.get("seed")
     assert identity["base_url"] is None
     assert identity["custom_llm_provider"] is None
     assert "api_key" not in identity and "messages" not in identity
@@ -127,7 +127,7 @@ def test_unset_seed_and_explicit_temperature_none_keep_builder_semantics(monkeyp
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini", temperature=0.7))
     assert client.get_completion_request_contract()["temperature"] == 0.7
     changed = client.get_completion_request_contract(temperature=0.2)
-    assert changed["temperature"] == 0.2 and changed["seed"] == 42
+    assert changed["temperature"] == 0.2 and changed["seed"] is None
     assert (
         client.get_completion_request_contract(temperature=None)["temperature"] is None
     )

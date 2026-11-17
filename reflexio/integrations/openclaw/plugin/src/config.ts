@@ -8,7 +8,7 @@ type IntegerPolicy = { default: number; minimum: number; maximum: number };
 type Manifest = {
   configSchema: {
     properties: {
-      search: { properties: Record<"top_k" | "min_prompt_length" | "timeout_ms", IntegerPolicy> };
+      search: { properties: Record<"top_k" | "timeout_ms", IntegerPolicy> };
       publish: { properties: { max_content_length: IntegerPolicy } };
     };
   };
@@ -26,7 +26,6 @@ export interface Settings {
   url: string;
   apiKey: string;
   topK: number;
-  minPromptLength: number;
   searchTimeoutMs: number;
   maxContentLength: number;
 }
@@ -68,13 +67,15 @@ export function resolveSettings(
 ): Settings {
   const cfg = pluginConfig ?? {};
   const search = section(cfg, "search");
+  if (Object.hasOwn(search, "min_prompt_length")) {
+    throw new Error("search.min_prompt_length is retired; remove it to retrieve for every nonempty user prompt. Search deadlines and result limits remain configurable.");
+  }
   const publish = section(cfg, "publish");
   const url = str(cfg.url) || str(env.REFLEXIO_URL) || DEFAULT_URL;
   return {
     url: url.endsWith("/") ? url : `${url}/`,
     apiKey: str(cfg.apiKey) || str(env.REFLEXIO_API_KEY),
     topK: integer(search, "top_k", searchPolicy.top_k, "search"),
-    minPromptLength: integer(search, "min_prompt_length", searchPolicy.min_prompt_length, "search"),
     searchTimeoutMs: integer(search, "timeout_ms", searchPolicy.timeout_ms, "search"),
     maxContentLength: integer(
       publish,

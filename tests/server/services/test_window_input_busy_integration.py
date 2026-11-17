@@ -343,7 +343,7 @@ def test_image_compatibility_completed_compute_save_contention_is_bounded(
                     "profiles": [
                         {
                             "content": "Prefer concise answers.",
-                            "time_to_live": "infinity",
+                            "explicit_storage_deadline": None,
                         }
                     ]
                 }

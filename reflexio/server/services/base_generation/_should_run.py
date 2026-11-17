@@ -22,13 +22,14 @@ import time
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
+from reflexio.models.extraction_window import ExtractionWindow
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.env_utils import env_bool
+from reflexio.server.llm.input_budget import model_input_budget
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.extractor_config_utils import get_extractor_name
 from reflexio.server.services.extractor_interaction_utils import (
     get_effective_source_filter,
-    get_extractor_window_params,
 )
 from reflexio.server.services.service_utils import log_llm_messages, log_model_response
 from reflexio.server.services.storage.storage_base import BaseStorage
@@ -69,6 +70,7 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
         # so pyright can resolve the ``self._get_service_name()`` call. No runtime
         # attribute is added, so ``__abstractmethods__`` is unaffected.
         def _get_service_name(self) -> str: ...
+        def _get_extraction_window(self) -> ExtractionWindow: ...
 
     def _should_run_before_extraction(self, extractor_config: TExtractorConfig) -> bool:
         """
@@ -212,10 +214,11 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
                 [{"role": "user", "content": prompt}],
             )
 
-            content = self.client.generate_chat_response(
-                messages=[{"role": "user", "content": prompt}],
-                model=should_run_model,
-            )
+            with model_input_budget():
+                content = self.client.generate_chat_response(
+                    messages=[{"role": "user", "content": prompt}],
+                    model=should_run_model,
+                )
             log_model_response(
                 logger,
                 f"Consolidated {self._get_service_name()} should_run response",
@@ -236,7 +239,14 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
             )
             return decision
         except Exception as exc:
-            if getattr(self.service_config, "window_interactions", None) is not None:
+            from reflexio.server.services.durable_learning.learning_admission import (
+                learning_transition_is_held,
+            )
+
+            if (
+                learning_transition_is_held(exc)
+                or getattr(self.service_config, "window_interactions", None) is not None
+            ):
                 raise
             logger.error(
                 "Consolidated should_generate check failed for %s: %s, defaulting to run",
@@ -285,14 +295,6 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
             self._last_precheck_sessions = explicit
             return explicit, extractor_config
 
-        root_config = self.request_context.configurator.get_config()
-        global_window_size = (
-            getattr(root_config, "window_size", None) if root_config else None
-        )
-        global_stride_size = (
-            getattr(root_config, "stride_size", None) if root_config else None
-        )
-
         extra_kwargs = self._get_precheck_interaction_query_kwargs()
 
         should_skip, effective_source = get_effective_source_filter(
@@ -303,9 +305,7 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
             self._last_precheck_sessions = []
             return [], extractor_config
 
-        window_size, _ = get_extractor_window_params(
-            extractor_config, global_window_size, global_stride_size
-        )
+        window_size, _ = self._get_extraction_window()
         session_data_models, _ = self.storage.get_last_k_interactions_grouped(  # type: ignore[reportOptionalMemberAccess]
             user_id=getattr(self.service_config, "user_id", None),
             k=window_size,

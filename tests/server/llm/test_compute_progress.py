@@ -139,3 +139,42 @@ def test_parallel_children_share_one_completed_owner_reservation():
         first.result(timeout=5)
         second.result(timeout=5)
     assert admitted == [1]
+
+
+@pytest.mark.parametrize("progress", ["accepted", "completed"])
+def test_interrupted_transition_keeps_only_value_free_hold_classification(progress):
+    from reflexio.server.llm.compute_admission import ComputeTransitionInterruptedError
+    from reflexio.server.services.durable_learning.learning_admission import (
+        learning_transition_is_held,
+    )
+    from reflexio.server.services.storage.storage_base.learning_transition import (
+        LearningTransitionBlockedError,
+    )
+
+    charged = []
+    with (
+        pytest.raises(ComputeTransitionInterruptedError) as raised,
+        compute_attempt_scope(reserve=lambda: charged.append(1)),
+    ):
+        admit_external_compute()
+        if progress == "completed":
+            record_compute_result()
+        raise LearningTransitionBlockedError("Synthetic private transition detail")
+    assert charged == [1]
+    assert learning_transition_is_held(raised.value)
+    assert not execution_input_is_busy(raised.value)
+    assert raised.value.__cause__ is None
+    assert "private" not in str(raised.value)
+
+
+def test_genuine_partial_input_race_is_not_a_transition_hold():
+    from reflexio.server.services.durable_learning.learning_admission import (
+        learning_transition_is_held,
+    )
+
+    with pytest.raises(ComputeInterruptedError) as raised, compute_attempt_scope():
+        admit_external_compute()
+        record_compute_result()
+        raise ExecutionInputBusyError("Unretained native input race")
+    assert not learning_transition_is_held(raised.value)
+    assert not execution_input_is_busy(raised.value)

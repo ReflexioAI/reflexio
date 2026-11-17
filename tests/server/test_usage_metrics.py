@@ -150,3 +150,133 @@ def test_strict_delivery_propagates_recorder_exception_while_ordinary_stays_fail
             )
     finally:
         usage_metrics.configure_usage_event_recorder(None)
+
+
+def _batch_events(n: int) -> list[UsageEvent]:
+    return [
+        UsageEvent(
+            org_id="7",
+            event_name="publish_request_succeeded",
+            event_category="publish",
+            event_key=f"pub:{i}",
+        )
+        for i in range(n)
+    ]
+
+
+class _BatchRecorder:
+    def __init__(self, statuses):
+        self.single: list[UsageEvent] = []
+        self.batches: list[list[UsageEvent]] = []
+        self._statuses = statuses
+
+    def __call__(self, event):
+        self.single.append(event)
+        return UsageEventDeliveryStatus.APPENDED
+
+    def record_batch(self, events):
+        self.batches.append(list(events))
+        return self._statuses(events)
+
+
+def test_record_usage_event_batch_uses_one_batch_call_when_supported():
+    recorder = _BatchRecorder(
+        lambda events: [UsageEventDeliveryStatus.APPENDED] * len(events)
+    )
+    usage_metrics.configure_usage_event_recorder(recorder)
+    try:
+        usage_metrics.record_usage_event_batch(_batch_events(3))
+    finally:
+        usage_metrics.configure_usage_event_recorder(None)
+
+    assert recorder.single == []
+    assert [[e.event_key for e in batch] for batch in recorder.batches] == [
+        ["pub:0", "pub:1", "pub:2"]
+    ]
+
+
+def test_record_usage_event_batch_falls_back_to_per_event_delivery():
+    captured: list[UsageEvent] = []
+    usage_metrics.configure_usage_event_recorder(captured.append)
+    try:
+        usage_metrics.record_usage_event_batch(_batch_events(2))
+    finally:
+        usage_metrics.configure_usage_event_recorder(None)
+
+    assert [event.event_key for event in captured] == ["pub:0", "pub:1"]
+
+
+def test_record_usage_event_batch_fallback_continues_after_one_failure(caplog):
+    delivered: list[str | None] = []
+
+    def recorder(event):
+        if event.event_key == "pub:0":
+            raise RuntimeError("boom")
+        delivered.append(event.event_key)
+        return UsageEventDeliveryStatus.APPENDED
+
+    usage_metrics.configure_usage_event_recorder(recorder)
+    try:
+        with caplog.at_level(logging.WARNING, logger=usage_metrics.__name__):
+            usage_metrics.record_usage_event_batch(_batch_events(2))
+    finally:
+        usage_metrics.configure_usage_event_recorder(None)
+
+    assert delivered == ["pub:1"]
+    assert len(caplog.records) == 1
+
+
+def test_record_usage_event_batch_is_fail_open_and_reports_failures(caplog):
+    recorder = _BatchRecorder(
+        lambda _events: [
+            UsageEventDeliveryStatus.APPENDED,
+            UsageEventDeliveryStatus.FAILED,
+            UsageEventDeliveryStatus.UNKNOWN,
+        ]
+    )
+    usage_metrics.configure_usage_event_recorder(recorder)
+    try:
+        with caplog.at_level(logging.WARNING, logger=usage_metrics.__name__):
+            usage_metrics.record_usage_event_batch(_batch_events(3))
+    finally:
+        usage_metrics.configure_usage_event_recorder(None)
+
+    # FAILED is reported; UNKNOWN stays silent, as on the single-event path.
+    assert [r.getMessage() for r in caplog.records] == [
+        "Usage metrics recorder failed: usage event delivery failed"
+    ]
+
+
+def test_record_usage_event_batch_swallows_batch_exception(caplog):
+    def explode(_events):
+        raise RuntimeError("metrics down")
+
+    recorder = _BatchRecorder(explode)
+    usage_metrics.configure_usage_event_recorder(recorder)
+    try:
+        with caplog.at_level(logging.WARNING, logger=usage_metrics.__name__):
+            usage_metrics.record_usage_event_batch(_batch_events(2))
+    finally:
+        usage_metrics.configure_usage_event_recorder(None)
+
+    assert len(caplog.records) == 1
+
+
+def test_record_usage_event_batch_reports_a_short_status_list(caplog):
+    recorder = _BatchRecorder(lambda _events: [UsageEventDeliveryStatus.APPENDED])
+    usage_metrics.configure_usage_event_recorder(recorder)
+    try:
+        with caplog.at_level(logging.WARNING, logger=usage_metrics.__name__):
+            usage_metrics.record_usage_event_batch(_batch_events(2))
+    finally:
+        usage_metrics.configure_usage_event_recorder(None)
+
+    assert "returned 1 statuses for 2 events" in caplog.records[0].getMessage()
+
+
+def test_record_usage_event_batch_without_recorder_or_events_is_silent(caplog):
+    usage_metrics.configure_usage_event_recorder(None)
+    with caplog.at_level(logging.WARNING, logger=usage_metrics.__name__):
+        usage_metrics.record_usage_event_batch(_batch_events(2))
+        usage_metrics.record_usage_event_batch([])
+    assert caplog.records == []
