@@ -412,3 +412,42 @@ def test_shared_route_foreign_cursor_cannot_prove_work_inert(storage):
     work = storage.transition_inventory_page("work").items[0]
     assert work.execution_bearing is None
     assert work.reasons == ("unproven_admission",)
+
+
+@pytest.mark.parametrize("after", [None, ("zzzz",)])
+@pytest.mark.parametrize("status", ["running", "finalized"])
+def test_null_primary_key_refuses_even_after_keyset_boundary(storage, after, status):
+    # SQLite TEXT PRIMARY KEY does not imply NOT NULL in ordinary rowid tables.
+    seed_run(storage, None, status=status)
+    with pytest.raises(TransitionInventoryScopeError, match="inventory|Inventory"):
+        storage.transition_inventory_page("runs", after=after)
+
+
+@pytest.mark.parametrize("after", [None, ("zzzz", "zzzz")])
+def test_null_nonleading_inventory_key_cannot_be_paginated_away(
+    storage, monkeypatch, after
+):
+    from reflexio.server.services.storage.storage_base.transition_inventory import (
+        read_transition_inventory_page_db,
+    )
+
+    seed_run(storage, "valid", status="finalized")
+    with storage.commit_scope():
+        storage.conn.execute(
+            "CREATE TEMP VIEW null_inventory_dependencies AS SELECT 'valid' AS run_id,NULL AS pending_tool_call_id,1 AS resolved_at,1 AS consumed_at"
+        )
+    with storage._independent_writer_metadata_sql() as db:
+        original = db.table
+        monkeypatch.setattr(
+            db,
+            "table",
+            lambda name: (
+                "null_inventory_dependencies"
+                if name == "_run_tool_dependencies"
+                else original(name)
+            ),
+        )
+        with pytest.raises(TransitionInventoryScopeError):
+            read_transition_inventory_page_db(
+                db, "dependencies", org_id=storage.org_id, project_id="", after=after
+            )

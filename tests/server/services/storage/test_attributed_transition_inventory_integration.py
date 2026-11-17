@@ -136,3 +136,35 @@ def test_wrong_writer_binding_is_refused(storage):
             "cursors",
             attribution=TransitionInventoryAttribution(storage.org_id, "", object()),
         )
+
+
+@pytest.mark.parametrize("column", ["user_id", "kind", "project_id"])
+@pytest.mark.parametrize("after", [None, ("zzzz", "zzzz", "zzzz")])
+def test_null_attributed_cursor_key_refuses_before_keyset_filter(
+    storage, monkeypatch, column, after
+):
+    from reflexio.server.services.storage.storage_base.transition_inventory import (
+        _attributed_cursors,
+    )
+
+    values = {"user_id": "'u'", "kind": "'profile'", "project_id": "''"}
+    values[column] = "NULL"
+    with storage.commit_scope():
+        storage.conn.execute(
+            "CREATE TEMP VIEW null_attributed_cursors AS SELECT "
+            + ",".join(f"{value} AS {name}" for name, value in values.items())  # noqa: S608 -- Fixed negative-test column/constant choices.
+            + ",NULL AS window_id,0 AS started,0 AS attempts,0 AS retry_at,NULL AS last_error,0 AS completed_seq"
+        )
+    with storage._independent_writer_metadata_sql() as db:
+        original = db.table
+        monkeypatch.setattr(
+            db,
+            "table",
+            lambda name: (
+                "null_attributed_cursors"
+                if name == "extraction_cursors"
+                else original(name)
+            ),
+        )
+        with pytest.raises(TransitionInventoryScopeError):
+            _attributed_cursors(db, attribution(storage), after, 100)

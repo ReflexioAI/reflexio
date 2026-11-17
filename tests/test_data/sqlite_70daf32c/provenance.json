@@ -1,0 +1,608 @@
+{
+  "old_sdk": "70daf32c2b47b35dd0fe7be1d6f64d648a67eb8a",
+  "current_sdk": "67951345dab45587ae1a80c180b01db751a10d8d",
+  "model_scope": "scripted SDK mock responses; embedding provider off; actual provider dispatch forbidden",
+  "cohorts": {
+    "empty": {
+      "producer": {
+        "fingerprint": {
+          "sha256": "7d3168d9492c1b84baa705a53c0363b8166dda5703af4be02d1588eb61d7b8a7",
+          "request_count": 0,
+          "interaction_count": 0
+        },
+        "profiles": 0,
+        "retained_tables": {
+          "requests": 0,
+          "interactions": 0,
+          "profiles": 0,
+          "_agent_runs": 0,
+          "extraction_windows": 0,
+          "extraction_cursors": 0,
+          "_agent_output_receipts": 0,
+          "_agent_run_finalization_receipts": 0,
+          "_agent_output_preparations": 0,
+          "learning_work": 0,
+          "_dataset_identity": 1
+        }
+      },
+      "fixture": {
+        "raw_sha256": "ec6a919e8f8fb9b4c4040dbd9ac664d92b57cc7fea25e277a23351ad1794da6a",
+        "gzip_sha256": "475901bb0e561bce776939360092e162f4a643d83d4c637d3609e5e81b33dfa7",
+        "raw_bytes": 1179648,
+        "gzip_bytes": 30986
+      },
+      "consumer": {
+        "fingerprint": {
+          "sha256": "7d3168d9492c1b84baa705a53c0363b8166dda5703af4be02d1588eb61d7b8a7",
+          "request_count": 0,
+          "interaction_count": 0
+        },
+        "closure": {
+          "ready": true,
+          "blockers": [],
+          "counts": {
+            "runs": 0,
+            "windows": 0,
+            "dependencies": 0,
+            "preparations": 0,
+            "receipts": 0,
+            "work": 0,
+            "cursors": 0,
+            "admissions": 0,
+            "queued_admissions": 0
+          }
+        },
+        "authority": "absent, admission remains held",
+        "retained_tables_unchanged": [
+          "_agent_output_preparations",
+          "_agent_output_receipts",
+          "_agent_run_finalization_receipts",
+          "_agent_runs",
+          "_dataset_identity",
+          "extraction_cursors",
+          "extraction_windows",
+          "interactions",
+          "learning_work",
+          "profiles",
+          "requests"
+        ]
+      }
+    },
+    "filtered_queued": {
+      "producer": {
+        "fingerprint": {
+          "sha256": "776ce3829eded1690d247f62ee9d626e2f23b6b219fd9f2945096ef660914153",
+          "request_count": 1,
+          "interaction_count": 10
+        },
+        "profiles": 0,
+        "retained_tables": {
+          "requests": 1,
+          "interactions": 10,
+          "profiles": 0,
+          "_agent_runs": 0,
+          "extraction_windows": 0,
+          "extraction_cursors": 2,
+          "_agent_output_receipts": 0,
+          "_agent_run_finalization_receipts": 0,
+          "_agent_output_preparations": 0,
+          "learning_work": 1,
+          "_dataset_identity": 1
+        }
+      },
+      "fixture": {
+        "raw_sha256": "9f0923f5c24f200d38013a960ea7beeb95123c0fdb1d2781d872e33410096ab2",
+        "gzip_sha256": "aa3bd91d5ea212dbebed2f5ad4442e391360808413f42d99b76a0222b1392b99",
+        "raw_bytes": 1179648,
+        "gzip_bytes": 33555
+      },
+      "consumer": {
+        "fingerprint": {
+          "sha256": "776ce3829eded1690d247f62ee9d626e2f23b6b219fd9f2945096ef660914153",
+          "request_count": 1,
+          "interaction_count": 10
+        },
+        "closure": {
+          "ready": true,
+          "blockers": [],
+          "counts": {
+            "runs": 0,
+            "windows": 0,
+            "dependencies": 0,
+            "preparations": 0,
+            "receipts": 0,
+            "work": 1,
+            "org_work_requiring_fleet_reconciliation": 1,
+            "cursors": 2,
+            "admissions": 1,
+            "queued_admissions": 0
+          }
+        },
+        "authority": "absent, admission remains held",
+        "retained_tables_unchanged": [
+          "_agent_output_preparations",
+          "_agent_output_receipts",
+          "_agent_run_finalization_receipts",
+          "_agent_runs",
+          "_dataset_identity",
+          "extraction_cursors",
+          "extraction_windows",
+          "interactions",
+          "learning_work",
+          "profiles",
+          "requests"
+        ]
+      }
+    },
+    "filtered_drained": {
+      "producer": {
+        "fingerprint": {
+          "sha256": "d60b44a349aa5436e54ec6e2e5cb0eda391192d94b3826a166799092e7d3f1d0",
+          "request_count": 1,
+          "interaction_count": 10
+        },
+        "profiles": 0,
+        "retained_tables": {
+          "requests": 1,
+          "interactions": 10,
+          "profiles": 0,
+          "_agent_runs": 0,
+          "extraction_windows": 0,
+          "extraction_cursors": 2,
+          "_agent_output_receipts": 0,
+          "_agent_run_finalization_receipts": 0,
+          "_agent_output_preparations": 0,
+          "learning_work": 1,
+          "_dataset_identity": 1
+        }
+      },
+      "fixture": {
+        "raw_sha256": "86ae6c4b7e7c0f4792ced17501a37e7410bacc3e8861d6effcbcdc7226f5c269",
+        "gzip_sha256": "e5be2aeb0d4f833ec2bd4b8595ef1583bb591008254803bfaf2f6567b772da2b",
+        "raw_bytes": 1179648,
+        "gzip_bytes": 33688
+      },
+      "consumer": {
+        "fingerprint": {
+          "sha256": "d60b44a349aa5436e54ec6e2e5cb0eda391192d94b3826a166799092e7d3f1d0",
+          "request_count": 1,
+          "interaction_count": 10
+        },
+        "closure": {
+          "ready": true,
+          "blockers": [],
+          "counts": {
+            "runs": 0,
+            "windows": 0,
+            "dependencies": 0,
+            "preparations": 0,
+            "receipts": 0,
+            "work": 1,
+            "org_work_requiring_fleet_reconciliation": 1,
+            "cursors": 2,
+            "admissions": 1,
+            "queued_admissions": 0
+          }
+        },
+        "authority": "absent, admission remains held",
+        "retained_tables_unchanged": [
+          "_agent_output_preparations",
+          "_agent_output_receipts",
+          "_agent_run_finalization_receipts",
+          "_agent_runs",
+          "_dataset_identity",
+          "extraction_cursors",
+          "extraction_windows",
+          "interactions",
+          "learning_work",
+          "profiles",
+          "requests"
+        ]
+      }
+    },
+    "eligible_queued": {
+      "producer": {
+        "fingerprint": {
+          "sha256": "3f2b2a6ae1018c082b1e7fdf44c481772b5200989b36c6ad7facf03b075ab8e6",
+          "request_count": 1,
+          "interaction_count": 10
+        },
+        "profiles": 0,
+        "retained_tables": {
+          "requests": 1,
+          "interactions": 10,
+          "profiles": 0,
+          "_agent_runs": 0,
+          "extraction_windows": 0,
+          "extraction_cursors": 2,
+          "_agent_output_receipts": 0,
+          "_agent_run_finalization_receipts": 0,
+          "_agent_output_preparations": 0,
+          "learning_work": 1,
+          "_dataset_identity": 1
+        }
+      },
+      "fixture": {
+        "raw_sha256": "ce0e17cdef4a07be7c3284756217d4d6c417be69258adc63fc3c51782164f975",
+        "gzip_sha256": "fa66f727884c9b395b2ca2f5d401b414d7e5c2d3758fc09a51f24ab15919dab4",
+        "raw_bytes": 1179648,
+        "gzip_bytes": 33723
+      },
+      "consumer": {
+        "fingerprint": {
+          "sha256": "3f2b2a6ae1018c082b1e7fdf44c481772b5200989b36c6ad7facf03b075ab8e6",
+          "request_count": 1,
+          "interaction_count": 10
+        },
+        "closure": {
+          "ready": true,
+          "blockers": [],
+          "counts": {
+            "runs": 0,
+            "windows": 0,
+            "dependencies": 0,
+            "preparations": 0,
+            "receipts": 0,
+            "work": 1,
+            "org_work_requiring_fleet_reconciliation": 1,
+            "cursors": 2,
+            "admissions": 1,
+            "queued_admissions": 1
+          }
+        },
+        "authority": "absent, admission remains held",
+        "retained_tables_unchanged": [
+          "_agent_output_preparations",
+          "_agent_output_receipts",
+          "_agent_run_finalization_receipts",
+          "_agent_runs",
+          "_dataset_identity",
+          "extraction_cursors",
+          "extraction_windows",
+          "interactions",
+          "learning_work",
+          "profiles",
+          "requests"
+        ]
+      }
+    },
+    "completed": {
+      "producer": {
+        "fingerprint": {
+          "sha256": "d309f9ae1ff0dd8d64a647b2b6062e44b104edf7bdad6d8202671af248f51204",
+          "request_count": 1,
+          "interaction_count": 10
+        },
+        "profiles": 1,
+        "retained_tables": {
+          "requests": 1,
+          "interactions": 10,
+          "profiles": 1,
+          "_agent_runs": 0,
+          "extraction_windows": 1,
+          "extraction_cursors": 2,
+          "_agent_output_receipts": 0,
+          "_agent_run_finalization_receipts": 0,
+          "_agent_output_preparations": 0,
+          "learning_work": 1,
+          "_dataset_identity": 1
+        }
+      },
+      "fixture": {
+        "raw_sha256": "58de917bd92c4f6a4dbccf62c3ffb5bd15329241c532b64caff9f434d688bab3",
+        "gzip_sha256": "2cb691e80cdc797b13359cf5039d20c65bdd4bef1679d2ed15707eb6e4bd1278",
+        "raw_bytes": 1183744,
+        "gzip_bytes": 36324
+      },
+      "consumer": {
+        "fingerprint": {
+          "sha256": "d309f9ae1ff0dd8d64a647b2b6062e44b104edf7bdad6d8202671af248f51204",
+          "request_count": 1,
+          "interaction_count": 10
+        },
+        "closure": {
+          "ready": true,
+          "blockers": [],
+          "counts": {
+            "runs": 0,
+            "windows": 1,
+            "dependencies": 0,
+            "preparations": 0,
+            "receipts": 0,
+            "work": 1,
+            "org_work_requiring_fleet_reconciliation": 1,
+            "cursors": 2,
+            "admissions": 1,
+            "queued_admissions": 0
+          }
+        },
+        "authority": "absent, admission remains held",
+        "retained_tables_unchanged": [
+          "_agent_output_preparations",
+          "_agent_output_receipts",
+          "_agent_run_finalization_receipts",
+          "_agent_runs",
+          "_dataset_identity",
+          "extraction_cursors",
+          "extraction_windows",
+          "interactions",
+          "learning_work",
+          "profiles",
+          "requests"
+        ]
+      }
+    },
+    "billing_pending": {
+      "producer": {
+        "fingerprint": {
+          "sha256": "30d0a09927faaba6447024daf910a552fe1b5b18da70018854baa16c70acbe45",
+          "request_count": 1,
+          "interaction_count": 10
+        },
+        "profiles": 1,
+        "retained_tables": {
+          "requests": 1,
+          "interactions": 10,
+          "profiles": 1,
+          "_agent_runs": 0,
+          "extraction_windows": 1,
+          "extraction_cursors": 2,
+          "_agent_output_receipts": 0,
+          "_agent_run_finalization_receipts": 0,
+          "_agent_output_preparations": 0,
+          "learning_work": 1,
+          "_dataset_identity": 1
+        }
+      },
+      "fixture": {
+        "raw_sha256": "bb0b528ede65d6a5febae3d822dc726b69b9784ed62a7e1e7438f5bff08eba54",
+        "gzip_sha256": "7b1ea518097db7fe35daedcb9e9f49c8077f56b91a5ba3f8aa6886dc23def856",
+        "raw_bytes": 1187840,
+        "gzip_bytes": 36419
+      },
+      "consumer": {
+        "fingerprint": {
+          "sha256": "30d0a09927faaba6447024daf910a552fe1b5b18da70018854baa16c70acbe45",
+          "request_count": 1,
+          "interaction_count": 10
+        },
+        "closure": {
+          "ready": false,
+          "blockers": [
+            "admission_cursor_unproven",
+            "cursor_completion_unproven",
+            "windows_not_closed"
+          ],
+          "counts": {
+            "runs": 0,
+            "windows": 1,
+            "dependencies": 0,
+            "preparations": 0,
+            "receipts": 0,
+            "work": 1,
+            "org_work_requiring_fleet_reconciliation": 1,
+            "cursors": 2,
+            "admissions": 1,
+            "queued_admissions": 0
+          }
+        },
+        "authority": "absent, admission remains held",
+        "retained_tables_unchanged": [
+          "_agent_output_preparations",
+          "_agent_output_receipts",
+          "_agent_run_finalization_receipts",
+          "_agent_runs",
+          "_dataset_identity",
+          "extraction_cursors",
+          "extraction_windows",
+          "interactions",
+          "learning_work",
+          "profiles",
+          "requests"
+        ]
+      }
+    },
+    "window_pending": {
+      "producer": {
+        "fingerprint": {
+          "sha256": "1a8112fa37ef5f144e0032bfb8114159467f548c38aaa264cc04a613443506c4",
+          "request_count": 1,
+          "interaction_count": 10
+        },
+        "profiles": 0,
+        "retained_tables": {
+          "requests": 1,
+          "interactions": 10,
+          "profiles": 0,
+          "_agent_runs": 0,
+          "extraction_windows": 1,
+          "extraction_cursors": 2,
+          "_agent_output_receipts": 0,
+          "_agent_run_finalization_receipts": 0,
+          "_agent_output_preparations": 0,
+          "learning_work": 1,
+          "_dataset_identity": 1
+        }
+      },
+      "fixture": {
+        "raw_sha256": "9fbc773153504a33614b7bc8de5d69967138c16402ba2090893e97851ec62ec4",
+        "gzip_sha256": "4901c3e4c4511c09af2897713db8bfc3c9831fa9dc2c4e42dc41fc71e8f9032f",
+        "raw_bytes": 1179648,
+        "gzip_bytes": 34196
+      },
+      "consumer": {
+        "fingerprint": {
+          "sha256": "1a8112fa37ef5f144e0032bfb8114159467f548c38aaa264cc04a613443506c4",
+          "request_count": 1,
+          "interaction_count": 10
+        },
+        "closure": {
+          "ready": false,
+          "blockers": [
+            "admission_cursor_unproven",
+            "cursor_execution_or_unknown_lineage",
+            "live_work_owner",
+            "windows_not_closed"
+          ],
+          "counts": {
+            "runs": 0,
+            "windows": 1,
+            "dependencies": 0,
+            "preparations": 0,
+            "receipts": 0,
+            "work": 1,
+            "org_work_requiring_fleet_reconciliation": 1,
+            "cursors": 2,
+            "admissions": 1,
+            "queued_admissions": 0
+          }
+        },
+        "authority": "absent, admission remains held",
+        "retained_tables_unchanged": [
+          "_agent_output_preparations",
+          "_agent_output_receipts",
+          "_agent_run_finalization_receipts",
+          "_agent_runs",
+          "_dataset_identity",
+          "extraction_cursors",
+          "extraction_windows",
+          "interactions",
+          "learning_work",
+          "profiles",
+          "requests"
+        ]
+      }
+    },
+    "unclaimed_empty": {
+      "producer": {
+        "fingerprint": {
+          "sha256": "7d3168d9492c1b84baa705a53c0363b8166dda5703af4be02d1588eb61d7b8a7",
+          "request_count": 0,
+          "interaction_count": 0
+        },
+        "profiles": 0,
+        "retained_tables": {
+          "requests": 0,
+          "interactions": 0,
+          "profiles": 0,
+          "_agent_runs": 0,
+          "extraction_windows": 0,
+          "extraction_cursors": 0,
+          "_agent_output_receipts": 0,
+          "_agent_run_finalization_receipts": 0,
+          "_agent_output_preparations": 0,
+          "learning_work": 0
+        }
+      },
+      "fixture": {
+        "raw_sha256": "dc94bbed597ecfb2844b85a2dc7b18188d511ebdad5fd40551e55f00d8def29c",
+        "gzip_sha256": "aaa1fafbfe6f22aa170daa517cd2a7e540a7c75bb876518d19b077f27dab426c",
+        "raw_bytes": 1175552,
+        "gzip_bytes": 30845
+      },
+      "consumer": {
+        "fingerprint": {
+          "sha256": "7d3168d9492c1b84baa705a53c0363b8166dda5703af4be02d1588eb61d7b8a7",
+          "request_count": 0,
+          "interaction_count": 0
+        },
+        "closure": {
+          "ready": true,
+          "blockers": [],
+          "counts": {
+            "runs": 0,
+            "windows": 0,
+            "dependencies": 0,
+            "preparations": 0,
+            "receipts": 0,
+            "work": 0,
+            "cursors": 0,
+            "admissions": 0,
+            "queued_admissions": 0
+          }
+        },
+        "authority": "absent, admission remains held",
+        "retained_tables_unchanged": [
+          "_agent_output_preparations",
+          "_agent_output_receipts",
+          "_agent_run_finalization_receipts",
+          "_agent_runs",
+          "extraction_cursors",
+          "extraction_windows",
+          "interactions",
+          "learning_work",
+          "profiles",
+          "requests"
+        ]
+      }
+    },
+    "unclaimed_completed": {
+      "producer": {
+        "fingerprint": {
+          "sha256": "8157e2c687b423cfb635207b4877a738f8ad8783a859456107a3b78f4b5d2c4b",
+          "request_count": 1,
+          "interaction_count": 10
+        },
+        "profiles": 1,
+        "retained_tables": {
+          "requests": 1,
+          "interactions": 10,
+          "profiles": 1,
+          "_agent_runs": 0,
+          "extraction_windows": 1,
+          "extraction_cursors": 2,
+          "_agent_output_receipts": 0,
+          "_agent_run_finalization_receipts": 0,
+          "_agent_output_preparations": 0,
+          "learning_work": 1
+        }
+      },
+      "fixture": {
+        "raw_sha256": "e5a7286181ae4234b547cd1ede675b7a739a8e9a3d74eb7ad41167a27a39af95",
+        "gzip_sha256": "02ddd8d4b6aad20df328995a2028d892cfd437b1a3654a709e27b591e6cdee37",
+        "raw_bytes": 1179648,
+        "gzip_bytes": 36227
+      },
+      "consumer": {
+        "fingerprint": {
+          "sha256": "8157e2c687b423cfb635207b4877a738f8ad8783a859456107a3b78f4b5d2c4b",
+          "request_count": 1,
+          "interaction_count": 10
+        },
+        "closure": {
+          "ready": true,
+          "blockers": [],
+          "counts": {
+            "runs": 0,
+            "windows": 1,
+            "dependencies": 0,
+            "preparations": 0,
+            "receipts": 0,
+            "work": 1,
+            "org_work_requiring_fleet_reconciliation": 1,
+            "cursors": 2,
+            "admissions": 1,
+            "queued_admissions": 0
+          }
+        },
+        "authority": "absent, admission remains held",
+        "retained_tables_unchanged": [
+          "_agent_output_preparations",
+          "_agent_output_receipts",
+          "_agent_run_finalization_receipts",
+          "_agent_runs",
+          "extraction_cursors",
+          "extraction_windows",
+          "interactions",
+          "learning_work",
+          "profiles",
+          "requests"
+        ]
+      }
+    }
+  },
+  "scope": "Actual old HTTP publish/drain and current closure; no upgrade or dataset authority grant",
+  "cleanup": "Owned source archive, HOME, configs and databases removed",
+  "provider_dispatch": "forbidden",
+  "producer_script_sha256": "86dbcaf8ca2ffb0f8ac72a230a670d386fd07a585e83af4a6a87afa639ee687f"
+}
