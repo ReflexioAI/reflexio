@@ -142,6 +142,12 @@ Successful JSON includes the new provenance descriptor. A retry returns the
 retained authority/origin/digest and explicitly reports the original descriptor
 unavailable; fresh observations never masquerade as original provenance.
 This action establishes policy for future work, not unchanged historical policy.
+An incompatible local configuration publication or storage retarget checks both
+existing SQLite targets for OPEN authority matching the current SDK policy.
+Missing or held authority refuses before the configuration is backed up or
+replaced, preserving the predecessor's settings for recovery. Run the explicit
+maintenance command before retrying preparation; pending work must first finish
+with its existing owner. Configuration preparation never grants authority.
 Native databases, automatic plugin activation, mixed-version operation and
 Windows adoption are separate qualifications.
 
