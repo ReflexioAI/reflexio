@@ -510,6 +510,9 @@ def create_app(  # noqa: C901
         )
         try:
             if mounts_data_plane:
+                from reflexio.server.services.retrieval.judge_client import judge_mode
+
+                judge_mode()  # Validate the explicit mode without constructing a client.
                 log_publish_hardware_capacity()
                 validate_llm_availability()
                 # Window execution and deferred recovery share the durable owner
@@ -586,6 +589,15 @@ def create_app(  # noqa: C901
             )
 
             stop_search_metering_worker(timeout=5.0)
+            if mounts_data_plane:
+                from reflexio.server.services.retrieval.judge_client import (
+                    close_judge_client,
+                )
+
+                try:
+                    close_judge_client()
+                except Exception:
+                    logger.warning("Search judge HTTP cleanup failed", exc_info=True)
             if capabilities is None:
                 from reflexio.server.usage_metrics import (
                     configure_usage_event_recorder,
