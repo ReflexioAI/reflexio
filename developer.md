@@ -413,6 +413,20 @@ not model tokens or the required evidence. Native unit/adapter and saved-respons
 qualification must establish parity before release; benchmark results are local,
 not a promise of online speedup.
 
+Reduction admission also accounts for the complete variable request envelope:
+evidence reference lists and source/origin aliases grow with the evidence
+population. Intermediate products reserve that overhead before they can feed a
+parent request. The complete request guard still runs before dispatch. Changed
+compression contracts invalidate old plan/cache identities; never reset a durable
+attempt budget to force an old journal through a new plan.
+
+For open-world tuning, classified transient provider errors (such as a hard
+timeout or HTTP 529) return existing scheduler-retry eligibility. The failed job
+stays terminal with its prepared/completed invocation records retained; the host
+scheduler owns cooldown and attempt ceilings. Permanent request, evidence and
+structured-output failures do not become retryable. No inline retry, charge refund
+or lease bypass is introduced.
+
 ## Supported LLM Providers
 
 | Provider | Env Variable | Model Prefix | Example Usage |
