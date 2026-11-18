@@ -1,8 +1,10 @@
-"""Native-plan orchestration with fake I/O; no provider, model or database calls."""
+"""Native-plan orchestration preserves each source-owned acceptance contract."""
 
 import time
 from collections.abc import Iterator
 from contextvars import ContextVar
+from importlib import import_module
+from importlib.util import find_spec
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import ANY, Mock
@@ -19,9 +21,13 @@ from reflexio.models.api_schema.service_schemas import (
     UserProfile,
 )
 from reflexio.models.config_schema import RetrievalFloorConfig, SearchMode
+from reflexio.profile_authoring_protocol import (
+    ESTIMATED_LIFETIME_POLICY,
+    PROFILE_AUTHORING_POLICY,
+    SOURCE_RETENTION_POLICY,
+)
 from reflexio.server import search_runtime
 from reflexio.server.services import unified_search_service as service
-from reflexio.server.services.profile import attention
 from reflexio.server.services.retrieval.judge_payload import MODEL
 from reflexio.server.services.retrieval.recency import RecencyConfig, ScoredItem
 from reflexio.server.services.retrieval.session_dedup import session_seen_cache
@@ -30,6 +36,32 @@ from reflexio.server.services.storage.storage_base import BaseStorage
 
 pytestmark = pytest.mark.unit
 KINDS = ("profiles", "agent_playbooks", "user_playbooks")
+HAS_ATTENTION = PROFILE_AUTHORING_POLICY == SOURCE_RETENTION_POLICY
+attention = (
+    import_module("reflexio.server.services.profile.attention")
+    if HAS_ATTENTION
+    else None
+)
+
+
+def test_compiled_policy_owns_profile_acceptance():
+    assert PROFILE_AUTHORING_POLICY in (
+        ESTIMATED_LIFETIME_POLICY,
+        SOURCE_RETENTION_POLICY,
+    )
+    assert hasattr(service, "record_accepted_profiles") is HAS_ATTENTION
+    assert (
+        find_spec("reflexio.server.services.profile.attention") is not None
+    ) is HAS_ATTENTION
+
+
+def assert_final_access(native, profile_ids):
+    if HAS_ATTENTION:
+        native.storage.record_served_profile_access.assert_called_once_with(
+            user_id="u", profile_ids=profile_ids, accessed_at=ANY
+        )
+    else:
+        native.storage.record_served_profile_access.assert_not_called()
 
 
 def profile(number: int) -> UserProfile:
@@ -130,8 +162,12 @@ def native(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
     def judge(wire):
         state.events.append("judge")
         assert state.dto.call_count == 0
-        snapshot = attention._SNAPSHOT.get()
-        assert snapshot is not None and snapshot.storage is storage
+        if HAS_ATTENTION:
+            assert attention is not None
+            snapshot = attention._SNAPSHOT.get()
+            assert snapshot is not None and snapshot.storage is storage
+        else:
+            assert not hasattr(service, "record_accepted_profiles")
         return reply(wire)
 
     state.phase_a = Mock(side_effect=phase_a)
@@ -241,11 +277,7 @@ def test_default_recency_one_native_snapshot_selectors_before_judge_and_one_fina
     assert wire["state"]["request"] == "Canonical task"
     assert "PRIVATE" not in str(wire)
     assert "profile evidence 999" in str(wire)
-    native.storage.record_served_profile_access.assert_called_once_with(
-        user_id="u",
-        profile_ids=["p1", "p2", "p3", "p4", "p999"],
-        accessed_at=ANY,
-    )
+    assert_final_access(native, ["p1", "p2", "p3", "p4", "p999"])
 
 
 @pytest.mark.parametrize("case", ["off", "profile_only", "empty"])
@@ -473,11 +505,7 @@ def test_final_profile_selection_only_is_recorded_after_judge(native):
     native.judge.side_effect = judge
     result = run(native)
     assert [p.profile_id for p in result.profiles] == ["p2", "p3", "p4", "p5", "p6"]
-    native.storage.record_served_profile_access.assert_called_once_with(
-        user_id="u",
-        profile_ids=["p2", "p3", "p4", "p5", "p6"],
-        accessed_at=ANY,
-    )
+    assert_final_access(native, ["p2", "p3", "p4", "p5", "p6"])
 
 
 def test_http_owned_scope_defers_final_access_and_retains_registering_context(native):
@@ -492,14 +520,23 @@ def test_http_owned_scope_defers_final_access_and_retains_registering_context(na
     try:
         result = run(native)
         native.storage.record_served_profile_access.assert_not_called()
-        assert [entry[1] for entry in scope.success_callbacks] == ["profile_attention"]
-        _order, _name, context, callback = scope.success_callbacks[0]
-        assert context.get(marker) == "origin"
-        snapshot = context.get(attention._SNAPSHOT)
-        assert snapshot is not None and snapshot.storage is native.storage
-        marker.set("different")
-        context.run(callback)
-        assert observed == [("origin", sorted(p.profile_id for p in result.profiles))]
+        if HAS_ATTENTION:
+            assert attention is not None
+            assert [entry[1] for entry in scope.success_callbacks] == [
+                "profile_attention"
+            ]
+            _order, _name, context, callback = scope.success_callbacks[0]
+            assert context.get(marker) == "origin"
+            snapshot = context.get(attention._SNAPSHOT)
+            assert snapshot is not None and snapshot.storage is native.storage
+            marker.set("different")
+            context.run(callback)
+            assert observed == [
+                ("origin", sorted(p.profile_id for p in result.profiles))
+            ]
+        else:
+            assert not scope.success_callbacks
+            assert not hasattr(service, "record_accepted_profiles")
     finally:
         search_runtime._scope.reset(scope_token)
         marker.reset(marker_token)
