@@ -22,6 +22,7 @@ from reflexio.server.services.embedding_text import (
     embedding_text,
     profile_semantic_features,
 )
+from reflexio.server.services.profile.lifecycle_deadlines import profile_version
 from reflexio.server.services.storage.lifecycle_filters import (
     GC_ELIGIBLE_STATUSES,
     PROFILE_TOMBSTONE_STATUS_VALUES,
@@ -91,6 +92,7 @@ class ProfileStoreMixin:
     _assert_subject_writable_locked: Any
     _own_transaction: Any
     commit_scope: Any
+    profile_lifecycle_rows: Any
     _deferred_index_ops: list[tuple[str, Any]]
 
     def _subject_ref_from_profile_row(self, row: sqlite3.Row) -> str:
@@ -373,8 +375,13 @@ class ProfileStoreMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def update_user_profile_by_id(
-        self, user_id: str, profile_id: str, new_profile: UserProfile
-    ) -> None:
+        self,
+        user_id: str,
+        profile_id: str,
+        new_profile: UserProfile,
+        *,
+        expected_version: str | None = None,
+    ) -> bool:
         """Replace a profile's content in-place and emit a revise lineage event.
 
         Each call generates a fresh request_id so every edit is a distinct audit
@@ -391,19 +398,29 @@ class ProfileStoreMixin:
             ).fetchone()
             if not row:
                 logger.warning("User profile not found for user id: %s", user_id)
-                return
+                return False
             self._assert_subject_writable_locked(
                 self._subject_ref_from_profile_row(row)
             )
         embedding = self._get_embedding(embedding_text(new_profile))
         new_profile.embedding = embedding
-        with self._lock:
+        with self.commit_scope() if expected_version is not None else self._lock:
+            if expected_version is not None:
+                rows = self.profile_lifecycle_rows(
+                    user_id, "", profile_id=profile_id, lock=True
+                )
+                if (
+                    not rows
+                    or rows[0]["expiration_timestamp"] < _epoch_now()
+                    or profile_version(rows[0]) != expected_version
+                ):
+                    return False
             if (
                 self._assert_profile_writable_locked(profile_id, user_id=user_id)
                 is None
             ):
                 logger.warning("User profile not found for user id: %s", user_id)
-                return
+                return False
             cur = self.conn.execute(
                 """UPDATE profiles SET content=?, last_modified_timestamp=?,
                    generated_from_request_id=?, profile_time_to_live=?,
@@ -444,7 +461,8 @@ class ProfileStoreMixin:
                     request_id=uuid.uuid4().hex,
                     reason="in-place update",
                 )
-            self.conn.commit()
+            if expected_version is None:
+                self.conn.commit()
             fts_parts = [new_profile.content or ""]
             fts_parts.extend(
                 str(v) for v in profile_semantic_features(new_profile).values() if v
@@ -457,6 +475,7 @@ class ProfileStoreMixin:
             )
             if rowid_row and embedding:
                 self._vec_upsert("profiles_vec", rowid_row["rowid"], embedding)
+        return True
 
     @SQLiteStorageBase.handle_exceptions
     def update_user_profile_tags(

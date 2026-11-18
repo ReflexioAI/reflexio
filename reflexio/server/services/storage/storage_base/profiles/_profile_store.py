@@ -119,8 +119,18 @@ class ProfileStoreMixin:
 
     @abstractmethod
     def update_user_profile_by_id(
-        self, user_id: str, profile_id: str, new_profile: UserProfile
-    ) -> None:
+        self,
+        user_id: str,
+        profile_id: str,
+        new_profile: UserProfile,
+        *,
+        expected_version: str | None = None,
+    ) -> bool:
+        """Revise a profile, returning false when missing or its version changed.
+
+        If supplied, the canonical payload version must be checked under the
+        same writer transaction as the revision and lineage event.
+        """
         raise NotImplementedError
 
     @abstractmethod
