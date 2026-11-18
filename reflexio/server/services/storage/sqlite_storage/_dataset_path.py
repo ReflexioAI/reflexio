@@ -210,6 +210,22 @@ def barrier_identity_labels(path: Path) -> set[str]:
     return labels
 
 
+def _claim_or_read_identity_db(conn: sqlite3.Connection, org_id: str) -> str:
+    """Claim within the caller's write transaction; never reserve or commit."""
+    if not conn.in_transaction:
+        raise RuntimeError("Dataset identity claim requires a write transaction")
+    conn.execute(f"CREATE TABLE IF NOT EXISTS {_IDENTITY_CLAIM_DEFINITION}")
+    conn.execute(
+        f"INSERT INTO {IDENTITY_CLAIM_TABLE} (k, org_id, claimed_at)"
+        " VALUES (1, ?, ?) ON CONFLICT(k) DO NOTHING",
+        (org_id, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+    )
+    row = conn.execute(
+        f"SELECT org_id FROM {IDENTITY_CLAIM_TABLE} WHERE k = 1"
+    ).fetchone()
+    return str(row[0]) if row else org_id
+
+
 def claim_or_read_identity(path: Path, org_id: str) -> str:
     """Claim *path* for *org_id*, or return the identity that already holds it.
 
@@ -246,19 +262,11 @@ def claim_or_read_identity(path: Path, org_id: str) -> str:
             if row is not None:
                 return str(row[0])
         conn.execute("BEGIN IMMEDIATE")
-        conn.execute(f"CREATE TABLE IF NOT EXISTS {_IDENTITY_CLAIM_DEFINITION}")
-        conn.execute(
-            f"INSERT INTO {IDENTITY_CLAIM_TABLE} (k, org_id, claimed_at)"
-            " VALUES (1, ?, ?) ON CONFLICT(k) DO NOTHING",
-            (org_id, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
-        )
-        row = conn.execute(
-            f"SELECT org_id FROM {IDENTITY_CLAIM_TABLE} WHERE k = 1"
-        ).fetchone()
+        owner = _claim_or_read_identity_db(conn, org_id)
         conn.commit()
     finally:
         conn.close()
-    return str(row[0]) if row else org_id
+    return owner
 
 
 def resolve_sqlite_db_path(root: str | Path, org_id: str) -> str:
