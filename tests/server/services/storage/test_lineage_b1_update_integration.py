@@ -18,6 +18,7 @@ from reflexio.models.api_schema.domain.entities import (
     UserProfile,
 )
 from reflexio.models.api_schema.domain.enums import PlaybookStatus
+from reflexio.server.services.profile.lifecycle_deadlines import profile_version
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
@@ -346,6 +347,50 @@ def test_update_user_profile_emits_revise(tmp_path):
     fetched = s.get_profile_by_id(str(profile.profile_id))
     assert fetched is not None
     assert fetched.content == "updated content"
+
+
+@pytest.mark.parametrize("owner_id", ["u", ""])
+def test_concurrent_profile_edit_rejects_same_timestamp_stale_snapshot(
+    tmp_path, owner_id
+):
+    """Preserve the normal SQLite read semantics for legacy rows and owner IDs."""
+    s = _store(tmp_path)
+    profile = UserProfile(
+        user_id=owner_id,
+        profile_id="guarded-profile",
+        content="before",
+        last_modified_timestamp=0,
+        generated_from_request_id="r",
+    )
+    s.add_user_profile(owner_id, [profile])
+    with s.conn:
+        s.conn.execute(
+            "UPDATE profiles SET tags = '' WHERE profile_id = ?", (profile.profile_id,)
+        )
+    (snapshot,) = s.get_user_profile(owner_id)
+    expected = profile_version(snapshot.model_dump(mode="json"))
+    assert s.update_user_profile_by_id(
+        owner_id,
+        "guarded-profile",
+        snapshot.model_copy(update={"custom_features": {"state": "newer"}}),
+        expected_version=expected,
+    )
+    assert not s.update_user_profile_by_id(
+        owner_id,
+        "guarded-profile",
+        snapshot.model_copy(update={"content": "stale edit"}),
+        expected_version=expected,
+    )
+    (stored,) = s.get_user_profile(owner_id)
+    assert stored.last_modified_timestamp == snapshot.last_modified_timestamp
+    assert stored.content == "before"
+    assert stored.custom_features == {"state": "newer"}
+    assert [
+        event.op
+        for event in s.get_lineage_events(
+            entity_id="guarded-profile", entity_type="profile"
+        )
+    ] == ["create", "revise"]
 
 
 def test_update_user_profile_nonexistent_emits_no_event(tmp_path):
