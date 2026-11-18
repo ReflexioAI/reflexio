@@ -11,10 +11,10 @@ REFLEXIO_NATIVE_CLI_MODEL=local-cli/codex/your-native-model
 
 Supported shapes:
 
-| Reference | Selection |
-| --- | --- |
-| `local-cli/claude-code` | Claude Code's configured default |
-| `local-cli/codex/your-native-model` | Explicit Codex model |
+| Reference                                | Selection                           |
+| ---------------------------------------- | ----------------------------------- |
+| `local-cli/claude-code`                  | Claude Code's configured default    |
+| `local-cli/codex/your-native-model`      | Explicit Codex model                |
 | `local-cli/opencode/provider/model#high` | Explicit OpenCode model and variant |
 
 A host-only reference delegates to the CLI's own default. An explicit suffix
