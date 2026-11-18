@@ -378,17 +378,24 @@ def test_starved_org_not_falsely_reported_as_timed_out(monkeypatch) -> None:
     started: set[str] = set()
     observed_timeouts: set[str] = set()
     observed_futures = []
+    capacity_retired = []
     done: list[str] = []
     lock = threading.Lock()
     wait_for_org = org_fanout._wait_for_org
 
     def observe(org_id, work, **kwargs):
         observed_futures.append(work.future)
+        retired = threading.Event()
+        # These workers remain blocked below, so this callback is registered
+        # after the owner's retirement callback and before completion.
+        work.future.add_done_callback(lambda _future: retired.set())
+        capacity_retired.append(retired)
         result = wait_for_org(org_id, work, **kwargs)
         if result:
             observed_timeouts.add(org_id)
             if observed_timeouts == {"stuck1", "stuck2"}:
                 release_workers.set()
+                assert all(event.wait(5) for event in capacity_retired)
         return result
 
     monkeypatch.setattr(org_fanout, "_wait_for_org", observe)
