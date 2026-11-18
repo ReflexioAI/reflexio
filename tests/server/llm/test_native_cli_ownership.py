@@ -1012,10 +1012,10 @@ def _physical_probe(root: Path, contract: str):
             "claude-smart-extractor",
         ]
         if contract == "modern":
-            assert entry["argv"][-2:] == ["--model", "owned/model#low"]
+            assert entry["argv"][-1] == "--model=owned/model#low"
             assert "--standalone" in entry["argv"]
         else:
-            assert entry["argv"][-4:] == ["--model", "owned/model", "--variant", "low"]
+            assert entry["argv"][-2:] == ["--model=owned/model", "--variant=low"]
             assert "--standalone" not in entry["argv"]
         assert "synthetic private λ" in entry[
             "stdin"
@@ -1037,7 +1037,7 @@ def _physical_probe(root: Path, contract: str):
             timeout=1,
         )
         default_argv = json.loads(record.read_text().splitlines()[-1])["argv"]
-        assert "--model" not in default_argv and "--variant" not in default_argv
+        assert not any(arg.startswith(("--model", "--variant")) for arg in default_argv)
 
         client = LiteLLMClient(
             LiteLLMConfig(

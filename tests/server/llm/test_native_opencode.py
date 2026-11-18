@@ -478,14 +478,14 @@ def test_discovery_and_execution_spend_one_original_deadline(
     assert kwargs["timeout"] == pytest.approx(0.4)
     assert kwargs["input"] == "owned context\n\n## Task\nowned task"
     if model is None:
-        assert "--model" not in argv and "--variant" not in argv
+        assert not any(arg.startswith(("--model", "--variant")) for arg in argv)
     elif model == "opaque/nested/model":
-        assert argv[-2:] == ["--model", "opaque/nested/model"]
-        assert "--variant" not in argv
+        assert argv[-1] == "--model=opaque/nested/model"
+        assert not any(arg.startswith("--variant") for arg in argv)
     elif private:
-        assert argv[-2:] == ["--model", "opaque/model#variant"]
+        assert argv[-1] == "--model=opaque/model#variant"
     else:
-        assert argv[-4:] == ["--model", "opaque/model", "--variant", "variant"]
+        assert argv[-2:] == ["--model=opaque/model", "--variant=variant"]
     assert ("--standalone" in argv) is private
     assert argv[argv.index("--title") + 1] == native._AGENT
     assert calls[0][1]["cwd"] == kwargs["cwd"]
@@ -509,6 +509,54 @@ def test_legacy_empty_variant_components_refuse_before_generation(monkeypatch, m
     assert dispatch.call_count == 1
     assert dispatch.call_args.args[0][-2:] == ["run", "--help"]
     assert not Path(dispatch.call_args.kwargs["cwd"]).exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("private", [False, True])
+@pytest.mark.parametrize("component", ["model", "variant"])
+def test_model_text_cannot_become_a_native_routing_option(
+    monkeypatch, private, component
+):
+    # The recorded release-declared Yargs18 parser interprets paired option-
+    # shaped values as --attach. Inline binding preserves their literal value.
+    provenance = json.loads(
+        (
+            Path(__file__).parents[2]
+            / "fixtures/opencode_v1_19_6_run_help.provenance.json"
+        ).read_text()
+    )["option_binding_probe"]["results"]
+    value = provenance["modelBound"]["model"]
+    assert provenance["modelPair"]["attach"] == "https://example.invalid"
+    assert provenance["variantPair"]["attach"] == "https://example.invalid"
+    assert provenance["variantBound"]["variant"] == value
+    model = value if component == "model" else "provider/model#" + value
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if argv[-1] == "--help":
+            return subprocess.CompletedProcess(
+                argv, 0, MODERN if private else LEGACY, ""
+            )
+        return subprocess.CompletedProcess(
+            argv, 0, '{"type":"text","text":"owned reply"}', ""
+        )
+
+    monkeypatch.setattr(native, "run_native_cli", run)
+    assert native.run_opencode(
+        cli_path=sys.executable,
+        system_prompt="owned context",
+        dialogue="owned task",
+        model=model,
+        timeout_seconds=1,
+    ).success
+    expected = (
+        ["--model=provider/model", "--variant=" + value]
+        if not private and component == "variant"
+        else ["--model=" + model]
+    )
+    assert calls[-1][-len(expected) :] == expected
+    assert not any(arg.startswith("--attach=") for arg in calls[-1])
 
 
 @pytest.mark.unit

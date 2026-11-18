@@ -231,9 +231,9 @@ def run_opencode(
                         raise OpenCodeCLIError(
                             "OpenCode model variant reference is invalid"
                         )
-                    argv += ["--model", selected, "--variant", variant]
+                    argv += [f"--model={selected}", f"--variant={variant}"]
                 else:
-                    argv += ["--model", model]
+                    argv.append(f"--model={model}")
             result = run_native_cli(
                 argv,
                 input=prompt,

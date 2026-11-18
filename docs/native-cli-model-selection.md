@@ -30,6 +30,8 @@ on either stdout or stderr. A CLI declaring `--standalone` receives the full
 `--attach`/`--variant` contract receives separate model and variant arguments;
 an empty explicit component refuses before generation. A host-only reference
 supplies neither argument. Discovery and execution share the original deadline.
+Model and variant values are bound as `--name=value`, so option-shaped text
+cannot select another server or alter other invocation flags.
 
 Model resolution retains explicit organization/role choices, applicable custom
 gateway inheritance and sitevar choices ahead of this native fallback. Embeddings

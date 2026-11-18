@@ -1860,8 +1860,9 @@ which model physically served the response.
 
 Native OpenCode accepts successful capability-help declarations from stdout or
 stderr. Its recognized attach/variant contract encodes `provider/model#high`
-as separate `--model provider/model --variant high` arguments; the private-server
+as separate `--model=provider/model --variant=high` arguments; the private-server
 contract retains the full reference. Empty explicit variant components refuse.
+Values are bound inline so model/variant text cannot become routing options.
 Neither discovery nor this encoding grants a fresh deadline or another route.
 
 Codex spends its selected deadline on setup, native execution and reading its
