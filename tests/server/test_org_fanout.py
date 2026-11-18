@@ -369,33 +369,58 @@ def test_stop_event_halts_submission_with_pool() -> None:
     assert sorted(submitted) == ["a", "b"]  # c, d never submitted once stop fired
 
 
-def test_starved_org_not_falsely_reported_as_timed_out() -> None:
-    """Regression for the queue-wait-counted-as-run-time bug (F001): with
-    max_workers < len(org_ids), an org that is merely queued (never started)
-    when its own wait window elapses must not be reported as timed out. Once
-    a worker frees up, the queued org still gets to run and finish normally.
-    """
-    budget = 0.6
-    stuck_duration = 1.5  # sits inside "fast"'s [2*budget, 3*budget) wait window
+def test_starved_org_not_falsely_reported_as_timed_out(monkeypatch) -> None:
+    """Capacity wait does not spend the fast org's execution allowance."""
+    from reflexio.server import org_fanout
+
+    both_started = threading.Event()
+    release_workers = threading.Event()
+    started: set[str] = set()
+    observed_timeouts: set[str] = set()
+    observed_futures = []
     done: list[str] = []
     lock = threading.Lock()
+    wait_for_org = org_fanout._wait_for_org
+
+    def observe(org_id, work, **kwargs):
+        observed_futures.append(work.future)
+        result = wait_for_org(org_id, work, **kwargs)
+        if result:
+            observed_timeouts.add(org_id)
+            if observed_timeouts == {"stuck1", "stuck2"}:
+                release_workers.set()
+        return result
+
+    monkeypatch.setattr(org_fanout, "_wait_for_org", observe)
 
     def fn(org_id: str) -> None:
         if org_id in ("stuck1", "stuck2"):
-            time.sleep(stuck_duration)
-            return
-        with lock:
-            done.append(org_id)
+            with lock:
+                started.add(org_id)
+                if len(started) == 2:
+                    both_started.set()
+            assert release_workers.wait(5)
+        else:
+            with lock:
+                done.append(org_id)
 
-    timed_out = iterate_orgs_bounded(
-        ["stuck1", "stuck2", "fast"],
-        fn,
-        max_workers=2,
-        per_org_timeout_seconds=budget,
-    )
-    assert timed_out == ["stuck1", "stuck2"]
-    assert "fast" not in timed_out
-    assert done == ["fast"]  # "fast" got a freed worker and completed within the call
+    def org_ids():
+        yield "stuck1"
+        yield "stuck2"
+        assert both_started.wait(5)
+        yield "fast"
+
+    try:
+        timed_out = iterate_orgs_bounded(
+            org_ids(), fn, max_workers=2, per_org_timeout_seconds=0.02
+        )
+        assert timed_out == ["stuck1", "stuck2"]
+        assert "fast" not in timed_out
+        assert done == ["fast"]
+    finally:
+        release_workers.set()
+        for future in observed_futures:
+            future.result(timeout=5)
 
 
 def test_starved_org_when_never_scheduled(caplog) -> None:
