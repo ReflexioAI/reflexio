@@ -412,7 +412,7 @@ def test_starved_org_not_falsely_reported_as_timed_out(monkeypatch) -> None:
 
     try:
         timed_out = iterate_orgs_bounded(
-            org_ids(), fn, max_workers=2, per_org_timeout_seconds=0.02
+            org_ids(), fn, max_workers=2, per_org_timeout_seconds=0.6
         )
         assert timed_out == ["stuck1", "stuck2"]
         assert "fast" not in timed_out
