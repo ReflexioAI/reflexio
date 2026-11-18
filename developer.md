@@ -127,6 +127,15 @@ neutral scope and durable execution/financial closure on its existing writer;
 it publishes only the current future-policy authority atomically. It never
 constructs normal storage, loads operator `.env`, migrates business data, clears
 work or changes configuration. Authentic queued, unstarted intake is preserved.
+The supported plugin's explicit-path predecessor schema can lack an identity
+claim. Only for that exact cohort, pass `--org-id YOUR_NAMESPACE` to select the
+future local namespace explicitly. This establishes a claim; it does not recover
+or prove historical ownership. Existing claims cannot be changed, and a supplied
+namespace must match them. Identity and future-policy authority commit together
+after qualification; incomplete work or debt cannot be bypassed by this option.
+An absent claim with any retained authority still refuses. Keep old hosts stopped
+after cutover. Lost acknowledgement can be retried against the same unchanged file;
+file replacement during commit reports uncertainty rather than success.
 Both shared metadata page readers reject NULL key components over the full
 scoped source before applying keyset boundaries. A NULL historical text primary
 key must never be mistaken for an empty page or disappear from closure.
@@ -142,6 +151,12 @@ Successful JSON includes the new provenance descriptor. A retry returns the
 retained authority/origin/digest and explicitly reports the original descriptor
 unavailable; fresh observations never masquerade as original provenance.
 This action establishes policy for future work, not unchanged historical policy.
+An incompatible local configuration publication or storage retarget checks both
+existing SQLite targets for OPEN authority matching the current SDK policy.
+Missing or held authority refuses before the configuration is backed up or
+replaced, preserving the predecessor's settings for recovery. Run the explicit
+maintenance command before retrying preparation; pending work must first finish
+with its existing owner. Configuration preparation never grants authority.
 Native databases, automatic plugin activation, mixed-version operation and
 Windows adoption are separate qualifications.
 
@@ -1851,6 +1866,14 @@ The explicit native reference carries the physical model selection. A
 host-only reference delegates to that CLI's own default; an explicit suffix
 `/default` remains a literal model ID. The requested reference never proves
 which model physically served the response.
+
+Native OpenCode accepts successful capability-help declarations from stdout or
+stderr. Its recognized attach/variant contract encodes `provider/model#high`
+as separate `--model=provider/model --variant=high` arguments; the private-server
+contract retains the full reference. Empty explicit variant components are terminal
+selection errors and do not advance an HTTP fallback ladder.
+Values are bound inline so model/variant text cannot become routing options.
+Neither discovery nor this encoding grants a fresh deadline or another route.
 
 Codex spends its selected deadline on setup, native execution and reading its
 final output. Setup cannot grant a fresh allowance, and a result read after

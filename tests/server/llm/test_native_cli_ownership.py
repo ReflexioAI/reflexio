@@ -470,8 +470,9 @@ def test_codex_scratch_and_permit_survive_until_native_reaping(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("contract", ["modern", "released_legacy"])
 def test_real_native_opencode_dispatch_and_owner_in_fresh_interpreter(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, contract
 ):
     """Also collected by Windows diagnostics: actual native exe, no batch shell."""
     monkeypatch.setenv("BRAINTRUST_API_KEY", "private-parent-telemetry-canary")
@@ -518,6 +519,7 @@ def test_real_native_opencode_dispatch_and_owner_in_fresh_interpreter(
             sys.executable,
             str(Path(__file__).resolve()),
             str(tmp_path),
+            contract,
         ],
         cwd=tmp_path,
         env=env,
@@ -921,7 +923,7 @@ class NativeProbeAnswer(BaseModel):
     answer: str
 
 
-def _physical_probe(root: Path):
+def _physical_probe(root: Path, contract: str):
     """A fresh interpreter avoids paid-provider mocks; the owned CLI is Python itself."""
     import litellm
 
@@ -939,6 +941,16 @@ def _physical_probe(root: Path):
     hooks.mkdir()
     record = root / "native-calls.jsonl"
     response_file = root / "response.txt"
+    # Captured from the digest-verified official 1.19.6 binary: successful help
+    # is on stderr, and its model variant is a separate --variant argument.
+    help_text = (
+        "  --model\n  --agent\n  --format\n  --title\n  --standalone"
+        if contract == "modern"
+        else (
+            Path(__file__).parents[2] / "fixtures/opencode_v1_19_6_run_help.txt"
+        ).read_text()
+    )
+    help_stream = "sys.stdout" if contract == "modern" else "sys.stderr"
     (hooks / "sitecustomize.py").write_text(
         "import sys,os,json,time\nfrom pathlib import Path\n"
         "if Path(sys.argv[0]).name == 'exec':\n"
@@ -948,7 +960,7 @@ def _physical_probe(root: Path):
         " Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_text('native codex λ',encoding='utf-8')\n"
         " os._exit(0)\n"
         "if Path(sys.argv[0]).name == 'run':\n"
-        " if '--help' in sys.argv: print('  --model\\n  --agent\\n  --format\\n  --title\\n  --standalone',flush=True);os._exit(0)\n"
+        f" if '--help' in sys.argv: print({help_text!r},file={help_stream},flush=True);os._exit(0)\n"
         " data={'pid':os.getpid(),'ppid':os.getppid(),'argv':sys.argv,'cwd':os.getcwd(),'stdin':sys.stdin.read()}\n"
         " data['config']=json.loads((Path.cwd()/'.opencode'/'opencode.json').read_text(encoding='utf-8'))\n"
         " data['env']={key:os.environ.get(key) for key in ('PWD','OPENCODE_PURE','CLAUDE_SMART_HOST','CLAUDE_SMART_INTERNAL','CLAUDE_CODE_ENTRYPOINT')}\n"
@@ -999,7 +1011,12 @@ def _physical_probe(root: Path):
             "--agent",
             "claude-smart-extractor",
         ]
-        assert entry["argv"][-2:] == ["--model", "owned/model#low"]
+        if contract == "modern":
+            assert entry["argv"][-1] == "--model=owned/model#low"
+            assert "--standalone" in entry["argv"]
+        else:
+            assert entry["argv"][-2:] == ["--model=owned/model", "--variant=low"]
+            assert "--standalone" not in entry["argv"]
         assert "synthetic private λ" in entry[
             "stdin"
         ] and "synthetic private λ" not in repr(entry["argv"])
@@ -1019,7 +1036,8 @@ def _physical_probe(root: Path):
             messages=[{"role": "user", "content": "default synthetic"}],
             timeout=1,
         )
-        assert "--model" not in json.loads(record.read_text().splitlines()[-1])["argv"]
+        default_argv = json.loads(record.read_text().splitlines()[-1])["argv"]
+        assert not any(arg.startswith(("--model", "--variant")) for arg in default_argv)
 
         client = LiteLLMClient(
             LiteLLMConfig(
@@ -1182,4 +1200,4 @@ def _physical_probe(root: Path):
 
 
 if __name__ == "__main__":
-    _physical_probe(Path(sys.argv[1]))
+    _physical_probe(Path(sys.argv[1]), sys.argv[2])

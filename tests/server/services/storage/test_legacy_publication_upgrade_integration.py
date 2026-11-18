@@ -100,7 +100,31 @@ def _row(conn):
 def test_original_v1_cutover_replays_completed_and_holds_changed_instructions(
     tmp_path, monkeypatch, phase
 ):
-    target = restore_legacy_publication_fixture(phase, tmp_path / "predecessor.sqlite")
+    target = tmp_path / "predecessor.sqlite"
+    # Recovery reads already-current settings; configuration cutover is tested
+    # separately and must not publish over a missing-authority dataset.
+    config = DefaultConfigurator(org_id="stream-test", base_dir=str(tmp_path))
+    config.set_config(
+        Config(
+            storage_config=StorageConfigSQLite(db_path=str(target)),
+            profile_window_size=10,
+            playbook_window_size=10,
+            profile_stride_size=5,
+            playbook_stride_size=5,
+            profile_extractor_config=None
+            if phase == "completed_projection_no_body"
+            else ProfileExtractorConfig(
+                extraction_definition_prompt="Extract user preferences"
+            ),
+            user_playbook_extractor_config=UserPlaybookExtractorConfig(
+                extraction_definition_prompt="Learn deployment instructions"
+            )
+            if phase == "completed_projection_no_body"
+            else None,
+            agent_success_config=None,
+        )
+    )
+    restore_legacy_publication_fixture(phase, target)
     with sqlite3.connect(target) as destination:
         before = _row(destination)
         before_manifest = json.loads(before["generation_request_snapshot"])["overflow"]
@@ -177,27 +201,6 @@ def test_original_v1_cutover_replays_completed_and_holds_changed_instructions(
 
     monkeypatch.setattr(
         LiteLLMClient, "_completion_with_hard_timeout", Mock(side_effect=respond)
-    )
-    config = DefaultConfigurator(org_id="stream-test", base_dir=str(tmp_path))
-    config.set_config(
-        Config(
-            storage_config=StorageConfigSQLite(db_path=str(target)),
-            profile_window_size=10,
-            playbook_window_size=10,
-            profile_stride_size=5,
-            playbook_stride_size=5,
-            profile_extractor_config=None
-            if phase == "completed_projection_no_body"
-            else ProfileExtractorConfig(
-                extraction_definition_prompt="Extract user preferences"
-            ),
-            user_playbook_extractor_config=UserPlaybookExtractorConfig(
-                extraction_definition_prompt="Learn deployment instructions"
-            )
-            if phase == "completed_projection_no_body"
-            else None,
-            agent_success_config=None,
-        )
     )
     engine = Reflexio(
         org_id="stream-test", storage_base_dir=str(tmp_path), configurator=config
@@ -437,7 +440,25 @@ def test_window_finance_validation_before_first_emit_and_partial_retry(tmp_path)
     ],
 )
 def test_preserves_genuine_refusals_before_publication(tmp_path, monkeypatch, change):
-    target = restore_legacy_publication_fixture("running", tmp_path / "negative.sqlite")
+    target = tmp_path / "negative.sqlite"
+    config = DefaultConfigurator(org_id="stream-test", base_dir=str(tmp_path))
+    settings = Config(
+        storage_config=StorageConfigSQLite(db_path=str(target)),
+        profile_window_size=10,
+        playbook_window_size=10,
+        profile_stride_size=5,
+        playbook_stride_size=5,
+        profile_extractor_config=ProfileExtractorConfig(
+            extraction_definition_prompt="Extract user preferences"
+        ),
+        user_playbook_extractor_config=None,
+        agent_success_config=None,
+    )
+    if change in {"malformed_journal", "changed_policy", "changed_source"}:
+        # These cases exercise held runtime reads, not permission to replace
+        # a predecessor configuration. Prepare settings before fixture restore.
+        config.set_config(settings)
+    restore_legacy_publication_fixture("running", target)
     with sqlite3.connect(target) as destination:
         before = _row(destination)
         snapshot = json.loads(before["generation_request_snapshot"])
@@ -495,19 +516,6 @@ def test_preserves_genuine_refusals_before_publication(tmp_path, monkeypatch, ch
         lambda event: events.append(event) or UsageEventDeliveryStatus.APPENDED
     )
     try:
-        config = DefaultConfigurator(org_id="stream-test", base_dir=str(tmp_path))
-        settings = Config(
-            storage_config=StorageConfigSQLite(db_path=str(target)),
-            profile_window_size=10,
-            playbook_window_size=10,
-            profile_stride_size=5,
-            playbook_stride_size=5,
-            profile_extractor_config=ProfileExtractorConfig(
-                extraction_definition_prompt="Extract user preferences"
-            ),
-            user_playbook_extractor_config=None,
-            agent_success_config=None,
-        )
         if change in (
             "ordinary_active",
             "ambiguous_receipt",
@@ -517,7 +525,6 @@ def test_preserves_genuine_refusals_before_publication(tmp_path, monkeypatch, ch
             with pytest.raises(ValueError, match="Legacy publication cutover refused"):
                 config.set_config(settings)
         else:
-            config.set_config(settings)
             engine = Reflexio(
                 org_id="stream-test",
                 storage_base_dir=str(tmp_path),

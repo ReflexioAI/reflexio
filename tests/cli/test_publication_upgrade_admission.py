@@ -12,11 +12,13 @@ import pytest
 from reflexio.cli.config_upgrade import prepare_local_config
 from reflexio.config_document import decode_config_document
 from reflexio.config_env import StoredConfigurationError
-from reflexio.config_file import FILE_FORMAT_VERSION
 from reflexio.server.services.configurator.local_file_config_storage import (
     LocalFileConfigStorage,
 )
 from reflexio.server.services.storage.sqlite_storage._dataset_path import derive_db_path
+from reflexio.server.services.storage.storage_base.learning_transition import (
+    LearningTransitionBlockedError,
+)
 
 
 def legacy_database(path):
@@ -46,7 +48,7 @@ def old_reader():
     )["_decode"]
 
 
-def test_startup_refusal_keeps_old_reader_then_allows_drained_upgrade(tmp_path):
+def test_draining_legacy_publication_is_not_dataset_qualification(tmp_path):
     db = tmp_path / "old.sqlite"
     legacy_database(db)
     storage = LocalFileConfigStorage("owner", base_dir=str(tmp_path))
@@ -78,13 +80,13 @@ def test_startup_refusal_keeps_old_reader_then_allows_drained_upgrade(tmp_path):
         )
         # Simulate completion by the old writer; admission itself never repairs it.
         conn.execute("UPDATE _agent_runs SET status='finalized' WHERE id='old-run'")
-    assert prepare_local_config("owner", base_dir=str(tmp_path))
-    assert (
-        json.loads(path.read_bytes())["_reflexio_config_file"]["version"]
-        == FILE_FORMAT_VERSION
-    )
-    with pytest.raises(StoredConfigurationError):
-        reader(path.read_bytes())
+    # Clearing one ledger is not proof of the retained dataset's complete
+    # schema/closure. Only the explicit upgrade owner can establish authority.
+    with pytest.raises(LearningTransitionBlockedError, match="upgrade-local"):
+        prepare_local_config("owner", base_dir=str(tmp_path))
+    assert path.read_bytes() == original
+    assert reader(path.read_bytes())[1]["version"] == 10
+    assert not (path.parent / ".config-migrations").exists()
 
 
 def test_missing_config_cannot_publish_over_existing_default_target_debt(tmp_path):

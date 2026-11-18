@@ -10,7 +10,10 @@ from unittest.mock import Mock
 
 import pytest
 
-from reflexio.server.llm._litellm_types import LLMHardTimeoutError
+from reflexio.server.llm._litellm_types import (
+    LLMHardTimeoutError,
+    ProviderRequestGuardError,
+)
 from reflexio.server.llm.providers import _opencode_cli as native
 from reflexio.server.llm.providers import native_cli_provider as provider
 from reflexio.server.llm.providers.claude_code_stream_parser import (
@@ -443,7 +446,10 @@ def test_unknown_help_cannot_become_a_protocol_fallback(help_text):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("private", [False, True])
-def test_discovery_and_execution_spend_one_original_deadline(monkeypatch, private):
+@pytest.mark.parametrize("model", [None, "opaque/nested/model", "opaque/model#variant"])
+def test_discovery_and_execution_spend_one_original_deadline(
+    monkeypatch, private, model
+):
     clock = [10.0]
     calls = []
     monkeypatch.setattr(native.time, "monotonic", lambda: clock[0])
@@ -465,7 +471,7 @@ def test_discovery_and_execution_spend_one_original_deadline(monkeypatch, privat
         cli_path=sys.executable,
         system_prompt="owned context",
         dialogue="owned task",
-        model="opaque/model#variant",
+        model=model,
         timeout_seconds=1,
     )
     assert result.success and result.terminal_text == "owned reply"
@@ -474,11 +480,168 @@ def test_discovery_and_execution_spend_one_original_deadline(monkeypatch, privat
     argv, kwargs = calls[1]
     assert kwargs["timeout"] == pytest.approx(0.4)
     assert kwargs["input"] == "owned context\n\n## Task\nowned task"
-    assert argv[-2:] == ["--model", "opaque/model#variant"]
+    if model is None:
+        assert not any(arg.startswith(("--model", "--variant")) for arg in argv)
+    elif model == "opaque/nested/model":
+        assert argv[-1] == "--model=opaque/nested/model"
+        assert not any(arg.startswith("--variant") for arg in argv)
+    elif private:
+        assert argv[-1] == "--model=opaque/model#variant"
+    else:
+        assert argv[-2:] == ["--model=opaque/model", "--variant=variant"]
     assert ("--standalone" in argv) is private
     assert argv[argv.index("--title") + 1] == native._AGENT
     assert calls[0][1]["cwd"] == kwargs["cwd"]
     assert not Path(kwargs["cwd"]).exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", ["private-canary#", "#private-canary", "model# \t"])
+def test_legacy_empty_variant_components_refuse_before_generation(monkeypatch, model):
+    dispatch = Mock(return_value=subprocess.CompletedProcess([], 0, "", LEGACY))
+    monkeypatch.setattr(native, "run_native_cli", dispatch)
+    with pytest.raises(ProviderRequestGuardError, match="variant reference") as failure:
+        native.run_opencode(
+            cli_path=sys.executable,
+            system_prompt="owned context",
+            dialogue="owned task",
+            model=model,
+            timeout_seconds=1,
+        )
+    assert "private-canary" not in str(failure.value)
+    assert dispatch.call_count == 1
+    assert dispatch.call_args.args[0][-2:] == ["run", "--help"]
+    assert not Path(dispatch.call_args.kwargs["cwd"]).exists()
+
+
+@pytest.mark.unit
+def test_empty_legacy_variant_stays_terminal_through_worker_and_http_fallback(
+    monkeypatch,
+):
+    import pickle
+    import socket
+    import time
+    from unittest.mock import patch
+
+    import litellm
+
+    from reflexio.server.llm import _litellm_subprocess as worker
+    from reflexio.server.llm._litellm_types import ProviderRequestGuardError
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+    from reflexio.test_support.llm_mock import unpatched_litellm
+
+    reference = "local-cli/opencode/provider/model#"
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", reference)
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", sys.executable)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_CLI_MODEL", raising=False)
+    monkeypatch.setattr(litellm, "custom_provider_map", [])
+    monkeypatch.setattr(provider, "_HANDLER", None)
+    discovery = Mock(return_value=subprocess.CompletedProcess([], 0, "", LEGACY))
+    monkeypatch.setattr(native, "run_native_cli", discovery)
+    models = []
+    snapshots = []
+
+    def physical(params, hard_timeout):
+        models.append(params["model"])
+        if params["model"] != reference:
+            # A real HTTP rung is forbidden; the pre-fix walk reaches this
+            # inert response and thereby fails the terminal-refusal assertion.
+            return litellm.ModelResponse(
+                choices=[
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "unexpected fallback",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            )
+        queue = Mock()
+        with (
+            unpatched_litellm(),
+            patch.object(
+                socket.socket,
+                "connect",
+                side_effect=AssertionError("network forbidden"),
+            ),
+        ):
+            worker._litellm_completion_worker(
+                params, queue, time.monotonic() + hard_timeout
+            )
+        status, snapshot = queue.put.call_args.args[0]
+        assert status == "error"
+        snapshots.append(snapshot)
+        restored = pickle.loads(pickle.dumps(snapshot))  # noqa: S301 -- Owned in-process worker error snapshot only.
+        return worker._raise_completion_error(restored)
+
+    client = LiteLLMClient(
+        LiteLLMConfig(
+            model=reference,
+            timeout=5,
+            max_retries=0,
+            max_tokens=32,
+            fallback_models=["openai/owned-http"],
+        )
+    )
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", physical)
+    try:
+        with pytest.raises(ProviderRequestGuardError, match="variant reference"):
+            client.generate_response("owned synthetic input")
+    finally:
+        assert models == [reference]
+    assert len(snapshots) == 1 and snapshots[0].request_guard_error
+    assert discovery.call_count == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("private", [False, True])
+@pytest.mark.parametrize("component", ["model", "variant"])
+def test_model_text_cannot_become_a_native_routing_option(
+    monkeypatch, private, component
+):
+    # The recorded release-declared Yargs18 parser interprets paired option-
+    # shaped values as --attach. Inline binding preserves their literal value.
+    provenance = json.loads(
+        (
+            Path(__file__).parents[2]
+            / "fixtures/opencode_v1_19_6_run_help.provenance.json"
+        ).read_text()
+    )["option_binding_probe"]["results"]
+    value = provenance["modelBound"]["model"]
+    assert provenance["modelPair"]["attach"] == "https://example.invalid"
+    assert provenance["variantPair"]["attach"] == "https://example.invalid"
+    assert provenance["variantBound"]["variant"] == value
+    model = value if component == "model" else "provider/model#" + value
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if argv[-1] == "--help":
+            return subprocess.CompletedProcess(
+                argv, 0, MODERN if private else LEGACY, ""
+            )
+        return subprocess.CompletedProcess(
+            argv, 0, '{"type":"text","text":"owned reply"}', ""
+        )
+
+    monkeypatch.setattr(native, "run_native_cli", run)
+    assert native.run_opencode(
+        cli_path=sys.executable,
+        system_prompt="owned context",
+        dialogue="owned task",
+        model=model,
+        timeout_seconds=1,
+    ).success
+    expected = (
+        ["--model=provider/model", "--variant=" + value]
+        if not private and component == "variant"
+        else ["--model=" + model]
+    )
+    assert calls[-1][-len(expected) :] == expected
+    assert not any(arg.startswith("--attach=") for arg in calls[-1])
 
 
 @pytest.mark.unit

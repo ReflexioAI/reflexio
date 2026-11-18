@@ -55,6 +55,12 @@ def upgrade_local(
     database: Annotated[
         Path, typer.Argument(help="Absolute path to an existing local SQLite dataset")
     ],
+    org_id: Annotated[
+        str | None,
+        typer.Option(
+            help="Explicit namespace for a qualified unclaimed dataset; never overrides an existing claim"
+        ),
+    ] = None,
 ) -> None:
     """Establish future learning policy after stopping affected services/hosts.
 
@@ -72,7 +78,7 @@ def upgrade_local(
     )
 
     try:
-        result = upgrade_existing_sqlite_dataset(database)
+        result = upgrade_existing_sqlite_dataset(database, org_id=org_id)
     except (OSError, sqlite3.Error, ValueError, LearningTransitionBlockedError) as exc:
         message = (
             str(exc)

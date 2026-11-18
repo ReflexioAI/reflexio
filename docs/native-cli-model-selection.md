@@ -24,6 +24,15 @@ model components and unknown hosts are rejected. Native routes provide no
 inferred context/output capacity. Reported served-model provenance comes only
 from the CLI response, never from the requested reference.
 
+Native OpenCode discovers declared options from successful `run --help` output
+on either stdout or stderr. A CLI declaring `--standalone` receives the full
+`provider/model#variant` reference with its private-server flag. The recognized
+`--attach`/`--variant` contract receives separate model and variant arguments;
+an empty explicit component terminates selection before generation or fallback. A host-only reference
+supplies neither argument. Discovery and execution share the original deadline.
+Model and variant values are bound as `--name=value`, so option-shaped text
+cannot select another server or alter other invocation flags.
+
 Model resolution retains explicit organization/role choices, applicable custom
 gateway inheritance and sitevar choices ahead of this native fallback. Embeddings
 retain their own model. Explicit HTTP roles remain HTTP. An unavailable selected

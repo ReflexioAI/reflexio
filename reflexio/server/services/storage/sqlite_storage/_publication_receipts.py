@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -236,6 +237,40 @@ def _refuse_legacy_publication_debt(conn: sqlite3.Connection) -> None:
         )
 
 
+def _require_current_learning_authority(conn: sqlite3.Connection) -> None:
+    from reflexio.profile_authoring_protocol import PROFILE_AUTHORING_POLICY
+    from reflexio.server.services.storage.storage_base.learning_transition import (
+        LearningPolicyAuthority,
+        LearningTransitionBlockedError,
+    )
+
+    # An incompatible settings write must not strand the predecessor that
+    # still owns unfinished data. Admission reads authority; only explicit
+    # stopped-host maintenance may establish it on a retained database.
+    if (
+        conn.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='_learning_policy_authority'"
+        ).fetchone()
+        is None
+    ):
+        raise LearningTransitionBlockedError(
+            "Existing SQLite requires explicit data upgrade-local before "
+            "configuration publication; original configuration was not upgraded"
+        )
+    rows = conn.execute(
+        "SELECT singleton,authority FROM _learning_policy_authority LIMIT 2"
+    ).fetchall()
+    if len(rows) != 1 or rows[0][0] != 1:
+        raise LearningTransitionBlockedError(
+            "SQLite learning policy authority is unavailable; original configuration was not upgraded"
+        )
+    authority = LearningPolicyAuthority.from_dict(json.loads(rows[0][1]))
+    if authority.phase != "open" or authority.active_policy != PROFILE_AUTHORING_POLICY:
+        raise LearningTransitionBlockedError(
+            "SQLite learning policy needs its transition owner; original configuration was not upgraded"
+        )
+
+
 def validate_publication_cutover(
     org_id: str,
     *,
@@ -325,8 +360,7 @@ def validate_publication_cutover(
                 raise ValueError(
                     "Publication receipt schema is unsupported; original configuration was not upgraded"
                 )
-            return
-        if "_agent_runs" not in tables:
+        elif "_agent_runs" not in tables:
             if (
                 "_agent_run_finalization_receipts" in tables
                 and conn.execute(
@@ -334,18 +368,18 @@ def validate_publication_cutover(
                 ).fetchone()
             ):
                 raise ValueError("Historical publication receipt owner is unavailable")
-            return
-        if "_agent_run_finalization_receipts" not in tables:
+        elif "_agent_run_finalization_receipts" not in tables:
             if conn.execute("SELECT 1 FROM _agent_runs LIMIT 1").fetchone():
                 raise ValueError(
                     "Historical publication ledger is unavailable; original configuration was not upgraded"
                 )
-            return
-        if conn.execute(
-            "SELECT 1 FROM _agent_run_finalization_receipts q LEFT JOIN _agent_runs r ON r.id=q.run_id WHERE r.id IS NULL LIMIT 1"
-        ).fetchone():
-            raise ValueError("Historical publication receipt owner is unavailable")
-        _refuse_legacy_publication_debt(conn)
+        else:
+            if conn.execute(
+                "SELECT 1 FROM _agent_run_finalization_receipts q LEFT JOIN _agent_runs r ON r.id=q.run_id WHERE r.id IS NULL LIMIT 1"
+            ).fetchone():
+                raise ValueError("Historical publication receipt owner is unavailable")
+            _refuse_legacy_publication_debt(conn)
+        _require_current_learning_authority(conn)
 
 
 def migrate_publication_receipts(conn: sqlite3.Connection, *, org_id: str) -> None:
