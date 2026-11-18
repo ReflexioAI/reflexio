@@ -19,6 +19,7 @@ from reflexio.server.llm._native_cli import (
     request_timeout_seconds,
     run_native_cli,
 )
+from reflexio.server.llm._native_model_ref import reject_native_selection
 from reflexio.server.llm.providers.claude_code_stream_parser import (
     ParseResult,
     classify_stall,
@@ -211,7 +212,7 @@ def run_opencode(
             )
             if discovery.returncode != 0:
                 raise OpenCodeCLIError("OpenCode CLI capability discovery failed")
-            private = _uses_private_server(discovery.stdout)
+            private = _uses_private_server(discovery.stdout + "\n" + discovery.stderr)
             argv = [
                 str(executable),
                 "run",
@@ -225,7 +226,15 @@ def run_opencode(
             if private:
                 argv.append("--standalone")
             if model:
-                argv += ["--model", model]
+                if not private and "#" in model:
+                    selected, variant = model.split("#", 1)
+                    if not selected.strip() or not variant.strip():
+                        reject_native_selection(
+                            "OpenCode model variant reference is invalid"
+                        )
+                    argv += [f"--model={selected}", f"--variant={variant}"]
+                else:
+                    argv.append(f"--model={model}")
             result = run_native_cli(
                 argv,
                 input=prompt,

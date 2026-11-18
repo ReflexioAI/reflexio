@@ -1858,6 +1858,14 @@ host-only reference delegates to that CLI's own default; an explicit suffix
 `/default` remains a literal model ID. The requested reference never proves
 which model physically served the response.
 
+Native OpenCode accepts successful capability-help declarations from stdout or
+stderr. Its recognized attach/variant contract encodes `provider/model#high`
+as separate `--model=provider/model --variant=high` arguments; the private-server
+contract retains the full reference. Empty explicit variant components are terminal
+selection errors and do not advance an HTTP fallback ladder.
+Values are bound inline so model/variant text cannot become routing options.
+Neither discovery nor this encoding grants a fresh deadline or another route.
+
 Codex spends its selected deadline on setup, native execution and reading its
 final output. Setup cannot grant a fresh allowance, and a result read after
 expiry is a timeout.
