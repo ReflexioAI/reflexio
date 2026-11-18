@@ -205,7 +205,8 @@ raise AssertionError('crash boundary was not reached')
     env = {
         k: v
         for k, v in os.environ.items()
-        if k in {"PATH", "TMPDIR", "TEMP", "TMP", "LANG", "SystemRoot", "WINDIR"}
+        if k.upper()
+        in {"PATH", "TMPDIR", "TEMP", "TMP", "LANG", "SYSTEMROOT", "WINDIR"}
     }
     env.update(
         HOME=str(tmp_path),
