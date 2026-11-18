@@ -62,6 +62,7 @@ Most common commands at a glance:
 | List playbooks | `reflexio agent-playbooks list` |
 | Check health | `reflexio status check` |
 | Qualify a stopped, supported retained SQLite dataset | `reflexio --json data upgrade-local /absolute/existing.sqlite` |
+| Qualify the exact unclaimed plugin predecessor with an explicit namespace | `reflexio --json data upgrade-local /absolute/existing.sqlite --org-id YOUR_NAMESPACE` |
 | Stop server | `reflexio services stop` |
 
 ## Install & invoke

@@ -888,6 +888,10 @@ connection and the inspectable `_historical_schema_70daf32c.json` contract,
 never the normal constructor or business migrations. Unknown schema, scope,
 independent work and financial debt remain held. See developer.md's learning
 policy authority section for its stopped-host prerequisite and bounded cohort.
+The exact unclaimed explicit-path predecessor additionally requires `--org-id`
+to select its namespace; it never infers ownership or overrides a retained claim.
+The existing identity owner writes that claim in the same transaction as policy
+publication, after all scope and closure checks.
 
 SQLite bootstrap executes the base schema in one explicit transaction, avoiding
 a durable commit per CREATE statement. A base-schema failure rolls back that

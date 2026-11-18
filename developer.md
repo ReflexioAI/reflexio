@@ -127,6 +127,15 @@ neutral scope and durable execution/financial closure on its existing writer;
 it publishes only the current future-policy authority atomically. It never
 constructs normal storage, loads operator `.env`, migrates business data, clears
 work or changes configuration. Authentic queued, unstarted intake is preserved.
+The supported plugin's explicit-path predecessor schema can lack an identity
+claim. Only for that exact cohort, pass `--org-id YOUR_NAMESPACE` to select the
+future local namespace explicitly. This establishes a claim; it does not recover
+or prove historical ownership. Existing claims cannot be changed, and a supplied
+namespace must match them. Identity and future-policy authority commit together
+after qualification; incomplete work or debt cannot be bypassed by this option.
+An absent claim with any retained authority still refuses. Keep old hosts stopped
+after cutover. Lost acknowledgement can be retried against the same unchanged file;
+file replacement during commit reports uncertainty rather than success.
 Both shared metadata page readers reject NULL key components over the full
 scoped source before applying keyset boundaries. A NULL historical text primary
 key must never be mistaken for an empty page or disappear from closure.

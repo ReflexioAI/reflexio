@@ -1,0 +1,81 @@
+"""Capture actual supported predecessor plugin path + SDK pipeline, owned data only."""
+import ast
+import gzip
+import hashlib
+import json
+import os
+from pathlib import Path
+import sqlite3
+import subprocess
+import tarfile
+import tempfile
+
+A = Path(__file__).resolve().parent
+S = A / 'enterprise-authenticated-rate-identity-work/open_source/reflexio'
+P = S.parent / 'claude-smart'
+PY = A / 'sdk-adoption-test-env/bin/python'
+OLD = '70daf32c2b47b35dd0fe7be1d6f64d648a67eb8a'
+PLUGIN = '2a719abfbba4f0ee978516ab14b89e8c937d4213'
+OUT = A / 'plugin-unclaimed-cohorts-20261117'
+OUT.mkdir(exist_ok=True)
+recipe = ast.parse((S / 'tests/test_data/sqlite_70daf32c/producer.py.txt').read_text())
+assigns = {n.targets[0].id: n.value for n in recipe.body if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)}
+code = ast.literal_eval(assigns['COMMON']).replace("org='historical_http'", "org='claude-smart'") + ast.literal_eval(assigns['PRODUCER'].right)
+needle = "with patch('reflexio.server.services.durable_learning.local.ensure_local_extraction',lambda _:None),patch('reflexio.server.services.tagging.tagging_scheduler.schedule_tagging',lambda **_:None):"
+injection = """import os,runpy,socket
+os.environ['CLAUDE_SMART_BACKEND']='1'
+with socket.socket() as probe:
+ probe.bind(('127.0.0.1',0));backend_port=probe.getsockname()[1]
+runner=runpy.run_path(sys.argv[3])
+runner['pin_legacy_sqlite_db_path'](backend_port,'127.0.0.1')
+config=DefaultConfigurator(org_id=org,base_dir=str(root))
+assert config.get_config().storage_config.db_path==str(root/'reflexio.db')
+"""
+assert code.count(needle) == 1
+code = code.replace(needle, injection + '\n' + needle, 1)
+
+def archive(repo, revision, destination):
+    destination.mkdir()
+    process = subprocess.Popen(['git', 'archive', revision], cwd=repo, stdout=subprocess.PIPE)
+    with tarfile.open(fileobj=process.stdout, mode='r|') as tar:
+        tar.extractall(destination, filter='data')
+    assert process.wait() == 0
+
+report = {'sdk': OLD, 'plugin': PLUGIN, 'namespace': 'claude-smart', 'scope': 'Actual plugin pin_legacy_sqlite_db_path + actual old SDK HTTP producer/durable worker; no full coding-host installation', 'model_calls': 0, 'cohorts': {}}
+with tempfile.TemporaryDirectory(prefix='rx-owned-plugin-cohorts-') as temporary:
+    root = Path(temporary)
+    old, plugin = root / 'sdk', root / 'plugin'
+    archive(S, OLD, old)
+    archive(P, PLUGIN, plugin)
+    for cohort in ('empty', 'completed', 'eligible_queued', 'billing_pending', 'window_pending'):
+        home = root / cohort
+        home.mkdir()
+        data = home / '.reflexio'
+        data.mkdir()
+        empty = home / 'empty.env'
+        empty.touch()
+        env = {k: v for k, v in os.environ.items() if k in ('PATH', 'TMPDIR', 'LANG')}
+        env.update(HOME=str(home), USERPROFILE=str(home), REFLEXIO_ENV_FILE=str(empty), PYTHON_DOTENV_DISABLED='1', PYTHONPATH=str(old), LOCAL_STORAGE_PATH=str(data), REFLEXIO_DEFAULT_ORG_ID='claude-smart', MOCK_LLM_RESPONSE='true', REFLEXIO_EMBEDDING_PROVIDER='off', OPENAI_API_KEY='sk-test-not-real', LITELLM_LOCAL_MODEL_COST_MAP='true', REFLEXIO_NATIVE_COMPUTE_THREADS='1', OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='1', MKL_NUM_THREADS='1', POLARS_MAX_THREADS='2')
+        value = subprocess.run([str(PY), '-u', '-c', code, str(data), cohort, str(plugin / 'plugin/scripts/backend-python-runner.py')], env=env, cwd=home, text=True, capture_output=True, timeout=120)
+        (OUT / f'{cohort}.log').write_text(f'EXIT_CODE {value.returncode}\n' + value.stdout + value.stderr)
+        assert value.returncode == 0, (cohort, value.stderr[-2000:])
+        database = data / json.loads((data / 'dataset-name.json').read_text())
+        with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True) as conn:
+            catalog = conn.execute('SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name LIMIT 307').fetchall()
+            assert len(catalog) == 304
+            assert not conn.execute("SELECT 1 FROM sqlite_schema WHERE name='_dataset_identity'").fetchall()
+        conn.close()
+        raw = database.read_bytes()
+        compressed = gzip.compress(raw, mtime=0)
+        (OUT / f'{cohort}.sqlite.gz').write_bytes(compressed)
+        (OUT / f'{cohort}.snapshot.json').write_bytes((data / 'retained-snapshot.json').read_bytes())
+        producer = [json.loads(line.removeprefix('PROBE_JSON ')) for line in value.stdout.splitlines() if line.startswith('PROBE_JSON ')]
+        assert len(producer) == 1
+        if cohort in ('completed', 'billing_pending'):
+            assert producer[0]['profiles'] == 1
+        report['cohorts'][cohort] = {'catalog_objects': 304, 'identity_table': False, 'raw_sha256': hashlib.sha256(raw).hexdigest(), 'gzip_sha256': hashlib.sha256(compressed).hexdigest(), 'raw_bytes': len(raw), 'gzip_bytes': len(compressed), 'producer': producer[0]}
+report.update(owned_home_and_source_archives_removed=not root.exists(), recipe_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+(OUT / 'provenance.json').write_text(json.dumps(report, indent=2) + '\n')
+(OUT / 'producer.py.txt').write_text(Path(__file__).read_text())
+print(json.dumps({k: v for k, v in report.items() if k != 'cohorts'}, indent=2))
+print('Captured genuine unclaimed cohorts: ' + ', '.join(report['cohorts']))

@@ -65,7 +65,9 @@ def _owned_identifier(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
-def _check_upgrade_schema(conn: sqlite3.Connection, contract: dict[str, Any]) -> bool:
+def _check_upgrade_schema(
+    conn: sqlite3.Connection, contract: dict[str, Any]
+) -> tuple[bool, bool]:
     expected = contract["catalog"]
     observed = _catalog(conn, len(expected) + 2)
     authority_objects = [
@@ -80,9 +82,14 @@ def _check_upgrade_schema(conn: sqlite3.Connection, contract: dict[str, Any]) ->
                 raise _upgrade_refused("unsupported authority schema")
         finally:
             reference.close()
+    has_identity = any(row["table"] == "_dataset_identity" for row in observed)
+    if not has_identity:
+        expected = [row for row in expected if row["table"] != "_dataset_identity"]
     if [row for row in observed if row not in authority_objects] != expected:
         raise _upgrade_refused("unsupported historical schema")
     for name, shape in contract["tables"].items():
+        if name == "_dataset_identity" and not has_identity:
+            continue
         if shape.get("virtual"):
             continue  # Exact catalog/ownership proof, never query a virtual parent.
         columns = [
@@ -93,7 +100,7 @@ def _check_upgrade_schema(conn: sqlite3.Connection, contract: dict[str, Any]) ->
         ]
         if columns != shape["columns"]:
             raise _upgrade_refused("unsupported historical columns")
-    return bool(authority_objects)
+    return bool(authority_objects), has_identity
 
 
 def _upgrade_identity(conn: sqlite3.Connection) -> str:
@@ -139,7 +146,36 @@ def _check_upgrade_scope(
         raise _upgrade_refused("unknown sequence owner")
 
 
-def upgrade_existing_sqlite_dataset(path: Path) -> SQLiteDatasetUpgradeResult:
+def _select_upgrade_namespace(
+    conn: sqlite3.Connection,
+    selected: str | None,
+    *,
+    has_identity: bool,
+    has_authority: bool,
+) -> str:
+    """Select explicitly or retain the immutable claim; never infer ownership."""
+    from ._dataset_path import DatasetIdentityError, validate_dataset_identity
+
+    if selected is not None:
+        try:
+            validate_dataset_identity(selected)
+        except DatasetIdentityError:
+            raise _upgrade_refused("the selected namespace is invalid") from None
+    if has_identity:
+        retained = _upgrade_identity(conn)
+        if selected is not None and selected != retained:
+            raise _upgrade_refused("the selected namespace conflicts with its claim")
+        return retained
+    if has_authority:
+        raise _upgrade_refused("retained authority has no identity claim")
+    if selected is None:
+        raise _upgrade_refused("an unclaimed dataset requires explicit --org-id")
+    return selected
+
+
+def upgrade_existing_sqlite_dataset(
+    path: Path, *, org_id: str | None = None
+) -> SQLiteDatasetUpgradeResult:
     """Explicitly establish future policy on one qualified, stopped local cohort.
 
     Stop affected services/coding hosts and filesystem changes first. This never
@@ -147,6 +183,7 @@ def upgrade_existing_sqlite_dataset(path: Path) -> SQLiteDatasetUpgradeResult:
     Unknown schemas and retained independent work remain held, without cleanup.
     """
     from ..storage_base.transition_closure import derive_project_transition_closure_db
+    from ._dataset_path import _claim_or_read_identity_db
     from ._extraction_stream import SQLiteStreamSQL
 
     if not path.is_absolute():
@@ -171,8 +208,10 @@ def upgrade_existing_sqlite_dataset(path: Path) -> SQLiteDatasetUpgradeResult:
         check_target()
         conn.execute("BEGIN IMMEDIATE")
         check_target()
-        has_authority = _check_upgrade_schema(conn, contract)
-        org_id = _upgrade_identity(conn)
+        has_authority, has_identity = _check_upgrade_schema(conn, contract)
+        org_id = _select_upgrade_namespace(
+            conn, org_id, has_identity=has_identity, has_authority=has_authority
+        )
         _check_upgrade_scope(conn, contract, org_id)
         db = SQLiteStreamSQL(conn)
         raw = db.read_learning_policy_authority() if has_authority else None
@@ -185,6 +224,7 @@ def upgrade_existing_sqlite_dataset(path: Path) -> SQLiteDatasetUpgradeResult:
                 raise _upgrade_refused("retained authority needs its transition owner")
             check_target()
             conn.commit()
+            check_target()
             return SQLiteDatasetUpgradeResult(retained, False, None)
         for name in contract["empty_controls"]:
             if conn.execute(
@@ -203,6 +243,16 @@ def upgrade_existing_sqlite_dataset(path: Path) -> SQLiteDatasetUpgradeResult:
         provenance = {
             "protocol": "sqlite-qualified-upgrade-v1",
             "source_schema_sha256": hashlib.sha256(contract_bytes).hexdigest(),
+            "source_catalog_sha256": hashlib.sha256(
+                json.dumps(
+                    _catalog(conn, len(contract["catalog"]) + 2),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest(),
+            "identity_origin": "retained_claim"
+            if has_identity
+            else "operator_established",
             "org_id": org_id,
             "file_identity": [original.st_dev, original.st_ino],
             "policy": PROFILE_AUTHORING_POLICY,
@@ -224,6 +274,8 @@ def upgrade_existing_sqlite_dataset(path: Path) -> SQLiteDatasetUpgradeResult:
             ).hexdigest(),
             True,
         )
+        if not has_identity and _claim_or_read_identity_db(conn, org_id) != org_id:
+            raise _upgrade_refused("the selected namespace conflicts with its claim")
         conn.execute(AUTHORITY_DDL)
         conn.execute(
             "INSERT INTO _learning_policy_authority(singleton,authority) VALUES(1,?)",
@@ -247,6 +299,7 @@ def upgrade_existing_sqlite_dataset(path: Path) -> SQLiteDatasetUpgradeResult:
         ):
             raise _upgrade_refused("the published authority changed")
         conn.commit()
+        check_target()
         return SQLiteDatasetUpgradeResult(root, True, provenance)
     except BaseException:
         conn.rollback()

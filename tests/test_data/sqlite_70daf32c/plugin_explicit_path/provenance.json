@@ -1,0 +1,151 @@
+{
+  "sdk": "70daf32c2b47b35dd0fe7be1d6f64d648a67eb8a",
+  "plugin": "2a719abfbba4f0ee978516ab14b89e8c937d4213",
+  "namespace": "claude-smart",
+  "scope": "Actual plugin pin_legacy_sqlite_db_path + actual old SDK HTTP producer/durable worker; no full coding-host installation",
+  "model_calls": 0,
+  "cohorts": {
+    "empty": {
+      "catalog_objects": 304,
+      "identity_table": false,
+      "raw_sha256": "dc94bbed597ecfb2844b85a2dc7b18188d511ebdad5fd40551e55f00d8def29c",
+      "gzip_sha256": "3ee90292188290b60d9734ec891ca220cfae5d2d30606d2faf7a81aa99326ae2",
+      "raw_bytes": 1175552,
+      "gzip_bytes": 30845,
+      "producer": {
+        "fingerprint": {
+          "sha256": "7d3168d9492c1b84baa705a53c0363b8166dda5703af4be02d1588eb61d7b8a7",
+          "request_count": 0,
+          "interaction_count": 0
+        },
+        "profiles": 0,
+        "retained_tables": {
+          "requests": 0,
+          "interactions": 0,
+          "profiles": 0,
+          "_agent_runs": 0,
+          "extraction_windows": 0,
+          "extraction_cursors": 0,
+          "_agent_output_receipts": 0,
+          "_agent_run_finalization_receipts": 0,
+          "_agent_output_preparations": 0,
+          "learning_work": 0
+        }
+      }
+    },
+    "completed": {
+      "catalog_objects": 304,
+      "identity_table": false,
+      "raw_sha256": "7aa29bbfd54743d38341138ba1bfcd45a1dd06386146a85766d4b8db9520c3b9",
+      "gzip_sha256": "9108d4ceaef057015f6dbd4039923fbacd579c2287955bd6038273f1c36797dc",
+      "raw_bytes": 1179648,
+      "gzip_bytes": 36216,
+      "producer": {
+        "fingerprint": {
+          "sha256": "52ad820b509176c3da751e83865c392f2554b31d0587bfa685268e69888552e2",
+          "request_count": 1,
+          "interaction_count": 10
+        },
+        "profiles": 1,
+        "retained_tables": {
+          "requests": 1,
+          "interactions": 10,
+          "profiles": 1,
+          "_agent_runs": 0,
+          "extraction_windows": 1,
+          "extraction_cursors": 2,
+          "_agent_output_receipts": 0,
+          "_agent_run_finalization_receipts": 0,
+          "_agent_output_preparations": 0,
+          "learning_work": 1
+        }
+      }
+    },
+    "eligible_queued": {
+      "catalog_objects": 304,
+      "identity_table": false,
+      "raw_sha256": "a4d29d7fdb50bfce334ea7d33179144f0ccea44072e5c7abfbdb912a2116d1c9",
+      "gzip_sha256": "43c01005fbf15af0a4a6dc07fe28b2912a345eece0d6c07843422523d6818fca",
+      "raw_bytes": 1175552,
+      "gzip_bytes": 33584,
+      "producer": {
+        "fingerprint": {
+          "sha256": "707142d97909f3e03dee46b3da60cc9a03b49671bcb0d39f25b13fb83f1981f7",
+          "request_count": 1,
+          "interaction_count": 10
+        },
+        "profiles": 0,
+        "retained_tables": {
+          "requests": 1,
+          "interactions": 10,
+          "profiles": 0,
+          "_agent_runs": 0,
+          "extraction_windows": 0,
+          "extraction_cursors": 2,
+          "_agent_output_receipts": 0,
+          "_agent_run_finalization_receipts": 0,
+          "_agent_output_preparations": 0,
+          "learning_work": 1
+        }
+      }
+    },
+    "billing_pending": {
+      "catalog_objects": 304,
+      "identity_table": false,
+      "raw_sha256": "7c535ddf42259ac554da2e22c066dd4046ca6dcbc15e0e235fe140d605dd612a",
+      "gzip_sha256": "a01de5f6047064f33e8acfbd57d9be1f205f05b952e8d2c84ad61f00ab2e32e7",
+      "raw_bytes": 1183744,
+      "gzip_bytes": 36304,
+      "producer": {
+        "fingerprint": {
+          "sha256": "63f322dd231007a8be792bdb0d256980d5e2ed2878cf2e300ff25044746376b4",
+          "request_count": 1,
+          "interaction_count": 10
+        },
+        "profiles": 1,
+        "retained_tables": {
+          "requests": 1,
+          "interactions": 10,
+          "profiles": 1,
+          "_agent_runs": 0,
+          "extraction_windows": 1,
+          "extraction_cursors": 2,
+          "_agent_output_receipts": 0,
+          "_agent_run_finalization_receipts": 0,
+          "_agent_output_preparations": 0,
+          "learning_work": 1
+        }
+      }
+    },
+    "window_pending": {
+      "catalog_objects": 304,
+      "identity_table": false,
+      "raw_sha256": "581393072064e46ce7f4e6c04d87473d6899aea6e8ab262be4038c309d5d900f",
+      "gzip_sha256": "66ce1f8f451856201456a6d71ed16cc987a57f687b3a9174aa7dfe8e405dc9a2",
+      "raw_bytes": 1175552,
+      "gzip_bytes": 34070,
+      "producer": {
+        "fingerprint": {
+          "sha256": "4b99bcc501a3394e90aff149c4e7f8cae6a16695cc58d1152260b38f5176f32d",
+          "request_count": 1,
+          "interaction_count": 10
+        },
+        "profiles": 0,
+        "retained_tables": {
+          "requests": 1,
+          "interactions": 10,
+          "profiles": 0,
+          "_agent_runs": 0,
+          "extraction_windows": 1,
+          "extraction_cursors": 2,
+          "_agent_output_receipts": 0,
+          "_agent_run_finalization_receipts": 0,
+          "_agent_output_preparations": 0,
+          "learning_work": 1
+        }
+      }
+    }
+  },
+  "owned_home_and_source_archives_removed": true,
+  "recipe_sha256": "3a8c47f798f564709e8a2c61e42825a96f7621e763feec26ab2729379a39cf4c"
+}
