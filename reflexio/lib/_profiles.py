@@ -43,6 +43,7 @@ from reflexio.models.api_schema.service_schemas import (
     UpgradeProfilesRequest,
     UpgradeProfilesResponse,
 )
+from reflexio.server.services.profile.lifecycle_deadlines import profile_version
 from reflexio.server.services.profile.service import (
     ProfileGenerationService,
 )
@@ -272,7 +273,7 @@ class ProfilesMixin(ReflexioBase):
         non-None fields from ``request``, refreshes ``last_modified_timestamp``,
         and persists the whole record via
         :meth:`BaseStorage.update_user_profile_by_id`. The storage layer
-        regenerates the embedding for the updated content.
+        regenerates the embedding and rejects a concurrent edit or supersession.
 
         Args:
             request (Union[UpdateUserProfileRequest, dict]): The update request.
@@ -300,12 +301,22 @@ class ProfilesMixin(ReflexioBase):
                     f"profile_id={request.profile_id!r}"
                 ),
             )
+        expected_version = profile_version(existing.model_dump(mode="json"))
         if request.content is not None:
             existing.content = request.content
         if request.custom_features is not None:
             existing.custom_features = request.custom_features
         existing.last_modified_timestamp = int(datetime.now(UTC).timestamp())
-        storage.update_user_profile_by_id(request.user_id, request.profile_id, existing)
+        if not storage.update_user_profile_by_id(
+            request.user_id,
+            request.profile_id,
+            existing,
+            expected_version=expected_version,
+        ):
+            return UpdateUserProfileResponse(
+                success=False,
+                msg="Profile changed while the edit was being prepared. Reload and retry.",
+            )
         return UpdateUserProfileResponse(
             success=True, msg="User profile updated successfully"
         )
