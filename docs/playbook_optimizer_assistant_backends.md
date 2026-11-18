@@ -8,7 +8,7 @@ This doc explains the playbook optimizer's **assistant backend layer**: what an 
 
 The playbook optimizer takes an existing playbook ("incumbent") and uses [GEPA](https://github.com/stanford-nlp/gepa) to search for a better wording ("candidate"). To decide if a candidate is actually better, it needs to **run both versions against the real assistant** on the same user turns and compare the resulting conversations.
 
-The "assistant backend" is the thing that turns *(messages, playbooks)* into the next assistant reply. The optimizer doesn't care how that reply is produced — it just needs a callable that respects the contract.
+The "assistant backend" is the thing that turns _(messages, playbooks)_ into the next assistant reply. The optimizer doesn't care how that reply is produced — it just needs a callable that respects the contract.
 
 ```
                        ┌──────────────────────────────────────────────────────────┐
@@ -128,9 +128,10 @@ The "assistant backend" is the thing that turns *(messages, playbooks)* into the
 ```
 
 Reading the diagram top-to-bottom:
+
 - The **upper third** is "how an optimization gets started" — upstream services enqueue work and the scheduler decides when to actually run it.
 - The **middle band** is `PlaybookOptimizer.optimize` — the only place that knows about config, scenario windows, and the GEPA loop. Step 2 is where this change lives: a single dispatch into one of the two backends.
-- The **lower third** is the inner loop: for every (candidate, window) pair the adapter runs *two* paired rollouts that share the same user turns and the same backend, then a judge LLM scores them. Both rollouts route through whichever `AssistantCallable` was selected at step 2 — that's why the backend layer is the only thing that has to be swappable.
+- The **lower third** is the inner loop: for every (candidate, window) pair the adapter runs _two_ paired rollouts that share the same user turns and the same backend, then a judge LLM scores them. Both rollouts route through whichever `AssistantCallable` was selected at step 2 — that's why the backend layer is the only thing that has to be swappable.
 
 ---
 
@@ -145,12 +146,12 @@ class AssistantCallable(Protocol):
     ) -> str: ...
 ```
 
-| Input / Output | Meaning |
-|---|---|
-| `messages` | Conversation so far. Each `ChatMessage` has `role` (`user`/`assistant`/`system`) and `content`. |
-| `playbooks` | Playbooks to inject into the assistant's system context. Today exactly one — the incumbent or candidate version under test. |
-| Return value | The assistant's next reply as a plain string. |
-| On failure | Raise `AssistantFailedError` (or a subclass). The adapter catches this and records an `aborted` evaluation row instead of crashing the GEPA loop. |
+| Input / Output | Meaning                                                                                                                                           |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `messages`     | Conversation so far. Each `ChatMessage` has `role` (`user`/`assistant`/`system`) and `content`.                                                   |
+| `playbooks`    | Playbooks to inject into the assistant's system context. Today exactly one — the incumbent or candidate version under test.                       |
+| Return value   | The assistant's next reply as a plain string.                                                                                                     |
+| On failure     | Raise `AssistantFailedError` (or a subclass). The adapter catches this and records an `aborted` evaluation row instead of crashing the GEPA loop. |
 
 Anything that satisfies this Protocol can be swapped in. The two concrete backends are described below.
 
@@ -158,16 +159,16 @@ Anything that satisfies this Protocol can be swapped in. The two concrete backen
 
 ## 3. The two backends
 
-| Aspect | `WebhookAssistant` | `LocalScriptAssistant` |
-|---|---|---|
-| Transport | HTTPS POST | SDK-owned process launch |
-| Where the assistant runs | Wherever the URL points | On the same host as the optimizer |
-| Payload format | JSON body | JSON on stdin |
-| Response format | JSON body with `{"content": "..."}` | JSON on stdout with `{"content": "..."}` |
-| Auth | Optional `Authorization` header | Inherits process env (no separate auth concept) |
-| Failure type | `WebhookFailedError` | `LocalScriptFailedError` |
-| Common base | `AssistantFailedError` | `AssistantFailedError` |
-| Best for | Production / remote deployments | Local dev, CI, offline evaluation |
+| Aspect                   | `WebhookAssistant`                  | `LocalScriptAssistant`                          |
+| ------------------------ | ----------------------------------- | ----------------------------------------------- |
+| Transport                | HTTPS POST                          | SDK-owned process launch                        |
+| Where the assistant runs | Wherever the URL points             | On the same host as the optimizer               |
+| Payload format           | JSON body                           | JSON on stdin                                   |
+| Response format          | JSON body with `{"content": "..."}` | JSON on stdout with `{"content": "..."}`        |
+| Auth                     | Optional `Authorization` header     | Inherits process env (no separate auth concept) |
+| Failure type             | `WebhookFailedError`                | `LocalScriptFailedError`                        |
+| Common base              | `AssistantFailedError`              | `AssistantFailedError`                          |
+| Best for                 | Production / remote deployments     | Local dev, CI, offline evaluation               |
 
 Both share the configured timeout field, single-attempt delivery contract and
 payload builder (`_build_payload`). HTTP timeouts bound each transport phase;
@@ -177,13 +178,11 @@ local compilation and native execution share one caller deadline.
 
 ```json
 {
-  "messages": [
-    {"role": "user", "content": "How do I reset my password?"},
-    {"role": "assistant", "content": "..."}
-  ],
-  "playbooks": [
-    {"id": 42, "content": "<playbook text>", "trigger": "password reset"}
-  ]
+	"messages": [
+		{ "role": "user", "content": "How do I reset my password?" },
+		{ "role": "assistant", "content": "..." }
+	],
+	"playbooks": [{ "id": 42, "content": "<playbook text>", "trigger": "password reset" }]
 }
 ```
 
@@ -192,7 +191,7 @@ For the webhook, this becomes the request body. For the script, this becomes the
 ### 3.2 The expected response
 
 ```json
-{"content": "<assistant reply>"}
+{ "content": "<assistant reply>" }
 ```
 
 Local scripts may also return the compile-only native form below. Otherwise,
@@ -205,13 +204,13 @@ A local script can prepare a request instead of starting its own model process:
 
 ```json
 {
-  "native_cli_v1": {
-    "protocol": "codex",
-    "executable": "/absolute/path/to/codex",
-    "model": null,
-    "system_prompt": "Read-only evaluation context",
-    "dialogue": "The current task"
-  }
+	"native_cli_v1": {
+		"protocol": "codex",
+		"executable": "/absolute/path/to/codex",
+		"model": null,
+		"system_prompt": "Read-only evaluation context",
+		"dialogue": "The current task"
+	}
 }
 ```
 
@@ -281,22 +280,22 @@ There is **no shell interpretation** (`shell=True` is not used), so config value
 
 ### 4.2 What the script must do
 
-| Step | Requirement |
-|---|---|
-| 1. Read stdin | Single JSON object (UTF-8). The `messages` and `playbooks` fields described above. |
-| 2. Compute reply | Free-form. Could be an LLM call, a deterministic stub, a replay of prior recordings, etc. |
-| 3. Write stdout | Single JSON object containing at least `{"content": "<string>"}`. |
-| 4. Exit 0 on success | Any non-zero exit is a failure; diagnostics omit raw stderr. |
+| Step                 | Requirement                                                                               |
+| -------------------- | ----------------------------------------------------------------------------------------- |
+| 1. Read stdin        | Single JSON object (UTF-8). The `messages` and `playbooks` fields described above.        |
+| 2. Compute reply     | Free-form. Could be an LLM call, a deterministic stub, a replay of prior recordings, etc. |
+| 3. Write stdout      | Single JSON object containing at least `{"content": "<string>"}`.                         |
+| 4. Exit 0 on success | Any non-zero exit is a failure; diagnostics omit raw stderr.                              |
 
 ### 4.3 Failure modes and how each is reported
 
-| Symptom | What the backend raises |
-|---|---|
-| Non-zero exit code | `LocalScriptFailedError("...exited with code N")` |
-| stdout not valid JSON | `LocalScriptFailedError("...returned invalid JSON")` |
-| stdout missing `content` (or non-string) | `LocalScriptFailedError("...returned no content")` |
-| `subprocess.TimeoutExpired` | No replay; raises `LocalScriptFailedError("...timed out after Ns")` |
-| Any other exception | Typed failure without replay or raw process output. |
+| Symptom                                  | What the backend raises                                             |
+| ---------------------------------------- | ------------------------------------------------------------------- |
+| Non-zero exit code                       | `LocalScriptFailedError("...exited with code N")`                   |
+| stdout not valid JSON                    | `LocalScriptFailedError("...returned invalid JSON")`                |
+| stdout missing `content` (or non-string) | `LocalScriptFailedError("...returned no content")`                  |
+| `subprocess.TimeoutExpired`              | No replay; raises `LocalScriptFailedError("...timed out after Ns")` |
+| Any other exception                      | Typed failure without replay or raw process output.                 |
 
 stderr is truncated to 1000 chars before being put into messages so a noisy script can't blow up logs or DB rows.
 
@@ -339,14 +338,14 @@ def _create_assistant(self, config) -> AssistantCallable | None:
     return None
 ```
 
-| Config state | Result |
-|---|---|
-| `webhook_url` set, `assistant_script_path` unset | Webhook backend |
-| `assistant_script_path` set, `webhook_url` unset | Script backend |
-| Both set | **Rejected at config load time** by a Pydantic validator (`ValueError: Configure only one playbook optimizer assistant backend...`) |
-| Neither set | Optimizer logs `Skipping playbook optimization: no assistant backend configured` and returns without creating a job |
+| Config state                                     | Result                                                                                                                              |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `webhook_url` set, `assistant_script_path` unset | Webhook backend                                                                                                                     |
+| `assistant_script_path` set, `webhook_url` unset | Script backend                                                                                                                      |
+| Both set                                         | **Rejected at config load time** by a Pydantic validator (`ValueError: Configure only one playbook optimizer assistant backend...`) |
+| Neither set                                      | Optimizer logs `Skipping playbook optimization: no assistant backend configured` and returns without creating a job                 |
 
-The backend check happens *before* loading the incumbent or resolving scenario
+The backend check happens _before_ loading the incumbent or resolving scenario
 windows, so an unconfigured optimizer short-circuits cheaply when there is no
 recoverable publication. After source-window resolution, the optimizer also
 skips before job creation when the validation holdout is smaller than
@@ -360,11 +359,11 @@ All fields live on `PlaybookOptimizerConfig` (in `reflexio/models/config_schema.
 
 ### 6.1 New fields
 
-| Field | Type | Default | Purpose |
-|---|---|---|---|
-| `assistant_script_path` | `str \| None` | `None` | Absolute path to the executable. Set this to enable the script backend. |
-| `assistant_script_args` | `list[str]` | `[]` | Extra argv tokens passed after `assistant_script_path`. |
-| `max_validation_windows` | `int > 0` | 2 | Maximum source windows held out for validation; all remaining source windows form the GEPA training pool. |
+| Field                    | Type          | Default | Purpose                                                                                                   |
+| ------------------------ | ------------- | ------- | --------------------------------------------------------------------------------------------------------- |
+| `assistant_script_path`  | `str \| None` | `None`  | Absolute path to the executable. Set this to enable the script backend.                                   |
+| `assistant_script_args`  | `list[str]`   | `[]`    | Extra argv tokens passed after `assistant_script_path`.                                                   |
+| `max_validation_windows` | `int > 0`     | 2       | Maximum source windows held out for validation; all remaining source windows form the GEPA training pool. |
 
 Reflexio always passes `cache_evaluation=True` to GEPA so the same accepted
 candidate/window pair is never scored twice across iterations.
@@ -383,14 +382,14 @@ positive `metric_call_budget` and the relevant target permission to opt in.
 
 ### 6.2 Existing fields that now apply to both backends
 
-| Field | Type | Default | Notes |
-|---|---|---|---|
-| `webhook_url` | `str \| None` | `None` | URL for the webhook backend |
-| `webhook_auth_header` | `str \| None` | `None` | Sent verbatim as `Authorization` (webhook only) |
-| `webhook_timeout_seconds` | `int > 0` | 60 | Per-call timeout — both backends |
-| `metric_call_budget` | `int >= 0` | 0 | Zero disables new optimization; positive values set GEPA’s metric-call stopping threshold |
-| `max_turns` | `int > 0` | 4 | Maximum user turns replayed per source window rollout |
-| `reflection_minibatch_size` | `int > 0` | 2 | Number of training windows GEPA samples for each reflection minibatch |
+| Field                       | Type          | Default | Notes                                                                                     |
+| --------------------------- | ------------- | ------- | ----------------------------------------------------------------------------------------- |
+| `webhook_url`               | `str \| None` | `None`  | URL for the webhook backend                                                               |
+| `webhook_auth_header`       | `str \| None` | `None`  | Sent verbatim as `Authorization` (webhook only)                                           |
+| `webhook_timeout_seconds`   | `int > 0`     | 60      | Per-call timeout — both backends                                                          |
+| `metric_call_budget`        | `int >= 0`    | 0       | Zero disables new optimization; positive values set GEPA’s metric-call stopping threshold |
+| `max_turns`                 | `int > 0`     | 4       | Maximum user turns replayed per source window rollout                                     |
+| `reflection_minibatch_size` | `int > 0`     | 2       | Number of training windows GEPA samples for each reflection minibatch                     |
 
 Search stops when GEPA's current winner satisfies the publication quality policy:
 aggregate `min_commit_score`, and `min_commit_windows` distinct validation windows
@@ -470,23 +469,23 @@ playbook_optimizer_config:
 
 What happens, in order, when a playbook is scheduled and the optimizer is enabled:
 
-| Step | Component | What it does |
-|---|---|---|
-| 1 | `PlaybookAggregator._enqueue_playbook_optimization` | After saving new agent playbooks, enqueues each PENDING playbook with the scheduler. |
-| 2 | `PlaybookOptimizationScheduler` | Coalesces `(org_id, kind, target_id)` work through the shared bounded callback executor; no jitter timer. |
-| 3 | `PlaybookOptimizer.optimize(target)` | Applies feature, target, and adoption gates. For user targets, resumes an expired staged publication before starting new search work. |
-| 4 | `ScenarioResolver` | Builds `ScenarioWindow`s from snapshotted agent source windows or a user playbook's `source_interaction_ids`. |
-| 5 | `gepa.api.optimize(...)` | Runs the candidate-search loop. |
-| 6 | `ReflexioPlaybookGEPAAdapter.evaluate` | For each `(candidate, window)`: |
-|   |   | • `MultiTurnRollout(incumbent).run(window)` → calls backend N times |
-|   |   | • `MultiTurnRollout(candidate).run(window)` → calls backend N times |
-|   |   | • `PairwiseJudge.judge(...)` → LLM verdict |
-|   |   | • Persists `PlaybookOptimizationEvaluation` row |
-| 7 | Failure handling | Any `AssistantFailedError` → `verdict="aborted"`, `score=0.0`, GEPA continues. |
-| 8 | `PlaybookOptimizer._passes_commit_thresholds` | Checks score / likert / per-window verdict counts. |
-| 9a | Agent-playbook publication | `_commit_if_allowed` archives the pending incumbent and saves its successor. |
-| 9b | User-playbook publication | Builds a fixed decision proof and search projection, stages them durably, then atomically replaces the current user playbook with exactly one successor. The compact proof binds each full durable evaluation through a canonical digest rather than duplicating rollout documents. |
-| 10 | User-playbook recovery | A later enabled run may reclaim an expired publication lease and finish from the staged bytes. Incumbent changes produce `incumbent_changed`; retries do not rerun GEPA or regenerate the projection. |
+| Step | Component                                           | What it does                                                                                                                                                                                                                                                                        |
+| ---- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | `PlaybookAggregator._enqueue_playbook_optimization` | After saving new agent playbooks, enqueues each PENDING playbook with the scheduler.                                                                                                                                                                                                |
+| 2    | `PlaybookOptimizationScheduler`                     | Coalesces `(org_id, kind, target_id)` work through the shared bounded callback executor; no jitter timer.                                                                                                                                                                           |
+| 3    | `PlaybookOptimizer.optimize(target)`                | Applies feature, target, and adoption gates. For user targets, resumes an expired staged publication before starting new search work.                                                                                                                                               |
+| 4    | `ScenarioResolver`                                  | Builds `ScenarioWindow`s from snapshotted agent source windows or a user playbook's `source_interaction_ids`.                                                                                                                                                                       |
+| 5    | `gepa.api.optimize(...)`                            | Runs the candidate-search loop.                                                                                                                                                                                                                                                     |
+| 6    | `ReflexioPlaybookGEPAAdapter.evaluate`              | For each `(candidate, window)`:                                                                                                                                                                                                                                                     |
+|      |                                                     | • `MultiTurnRollout(incumbent).run(window)` → calls backend N times                                                                                                                                                                                                                 |
+|      |                                                     | • `MultiTurnRollout(candidate).run(window)` → calls backend N times                                                                                                                                                                                                                 |
+|      |                                                     | • `PairwiseJudge.judge(...)` → LLM verdict                                                                                                                                                                                                                                          |
+|      |                                                     | • Persists `PlaybookOptimizationEvaluation` row                                                                                                                                                                                                                                     |
+| 7    | Failure handling                                    | Any `AssistantFailedError` → `verdict="aborted"`, `score=0.0`, GEPA continues.                                                                                                                                                                                                      |
+| 8    | `PlaybookOptimizer._passes_commit_thresholds`       | Checks score / likert / per-window verdict counts.                                                                                                                                                                                                                                  |
+| 9a   | Agent-playbook publication                          | `_commit_if_allowed` archives the pending incumbent and saves its successor.                                                                                                                                                                                                        |
+| 9b   | User-playbook publication                           | Builds a fixed decision proof and search projection, stages them durably, then atomically replaces the current user playbook with exactly one successor. The compact proof binds each full durable evaluation through a canonical digest rather than duplicating rollout documents. |
+| 10   | User-playbook recovery                              | A later enabled run may reclaim an expired publication lease and finish from the staged bytes. Incumbent changes produce `incumbent_changed`; retries do not rerun GEPA or regenerate the projection.                                                                               |
 
 User-playbook recovery and new runs both require a positive `metric_call_budget`
 and `user_playbooks_enabled`. Explicit historical conversion combines the two legacy user switches with their
@@ -501,24 +500,24 @@ authority retains its recorded policy independently of later config changes.
 
 (Despite the file name, both backends live here.)
 
-| Symbol | Kind | Role |
-|---|---|---|
-| `AssistantCallable` | Protocol | Shape both backends satisfy. |
-| `AssistantFailedError` | Exception | Common base — caught by the adapter. |
-| `WebhookFailedError` | Exception | Webhook backend failures. |
-| `LocalScriptFailedError` | Exception | Script backend failures. |
-| `_build_payload` | Function | Single source of truth for the wire payload. |
-| `WebhookAssistant` | Class | One HTTP POST; redirects rejected. |
-| `LocalScriptAssistant` | Class | One `subprocess.run` invocation. |
+| Symbol                   | Kind      | Role                                         |
+| ------------------------ | --------- | -------------------------------------------- |
+| `AssistantCallable`      | Protocol  | Shape both backends satisfy.                 |
+| `AssistantFailedError`   | Exception | Common base — caught by the adapter.         |
+| `WebhookFailedError`     | Exception | Webhook backend failures.                    |
+| `LocalScriptFailedError` | Exception | Script backend failures.                     |
+| `_build_payload`         | Function  | Single source of truth for the wire payload. |
+| `WebhookAssistant`       | Class     | One HTTP POST; redirects rejected.           |
+| `LocalScriptAssistant`   | Class     | One `subprocess.run` invocation.             |
 
 ### Other touched files
 
-| File | What changed |
-|---|---|
-| `reflexio/server/services/playbook_optimizer/optimizer.py` | New `_create_assistant` method; `optimize()` short-circuits when no backend is configured. |
-| `reflexio/server/services/playbook_optimizer/gepa_adapter.py` | Catches `AssistantFailedError` (the new common base) instead of `WebhookFailedError` only. |
-| `reflexio/models/config_schema.py` | Adds `assistant_script_path`, `assistant_script_args`, plus the mutual-exclusion validator. |
-| `tests/models/test_validators.py` | Four new tests for the validator (see §9). |
+| File                                                          | What changed                                                                                |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `reflexio/server/services/playbook_optimizer/optimizer.py`    | New `_create_assistant` method; `optimize()` short-circuits when no backend is configured.  |
+| `reflexio/server/services/playbook_optimizer/gepa_adapter.py` | Catches `AssistantFailedError` (the new common base) instead of `WebhookFailedError` only.  |
+| `reflexio/models/config_schema.py`                            | Adds `assistant_script_path`, `assistant_script_args`, plus the mutual-exclusion validator. |
+| `tests/models/test_validators.py`                             | Four new tests for the validator (see §9).                                                  |
 
 ---
 
@@ -526,12 +525,12 @@ authority retains its recorded policy independently of later config changes.
 
 ### 9.1 Config validation (`tests/models/test_validators.py`)
 
-| Test | Asserts |
-|---|---|
-| `test_playbook_optimizer_accepts_webhook_backend` | Webhook-only config is valid; `assistant_script_path is None`. |
-| `test_playbook_optimizer_accepts_script_backend` | Script-only config round-trips path + args. |
-| `test_playbook_optimizer_accepts_no_assistant_backend` | Default config (neither set) is valid; the optimizer is responsible for skipping. |
-| `test_playbook_optimizer_rejects_multiple_assistant_backends` | Both set → `ValidationError` matching `"only one"`. |
+| Test                                                          | Asserts                                                                           |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `test_playbook_optimizer_accepts_webhook_backend`             | Webhook-only config is valid; `assistant_script_path is None`.                    |
+| `test_playbook_optimizer_accepts_script_backend`              | Script-only config round-trips path + args.                                       |
+| `test_playbook_optimizer_accepts_no_assistant_backend`        | Default config (neither set) is valid; the optimizer is responsible for skipping. |
+| `test_playbook_optimizer_rejects_multiple_assistant_backends` | Both set → `ValidationError` matching `"only one"`.                               |
 
 ### 9.2 Adapter / optimizer tests
 
@@ -541,26 +540,25 @@ The existing tests in `tests/server/services/playbook_optimizer/test_playbook_op
 
 ## 10. Operational notes
 
-| Topic | Notes |
-|---|---|
-| **Trust boundary** | The script backend executes whatever `assistant_script_path` points to with the same privileges as the optimizer process. Treat it like any other piece of config that names a binary. |
-| **Shell injection** | None. The command is a list, `shell=True` is not used. |
-| **Credentials in logs** | Only `str(last_error)` from the exception chain is logged. Authorization headers are never logged or echoed back. |
-| **Data residency** | Webhook traffic goes wherever `webhook_url` points — operators are responsible for choosing an appropriate endpoint. The script backend is local and never leaves the host. |
-| **Process overhead** | One process per assistant turn. Work grows with evaluations and `max_turns`, and GEPA may finish a validation batch past its stopping threshold. For a long-lived script that pays a heavy startup cost, see §11. |
-| **stderr handling** | Captured, not streamed; raw stderr/stdout are omitted from persisted failure diagnostics. |
+| Topic                   | Notes                                                                                                                                                                                                             |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Trust boundary**      | The script backend executes whatever `assistant_script_path` points to with the same privileges as the optimizer process. Treat it like any other piece of config that names a binary.                            |
+| **Shell injection**     | None. The command is a list, `shell=True` is not used.                                                                                                                                                            |
+| **Credentials in logs** | Only `str(last_error)` from the exception chain is logged. Authorization headers are never logged or echoed back.                                                                                                 |
+| **Data residency**      | Webhook traffic goes wherever `webhook_url` points — operators are responsible for choosing an appropriate endpoint. The script backend is local and never leaves the host.                                       |
+| **Process overhead**    | One process per assistant turn. Work grows with evaluations and `max_turns`, and GEPA may finish a validation batch past its stopping threshold. For a long-lived script that pays a heavy startup cost, see §11. |
+| **stderr handling**     | Captured, not streamed; raw stderr/stdout are omitted from persisted failure diagnostics.                                                                                                                         |
 
 ---
 
 ## 11. Future work / known limitations
 
-| Item | Detail |
-|---|---|
-| Timeout naming | `webhook_timeout_seconds` governs both transports; generic replay settings are retired. |
-| Long-lived script process | If startup overhead is measurable, replace `subprocess.run` with a persistent process speaking line-delimited JSON. Only `LocalScriptAssistant.__call__` would change. |
-| Per-turn working directory | Today the script inherits `cwd`. Passing an explicit `cwd` would help when the script loads local state tied to an org. |
-| Structured stderr capture on success | Raw stderr is currently omitted from failure diagnostics. Any future telemetry needs explicit content/redaction ownership. |
-
+| Item                                 | Detail                                                                                                                                                                 |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Timeout naming                       | `webhook_timeout_seconds` governs both transports; generic replay settings are retired.                                                                                |
+| Long-lived script process            | If startup overhead is measurable, replace `subprocess.run` with a persistent process speaking line-delimited JSON. Only `LocalScriptAssistant.__call__` would change. |
+| Per-turn working directory           | Today the script inherits `cwd`. Passing an explicit `cwd` would help when the script loads local state tied to an org.                                                |
+| Structured stderr capture on success | Raw stderr is currently omitted from failure diagnostics. Any future telemetry needs explicit content/redaction ownership.                                             |
 
 ## Work-budget migration
 
@@ -585,7 +583,6 @@ Remote organizations require their separately qualified enterprise image upgrade
 installing this SDK alone does not authorize a remote conversion. Immutable job
 authority continues to record the historical `budget_settings.max_metric_calls`
 output key, which is not a supported configuration input.
-
 
 The local script adapter's compile-only execution uses
 `reflexio/server/services/playbook_optimizer/assistant_native.py`: a strict
