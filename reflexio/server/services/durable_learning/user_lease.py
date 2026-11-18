@@ -5,7 +5,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field
 
 from reflexio import durable_learning_policy
@@ -342,7 +342,10 @@ def owned_user_work_context(
     started = False
     try:
         thread = threading.Thread(
-            target=heartbeat, daemon=True, name="reflexio-extraction-heartbeat"
+            target=copy_context().run,
+            args=(heartbeat,),
+            daemon=True,
+            name="reflexio-extraction-heartbeat",
         )
         thread.start()
         started = True
