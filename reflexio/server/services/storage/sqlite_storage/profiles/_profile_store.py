@@ -92,7 +92,6 @@ class ProfileStoreMixin:
     _assert_subject_writable_locked: Any
     _own_transaction: Any
     commit_scope: Any
-    profile_lifecycle_rows: Any
     _deferred_index_ops: list[tuple[str, Any]]
 
     def _subject_ref_from_profile_row(self, row: sqlite3.Row) -> str:
@@ -390,11 +389,14 @@ class ProfileStoreMixin:
         self._lock is an RLock so the inner _fts_upsert_profile/_vec_upsert calls
         that re-acquire it are safe.
         """
-        current_ts = _epoch_now()
+        select_live = (
+            "SELECT * FROM profiles WHERE user_id = ? AND profile_id = ? "
+            "AND expiration_timestamp >= ?"
+        )
         with self._lock:
             row = self.conn.execute(
-                "SELECT user_id, governance_subject_ref FROM profiles WHERE user_id = ? AND profile_id = ? AND expiration_timestamp >= ?",
-                (user_id, profile_id, current_ts),
+                select_live,
+                (user_id, profile_id, _epoch_now()),
             ).fetchone()
             if not row:
                 logger.warning("User profile not found for user id: %s", user_id)
@@ -402,17 +404,24 @@ class ProfileStoreMixin:
             self._assert_subject_writable_locked(
                 self._subject_ref_from_profile_row(row)
             )
+            if (
+                expected_version is not None
+                and profile_version(_row_to_profile(row).model_dump(mode="json"))
+                != expected_version
+            ):
+                return False
         embedding = self._get_embedding(embedding_text(new_profile))
         new_profile.embedding = embedding
         with self.commit_scope() if expected_version is not None else self._lock:
             if expected_version is not None:
-                rows = self.profile_lifecycle_rows(
-                    user_id, "", profile_id=profile_id, lock=True
-                )
+                stored = self.conn.execute(
+                    select_live,
+                    (user_id, profile_id, _epoch_now()),
+                ).fetchone()
                 if (
-                    not rows
-                    or rows[0]["expiration_timestamp"] < _epoch_now()
-                    or profile_version(rows[0]) != expected_version
+                    stored is None
+                    or profile_version(_row_to_profile(stored).model_dump(mode="json"))
+                    != expected_version
                 ):
                     return False
             if (

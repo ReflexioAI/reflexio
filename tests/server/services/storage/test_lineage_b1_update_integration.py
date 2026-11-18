@@ -349,31 +349,39 @@ def test_update_user_profile_emits_revise(tmp_path):
     assert fetched.content == "updated content"
 
 
-def test_concurrent_profile_edit_rejects_same_timestamp_stale_snapshot(tmp_path):
+@pytest.mark.parametrize("owner_id", ["u", ""])
+def test_concurrent_profile_edit_rejects_same_timestamp_stale_snapshot(
+    tmp_path, owner_id
+):
+    """Preserve the normal SQLite read semantics for legacy rows and owner IDs."""
     s = _store(tmp_path)
     profile = UserProfile(
-        user_id="u",
+        user_id=owner_id,
         profile_id="guarded-profile",
         content="before",
         last_modified_timestamp=0,
         generated_from_request_id="r",
     )
-    s.add_user_profile("u", [profile])
-    (snapshot,) = s.get_user_profile("u")
+    s.add_user_profile(owner_id, [profile])
+    with s.conn:
+        s.conn.execute(
+            "UPDATE profiles SET tags = '' WHERE profile_id = ?", (profile.profile_id,)
+        )
+    (snapshot,) = s.get_user_profile(owner_id)
     expected = profile_version(snapshot.model_dump(mode="json"))
     assert s.update_user_profile_by_id(
-        "u",
+        owner_id,
         "guarded-profile",
         snapshot.model_copy(update={"custom_features": {"state": "newer"}}),
         expected_version=expected,
     )
     assert not s.update_user_profile_by_id(
-        "u",
+        owner_id,
         "guarded-profile",
         snapshot.model_copy(update={"content": "stale edit"}),
         expected_version=expected,
     )
-    (stored,) = s.get_user_profile("u")
+    (stored,) = s.get_user_profile(owner_id)
     assert stored.last_modified_timestamp == snapshot.last_modified_timestamp
     assert stored.content == "before"
     assert stored.custom_features == {"state": "newer"}
