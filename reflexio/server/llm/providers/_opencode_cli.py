@@ -19,6 +19,7 @@ from reflexio.server.llm._native_cli import (
     request_timeout_seconds,
     run_native_cli,
 )
+from reflexio.server.llm._native_model_ref import reject_native_selection
 from reflexio.server.llm.providers.claude_code_stream_parser import (
     ParseResult,
     classify_stall,
@@ -228,7 +229,7 @@ def run_opencode(
                 if not private and "#" in model:
                     selected, variant = model.split("#", 1)
                     if not selected.strip() or not variant.strip():
-                        raise OpenCodeCLIError(
+                        reject_native_selection(
                             "OpenCode model variant reference is invalid"
                         )
                     argv += [f"--model={selected}", f"--variant={variant}"]

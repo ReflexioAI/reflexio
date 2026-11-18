@@ -28,7 +28,7 @@ Native OpenCode discovers declared options from successful `run --help` output
 on either stdout or stderr. A CLI declaring `--standalone` receives the full
 `provider/model#variant` reference with its private-server flag. The recognized
 `--attach`/`--variant` contract receives separate model and variant arguments;
-an empty explicit component refuses before generation. A host-only reference
+an empty explicit component terminates selection before generation or fallback. A host-only reference
 supplies neither argument. Discovery and execution share the original deadline.
 Model and variant values are bound as `--name=value`, so option-shaped text
 cannot select another server or alter other invocation flags.
