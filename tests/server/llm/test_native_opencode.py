@@ -589,7 +589,7 @@ def test_plugin_owned_generation_uses_compatible_cli_inside_request(monkeypatch,
     assert len(requests) == (1 if owned else 2)
     argv, capture = requests[-1]
     assert capture["input"] == "system\n\n## Task\ntask"
-    assert capture["timeout"] == (1.5 if owned else 8)
+    assert capture["timeout"] == 8
     assert argv[-2:] == (
         ["--model", "provider/model"]
         if owned
@@ -653,8 +653,11 @@ def test_discovery_and_execution_spend_one_original_deadline(
 @pytest.mark.parametrize(
     "model", ["private-canary#", "#", "model# \t", " #private-canary"]
 )
-def test_legacy_empty_variant_components_refuse_before_generation(monkeypatch, model):
-    dispatch = Mock(return_value=subprocess.CompletedProcess([], 0, "", LEGACY))
+@pytest.mark.parametrize("legacy_wire", [False, True])
+def test_empty_variant_components_refuse_before_any_launch(
+    monkeypatch, model, legacy_wire
+):
+    dispatch = Mock(side_effect=OSError("must not probe"))
     monkeypatch.setattr(native, "run_native_cli", dispatch)
     with pytest.raises(ProviderRequestGuardError, match="variant reference") as failure:
         native.run_opencode(
@@ -663,11 +666,10 @@ def test_legacy_empty_variant_components_refuse_before_generation(monkeypatch, m
             dialogue="owned task",
             model=model,
             deadline=time.monotonic() + 1,
+            legacy_wire=legacy_wire,
         )
     assert "private-canary" not in str(failure.value)
-    assert dispatch.call_count == 1
-    assert dispatch.call_args.args[0][-2:] == ["run", "--help"]
-    assert not Path(dispatch.call_args.kwargs["cwd"]).exists()
+    dispatch.assert_not_called()
 
 
 @pytest.mark.unit
@@ -789,7 +791,7 @@ def test_empty_legacy_variant_stays_terminal_through_worker_and_http_fallback(
     finally:
         assert models == [reference]
     assert len(snapshots) == 1 and snapshots[0].request_guard_error
-    assert discovery.call_count == 1
+    discovery.assert_not_called()
 
 
 @pytest.mark.unit

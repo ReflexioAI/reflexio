@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -105,6 +106,8 @@ def test_native_opencode_executes_under_sdk_ownership(tmp_path, protocol, model)
         "if sys.argv[2:] == ['--help']:\n"
         f"    print({help_text!r})\n"
         "    sys.exit()\n"
+        f"if {legacy_wire!r} and any(arg.startswith(('--model=', '--variant=')) for arg in sys.argv):\n"
+        "    sys.exit(2)\n"
         "work = Path.cwd()\n"
         "policy = json.loads((work / '.opencode/opencode.json').read_text())\n"
         "agent = sys.argv[sys.argv.index('--agent') + 1]\n"
@@ -132,10 +135,12 @@ def test_native_opencode_executes_under_sdk_ownership(tmp_path, protocol, model)
     assert calls.read_text().splitlines().count("--help") == int(
         not legacy_wire or model is not None
     )
-    model_flags = [arg for arg in args if arg.startswith(("--model", "--variant"))]
-    assert model_flags == (
-        [] if model is None else ["--model=provider/model", "--variant=low"]
-    )
+    if model is None:
+        assert not any(arg.startswith(("--model", "--variant")) for arg in args)
+    elif legacy_wire:
+        assert args[-4:] == ["--model", "provider/model", "--variant", "low"]
+    else:
+        assert args[-2:] == ["--model=provider/model", "--variant=low"]
 
     invalid = dict(request, model="provider/model#")
     rejected = _compiler(tmp_path, f"print({json.dumps({'native_cli_v1': invalid})!r})")
@@ -143,6 +148,22 @@ def test_native_opencode_executes_under_sdk_ownership(tmp_path, protocol, model)
         LocalScriptFailedError, match="native assistant execution failed"
     ):
         rejected([], [])
+
+
+def test_open_code_compatibility_optimizer_keeps_the_explicit_bridge_cap(monkeypatch):
+    from reflexio.server.llm.providers import _opencode_cli
+    from reflexio.server.services.playbook_optimizer import assistant_native
+
+    monkeypatch.setattr(assistant_native.time, "monotonic", lambda: 20.0)
+    monkeypatch.setenv("CLAUDE_SMART_CLI_TIMEOUT", "1.5")
+    reply = SimpleNamespace(success=True, terminal_text="result")
+    launch = Mock(return_value=reply)
+    monkeypatch.setattr(_opencode_cli, "run_opencode", launch)
+    request = assistant_native.NativeAssistantRequest.model_validate(
+        _request(protocol="opencode-compat-json")
+    )
+    assert assistant_native.run_native_assistant(request, 28.0) == "result"
+    assert launch.call_args.kwargs["deadline"] == 21.5
 
 
 @pytest.mark.parametrize(

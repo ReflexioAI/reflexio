@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
 import shutil
 import subprocess
 import tempfile
-import time
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +19,6 @@ from reflexio.server.llm._native_cli import (
     run_native_cli,
 )
 from reflexio.server.llm._native_model_ref import (
-    CLI_TIMEOUT_ENV,
     reject_native_selection,
 )
 from reflexio.server.llm.providers.claude_code_stream_parser import (
@@ -52,26 +49,32 @@ def _run_options(help_text: str) -> set[str]:
     raise OpenCodeCLIError("OpenCode CLI capabilities are unsupported")
 
 
+def _wire_argument(option: str, value: str, *, legacy_wire: bool) -> list[str]:
+    # Older wrappers consume separate tokens. Bind a flag-shaped value inline
+    # so it can never become another option on either command line.
+    if legacy_wire and not value.startswith("-"):
+        return [option, value]
+    return [f"{option}={value}"]
+
+
 def _model_arguments(
     model: str | None, options: set[str], *, legacy_wire: bool
 ) -> list[str]:
     if not model:
         return []
     selected, separator, variant = model.partition("#")
-    standalone = "--standalone" in options
-    if separator and (not standalone or not selected or legacy_wire):
-        if (selected and not selected.strip()) or not variant.strip():
-            reject_native_selection("OpenCode model variant reference is invalid")
-        if standalone and selected:
-            return [f"--model={model}"]
+    if separator and ("--standalone" not in options or not selected):
         if "--variant" not in options:
             reject_native_selection(
                 "Selected OpenCode CLI does not support a variant without a model"
             )
-        return ([f"--model={selected}"] if selected else []) + [f"--variant={variant}"]
-    if legacy_wire and not model.startswith("-"):
-        return ["--model", model]
-    return [f"--model={model}"]
+        flags = (
+            _wire_argument("--model", selected, legacy_wire=legacy_wire)
+            if selected
+            else []
+        )
+        return flags + _wire_argument("--variant", variant, legacy_wire=legacy_wire)
+    return _wire_argument("--model", model, legacy_wire=legacy_wire)
 
 
 def _error_message(error: Any) -> str:
@@ -151,20 +154,6 @@ def parse_output(stdout: str, returncode: int, stderr: str) -> ParseResult:
     )
 
 
-def _compat_deadline(deadline: float) -> float:
-    # Preserve an explicit cap supported by the old bridge. Without one,
-    # the original request owner supplies the full remaining allowance.
-    try:
-        cap = float(os.environ.get(CLI_TIMEOUT_ENV, ""))
-    except ValueError:
-        return deadline
-    return (
-        min(deadline, time.monotonic() + cap)
-        if math.isfinite(cap) and cap > 0
-        else deadline
-    )
-
-
 def run_opencode(
     *,
     cli_path: str,
@@ -175,8 +164,9 @@ def run_opencode(
     legacy_wire: bool = False,
 ) -> ParseResult:
     """Launch the actual native executable; retain delegated scratch with its owner."""
-    if legacy_wire:
-        deadline = _compat_deadline(deadline)
+    selected, separator, variant = (model or "").partition("#")
+    if separator and ((selected and not selected.strip()) or not variant.strip()):
+        reject_native_selection("OpenCode model variant reference is invalid")
     owner = native_cli_directory()
     directory: Path | None = None
     try:
@@ -230,7 +220,7 @@ def run_opencode(
             options: set[str] = set()
             # The plugin bridge only needed discovery for variant references.
             # In particular, a CLI wrapper may implement generation without help.
-            if not legacy_wire or (model and "#" in model):
+            if not legacy_wire or separator:
                 discovery = run_native_cli(
                     [str(executable), "run", "--help"],
                     input="",

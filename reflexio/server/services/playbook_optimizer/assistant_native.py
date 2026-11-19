@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
+import time
 from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from reflexio.server.llm._litellm_types import LLMHardTimeoutError
 from reflexio.server.llm._native_cli import remaining_native_time, run_native_cli
-from reflexio.server.llm._native_model_ref import NativeCLISelectionError
+from reflexio.server.llm._native_model_ref import (
+    CLI_TIMEOUT_ENV,
+    NativeCLISelectionError,
+)
 
 NativeAssistantProtocol = Literal[
     "claude-json", "codex", "opencode-json", "opencode-compat-json"
@@ -43,6 +48,20 @@ def remaining_assistant_time(deadline: float) -> float:
         raise NativeAssistantError("native assistant deadline expired") from None
 
 
+def _compat_deadline(deadline: float) -> float:
+    # Preserve an explicit cap supported by the old bridge. Without one,
+    # the original request owner supplies the full remaining allowance.
+    try:
+        cap = float(os.environ.get(CLI_TIMEOUT_ENV, ""))
+    except ValueError:
+        return deadline
+    return (
+        min(deadline, time.monotonic() + cap)
+        if math.isfinite(cap) and cap > 0
+        else deadline
+    )
+
+
 def run_native_assistant(request: NativeAssistantRequest, deadline: float) -> str:
     """Own the immediate CLI child; arbitrary wrappers retain descendant limits."""
     from reflexio.server.llm.providers._opencode_cli import (
@@ -70,13 +89,16 @@ def run_native_assistant(request: NativeAssistantRequest, deadline: float) -> st
                 raise NativeAssistantError("native assistant execution failed")
             content = result.terminal_text
         elif request.protocol in {"opencode-json", "opencode-compat-json"}:
+            legacy_wire = request.protocol == "opencode-compat-json"
+            if legacy_wire:
+                deadline = _compat_deadline(deadline)
             result = run_opencode(
                 cli_path=request.executable,
                 system_prompt=request.system_prompt,
                 dialogue=request.dialogue,
                 model=request.model,
                 deadline=deadline,
-                legacy_wire=request.protocol == "opencode-compat-json",
+                legacy_wire=legacy_wire,
             )
             if not result.success:
                 raise NativeAssistantError("native assistant execution failed")
