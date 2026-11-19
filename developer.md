@@ -490,8 +490,11 @@ their existing behavior. The API-version configuration remains supported.
 
 Configure models through the organization's `llm_config`. If you customized
 the former bundled `llm_model_setting.json`, record each model actually in use
-before upgrading. Apply only the former defaults that were effective for
-each organization.
+before upgrading. Prepare the complete updated organization policy in
+advance. Let in-flight ordinary profile work finish and stop all old writers
+before applying it. Use the new release's config writer to publish generation
+and evaluation choices together, then reload and verify both before resuming
+work. An old writer discards the new evaluation field.
 
 | Former key | Organization field |
 | --- | --- |
@@ -504,11 +507,10 @@ When copying a custom generation default, also set
 `llm_config.evaluation_model_name` to the previously effective evaluation model
 if it was different. This includes a provider-selected evaluation default.
 Otherwise evaluation inherits the configured generation model as before.
-The shipped blank defaults require no migration.
-
-Before an upgrade or model change, let in-flight ordinary profile work finish
-on its original runtime. Its saved preparation verifies the original source
-and configuration. Source-package retries keep their saved model ladder.
+The shipped blank defaults require no migration. Source-package retries keep
+their saved model ladder. A rollback of a customized deployment needs its
+previous bundled values and a compatible configuration reconciled with newer
+edits. Reverting the binary alone can lose a distinct evaluator.
 Use the provider prefix shown above (e.g., `anthropic/` for Anthropic models). Set the corresponding API key in your `.env` file.
 
 Retryable physical-request warnings record only the error type, reason and
