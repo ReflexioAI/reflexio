@@ -214,17 +214,19 @@ A local script can prepare a request instead of starting its own model process:
 }
 ```
 
-Supported protocols are `codex` and `claude-json`. `claude-json` preserves the
+Supported protocols are `codex`, `claude-json` and `opencode-json`. `claude-json` preserves the
 existing custom executable contract: `-p --output-format json`, with a string
 `result` or `response` in its reply. The SDK applies the optimizer's read-only
 Claude tools/MCP/session policy; Codex uses its read-only sandbox and ephemeral
-execution. Requests cannot select permissions, arbitrary argv/environment,
+execution. OpenCode uses the SDK's native runner, with an isolated project and
+an agent that denies tools. Requests cannot select permissions, arbitrary argv/environment,
 retries, fallback or a second timeout. Unknown fields and ambiguous
 `content` plus `native_cli_v1` responses fail before native dispatch.
 
 The SDK supplies `_REFLEXIO_ASSISTANT_INVOCATION` only in the script child's
 environment, overwriting any inherited value. This private invocation header
-contains `protocol: "native-cli/v1"` and `deadline_monotonic`; it is IPC metadata,
+contains `protocol: "native-cli/v1"`, `deadline_monotonic`, and the `transports` list.
+A compiler must check that list before requesting OpenCode. It is IPC metadata,
 not a configuration setting. The messages/playbooks input JSON and HTTP webhook
 payload stay unchanged. A compile-only integration must require this capability
 and refuse an older caller before any model dispatch. Updating a helper at a

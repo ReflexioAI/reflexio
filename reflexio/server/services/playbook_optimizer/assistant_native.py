@@ -5,12 +5,16 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from reflexio.server.llm._litellm_types import LLMHardTimeoutError
 from reflexio.server.llm._native_cli import remaining_native_time, run_native_cli
+from reflexio.server.llm._native_model_ref import NativeCLISelectionError
+
+NativeAssistantProtocol = Literal["claude-json", "codex", "opencode-json"]
+NATIVE_ASSISTANT_TRANSPORTS = get_args(NativeAssistantProtocol)
 
 
 class NativeAssistantError(Exception):
@@ -22,7 +26,7 @@ class NativeAssistantRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    protocol: Literal["claude-json", "codex"]
+    protocol: NativeAssistantProtocol
     executable: str = Field(min_length=1)
     model: str | None = None
     system_prompt: str
@@ -39,6 +43,10 @@ def remaining_assistant_time(deadline: float) -> float:
 
 def run_native_assistant(request: NativeAssistantRequest, deadline: float) -> str:
     """Own the immediate CLI child; arbitrary wrappers retain descendant limits."""
+    from reflexio.server.llm.providers._opencode_cli import (
+        OpenCodeCLIError,
+        run_opencode,
+    )
     from reflexio.server.llm.providers.native_cli_provider import (
         ClaudeCodeCLIError,
         ClaudeCodeCLITimeoutError,
@@ -59,13 +67,24 @@ def run_native_assistant(request: NativeAssistantRequest, deadline: float) -> st
             if not result.success:
                 raise NativeAssistantError("native assistant execution failed")
             content = result.terminal_text
+        elif request.protocol == "opencode-json":
+            result = run_opencode(
+                cli_path=request.executable,
+                system_prompt=request.system_prompt,
+                dialogue=request.dialogue,
+                model=request.model,
+                deadline=deadline,
+            )
+            if not result.success:
+                raise NativeAssistantError("native assistant execution failed")
+            content = result.terminal_text
         else:
             content = _run_claude_json(request, deadline)
         remaining_assistant_time(deadline)
         return content
     except (subprocess.TimeoutExpired, LLMHardTimeoutError, ClaudeCodeCLITimeoutError):
         raise NativeAssistantError("native assistant timed out") from None
-    except ClaudeCodeCLIError:
+    except (ClaudeCodeCLIError, OpenCodeCLIError, NativeCLISelectionError):
         raise NativeAssistantError("native assistant execution failed") from None
     except (OSError, ValueError):
         raise NativeAssistantError("native assistant execution failed") from None

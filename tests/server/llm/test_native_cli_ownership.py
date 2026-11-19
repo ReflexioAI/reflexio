@@ -110,7 +110,7 @@ def _broker_completion(params):
             system_prompt="",
             dialogue="synthetic native ownership",
             model=None,
-            timeout_seconds=params["native_timeout"],
+            deadline=time.monotonic() + params["native_timeout"],
         )
     output = (
         native_cli_provider._temporary_output_path()
@@ -1119,7 +1119,7 @@ def _physical_probe(root: Path, contract: str):
                     system_prompt="",
                     dialogue="",
                     model=None,
-                    timeout_seconds=1,
+                    deadline=time.monotonic() + 1,
                 )
         os.environ["NATIVE_TEST_SLEEP"] = "30"
         started = time.monotonic()

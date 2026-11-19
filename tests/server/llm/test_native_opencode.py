@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -168,8 +169,13 @@ def test_native_allowance_has_no_implicit_default_and_preserves_explicit_caps(
     )
     dispatch = Mock(return_value=ParseResult(True, "ok", cli_binary="opencode"))
     monkeypatch.setattr(native, "run_opencode", dispatch)
+    started = time.monotonic()
     handler.completion(model="local-cli/" + "opencode", timeout=budget)
-    assert dispatch.call_args.kwargs["timeout_seconds"] == expected
+    assert (
+        started + expected
+        <= dispatch.call_args.kwargs["deadline"]
+        <= time.monotonic() + expected
+    )
 
 
 @pytest.mark.unit
@@ -193,13 +199,18 @@ def test_native_async_handler_keeps_the_selected_budget(monkeypatch):
     monkeypatch.delenv("CLAUDE_SMART_CLI_TIMEOUT", raising=False)
     dispatch = Mock(return_value=ParseResult(True, "ok", cli_binary="opencode"))
     monkeypatch.setattr(native, "run_opencode", dispatch)
+    started = time.monotonic()
     response = asyncio.run(
         provider.NativeCLILLM(cli_path=sys.executable).acompletion(
             model="local-cli/" + "opencode", timeout=0.25
         )
     )
     assert response.choices[0].message.content == "ok"
-    assert dispatch.call_args.kwargs["timeout_seconds"] == 0.25
+    assert (
+        started + 0.25
+        <= dispatch.call_args.kwargs["deadline"]
+        <= time.monotonic() + 0.25
+    )
 
 
 @pytest.mark.unit
@@ -235,7 +246,7 @@ def test_native_relative_executable_is_anchored_before_changing_cwd(
         system_prompt="s",
         dialogue="p",
         model=None,
-        timeout_seconds=1,
+        deadline=time.monotonic() + 1,
     )
     assert selected[0][0][0] == str(executable)
     assert 0 < selected[0][1]["timeout"] <= 1
@@ -272,7 +283,7 @@ def test_setup_failure_cannot_dispatch_or_expose_raw_error(monkeypatch):
             system_prompt="",
             dialogue="",
             model=None,
-            timeout_seconds=1,
+            deadline=time.monotonic() + 1,
         )
     assert "private-canary" not in str(failure.value)
     dispatch.assert_not_called()
@@ -295,7 +306,7 @@ def test_decode_failure_is_metadata_only(monkeypatch):
             system_prompt="",
             dialogue="",
             model=None,
-            timeout_seconds=1,
+            deadline=time.monotonic() + 1,
         )
     assert "private-canary" not in str(failure.value)
 
@@ -305,14 +316,14 @@ def test_setup_expiry_cannot_launch(monkeypatch, tmp_path):
     dispatch = Mock()
     monkeypatch.setattr(native, "run_native_cli", dispatch)
     times = iter((1.0, 3.0))
-    monkeypatch.setattr(native.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(time, "monotonic", lambda: next(times))
     with pytest.raises(LLMHardTimeoutError, match="deadline expired"):
         native.run_opencode(
             cli_path=sys.executable,
             system_prompt="",
             dialogue="",
             model=None,
-            timeout_seconds=1,
+            deadline=time.monotonic() + 1,
         )
     dispatch.assert_not_called()
 
@@ -452,7 +463,7 @@ def test_discovery_and_execution_spend_one_original_deadline(
 ):
     clock = [10.0]
     calls = []
-    monkeypatch.setattr(native.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
 
     def run(argv, **kwargs):
         calls.append((argv, kwargs))
@@ -472,7 +483,7 @@ def test_discovery_and_execution_spend_one_original_deadline(
         system_prompt="owned context",
         dialogue="owned task",
         model=model,
-        timeout_seconds=1,
+        deadline=time.monotonic() + 1,
     )
     assert result.success and result.terminal_text == "owned reply"
     assert len(calls) == 2 and calls[0][0][-2:] == ["run", "--help"]
@@ -506,7 +517,7 @@ def test_legacy_empty_variant_components_refuse_before_generation(monkeypatch, m
             system_prompt="owned context",
             dialogue="owned task",
             model=model,
-            timeout_seconds=1,
+            deadline=time.monotonic() + 1,
         )
     assert "private-canary" not in str(failure.value)
     assert dispatch.call_count == 1
@@ -633,7 +644,7 @@ def test_model_text_cannot_become_a_native_routing_option(
         system_prompt="owned context",
         dialogue="owned task",
         model=model,
-        timeout_seconds=1,
+        deadline=time.monotonic() + 1,
     ).success
     expected = (
         ["--model=provider/model", "--variant=" + value]
@@ -649,7 +660,7 @@ def test_model_text_cannot_become_a_native_routing_option(
 def test_expiry_after_parsing_never_returns_or_replays(monkeypatch, phase):
     clock = [10.0]
     calls = []
-    monkeypatch.setattr(native.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
 
     def run(argv, **_kwargs):
         calls.append(argv)
@@ -676,7 +687,7 @@ def test_expiry_after_parsing_never_returns_or_replays(monkeypatch, phase):
             system_prompt="",
             dialogue="",
             model=None,
-            timeout_seconds=1,
+            deadline=time.monotonic() + 1,
         )
     assert len(calls) == (1 if phase == "help" else 2)
 
@@ -701,7 +712,7 @@ def test_failed_discovery_never_dispatches_model_or_leaks_output(
             system_prompt="",
             dialogue="",
             model=None,
-            timeout_seconds=1,
+            deadline=time.monotonic() + 1,
         )
     assert len(calls) == 1 and calls[0][-1] == "--help"
     assert "private-canary" not in str(failure.value)
