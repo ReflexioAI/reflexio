@@ -28,6 +28,11 @@ Expose the SDK and local service lifecycle through consistent commands and outpu
 
 Global options and persisted state configure a shared client; domain commands validate input and call the SDK. Service commands manage local processes. Enterprise reuses the CLI and overrides the services group.
 
+Set `REFLEXIO_ENV_FILE` in the launch environment to select a different
+user-level dotenv file. The local service launcher passes the absolute
+launch path to the server, including when that path is a symlink. A
+project dotenv can still supply setting values in the current directory.
+
 ## Table of Contents
 
 

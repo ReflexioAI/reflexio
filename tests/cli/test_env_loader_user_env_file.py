@@ -170,3 +170,24 @@ def test_setup_env_targets_override_even_when_default_exists(monkeypatch, tmp_pa
     assert resolved == override == env_loader.user_env_file()
     assert override.read_text() == "OVERRIDE_ONLY=1\n"
     assert default.read_text() == "DEFAULT_ONLY=1\n"
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_dotenv_cannot_set_its_own_launch_selector(monkeypatch, tmp_path, override):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
+    monkeypatch.delenv("REFLEXIO_TEST_PROJECT_VALUE", raising=False)
+    original = tmp_path / "selected.env"
+    if override:
+        monkeypatch.setenv(_ENV, str(original))
+    else:
+        monkeypatch.delenv(_ENV, raising=False)
+        monkeypatch.setattr(env_loader, "_USER_ENV_FILE", original)
+    project = tmp_path / ".env"
+    project.write_text(
+        "REFLEXIO_ENV_FILE=other.env\nREFLEXIO_TEST_PROJECT_VALUE=loaded\n"
+    )
+
+    assert env_loader.load_existing_reflexio_env() == Path(".env")
+    assert os.environ.pop("REFLEXIO_TEST_PROJECT_VALUE") == "loaded"
+    assert env_loader.get_env_path() == original
