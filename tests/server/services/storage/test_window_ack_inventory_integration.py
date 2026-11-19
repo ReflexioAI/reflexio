@@ -1,6 +1,8 @@
 """Compatibility window closure is proved by the leased effects ACK."""
 
 import json
+import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -24,7 +26,11 @@ pytestmark = pytest.mark.integration
         "fractional_billing_type",
         "billing_not_delivered",
         "different_billing",
-        "billing_lost_after_ack",
+        "null_billing_after_ack",
+        "empty_billing_after_ack",
+        "partial_billing_after_ack",
+        "wrong_billing_type_after_ack",
+        "invalid_utf8_billing_after_ack",
         "historical_compacted",
         "no_derived_claim",
         "active_cursor",
@@ -36,6 +42,7 @@ pytestmark = pytest.mark.integration
         "nul_digest",
         "nul_stage",
         "nul_ack",
+        "invalid_utf8_kind",
         "adapter_without_proof",
         "wrong_effect_run",
         "foreign_window",
@@ -58,7 +65,7 @@ def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(
         monkeypatch.delattr(SQLiteStreamSQL, "transition_window_publication_proof")
     window_id = "compatibility-window"
     run_id = f"window:{window_id}"
-    output = {"_reflexio_envelope_version": 1, "output": {}}
+    output: dict[str, object] = {"_reflexio_envelope_version": 1, "output": {}}
     if case == "pre_envelope_output":
         output = {"profiles": []}
     if case == "mismatched_output":
@@ -94,7 +101,7 @@ def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(
         billing["input_tokens"] = -1
     if case == "wrong_billing_pipeline":
         billing["pipeline"] = "playbook"
-    effects = {
+    effects: dict[str, object] = {
         "extraction_run_ids": ["wrong-run" if case == "wrong_effect_run" else run_id]
     }
     if case != "missing_billing":
@@ -142,11 +149,22 @@ def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(
             window_id, user_id="user", token=token, delivered_billing=delivered_billing
         )
         storage.release_user_extraction("user", token)
-    if case == "billing_lost_after_ack":
+    damaged_billing = {
+        "null_billing_after_ack": "null",
+        "empty_billing_after_ack": "{}",
+        "partial_billing_after_ack": json.dumps(
+            {key: value for key, value in billing.items() if key != "ids"}
+        ),
+        "wrong_billing_type_after_ack": json.dumps({**billing, "platform_llm": 0}),
+        "invalid_utf8_billing_after_ack": json.dumps({**billing, "ids": ["bad_id"]})
+        .encode("utf-8")
+        .replace(b"bad_id", b"\xff"),
+    }
+    if case in damaged_billing:
         with storage.commit_scope():
             storage.conn.execute(
-                "UPDATE extraction_windows SET effects=json_remove(effects, '$.billing') WHERE window_id=?",
-                (window_id,),
+                "UPDATE extraction_windows SET effects=json_set(effects, '$.billing', json(CAST(? AS TEXT))) WHERE window_id=?",
+                (damaged_billing[case], window_id),
             )
     if case == "nul_ack":
         with storage.commit_scope():
@@ -163,15 +181,71 @@ def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(
         )
         with storage.commit_scope():
             storage.conn.execute(query, ("invalid JSON", window_id))
-    if case in {"fractional_predecessor", "fractional_end"}:
-        query = (
-            "UPDATE extraction_windows SET predecessor=0.5 WHERE window_id=?"
-            if case == "fractional_predecessor"
-            else "UPDATE extraction_windows SET end_seq=2.5 WHERE window_id=?"
-        )
-        with storage.commit_scope():
-            storage.conn.execute(query, (window_id,))
+    malformed_bindings = {
+        "fractional_predecessor": (
+            "UPDATE extraction_windows SET predecessor=0.5 WHERE window_id=?",
+        ),
+        "fractional_end": (
+            "UPDATE extraction_windows SET end_seq=2.5 WHERE window_id=?",
+        ),
+        "invalid_utf8_kind": (
+            "UPDATE extraction_windows SET kind=CAST(x'ff' AS TEXT) WHERE window_id=?",
+            "UPDATE _agent_runs SET extractor_kind=CAST(x'ff' AS TEXT) WHERE id='window:' || ?",
+        ),
+    }
+    with storage.commit_scope():
+        for statement in malformed_bindings.get(case, ()):
+            storage.conn.execute(statement, (window_id,))
     run = storage.transition_inventory_page("runs").items[0]
     assert ("unreceipted_output" not in run.reasons) == (case == "owned")
     if case == "owned":
         assert run.reasons == ()
+
+
+def test_window_inventory_uses_output_receipt_index(storage):
+    statements = []
+    storage.conn.set_trace_callback(statements.append)
+    try:
+        storage.transition_inventory_page("runs")
+    finally:
+        storage.conn.set_trace_callback(None)
+    statement = next(query for query in statements if " AS window_published" in query)
+    plan = [row[3] for row in storage.conn.execute("EXPLAIN QUERY PLAN " + statement)]
+    assert any(
+        "SEARCH p" in step
+        and "publication_output_identity" in step
+        and "(org_id=? AND run_id=?)" in step
+        for step in plan
+    )
+
+
+@pytest.mark.parametrize("encoding", ["UTF-8", "UTF-16le", "UTF-16be"])
+def test_billing_validator_accepts_sqlite_database_encodings(encoding):
+    from reflexio.server.services.extraction.publication_receipts import (
+        valid_window_delivery_payload,
+    )
+
+    billing = {
+        "ids": ["référence"],
+        "created_at": 0,
+        "platform_llm": False,
+        "input_tokens": 1,
+        "prompt_tokens": 2,
+        "completion_tokens": 3,
+    }
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute(f"PRAGMA encoding='{encoding}'")
+        conn.execute("CREATE TABLE fixture (id INTEGER)")
+        (payload,) = conn.execute(
+            "SELECT CAST(? -> '$.billing' AS BLOB)",
+            (json.dumps({"billing": billing}, ensure_ascii=False),),
+        ).fetchone()
+    assert valid_window_delivery_payload("profile", payload) == 1
+
+
+def test_window_inventory_preserves_open_read_cursor(storage):
+    storage.transition_inventory_page("runs")
+    with closing(storage.conn.execute("SELECT 1 UNION ALL SELECT 2")) as cursor:
+        assert cursor.fetchone()[0] == 1
+        storage.transition_inventory_page("runs")
+        assert cursor.fetchone()[0] == 2
