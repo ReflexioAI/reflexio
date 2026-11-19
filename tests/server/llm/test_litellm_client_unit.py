@@ -4362,7 +4362,9 @@ class TestLitellmIntegration:
         assert captured["timeout"] == configured_timeout
         assert captured["num_retries"] == 0
         assert captured["fallbacks"] is None
-        assert captured["hard_timeout"] == pytest.approx(configured_timeout)
+        # The rung bound is min(per-attempt, remaining walk budget), so elapsed
+        # setup time may shave it slightly; it must never scale with the ladder.
+        assert configured_timeout - 1 < captured["hard_timeout"] <= configured_timeout
 
     @pytest.mark.parametrize("fallback_models", [[], ["a"], ["a", "b"]])
     def test_hard_timeout_does_not_scale_with_rung_count(
@@ -4386,7 +4388,7 @@ class TestLitellmIntegration:
 
         # Only the primary rung runs (it succeeds); its bound is 30 seconds,
         # independent of the fallback count.
-        assert captured["hard_timeout"] == pytest.approx(30)
+        assert 29 < captured["hard_timeout"] <= 30
 
     def test_fallback_response_returned_when_primary_fails(self, monkeypatch):
         """End-to-end: when the primary fails and a fallback is configured, the
