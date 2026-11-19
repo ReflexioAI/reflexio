@@ -4341,9 +4341,26 @@ class TestLitellmIntegration:
             client.generate_chat_response(self._messages())
         assert len(attempts) == 1
 
+    @pytest.fixture
+    def fixed_rung_clock(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from reflexio.server.llm import _litellm_text_generation as text_generation
+
+        monkeypatch.setattr(
+            text_generation,
+            "time",
+            SimpleNamespace(
+                monotonic=lambda: 1000.0,
+                perf_counter=time.perf_counter,
+                sleep=time.sleep,
+                time=time.time,
+            ),
+        )
+
     @pytest.mark.parametrize("configured_timeout", [15, 120])
     def test_hard_timeout_is_per_rung_single_attempt(
-        self, monkeypatch, configured_timeout
+        self, monkeypatch, configured_timeout, fixed_rung_clock
     ):
         """Each rung now owns a per-SINGLE-ATTEMPT hard timeout (not the old
         ladder-wide ``(1 + len(fallbacks)) * per_attempt``). num_retries is 0 and
@@ -4373,13 +4390,11 @@ class TestLitellmIntegration:
         assert captured["timeout"] == configured_timeout
         assert captured["num_retries"] == 0
         assert captured["fallbacks"] is None
-        # The rung bound is min(per-attempt, remaining walk budget), so elapsed
-        # setup time may shave it slightly; it must never scale with the ladder.
-        assert configured_timeout - 1 < captured["hard_timeout"] <= configured_timeout
+        assert captured["hard_timeout"] == configured_timeout
 
     @pytest.mark.parametrize("fallback_models", [[], ["a"], ["a", "b"]])
     def test_hard_timeout_does_not_scale_with_rung_count(
-        self, monkeypatch, fallback_models
+        self, monkeypatch, fallback_models, fixed_rung_clock
     ):
         """The per-rung hard timeout is constant regardless of how many fallbacks
         follow — each rung is bounded to its own single attempt. A
@@ -4399,7 +4414,7 @@ class TestLitellmIntegration:
 
         # Only the primary rung runs (it succeeds); its bound is 30 seconds,
         # independent of the fallback count.
-        assert 29 < captured["hard_timeout"] <= 30
+        assert captured["hard_timeout"] == 30
 
     def test_fallback_response_returned_when_primary_fails(self, monkeypatch):
         """End-to-end: when the primary fails and a fallback is configured, the
