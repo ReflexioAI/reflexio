@@ -18,7 +18,6 @@ def saved_local_config(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("REFLEXIO_LOG_DIR", str(tmp_path))
-    monkeypatch.setenv("REFLEXIO_DEFAULT_ORG_ID", "startup-owner")
     monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://127.0.0.1:9")
     monkeypatch.delenv("REFLEXIO_STORAGE", raising=False)
     monkeypatch.setattr(run_services, "load_reflexio_env", lambda: None)
@@ -191,7 +190,7 @@ def test_real_server_upgrades_before_serving_and_keeps_owned_dataset(
 
     # This test upgrades saved settings around an already qualified dataset.
     # Historical data without authority requires explicit maintenance first.
-    storage = SQLiteStorage(org_id="startup-owner", db_path=database)
+    storage = SQLiteStorage(org_id="self-host-org", db_path=database)
     storage.conn.close()
     with sqlite3.connect(database) as connection:
         connection.execute("CREATE TABLE upgrade_identity (value TEXT)")
@@ -218,7 +217,6 @@ def test_real_server_upgrades_before_serving_and_keeps_owned_dataset(
         USERPROFILE=str(tmp_path),
         REFLEXIO_LOG_DIR=str(tmp_path),
         REFLEXIO_ENV_FILE=str(empty_env),
-        REFLEXIO_DEFAULT_ORG_ID="startup-owner",
         LOCAL_STORAGE_PATH=str(tmp_path / "sqlite"),
         REFLEXIO_STORAGE="sqlite",
         PYTHONPATH=str(Path(__file__).parents[2]),

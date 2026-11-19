@@ -152,12 +152,18 @@ def show_local(ctx: typer.Context) -> None:
 
 @app.command(name="bind-local")
 @handle_errors
-def bind_local(ctx: typer.Context) -> None:
-    """Remember the selected local dataset for future launches."""
+def bind_local(
+    ctx: typer.Context,
+    organization: Annotated[
+        str | None,
+        typer.Argument(help="Organization of the existing saved local dataset"),
+    ] = None,
+) -> None:
+    """Remember an existing local dataset for future launches."""
     from reflexio.local_instance import bind_local_instance
 
     try:
-        org_id = bind_local_instance()
+        org_id = bind_local_instance(organization)
     except OSError as exc:
         raise CliError(
             message="Could not save the local instance. Check installation permissions.",

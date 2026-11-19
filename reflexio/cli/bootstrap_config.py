@@ -91,7 +91,7 @@ def load_storage_from_config(
 
     Args:
         org_id: Organization ID for the config file name. Defaults to the
-            ``REFLEXIO_DEFAULT_ORG_ID``-aware default org.
+            saved local organization, or the standalone default.
         base_dir: Override base directory (for testing). If None, uses ~/.reflexio/.
 
     Returns:
@@ -143,7 +143,7 @@ def save_storage_to_config(
     Args:
         storage_type: Backend name ("sqlite", "supabase", "postgres").
         org_id: Organization ID for the config file name. Defaults to the
-            ``REFLEXIO_DEFAULT_ORG_ID``-aware default org.
+            saved local organization, or the standalone default.
         base_dir: Override base directory (for testing).
     """
     from reflexio.models.config_schema import (
