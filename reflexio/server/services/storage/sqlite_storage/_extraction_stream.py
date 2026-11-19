@@ -18,6 +18,12 @@ from reflexio.server.services.storage.storage_base.agent_run._models import (
 )
 from reflexio.server.work_scope import current_project_id
 
+CURSOR_WINDOW_INDEX_NAME = "extraction_cursors_window_lookup"
+CURSOR_WINDOW_INDEX_DDL = (
+    f"CREATE INDEX IF NOT EXISTS {CURSOR_WINDOW_INDEX_NAME}\n"
+    " ON extraction_cursors(window_id) WHERE window_id IS NOT NULL"
+)
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS learning_work (
  org_id TEXT NOT NULL, user_id TEXT NOT NULL, highwater INTEGER NOT NULL DEFAULT 0,
