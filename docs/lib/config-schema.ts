@@ -48,6 +48,7 @@ export interface APIKeyConfig {
 export interface LLMConfig {
 	should_run_model_name: string | null;
 	generation_model_name: string | null;
+	evaluation_model_name?: string | null;
 	embedding_model_name: string | null;
 	pre_retrieval_model_name: string | null;
 	// Must stay listed in cleanLlm below: /api/set_config is a full replacement,
@@ -265,8 +266,11 @@ export function serializeConfig(config: ReflexioConfig) {
 
 	const cleanLlm = (llm: LLMConfig | null): LLMConfig | null => {
 		if (!llm) return null;
+		const { evaluation_model_name, ...otherModels } = llm;
+		const evaluationModel = clean(evaluation_model_name);
 		const out: LLMConfig = {
-			...llm,
+			...otherModels,
+			...(evaluationModel != null ? { evaluation_model_name: evaluationModel } : {}),
 			should_run_model_name: clean(llm.should_run_model_name),
 			generation_model_name: clean(llm.generation_model_name),
 			embedding_model_name: clean(llm.embedding_model_name),

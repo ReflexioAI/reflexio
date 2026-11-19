@@ -41,7 +41,6 @@ from reflexio.server.services.storage.storage_base.retrieved_learning_state impo
     CANONICAL_RETRIEVED_KINDS,
     BoundedRetrievedLearningSnapshot,
 )
-from reflexio.server.site_var.site_var_manager import SiteVarManager
 
 if TYPE_CHECKING:
     from reflexio.server.api_endpoints.request_context import RequestContext
@@ -190,11 +189,8 @@ class RetrievedLearningEvaluator:
 
         config = self.request_context.configurator.get_config()
         llm_config = config.llm_config if config else None
-        model_setting = SiteVarManager().get_site_var("llm_model_setting")
-        site_var = model_setting if isinstance(model_setting, dict) else {}
         self.model_name = resolve_model_name(
             ModelRole.EVALUATION,
-            site_var_value=site_var.get("default_evaluate_model_name"),
             llm_config=llm_config,
             api_key_config=config.api_key_config if config else None,
         )

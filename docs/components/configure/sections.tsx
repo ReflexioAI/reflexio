@@ -354,7 +354,12 @@ const LLM_FIELDS: {
 	{
 		key: "generation_model_name",
 		label: "Generation model",
-		hint: "Used for extraction, evaluation, and generation tasks.",
+		hint: "Used for extraction and generation tasks.",
+	},
+	{
+		key: "evaluation_model_name",
+		label: "Evaluation model",
+		hint: "Optional model for evaluations. Defaults to the configured generation model or provider default.",
 	},
 	{
 		key: "embedding_model_name",
@@ -372,6 +377,7 @@ function emptyLlm(): LLMConfig {
 	return {
 		should_run_model_name: null,
 		generation_model_name: null,
+		evaluation_model_name: null,
 		embedding_model_name: null,
 		pre_retrieval_model_name: null,
 		// Deliberately absent from LLM_FIELDS: those render text inputs and hand
@@ -394,14 +400,14 @@ export function LLMModelsSection({
 	return (
 		<Section
 			title="LLM model overrides"
-			description="A custom gateway requires a generation model; omitted text roles inherit it. Other providers use site-variable defaults when a role is blank."
+			description="A custom gateway requires a generation model. Unset text roles inherit it. Otherwise, unset roles use provider defaults unless evaluation inherits a configured generation model."
 			defaultOpen={false}
 		>
 			{LLM_FIELDS.map((f) => (
 				<FieldRow key={f.key} label={f.label} htmlFor={`llm-${f.key}`} hint={f.hint}>
 					<TextField
 						id={`llm-${f.key}`}
-						value={llm[f.key]}
+						value={llm[f.key] ?? null}
 						onChange={(v) =>
 							setConfig((prev) => ({
 								...prev,

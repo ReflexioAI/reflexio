@@ -386,7 +386,7 @@ Pending tools require a positive `pending_tool_call_config.pending_ttl_seconds`;
 construction. Legacy non-neutral rollout files require explicit org-policy
 adoption; no constant enabled flag replaces their resolver.
 
-Access model/retrieval defaults with `SiteVarManager().get_site_var(key)`.
+Access retrieval defaults with `SiteVarManager().get_site_var(key)`. Model selection uses organization configuration and provider defaults.
 
 ## Services
 

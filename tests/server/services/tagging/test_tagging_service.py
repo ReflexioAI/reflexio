@@ -215,10 +215,6 @@ def make_config(
 
 def test_tagging_updates_profiles_and_playbooks(monkeypatch: Any) -> None:
     monkeypatch.delenv("MOCK_LLM_RESPONSE", raising=False)
-    monkeypatch.setattr(
-        "reflexio.server.services.tagging.service.SiteVarManager.get_site_var",
-        lambda *_: {},
-    )
     storage = FakeStorage()
     context = FakeRequestContext(make_config(), storage)
     client = FakeLLMClient(
@@ -254,10 +250,6 @@ def test_tagging_skips_entity_types_without_tagging_prompts(
     monkeypatch: Any,
 ) -> None:
     monkeypatch.delenv("MOCK_LLM_RESPONSE", raising=False)
-    monkeypatch.setattr(
-        "reflexio.server.services.tagging.service.SiteVarManager.get_site_var",
-        lambda *_: {},
-    )
     storage = FakeStorage()
     context = FakeRequestContext(
         make_config(profile_tagging_prompt=None, playbook_tagging_prompt=None), storage
@@ -276,10 +268,6 @@ def test_tagging_skips_entity_types_without_tagging_prompts(
 
 def test_tagging_can_scope_to_profiles_only(monkeypatch: Any) -> None:
     monkeypatch.delenv("MOCK_LLM_RESPONSE", raising=False)
-    monkeypatch.setattr(
-        "reflexio.server.services.tagging.service.SiteVarManager.get_site_var",
-        lambda *_: {},
-    )
     storage = FakeStorage()
     context = FakeRequestContext(make_config(), storage)
     client = FakeLLMClient([["profile-tag"]])
@@ -299,10 +287,6 @@ def test_tagging_can_scope_to_profiles_only(monkeypatch: Any) -> None:
 
 def test_tagging_skips_already_tagged_entities(monkeypatch: Any) -> None:
     monkeypatch.delenv("MOCK_LLM_RESPONSE", raising=False)
-    monkeypatch.setattr(
-        "reflexio.server.services.tagging.service.SiteVarManager.get_site_var",
-        lambda *_: {},
-    )
     storage = FakeStorage()
     # An empty list means tagging already ran and matched nothing — a final state.
     # The service must NOT re-tag these (only tags is None means "never tagged").
@@ -324,10 +308,6 @@ def test_tagging_skips_already_tagged_entities(monkeypatch: Any) -> None:
 
 def test_tagging_updates_evaluation_from_persisted_summary(monkeypatch: Any) -> None:
     monkeypatch.delenv("MOCK_LLM_RESPONSE", raising=False)
-    monkeypatch.setattr(
-        "reflexio.server.services.tagging.service.SiteVarManager.get_site_var",
-        lambda *_: {},
-    )
     storage = FakeStorage()
     context = FakeRequestContext(
         make_config(
@@ -362,10 +342,6 @@ def test_tagging_updates_evaluation_from_persisted_summary(monkeypatch: Any) -> 
 
 def test_tagging_persists_empty_evaluation_tags(monkeypatch: Any) -> None:
     monkeypatch.delenv("MOCK_LLM_RESPONSE", raising=False)
-    monkeypatch.setattr(
-        "reflexio.server.services.tagging.service.SiteVarManager.get_site_var",
-        lambda *_: {},
-    )
     storage = FakeStorage()
     context = FakeRequestContext(
         make_config(
@@ -385,10 +361,6 @@ def test_tagging_persists_empty_evaluation_tags(monkeypatch: Any) -> None:
 
 def test_tagging_skips_already_tagged_evaluation(monkeypatch: Any) -> None:
     monkeypatch.delenv("MOCK_LLM_RESPONSE", raising=False)
-    monkeypatch.setattr(
-        "reflexio.server.services.tagging.service.SiteVarManager.get_site_var",
-        lambda *_: {},
-    )
     storage = FakeStorage()
     storage.evaluations[0].tags = []
     context = FakeRequestContext(

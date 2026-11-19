@@ -107,7 +107,6 @@ from reflexio.server.services.storage.storage_base.agent_run._agent_run_store im
     is_overflow_protocol_run,
 )
 from reflexio.server.services.tagging.tagging_scheduler import schedule_tagging
-from reflexio.server.site_var.site_var_manager import SiteVarManager
 from reflexio.server.work_scope import WorkScope, bind_work_scope
 
 logger = logging.getLogger(__name__)
@@ -138,14 +137,11 @@ def _create_llm_client(request_context: RequestContext) -> LiteLLMClient:
     # (see run_tool_loop); this client's model name is only a fallback. We resolve
     # the GENERATION model here so the client still carries a sensible default and
     # the org's api_key_config, which the loop reuses for provider routing.
-    model_setting = SiteVarManager().get_site_var("llm_model_setting")
-    site_var = model_setting if isinstance(model_setting, dict) else {}
     config = request_context.configurator.get_config()
     api_key_config = config.api_key_config if config else None
     llm_config = config.llm_config if config else None
     model_name = resolve_model_name(
         ModelRole.GENERATION,
-        site_var_value=site_var.get("default_generation_model_name"),
         llm_config=llm_config,
         api_key_config=api_key_config,
     )

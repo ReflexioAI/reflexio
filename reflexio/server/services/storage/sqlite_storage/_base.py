@@ -1143,7 +1143,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         from reflexio.server.llm.providers.embedding_service_provider import (
             resolve_service_configured_model,
         )
-        from reflexio.server.site_var.site_var_manager import SiteVarManager
 
         from ._extraction_stream import register_window_delivery_validator
 
@@ -1204,9 +1203,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             self.conn.execute("PRAGMA foreign_keys=ON")
 
         # LLM client for embeddings
-        model_setting = SiteVarManager().get_site_var("llm_model_setting")
-        site_var = model_setting if isinstance(model_setting, dict) else {}
-
         self.embedding_model_name = resolve_service_configured_model(
             resolve_model_name(
                 ModelRole.EMBEDDING,
@@ -1223,7 +1219,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         # fail (e.g. local/minilm-l6-v2 cannot serve completions).
         self._expansion_model_name = resolve_model_name(
             ModelRole.GENERATION,
-            site_var_value=site_var.get("default_generation_model_name"),
             llm_config=llm_config,
             api_key_config=self.api_key_config,
         )

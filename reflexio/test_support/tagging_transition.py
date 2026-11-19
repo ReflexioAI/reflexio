@@ -19,10 +19,6 @@ from reflexio.server.services.tagging.service import TaggingService, TagsOutput
 
 def build(context: Any, monkeypatch: Any) -> tuple[TaggingService, MagicMock]:
     monkeypatch.delenv("MOCK_LLM_RESPONSE", raising=False)
-    monkeypatch.setattr(
-        "reflexio.server.services.tagging.service.SiteVarManager.get_site_var",
-        lambda *_: {},
-    )
     context.prompt_manager.render_prompt.return_value = "synthetic tagging prompt"
     config = context.configurator.get_config()
     config.profile_extractor_config.tagging_definition_prompt = "synthetic tags"

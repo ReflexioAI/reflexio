@@ -488,14 +488,23 @@ Query/fragment-bearing v1 endpoints refuse without logging their values;
 explicit non-Azure transport overrides and dated Azure API versions retain
 their existing behavior. The API-version configuration remains supported.
 
-Set `llm_config.pre_retrieval_model_name` for query reformulation and
-`llm_config.should_run_model_name` for the extraction check. If you customized
-either corresponding key in the bundled
-[`llm_model_setting.json`](reflexio/server/site_var/site_var_sources/llm_model_setting.json),
-copy the value into each configuration where it was effective before upgrading
-and remove the old key. Keep any organization override or custom gateway
-generation model that already took precedence. The shipped blank values require
-no migration. The bundled file still supplies generation and evaluation defaults.
+Configure models through the organization's `llm_config`. If you customized
+the former bundled `llm_model_setting.json`, record each model actually in use
+before upgrading. Apply only the former defaults that were effective for
+each organization.
+
+| Former key | Organization field |
+| --- | --- |
+| `default_generation_model_name` | `llm_config.generation_model_name` |
+| `default_evaluate_model_name` | `llm_config.evaluation_model_name` |
+| `pre_retrieval_model_name` | `llm_config.pre_retrieval_model_name` |
+| `should_run_model_name` | `llm_config.should_run_model_name` |
+
+When copying a custom generation default, also set
+`llm_config.evaluation_model_name` to the previously effective evaluation model
+if it was different. This includes a provider-selected evaluation default.
+Otherwise evaluation inherits the configured generation model as before.
+The shipped blank defaults require no migration.
 
 Before an upgrade or model change, let in-flight ordinary profile work finish
 on its original runtime. Its saved preparation verifies the original source

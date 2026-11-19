@@ -18,7 +18,6 @@ from reflexio.server.llm.llm_utils import positive_int_env
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.configurator.base_configurator import BaseConfigurator
 from reflexio.server.services.storage.storage_base import BaseStorage
-from reflexio.server.site_var.site_var_manager import SiteVarManager
 from reflexio.server.tracing import profile_step
 
 logger = logging.getLogger(__name__)
@@ -58,14 +57,11 @@ def create_generation_litellm_client(
     request_context: RequestContext,
 ) -> LiteLLMClient:
     """Build the tenant client used by normal generation and aggregation."""
-    model_setting = SiteVarManager().get_site_var("llm_model_setting")
-    site_var = model_setting if isinstance(model_setting, dict) else {}
     config = request_context.configurator.get_config()
     api_key_config = config.api_key_config if config else None
     config_llm_config = config.llm_config if config else None
     generation_model_name = resolve_model_name(
         ModelRole.GENERATION,
-        site_var_value=site_var.get("default_generation_model_name"),
         llm_config=config_llm_config,
         api_key_config=api_key_config,
     )

@@ -1053,7 +1053,7 @@ class TestResumableAgentPath:
         )
 
         with (
-            patch("litellm.completion", side_effect=[response]),
+            patch.object(LiteLLMClient, "_run_completion", side_effect=[response]),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
             persist_source_models(sqlite_storage, sample_request_interaction_models)
@@ -1158,7 +1158,7 @@ class TestStructuredPlaybookExtraction:
         )
 
         with (
-            patch("litellm.completion", side_effect=[response]),
+            patch.object(LiteLLMClient, "_run_completion", side_effect=[response]),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
             persist_source_models(sqlite_storage, sample_request_interaction_models)
@@ -1204,7 +1204,7 @@ class TestStructuredPlaybookExtraction:
         )
 
         with (
-            patch("litellm.completion", side_effect=[response]),
+            patch.object(LiteLLMClient, "_run_completion", side_effect=[response]),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
             persist_source_models(sqlite_storage, sample_request_interaction_models)
@@ -1237,7 +1237,7 @@ class TestStructuredPlaybookExtraction:
         response = make_structured_finish({"playbooks": []})
 
         with (
-            patch("litellm.completion", side_effect=[response]),
+            patch.object(LiteLLMClient, "_run_completion", side_effect=[response]),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
             persist_source_models(sqlite_storage, sample_request_interaction_models)
@@ -1270,7 +1270,7 @@ class TestStructuredPlaybookExtraction:
         response = make_stop()
 
         with (
-            patch("litellm.completion", side_effect=[response]),
+            patch.object(LiteLLMClient, "_run_completion", side_effect=[response]),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
             pytest.raises(
                 RuntimeError,
@@ -2238,7 +2238,7 @@ class TestRationaleRoundTrip:
         )
 
         with (
-            patch("litellm.completion", side_effect=[response]),
+            patch.object(LiteLLMClient, "_run_completion", side_effect=[response]),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
             persist_source_models(sqlite_storage, sample_request_interaction_models)
@@ -2416,7 +2416,7 @@ class TestPlaybookContentExtraction:
         )
 
         with (
-            patch("litellm.completion", side_effect=[response]),
+            patch.object(LiteLLMClient, "_run_completion", side_effect=[response]),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
             persist_source_models(sqlite_storage, sample_request_interaction_models)

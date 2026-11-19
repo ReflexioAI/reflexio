@@ -17,6 +17,7 @@ from reflexio.models.api_schema.domain.entities import (
 from reflexio.models.api_schema.domain.enums import Status
 from reflexio.models.config_schema import (
     DeduplicationConfig,
+    LLMConfig,
     UserPlaybookExtractorConfig,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
@@ -91,13 +92,10 @@ def consolidator(storage, tmp_path, monkeypatch):
     context.storage = storage
     context.prompt_manager = MagicMock()
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o", fallback_models=[]))
-    with patch(
-        "reflexio.server.services.deduplication_utils.SiteVarManager"
-    ) as manager:
-        manager.return_value.get_site_var.return_value = {
-            "default_generation_model_name": "gpt-4o"
-        }
-        yield PlaybookConsolidator(context, client, DeduplicationConfig())
+    context.configurator.set_config_by_name(
+        "llm_config", LLMConfig(generation_model_name="gpt-4o")
+    )
+    yield PlaybookConsolidator(context, client, DeduplicationConfig())
 
 
 def source(storage, *, owner="owner", agent_version="v1", expert=False):

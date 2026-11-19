@@ -756,7 +756,7 @@ class TestResumableAgentPath:
         )
 
         with (
-            patch("litellm.completion", side_effect=[response]),
+            patch.object(LiteLLMClient, "_run_completion", side_effect=[response]),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
             persist_source_models(sqlite_storage, sample_request_interaction_models)
@@ -824,7 +824,7 @@ class TestResumableAgentPath:
         )
 
         with (
-            patch("litellm.completion", side_effect=[response]),
+            patch.object(LiteLLMClient, "_run_completion", side_effect=[response]),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
             persist_source_models(sqlite_storage, sample_request_interaction_models)
@@ -920,7 +920,11 @@ class TestResumableAgentPath:
         )
 
         with (
-            patch("litellm.completion", side_effect=[attach_response, finish_response]),
+            patch.object(
+                LiteLLMClient,
+                "_run_completion",
+                side_effect=[attach_response, finish_response],
+            ),
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
             persist_source_models(sqlite_storage, sample_request_interaction_models)

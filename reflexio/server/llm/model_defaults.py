@@ -3,7 +3,7 @@
 Resolution order (highest priority first):
     1. LLMConfig override (org-level configuration)
     2. For embeddings, Reflexio's local default model
-    3. For other roles, llm_model_setting.json site var and provider autodetection
+    3. For other roles, provider autodetection when there is no explicit model
 """
 
 from __future__ import annotations
@@ -438,13 +438,13 @@ def resolve_model_name(
 
     Resolution order (highest priority first):
         1. config_override, then the matching llm_config role choice
-        2. For custom gateways, inherit their generation model for text roles
+        2. Evaluation and custom-gateway text roles inherit a configured generation model
         3. For EMBEDDING, the OSS local MiniLM model
         4. For other roles, site_var_value then auto-detect from available API keys
 
     Args:
         role: The model role to resolve.
-        site_var_value: Value from llm_model_setting.json. Ignored for embeddings.
+        site_var_value: Legacy caller-provided fallback. Ignored for embeddings.
         config_override: Value from org-level LLMConfig.
         api_key_config: Optional org-level API key configuration for provider detection.
         llm_config: Existing organization role choices. Custom gateways inherit
@@ -461,7 +461,7 @@ def resolve_model_name(
     if llm_config is not None:
         field = {
             ModelRole.GENERATION: "generation_model_name",
-            ModelRole.EVALUATION: "generation_model_name",
+            ModelRole.EVALUATION: "evaluation_model_name",
             ModelRole.SHOULD_RUN: "should_run_model_name",
             ModelRole.PRE_RETRIEVAL: "pre_retrieval_model_name",
             ModelRole.EMBEDDING: "embedding_model_name",
@@ -469,6 +469,8 @@ def resolve_model_name(
         selected = getattr(llm_config, field) if field else None
         if selected:
             return selected
+        if role == ModelRole.EVALUATION and llm_config.generation_model_name:
+            return llm_config.generation_model_name
         if (
             role != ModelRole.EMBEDDING
             and api_key_config is not None

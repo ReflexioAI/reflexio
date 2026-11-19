@@ -97,6 +97,7 @@ def test_gateway_role_inherits_existing_generation_choice(role):
     "role,field",
     [
         (ModelRole.SHOULD_RUN, "should_run_model_name"),
+        (ModelRole.EVALUATION, "evaluation_model_name"),
         (ModelRole.PRE_RETRIEVAL, "pre_retrieval_model_name"),
     ],
 )
@@ -111,6 +112,34 @@ def test_gateway_retains_deliberate_role_choice(role, field):
             ),
         )
         == "openai/special"
+    )
+
+
+def test_migrated_generation_and_evaluation_models_stay_distinct():
+    config = Config(
+        storage_config=None,
+        llm_config=LLMConfig(
+            generation_model_name="openai/generation",
+            evaluation_model_name="anthropic/evaluation",
+        ),
+    )
+    saved = Config.model_validate(config.model_dump(mode="json")).llm_config
+    assert (
+        resolve_model_name(ModelRole.GENERATION, llm_config=saved)
+        == "openai/generation"
+    )
+    assert (
+        resolve_model_name(ModelRole.EVALUATION, llm_config=saved)
+        == "anthropic/evaluation"
+    )
+
+
+def test_unset_evaluation_model_keeps_existing_generation_inheritance():
+    policy = LLMConfig(generation_model_name="openai/existing-generation")
+    assert "evaluation_model_name" not in policy.model_dump(mode="json")
+    assert (
+        resolve_model_name(ModelRole.EVALUATION, llm_config=policy)
+        == "openai/existing-generation"
     )
 
 
