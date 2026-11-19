@@ -67,9 +67,20 @@ def _owned_identifier(name: str) -> str:
 
 def _check_upgrade_schema(
     conn: sqlite3.Connection, contract: dict[str, Any]
-) -> tuple[bool, bool]:
+) -> tuple[bool, bool, list[dict[str, Any]]]:
+    from ._extraction_stream import CURSOR_WINDOW_INDEX_DDL, CURSOR_WINDOW_INDEX_NAME
+
     expected = contract["catalog"]
-    observed = _catalog(conn, len(expected) + 2)
+    # The authority and the optional index may coexist. Read one more row so
+    # neither addition can hide an unsupported trailing catalog object.
+    observed = _catalog(conn, len(expected) + 3)
+    window_index = {
+        "type": "index",
+        "name": CURSOR_WINDOW_INDEX_NAME,
+        "table": "extraction_cursors",
+        # SQLite removes IF NOT EXISTS in the stored definition.
+        "sql": CURSOR_WINDOW_INDEX_DDL.replace(" IF NOT EXISTS", "", 1),
+    }
     authority_objects = [
         row for row in observed if row["table"] == "_learning_policy_authority"
     ]
@@ -85,7 +96,10 @@ def _check_upgrade_schema(
     has_identity = any(row["table"] == "_dataset_identity" for row in observed)
     if not has_identity:
         expected = [row for row in expected if row["table"] != "_dataset_identity"]
-    if [row for row in observed if row not in authority_objects] != expected:
+    historical_objects = [
+        row for row in observed if row not in authority_objects and row != window_index
+    ]
+    if historical_objects != expected:
         raise _upgrade_refused("unsupported historical schema")
     for name, shape in contract["tables"].items():
         if name == "_dataset_identity" and not has_identity:
@@ -100,7 +114,7 @@ def _check_upgrade_schema(
         ]
         if columns != shape["columns"]:
             raise _upgrade_refused("unsupported historical columns")
-    return bool(authority_objects), has_identity
+    return bool(authority_objects), has_identity, observed
 
 
 def _upgrade_identity(conn: sqlite3.Connection) -> str:
@@ -208,7 +222,7 @@ def upgrade_existing_sqlite_dataset(
         check_target()
         conn.execute("BEGIN IMMEDIATE")
         check_target()
-        has_authority, has_identity = _check_upgrade_schema(conn, contract)
+        has_authority, has_identity, catalog = _check_upgrade_schema(conn, contract)
         org_id = _select_upgrade_namespace(
             conn, org_id, has_identity=has_identity, has_authority=has_authority
         )
@@ -245,7 +259,7 @@ def upgrade_existing_sqlite_dataset(
             "source_schema_sha256": hashlib.sha256(contract_bytes).hexdigest(),
             "source_catalog_sha256": hashlib.sha256(
                 json.dumps(
-                    _catalog(conn, len(contract["catalog"]) + 2),
+                    catalog,
                     sort_keys=True,
                     separators=(",", ":"),
                 ).encode()
