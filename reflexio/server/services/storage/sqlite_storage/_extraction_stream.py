@@ -284,27 +284,30 @@ class SQLiteStreamSQL:
         values = {
             "output_id": "json_extract(r.committed_output,'$.publication.id')",
             "preparation_id": "json_extract(r.preparation,'$.output_id')",
-            "v1_window_publication": (
-                "CASE WHEN json_valid(w.effects) AND json_valid(w.manifest) THEN ("
-                "w.project_id='' AND typeof(w.predecessor)='integer' AND typeof(w.end_seq)='integer' "
-                "AND json_extract(w.effects,'$.acknowledged_window_run_id')=r.id "
-                "AND json_type(w.effects,'$.version')='integer' "
-                "AND json_extract(w.effects,'$.version')=1 AND json_type(w.effects,'$.skipped')='true' "
-                "AND json_type(w.manifest)='array' AND json_array_length(w.manifest)=0 "
-                "AND json_type(r.generation_request_snapshot,'$.overflow.version')='integer' "
-                "AND json_extract(r.generation_request_snapshot,'$.overflow.version')=1 "
-                "AND json_extract(r.generation_request_snapshot,'$.overflow.checkpoint.stage')='recovered' "
-                "AND length(json_extract(r.generation_request_snapshot,'$.overflow.source_digest'))=64 "
-                "AND instr(json_extract(r.generation_request_snapshot,'$.overflow.source_digest'),char(0))=0 "
-                "AND json_extract(r.generation_request_snapshot,'$.overflow.source_digest') NOT GLOB '*[^a-f0-9]*' "
-                "AND json_type(r.committed_output,'$._reflexio_envelope_version')='integer' "
-                "AND json_extract(r.committed_output,'$._reflexio_envelope_version')=1 "
-                "AND json_type(r.committed_output,'$.output')='object' "
-                "AND json_type(r.committed_output,'$.publication') IS NULL) ELSE 0 END"
-            ),
             "overflow_stage": "json_extract(r.generation_request_snapshot,'$.overflow.checkpoint.stage')",
         }
         return values[field]
+
+    def transition_window_publication_proof(self) -> str:
+        # Older JSON1 scalar extraction can truncate strings at an escaped NUL.
+        return (
+            "CASE WHEN json_valid(w.effects) AND json_valid(w.manifest) THEN ("
+            "w.project_id='' AND typeof(w.predecessor)='integer' AND typeof(w.end_seq)='integer' "
+            "AND (w.effects -> '$.acknowledged_window_run_id')=json_quote(r.id) "
+            "AND json_type(w.effects,'$.version')='integer' "
+            "AND json_extract(w.effects,'$.version')=1 AND json_type(w.effects,'$.skipped')='true' "
+            "AND json_type(w.manifest)='array' AND json_array_length(w.manifest)=0 "
+            "AND json_type(r.generation_request_snapshot,'$.overflow.version')='integer' "
+            "AND json_extract(r.generation_request_snapshot,'$.overflow.version')=1 "
+            "AND (r.generation_request_snapshot -> '$.overflow.checkpoint.stage')=json_quote('recovered') "
+            "AND json_type(r.generation_request_snapshot,'$.overflow.source_digest')='text' "
+            "AND length(r.generation_request_snapshot -> '$.overflow.source_digest')=66 "
+            "AND substr(r.generation_request_snapshot -> '$.overflow.source_digest',2,64) NOT GLOB '*[^a-f0-9]*' "
+            "AND json_type(r.committed_output,'$._reflexio_envelope_version')='integer' "
+            "AND json_extract(r.committed_output,'$._reflexio_envelope_version')=1 "
+            "AND json_type(r.committed_output,'$.output')='object' "
+            "AND json_type(r.committed_output,'$.publication') IS NULL) ELSE 0 END"
+        )
 
     def input_lock(self) -> str:
         return ""

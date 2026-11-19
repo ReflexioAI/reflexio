@@ -25,6 +25,9 @@ pytestmark = pytest.mark.integration
         "fractional_predecessor",
         "fractional_end",
         "nul_digest",
+        "nul_stage",
+        "nul_ack",
+        "adapter_without_proof",
         "wrong_effect_run",
         "foreign_window",
         "invalidated",
@@ -34,7 +37,15 @@ pytestmark = pytest.mark.integration
         "mismatched_output",
     ],
 )
-def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(storage, case):
+def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(
+    storage, case, monkeypatch
+):
+    if case == "adapter_without_proof":
+        from reflexio.server.services.storage.sqlite_storage._extraction_stream import (
+            SQLiteStreamSQL,
+        )
+
+        monkeypatch.delattr(SQLiteStreamSQL, "transition_window_publication_proof")
     window_id = "compatibility-window"
     run_id = f"window:{window_id}"
     output = {"_reflexio_envelope_version": 1, "output": {}}
@@ -43,6 +54,8 @@ def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(storage, 
     stage = {"retired": "retired", "fresh_extracted": "extracted"}.get(
         case, "recovered"
     )
+    if case == "nul_stage":
+        stage += "\x00extra"
     seed_run(
         storage,
         run_id,
@@ -92,6 +105,13 @@ def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(storage, 
         assert token
         storage.ack_extraction_effects(window_id, user_id="user", token=token)
         storage.release_user_extraction("user", token)
+    if case == "nul_ack":
+        with storage.commit_scope():
+            storage.conn.execute(
+                "UPDATE extraction_windows SET effects=json_set(effects, "
+                "'$.acknowledged_window_run_id', ?) WHERE window_id=?",
+                (run_id + "\x00extra", window_id),
+            )
     if case in {"corrupt_ack", "corrupt_manifest"}:
         query = (
             "UPDATE extraction_windows SET effects=? WHERE window_id=?"
