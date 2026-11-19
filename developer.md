@@ -499,7 +499,9 @@ updated policy from the effective choices. Leave already effective
 organization settings in place and skip bundled defaults they overrode.
 Stop all old writers, then publish generation and evaluation together through
 the upgraded writer. Reload the policy and verify both resolved models before
-resuming work. An old writer discards the new evaluation field.
+resuming work. An old writer discards the new evaluation field. Stop all old
+writers before first publishing an evaluation model, even if no bundled value
+needs to move.
 
 | Former key | Organization field |
 | --- | --- |
@@ -515,8 +517,9 @@ Otherwise evaluation inherits the configured generation model as before.
 The shipped blank defaults require no migration. Source-package retries keep
 their saved model ladder. To roll back a customized deployment, restore the
 old bundled defaults and reconcile the current organization policy with the
-pre-upgrade copy. Undo generation overrides introduced only by the migration
-so the old runtime can use its original evaluation default. Preserve unrelated
+pre-upgrade copy. Undo all model overrides introduced only by the migration, including
+generation overrides that would take precedence over the old evaluation
+default and evaluation overrides the old writer cannot carry. Preserve unrelated
 newer edits and verify both resolved models before resuming work.
 Use the provider prefix shown above (e.g., `anthropic/` for Anthropic models). Set the corresponding API key in your `.env` file.
 
