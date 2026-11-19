@@ -17,6 +17,13 @@ from functools import cache
 DEFAULT_ORG_ID = "self-host-org"
 
 
+def configured_local_org_id() -> str:
+    """Resolve the local launcher identity without recording request timings."""
+    from reflexio.server.env_utils import env_str
+
+    return env_str("REFLEXIO_DEFAULT_ORG_ID", DEFAULT_ORG_ID)
+
+
 def default_get_org_id() -> str:
     """Return the default organization ID for local hosting.
 
@@ -37,9 +44,8 @@ def default_get_org_id() -> str:
     # Lazy import keeps this deliberately cycle-free module independent of the
     # ``reflexio.server`` package init (see module docstring).
     from reflexio.server import publish_timing
-    from reflexio.server.env_utils import env_str
 
-    org_id = env_str("REFLEXIO_DEFAULT_ORG_ID", DEFAULT_ORG_ID)
+    org_id = configured_local_org_id()
     publish_timing.http_org_resolved(org_id)
     return org_id
 
