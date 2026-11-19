@@ -488,10 +488,18 @@ Query/fragment-bearing v1 endpoints refuse without logging their values;
 explicit non-Azure transport overrides and dated Azure API versions retain
 their existing behavior. The API-version configuration remains supported.
 
-Configure models through the organization's `llm_config`. If you customized
-the former bundled `llm_model_setting.json`, record each model actually in use
-before upgrading. Apply only the former defaults that were effective for
-each organization.
+Configure models through the organization's `llm_config`. Before upgrading
+or changing model policy, let in-flight ordinary profile work finish on its
+original runtime. Record each organization's effective models and back up its
+model policy, including on installations using shipped defaults. Keep a copy
+of any customized bundled `llm_model_setting.json`.
+
+If you customized bundled defaults, prepare an updated policy from the effective
+choices. Keep organization settings that already took precedence. Stop every
+old config writer before the first publication of an evaluation model through
+the upgraded writer, including on installations using shipped defaults. Save
+generation and evaluation together when migrating distinct models. With the
+upgraded release, verify every affected role before resuming work.
 
 | Former key | Organization field |
 | --- | --- |
@@ -504,11 +512,18 @@ When copying a custom generation default, also set
 `llm_config.evaluation_model_name` to the previously effective evaluation model
 if it was different. This includes a provider-selected evaluation default.
 Otherwise evaluation inherits the configured generation model as before.
-The shipped blank defaults require no migration.
+The shipped blank defaults require no migration. Source-package retries keep
+their saved model ladder.
 
-Before an upgrade or model change, let in-flight ordinary profile work finish
-on its original runtime. Its saved preparation verifies the original source
-and configuration. Source-package retries keep their saved model ladder.
+For rollback, first let in-flight ordinary profile work finish on the current
+runtime, even if no settings need to change. Back up the current model policy,
+then reconcile it with the pre-upgrade copy. Restore the relevant bundled values
+for the exact rollback release. Undo migration-only overrides and remove
+`evaluation_model_name` from the live policy if the rollback release cannot
+carry it. Keep a distinct evaluator in the backup for re-upgrade and preserve
+unrelated newer edits. Verify every affected role with the exact rollback
+release while writes and workload dispatch are disabled. If the rollback
+release cannot resolve a required model, keep work paused and repair forward.
 Use the provider prefix shown above (e.g., `anthropic/` for Anthropic models). Set the corresponding API key in your `.env` file.
 
 Retryable physical-request warnings record only the error type, reason and
