@@ -22,6 +22,9 @@ pytestmark = pytest.mark.integration
         "foreign_active_cursor",
         "corrupt_ack",
         "corrupt_manifest",
+        "fractional_predecessor",
+        "fractional_end",
+        "nul_digest",
         "wrong_effect_run",
         "foreign_window",
         "invalidated",
@@ -48,7 +51,8 @@ def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(storage, 
             "overflow": {
                 "version": 2 if case == "unknown_version" else 1,
                 "checkpoint": {"stage": stage},
-                "source_digest": "a" * 64,
+                "source_digest": "a" * 64
+                + ("\x00extra" if case == "nul_digest" else ""),
             },
         },
         output=output,
@@ -96,6 +100,14 @@ def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(storage, 
         )
         with storage.commit_scope():
             storage.conn.execute(query, ("invalid JSON", window_id))
+    if case in {"fractional_predecessor", "fractional_end"}:
+        query = (
+            "UPDATE extraction_windows SET predecessor=0.5 WHERE window_id=?"
+            if case == "fractional_predecessor"
+            else "UPDATE extraction_windows SET end_seq=2.5 WHERE window_id=?"
+        )
+        with storage.commit_scope():
+            storage.conn.execute(query, (window_id,))
     run = storage.transition_inventory_page("runs").items[0]
     assert ("unreceipted_output" not in run.reasons) == (case == "owned")
     if case == "owned":

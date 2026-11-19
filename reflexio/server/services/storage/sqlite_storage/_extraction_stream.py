@@ -18,6 +18,12 @@ from reflexio.server.services.storage.storage_base.agent_run._models import (
 )
 from reflexio.server.work_scope import current_project_id
 
+CURSOR_WINDOW_INDEX_NAME = "extraction_cursors_window_lookup"
+CURSOR_WINDOW_INDEX_DDL = (
+    f"CREATE INDEX IF NOT EXISTS {CURSOR_WINDOW_INDEX_NAME}\n"
+    " ON extraction_cursors(window_id) WHERE window_id IS NOT NULL"
+)
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS learning_work (
  org_id TEXT NOT NULL, user_id TEXT NOT NULL, highwater INTEGER NOT NULL DEFAULT 0,
@@ -33,8 +39,6 @@ CREATE TABLE IF NOT EXISTS extraction_cursors (
  project_id TEXT NOT NULL DEFAULT '', window_id TEXT, attempts INTEGER NOT NULL DEFAULT 0, retry_at REAL NOT NULL DEFAULT 0,
  last_error TEXT, last_turn REAL NOT NULL DEFAULT 0, PRIMARY KEY(user_id,kind,project_id)
 );
-CREATE INDEX IF NOT EXISTS extraction_cursors_window_lookup
- ON extraction_cursors(window_id) WHERE window_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS extraction_windows (
  window_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, kind TEXT NOT NULL, org_id TEXT,
  project_id TEXT NOT NULL DEFAULT '', predecessor INTEGER NOT NULL, end_seq INTEGER NOT NULL, manifest TEXT NOT NULL,
@@ -282,7 +286,7 @@ class SQLiteStreamSQL:
             "preparation_id": "json_extract(r.preparation,'$.output_id')",
             "v1_window_publication": (
                 "CASE WHEN json_valid(w.effects) AND json_valid(w.manifest) THEN ("
-                "w.project_id='' "
+                "w.project_id='' AND typeof(w.predecessor)='integer' AND typeof(w.end_seq)='integer' "
                 "AND json_extract(w.effects,'$.acknowledged_window_run_id')=r.id "
                 "AND json_type(w.effects,'$.version')='integer' "
                 "AND json_extract(w.effects,'$.version')=1 AND json_type(w.effects,'$.skipped')='true' "
@@ -291,6 +295,7 @@ class SQLiteStreamSQL:
                 "AND json_extract(r.generation_request_snapshot,'$.overflow.version')=1 "
                 "AND json_extract(r.generation_request_snapshot,'$.overflow.checkpoint.stage')='recovered' "
                 "AND length(json_extract(r.generation_request_snapshot,'$.overflow.source_digest'))=64 "
+                "AND instr(json_extract(r.generation_request_snapshot,'$.overflow.source_digest'),char(0))=0 "
                 "AND json_extract(r.generation_request_snapshot,'$.overflow.source_digest') NOT GLOB '*[^a-f0-9]*' "
                 "AND json_type(r.committed_output,'$._reflexio_envelope_version')='integer' "
                 "AND json_extract(r.committed_output,'$._reflexio_envelope_version')=1 "
