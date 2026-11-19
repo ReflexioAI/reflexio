@@ -253,6 +253,83 @@ def test_native_relative_executable_is_anchored_before_changing_cwd(
     assert not Path(selected[0][1]["cwd"]).exists()
 
 
+def _npm_install(tmp_path, local):
+    package = tmp_path / "node_modules" / "opencode-ai"
+    shim_dir = package.parent / ".bin" if local else tmp_path
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    executable = package / "bin" / "opencode.exe"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"MZ")
+    target = (
+        r"..\opencode-ai\bin\opencode.exe"
+        if local
+        else r"node_modules\opencode-ai\bin\opencode.exe"
+    )
+    shim = shim_dir / "opencode.cmd"
+    shim.write_bytes(
+        (
+            "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\n"
+            "EXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n"
+            f'"%dp0%\\{target}"   %*\r\n'
+        ).encode("ascii")
+    )
+    return shim, executable
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("local", [False, True])
+def test_npm_opencode_shim_selects_its_native_package_executable(tmp_path, local):
+    shim, executable = _npm_install(tmp_path, local)
+    assert native._npm_opencode_executable(shim) == executable
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "damage", ["custom", "extra-command", "missing", "placeholder"]
+)
+def test_refuses_nonstandard_or_incomplete_npm_shims(tmp_path, damage):
+    shim, executable = _npm_install(tmp_path, False)
+    if damage == "custom":
+        shim.write_text("@exit /b 99")
+    elif damage == "extra-command":
+        shim.write_bytes(shim.read_bytes() + b"@echo extra\r\n")
+    elif damage == "missing":
+        executable.unlink()
+    else:
+        executable.write_text("postinstall required")
+    assert native._npm_opencode_executable(shim) is None
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "nt", reason="Windows PATH/PATHEXT executable selection")
+@pytest.mark.parametrize("local", [False, True])
+def test_windows_opencode_uses_package_binary_for_both_launches(
+    monkeypatch, tmp_path, local
+):
+    shim, executable = _npm_install(tmp_path, local)
+    monkeypatch.setenv("PATH", str(shim.parent))
+    monkeypatch.setenv("PATHEXT", ".CMD")
+    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/opencode")
+    launch = Mock(
+        side_effect=[
+            subprocess.CompletedProcess(
+                [], 0, "--model\n--agent\n--format\n--title\n--standalone", ""
+            ),
+            subprocess.CompletedProcess([], 0, '{"type":"text","text":"owned"}', ""),
+        ]
+    )
+    monkeypatch.setattr(native, "run_native_cli", launch)
+    result = provider.NativeCLILLM().completion(
+        model="local-cli/opencode",
+        messages=[{"role": "user", "content": "owned"}],
+        timeout=1,
+    )
+    assert result.choices[0].message.content == "owned"
+    assert launch.call_count == 2
+    assert all(Path(call.args[0][0]) == executable for call in launch.call_args_list)
+
+
 @pytest.mark.unit
 def test_bridge_symlink_is_discriminated_before_native_path_canonicalization(
     monkeypatch, tmp_path
