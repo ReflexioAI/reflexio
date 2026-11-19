@@ -66,7 +66,7 @@ site_var/
 ├── site_var_manager.py        # SiteVarManager (per-instance cache)
 └── site_var_sources/
     ├── llm_model_setting.json # Provider/model defaults
-    └── search_settings.json   # Default retrieval mode and hybrid search weights
+    └── search_settings.json   # Relative weighting for hybrid search
 ```
 
 ## Architecture Pattern
