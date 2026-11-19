@@ -169,7 +169,11 @@ def convert_canonical_legacy_extraction_windows(
 def convert_canonical_legacy_project_windows(
     original_workspace: dict[str, Any], overlay: dict[str, Any]
 ) -> dict[str, Any]:
-    """Project against the original workspace, refusing masked future intent.
+    """Preserve the effective policy of a sparse historical project overlay.
+
+    When a workspace extractor overrode a global value, that project dimension
+    was inherited for that extractor. Leave it inherited after conversion.
+    The publication owner retains the exact historical overlay separately.
 
     Project raw-name/preset conversion must already have run. A project preset
     never selected geometry, unlike a workspace preset. This function cannot
@@ -193,11 +197,7 @@ def convert_canonical_legacy_project_windows(
                 overrides is not None
                 and getattr(overrides, f"{dimension}_override") is not None
             ):
-                raise ConfigurationMigrationError(
-                    "Project extraction-window policy is masked by a workspace "
-                    f"override at {kind}.{dimension}; publish explicit policy "
-                    "before converting either document."
-                )
+                continue
             converted[f"{kind}_{dimension}"] = value
     for dimension in dimensions:
         converted.pop(dimension)
