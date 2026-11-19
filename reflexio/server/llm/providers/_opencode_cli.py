@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +20,10 @@ from reflexio.server.llm._native_cli import (
     remaining_native_time,
     run_native_cli,
 )
-from reflexio.server.llm._native_model_ref import reject_native_selection
+from reflexio.server.llm._native_model_ref import (
+    CLI_TIMEOUT_ENV,
+    reject_native_selection,
+)
 from reflexio.server.llm.providers.claude_code_stream_parser import (
     ParseResult,
     classify_stall,
@@ -28,19 +33,45 @@ from reflexio.server.llm.providers.claude_code_stream_parser import (
 _AGENT = "claude-smart-extractor"
 
 
-def _run_options(help_text: str) -> set[str]:
+def _declared_run_options(help_text: str) -> set[str]:
     """Recognize declared CLI capabilities, never mentions in diagnostic prose."""
-    options = set(
+    return set(
         re.findall(
             r"(?m)^\s*(?:-[A-Za-z0-9],\s*)?(--[A-Za-z0-9][A-Za-z0-9-]*)(?=[,\s=]|$)",
             help_text,
         )
     )
+
+
+def _run_options(help_text: str) -> set[str]:
+    options = _declared_run_options(help_text)
     if not {"--model", "--agent", "--format", "--title"} <= options:
         raise OpenCodeCLIError("OpenCode CLI capabilities are unsupported")
     if "--standalone" in options or {"--attach", "--variant"} <= options:
         return options
     raise OpenCodeCLIError("OpenCode CLI capabilities are unsupported")
+
+
+def _model_arguments(
+    model: str | None, options: set[str], *, legacy_wire: bool
+) -> list[str]:
+    if not model:
+        return []
+    selected, separator, variant = model.partition("#")
+    standalone = "--standalone" in options
+    if separator and (not standalone or not selected or legacy_wire):
+        if (selected and not selected.strip()) or not variant.strip():
+            reject_native_selection("OpenCode model variant reference is invalid")
+        if standalone and selected:
+            return [f"--model={model}"]
+        if "--variant" not in options:
+            reject_native_selection(
+                "Selected OpenCode CLI does not support a variant without a model"
+            )
+        return ([f"--model={selected}"] if selected else []) + [f"--variant={variant}"]
+    if legacy_wire and not model.startswith("-"):
+        return ["--model", model]
+    return [f"--model={model}"]
 
 
 def _error_message(error: Any) -> str:
@@ -120,6 +151,20 @@ def parse_output(stdout: str, returncode: int, stderr: str) -> ParseResult:
     )
 
 
+def _compat_deadline(deadline: float) -> float:
+    # Preserve an explicit cap supported by the old bridge. Without one,
+    # the original request owner supplies the full remaining allowance.
+    try:
+        cap = float(os.environ.get(CLI_TIMEOUT_ENV, ""))
+    except ValueError:
+        return deadline
+    return (
+        min(deadline, time.monotonic() + cap)
+        if math.isfinite(cap) and cap > 0
+        else deadline
+    )
+
+
 def run_opencode(
     *,
     cli_path: str,
@@ -127,8 +172,11 @@ def run_opencode(
     dialogue: str,
     model: str | None,
     deadline: float,
+    legacy_wire: bool = False,
 ) -> ParseResult:
     """Launch the actual native executable; retain delegated scratch with its owner."""
+    if legacy_wire:
+        deadline = _compat_deadline(deadline)
     owner = native_cli_directory()
     directory: Path | None = None
     try:
@@ -179,44 +227,31 @@ def run_opencode(
             "check": False,
         }
         try:
-            discovery = run_native_cli(
-                [str(executable), "run", "--help"],
-                input="",
-                timeout=remaining_native_time(deadline),
-                **capture,
-            )
-            if discovery.returncode != 0:
-                raise OpenCodeCLIError("OpenCode CLI capability discovery failed")
-            options = _run_options(discovery.stdout + "\n" + discovery.stderr)
-            private = "--standalone" in options
-            argv = [
-                str(executable),
-                "run",
-                "--format",
-                "json",
-                "--agent",
-                _AGENT,
-                "--title",
-                _AGENT,
-            ]
-            if private:
-                argv.append("--standalone")
-            if model:
-                selected, separator, variant = model.partition("#")
-                if separator and (not private or not selected):
-                    if (selected and not selected.strip()) or not variant.strip():
-                        reject_native_selection(
-                            "OpenCode model variant reference is invalid"
-                        )
-                    if "--variant" not in options:
-                        reject_native_selection(
-                            "Selected OpenCode CLI does not support a variant without a model"
-                        )
-                    if selected:
-                        argv.append(f"--model={selected}")
-                    argv.append(f"--variant={variant}")
-                else:
-                    argv.append(f"--model={model}")
+            options: set[str] = set()
+            # The plugin bridge only needed discovery for variant references.
+            # In particular, a CLI wrapper may implement generation without help.
+            if not legacy_wire or (model and "#" in model):
+                discovery = run_native_cli(
+                    [str(executable), "run", "--help"],
+                    input="",
+                    timeout=remaining_native_time(deadline),
+                    **capture,
+                )
+                if discovery.returncode != 0:
+                    raise OpenCodeCLIError("OpenCode CLI capability discovery failed")
+                help_text = discovery.stdout + "\n" + discovery.stderr
+                options = (
+                    _declared_run_options(help_text)
+                    if legacy_wire
+                    else _run_options(help_text)
+                )
+            standalone = "--standalone" in options
+            argv = [str(executable), "run", "--format", "json", "--agent", _AGENT]
+            if not legacy_wire:
+                argv.extend(["--title", _AGENT])
+                if standalone:
+                    argv.append("--standalone")
+            argv.extend(_model_arguments(model, options, legacy_wire=legacy_wire))
             result = run_native_cli(
                 argv,
                 input=prompt,

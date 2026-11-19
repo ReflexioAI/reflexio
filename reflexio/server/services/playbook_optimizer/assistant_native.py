@@ -13,7 +13,9 @@ from reflexio.server.llm._litellm_types import LLMHardTimeoutError
 from reflexio.server.llm._native_cli import remaining_native_time, run_native_cli
 from reflexio.server.llm._native_model_ref import NativeCLISelectionError
 
-NativeAssistantProtocol = Literal["claude-json", "codex", "opencode-json"]
+NativeAssistantProtocol = Literal[
+    "claude-json", "codex", "opencode-json", "opencode-compat-json"
+]
 NATIVE_ASSISTANT_TRANSPORTS = get_args(NativeAssistantProtocol)
 
 
@@ -67,13 +69,14 @@ def run_native_assistant(request: NativeAssistantRequest, deadline: float) -> st
             if not result.success:
                 raise NativeAssistantError("native assistant execution failed")
             content = result.terminal_text
-        elif request.protocol == "opencode-json":
+        elif request.protocol in {"opencode-json", "opencode-compat-json"}:
             result = run_opencode(
                 cli_path=request.executable,
                 system_prompt=request.system_prompt,
                 dialogue=request.dialogue,
                 model=request.model,
                 deadline=deadline,
+                legacy_wire=request.protocol == "opencode-compat-json",
             )
             if not result.success:
                 raise NativeAssistantError("native assistant execution failed")

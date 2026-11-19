@@ -82,19 +82,28 @@ def _request(**changes):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="uses an executable POSIX script")
+@pytest.mark.parametrize("protocol", ["opencode-json", "opencode-compat-json"])
 @pytest.mark.parametrize("model", [None, "provider/model#low"])
-def test_native_opencode_executes_under_sdk_ownership(tmp_path, model):
+def test_native_opencode_executes_under_sdk_ownership(tmp_path, protocol, model):
     from reflexio.server.services.playbook_optimizer.assistant_webhook import (
         LocalScriptFailedError,
     )
 
+    legacy_wire = protocol == "opencode-compat-json"
+    help_text = (
+        "--variant"
+        if legacy_wire
+        else "--model\n--agent\n--format\n--title\n--attach\n--variant"
+    )
     cli = tmp_path / "opencode"
+    calls = tmp_path / "cli-calls"
     cli.write_text(
         f"#!{sys._base_executable}\n"
         "import json, os, sys\n"
         "from pathlib import Path\n"
+        f"with Path({str(calls)!r}).open('a') as out: out.write(sys.argv[-1] + '\\n')\n"
         "if sys.argv[2:] == ['--help']:\n"
-        "    print('--model\\n--agent\\n--format\\n--title\\n--attach\\n--variant')\n"
+        f"    print({help_text!r})\n"
         "    sys.exit()\n"
         "work = Path.cwd()\n"
         "policy = json.loads((work / '.opencode/opencode.json').read_text())\n"
@@ -105,12 +114,12 @@ def test_native_opencode_executes_under_sdk_ownership(tmp_path, model):
         encoding="utf-8",
     )
     cli.chmod(0o700)
-    request = _request(protocol="opencode-json", executable=str(cli), model=model)
+    request = _request(protocol=protocol, executable=str(cli), model=model)
     assistant = _compiler(
         tmp_path,
         "import json,os\n"
         f"header=json.loads(os.environ[{HEADER!r}])\n"
-        "assert 'opencode-json' in header['transports']\n"
+        f"assert {protocol!r} in header['transports']\n"
         f"print({json.dumps({'native_cli_v1': request})!r})",
     )
 
@@ -119,6 +128,10 @@ def test_native_opencode_executes_under_sdk_ownership(tmp_path, model):
     assert cwd == pwd
     assert not Path(cwd).exists()
     assert permission == "deny" and internal == "1"
+    assert ("--title" in args) is not legacy_wire
+    assert calls.read_text().splitlines().count("--help") == int(
+        not legacy_wire or model is not None
+    )
     model_flags = [arg for arg in args if arg.startswith(("--model", "--variant"))]
     assert model_flags == (
         [] if model is None else ["--model=provider/model", "--variant=low"]

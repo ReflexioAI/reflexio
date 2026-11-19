@@ -56,6 +56,10 @@ from reflexio.server.llm._native_cli import (
     run_native_cli,
 )
 from reflexio.server.llm._native_model_ref import (
+    CLI_TIMEOUT_ENV as _ENV_TIMEOUT,
+)
+from reflexio.server.llm._native_model_ref import (
+    PLUGIN_OPENCODE_EXECUTABLE_ENV,
     PROVIDER_KEY,
     NativeModelRef,
     authorize_native_model,
@@ -85,7 +89,6 @@ _LOGGER = logging.getLogger(__name__)
 
 _ENV_CLI_PATH = "CLAUDE_SMART_CLI_PATH"
 _RETIRED_CODEX_PATH = "CLAUDE_SMART_CODEX_PATH"
-_ENV_TIMEOUT = "CLAUDE_SMART_CLI_TIMEOUT"
 _HOST_CODEX = "codex"
 _HOST_CLAUDE_CODE = "claude-code"
 _HOST_OPENCODE = "opencode"
@@ -441,6 +444,7 @@ def _run_cli_stream(
                 dialogue=dialogue,
                 model=model,
                 deadline=time.monotonic() + request_timeout_seconds(timeout_seconds),
+                legacy_wire=os.environ.get(PLUGIN_OPENCODE_EXECUTABLE_ENV) == cli_path,
             )
         except OpenCodeCLIError as exc:
             raise ClaudeCodeCLIError(str(exc)) from None

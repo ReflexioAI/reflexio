@@ -561,6 +561,44 @@ def test_unknown_help_cannot_become_a_protocol_fallback(help_text):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("owned", [False, True])
+def test_plugin_owned_generation_uses_compatible_cli_inside_request(monkeypatch, owned):
+    requests = []
+    if owned:
+        monkeypatch.setenv(provider.PLUGIN_OPENCODE_EXECUTABLE_ENV, sys.executable)
+    else:
+        monkeypatch.setenv(provider.PLUGIN_OPENCODE_EXECUTABLE_ENV, "/other/opencode")
+    monkeypatch.setenv("CLAUDE_SMART_CLI_TIMEOUT", "1.5")
+    monkeypatch.setattr(time, "monotonic", lambda: 20.0)
+
+    def run(argv, **kwargs):
+        requests.append((argv, kwargs))
+        output = MODERN if argv[-1] == "--help" else '{"type":"text","text":"done"}'
+        return subprocess.CompletedProcess(argv, 0, output, "")
+
+    monkeypatch.setattr(native, "run_native_cli", run)
+    result = provider._run_cli_stream(
+        cli_path=sys.executable,
+        system_prompt="system",
+        dialogue="task",
+        timeout_seconds=8,
+        host="opencode",
+        model="provider/model",
+    )
+    assert result.success
+    assert len(requests) == (1 if owned else 2)
+    argv, capture = requests[-1]
+    assert capture["input"] == "system\n\n## Task\ntask"
+    assert capture["timeout"] == (1.5 if owned else 8)
+    assert argv[-2:] == (
+        ["--model", "provider/model"]
+        if owned
+        else ["--standalone", "--model=provider/model"]
+    )
+    assert ("--title" in argv) is not owned
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("private", [False, True])
 @pytest.mark.parametrize("model", [None, "opaque/nested/model", "opaque/model#variant"])
 def test_discovery_and_execution_spend_one_original_deadline(

@@ -18,6 +18,9 @@ from reflexio.server.llm._litellm_types import ProviderRequestGuardError
 PROVIDER_KEY = "local-cli"
 MODEL_PREFIX = f"{PROVIDER_KEY}/"
 ENV_NATIVE_MODEL = "REFLEXIO_NATIVE_CLI_MODEL"
+CLI_TIMEOUT_ENV = "CLAUDE_SMART_CLI_TIMEOUT"
+# Process-owned launch metadata from the packaged plugin, bound to its exact path.
+PLUGIN_OPENCODE_EXECUTABLE_ENV = "_CLAUDE_SMART_NATIVE_OPENCODE_EXECUTABLE"
 _HOSTS = frozenset({"claude-code", "codex", "opencode"})
 
 
@@ -141,7 +144,8 @@ def native_policy_digest() -> str:
             name: os.environ.get(name)
             for name in (
                 "CLAUDE_SMART_CLI_PATH",
-                "CLAUDE_SMART_CLI_TIMEOUT",
+                PLUGIN_OPENCODE_EXECUTABLE_ENV,
+                CLI_TIMEOUT_ENV,
                 "CLAUDE_SMART_CODEX_PATH",
                 "CODEX_HOME",
                 "CLAUDE_CONFIG_DIR",

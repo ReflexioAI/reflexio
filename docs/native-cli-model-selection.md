@@ -44,6 +44,14 @@ An explicitly configured fallback ladder may advance after an authorized
 operational failure; authorization and adoption errors are terminal, including
 when LiteLLM or a spawned worker wraps them.
 
+When Claude Smart selects an executable for its bundled backend, the SDK
+owns the existing bridge-compatible OpenCode command directly. The optimizer
+can negotiate the same command through `opencode-compat-json`. With no variant
+these requests launch generation once without a help probe. With a variant the
+help probe and generation share the caller's original deadline. An explicit
+shorter `CLAUDE_SMART_CLI_TIMEOUT` still caps execution. Explicit native SDK
+selection continues to require the standard native capabilities.
+
 On Windows, native OpenCode resolves npm's global and project-local
 opencode.cmd launchers when they target the installed package's bin/opencode.exe,
 as in opencode-ai 1.19.6. For an older package layout, upgrade or select the
