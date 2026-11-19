@@ -339,8 +339,7 @@ class RuleEvidenceMethod:
         )
 
 
-def qualify_rule_evidence_v1(transport: Any) -> RuleEvidenceMethod:
-    """Qualify the two-component method for a v1 persistence protocol."""
+def qualify_rule_evidence_method(transport: Any) -> RuleEvidenceMethod:
     receipt = _structural_qualification()
     components = []
     for role, stage, schema in (
@@ -372,12 +371,6 @@ def qualify_rule_evidence_v1(transport: Any) -> RuleEvidenceMethod:
                 qualification_suite_version="native-global-rule-audit-contract-v7",
             )
         )
-    return RuleEvidenceMethod(components[0], components[1], receipt)
-
-
-def qualify_rule_evidence_method(transport: Any) -> RuleEvidenceMethod:
-    """Qualify rule and Trigger components for the current v2 protocol."""
-    base = qualify_rule_evidence_v1(transport)
     trigger_components = []
     for role, stage, schema in (
         ("trigger_gate", "gate", TriggerGate),
@@ -410,11 +403,13 @@ def qualify_rule_evidence_method(transport: Any) -> RuleEvidenceMethod:
                 qualification_suite_version="native-trigger-maintenance-contract-v1",
             )
         )
-    return dataclasses.replace(
-        base,
-        trigger_gate=trigger_components[0],
-        trigger_builder=trigger_components[1],
-        trigger_qualification_receipt=qualify_trigger_structure(),
+    return RuleEvidenceMethod(
+        components[0],
+        components[1],
+        receipt,
+        trigger_components[0],
+        trigger_components[1],
+        qualify_trigger_structure(),
     )
 
 

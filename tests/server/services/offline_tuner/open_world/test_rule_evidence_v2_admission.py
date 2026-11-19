@@ -14,6 +14,8 @@ from reflexio.server.services.offline_tuner.open_world.models import (
 )
 from reflexio.server.services.offline_tuner.open_world.rule_evidence_authority import (
     qualify_rule_evidence_method,
+)
+from reflexio.server.services.offline_tuner.open_world.rule_evidence_v1_authority import (
     qualify_rule_evidence_v1,
 )
 from reflexio.server.services.offline_tuner.open_world.shared_compaction import (
