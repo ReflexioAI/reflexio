@@ -498,8 +498,8 @@ of the old bundled file and each organization's model policy. Prepare the
 updated policy from the effective choices. Leave already effective
 organization settings in place and skip bundled defaults they overrode.
 Stop all old writers, then publish generation and evaluation together through
-the upgraded writer. Reload the policy and verify both resolved models before
-resuming work. An old writer discards the new evaluation field. Stop all old
+the upgraded writer. Reload the policy and verify the resolved model for every affected role
+before resuming work. An old writer discards the new evaluation field. Stop all old
 writers before first publishing an evaluation model, even if no bundled value
 needs to move.
 
@@ -515,12 +515,15 @@ When copying a custom generation default, also set
 if it was different. This includes a provider-selected evaluation default.
 Otherwise evaluation inherits the configured generation model as before.
 The shipped blank defaults require no migration. Source-package retries keep
-their saved model ladder. To roll back a customized deployment, restore the
-old bundled defaults and reconcile the current organization policy with the
-pre-upgrade copy. Undo all model overrides introduced only by the migration, including
-generation overrides that would take precedence over the old evaluation
-default and evaluation overrides the old writer cannot carry. Preserve unrelated
-newer edits and verify both resolved models before resuming work.
+their saved model ladder.
+
+Before rollback, save the current model policy if you migrated any bundled
+defaults or set an explicit evaluation model. Restore the old bundled
+defaults when applicable and reconcile the organization policy with its
+pre-upgrade copy. Undo each migration-only override. Preserve unrelated
+edits and keep any distinct evaluation choice in the backup for re-upgrade,
+since the old writer cannot carry it. Verify the resolved model for every
+affected role before restarting old writers or resuming work.
 Use the provider prefix shown above (e.g., `anthropic/` for Anthropic models). Set the corresponding API key in your `.env` file.
 
 Retryable physical-request warnings record only the error type, reason and
