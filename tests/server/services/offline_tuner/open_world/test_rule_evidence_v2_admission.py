@@ -14,6 +14,7 @@ from reflexio.server.services.offline_tuner.open_world.models import (
 )
 from reflexio.server.services.offline_tuner.open_world.rule_evidence_authority import (
     qualify_rule_evidence_method,
+    qualify_rule_evidence_v1,
 )
 from reflexio.server.services.offline_tuner.open_world.shared_compaction import (
     shared_consumer_admission,
@@ -31,6 +32,21 @@ from reflexio.test_support.open_world_rule_evidence import (
 from reflexio.test_support.open_world_rule_evidence import (
     source as source,
 )
+
+
+def test_qualification_keeps_v1_storage_authority_explicit(runtime):
+    _, transport, _, _ = runtime
+    legacy = qualify_rule_evidence_v1(transport)
+    current = qualify_rule_evidence_method(transport)
+    assert (
+        legacy.payload["schema_version"] == "offline-tuner-rule-evidence-authority-v1"
+    )
+    assert "trigger_maintenance" not in legacy.payload
+    assert not legacy.is_v2
+    assert current.is_v2
+    assert legacy.diagnostic == current.diagnostic
+    assert legacy.proposal == current.proposal
+    assert legacy.qualification_receipt == current.qualification_receipt
 
 
 def _configured(runtime, *, shared_protocol: bool, fail_stage: str | None):
