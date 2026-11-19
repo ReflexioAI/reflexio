@@ -16,6 +16,12 @@ pytestmark = pytest.mark.integration
     [
         "owned",
         "unfenced",
+        "missing_billing",
+        "null_billing",
+        "malformed_billing",
+        "billing_not_delivered",
+        "different_billing",
+        "billing_lost_after_ack",
         "historical_compacted",
         "no_derived_claim",
         "active_cursor",
@@ -70,9 +76,21 @@ def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(
         },
         output=output,
     )
+    billing = {
+        "ids": [],
+        "created_at": 0,
+        "platform_llm": False,
+        "input_tokens": 1,
+        "prompt_tokens": 2,
+        "completion_tokens": 3,
+    }
+    if case == "malformed_billing":
+        billing["input_tokens"] = -1
     effects = {
         "extraction_run_ids": ["wrong-run" if case == "wrong_effect_run" else run_id]
     }
+    if case != "missing_billing":
+        effects["billing"] = None if case == "null_billing" else billing
     if case == "historical_compacted":
         effects = {"version": 1, "skipped": True}
     with storage.commit_scope():
@@ -103,8 +121,21 @@ def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(
     else:
         token = storage.claim_user_extraction("user", "ack-proof-test", 30)
         assert token
-        storage.ack_extraction_effects(window_id, user_id="user", token=token)
+        delivered_billing = billing
+        if case in {"missing_billing", "null_billing", "billing_not_delivered"}:
+            delivered_billing = None
+        elif case == "different_billing":
+            delivered_billing = {**billing, "prompt_tokens": 4}
+        storage.ack_extraction_effects(
+            window_id, user_id="user", token=token, delivered_billing=delivered_billing
+        )
         storage.release_user_extraction("user", token)
+    if case == "billing_lost_after_ack":
+        with storage.commit_scope():
+            storage.conn.execute(
+                "UPDATE extraction_windows SET effects=json_remove(effects, '$.billing') WHERE window_id=?",
+                (window_id,),
+            )
     if case == "nul_ack":
         with storage.commit_scope():
             storage.conn.execute(

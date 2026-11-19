@@ -2012,7 +2012,12 @@ class ExtractionStreamStore:
             raise
 
     def ack_extraction_effects(
-        self, window_id: str, *, user_id: str | None = None, token: str | None = None
+        self,
+        window_id: str,
+        *,
+        user_id: str | None = None,
+        token: str | None = None,
+        delivered_billing: dict[str, Any] | None = None,
     ) -> None:
         fenced = token is not None and user_id is not None
         with self._stream_sql() as db:
@@ -2020,7 +2025,7 @@ class ExtractionStreamStore:
                 self._fence_extraction_effects(db, window_id, user_id, token)
             rows = db.query(
                 f"SELECT effects, effects_done, completed, invalidated, derived_claimed, "
-                "org_id, user_id, project_id "
+                "org_id, user_id, project_id, kind "
                 f"FROM {db.table('extraction_windows')} WHERE window_id=?" + db.lock(),
                 (window_id,),
             )
@@ -2048,11 +2053,20 @@ class ExtractionStreamStore:
                 and not row["invalidated"]
                 and row["derived_claimed"]
                 and effects.get("extraction_run_ids") == [run_id]
+                and delivered_billing is not None
+                and delivered_billing == effects.get("billing")
             ):
-                # The actual leased effects owner can retain this existing
-                # link when discarding the detailed payload. It is not a
-                # publication or billing receipt.
-                summary["acknowledged_window_run_id"] = run_id
+                from reflexio.server.services.extraction.publication_receipts import (
+                    window_handoff_facts,
+                )
+
+                try:
+                    window_handoff_facts(row["kind"], delivered_billing)
+                except ValueError:
+                    # Compact the ACK as before, but do not prove closure.
+                    pass
+                else:
+                    summary["acknowledged_window_run_id"] = run_id
             db.query(
                 f"UPDATE {db.table('extraction_windows')} SET effects_done=1,outcome=NULL,effects=?,manifest='[]' WHERE window_id=?",
                 (json.dumps(summary), window_id),
