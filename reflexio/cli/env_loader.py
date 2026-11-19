@@ -31,7 +31,7 @@ _USER_ENV_FILE = _USER_ENV_DIR / ".env"
 def user_env_file() -> Path:
     """Return the user-level .env path, honoring ``REFLEXIO_ENV_FILE``.
 
-    When ``REFLEXIO_ENV_FILE`` is set (and non-blank) it overrides the default
+    A non-blank ``REFLEXIO_ENV_FILE`` in the launch environment overrides the default
     ``~/.reflexio/.env``. This lets a second local backend keep its env separate
     from the OSS reflexio default that also lives under ``~/.reflexio`` — e.g.
     claude-smart points this at ``~/.claude-smart/.env`` so an OSS reflexio
@@ -220,7 +220,9 @@ def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> Non
     ).dict()
     reject_removed_env(file_vals)
     for key, value in file_vals.items():
-        if key in TOKENIZER_ENV_OUTPUTS or value is None:
+        # The launch environment selects the user-level file. Assignments in
+        # the file cannot retarget later loads, setup writes, or child workers.
+        if key == "REFLEXIO_ENV_FILE" or key in TOKENIZER_ENV_OUTPUTS or value is None:
             continue
         if override or key not in os.environ:
             os.environ[key] = value

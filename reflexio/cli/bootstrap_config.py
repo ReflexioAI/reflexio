@@ -21,27 +21,14 @@ from reflexio.config_env import (
     resolve_postgres_pool_defaults,
 )
 from reflexio.config_migration import StoredConfigurationError
+from reflexio.local_instance import configured_local_org_id as default_org_id
 
 from .paths import reflexio_home
 
 logger = logging.getLogger(__name__)
 
 _VALID_STORAGE_BACKENDS = frozenset({"sqlite", "supabase", "postgres"})
-_DEFAULT_ORG_ID = "self-host-org"
 _DEFAULT_STORAGE = "sqlite"
-
-
-def default_org_id() -> str:
-    """Resolve the default org id, honoring ``REFLEXIO_DEFAULT_ORG_ID``.
-
-    Mirrors :func:`reflexio.server.auth.default_get_org_id` so the local CLI
-    helpers (``setup``, ``config show`` / ``config local``) resolve the same
-    ``config_<org>.json`` the running no-auth server reads. Uses ``os.environ``
-    directly (not ``env_utils``) to keep this module's import lightweight — see
-    the ``_TYPE_TO_BACKEND`` note above.
-    """
-    return os.environ.get("REFLEXIO_DEFAULT_ORG_ID", "").strip() or _DEFAULT_ORG_ID
-
 
 # Maps StorageConfig subclass to backend string.  Lazy-imported in functions
 # that need it so module-level import stays lightweight (no Pydantic at import).

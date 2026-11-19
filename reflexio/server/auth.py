@@ -14,14 +14,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from functools import cache
 
-DEFAULT_ORG_ID = "self-host-org"
-
-
-def configured_local_org_id() -> str:
-    """Resolve the local launcher identity without recording request timings."""
-    from reflexio.server.env_utils import env_str
-
-    return env_str("REFLEXIO_DEFAULT_ORG_ID", DEFAULT_ORG_ID)
+from reflexio.local_instance import (
+    DEFAULT_ORG_ID as DEFAULT_ORG_ID,
+)
+from reflexio.local_instance import (
+    configured_local_org_id as configured_local_org_id,
+)
 
 
 def default_get_org_id() -> str:
