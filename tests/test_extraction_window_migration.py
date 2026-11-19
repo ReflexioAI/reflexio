@@ -83,23 +83,17 @@ def test_sixteen_project_masks_and_four_overlay_shapes():
         if project_stride:
             project["stride_size"] = 2
         before = deepcopy((parent, project))
-        masked = (
-            project_width
-            and (pw is not None or bw is not None)
-            or project_stride
-            and (ps is not None or bs is not None)
-        )
-        if masked:
-            with pytest.raises(ConfigurationMigrationError, match="masked"):
-                convert_canonical_legacy_project_windows(parent, project)
-        else:
-            output = convert_canonical_legacy_project_windows(parent, project)
-            expected: dict[str, Any] = {"opaque": {"exact": Decimal("1e1000")}}
-            if project_width:
-                expected.update(profile_window_size=24, playbook_window_size=24)
-            if project_stride:
-                expected.update(profile_stride_size=2, playbook_stride_size=2)
-            assert output == expected
+        output = convert_canonical_legacy_project_windows(parent, project)
+        expected: dict[str, Any] = {"opaque": {"exact": Decimal("1e1000")}}
+        for kind, width_override, stride_override in (
+            ("profile", pw, ps),
+            ("playbook", bw, bs),
+        ):
+            if project_width and width_override is None:
+                expected[f"{kind}_window_size"] = 24
+            if project_stride and stride_override is None:
+                expected[f"{kind}_stride_size"] = 2
+        assert output == expected
         assert (parent, project) == before
 
 
