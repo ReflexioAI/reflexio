@@ -10,6 +10,8 @@ contract (and its backward-compatible default).
 from __future__ import annotations
 
 import pytest
+from fastapi import APIRouter, Depends
+from fastapi.testclient import TestClient
 
 from reflexio.server import api
 from reflexio.server.auth import DEFAULT_ORG_ID, default_get_org_id
@@ -35,6 +37,85 @@ def test_blank_value_falls_back_to_default(
     # at the empty string — it resolves to the default, like unset.
     monkeypatch.setenv(_ENV, blank)
     assert default_get_org_id() == DEFAULT_ORG_ID
+
+
+def test_local_apps_retain_independent_construction_identities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = APIRouter()
+
+    @router.get("/test/local-identity")
+    def org(org_id: str = Depends(default_get_org_id)) -> str:
+        return org_id
+
+    monkeypatch.setenv(_ENV, "standalone-local")
+    standalone = api.create_app(mount_data_plane=False, additional_routers=[router])
+    monkeypatch.setenv(_ENV, "claude-smart")
+    plugin = api.create_app(mount_data_plane=False, additional_routers=[router])
+    monkeypatch.setenv(_ENV, "later-process-value")
+
+    assert (
+        TestClient(standalone).get("/test/local-identity").json() == "standalone-local"
+    )
+    assert TestClient(plugin).get("/test/local-identity").json() == "claude-smart"
+
+
+def test_local_lifespan_uses_the_same_bound_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from reflexio.server.api_endpoints import request_context
+    from reflexio.server.llm import model_defaults
+    from reflexio.server.services import durable_learning, search_metering_worker
+    from reflexio.server.services.lineage import gc_scheduler, vector_backfill_sweep
+    from reflexio.server.services.playbook import aggregation_scheduler
+
+    observed: dict[str, str] = {}
+
+    def record_scheduler(name: str):
+        def start(_factory, *, bootstrap_org_id: str, **_kwargs) -> None:
+            observed[name] = bootstrap_org_id
+
+        return start
+
+    router = APIRouter()
+
+    @router.get("/test/local-identity")
+    def org(org_id: str = Depends(default_get_org_id)) -> str:
+        return org_id
+
+    monkeypatch.setattr(api, "freeze_startup_heap", lambda: None)
+    monkeypatch.setattr(model_defaults, "validate_llm_availability", lambda: None)
+    monkeypatch.setattr(
+        vector_backfill_sweep, "install_missing_vector_backfill_sweep", lambda: None
+    )
+    monkeypatch.setattr(gc_scheduler, "maybe_start_lineage_gc", record_scheduler("gc"))
+    monkeypatch.setattr(
+        durable_learning, "maybe_start_durable_learning", record_scheduler("durable")
+    )
+    monkeypatch.setattr(request_context, "RequestContext", lambda *, org_id: org_id)
+    monkeypatch.setattr(
+        aggregation_scheduler,
+        "ensure_local_playbook_aggregation_scheduler",
+        lambda org_id: observed.update(aggregation=org_id),
+    )
+    monkeypatch.setattr(
+        search_metering_worker, "start_search_metering_worker", lambda: None
+    )
+    monkeypatch.setattr(
+        search_metering_worker, "stop_search_metering_worker", lambda **_kwargs: 0
+    )
+    monkeypatch.setattr(api, "_lifespan_org_id_resolver", lambda: "unrelated-app")
+
+    monkeypatch.setenv(_ENV, "local-at-launch")
+    app = api.create_app(additional_routers=[router])
+    monkeypatch.setenv(_ENV, "later-process-value")
+    with TestClient(app) as client:
+        assert client.get("/test/local-identity").json() == "local-at-launch"
+    assert observed == {
+        "gc": "local-at-launch",
+        "durable": "local-at-launch",
+        "aggregation": "local-at-launch",
+    }
 
 
 class TestLifespanOrgIdResolver:

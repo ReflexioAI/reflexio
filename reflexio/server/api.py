@@ -77,7 +77,10 @@ from reflexio.server.middleware import (
     _resolve_cors_origins,
 )
 from reflexio.server.operation_limiter import log_publish_hardware_capacity
-from reflexio.server.publish_timing import PublishHttpTimingMiddleware
+from reflexio.server.publish_timing import (
+    PublishHttpTimingMiddleware,
+    http_org_resolved,
+)
 from reflexio.server.rate_limit import configure_rate_limiter, limiter
 from reflexio.server.routes import (
     braintrust,
@@ -475,6 +478,7 @@ def create_app(  # noqa: C901
 
     from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.auth import (
+        configured_local_org_id,
         default_billing_gate,
         default_get_caller_type,
         default_get_org_id,
@@ -490,6 +494,10 @@ def create_app(  # noqa: C901
     from reflexio.server.services.lineage.vector_backfill_sweep import (
         install_missing_vector_backfill_sweep,
     )
+
+    # A local app and its background services must use one dataset until the
+    # next launch. Custom request and lifespan resolvers keep their own policy.
+    local_org_id = configured_local_org_id() if get_org_id is None else None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
@@ -523,7 +531,11 @@ def create_app(  # noqa: C901
                 validate_llm_availability()
                 # Window execution and deferred recovery share the durable owner
                 # below. Bootstrap seeds only the default single-ref discovery.
-                bootstrap_org_id = _resolve_lifespan_org_id(get_org_id)
+                bootstrap_org_id = (
+                    local_org_id
+                    if local_org_id is not None
+                    else _resolve_lifespan_org_id(get_org_id)
+                )
                 # Register bounded missing-vector repair BEFORE starting the GC
                 # scheduler so its per-org hook participates in start conditions.
                 # A zero REFLEXIO_MISSING_VECTOR_BACKFILL_CAP skips registration.
@@ -668,9 +680,15 @@ def create_app(  # noqa: C901
     # Bot protection
     app.add_middleware(BotProtectionMiddleware)
 
-    # Override get_org_id dependency if custom one provided
     if get_org_id is not None:
         app.dependency_overrides[default_get_org_id] = get_org_id
+    elif local_org_id is not None:
+
+        def get_bound_local_org_id() -> str:
+            http_org_resolved(local_org_id)
+            return local_org_id
+
+        app.dependency_overrides[default_get_org_id] = get_bound_local_org_id
 
     # Override get_caller_type dependency if custom one provided
     if get_caller_type is not None:
