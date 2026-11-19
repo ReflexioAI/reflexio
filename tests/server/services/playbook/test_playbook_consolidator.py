@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from reflexio.models.api_schema.service_schemas import UserPlaybook
+from reflexio.models.config_schema import Config, LLMConfig
 from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.services.playbook.components.consolidator import (
     PlaybookConsolidator,
@@ -58,15 +59,12 @@ def mock_consolidator():
         _generate_with_provenance
     )
 
-    with patch(
-        "reflexio.server.services.deduplication_utils.SiteVarManager"
-    ) as mock_svm:
-        mock_svm.return_value.get_site_var.return_value = {
-            "default_generation_model_name": "gpt-test"
-        }
-        return PlaybookConsolidator(
-            request_context=mock_request_context, llm_client=mock_llm_client
-        )
+    mock_request_context.configurator.get_config.return_value = Config(
+        storage_config=None, llm_config=LLMConfig(generation_model_name="gpt-test")
+    )
+    return PlaybookConsolidator(
+        request_context=mock_request_context, llm_client=mock_llm_client
+    )
 
 
 class TestRetrieveExistingPlaybooks:

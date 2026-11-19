@@ -25,7 +25,6 @@ from reflexio.server.services.durable_learning.learning_admission import (
 )
 from reflexio.server.services.durable_learning.user_lease import user_extraction_lease
 from reflexio.server.services.service_utils import log_llm_messages, log_model_response
-from reflexio.server.site_var.site_var_manager import SiteVarManager
 from reflexio.server.work_scope import current_project_id
 
 logger = logging.getLogger(__name__)
@@ -59,14 +58,11 @@ class TaggingService:
         self.configurator = request_context.configurator
         self.storage = request_context.storage
 
-        model_setting = SiteVarManager().get_site_var("llm_model_setting")
-        site_var = model_setting if isinstance(model_setting, dict) else {}
         config = self.configurator.get_config()
         llm_config = config.llm_config if config else None
         api_key_config = config.api_key_config if config else None
         self.model_name = resolve_model_name(
             ModelRole.GENERATION,
-            site_var_value=site_var.get("default_generation_model_name"),
             llm_config=llm_config,
             api_key_config=api_key_config,
         )

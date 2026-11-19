@@ -71,7 +71,6 @@ from reflexio.server.services.service_utils import (
     extract_interactions_from_request_interaction_data_models,
     log_llm_messages,
 )
-from reflexio.server.site_var.site_var_manager import SiteVarManager
 
 if TYPE_CHECKING:
     from reflexio.server.services.playbook.service import (
@@ -319,15 +318,10 @@ class PlaybookExtractor:
         # Get LLM config overrides from configuration
         config = self.request_context.configurator.get_config()
         llm_config = config.llm_config if config else None
-
-        # Resolve the generation model from configuration and provider policy.
-        model_setting = SiteVarManager().get_site_var("llm_model_setting")
-        site_var = model_setting if isinstance(model_setting, dict) else {}
         api_key_config = config.api_key_config if config else None
 
         self.default_generation_model_name = resolve_model_name(
             ModelRole.GENERATION,
-            site_var_value=site_var.get("default_generation_model_name"),
             llm_config=llm_config,
             api_key_config=api_key_config,
         )
