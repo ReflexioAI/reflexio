@@ -42,6 +42,7 @@ pytestmark = pytest.mark.integration
         "nul_digest",
         "nul_stage",
         "nul_ack",
+        "invalid_utf8_kind",
         "adapter_without_proof",
         "wrong_effect_run",
         "foreign_window",
@@ -180,14 +181,21 @@ def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(
         )
         with storage.commit_scope():
             storage.conn.execute(query, ("invalid JSON", window_id))
-    if case in {"fractional_predecessor", "fractional_end"}:
-        query = (
-            "UPDATE extraction_windows SET predecessor=0.5 WHERE window_id=?"
-            if case == "fractional_predecessor"
-            else "UPDATE extraction_windows SET end_seq=2.5 WHERE window_id=?"
-        )
-        with storage.commit_scope():
-            storage.conn.execute(query, (window_id,))
+    malformed_bindings = {
+        "fractional_predecessor": (
+            "UPDATE extraction_windows SET predecessor=0.5 WHERE window_id=?",
+        ),
+        "fractional_end": (
+            "UPDATE extraction_windows SET end_seq=2.5 WHERE window_id=?",
+        ),
+        "invalid_utf8_kind": (
+            "UPDATE extraction_windows SET kind=CAST(x'ff' AS TEXT) WHERE window_id=?",
+            "UPDATE _agent_runs SET extractor_kind=CAST(x'ff' AS TEXT) WHERE id='window:' || ?",
+        ),
+    }
+    with storage.commit_scope():
+        for statement in malformed_bindings.get(case, ()):
+            storage.conn.execute(statement, (window_id,))
     run = storage.transition_inventory_page("runs").items[0]
     assert ("unreceipted_output" not in run.reasons) == (case == "owned")
     if case == "owned":

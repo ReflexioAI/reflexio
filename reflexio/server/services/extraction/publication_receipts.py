@@ -138,9 +138,9 @@ def window_delivery_facts(
     return window_handoff_facts(kind, descriptor)
 
 
-def valid_window_delivery_payload(kind: str, billing_json: bytes | None) -> int:
+def valid_window_delivery_payload(kind: str | None, billing_json: bytes | None) -> int:
     """SQLite proof adapter for the same validation used during delivery."""
-    if billing_json is None:
+    if kind is None or billing_json is None:
         return 0
     try:
         # SQLite emits a compact object and CAST preserves its database encoding.
