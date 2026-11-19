@@ -327,6 +327,11 @@ an implicit SQLite path, it pins the verified file in the existing config.
 If a supported historical file has no owner claim, qualify it separately
 with `reflexio data upgrade-local` using its exact path and known organization.
 
+Local host installers can prepare a binding for a brand-new SQLite file
+before launching the server. The first server open completes SQLite's
+normal initialization. Retrying setup uses the same reservation. Existing
+installations keep their saved database target.
+
 
 ```shell
 uv run reflexio config show

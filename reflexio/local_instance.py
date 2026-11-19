@@ -34,13 +34,13 @@ def _instance_file() -> Path:
     return reflexio_home() / "instances" / f"{key}.json"
 
 
-def _config_file(org_id: str) -> Path:
+def _config_file(org_id: str, *, require_exists: bool = True) -> Path:
     from reflexio.cli.paths import reflexio_home
 
     if not is_valid_local_org_id(org_id):
         raise LocalInstanceError("Local instance has an invalid organization name.")
     path = (reflexio_home() / "configs").resolve() / f"config_{org_id}.json"
-    if path.is_symlink() or not path.is_file():
+    if path.is_symlink() or ((require_exists or path.exists()) and not path.is_file()):
         raise LocalInstanceError(
             "Local instance requires its existing saved organization configuration."
         )
@@ -127,6 +127,15 @@ def _verify_sqlite(
 
 def bind_local_instance() -> str:
     """Persist the currently selected installation's organization after verification."""
+    return _bind_local_instance()
+
+
+def prepare_local_sqlite_instance(org_id: str, db_path: Path) -> str:
+    """Provision a fresh host installation or bind its existing saved config."""
+    return _bind_local_instance((org_id, db_path))
+
+
+def _bind_local_instance(first_install: tuple[str, Path] | None = None) -> str:
     from filelock import FileLock, Timeout
 
     from reflexio.config_file import LocalConfigFile, _publish_bytes, _sync_directory
@@ -148,7 +157,25 @@ def bind_local_instance() -> str:
             "Local instance binding is already in progress."
         ) from exc
     try:
-        org_id = configured_local_org_id()
+        if first_install is None:
+            org_id = configured_local_org_id()
+        else:
+            selected_org, first_db_path = first_install
+            legacy = _legacy_org_id()
+            bound = _read_binding(instance)
+            if (legacy is not None and legacy != selected_org) or (
+                bound is not None and bound != selected_org
+            ):
+                raise LocalInstanceError(
+                    "The saved or legacy organization conflicts with this installation."
+                )
+            org_id = selected_org
+            if bound is not None:
+                _verify_bound_config(bound)
+            else:
+                config_path = _config_file(org_id, require_exists=False)
+                if not config_path.exists():
+                    _prepare_first_sqlite_config(org_id, config_path, first_db_path)
         config = validate_stored_config(
             LocalConfigFile(_config_file(org_id)).read_document()
         )
@@ -165,6 +192,55 @@ def bind_local_instance() -> str:
         return org_id
     finally:
         lock.release()
+
+
+def _prepare_first_sqlite_config(org_id: str, config_path: Path, db_path: Path) -> None:
+    import sqlite3
+
+    from reflexio.config_file import LocalConfigFile, _sync_directory
+    from reflexio.models.config_schema import StorageConfigSQLite
+    from reflexio.server.services.configurator.local_file_config_storage import (
+        LocalFileConfigStorage,
+    )
+    from reflexio.server.services.storage.sqlite_storage._dataset_path import (
+        DatasetIdentityError,
+    )
+    from reflexio.server.services.storage.sqlite_storage._learning_policy_authority import (
+        reserve_new_sqlite_dataset,
+        verify_sqlite_creation_reservation,
+    )
+    from reflexio.server.services.storage.storage_base.learning_transition import (
+        LearningTransitionBlockedError,
+    )
+
+    if not db_path.is_absolute():
+        raise LocalInstanceError("Select the local SQLite path by its absolute name.")
+    if db_path.is_symlink():
+        raise LocalInstanceError("The first-install SQLite path must not be a link.")
+    try:
+        reserve_new_sqlite_dataset(str(db_path), org_id, claim_owner=True)
+        config = LocalFileConfigStorage(org_id).get_default_config()
+        config.storage_config = StorageConfigSQLite(db_path=str(db_path))
+
+        def admit_reservation(_document: dict) -> None:
+            verify_sqlite_creation_reservation(db_path, org_id)
+            _sync_directory(db_path.parent)
+
+        # This initial-publication admission knows about the sealed reservation.
+        # The normal config writer remains the owner of all subsequent changes.
+        LocalConfigFile(config_path).publish_document(
+            config.model_dump_json(), create_only=True, admit=admit_reservation
+        )
+    except (
+        OSError,
+        sqlite3.Error,
+        ValueError,
+        DatasetIdentityError,
+        LearningTransitionBlockedError,
+    ) as exc:
+        raise LocalInstanceError(
+            "Could not establish a fresh SQLite installation at the selected path."
+        ) from exc
 
 
 def _pin_sqlite(org_id: str, db_path: str | None) -> None:

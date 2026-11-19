@@ -18,6 +18,7 @@ from reflexio.local_instance import (
     LocalInstanceError,
     bind_local_instance,
     configured_local_org_id,
+    prepare_local_sqlite_instance,
 )
 from reflexio.server import api, auth
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
@@ -251,3 +252,70 @@ def test_competing_processes_keep_the_first_binding(installation):
         record.read_text().strip()
         for record in (installation / "instances").glob("*.json")
     ] == [f'{{"org_id": "{winner}"}}']
+
+
+def test_first_install_resumes_its_reservation_after_config_publication_failure(
+    installation, monkeypatch
+):
+    from reflexio.config_file import LocalConfigFile
+
+    monkeypatch.delenv("REFLEXIO_DEFAULT_ORG_ID")
+    db = installation / "data" / "first.db"
+    original_publisher = LocalConfigFile.publish_document
+
+    def interrupted(*_args, **_kwargs):
+        raise OSError("simulated interruption before config publication")
+
+    monkeypatch.setattr(LocalConfigFile, "publish_document", interrupted)
+    with pytest.raises(LocalInstanceError, match="fresh SQLite installation"):
+        prepare_local_sqlite_instance("plugin", db)
+    assert not list((installation / "configs").glob("config_*.json"))
+    assert not list((installation / "instances").glob("*.json"))
+    inode = db.stat().st_ino
+
+    monkeypatch.setattr(LocalConfigFile, "publish_document", original_publisher)
+    assert prepare_local_sqlite_instance("plugin", db) == "plugin"
+    assert configured_local_org_id() == "plugin"
+    assert str(db) in default_config_path().read_text()
+    assert db.stat().st_ino == inode
+
+    # First storage open consumes the sealed reservation on the same file.
+    storage = SQLiteStorage(org_id="plugin", db_path=str(db))
+    try:
+        assert (
+            storage.conn.execute("SELECT org_id FROM _dataset_identity").fetchone()[0]
+            == "plugin"
+        )
+    finally:
+        storage.conn.close()
+    assert db.stat().st_ino == inode
+
+    db.rename(db.with_name("retained.db"))
+    with pytest.raises(LocalInstanceError, match="file is missing"):
+        prepare_local_sqlite_instance("plugin", db)
+    assert not db.exists()
+
+
+def test_first_install_never_attaches_an_unproven_existing_database(
+    installation, monkeypatch
+):
+    monkeypatch.delenv("REFLEXIO_DEFAULT_ORG_ID")
+    db = _dataset(installation / "data" / "existing.db", "plugin")
+    before = db.read_bytes()
+    with pytest.raises(LocalInstanceError, match="fresh SQLite installation"):
+        prepare_local_sqlite_instance("plugin", db)
+
+    assert db.read_bytes() == before
+    assert not list((installation / "instances").glob("*.json"))
+
+
+def test_host_preparation_keeps_the_existing_saved_target(installation, monkeypatch):
+    monkeypatch.delenv("REFLEXIO_DEFAULT_ORG_ID")
+    db = _dataset(installation / "data" / "saved.db", "plugin")
+    original = _config(installation, "plugin", {"type": "sqlite", "db_path": str(db)})
+    before = original.read_bytes()
+    unused = db.with_name("new-default.db")
+
+    assert prepare_local_sqlite_instance("plugin", unused) == "plugin"
+    assert default_config_path().read_bytes() == before
+    assert not unused.exists()
