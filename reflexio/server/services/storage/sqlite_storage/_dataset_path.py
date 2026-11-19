@@ -72,6 +72,10 @@ class DatasetIdentityError(RuntimeError):
     """A dataset file cannot be resolved for the requested identity."""
 
 
+class UnclaimedDatasetError(DatasetIdentityError):
+    """No local namespace has been recorded for this SQLite file."""
+
+
 def validate_dataset_identity(org_id: str) -> str:
     """Return *org_id* if it is usable as a filename component.
 
@@ -291,7 +295,7 @@ def verify_existing_dataset_owner(path: Path, org_id: str) -> None:
             "Could not verify the SQLite dataset owner."
         ) from exc
     if row is None:
-        raise DatasetIdentityError(
+        raise UnclaimedDatasetError(
             "The SQLite dataset has no owner claim. Verify it with data upgrade-local before binding."
         )
     if row[0] != org_id:
