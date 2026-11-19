@@ -97,10 +97,44 @@ _DEFAULT_AGENT_PLAYBOOK_STATUSES: tuple[PlaybookStatus, ...] = (
     PlaybookStatus.APPROVED,
     PlaybookStatus.PENDING,
 )
+
+
+class _SearchWorkerPool:
+    """Keep speculative work out of the queue behind accepted work."""
+
+    def __init__(self, max_workers: int, *, thread_name_prefix: str) -> None:
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix=thread_name_prefix
+        )
+        self._capacity = max_workers
+        self._outstanding = 0
+        self._work_lock = threading.Lock()
+
+    def submit[T](self, fn: Callable[[], T]) -> Future[T]:
+        with self._work_lock:
+            future = self._executor.submit(fn)
+            self._outstanding += 1
+        future.add_done_callback(self._release_work)
+        return future
+
+    def submit_if_idle[T](self, fn: Callable[[], T]) -> Future[T] | None:
+        with self._work_lock:
+            if self._outstanding >= self._capacity:
+                return None
+            future = self._executor.submit(fn)
+            self._outstanding += 1
+        future.add_done_callback(self._release_work)
+        return future
+
+    def _release_work(self, _future: Future[Any]) -> None:
+        with self._work_lock:
+            self._outstanding -= 1
+
+
 _SEARCH_FANOUT_MAX_WORKERS = max(
     1, int(os.getenv("REFLEXIO_SEARCH_FANOUT_WORKERS", "16") or "16")
 )
-_SEARCH_FANOUT_EXECUTOR = ThreadPoolExecutor(
+_SEARCH_FANOUT_EXECUTOR = _SearchWorkerPool(
     max_workers=_SEARCH_FANOUT_MAX_WORKERS,
     thread_name_prefix="reflexio-search",
 )
@@ -971,7 +1005,7 @@ def _run_phase_b(
             search_runtime.increment("retrieval.fanout_attempts")
             profiles_future = (
                 _submit_with_current_context(
-                    _SEARCH_FANOUT_EXECUTOR,
+                    _SEARCH_FANOUT_EXECUTOR.submit,
                     _search_profiles_via_storage,
                     storage,
                     query,
@@ -990,7 +1024,7 @@ def _run_phase_b(
             )
             agent_playbooks_future = (
                 _submit_with_current_context(
-                    _SEARCH_FANOUT_EXECUTOR,
+                    _SEARCH_FANOUT_EXECUTOR.submit,
                     _search_agent_playbooks_via_storage,
                     storage,
                     query,
@@ -1024,7 +1058,7 @@ def _run_phase_b(
                     end_time=end_time,
                 )
                 user_playbooks_future = _submit_with_current_context(
-                    _SEARCH_FANOUT_EXECUTOR,
+                    _SEARCH_FANOUT_EXECUTOR.submit,
                     _search_user_playbooks_via_storage,
                     storage,
                     rf_request,
@@ -1171,7 +1205,7 @@ def _run_phase_b_single_rpc(
         return None
 
     future = _submit_with_current_context(
-        _SEARCH_FANOUT_EXECUTOR,
+        _SEARCH_FANOUT_EXECUTOR.submit,
         unified_hybrid_search,
         query=query,
         query_embedding=embedding,
@@ -1651,12 +1685,12 @@ def _search_user_playbooks_via_storage(
         return user_playbooks
 
 
-def _submit_with_current_context(
-    executor: ThreadPoolExecutor,
+def _submit_with_current_context[T: (Future[Any], Future[Any] | None)](
+    submit: Callable[[Callable[[], object]], T],
     fn: Callable[..., object],
     *args: object,
     **kwargs: object,
-) -> Future[Any]:
+) -> T:
     search_runtime.checkpoint()
     context = contextvars.copy_context()
     submitted = time.monotonic()
@@ -1681,7 +1715,7 @@ def _submit_with_current_context(
         return fn(*args, **kwargs)
 
     try:
-        future = executor.submit(context.run, run)
+        future = submit(lambda: context.run(run))
     except BaseException:
         if scope is not None:
             with scope.lock:
@@ -1690,6 +1724,15 @@ def _submit_with_current_context(
                     ("search.worker_queue", submitted, time.monotonic())
                 )
         raise
+    if future is None:
+        if scope is not None:
+            with scope.lock:
+                scope.active.pop(queue_key, None)
+                if scope.phase_counts["search.worker_queue"] == 1:
+                    del scope.phase_counts["search.worker_queue"]
+                else:
+                    scope.phase_counts["search.worker_queue"] -= 1
+        return future
     # Future.cancel() leaves its WorkItem in ThreadPoolExecutor's queue.
     # Keep ownership until this wrapper is dequeued; checkpoint skips expired
     # work without running a query, and admission remains bounded meanwhile.
@@ -1697,9 +1740,9 @@ def _submit_with_current_context(
     return future
 
 
-def submit_search_work(fn: Callable[[], object]) -> Future[Any]:
-    """Submit independent request work with shared capacity, context and deadline."""
-    return _submit_with_current_context(_SEARCH_FANOUT_EXECUTOR, fn)
+def try_submit_search_work(fn: Callable[[], object]) -> Future[Any] | None:
+    """Start optional work only when no accepted work needs the slot."""
+    return _submit_with_current_context(_SEARCH_FANOUT_EXECUTOR.submit_if_idle, fn)
 
 
 def _storage_backend_name(storage: BaseStorage) -> str:
