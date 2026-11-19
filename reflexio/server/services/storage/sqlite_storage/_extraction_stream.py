@@ -279,6 +279,7 @@ class SQLiteStreamSQL:
             "output_id": "json_extract(r.committed_output,'$.publication.id')",
             "preparation_id": "json_extract(r.preparation,'$.output_id')",
             "v1_window_publication": (
+                "CASE WHEN json_valid(w.effects) AND json_valid(w.manifest) THEN ("
                 "w.project_id='' "
                 "AND json_extract(w.effects,'$.acknowledged_window_run_id')=r.id "
                 "AND json_type(w.effects,'$.version')='integer' "
@@ -292,7 +293,7 @@ class SQLiteStreamSQL:
                 "AND json_type(r.committed_output,'$._reflexio_envelope_version')='integer' "
                 "AND json_extract(r.committed_output,'$._reflexio_envelope_version')=1 "
                 "AND json_type(r.committed_output,'$.output')='object' "
-                "AND json_type(r.committed_output,'$.publication') IS NULL"
+                "AND json_type(r.committed_output,'$.publication') IS NULL) ELSE 0 END"
             ),
             "overflow_stage": "json_extract(r.generation_request_snapshot,'$.overflow.checkpoint.stage')",
         }
