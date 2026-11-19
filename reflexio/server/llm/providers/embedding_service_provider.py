@@ -192,7 +192,10 @@ def cached_inference_service_capabilities() -> InferenceServiceCapabilities | No
 
 
 def resolve_inference_service_capabilities(
-    *, advertised: dict[str, Any] | None = None, service_url: str | None = None
+    *,
+    advertised: dict[str, Any] | None = None,
+    service_url: str | None = None,
+    query_worker: bool = False,
 ) -> InferenceServiceCapabilities:
     """Discover and process-cache both models with one ``/health`` request.
 
@@ -266,6 +269,12 @@ def resolve_inference_service_capabilities(
         reranker_model = body.get("configured_reranker_model")
         if not isinstance(reranker_model, str) or not reranker_model.strip():
             reranker_model = None
+        workload = body.get("workload", "shared")
+        roles = ("query", "search") if query_worker else ("shared", "query", "search")
+        if not isinstance(workload, str) or workload not in roles:
+            raise EmbeddingUnavailableError(
+                "Inference worker advertised an invalid workload"
+            )
         capabilities = InferenceServiceCapabilities(
             configured_model=configured_model.strip(),
             configured_reranker_model=(
@@ -273,7 +282,7 @@ def resolve_inference_service_capabilities(
             ),
             reranker_enabled=body.get("reranker_enabled") is True,
             reranker_ready=body.get("reranker_ready") is True,
-            workload=body.get("workload", "shared"),
+            workload=workload,
         )
         checkpoint()
         _configured_model_cache[cache_key] = capabilities
@@ -434,7 +443,7 @@ def validate_search_reranker_service(
     endpoint = validate_query_embedding_service(shared.configured_model, None)
     cached = _configured_model_cache.get((os.getpid(), endpoint))
     isolated = resolve_inference_service_capabilities(
-        advertised=advertised, service_url=endpoint
+        advertised=advertised, service_url=endpoint, query_worker=True
     )
     if isolated.workload not in {"query", "search"}:
         raise EmbeddingUnavailableError(

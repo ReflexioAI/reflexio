@@ -186,7 +186,13 @@ def test_ready_refresh_cannot_switch_reserved_reranking_to_shared(endpoints):
     reranker.score_search_pairs("q", ["a", "b"])
     with pytest.raises(provider.EmbeddingUnavailableError, match="workload changed"):
         provider.validate_search_reranker_service(
-            advertised={"workload": "query"},
+            advertised={
+                "workload": "query",
+                "configured_model": "local/pinned",
+                "configured_reranker_model": "paired-reranker",
+                "reranker_enabled": True,
+                "reranker_ready": True,
+            },
         )
     reranker.score_search_pairs("q", ["a", "b"])
     assert calls == ["http://reserved/v1/rerank"] * 2
@@ -202,3 +208,15 @@ def test_obsolete_reranker_url_refuses_before_network_use(
         provider.validate_search_reranker_service()
     assert "hidden.invalid" not in str(caught.value)
     assert not calls
+
+
+@pytest.mark.parametrize("invalid", [[], {}, None, "unexpected", "shared"])
+def test_invalid_query_worker_health_does_not_poison_discovery(endpoints, invalid):
+    calls, settings = endpoints
+    settings["workload"] = invalid
+    with pytest.raises(reranker.CrossEncoderUnavailableError, match="invalid workload"):
+        reranker.score_search_pairs("q", ["a", "b"])
+    assert calls == []
+    settings["workload"] = "search"
+    assert reranker.score_search_pairs("q", ["a", "b"]) == [4.0, -2.0]
+    assert calls == ["http://reserved/v1/rerank"]
