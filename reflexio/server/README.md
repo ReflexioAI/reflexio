@@ -841,7 +841,7 @@ and rollout requirements.
 
 Reformulates user search queries into clean, normalized natural language for improved search recall. Resolves conversation context, expands abbreviations, fixes grammar. Enabled per-request via `enable_reformulation` parameter.
 
-- Uses `pre_retrieval_model_name` from `llm_model_setting.json` (fast, cheap model)
+- Uses `llm_config.pre_retrieval_model_name`, the configured gateway generation model, or a provider-specific default
 - Supports conversation-aware reformulation via `conversation_history` (list of `ConversationTurn`)
 - Plain-text LLM output with robust extraction/validation
 - Falls back to original query on any failure

@@ -488,7 +488,15 @@ Query/fragment-bearing v1 endpoints refuse without logging their values;
 explicit non-Azure transport overrides and dated Azure API versions retain
 their existing behavior. The API-version configuration remains supported.
 
-To change which models Reflexio uses, edit [`reflexio/server/site_var/site_var_sources/llm_model_setting.json`](reflexio/server/site_var/site_var_sources/llm_model_setting.json).
+Set `llm_config.pre_retrieval_model_name` in your Reflexio configuration to
+choose a query reformulation model. If you customized the old
+`pre_retrieval_model_name` key in the bundled
+[`llm_model_setting.json`](reflexio/server/site_var/site_var_sources/llm_model_setting.json),
+copy that value into each configuration where it was effective before upgrading
+and remove the old key. Keep any organization override or custom gateway
+generation model that already took precedence. The shipped blank value requires
+no migration. The bundled file still supplies generation, evaluation, and
+should-run defaults.
 Use the provider prefix shown above (e.g., `anthropic/` for Anthropic models). Set the corresponding API key in your `.env` file.
 
 Retryable physical-request warnings record only the error type, reason and

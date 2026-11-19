@@ -366,11 +366,11 @@ def test_unified_search_gateway_uses_shared_model_authority(monkeypatch, role_mo
     mixin.llm_client = LiteLLMClient(
         LiteLLMConfig(model="openai/gateway-generation", api_key_config=keys)
     )
-    monkeypatch.setattr(
-        SiteVarManager,
-        "get_site_var",
-        lambda *_args: {"pre_retrieval_model_name": "wrong-provider-default"},
-    )
+
+    def unexpected_sitevar_read(*_args):
+        raise AssertionError("Reformulation read site variables")
+
+    monkeypatch.setattr(SiteVarManager, "get_site_var", unexpected_sitevar_read)
     expected = role_model or "openai/gateway-generation"
     observed = []
 
