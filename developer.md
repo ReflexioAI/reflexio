@@ -488,20 +488,18 @@ Query/fragment-bearing v1 endpoints refuse without logging their values;
 explicit non-Azure transport overrides and dated Azure API versions retain
 their existing behavior. The API-version configuration remains supported.
 
-Configure models through the organization's `llm_config`. Before any upgrade
-or model-policy change, let in-flight ordinary profile work finish on its
-original runtime, even when no settings need to move.
+Configure models through the organization's `llm_config`. Before upgrading
+or changing model policy, let in-flight ordinary profile work finish on its
+original runtime. Record each organization's effective models and back up its
+model policy, including on installations using shipped defaults. Keep a copy
+of any customized bundled `llm_model_setting.json`.
 
-If you customized the former bundled `llm_model_setting.json`, record the
-effective model for each role and organization before upgrading. Keep a copy
-of the old bundled file and each organization's model policy. Prepare the
-updated policy from the effective choices. Leave already effective
-organization settings in place and skip bundled defaults they overrode.
-Stop all old writers, then publish generation and evaluation together through
-the upgraded writer. Reload the policy and verify the resolved model for every affected role
-before resuming work. An old writer discards the new evaluation field. Stop all old
-writers before first publishing an evaluation model, even if no bundled value
-needs to move.
+If you customized bundled defaults, prepare an updated policy from the effective
+choices. Keep organization settings that already took precedence. Stop every
+old config writer before the first publication of an evaluation model through
+the upgraded writer, including on installations using shipped defaults. Save
+generation and evaluation together when migrating distinct models. With the
+upgraded release, verify every affected role before resuming work.
 
 | Former key | Organization field |
 | --- | --- |
@@ -517,13 +515,15 @@ Otherwise evaluation inherits the configured generation model as before.
 The shipped blank defaults require no migration. Source-package retries keep
 their saved model ladder.
 
-Before rollback, save the current model policy if you migrated any bundled
-defaults or set an explicit evaluation model. Restore the old bundled
-defaults when applicable and reconcile the organization policy with its
-pre-upgrade copy. Undo each migration-only override. Preserve unrelated
-edits and keep any distinct evaluation choice in the backup for re-upgrade,
-since the old writer cannot carry it. Verify the resolved model for every
-affected role before restarting old writers or resuming work.
+For rollback, first let in-flight ordinary profile work finish on the current
+runtime, even if no settings need to change. Back up the current model policy,
+then reconcile it with the pre-upgrade copy. Restore the relevant bundled values
+for the exact rollback release. Undo migration-only overrides and remove
+`evaluation_model_name` from the live policy if the rollback release cannot
+carry it. Keep a distinct evaluator in the backup for re-upgrade and preserve
+unrelated newer edits. Verify every affected role with the exact rollback
+release while writes and workload dispatch are disabled. If the rollback
+release cannot resolve a required model, keep work paused and repair forward.
 Use the provider prefix shown above (e.g., `anthropic/` for Anthropic models). Set the corresponding API key in your `.env` file.
 
 Retryable physical-request warnings record only the error type, reason and
