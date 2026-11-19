@@ -203,7 +203,8 @@ class TestBuildBackendService:
 
         assert svc.name == "embedding"
         assert "reflexio.server.llm.embedding_service:app" in svc.command
-        assert svc.env is None
+        assert svc.env is not None
+        assert svc.env["PYTHON_DOTENV_DISABLED"] == "1"
 
     def test_build_embedding_service_accepts_app_module_override(self) -> None:
         svc = build_embedding_service(

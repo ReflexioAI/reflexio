@@ -241,7 +241,7 @@ def test_worker_inherits_the_parent_binding_when_project_dotenv_reappears(
     installation, monkeypatch
 ):
     from reflexio.cli.env_loader import load_local_launch_env
-    from reflexio.cli.run_services import build_backend_service
+    from reflexio.cli.run_services import build_backend_service, build_embedding_service
 
     monkeypatch.chdir(installation.parent)
     monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
@@ -261,6 +261,7 @@ def test_worker_inherits_the_parent_binding_when_project_dotenv_reappears(
     assert configured_local_org_id() == "user"
     backend = build_backend_service({"backend": 8061}, workers=2, reload=False)
     assert backend.env is not None
+    assert build_embedding_service({"embedding": 8069}).env == backend.env
     result = subprocess.run(  # noqa: S603 -- isolated worker and fixture settings.
         [
             sys.executable,
@@ -308,14 +309,24 @@ def test_project_with_a_legacy_user_binding_requires_explicit_selection(
     assert configured_local_org_id() == "plugin"
 
 
-def test_user_setup_writes_embedding_config_for_its_credential_source(
+def test_user_setup_uses_its_own_credentials_and_saved_configuration(
     installation, monkeypatch
 ):
-    from reflexio.cli.commands.setup_cmd import _write_embedding_model_to_org_config
-    from reflexio.cli.env_loader import load_local_launch_env, user_env_file
-
     monkeypatch.chdir(installation.parent)
-    monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
+    script = """
+from unittest.mock import patch
+from reflexio.cli.__main__ import main
+
+with (
+    patch("sys.stdin.isatty", return_value=True),
+    patch("typer.prompt", side_effect=[1, 1, "owned-setup-key"]),
+    patch(
+        "reflexio.cli.commands.setup_cmd._build_embedding_choices",
+        return_value=[("openai", "OPENAI_API_KEY", "OpenAI")],
+    ),
+):
+    main(["--server-url", "setup", "setup", "init", "--skip-llm"])
+"""
 
     def sqlite_config(org):
         database = _dataset(installation / "data" / f"{org}.db", org)
@@ -324,17 +335,32 @@ def test_user_setup_writes_embedding_config_for_its_credential_source(
     user = sqlite_config("user")
     project = sqlite_config("project")
     assert bind_local_instance("user") == "user"
-    (installation.parent / ".env").touch()
+    dotenv = installation.parent / ".env"
+    project_settings = "OPENAI_API_KEY=owned-project-key\n"
+    dotenv.write_text(project_settings)
     assert bind_local_instance("project") == "project"
-    load_local_launch_env(provision=False)
-    assert configured_local_org_id() == "project"
     project_before = project.read_bytes()
+    env = dict(os.environ)
+    for name in ("OPENAI_API_KEY", "PYTHON_DOTENV_DISABLED", "REFLEXIO_NONINTERACTIVE"):
+        env.pop(name, None)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
+    result = subprocess.run(  # noqa: S603 -- isolated setup and fixture settings.
+        [sys.executable, "-c", script],
+        cwd=installation.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
 
-    model = "local/minilm-l6-v2"
-    _write_embedding_model_to_org_config(model, env_path=user_env_file())
-
-    assert model in user.read_text()
+    assert result.returncode == 0, result.stderr
+    assert "text-embedding-3-small" in user.read_text()
+    assert (
+        'OPENAI_API_KEY="owned-setup-key"' in Path(env["REFLEXIO_ENV_FILE"]).read_text()
+    )
     assert project.read_bytes() == project_before
+    assert dotenv.read_text() == project_settings
 
 
 def test_competing_processes_keep_the_first_binding(installation):

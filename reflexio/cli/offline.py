@@ -108,29 +108,31 @@ def create_data_app() -> typer.Typer:
     return app
 
 
-def dispatch_offline(argv: list[str]) -> bool:
-    """Run the explicit converter without loading dotenv, services, or clients.
-
-    Typer's command parser reads the shared global option definitions before
-    selecting a route; option values that happen to equal command names never
-    become commands.
-    Other routes retain their usual operator environment bootstrap.
-    """
-    app = create_root_app()
-    config_app = typer.Typer()
-    config_app.command(name="upgrade-file")(upgrade_file)
-    app.add_typer(config_app, name="config")
-    app.add_typer(create_data_app(), name="data")
-    root = get_command(app)
-    # Build the parser from Typer's own command class: Typer 0.26+ vendors
-    # click, so its parameters are not interchangeable with click.Command's.
+def cli_command_path(argv: list[str]) -> tuple[str, ...]:
+    """Identify the command using the shared globals, before loading dotenv."""
+    root = get_command(create_root_app())
+    # Typer vendors Click in newer versions. The params must be parsed by
+    # Typer's own command class.
     parser = TyperCommand(
         "reflexio",
         params=root.params,
         context_settings={"allow_extra_args": True, "allow_interspersed_args": False},
     )
     with parser.make_context("reflexio", list(argv), resilient_parsing=True) as ctx:
-        if ctx.args[:2] not in (["config", "upgrade-file"], ["data", "upgrade-local"]):
-            return False
+        return tuple(ctx.args[:2])
+
+
+def dispatch_offline(
+    argv: list[str], *, command_path: tuple[str, ...] | None = None
+) -> bool:
+    """Run the explicit converter without loading dotenv, services, or clients."""
+    route = cli_command_path(argv) if command_path is None else command_path
+    if route not in (("config", "upgrade-file"), ("data", "upgrade-local")):
+        return False
+    app = create_root_app()
+    config_app = typer.Typer()
+    config_app.command(name="upgrade-file")(upgrade_file)
+    app.add_typer(config_app, name="config")
+    app.add_typer(create_data_app(), name="data")
     app(argv, standalone_mode=True)
     return True

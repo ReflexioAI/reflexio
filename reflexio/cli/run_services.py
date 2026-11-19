@@ -290,6 +290,9 @@ def build_embedding_service(
             "--port",
             str(ports["embedding"]),
         ],
+        env=local_worker_env()
+        if app_module == "reflexio.server.llm.embedding_service:app"
+        else None,
     )
 
 
