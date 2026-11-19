@@ -319,3 +319,18 @@ def test_host_preparation_keeps_the_existing_saved_target(installation, monkeypa
     assert prepare_local_sqlite_instance("plugin", unused) == "plugin"
     assert default_config_path().read_bytes() == before
     assert not unused.exists()
+
+
+def test_host_can_bind_saved_non_sqlite_config_without_a_fresh_target(
+    installation, monkeypatch
+):
+    monkeypatch.delenv("REFLEXIO_DEFAULT_ORG_ID")
+    original = _config(
+        installation,
+        "plugin",
+        {"type": "postgres", "db_url": "postgresql://local:fixture@localhost/db"},
+    )
+    before = original.read_bytes()
+    assert prepare_local_sqlite_instance("plugin") == "plugin"
+    assert default_config_path().read_bytes() == before
+    assert not (installation / "data").exists()

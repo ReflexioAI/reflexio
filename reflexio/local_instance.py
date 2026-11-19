@@ -130,12 +130,12 @@ def bind_local_instance() -> str:
     return _bind_local_instance()
 
 
-def prepare_local_sqlite_instance(org_id: str, db_path: Path) -> str:
-    """Provision a fresh host installation or bind its existing saved config."""
+def prepare_local_sqlite_instance(org_id: str, db_path: Path | None = None) -> str:
+    """Bind saved config, creating SQLite only if a fresh path is supplied."""
     return _bind_local_instance((org_id, db_path))
 
 
-def _bind_local_instance(first_install: tuple[str, Path] | None = None) -> str:
+def _bind_local_instance(first_install: tuple[str, Path | None] | None = None) -> str:
     from filelock import FileLock, Timeout
 
     from reflexio.config_file import LocalConfigFile, _publish_bytes, _sync_directory
@@ -174,7 +174,7 @@ def _bind_local_instance(first_install: tuple[str, Path] | None = None) -> str:
                 _verify_bound_config(bound)
             else:
                 config_path = _config_file(org_id, require_exists=False)
-                if not config_path.exists():
+                if not config_path.exists() and first_db_path is not None:
                     _prepare_first_sqlite_config(org_id, config_path, first_db_path)
         config = validate_stored_config(
             LocalConfigFile(_config_file(org_id)).read_document()
