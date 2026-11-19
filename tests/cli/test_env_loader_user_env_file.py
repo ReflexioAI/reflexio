@@ -25,10 +25,13 @@ import os
 from pathlib import Path
 from reflexio.cli.env_loader import load_existing_reflexio_env, load_reflexio_env
 from reflexio.removed_env import reject_removed_env
+from reflexio.local_instance import configured_local_org_id
 setup = SETUP
 loaded = load_reflexio_env() if setup else load_existing_reflexio_env()
 assert (loaded is not None) == setup
 assert Path(os.environ["REFLEXIO_ENV_FILE"]).exists() == setup
+assert "REFLEXIO_DEFAULT_ORG_ID" not in os.environ
+assert configured_local_org_id() == "self-host-org"
 reject_removed_env(os.environ)
 import reflexio.server
 print("fresh defaults loaded")
