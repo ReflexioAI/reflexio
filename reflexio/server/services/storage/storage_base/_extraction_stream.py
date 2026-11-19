@@ -2014,27 +2014,49 @@ class ExtractionStreamStore:
     def ack_extraction_effects(
         self, window_id: str, *, user_id: str | None = None, token: str | None = None
     ) -> None:
+        fenced = token is not None and user_id is not None
         with self._stream_sql() as db:
             if token is not None and user_id is not None:
                 self._fence_extraction_effects(db, window_id, user_id, token)
             rows = db.query(
-                f"SELECT effects FROM {db.table('extraction_windows')} WHERE window_id=?",
+                f"SELECT effects, effects_done, completed, invalidated, derived_claimed, "
+                "org_id, user_id, project_id "
+                f"FROM {db.table('extraction_windows')} WHERE window_id=?" + db.lock(),
                 (window_id,),
             )
-            if not rows and token is not None and user_id is not None:
-                raise WindowEffectsDeletedError("Extraction effects were erased")
-            if rows:
-                effects = decoded(rows[0]["effects"]) or {}
-                summary = {
-                    "version": 1,
-                    "skipped": True,
-                    "billing": effects.get("billing"),
-                    "request_ids": effects.get("request_ids", []),
-                }
-                db.query(
-                    f"UPDATE {db.table('extraction_windows')} SET effects_done=1,outcome=NULL,effects=?,manifest='[]' WHERE window_id=?",
-                    (json.dumps(summary), window_id),
-                )
+            if not rows:
+                if fenced:
+                    raise WindowEffectsDeletedError("Extraction effects were erased")
+                return
+            row = rows[0]
+            if row["effects_done"]:
+                return
+            effects = decoded(row["effects"]) or {}
+            summary = {
+                "version": 1,
+                "skipped": True,
+                "billing": effects.get("billing"),
+                "request_ids": effects.get("request_ids", []),
+            }
+            run_id = f"window:{window_id}"
+            if (
+                fenced
+                and row["org_id"] == self.org_id
+                and row["user_id"] == user_id
+                and row["project_id"] == (current_project_id() or "")
+                and row["completed"]
+                and not row["invalidated"]
+                and row["derived_claimed"]
+                and effects.get("extraction_run_ids") == [run_id]
+            ):
+                # The actual leased effects owner can retain this existing
+                # link when discarding the detailed payload. It is not a
+                # publication or billing receipt.
+                summary["acknowledged_window_run_id"] = run_id
+            db.query(
+                f"UPDATE {db.table('extraction_windows')} SET effects_done=1,outcome=NULL,effects=?,manifest='[]' WHERE window_id=?",
+                (json.dumps(summary), window_id),
+            )
 
     def invalidate_extraction(self, window: Window, token: str) -> None:
         """Explicit erasure invalidates compute; surviving inputs are selected anew."""

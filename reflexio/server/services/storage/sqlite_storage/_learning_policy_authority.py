@@ -423,7 +423,7 @@ def complete_sqlite_dataset_creation(
     proof needs explicit upgrade/recovery; a retained matching proof can retry.
     """
     from ..storage_base.transition_closure import derive_project_transition_closure_db
-    from ._extraction_stream import SQLiteStreamSQL
+    from ._extraction_stream import CURSOR_WINDOW_INDEX_DDL, SQLiteStreamSQL
 
     conn.execute(AUTHORITY_DDL)
     conn.commit()
@@ -436,6 +436,11 @@ def complete_sqlite_dataset_creation(
             return
         authority = LearningPolicyAuthority.from_dict(raw)
         if not authority.bootstrap or authority.initialization_kind != "first_dataset":
+            if (
+                authority.phase == "open"
+                and authority.active_policy == PROFILE_AUTHORING_POLICY
+            ):
+                conn.execute(CURSOR_WINDOW_INDEX_DDL)
             conn.commit()
             return
         if (
@@ -473,6 +478,7 @@ def complete_sqlite_dataset_creation(
             expected_nonce=authority.authority_nonce,
             expected_generation=authority.generation,
         )
+        conn.execute(CURSOR_WINDOW_INDEX_DDL)
         conn.commit()
     except BaseException:
         conn.rollback()
