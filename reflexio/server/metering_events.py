@@ -604,15 +604,12 @@ def record_window_extraction_finances(
     original event clock remain identical when governance removes that metadata.
     """
     from reflexio.server.services.extraction.publication_receipts import (
-        window_handoff_facts,
+        window_delivery_facts,
     )
 
     # Both financial events use one validated, detached original descriptor.
     # A malformed second event must not leave a first event appended.
-    descriptor = dict(billing)
-    if "pipeline" in descriptor and descriptor.pop("pipeline") != pipeline:
-        raise ValueError("Window financial pipeline does not match its owner")
-    ids, facts = window_handoff_facts(pipeline, descriptor)
+    ids, facts = window_delivery_facts(pipeline, billing)
     record_learnings_generated_records_strict(
         org_id=org_id,
         learning_ids=ids,

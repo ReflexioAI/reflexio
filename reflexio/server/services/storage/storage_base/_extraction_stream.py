@@ -2012,29 +2012,68 @@ class ExtractionStreamStore:
             raise
 
     def ack_extraction_effects(
-        self, window_id: str, *, user_id: str | None = None, token: str | None = None
+        self,
+        window_id: str,
+        *,
+        user_id: str | None = None,
+        token: str | None = None,
+        delivered_billing: dict[str, Any] | None = None,
     ) -> None:
+        fenced = token is not None and user_id is not None
         with self._stream_sql() as db:
             if token is not None and user_id is not None:
                 self._fence_extraction_effects(db, window_id, user_id, token)
             rows = db.query(
-                f"SELECT effects FROM {db.table('extraction_windows')} WHERE window_id=?",
+                f"SELECT effects, effects_done, completed, invalidated, derived_claimed, "
+                "org_id, user_id, project_id, kind "
+                f"FROM {db.table('extraction_windows')} WHERE window_id=?" + db.lock(),
                 (window_id,),
             )
-            if not rows and token is not None and user_id is not None:
-                raise WindowEffectsDeletedError("Extraction effects were erased")
-            if rows:
-                effects = decoded(rows[0]["effects"]) or {}
-                summary = {
-                    "version": 1,
-                    "skipped": True,
-                    "billing": effects.get("billing"),
-                    "request_ids": effects.get("request_ids", []),
-                }
-                db.query(
-                    f"UPDATE {db.table('extraction_windows')} SET effects_done=1,outcome=NULL,effects=?,manifest='[]' WHERE window_id=?",
-                    (json.dumps(summary), window_id),
+            if not rows:
+                if fenced:
+                    raise WindowEffectsDeletedError("Extraction effects were erased")
+                return
+            row = rows[0]
+            if row["effects_done"]:
+                return
+            effects = decoded(row["effects"]) or {}
+            retained_billing = effects.get("billing")
+            summary = {
+                "version": 1,
+                "skipped": True,
+                "billing": retained_billing,
+                "request_ids": effects.get("request_ids", []),
+            }
+            run_id = f"window:{window_id}"
+            if (
+                fenced
+                and row["org_id"] == self.org_id
+                and row["user_id"] == user_id
+                and row["project_id"] == (current_project_id() or "")
+                and row["completed"]
+                and not row["invalidated"]
+                and row["derived_claimed"]
+                and effects.get("extraction_run_ids") == [run_id]
+                and isinstance(delivered_billing, dict)
+                and isinstance(retained_billing, dict)
+                and delivered_billing == retained_billing
+            ):
+                from reflexio.server.services.extraction.publication_receipts import (
+                    window_delivery_facts,
                 )
+
+                try:
+                    window_delivery_facts(row["kind"], delivered_billing)
+                    window_delivery_facts(row["kind"], retained_billing)
+                except ValueError:
+                    # Compact the ACK as before, but do not prove closure.
+                    pass
+                else:
+                    summary["acknowledged_window_run_id"] = run_id
+            db.query(
+                f"UPDATE {db.table('extraction_windows')} SET effects_done=1,outcome=NULL,effects=?,manifest='[]' WHERE window_id=?",
+                (json.dumps(summary), window_id),
+            )
 
     def invalidate_extraction(self, window: Window, token: str) -> None:
         """Explicit erasure invalidates compute; surviving inputs are selected anew."""

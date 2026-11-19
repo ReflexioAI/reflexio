@@ -206,8 +206,8 @@ def _attributed_cursors(
         "AND a.extractor_kind=r.kind "
         f"AND ({run_project})) facts WHERE facts.status NOT IN ('finalized','failed','expired','cancelled') "
         "OR facts.dependency OR facts.preparation OR facts.debt OR facts.window "
-        "OR (facts.saved_output AND NOT facts.published AND NOT facts.legacy_published) "
-        "OR (facts.overflow AND NOT facts.overflow_retired AND NOT facts.published))"
+        "OR (facts.saved_output AND NOT facts.published AND NOT facts.legacy_published AND NOT facts.window_published) "
+        "OR (facts.overflow AND NOT facts.overflow_retired AND NOT facts.published AND NOT facts.window_published))"
     )
     unsafe = (
         # Full-source guard is not narrowed by the caller's after cursor.
@@ -322,6 +322,21 @@ def _projection(db: StreamSQL, source: InventorySource, now: float) -> tuple:
     prep = db.table("_agent_output_preparations")
     receipts = db.table("_agent_output_receipts")
     if source == "runs":
+        window_proof = getattr(db, "transition_window_publication_proof", None)
+        window_published = (
+            f"EXISTS(SELECT 1 FROM {windows} w WHERE w.window_id=substr(r.id,8) "
+            "AND substr(r.id,1,7)='window:' AND r.status='finalized' AND w.org_id=r.org_id AND w.user_id=r.user_id "
+            "AND w.kind=r.extractor_kind AND w.completed=1 AND w.invalidated=0 "
+            "AND w.effects_done=1 AND w.derived_claimed=1 AND w.outcome IS NULL "
+            f"AND w.completed_at>=0 AND w.completed_at<={now!r} "
+            "AND w.predecessor>=0 AND w.end_seq>w.predecessor "
+            f"AND ({window_proof()}) "
+            f"AND NOT EXISTS(SELECT 1 FROM {receipts} p WHERE p.run_id=r.id AND p.org_id=r.org_id) "
+            f"AND NOT EXISTS(SELECT 1 FROM {db.table('extraction_cursors')} c "
+            "WHERE c.window_id=w.window_id))"
+            if callable(window_proof)
+            else "0=1"
+        )
         return (
             runs,
             ("r.id",),
@@ -334,6 +349,7 @@ def _projection(db: StreamSQL, source: InventorySource, now: float) -> tuple:
             f"AND p.output_id={db.transition_json_scalar('output_id')}) AS published,"
             f"(EXISTS(SELECT 1 FROM {db.table('_agent_run_finalization_receipts')} p WHERE p.run_id=r.id) "
             f"AND {db.transition_json_scalar('output_id')} IS NULL) AS legacy_published,"
+            f"{window_published} AS window_published,"
             f"EXISTS(SELECT 1 FROM {work} u WHERE u.org_id=r.org_id AND "
             "(u.user_id=r.user_id OR u.lease_token=r.user_work_token) "
             f"AND u.lease_until>{now!r}) AS live_owner,"
@@ -412,9 +428,19 @@ def _run_reasons(row: dict) -> list[InventoryReason]:
     elif row["status"] not in _TERMINAL:
         reasons.append("unknown_state")
     reasons.extend(fact for fact in _RUN_FACTS if row[fact])
-    if row["overflow"] and not row["overflow_retired"] and not row["published"]:
+    if (
+        row["overflow"]
+        and not row["overflow_retired"]
+        and not row["published"]
+        and not row["window_published"]
+    ):
         reasons.append("overflow_requires_inspection")
-    if row["saved_output"] and not row["published"] and not row["legacy_published"]:
+    if (
+        row["saved_output"]
+        and not row["published"]
+        and not row["legacy_published"]
+        and not row["window_published"]
+    ):
         reasons.append("unreceipted_output")
     return reasons
 
