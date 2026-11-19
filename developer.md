@@ -1734,6 +1734,14 @@ Enterprise images own their separate versioned auth-row migration; updating
 only the SDK does not authorize a remote configuration upgrade.
 
 
+### Retired offline-tuner reward-label cap
+
+Offline-tuner reward labels were a former enterprise storage target. Current
+SDK backends do not provision those tables. The generic retention sweep no
+longer probes them. Remove `REFLEXIO_ROW_LIMIT_OFFLINE_TUNER_REWARD_LABEL`
+from process and dotenv settings, including blank assignments. The upgrade
+does not change the limits of active targets or delete historical records.
+
 ### Optimizer capacity retention
 
 Optimizer history uses one aggregate physical-row budget across job, candidate,
