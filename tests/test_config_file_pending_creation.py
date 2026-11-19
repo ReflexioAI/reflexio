@@ -6,13 +6,17 @@ import json
 import pytest
 
 from reflexio.config_env import StoredConfigurationError
-from reflexio.config_file import FILE_FORMAT_VERSION, LocalConfigFile
+from reflexio.config_file import (
+    EXTRACTION_WINDOW_POLICY_VERSION,
+    FILE_FORMAT_VERSION,
+    LocalConfigFile,
+)
 from reflexio.models.config_schema import validate_stored_config
 
 pytestmark = pytest.mark.unit
 
 
-@pytest.mark.parametrize("version", range(FILE_FORMAT_VERSION))
+@pytest.mark.parametrize("version", range(EXTRACTION_WINDOW_POLICY_VERSION))
 @pytest.mark.parametrize(
     "operation", ["raw", "storage", "configurator", "bootstrap", "edit"]
 )
@@ -93,7 +97,7 @@ def test_full_replacement_cannot_silently_relabel_supplied_historical_envelope(
         with pytest.raises(StoredConfigurationError, match="pending_tool_call_config"):
             owner.publish_document(document)
         assert path.read_bytes() == original
-    elif version < FILE_FORMAT_VERSION:
+    elif version < EXTRACTION_WINDOW_POLICY_VERSION:
         with pytest.raises(StoredConfigurationError, match="generation15"):
             owner.publish_document(document)
         assert path.read_bytes() == original

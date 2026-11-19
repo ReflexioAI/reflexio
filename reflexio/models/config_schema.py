@@ -671,12 +671,9 @@ class PlaybookOptimizerConfig(BaseModel):
     webhook_timeout_seconds: int = Field(default=60, gt=0)
 
     # --- assistant backend: local script ----------------------------------
-    # Absolute path to the executable. The optimizer spawns
-    # [assistant_script_path, *assistant_script_args] per turn, hands the
-    # rollout payload over stdin, and reads {"content": "..."} from stdout.
-    # See playbook_optimizer/assistant_webhook.py::LocalScriptAssistant.
-    assistant_script_path: str | None = None
-    assistant_script_args: list[str] = Field(default_factory=list)
+    # One argv vector: the executable followed by its exact arguments.
+    # No argument is split or passed through a shell.
+    assistant_command: Annotated[list[str], Field(min_length=1)] | None = None
 
     # Scheduling and optimizer search budgets have separate owners.
     abort_cooldown_threshold: _SchedulerThreshold = (
@@ -710,6 +707,8 @@ class PlaybookOptimizerConfig(BaseModel):
                 "scheduler_jitter_seconds",
                 "webhook_max_retries",
                 "webhook_backoff_base_seconds",
+                "assistant_script_path",
+                "assistant_script_args",
             ),
         )
 
@@ -726,10 +725,12 @@ class PlaybookOptimizerConfig(BaseModel):
         # Two backends configured at once would create ambiguous behavior
         # (which one wins?), so reject at load time rather than picking one
         # silently in _create_assistant.
-        if self.webhook_url and self.assistant_script_path:
+        if self.assistant_command and not self.assistant_command[0]:
+            raise ValueError("assistant_command requires a nonempty executable")
+        if self.webhook_url and self.assistant_command:
             raise ValueError(
                 "Configure only one playbook optimizer assistant backend: "
-                "webhook_url or assistant_script_path"
+                "webhook_url or assistant_command"
             )
         return self
 

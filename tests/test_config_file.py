@@ -13,6 +13,64 @@ from reflexio.config_file import FILE_FORMAT_VERSION, LocalConfigFile
 from reflexio.models.config_schema import StorageConfigSQLite, validate_stored_config
 
 
+def test_prepare_optimizer_command_preserves_exact_argv_without_runtime_aliases(
+    tmp_path,
+):
+    path = tmp_path / "config.json"
+    optimizer = {
+        "assistant_script_path": "/path with spaces/executable",
+        "assistant_script_args": ["--flag", "", "literal value"],
+        "metric_call_budget": 5,
+    }
+    original = encode_config_document(
+        {
+            "_reflexio_config_file": {"version": 15},
+            "storage_config": None,
+            "playbook_optimizer_config": optimizer,
+        }
+    ).encode()
+    path.write_bytes(original)
+    owner = LocalConfigFile(path)
+
+    with pytest.raises(StoredConfigurationError, match="playbook_optimizer_config"):
+        validate_stored_config(
+            {"storage_config": None, "playbook_optimizer_config": optimizer}
+        )
+    with pytest.raises(StoredConfigurationError, match="startup preparation"):
+        owner.read_document()
+    assert path.read_bytes() == original
+    assert owner.prepare()
+    assert owner.read_document()["playbook_optimizer_config"] == {
+        "assistant_command": [
+            "/path with spaces/executable",
+            "--flag",
+            "",
+            "literal value",
+        ],
+        "metric_call_budget": 5,
+    }
+    digest = hashlib.sha256(original).hexdigest()
+    assert (
+        tmp_path / ".config-migrations/config.json" / f"{digest}.json"
+    ).read_bytes() == original
+    assert owner.prepare() is False
+
+
+def test_preparation_never_activates_command_ignored_by_older_model(tmp_path):
+    path = tmp_path / "config.json"
+    original = encode_config_document(
+        {
+            "_reflexio_config_file": {"version": 15},
+            "playbook_optimizer_config": {"assistant_command": ["/path/executable"]},
+        }
+    )
+    path.write_text(original)
+    with pytest.raises(StoredConfigurationError, match="explicitly select the command"):
+        LocalConfigFile(path).prepare()
+    assert path.read_text() == original
+    assert not (tmp_path / ".config-migrations").exists()
+
+
 def test_preparation_preserves_original_policy_and_precision(tmp_path):
     path = tmp_path / "config.json"
     original = b'{"storage_config":{"type":"sqlite","db_path":"owned.db"},"playbook_optimizer_config":{"enabled":false,"optimize_agent_playbooks":true,"auto_update_pending_agent_playbooks":false},"opaque":{"number":1.00000000000000000000001}}'

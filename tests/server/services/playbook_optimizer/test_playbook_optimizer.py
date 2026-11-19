@@ -529,8 +529,7 @@ def test_optimizer_selects_local_script_assistant(tmp_path):
     storage = _sqlite_storage(tmp_path)
     config = PlaybookOptimizerConfig(
         metric_call_budget=20,
-        assistant_script_path=sys.executable,
-        assistant_script_args=["assistant.py"],
+        assistant_command=[sys.executable, "assistant.py"],
     )
     optimizer = _optimizer_for_test(storage, config)
 
@@ -544,7 +543,7 @@ def test_optimizer_skips_missing_local_script_assistant(tmp_path):
     storage = _sqlite_storage(tmp_path)
     config = PlaybookOptimizerConfig(
         metric_call_budget=20,
-        assistant_script_path=str(tmp_path / "missing-assistant"),
+        assistant_command=[str(tmp_path / "missing-assistant")],
     )
     optimizer = _optimizer_for_test(
         storage,
@@ -783,7 +782,7 @@ def test_agent_optimizer_local_backend_does_not_build_user_publication_authority
         playbook_optimizer_config=PlaybookOptimizerConfig(
             metric_call_budget=20,
             agent_playbooks_enabled=True,
-            assistant_script_path=sys.executable,
+            assistant_command=[sys.executable],
             min_commit_windows=1,
             min_commit_score=0.1,
             min_commit_likert=1,
@@ -1082,8 +1081,7 @@ json.dump({"content": "response for " + payload["playbooks"][0]["content"]}, sys
         playbook_optimizer_config=PlaybookOptimizerConfig(
             metric_call_budget=20,
             agent_playbooks_enabled=True,
-            assistant_script_path=sys.executable,
-            assistant_script_args=[str(script), str(record)],
+            assistant_command=[sys.executable, str(script), str(record)],
             min_commit_windows=1,
             min_commit_score=0.1,
             min_commit_likert=1,

@@ -422,7 +422,7 @@ class PlaybookOptimizer:
     ) -> AssistantCallable | None:
         """Pick the assistant backend implied by config.
 
-        ``webhook_url`` and ``assistant_script_path`` are mutually exclusive
+        ``webhook_url`` and ``assistant_command`` are mutually exclusive
         (validated in ``PlaybookOptimizerConfig``), so this is a simple two-way
         dispatch. Returning ``None`` means the optimizer is enabled but has no
         backend configured — ``optimize()`` treats that as a no-op.
@@ -436,17 +436,18 @@ class PlaybookOptimizer:
                 auth_header=config.webhook_auth_header,
                 timeout_s=config.webhook_timeout_seconds,
             )
-        if config.assistant_script_path:
-            if not _is_executable_file(config.assistant_script_path):
+        if config.assistant_command:
+            executable, *arguments = config.assistant_command
+            if not _is_executable_file(executable):
                 logger.warning(
-                    "Skipping playbook optimization: assistant_script_path is not "
+                    "Skipping playbook optimization: assistant command executable is not "
                     "an executable file path=%s",
-                    config.assistant_script_path,
+                    executable,
                 )
                 return None
             return LocalScriptAssistant(
-                script_path=config.assistant_script_path,
-                script_args=config.assistant_script_args,
+                script_path=executable,
+                script_args=arguments,
                 timeout_s=config.webhook_timeout_seconds,
             )
         return None
@@ -1140,11 +1141,12 @@ def _assistant_backend_identity(
         identity["webhook_auth_scheme"] = _webhook_auth_scheme(
             config.webhook_auth_header
         )
-    elif config.assistant_script_path:
+    elif config.assistant_command:
+        executable, *arguments = config.assistant_command
         identity["backend_kind"] = "local_script"
-        identity["script_args_digest"] = _json_digest(config.assistant_script_args)
+        identity["script_args_digest"] = _json_digest(arguments)
         identity["script_content_digest"] = sha256(
-            Path(config.assistant_script_path).read_bytes()
+            Path(executable).read_bytes()
         ).hexdigest()
     else:
         identity["backend_kind"] = "none"

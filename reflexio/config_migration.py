@@ -134,6 +134,34 @@ def retire_optimizer_replay_policy(data: Any) -> Any:
     return {key: value for key, value in data.items() if key not in fields}
 
 
+def canonicalize_optimizer_assistant_command(data: Any) -> Any:
+    """Project the previously selected executable and argv during an upgrade."""
+    if not isinstance(data, dict):
+        return data
+    legacy = {"assistant_script_path", "assistant_script_args"}
+    if not legacy.intersection(data):
+        return data
+    if "assistant_command" in data:
+        raise ConfigurationMigrationError(
+            "Optimizer assistant configuration contains both the old and new settings"
+        )
+    try:
+        path = TypeAdapter(str | None).validate_python(
+            data.get("assistant_script_path")
+        )
+        args = TypeAdapter(list[str]).validate_python(
+            data.get("assistant_script_args", [])
+        )
+    except ValidationError:
+        raise ConfigurationMigrationError(
+            "Invalid historical optimizer assistant command"
+        ) from None
+    output = {key: value for key, value in data.items() if key not in legacy}
+    if path:
+        output["assistant_command"] = [path, *args]
+    return output
+
+
 def canonicalize_optimizer_work_budget(data: Any) -> Any:
     """Translate old admission and budget only at an explicit upgrade boundary."""
     old_fields = {"enabled", "max_metric_calls"}
@@ -701,6 +729,12 @@ def canonicalize_config_document(payload: dict[str, Any]) -> dict[str, Any]:
 
     try:
         converted = canonicalize_stored_config_fields(payload)
+        if "playbook_optimizer_config" in converted:
+            converted["playbook_optimizer_config"] = (
+                canonicalize_optimizer_assistant_command(
+                    converted["playbook_optimizer_config"]
+                )
+            )
         if EXTRACTION_WINDOW_FIELDS.intersection(converted):
             # Storage owners must reject ignored new names in an older physical
             # generation before reaching this logical canonicalizer. Explicit

@@ -1826,7 +1826,7 @@ def test_gepa_local_script_identity_binds_script_content_and_code_digests(tmp_pa
     script.chmod(0o755)
     config = _optimizer_config(tmp_path)
     config.playbook_optimizer_config.webhook_url = None
-    config.playbook_optimizer_config.assistant_script_path = str(script)
+    config.playbook_optimizer_config.assistant_command = [str(script)]
     optimizer = _optimizer_with_config(storage, config)
     _install_winning_gepa(optimizer, storage, _window(incumbent.user_playbook_id))
 
