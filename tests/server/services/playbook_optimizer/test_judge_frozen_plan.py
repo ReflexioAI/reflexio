@@ -327,6 +327,8 @@ def test_pairwise_judge_rejects_drift_during_prompt_render_before_provider(
         ("native_cli_provider", "_compat_host"),
         ("opencode_module", "run_opencode"),
         ("opencode_module", "resolve_executable"),
+        ("opencode_executable_module", "_npm_opencode_executable"),
+        ("opencode_executable_module", "resolve_executable"),
         ("opencode_module", "_run_options"),
         ("opencode_module", "parse_output"),
         ("opencode_module", "_error_message"),
@@ -456,6 +458,7 @@ def test_native_helper_census_covers_actual_owned_functions_and_aliases():
         "native_cli_provider": judge_module.native_cli_provider,
         "native_model_ref": judge_module.native_model_ref,
         "opencode": judge_module.opencode_module,
+        "opencode_executable": judge_module.opencode_executable_module,
         "native_stream_parser": judge_module.native_stream_parser,
         "native_tool_protocol": judge_module.native_tool_protocol,
     }

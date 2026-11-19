@@ -11,6 +11,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from reflexio import opencode_executable
 from reflexio.server.llm._litellm_types import (
     LLMHardTimeoutError,
     ProviderRequestGuardError,
@@ -21,6 +22,33 @@ from reflexio.server.llm.providers.claude_code_stream_parser import (
     ParseResult,
     classify_stall,
 )
+
+
+@pytest.mark.unit
+def test_executable_discovery_does_not_import_the_server_or_llm_providers():
+    probe = """
+import importlib.abc
+import sys
+from pathlib import Path
+
+class BlockRuntimeImports(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split(".")[0] == "litellm" or fullname.startswith("reflexio.server"):
+            raise AssertionError(f"Unexpected runtime import: {fullname}")
+
+sys.meta_path.insert(0, BlockRuntimeImports())
+sys.path.insert(0, sys.argv[1])
+from reflexio.opencode_executable import resolve_executable
+
+assert resolve_executable(sys.executable) == Path(sys.executable).absolute()
+"""
+    result = subprocess.run(  # noqa: S603 - runs the fixed probe above
+        [sys.executable, "-I", "-c", probe, str(Path(__file__).resolve().parents[3])],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.unit
@@ -280,7 +308,7 @@ def _npm_install(tmp_path, local):
 @pytest.mark.parametrize("local", [False, True])
 def test_npm_opencode_shim_selects_its_native_package_executable(tmp_path, local):
     shim, executable = _npm_install(tmp_path, local)
-    assert native._npm_opencode_executable(shim) == executable
+    assert opencode_executable._npm_opencode_executable(shim) == executable
 
 
 @pytest.mark.unit
@@ -297,7 +325,7 @@ def test_refuses_nonstandard_or_incomplete_npm_shims(tmp_path, damage):
         executable.unlink()
     else:
         executable.write_text("postinstall required")
-    assert native._npm_opencode_executable(shim) is None
+    assert opencode_executable._npm_opencode_executable(shim) is None
 
 
 @pytest.mark.unit

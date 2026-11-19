@@ -16,6 +16,7 @@ from typing import Any, cast
 
 import litellm
 
+from reflexio import opencode_executable as opencode_executable_module
 from reflexio.models.api_schema.domain import AgentPlaybook
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm import _litellm_structured_output as structured_output_module
@@ -535,6 +536,7 @@ def _native_helper_identities() -> dict[str, dict[str, str]]:
         "native_cli_provider": native_cli_provider,
         "native_model_ref": native_model_ref,
         "opencode": opencode_module,
+        "opencode_executable": opencode_executable_module,
         "native_stream_parser": native_stream_parser,
         "native_tool_protocol": native_tool_protocol,
     }

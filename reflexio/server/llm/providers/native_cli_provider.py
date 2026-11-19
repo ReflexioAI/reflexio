@@ -180,10 +180,7 @@ def _resolve_cli_path(host: str) -> str | None:
     """
     override = os.environ.get(_ENV_CLI_PATH)
     if host == _HOST_OPENCODE:
-        from reflexio.server.llm.providers._opencode_cli import (
-            OpenCodeCLIError,
-            resolve_executable,
-        )
+        from reflexio.opencode_executable import OpenCodeCLIError, resolve_executable
 
         try:
             selected = override or "opencode"
