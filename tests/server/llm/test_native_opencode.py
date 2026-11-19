@@ -297,7 +297,8 @@ def test_windows_opencode_uses_package_binary_for_both_launches(
 ):
     shim, executable = _npm_install(tmp_path, local)
     monkeypatch.setenv("PATH", str(shim.parent))
-    monkeypatch.setenv("PATHEXT", ".EXE;.CMD")
+    monkeypatch.setenv("PATHEXT", ".CMD")
+    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
     monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/opencode")
     launch = Mock(
         side_effect=[
@@ -308,7 +309,7 @@ def test_windows_opencode_uses_package_binary_for_both_launches(
         ]
     )
     monkeypatch.setattr(native, "run_native_cli", launch)
-    result = provider.NativeCLILLM(cli_path="opencode").completion(
+    result = provider.NativeCLILLM().completion(
         model="local-cli/opencode",
         messages=[{"role": "user", "content": "owned"}],
         timeout=1,

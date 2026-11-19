@@ -85,7 +85,12 @@ def resolve_executable(cli_path: str) -> Path:
     for candidate in candidates:
         # An absolute candidate prevents Windows' implicit current-directory
         # search; which still supplies platform PATHEXT handling.
-        found = shutil.which(str(candidate.absolute()), path="")
+        absolute = candidate.absolute()
+        # An exact executable path is independent of PATHEXT. In particular,
+        # a package binary returned by npm shim resolution can be used again.
+        if os.name == "nt" and absolute.suffix.lower() == ".exe" and absolute.is_file():
+            return absolute
+        found = shutil.which(str(absolute), path="")
         if found:
             executable = Path(found).absolute()
             if os.name == "nt":
@@ -205,7 +210,7 @@ def run_opencode(
         if os.name == "nt" and executable.suffix.lower() != ".exe":
             raise OpenCodeCLIError(
                 "Native OpenCode requires an .exe; select it with CLAUDE_SMART_CLI_PATH. "
-                "Use a supported npm launcher or the existing compatibility bridge for custom batch wrappers."
+                "Use an npm package with a native .exe or keep the compatibility bridge for older and custom launchers."
             )
         directory = Path(tempfile.mkdtemp(prefix="opencode-", dir=owner)).resolve()
         config_dir = directory / ".opencode"
