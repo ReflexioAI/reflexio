@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -125,6 +126,16 @@ def window_handoff_facts(kind: str, billing: Any) -> tuple[list[str], dict[str, 
         },
     )
     return ids, facts
+
+
+def window_delivery_facts(
+    kind: str, billing: Mapping[str, Any]
+) -> tuple[list[str], dict[str, Any]]:
+    """Validate delivery facts, including the legacy explicit pipeline field."""
+    descriptor = dict(billing)
+    if "pipeline" in descriptor and descriptor.pop("pipeline") != kind:
+        raise ValueError("Window financial pipeline does not match its owner")
+    return window_handoff_facts(kind, descriptor)
 
 
 def window_handoff_matches(

@@ -942,7 +942,10 @@ class WindowExecutor:
             except Exception:
                 logger.exception("Extraction tagging dispatch failed")
         self.storage.ack_extraction_effects(
-            window.window_id, user_id=window.user_id, token=token
+            window.window_id,
+            user_id=window.user_id,
+            token=token,
+            delivered_billing=billing,
         )
 
     def _billing_snapshot(
