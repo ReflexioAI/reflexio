@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS extraction_cursors (
  project_id TEXT NOT NULL DEFAULT '', window_id TEXT, attempts INTEGER NOT NULL DEFAULT 0, retry_at REAL NOT NULL DEFAULT 0,
  last_error TEXT, last_turn REAL NOT NULL DEFAULT 0, PRIMARY KEY(user_id,kind,project_id)
 );
+CREATE INDEX IF NOT EXISTS extraction_cursors_window_lookup
+ ON extraction_cursors(window_id) WHERE window_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS extraction_windows (
  window_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, kind TEXT NOT NULL, org_id TEXT,
  project_id TEXT NOT NULL DEFAULT '', predecessor INTEGER NOT NULL, end_seq INTEGER NOT NULL, manifest TEXT NOT NULL,

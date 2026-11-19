@@ -19,6 +19,7 @@ pytestmark = pytest.mark.integration
         "historical_compacted",
         "no_derived_claim",
         "active_cursor",
+        "foreign_active_cursor",
         "corrupt_ack",
         "corrupt_manifest",
         "wrong_effect_run",
@@ -75,10 +76,10 @@ def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(storage, 
                 int(case == "invalidated"),
             ),
         )
-        if case == "active_cursor":
+        if case in {"active_cursor", "foreign_active_cursor"}:
             storage.conn.execute(
-                "INSERT INTO extraction_cursors(user_id,kind,window_id) VALUES('user','profile',?)",
-                (window_id,),
+                "INSERT INTO extraction_cursors(user_id,kind,window_id) VALUES(?,'profile',?)",
+                ("user" if case == "active_cursor" else "another-user", window_id),
             )
     if case == "unfenced":
         storage.ack_extraction_effects(window_id)
