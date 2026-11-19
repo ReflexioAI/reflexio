@@ -48,6 +48,9 @@ def user_env_file() -> Path:
 # so the startup banner can show the operator exactly which dotenv was
 # picked (./.env vs ~/.reflexio/.env vs auto-created).
 _loaded_env_path: Path | None = None
+# The selected lexical local source belongs to the process values loaded from
+# it. Keep it separate from the display path used by mode-aware loaders.
+_local_launch_source: tuple[Path, Path, Path] | None = None
 
 
 def get_env_path() -> Path:
@@ -180,10 +183,36 @@ def _existing_env_path() -> Path | None:
     return next((path for path in _env_search_paths() if path.exists()), None)
 
 
+def _local_scope() -> tuple[Path, Path]:
+    return Path.cwd(), user_env_file().absolute()
+
+
+def _captured_local_source() -> Path | None:
+    scope = _local_scope()
+    if _local_launch_source is not None and _local_launch_source[:2] == scope:
+        return _local_launch_source[2]
+    return None
+
+
 def local_instance_env_path() -> Path:
-    """Return the lexical address of the local launch's dotenv source."""
+    """Return the lexical address associated with the local process settings."""
+    captured = _captured_local_source()
+    if captured is not None:
+        return captured
     selected = None if _dotenv_disabled() else _existing_env_path()
     return (selected or user_env_file()).absolute()
+
+
+def load_local_launch_env(*, provision: bool = True) -> None:
+    """Load the local process settings once for a given launch source."""
+    global _local_launch_source
+    if _captured_local_source() is not None:
+        return
+    cwd, user = _local_scope()
+    disabled = _dotenv_disabled()
+    selected = load_reflexio_env() if provision else load_existing_reflexio_env()
+    address = cwd / selected if selected is not None and not disabled else user
+    _local_launch_source = (cwd, user, address)
 
 
 def local_worker_env() -> dict[str, str]:
@@ -204,12 +233,7 @@ def _dotenv_disabled() -> bool:
     }
 
 
-def _load_dotenv_pruned(
-    path: Path | StringIO,
-    *,
-    override: bool = False,
-    only_keys: set[str] | None = None,
-) -> None:
+def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> None:
     """Load a .env file, treating blank assignments (``KEY=``) as unset.
 
     python-dotenv exports a blank ``KEY=`` line as ``os.environ["KEY"] = ""``
@@ -228,7 +252,6 @@ def _load_dotenv_pruned(
         path: An existing .env path or in-memory bundled preset.
         override: Passed to ``DotEnv`` resolution and assignment. When False (default) the existing
             process environment wins over the file's values.
-        only_keys: Limit publication to settings explicitly updated by the caller.
     """
     reject_removed_env(os.environ)
     # Preserve python-dotenv's existing opt-out: disabled files cannot supply
@@ -244,8 +267,6 @@ def _load_dotenv_pruned(
     ).dict()
     reject_removed_env(file_vals)
     for key, value in file_vals.items():
-        if only_keys is not None and key not in only_keys:
-            continue
         # The launch environment selects the user-level file. Assignments in
         # the file cannot retarget later loads, setup writes, or child workers.
         if key == "REFLEXIO_ENV_FILE" or key in TOKENIZER_ENV_OUTPUTS or value is None:

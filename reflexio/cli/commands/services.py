@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from dotenv import dotenv_values
 
 from reflexio.cli import run_services as run_mod
 from reflexio.cli import stop_services as stop_mod
@@ -35,8 +34,8 @@ def _ensure_llm_configured(env_path: Path) -> None:
           inference service, or the colocated inference service when no remote
           URL is configured. No prompt, no blocking.
         - No LLM key, interactive TTY → prompt for a provider + key, then
-          (conditionally) prompt for an embedding key, re-load the .env so
-          the new values land in ``os.environ``, and return.
+          (conditionally) prompt for an embedding key, activate the entered
+          credentials for this launch, and return.
         - Missing only an embedding key (e.g. user set ANTHROPIC_API_KEY
           manually) AND ONNX dependencies are unavailable → prompt only for an
           embedding provider.
@@ -53,11 +52,9 @@ def _ensure_llm_configured(env_path: Path) -> None:
         typer.Exit: When stdin is not a TTY and no LLM key is configured.
     """
     from reflexio.cli.commands.setup_cmd import (
-        _PROVIDERS,
         _prompt_embedding_provider,
         _prompt_llm_provider,
     )
-    from reflexio.cli.env_loader import _load_dotenv_pruned
     from reflexio.server.llm.model_defaults import (
         EMBEDDING_CAPABLE_PROVIDERS,
         GENERATION_CAPABLE_PROVIDERS,
@@ -104,8 +101,6 @@ def _ensure_llm_configured(env_path: Path) -> None:
         )
         raise typer.Exit(1)
 
-    provider_keys = {provider["env_var"] for provider in _PROVIDERS.values()}
-    before = dotenv_values(env_path, interpolate=False)
     if not has_generation:
         typer.echo(
             "\nWelcome to Reflexio! Let's pick an LLM provider before "
@@ -115,8 +110,8 @@ def _ensure_llm_configured(env_path: Path) -> None:
             "(If you wanted Managed or Self-hosted Reflexio instead, press "
             "Ctrl+C and run `reflexio setup init`.)"
         )
-        _, _, provider_key = _prompt_llm_provider(env_path)
-        _prompt_embedding_provider(env_path, provider_key)
+        _, _, provider_key = _prompt_llm_provider(env_path, activate=True)
+        _prompt_embedding_provider(env_path, provider_key, activate=True)
     else:
         typer.echo(
             "\nYour LLM provider doesn't support text embeddings — Reflexio "
@@ -125,14 +120,8 @@ def _ensure_llm_configured(env_path: Path) -> None:
         non_embedding_provider = next(
             p for p in providers if p not in EMBEDDING_CAPABLE_PROVIDERS
         )
-        _prompt_embedding_provider(env_path, non_embedding_provider)
+        _prompt_embedding_provider(env_path, non_embedding_provider, activate=True)
 
-    # Publish only the credentials entered by this wizard. Existing process
-    # values, including the local service API key, keep their precedence.
-    after = dotenv_values(env_path, interpolate=False)
-    changed = {key for key in provider_keys if before.get(key) != after.get(key)}
-    if changed:
-        _load_dotenv_pruned(env_path, override=True, only_keys=changed)
     typer.echo()
 
 
@@ -228,11 +217,11 @@ def start(
     ] = 30,
 ) -> None:
     """Start Reflexio services (backend, docs)."""
-    from reflexio.cli.env_loader import load_reflexio_env, local_instance_env_path
+    from reflexio.cli.env_loader import load_local_launch_env, local_instance_env_path
 
     # Load .env BEFORE resolve_storage so env vars from ~/.reflexio/.env
     # (e.g. REFLEXIO_STORAGE=supabase) are visible to the resolution chain.
-    load_reflexio_env()
+    load_local_launch_env()
 
     selected_services = run_mod.parse_only_flag(only, {"backend", "docs"})
 

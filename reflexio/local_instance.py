@@ -74,10 +74,10 @@ def _require_explicit_project_selection(address: Path) -> None:
         )
 
 
-def configured_local_org_id() -> str:
+def configured_local_org_id(*, address: Path | None = None) -> str:
     """Resolve the local launcher's namespace for config and storage."""
     reject_removed_env(os.environ, canonical="config bind-local")
-    address = local_instance_env_path()
+    address = address if address is not None else local_instance_env_path()
     bound = _read_binding(_instance_file(address))
     if bound is None:
         _require_explicit_project_selection(address)

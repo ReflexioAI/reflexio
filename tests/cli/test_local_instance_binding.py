@@ -240,6 +240,7 @@ def test_worker_keeps_project_dotenv_and_its_bound_dataset_together(installation
 def test_worker_inherits_the_parent_binding_when_project_dotenv_reappears(
     installation, monkeypatch
 ):
+    from reflexio.cli.env_loader import load_local_launch_env
     from reflexio.cli.run_services import build_backend_service
 
     monkeypatch.chdir(installation.parent)
@@ -252,10 +253,14 @@ def test_worker_inherits_the_parent_binding_when_project_dotenv_reappears(
     dotenv.write_text("REFLEXIO_PROJECT_TEST_MARKER=project\n")
     assert bind_local_instance("project") == "project"
     dotenv.unlink()
+    load_local_launch_env(provision=False)
 
+    # The project source returns before the parent finishes preparing workers.
+    dotenv.write_text("REFLEXIO_PROJECT_TEST_MARKER=replacement\n")
+    load_local_launch_env()
+    assert configured_local_org_id() == "user"
     backend = build_backend_service({"backend": 8061}, workers=2, reload=False)
     assert backend.env is not None
-    dotenv.write_text("REFLEXIO_PROJECT_TEST_MARKER=replacement\n")
     result = subprocess.run(  # noqa: S603 -- isolated worker and fixture settings.
         [
             sys.executable,
@@ -301,6 +306,35 @@ def test_project_with_a_legacy_user_binding_requires_explicit_selection(
         bind_local_instance()
     assert bind_local_instance("plugin") == "plugin"
     assert configured_local_org_id() == "plugin"
+
+
+def test_user_setup_writes_embedding_config_for_its_credential_source(
+    installation, monkeypatch
+):
+    from reflexio.cli.commands.setup_cmd import _write_embedding_model_to_org_config
+    from reflexio.cli.env_loader import load_local_launch_env, user_env_file
+
+    monkeypatch.chdir(installation.parent)
+    monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
+
+    def sqlite_config(org):
+        database = _dataset(installation / "data" / f"{org}.db", org)
+        return _config(installation, org, {"type": "sqlite", "db_path": str(database)})
+
+    user = sqlite_config("user")
+    project = sqlite_config("project")
+    assert bind_local_instance("user") == "user"
+    (installation.parent / ".env").touch()
+    assert bind_local_instance("project") == "project"
+    load_local_launch_env(provision=False)
+    assert configured_local_org_id() == "project"
+    project_before = project.read_bytes()
+
+    model = "local/minilm-l6-v2"
+    _write_embedding_model_to_org_config(model, env_path=user_env_file())
+
+    assert model in user.read_text()
+    assert project.read_bytes() == project_before
 
 
 def test_competing_processes_keep_the_first_binding(installation):

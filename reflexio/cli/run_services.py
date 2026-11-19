@@ -12,7 +12,7 @@ from pathlib import Path
 
 import reflexio
 from reflexio.cli.env_loader import (
-    load_reflexio_env,
+    load_local_launch_env,
     local_instance_env_path,
     local_worker_env,
 )
@@ -333,7 +333,7 @@ def _ensure_nextjs_dependencies(project_dir: Path) -> bool:
 
 def execute(args: argparse.Namespace, *, storage: str | None = None) -> None:
     """Execute the run-services command."""
-    load_reflexio_env()
+    load_local_launch_env()
 
     # Banner so any captured stdout (e.g. ~/.reflexio/logs/server.log via the
     # Claude Code session-start hook) clearly marks the start of a new server

@@ -198,7 +198,7 @@ def test_launcher_selects_old_policy_before_prepare_even_without_backend(
     monkeypatch.setenv("REFLEXIO_LOG_DIR", str(tmp_path))
     monkeypatch.setattr("reflexio.local_instance.DEFAULT_ORG_ID", ORG)
     monkeypatch.setenv("REFLEXIO_POSTGRES_POOL_SIZE", "5")
-    monkeypatch.setattr(launcher, "load_reflexio_env", lambda: None)
+    monkeypatch.setattr(launcher, "load_local_launch_env", lambda: None)
     monkeypatch.setattr(launcher, "should_start_local_embedding_service", lambda: False)
     monkeypatch.setattr(launcher, "DOCS_DIR", tmp_path / "absent-docs")
     monkeypatch.setattr(launcher, "run_services", lambda *_args: None)

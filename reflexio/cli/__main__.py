@@ -44,7 +44,7 @@ def main(argv: list[str] | None = None) -> None:
 
     from reflexio.cli.env_loader import (
         block_implicit_dotenv_walkup,
-        load_reflexio_env,
+        load_local_launch_env,
     )
 
     # Stop third-party import-time ``load_dotenv()`` calls (notably litellm)
@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> None:
     # ``open_source/reflexio`` submodule. Must precede any import that pulls in
     # litellm. Reflexio's own scoped loader runs right after.
     block_implicit_dotenv_walkup()
-    load_reflexio_env()
+    load_local_launch_env()
 
     from importlib.metadata import entry_points
 

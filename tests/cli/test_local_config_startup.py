@@ -20,7 +20,7 @@ def saved_local_config(tmp_path, monkeypatch):
     monkeypatch.setenv("REFLEXIO_LOG_DIR", str(tmp_path))
     monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://127.0.0.1:9")
     monkeypatch.delenv("REFLEXIO_STORAGE", raising=False)
-    monkeypatch.setattr(run_services, "load_reflexio_env", lambda: None)
+    monkeypatch.setattr(run_services, "load_local_launch_env", lambda: None)
     fixture = Path(__file__).parents[1] / "fixtures/local_config_generation0.json"
     data = json.loads(fixture.read_text())
     data["storage_config"]["db_path"] = str(tmp_path / "owned.sqlite")
