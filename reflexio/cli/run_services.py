@@ -11,7 +11,11 @@ import time
 from pathlib import Path
 
 import reflexio
-from reflexio.cli.env_loader import get_env_path, load_reflexio_env
+from reflexio.cli.env_loader import (
+    get_env_path,
+    load_reflexio_env,
+    local_instance_env_path,
+)
 from reflexio.cli.utils import ServiceConfig, get_env_port, run_services
 from reflexio.inference_launch import ordinary_inference_launch
 
@@ -244,7 +248,7 @@ def build_backend_service(
         # Carry the launcher's lexical path into a fresh process. The child
         # can have a different default home, and resolving symlinks here
         # would turn credential-file rotation into a change of address.
-        env = {"REFLEXIO_ENV_FILE": str(get_env_path().absolute())}
+        env = {"REFLEXIO_ENV_FILE": str(local_instance_env_path())}
     return ServiceConfig(name="backend", command=cmd, env=env)
 
 

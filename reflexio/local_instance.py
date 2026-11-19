@@ -8,6 +8,7 @@ import os
 import re
 from pathlib import Path
 
+from reflexio.cli.env_loader import get_env_path, local_instance_env_path
 from reflexio.removed_env import reject_removed_env
 
 DEFAULT_ORG_ID = "self-host-org"
@@ -23,12 +24,10 @@ def is_valid_local_org_id(org_id: str) -> bool:
     return _ORG_ID.fullmatch(org_id) is not None
 
 
-def _instance_file() -> Path:
-    from reflexio.cli.env_loader import get_env_path
+def _instance_file(address: Path) -> Path:
     from reflexio.cli.paths import reflexio_home
 
-    address = os.fsencode(get_env_path().absolute())
-    key = hashlib.sha256(address).hexdigest()
+    key = hashlib.sha256(os.fsencode(address)).hexdigest()
     return reflexio_home() / "instances" / f"{key}.json"
 
 
@@ -69,8 +68,15 @@ def _read_binding(path: Path) -> str | None:
 def configured_local_org_id() -> str:
     """Resolve the local launcher's namespace for config and storage."""
     reject_removed_env(os.environ, canonical="config bind-local")
-    bound = _read_binding(_instance_file())
+    address = local_instance_env_path()
+    bound = _read_binding(_instance_file(address))
     if bound is None:
+        user_address = get_env_path().absolute()
+        if address != user_address and _read_binding(_instance_file(user_address)):
+            raise LocalInstanceError(
+                "This project's dotenv needs its own local instance binding. "
+                "Run reflexio config bind-local with the organization's saved name."
+            )
         return DEFAULT_ORG_ID
     _verify_bound_config(bound)
     return bound
@@ -141,7 +147,7 @@ def _bind_local_instance(
     )
 
     reject_removed_env(os.environ, canonical="config bind-local")
-    instance = _instance_file()
+    instance = _instance_file(local_instance_env_path())
     if instance.parent.is_symlink():
         raise LocalInstanceError("Local instance records must not be linked.")
     instance.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

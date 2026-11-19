@@ -313,13 +313,21 @@ uv run reflexio user-playbooks delete <playbook-id>
 ## Config
 
 
-Stop the local backend before binding an existing dataset. For an old
-installation that selected a custom organization through
-`REFLEXIO_DEFAULT_ORG_ID`, keep the original configuration and database,
-remove the assignment, and run `reflexio config bind-local <organization>`
-with the previous organization. Use the same `REFLEXIO_ENV_FILE` path for
-setup, CLI commands, and server starts. Later startups use the saved
-binding. An already bound installation can retry `reflexio config bind-local`
+Before upgrading an installation that uses `REFLEXIO_DEFAULT_ORG_ID`, stop
+the local backend with the previous CLI or the service manager that started
+it. Keep the original configuration and database. If the saved
+configuration needs file preparation, run
+`reflexio config upgrade-file <saved-config> --output <prepared-copy>`, review
+the copy, and install it at the saved config path while the backend is
+stopped. Then remove the old assignment and run
+`reflexio config bind-local <organization>` with the previous organization.
+
+Run binding and startup from the same project directory if it supplies
+`./.env`. Otherwise, use the same user-level `REFLEXIO_ENV_FILE` path for
+setup, CLI commands, and server starts. Later startups use that source's
+saved binding. If your project previously inherited a user-level binding,
+bind its existing organization explicitly from that project directory.
+An already bound installation can retry `reflexio config bind-local`
 without supplying the organization again.
 
 The command verifies the existing SQLite owner claim. For a database with a

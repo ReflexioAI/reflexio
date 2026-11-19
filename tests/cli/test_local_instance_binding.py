@@ -196,6 +196,65 @@ def test_two_env_addresses_keep_separate_instances_in_one_home(
     assert configured_local_org_id() == "plugin"
 
 
+def test_worker_keeps_project_dotenv_and_its_bound_dataset_together(installation):
+    database = _dataset(installation / "data" / "project.db", "project")
+    _config(installation, "project", {"type": "sqlite", "db_path": str(database)})
+    projects = [installation.parent / name for name in ("first", "second")]
+    for project in projects:
+        project.mkdir()
+        (project / ".env").write_text(f"REFLEXIO_PROJECT_TEST_MARKER={project.name}\n")
+
+    env = dict(os.environ)
+    env.pop("PYTHON_DOTENV_DISABLED", None)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
+    env["LITELLM_LOCAL_MODEL_COST_MAP"] = "true"
+    env.pop("REFLEXIO_PROJECT_TEST_MARKER", None)
+
+    def run(project, script):
+        return subprocess.run(  # noqa: S603 -- Isolated local worker startup.
+            [sys.executable, "-c", script],
+            cwd=project,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        ).stdout.splitlines()[-1]
+
+    run(
+        projects[0],
+        "from reflexio.cli.env_loader import load_existing_reflexio_env; "
+        "from reflexio.local_instance import bind_local_instance; "
+        "load_existing_reflexio_env(); print(bind_local_instance('project'))",
+    )
+    worker = (
+        "import os; from reflexio.server import api, auth; "
+        "app = api.create_app(mount_data_plane=False); "
+        "print(os.environ['REFLEXIO_PROJECT_TEST_MARKER'], "
+        "app.dependency_overrides[auth.default_get_org_id]())"
+    )
+    assert run(projects[0], worker) == "first project"
+    assert run(projects[1], worker) == "second self-host-org"
+
+
+def test_project_with_a_legacy_user_binding_requires_explicit_selection(
+    installation, monkeypatch
+):
+    monkeypatch.chdir(installation.parent)
+    policy = {"type": "postgres", "db_url": "postgresql://local:fixture@localhost/db"}
+    _config(installation, "plugin", policy)
+    assert bind_local_instance("plugin") == "plugin"
+
+    monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
+    (installation.parent / ".env").touch()
+    with pytest.raises(
+        LocalInstanceError, match="needs its own local instance binding"
+    ):
+        configured_local_org_id()
+    assert bind_local_instance("plugin") == "plugin"
+    assert configured_local_org_id() == "plugin"
+
+
 def test_competing_processes_keep_the_first_binding(installation):
     policy = {"type": "postgres", "db_url": "postgresql://local:fixture@localhost/db"}
     for org in ("plugin", "standalone"):

@@ -176,6 +176,16 @@ def _env_search_paths() -> list[Path]:
     ]
 
 
+def _existing_env_path() -> Path | None:
+    return next((path for path in _env_search_paths() if path.exists()), None)
+
+
+def local_instance_env_path() -> Path:
+    """Return the lexical address of the local launch's dotenv source."""
+    selected = None if _dotenv_disabled() else _existing_env_path()
+    return (selected or user_env_file()).absolute()
+
+
 def _dotenv_disabled() -> bool:
     return os.environ.get("PYTHON_DOTENV_DISABLED", "").casefold() in {
         "1",
@@ -233,14 +243,14 @@ def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> Non
 def _load_existing_env_paths() -> Path | None:
     global _loaded_env_path
     reject_removed_env(os.environ)
-    for env_path in _env_search_paths():
-        if env_path.exists():
-            _load_dotenv_pruned(env_path)
-            _loaded_env_path = env_path.resolve()
-            _logger.debug("Loaded env from: %s", _loaded_env_path)
-            return env_path
-    _loaded_env_path = None
-    return None
+    env_path = _existing_env_path()
+    if env_path is not None:
+        _load_dotenv_pruned(env_path)
+        _loaded_env_path = env_path.resolve()
+        _logger.debug("Loaded env from: %s", _loaded_env_path)
+    else:
+        _loaded_env_path = None
+    return env_path
 
 
 def load_existing_reflexio_env(
