@@ -34,6 +34,7 @@ import inspect
 import logging
 import math
 from collections.abc import Callable, Iterable
+from functools import cache
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -772,17 +773,28 @@ def create_app(  # noqa: C901
     return app
 
 
-# The standalone OSS app allows no-key access only from loopback. Embedded
-# hosts use create_app's existing authentication seams instead.
-from reflexio.server.local_access import LocalAccessMiddleware
+if TYPE_CHECKING:
+    app: FastAPI
 
-app = create_app()
-_add_openapi_security(app, allow_local_access=True)
-# Reject before the request reaches data middleware, but keep CORS, security
-# headers and correlation around authentication failures too.
-_cors_index = next(
-    index
-    for index, item in enumerate(app.user_middleware)
-    if item.cls is CORSMiddleware
-)
-app.user_middleware.insert(_cors_index + 1, Middleware(LocalAccessMiddleware))
+
+@cache
+def _standalone_app() -> FastAPI:
+    """Apply the standalone access policy when the local app is requested."""
+    from reflexio.server.local_access import LocalAccessMiddleware
+
+    app = create_app()
+    _add_openapi_security(app, allow_local_access=True)
+    # Keep CORS, security headers and correlation around authentication failures.
+    cors_index = next(
+        index
+        for index, item in enumerate(app.user_middleware)
+        if item.cls is CORSMiddleware
+    )
+    app.user_middleware.insert(cors_index + 1, Middleware(LocalAccessMiddleware))
+    return app
+
+
+def __getattr__(name: str) -> FastAPI:
+    if name == "app":
+        return _standalone_app()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

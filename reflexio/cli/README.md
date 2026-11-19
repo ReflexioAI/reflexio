@@ -313,6 +313,20 @@ uv run reflexio user-playbooks delete <playbook-id>
 ## Config
 
 
+Run `reflexio config bind-local` with the existing local launch environment
+after stopping the local backend. It remembers which saved organization this
+launch uses. Use the same `REFLEXIO_ENV_FILE` path for setup, CLI commands, and
+server starts. You can remove `REFLEXIO_DEFAULT_ORG_ID` from this launch after
+binding, once every launcher that uses the installation supports saved
+bindings. If an older launcher still supplies the setting, the organization
+must match.
+
+The command verifies the existing SQLite owner claim. For installations that
+use an implicit SQLite path, it pins the verified file in the existing config.
+If a supported historical file has no owner claim, qualify it separately
+with `reflexio data upgrade-local` using its exact path and known organization.
+
+
 ```shell
 uv run reflexio config show
 uv run reflexio config set --data '{"api_key_config": {"openai": "sk-..."}}'
