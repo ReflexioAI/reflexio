@@ -488,13 +488,17 @@ Query/fragment-bearing v1 endpoints refuse without logging their values;
 explicit non-Azure transport overrides and dated Azure API versions retain
 their existing behavior. The API-version configuration remains supported.
 
-Configure models through the organization's `llm_config`. If you customized
-the former bundled `llm_model_setting.json`, record each model actually in use
-before upgrading. Prepare the complete updated organization policy in
-advance. Let in-flight ordinary profile work finish and stop all old writers
-before applying it. Use the new release's config writer to publish generation
-and evaluation choices together, then reload and verify both before resuming
-work. An old writer discards the new evaluation field.
+Configure models through the organization's `llm_config`. Before any upgrade
+or model-policy change, let in-flight ordinary profile work finish on its
+original runtime, even when no settings need to move.
+
+If you customized the former bundled `llm_model_setting.json`, record the
+effective model for each role and organization before upgrading. Prepare the
+updated policy from those effective choices. Leave already effective
+organization settings in place and skip bundled defaults they overrode.
+Stop all old writers, then publish generation and evaluation together through
+the upgraded writer. Reload the policy and verify both resolved models before
+resuming work. An old writer discards the new evaluation field.
 
 | Former key | Organization field |
 | --- | --- |
