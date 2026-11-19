@@ -331,7 +331,8 @@ def _projection(db: StreamSQL, source: InventorySource, now: float) -> tuple:
             f"AND w.completed_at>=0 AND w.completed_at<={now!r} "
             "AND w.predecessor>=0 AND w.end_seq>w.predecessor "
             f"AND ({window_proof()}) "
-            f"AND NOT EXISTS(SELECT 1 FROM {receipts} p WHERE p.run_id=r.id AND p.org_id=r.org_id) "
+            f"AND NOT EXISTS(SELECT 1 FROM {receipts} p WHERE p.run_id=r.id AND p.org_id=r.org_id "
+            "AND p.row_kind='output') "
             f"AND NOT EXISTS(SELECT 1 FROM {db.table('extraction_cursors')} c "
             "WHERE c.window_id=w.window_id))"
             if callable(window_proof)

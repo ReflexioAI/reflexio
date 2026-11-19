@@ -138,6 +138,24 @@ def window_delivery_facts(
     return window_handoff_facts(kind, descriptor)
 
 
+def valid_window_delivery_payload(kind: str, billing_json: bytes | None) -> int:
+    """SQLite proof adapter for the same validation used during delivery."""
+    if billing_json is None:
+        return 0
+    try:
+        # SQLite emits a compact object and CAST preserves its database encoding.
+        encoding = {b"{\0": "utf-16-le", b"\0{": "utf-16-be"}.get(
+            billing_json[:2], "utf-8"
+        )
+        billing = json.loads(billing_json.decode(encoding))
+        if not isinstance(billing, dict):
+            return 0
+        window_delivery_facts(kind, billing)
+    except (ValueError, TypeError, OverflowError, RecursionError):
+        return 0
+    return 1
+
+
 def window_handoff_matches(
     kind: Any, billing_json: Any, ids_json: Any, facts_json: Any
 ) -> int:
