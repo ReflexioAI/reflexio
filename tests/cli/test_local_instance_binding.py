@@ -325,7 +325,7 @@ with (
         return_value=[("openai", "OPENAI_API_KEY", "OpenAI")],
     ),
 ):
-    main(["--server-url", "setup", "setup", "init", "--skip-llm"])
+    main(["--server-url", "setup", "setup", "--", "init", "--skip-llm"])
 """
 
     def sqlite_config(org):

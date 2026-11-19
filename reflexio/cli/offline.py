@@ -109,17 +109,21 @@ def create_data_app() -> typer.Typer:
 
 
 def cli_command_path(argv: list[str]) -> tuple[str, ...]:
-    """Identify the command using the shared globals, before loading dotenv."""
+    """Resolve root and group arguments before selecting a bootstrap source."""
+    context_settings = {"allow_extra_args": True, "allow_interspersed_args": False}
     root = get_command(create_root_app())
-    # Typer vendors Click in newer versions. The params must be parsed by
-    # Typer's own command class.
+    # Typer vendors Click in newer versions. Parse both levels with the
+    # same command class, including the group-level `--` option separator.
     parser = TyperCommand(
-        "reflexio",
-        params=root.params,
-        context_settings={"allow_extra_args": True, "allow_interspersed_args": False},
+        "reflexio", params=root.params, context_settings=context_settings
     )
     with parser.make_context("reflexio", list(argv), resilient_parsing=True) as ctx:
-        return tuple(ctx.args[:2])
+        if not ctx.args:
+            return ()
+        group, *args = ctx.args
+    group_parser = TyperCommand(group, context_settings=context_settings)
+    with group_parser.make_context(group, args, resilient_parsing=True) as ctx:
+        return (group, *ctx.args[:1])
 
 
 def dispatch_offline(

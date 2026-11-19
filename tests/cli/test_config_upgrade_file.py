@@ -407,6 +407,24 @@ def test_offline_probe_preserves_online_route_arguments(args):
     assert args == original
 
 
+@pytest.mark.parametrize(
+    ("group", "command"),
+    [
+        ("setup", "init"),
+        ("setup", "openclaw"),
+        ("config", "upgrade-file"),
+        ("data", "upgrade-local"),
+    ],
+)
+def test_bootstrap_command_path_honors_group_option_separator(group, command):
+    from reflexio.cli.offline import cli_command_path
+
+    assert cli_command_path(["--server-url", group, group, "--", command]) == (
+        group,
+        command,
+    )
+
+
 def test_real_cli_preserves_precise_opaque_numbers_and_source(tmp_path, monkeypatch):
     from decimal import Decimal
 
