@@ -24,7 +24,10 @@ pytestmark = pytest.mark.integration
         "fractional_billing_type",
         "billing_not_delivered",
         "different_billing",
-        "billing_lost_after_ack",
+        "null_billing_after_ack",
+        "empty_billing_after_ack",
+        "partial_billing_after_ack",
+        "wrong_billing_type_after_ack",
         "historical_compacted",
         "no_derived_claim",
         "active_cursor",
@@ -142,11 +145,19 @@ def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(
             window_id, user_id="user", token=token, delivered_billing=delivered_billing
         )
         storage.release_user_extraction("user", token)
-    if case == "billing_lost_after_ack":
+    damaged_billing = {
+        "null_billing_after_ack": None,
+        "empty_billing_after_ack": {},
+        "partial_billing_after_ack": {
+            key: value for key, value in billing.items() if key != "ids"
+        },
+        "wrong_billing_type_after_ack": {**billing, "platform_llm": 0},
+    }
+    if case in damaged_billing:
         with storage.commit_scope():
             storage.conn.execute(
-                "UPDATE extraction_windows SET effects=json_remove(effects, '$.billing') WHERE window_id=?",
-                (window_id,),
+                "UPDATE extraction_windows SET effects=json_set(effects, '$.billing', json(?)) WHERE window_id=?",
+                (json.dumps(damaged_billing[case]), window_id),
             )
     if case == "nul_ack":
         with storage.commit_scope():
@@ -175,3 +186,20 @@ def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(
     assert ("unreceipted_output" not in run.reasons) == (case == "owned")
     if case == "owned":
         assert run.reasons == ()
+
+
+def test_window_inventory_uses_output_receipt_index(storage):
+    statements = []
+    storage.conn.set_trace_callback(statements.append)
+    try:
+        storage.transition_inventory_page("runs")
+    finally:
+        storage.conn.set_trace_callback(None)
+    statement = next(query for query in statements if " AS window_published" in query)
+    plan = [row[3] for row in storage.conn.execute("EXPLAIN QUERY PLAN " + statement)]
+    assert any(
+        "SEARCH p" in step
+        and "publication_output_identity" in step
+        and "(org_id=? AND run_id=?)" in step
+        for step in plan
+    )

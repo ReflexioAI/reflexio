@@ -138,6 +138,20 @@ def window_delivery_facts(
     return window_handoff_facts(kind, descriptor)
 
 
+def valid_window_delivery_payload(kind: str, billing_json: str | None) -> int:
+    """SQLite proof adapter for the same validation used during delivery."""
+    if billing_json is None:
+        return 0
+    try:
+        billing = json.loads(billing_json)
+        if not isinstance(billing, dict):
+            return 0
+        window_delivery_facts(kind, billing)
+    except (ValueError, TypeError, OverflowError, RecursionError):
+        return 0
+    return 1
+
+
 def window_handoff_matches(
     kind: Any, billing_json: Any, ids_json: Any, facts_json: Any
 ) -> int:

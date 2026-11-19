@@ -289,6 +289,17 @@ class SQLiteStreamSQL:
         return values[field]
 
     def transition_window_publication_proof(self) -> str:
+        from reflexio.server.services.extraction.publication_receipts import (
+            valid_window_delivery_payload,
+        )
+
+        # Also used with the raw connection during a stopped-file upgrade.
+        self.conn.create_function(
+            "reflexio_valid_window_delivery",
+            2,
+            valid_window_delivery_payload,
+            deterministic=True,
+        )
         # Older JSON1 scalar extraction can truncate strings at an escaped NUL.
         # The first durable-window writer already emitted v1 envelopes. A raw
         # payload may be readable during recovery but cannot prove this lineage.
@@ -296,7 +307,7 @@ class SQLiteStreamSQL:
             "CASE WHEN json_valid(w.effects) AND json_valid(w.manifest) THEN ("
             "w.project_id='' AND typeof(w.predecessor)='integer' AND typeof(w.end_seq)='integer' "
             "AND (w.effects -> '$.acknowledged_window_run_id')=json_quote(r.id) "
-            "AND json_type(w.effects,'$.billing')='object' "
+            "AND reflexio_valid_window_delivery(w.kind,w.effects -> '$.billing')=1 "
             "AND json_type(w.effects,'$.version')='integer' "
             "AND json_extract(w.effects,'$.version')=1 AND json_type(w.effects,'$.skipped')='true' "
             "AND json_type(w.manifest)='array' AND json_array_length(w.manifest)=0 "
