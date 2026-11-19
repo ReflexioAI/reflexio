@@ -26,6 +26,7 @@ from reflexio.server.services.offline_tuner.evidence.shared_compaction_checkpoin
     encode_selection,
     receipt,
 )
+from reflexio.server.services.offline_tuner.open_world import hierarchical_compaction
 from reflexio.server.services.offline_tuner.open_world.hierarchical_compaction import (
     compress_session_evidence,
 )
@@ -183,6 +184,55 @@ def test_unknown_dispatch_remains_spent_after_restart(monkeypatch):
     after = SharedReceipt.model_validate(storage.rows[(7, "a" * 64)]).payload
     assert isinstance(after, Root) and after.calls == len(calls) and after.calls > spent
     assert all(storage.rows[(7, row["identity"])] == row for row in old_attempts)
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_saved_v6_session_resumes_with_exact_legacy_plan_and_existing_budget(
+    monkeypatch, interrupted
+):
+    calls = []
+    storage = MemoryCheckpoints()
+    source, trajectory = _freeze_document(
+        document("material user correction. " + "noise " * 6000)
+    )
+    native_plan = hierarchical_compaction.plan_with_client
+
+    def legacy_plan(*args, **kwargs):
+        return native_plan(*args, **{**kwargs, "_admission_version": "v6"})
+
+    with monkeypatch.context() as old_worker:
+        old_worker.setattr(hierarchical_compaction, "plan_with_client", legacy_plan)
+        old_worker.setattr(
+            LiteLLMClient,
+            "_completion_with_hard_timeout",
+            fake_transport(calls, fail=interrupted),
+        )
+        if interrupted:
+            with pytest.raises(Exception, match="scripted transport interruption"):
+                run(storage, source, trajectory)
+        else:
+            run(storage, source, trajectory)
+    saved = deepcopy(storage.rows)
+    root_before = SharedReceipt.model_validate(saved[(7, "a" * 64)])
+    assert isinstance(root_before.payload, Root) and root_before.payload.calls > 0
+    previous_calls = len(calls)
+    monkeypatch.setattr(
+        LiteLLMClient, "_completion_with_hard_timeout", fake_transport(calls)
+    )
+
+    journal, (_document, result) = run(storage, source, trajectory)
+
+    assert journal.plan is not None
+    assert journal.plan.witness == root_before.payload.plan_witness
+    root_after = SharedReceipt.model_validate(storage.rows[(7, "a" * 64)])
+    assert isinstance(root_after.payload, Root) and root_after.complete
+    assert root_after.payload.calls == len(calls) >= previous_calls
+    # Every old unknown reservation and completed selection stays immutable.
+    assert all(
+        storage.rows[key] == row for key, row in saved.items() if key != (7, "a" * 64)
+    )
+    if not interrupted:
+        assert result.cache_hits > 0 and len(calls) == previous_calls
 
 
 def test_small_input_uses_no_model_requests(monkeypatch):

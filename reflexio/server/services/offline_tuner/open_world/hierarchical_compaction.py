@@ -79,7 +79,8 @@ def compress_session_evidence(
     the compressor. The source reader still owns prefix completeness and scope.
     Supply its already-read canonical trajectory, including empty terminal
     requests; the final source identity binds that verified cutover.
-    Callers must use a new protocol receipt namespace, not legacy v6 checkpoints.
+    Callers must use the shared protocol receipt namespace, not checkpoints
+    from the older native-only compactor. Shared v6 plans remain witness-bound.
     """
     if not document.spans or not through_request_id:
         raise CompressionError("Session compression requires frozen source evidence")
@@ -191,7 +192,12 @@ def compress_session_evidence(
         )
     else:
         plan = plan_with_client(sources, **options)
-        journal.bind(plan)
+        plan = journal.bind(
+            plan,
+            legacy_plan=lambda: plan_with_client(
+                sources, **options, _admission_version="v6"
+            ),
+        )
         with journal.provider_scope():
             result = plan.execute(
                 before_call=before_call,

@@ -1,0 +1,116 @@
+[
+  {
+    "policy": "extraction",
+    "small": true,
+    "witness": "bbc249e1c898d3b739b018e3ff07331ac78933a4851c2a0398be2207b5ec9fee",
+    "sections": 0,
+    "calls_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "packet_hash": "75d44f03cc1681326f83d8347eaa08ef8201610fc7226ed3f7791efcf0fc399e",
+    "saved_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "saved": {}
+  },
+  {
+    "policy": "extraction",
+    "small": false,
+    "witness": "3f4d0e84deb756efc4684d87f703ee4978ff961adcf4514a20fd12be131e91b8",
+    "sections": 2,
+    "calls_hash": "a972d8e4cf5c849f21a61edd9d68e409e129fda711a4329dac47b071af9b4095",
+    "packet_hash": "a398938b3a3e531d7b3f75bb3d9965a9b58d950534c387c9ad00da41db42a317",
+    "saved_hash": "52f7f79a4d890820009db0d8d94a9897d4a147e7968698b0dd6bafe6165d7783",
+    "saved": {
+      "16191dacc0898c483770ebf9ac2ba68d35d64beb34f60889052eeea3baa5074f": {
+        "overview": "",
+        "points": [
+          {
+            "category": "constraint",
+            "detail": "Original evidence.",
+            "evidence_refs": [
+              "e1"
+            ]
+          }
+        ],
+        "unresolved": [],
+        "omissions": [],
+        "omission_counts": {
+          "capacity_points": 0,
+          "unseen_reference_groups": 0
+        }
+      },
+      "7f1912368f43cf145e78c0ca63f740404fefb7196af3e45f80466196549f37d0": {
+        "overview": "",
+        "points": [
+          {
+            "category": "constraint",
+            "detail": "Original evidence.",
+            "evidence_refs": [
+              "e1"
+            ]
+          }
+        ],
+        "unresolved": [],
+        "omissions": [],
+        "omission_counts": {
+          "capacity_points": 0,
+          "unseen_reference_groups": 0
+        }
+      }
+    }
+  },
+  {
+    "policy": "offline_tuning",
+    "small": true,
+    "witness": "bf099f3b4ad189d2a5f3a74a2b829fb675b8c56ce604f2566286a1f1c9971c8e",
+    "sections": 0,
+    "calls_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "packet_hash": "75d44f03cc1681326f83d8347eaa08ef8201610fc7226ed3f7791efcf0fc399e",
+    "saved_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "saved": {}
+  },
+  {
+    "policy": "offline_tuning",
+    "small": false,
+    "witness": "7e54df0b7dff1900b67939821bd07db102b98ce604efc91dc88504b99a26460f",
+    "sections": 2,
+    "calls_hash": "e9e4b84be9b1343d2a62896defa82b08a05d4b534f0793b8152265c343c578b0",
+    "packet_hash": "a398938b3a3e531d7b3f75bb3d9965a9b58d950534c387c9ad00da41db42a317",
+    "saved_hash": "74bbf846a245e4428e04afee074c43b77490df6471e3f189d16970f0670a8c5b",
+    "saved": {
+      "68351169a6c6238785b8b3a6b896da17764c565aac5740521a5a0122d652ace7": {
+        "overview": "",
+        "points": [
+          {
+            "category": "constraint",
+            "detail": "Original evidence.",
+            "evidence_refs": [
+              "e1"
+            ]
+          }
+        ],
+        "unresolved": [],
+        "omissions": [],
+        "omission_counts": {
+          "capacity_points": 0,
+          "unseen_reference_groups": 0
+        }
+      },
+      "09e3b8a2287f4f3b8f480b70bd7ce54009597ea7fa25a607a09c9323cfd9ea8e": {
+        "overview": "",
+        "points": [
+          {
+            "category": "constraint",
+            "detail": "Original evidence.",
+            "evidence_refs": [
+              "e1"
+            ]
+          }
+        ],
+        "unresolved": [],
+        "omissions": [],
+        "omission_counts": {
+          "capacity_points": 0,
+          "unseen_reference_groups": 0
+        }
+      }
+    }
+  }
+]
