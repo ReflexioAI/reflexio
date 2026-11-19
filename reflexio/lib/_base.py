@@ -204,18 +204,11 @@ class ReflexioBase:
         if not hasattr(self, "_query_reformulator"):
             from reflexio.server.services.pre_retrieval import QueryReformulator
 
-            # Resolve pre_retrieval_model_name: config override → site var → auto-detect
-            model_setting = SiteVarManager().get_site_var("llm_model_setting")
-            site_var = model_setting if isinstance(model_setting, dict) else {}
             config = self.request_context.configurator.get_config()
-            config_llm_config = config.llm_config if config else None
-            api_key_config = config.api_key_config if config else None
-
             pre_retrieval_model_name = resolve_model_name(
                 ModelRole.PRE_RETRIEVAL,
-                site_var_value=site_var.get("pre_retrieval_model_name"),
-                llm_config=config_llm_config,
-                api_key_config=api_key_config,
+                llm_config=config.llm_config if config else None,
+                api_key_config=config.api_key_config if config else None,
             )
 
             self._query_reformulator = QueryReformulator(

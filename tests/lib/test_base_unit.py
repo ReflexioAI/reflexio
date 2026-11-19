@@ -166,8 +166,7 @@ class TestGetQueryReformulator:
         """Handles None config gracefully — auto-detects model from available API keys."""
         base = _make_base()
         as_mock(base.request_context.configurator.get_config).return_value = None
-        # Site var also returns nothing for pre_retrieval_model_name
-        mock_svm_cls.return_value.get_site_var.return_value = {}
+        mock_svm_cls.side_effect = AssertionError("Reformulation read site variables")
 
         reformulator = base._get_query_reformulator()
 
@@ -175,7 +174,7 @@ class TestGetQueryReformulator:
         call_kwargs = mock_reformulator_cls.call_args[1]
         assert call_kwargs["llm_client"] is base.llm_client
         assert call_kwargs["prompt_manager"] is base.request_context.prompt_manager
-        # Auto-detects model from available API keys (no config, no site var)
+        # Auto-detects a model from available API keys.
         assert call_kwargs["model_name"] is not None
 
 

@@ -211,7 +211,7 @@ def _run_unified_search(
         llm_client (LiteLLMClient): Shared LLM client instance
         prompt_manager (PromptManager): Prompt manager for query reformulator
         pre_retrieval_model_name (str, optional): Model name override for query reformulation.
-            Caller should resolve this from config and/or site vars.
+            Caller should resolve this from organization configuration or provider defaults.
 
     Returns:
         UnifiedSearchResponse: Combined results from all entity types
@@ -801,12 +801,6 @@ def _run_phase_a(
             callers can distinguish a real failure from a mode that never
             needed an embedding.
     """
-    reformulator = QueryReformulator(
-        llm_client=llm_client,
-        prompt_manager=prompt_manager,
-        model_name=pre_retrieval_model_name,
-    )
-
     # Query reformulation (rewrite() handles all exceptions internally)
     with profile_step(
         "search.reformulate",
@@ -814,6 +808,11 @@ def _run_phase_a(
         has_conversation_history=bool(conversation_history),
     ):
         if enable_reformulation:
+            reformulator = QueryReformulator(
+                llm_client=llm_client,
+                prompt_manager=prompt_manager,
+                model_name=pre_retrieval_model_name,
+            )
             reformulation = reformulator.rewrite(query, conversation_history)
         else:
             reformulation = ReformulationResult(standalone_query=query)
