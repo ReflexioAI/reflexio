@@ -16,6 +16,7 @@ Supported shapes:
 | `local-cli/claude-code`                  | Claude Code's configured default    |
 | `local-cli/codex/your-native-model`      | Explicit Codex model                |
 | `local-cli/opencode/provider/model#high` | Explicit OpenCode model and variant |
+| `local-cli/opencode/#high`               | OpenCode's default model and an explicit variant |
 
 A host-only reference delegates to the CLI's own default. An explicit suffix
 `/default` is the literal model ID `default`; it is not a default-selection
@@ -28,8 +29,10 @@ Native OpenCode discovers declared options from successful `run --help` output
 on either stdout or stderr. A CLI declaring `--standalone` receives the full
 `provider/model#variant` reference with its private-server flag. The recognized
 `--attach`/`--variant` contract receives separate model and variant arguments;
-an empty explicit component terminates selection before generation or fallback. A host-only reference
-supplies neither argument. Discovery and execution share the original deadline.
+a missing variant or whitespace-only explicit model terminates selection before
+model execution. A leading `#` selects a variant while delegating the model to
+OpenCode. This form requires the CLI to advertise `--variant`. A host-only
+reference supplies neither argument. Discovery and execution share the original deadline.
 Model and variant values are bound as `--name=value`, so option-shaped text
 cannot select another server or alter other invocation flags.
 

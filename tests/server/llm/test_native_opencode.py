@@ -435,7 +435,7 @@ MODERN = COMMON + "GLOBAL FLAGS\n  --standalone   Run with a private server\n"
 @pytest.mark.unit
 @pytest.mark.parametrize("help_text,private", [(LEGACY, False), (MODERN, True)])
 def test_known_option_declarations_select_native_contract(help_text, private):
-    assert native._uses_private_server(help_text) is private
+    assert ("--standalone" in native._run_options(help_text)) is private
 
 
 @pytest.mark.unit
@@ -452,7 +452,7 @@ def test_known_option_declarations_select_native_contract(help_text, private):
 )
 def test_unknown_help_cannot_become_a_protocol_fallback(help_text):
     with pytest.raises(native.OpenCodeCLIError, match="capabilities"):
-        native._uses_private_server(help_text)
+        native._run_options(help_text)
 
 
 @pytest.mark.unit
@@ -507,7 +507,9 @@ def test_discovery_and_execution_spend_one_original_deadline(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("model", ["private-canary#", "#private-canary", "model# \t"])
+@pytest.mark.parametrize(
+    "model", ["private-canary#", "#", "model# \t", " #private-canary"]
+)
 def test_legacy_empty_variant_components_refuse_before_generation(monkeypatch, model):
     dispatch = Mock(return_value=subprocess.CompletedProcess([], 0, "", LEGACY))
     monkeypatch.setattr(native, "run_native_cli", dispatch)
@@ -523,6 +525,46 @@ def test_legacy_empty_variant_components_refuse_before_generation(monkeypatch, m
     assert dispatch.call_count == 1
     assert dispatch.call_args.args[0][-2:] == ["run", "--help"]
     assert not Path(dispatch.call_args.kwargs["cwd"]).exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("capabilities", [LEGACY, MODERN + "\n--variant"])
+def test_variant_can_leave_model_selection_to_opencode(monkeypatch, capabilities):
+    dispatch = Mock(
+        side_effect=[
+            subprocess.CompletedProcess([], 0, capabilities, ""),
+            subprocess.CompletedProcess(
+                [], 0, '{"type":"text","text":"owned reply"}', ""
+            ),
+        ]
+    )
+    monkeypatch.setattr(native, "run_native_cli", dispatch)
+    result = native.run_opencode(
+        cli_path=sys.executable,
+        system_prompt="",
+        dialogue="owned task",
+        model="#high",
+        deadline=time.monotonic() + 1,
+    )
+    assert result.success and dispatch.call_count == 2
+    argv = dispatch.call_args.args[0]
+    assert "--variant=high" in argv
+    assert not any(arg.startswith("--model") for arg in argv)
+
+
+@pytest.mark.unit
+def test_variant_only_requires_an_advertised_variant_option(monkeypatch):
+    dispatch = Mock(return_value=subprocess.CompletedProcess([], 0, MODERN, ""))
+    monkeypatch.setattr(native, "run_native_cli", dispatch)
+    with pytest.raises(ProviderRequestGuardError, match="variant without a model"):
+        native.run_opencode(
+            cli_path=sys.executable,
+            system_prompt="",
+            dialogue="owned task",
+            model="#high",
+            deadline=time.monotonic() + 1,
+        )
+    assert dispatch.call_count == 1
 
 
 @pytest.mark.unit
@@ -671,7 +713,7 @@ def test_expiry_after_parsing_never_returns_or_replays(monkeypatch, phase):
             "",
         )
 
-    target = "_uses_private_server" if phase == "help" else "parse_output"
+    target = "_run_options" if phase == "help" else "parse_output"
     original = getattr(native, target)
 
     def slow_parse(*args):

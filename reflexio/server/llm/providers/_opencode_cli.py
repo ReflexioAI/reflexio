@@ -48,7 +48,7 @@ def resolve_executable(cli_path: str) -> Path:
     raise OpenCodeCLIError("OpenCode selected executable is unavailable")
 
 
-def _uses_private_server(help_text: str) -> bool:
+def _run_options(help_text: str) -> set[str]:
     """Recognize declared CLI capabilities, never mentions in diagnostic prose."""
     options = set(
         re.findall(
@@ -58,10 +58,8 @@ def _uses_private_server(help_text: str) -> bool:
     )
     if not {"--model", "--agent", "--format", "--title"} <= options:
         raise OpenCodeCLIError("OpenCode CLI capabilities are unsupported")
-    if "--standalone" in options:
-        return True
-    if {"--attach", "--variant"} <= options:
-        return False
+    if "--standalone" in options or {"--attach", "--variant"} <= options:
+        return options
     raise OpenCodeCLIError("OpenCode CLI capabilities are unsupported")
 
 
@@ -209,7 +207,8 @@ def run_opencode(
             )
             if discovery.returncode != 0:
                 raise OpenCodeCLIError("OpenCode CLI capability discovery failed")
-            private = _uses_private_server(discovery.stdout + "\n" + discovery.stderr)
+            options = _run_options(discovery.stdout + "\n" + discovery.stderr)
+            private = "--standalone" in options
             argv = [
                 str(executable),
                 "run",
@@ -223,13 +222,19 @@ def run_opencode(
             if private:
                 argv.append("--standalone")
             if model:
-                if not private and "#" in model:
-                    selected, variant = model.split("#", 1)
-                    if not selected.strip() or not variant.strip():
+                selected, separator, variant = model.partition("#")
+                if separator and (not private or not selected):
+                    if (selected and not selected.strip()) or not variant.strip():
                         reject_native_selection(
                             "OpenCode model variant reference is invalid"
                         )
-                    argv += [f"--model={selected}", f"--variant={variant}"]
+                    if "--variant" not in options:
+                        reject_native_selection(
+                            "Selected OpenCode CLI does not support a variant without a model"
+                        )
+                    if selected:
+                        argv.append(f"--model={selected}")
+                    argv.append(f"--variant={variant}")
                 else:
                     argv.append(f"--model={model}")
             result = run_native_cli(
