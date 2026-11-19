@@ -1,6 +1,7 @@
 """Local binding preserves existing installation and storage ownership."""
 
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -115,12 +116,74 @@ def test_binding_refuses_an_unverified_sqlite_file(installation, ownership):
     before_cfg, before_db = original.read_bytes(), db.read_bytes()
 
     with pytest.raises(
-        LocalInstanceError, match="different organization|no owner claim"
+        LocalInstanceError, match="different organization|no matching creation proof"
     ):
         bind_local_instance()
     assert not list((installation / "instances").glob("*.json"))
     assert original.read_bytes() == before_cfg
     assert db.read_bytes() == before_db
+
+
+@pytest.mark.parametrize(
+    "case", ["original", "copy", "foreign creator", "foreign rows"]
+)
+def test_explicit_file_claim_requires_untouched_creation_scope(
+    installation, monkeypatch, case
+):
+    db = installation / "data" / "original.db"
+    store = SQLiteStorage(
+        org_id="other" if case == "foreign creator" else "plugin", db_path=str(db)
+    )
+    with store.conn:
+        store.conn.execute("CREATE TABLE retained (org_id TEXT NOT NULL, body TEXT)")
+        store.conn.execute(
+            "INSERT INTO retained VALUES (?, 'existing content')",
+            ("other" if case == "foreign rows" else "plugin",),
+        )
+    store.conn.close()
+    if case == "copy":
+        copied = db.with_name("copied.db")
+        shutil.copyfile(db, copied)
+        db = copied
+    config = _config(installation, "plugin", {"type": "sqlite", "db_path": str(db)})
+    before_config, before_db = config.read_bytes(), db.read_bytes()
+
+    def snapshot():
+        with closing(sqlite3.connect(db)) as conn:
+            return (
+                conn.execute("SELECT org_id, body FROM retained").fetchall(),
+                conn.execute(
+                    "SELECT authority FROM _learning_policy_authority"
+                ).fetchall(),
+                conn.execute(
+                    "SELECT name, sql FROM sqlite_schema "
+                    "WHERE tbl_name <> '_dataset_identity' ORDER BY name"
+                ).fetchall(),
+            )
+
+    before_data = snapshot()
+    if case == "original":
+        assert bind_local_instance() == "plugin"
+        assert snapshot() == before_data
+        with closing(sqlite3.connect(db)) as conn:
+            assert conn.execute("SELECT org_id FROM _dataset_identity").fetchall() == [
+                ("plugin",)
+            ]
+        monkeypatch.delenv("REFLEXIO_DEFAULT_ORG_ID")
+        assert configured_local_org_id() == "plugin"
+        claimed = db.read_bytes()
+        assert bind_local_instance() == "plugin"
+        assert db.read_bytes() == claimed
+    else:
+        with pytest.raises(
+            LocalInstanceError,
+            match="no matching creation proof|different organization",
+        ):
+            bind_local_instance()
+        assert not list((installation / "instances").glob("*.json"))
+        assert snapshot() == before_data
+        assert db.read_bytes() == before_db
+    assert config.read_bytes() == before_config
 
 
 def test_two_env_addresses_keep_separate_instances_in_one_home(

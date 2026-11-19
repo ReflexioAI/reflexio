@@ -335,6 +335,106 @@ def _provenance(path: str, org_id: str, nonce: str) -> str:
     ).hexdigest()
 
 
+def claim_existing_first_dataset(path: Path, org_id: str) -> None:
+    """Establish the namespace of an explicitly selected, stopped SQLite file.
+
+    Only the retained first-creation proof can authorize this metadata write.
+    The storage constructor, schema migrations and policy activation stay bypassed.
+    """
+    from ._dataset_path import (
+        IDENTITY_CLAIM_TABLE,
+        DatasetIdentityError,
+        _claim_or_read_identity_db,
+        _table_exists,
+        validate_dataset_identity,
+    )
+    from ._extraction_stream import SQLiteStreamSQL
+
+    validate_dataset_identity(org_id)
+    if not path.is_absolute() or not path.is_file():
+        raise DatasetIdentityError(
+            "Select the existing SQLite file by its absolute path."
+        )
+    missing_proof = (
+        "The SQLite dataset has no matching creation proof. "
+        "Use data upgrade-local for supported historical datasets before binding."
+    )
+    try:
+        target = path.resolve(strict=True)
+        original = target.stat()
+
+        def check_target() -> None:
+            current = path.stat()
+            if (current.st_dev, current.st_ino) != (original.st_dev, original.st_ino):
+                raise DatasetIdentityError(
+                    "The selected SQLite file changed during binding."
+                )
+
+        conn = sqlite3.connect(target.as_uri() + "?mode=rw", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            check_target()
+            if _table_exists(conn, IDENTITY_CLAIM_TABLE):
+                if _upgrade_identity(conn) != org_id:
+                    raise DatasetIdentityError(
+                        "The SQLite dataset belongs to a different organization."
+                    )
+                return  # Another maintenance operation established our claim.
+            if not _table_exists(conn, "_learning_policy_authority"):
+                raise DatasetIdentityError(missing_proof)
+            authority = LearningPolicyAuthority.from_dict(
+                SQLiteStreamSQL(conn).read_learning_policy_authority()
+            )
+            if (
+                authority.initialization_kind != "first_dataset"
+                or authority.phase != "open"
+                or authority.provenance_sha256
+                != _provenance(str(target), org_id, authority.initialization_nonce)
+            ):
+                raise DatasetIdentityError(missing_proof)
+            # Explicit SQLite paths historically allowed several organizations.
+            # Inspect stored labels in this transaction before making a claim.
+            # Virtual indexes are derived and can require an unloaded SQLite
+            # module. The ordinary tables own the persisted scope.
+            for (name,) in conn.execute(
+                "SELECT name FROM sqlite_schema "
+                "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' "
+                "AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'"
+            ).fetchall():
+                if (
+                    conn.execute(
+                        "SELECT 1 FROM pragma_table_xinfo(?) "
+                        "WHERE name = 'org_id' COLLATE NOCASE",
+                        (name,),
+                    ).fetchone()
+                    is None
+                ):
+                    continue
+                if conn.execute(
+                    f"SELECT 1 FROM {_owned_identifier(name)} "  # noqa: S608 -- Quoted catalog identifier.
+                    "WHERE org_id IS NOT NULL AND org_id <> '' "
+                    "AND org_id COLLATE BINARY <> ? LIMIT 1",
+                    (org_id,),
+                ).fetchone():
+                    raise DatasetIdentityError(
+                        "The selected SQLite file contains a different organization's data."
+                    )
+            if _claim_or_read_identity_db(conn, org_id) != org_id:
+                raise DatasetIdentityError(
+                    "The SQLite dataset owner changed during binding."
+                )
+            check_target()
+            conn.commit()
+        finally:
+            conn.close()
+        check_target()
+    except (sqlite3.Error, OSError, ValueError, LearningTransitionBlockedError) as exc:
+        raise DatasetIdentityError(
+            "Could not verify ownership of the selected SQLite dataset."
+        ) from exc
+
+
 def _retain_creation(conn: sqlite3.Connection, path: str, org_id: str) -> None:
     nonce = uuid.uuid4().hex
     root = LearningPolicyAuthority(

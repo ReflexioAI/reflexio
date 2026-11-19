@@ -97,9 +97,12 @@ def _verify_bound_config(org_id: str) -> None:
         _verify_sqlite(org_id, config.storage_config.db_path)
 
 
-def _verify_sqlite(org_id: str, db_path: str | None) -> None:
+def _verify_sqlite(
+    org_id: str, db_path: str | None, *, establish_claim: bool = False
+) -> None:
     from reflexio.server.services.storage.sqlite_storage._dataset_path import (
         DatasetIdentityError,
+        UnclaimedDatasetError,
         verify_existing_dataset_owner,
     )
 
@@ -108,7 +111,16 @@ def _verify_sqlite(org_id: str, db_path: str | None) -> None:
             "A bound SQLite dataset requires its saved absolute path."
         )
     try:
-        verify_existing_dataset_owner(Path(db_path), org_id)
+        try:
+            verify_existing_dataset_owner(Path(db_path), org_id)
+        except UnclaimedDatasetError:
+            if not establish_claim:
+                raise
+            from reflexio.server.services.storage.sqlite_storage._learning_policy_authority import (
+                claim_existing_first_dataset,
+            )
+
+            claim_existing_first_dataset(Path(db_path), org_id)
     except DatasetIdentityError as exc:
         raise LocalInstanceError(str(exc)) from exc
 
@@ -157,7 +169,7 @@ def bind_local_instance() -> str:
 
 def _pin_sqlite(org_id: str, db_path: str | None) -> None:
     if db_path is not None:
-        _verify_sqlite(org_id, db_path)
+        _verify_sqlite(org_id, db_path, establish_claim=True)
         return
 
     from reflexio.models.config_schema import (

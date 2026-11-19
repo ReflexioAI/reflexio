@@ -321,8 +321,9 @@ binding, once every launcher that uses the installation supports saved
 bindings. If an older launcher still supplies the setting, the organization
 must match.
 
-The command verifies the existing SQLite owner claim. For installations that
-use an implicit SQLite path, it pins the verified file in the existing config.
+The command verifies the existing SQLite owner claim. For a database with a
+matching creation record, the command can establish the claim in place. For
+an implicit SQLite path, it pins the verified file in the existing config.
 If a supported historical file has no owner claim, qualify it separately
 with `reflexio data upgrade-local` using its exact path and known organization.
 
