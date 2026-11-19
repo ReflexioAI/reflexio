@@ -266,11 +266,13 @@ export function serializeConfig(config: ReflexioConfig) {
 
 	const cleanLlm = (llm: LLMConfig | null): LLMConfig | null => {
 		if (!llm) return null;
+		const { evaluation_model_name, ...otherModels } = llm;
+		const evaluationModel = clean(evaluation_model_name);
 		const out: LLMConfig = {
-			...llm,
+			...otherModels,
+			...(evaluationModel != null ? { evaluation_model_name: evaluationModel } : {}),
 			should_run_model_name: clean(llm.should_run_model_name),
 			generation_model_name: clean(llm.generation_model_name),
-			evaluation_model_name: clean(llm.evaluation_model_name),
 			embedding_model_name: clean(llm.embedding_model_name),
 			pre_retrieval_model_name: clean(llm.pre_retrieval_model_name),
 			generation_timeout_seconds: clean(llm.generation_timeout_seconds),

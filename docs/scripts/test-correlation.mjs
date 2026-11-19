@@ -335,6 +335,13 @@ const gatewaySaved = configSchema.serializeConfig(gatewayConfig);
 assert.equal("model" in gatewaySaved.api_key_config.custom_endpoint, false);
 assert.equal(gatewaySaved.llm_config.generation_model_name, "openai/chosen");
 assert.equal(gatewaySaved.llm_config.evaluation_model_name, "openai/judge");
+for (const evaluationModel of [undefined, null, " "]) {
+	const inherited = configSchema.serializeConfig({
+		...gatewayConfig,
+		llm_config: { ...gatewayConfig.llm_config, evaluation_model_name: evaluationModel },
+	});
+	assert.equal("evaluation_model_name" in inherited.llm_config, false);
+}
 assert.equal(gatewaySaved.llm_config.should_run_model_name, "openai/check");
 assert.deepEqual(gatewaySaved.opaque, { keep: true });
 assert.throws(
