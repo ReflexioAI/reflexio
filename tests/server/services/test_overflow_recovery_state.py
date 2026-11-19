@@ -8,6 +8,7 @@ import pytest
 
 from reflexio.server.llm.input_budget import InputBudgetConfigurationError
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.services.durable_learning.window_executor import WindowExecutor
 from reflexio.server.services.extraction.history_inputs import HistoricalInputs
 from reflexio.server.services.extraction.resumable_agent import ResumableExtractionAgent
 from reflexio.server.services.playbook.components.reviewer import (
@@ -150,9 +151,10 @@ def _prepare_failed_saved_output(pipeline, monkeypatch, *, kind, cached):
 
 @pytest.mark.parametrize("kind", ["profile", "playbook"])
 @pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("billing_case", ["current", "missing", "legacy_pipeline"])
 @skip_in_precommit
 def test_corrected_saved_output_retry_publishes_and_becomes_discoverably_finalized(
-    recovery_pipeline, monkeypatch, kind, cached
+    recovery_pipeline, monkeypatch, kind, cached, billing_case
 ):
     _, storage, window, _, run, worker, http, stages = _prepare_failed_saved_output(
         recovery_pipeline, monkeypatch, kind=kind, cached=cached
@@ -160,6 +162,26 @@ def test_corrected_saved_output_retry_publishes_and_becomes_discoverably_finaliz
     first = storage.get_agent_run(run.id)
     assert first is not None
     attempts = first.generation_request_snapshot["overflow"]["attempts"]
+    if billing_case != "current":
+        deliver = WindowExecutor.deliver
+
+        def deliver_with_retained_billing(executor, current_window, effects, **kwargs):
+            effects = dict(effects)
+            if billing_case == "missing":
+                effects.pop("billing")
+            else:
+                effects["billing"] = {
+                    **effects["billing"],
+                    "pipeline": current_window.kind,
+                }
+            with storage.commit_scope():
+                storage.conn.execute(
+                    "UPDATE extraction_windows SET effects=? WHERE window_id=?",
+                    (json.dumps(effects), current_window.window_id),
+                )
+            return deliver(executor, current_window, effects, **kwargs)
+
+        monkeypatch.setattr(WindowExecutor, "deliver", deliver_with_retained_billing)
     assert worker.drain_org(storage.org_id, 2, 300) == 2
     assert http.get(
         "/api/learning_status", params={"request_id": "legacy-saved"}
@@ -185,6 +207,12 @@ def test_corrected_saved_output_retry_publishes_and_becomes_discoverably_finaliz
         1 if kind == "playbook" else 0
     )
     assert storage.pending_extraction_effects() == []
+    (inventory_run,) = storage.transition_inventory_page("runs").items
+    assert inventory_run.reasons == (
+        ("overflow_requires_inspection", "unreceipted_output")
+        if billing_case == "missing"
+        else ()
+    )
     assert worker.drain_org(storage.org_id, 2, 300) == 0
 
 

@@ -288,6 +288,30 @@ class SQLiteStreamSQL:
         }
         return values[field]
 
+    def transition_window_publication_proof(self) -> str:
+        # Older JSON1 scalar extraction can truncate strings at an escaped NUL.
+        # The first durable-window writer already emitted v1 envelopes. A raw
+        # payload may be readable during recovery but cannot prove this lineage.
+        return (
+            "CASE WHEN json_valid(w.effects) AND json_valid(w.manifest) THEN ("
+            "w.project_id='' AND typeof(w.predecessor)='integer' AND typeof(w.end_seq)='integer' "
+            "AND (w.effects -> '$.acknowledged_window_run_id')=json_quote(r.id) "
+            "AND json_type(w.effects,'$.billing')='object' "
+            "AND json_type(w.effects,'$.version')='integer' "
+            "AND json_extract(w.effects,'$.version')=1 AND json_type(w.effects,'$.skipped')='true' "
+            "AND json_type(w.manifest)='array' AND json_array_length(w.manifest)=0 "
+            "AND json_type(r.generation_request_snapshot,'$.overflow.version')='integer' "
+            "AND json_extract(r.generation_request_snapshot,'$.overflow.version')=1 "
+            "AND (r.generation_request_snapshot -> '$.overflow.checkpoint.stage')=json_quote('recovered') "
+            "AND json_type(r.generation_request_snapshot,'$.overflow.source_digest')='text' "
+            "AND length(r.generation_request_snapshot -> '$.overflow.source_digest')=66 "
+            "AND substr(r.generation_request_snapshot -> '$.overflow.source_digest',2,64) NOT GLOB '*[^a-f0-9]*' "
+            "AND json_type(r.committed_output,'$._reflexio_envelope_version')='integer' "
+            "AND json_extract(r.committed_output,'$._reflexio_envelope_version')=1 "
+            "AND json_type(r.committed_output,'$.output')='object' "
+            "AND json_type(r.committed_output,'$.publication') IS NULL) ELSE 0 END"
+        )
+
     def input_lock(self) -> str:
         return ""
 
