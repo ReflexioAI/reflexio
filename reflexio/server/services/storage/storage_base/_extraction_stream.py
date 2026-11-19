@@ -2037,10 +2037,11 @@ class ExtractionStreamStore:
             if row["effects_done"]:
                 return
             effects = decoded(row["effects"]) or {}
+            retained_billing = effects.get("billing")
             summary = {
                 "version": 1,
                 "skipped": True,
-                "billing": effects.get("billing"),
+                "billing": retained_billing,
                 "request_ids": effects.get("request_ids", []),
             }
             run_id = f"window:{window_id}"
@@ -2053,15 +2054,17 @@ class ExtractionStreamStore:
                 and not row["invalidated"]
                 and row["derived_claimed"]
                 and effects.get("extraction_run_ids") == [run_id]
-                and delivered_billing is not None
-                and delivered_billing == effects.get("billing")
+                and isinstance(delivered_billing, dict)
+                and isinstance(retained_billing, dict)
+                and delivered_billing == retained_billing
             ):
                 from reflexio.server.services.extraction.publication_receipts import (
-                    window_handoff_facts,
+                    window_delivery_facts,
                 )
 
                 try:
-                    window_handoff_facts(row["kind"], delivered_billing)
+                    window_delivery_facts(row["kind"], delivered_billing)
+                    window_delivery_facts(row["kind"], retained_billing)
                 except ValueError:
                     # Compact the ACK as before, but do not prove closure.
                     pass

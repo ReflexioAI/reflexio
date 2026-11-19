@@ -151,10 +151,10 @@ def _prepare_failed_saved_output(pipeline, monkeypatch, *, kind, cached):
 
 @pytest.mark.parametrize("kind", ["profile", "playbook"])
 @pytest.mark.parametrize("cached", [False, True])
-@pytest.mark.parametrize("retain_billing", [True, False])
+@pytest.mark.parametrize("billing_case", ["current", "missing", "legacy_pipeline"])
 @skip_in_precommit
 def test_corrected_saved_output_retry_publishes_and_becomes_discoverably_finalized(
-    recovery_pipeline, monkeypatch, kind, cached, retain_billing
+    recovery_pipeline, monkeypatch, kind, cached, billing_case
 ):
     _, storage, window, _, run, worker, http, stages = _prepare_failed_saved_output(
         recovery_pipeline, monkeypatch, kind=kind, cached=cached
@@ -162,23 +162,26 @@ def test_corrected_saved_output_retry_publishes_and_becomes_discoverably_finaliz
     first = storage.get_agent_run(run.id)
     assert first is not None
     attempts = first.generation_request_snapshot["overflow"]["attempts"]
-    if not retain_billing:
+    if billing_case != "current":
         deliver = WindowExecutor.deliver
 
-        def deliver_without_billing(executor, current_window, effects, **kwargs):
+        def deliver_with_retained_billing(executor, current_window, effects, **kwargs):
+            effects = dict(effects)
+            if billing_case == "missing":
+                effects.pop("billing")
+            else:
+                effects["billing"] = {
+                    **effects["billing"],
+                    "pipeline": current_window.kind,
+                }
             with storage.commit_scope():
                 storage.conn.execute(
-                    "UPDATE extraction_windows SET effects=json_remove(effects,'$.billing') WHERE window_id=?",
-                    (current_window.window_id,),
+                    "UPDATE extraction_windows SET effects=? WHERE window_id=?",
+                    (json.dumps(effects), current_window.window_id),
                 )
-            return deliver(
-                executor,
-                current_window,
-                {key: value for key, value in effects.items() if key != "billing"},
-                **kwargs,
-            )
+            return deliver(executor, current_window, effects, **kwargs)
 
-        monkeypatch.setattr(WindowExecutor, "deliver", deliver_without_billing)
+        monkeypatch.setattr(WindowExecutor, "deliver", deliver_with_retained_billing)
     assert worker.drain_org(storage.org_id, 2, 300) == 2
     assert http.get(
         "/api/learning_status", params={"request_id": "legacy-saved"}
@@ -206,7 +209,9 @@ def test_corrected_saved_output_retry_publishes_and_becomes_discoverably_finaliz
     assert storage.pending_extraction_effects() == []
     (inventory_run,) = storage.transition_inventory_page("runs").items
     assert inventory_run.reasons == (
-        () if retain_billing else ("overflow_requires_inspection", "unreceipted_output")
+        ("overflow_requires_inspection", "unreceipted_output")
+        if billing_case == "missing"
+        else ()
     )
     assert worker.drain_org(storage.org_id, 2, 300) == 0
 

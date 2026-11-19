@@ -290,6 +290,8 @@ class SQLiteStreamSQL:
 
     def transition_window_publication_proof(self) -> str:
         # Older JSON1 scalar extraction can truncate strings at an escaped NUL.
+        # The first durable-window writer already emitted v1 envelopes. A raw
+        # payload may be readable during recovery but cannot prove this lineage.
         return (
             "CASE WHEN json_valid(w.effects) AND json_valid(w.manifest) THEN ("
             "w.project_id='' AND typeof(w.predecessor)='integer' AND typeof(w.end_seq)='integer' "

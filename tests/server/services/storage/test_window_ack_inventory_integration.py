@@ -19,6 +19,9 @@ pytestmark = pytest.mark.integration
         "missing_billing",
         "null_billing",
         "malformed_billing",
+        "wrong_billing_pipeline",
+        "integer_billing_flag",
+        "fractional_billing_type",
         "billing_not_delivered",
         "different_billing",
         "billing_lost_after_ack",
@@ -39,6 +42,7 @@ pytestmark = pytest.mark.integration
         "invalidated",
         "retired",
         "fresh_extracted",
+        "pre_envelope_output",
         "unknown_version",
         "mismatched_output",
     ],
@@ -55,6 +59,8 @@ def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(
     window_id = "compatibility-window"
     run_id = f"window:{window_id}"
     output = {"_reflexio_envelope_version": 1, "output": {}}
+    if case == "pre_envelope_output":
+        output = {"profiles": []}
     if case == "mismatched_output":
         output["publication"] = {"id": "wrong-output"}
     stage = {"retired": "retired", "fresh_extracted": "extracted"}.get(
@@ -86,11 +92,17 @@ def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(
     }
     if case == "malformed_billing":
         billing["input_tokens"] = -1
+    if case == "wrong_billing_pipeline":
+        billing["pipeline"] = "playbook"
     effects = {
         "extraction_run_ids": ["wrong-run" if case == "wrong_effect_run" else run_id]
     }
     if case != "missing_billing":
         effects["billing"] = None if case == "null_billing" else billing
+    if case == "integer_billing_flag":
+        effects["billing"] = {**billing, "platform_llm": 0}
+    if case == "fractional_billing_type":
+        effects["billing"] = {**billing, "prompt_tokens": 2.0}
     if case == "historical_compacted":
         effects = {"version": 1, "skipped": True}
     with storage.commit_scope():
