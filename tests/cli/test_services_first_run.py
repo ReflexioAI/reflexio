@@ -60,7 +60,7 @@ class TestEnsureLlmConfigured:
         mock_emb.assert_not_called()
 
     def test_prompts_when_no_providers_and_tty(self, tmp_path: Path) -> None:
-        """No keys + interactive stdin → both wizard helpers run, env reloads with override=True (file wins)."""
+        """Both prompts run, and unchanged dotenv settings are never replayed."""
         env = tmp_path / ".env"
         env.write_text("")
         with (
@@ -82,7 +82,7 @@ class TestEnsureLlmConfigured:
             _ensure_llm_configured(env)
         mock_llm.assert_called_once_with(env)
         mock_emb.assert_called_once_with(env, "openai")
-        mock_load.assert_called_once_with(env, override=True)
+        mock_load.assert_not_called()
 
     def test_wizard_key_reaches_os_environ_after_reload(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -101,10 +101,13 @@ class TestEnsureLlmConfigured:
         # A fresh install ships an empty placeholder already present in the
         # process env; that is exactly what must NOT shadow the file value.
         monkeypatch.setenv("OPENAI_API_KEY", "")
+        monkeypatch.setenv("REFLEXIO_API_KEY", "process-fixture")
+        env.write_text("REFLEXIO_API_KEY=file-fixture\n")
 
         def _write_real_key(_env_path: Path) -> tuple[str, str, str]:
             # Stand in for the wizard's set_env_var: write to the FILE only.
-            env.write_text("OPENAI_API_KEY=sk-real-entered-key\n")
+            with env.open("a") as stream:
+                stream.write("OPENAI_API_KEY=sk-real-entered-key\n")
             return ("OpenAI", "gpt-5.4-mini", "openai")
 
         with (
@@ -127,6 +130,7 @@ class TestEnsureLlmConfigured:
         import os
 
         assert os.environ["OPENAI_API_KEY"] == "sk-real-entered-key"
+        assert os.environ["REFLEXIO_API_KEY"] == "process-fixture"
 
     def test_exits_cleanly_when_no_providers_and_non_tty(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

@@ -169,6 +169,31 @@ def test_ordinary_restart_preserves_database_and_unrelated_raw_fields(
     assert len(launches) == 2
 
 
+def test_explicit_storage_writes_only_to_the_selected_project_dotenv(
+    saved_local_config, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
+    project = tmp_path / ".env"
+    project.write_text("PROJECT_SETTING=project\n")
+    user = tmp_path / "user.env"
+    original = "USER_SETTING=user\n"
+    user.write_text(original)
+    monkeypatch.setenv("REFLEXIO_ENV_FILE", str(user))
+    monkeypatch.setattr(run_services, "run_services", lambda *_: None)
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    args = run_services._build_run_services_parser().parse_args(
+        ["--only", "backend", "--backend-port", str(port), "--no-reload"]
+    )
+
+    run_services.execute(args, storage="sqlite")
+
+    assert 'REFLEXIO_STORAGE="sqlite"' in project.read_text()
+    assert user.read_text() == original
+
+
 def test_real_server_upgrades_before_serving_and_keeps_owned_dataset(
     saved_local_config,
     tmp_path,

@@ -65,18 +65,22 @@ def _read_binding(path: Path) -> str | None:
     return record["org_id"]
 
 
+def _require_explicit_project_selection(address: Path) -> None:
+    user_address = get_env_path().absolute()
+    if address != user_address and _read_binding(_instance_file(user_address)):
+        raise LocalInstanceError(
+            "This project's dotenv needs its own local instance binding. "
+            "Run reflexio config bind-local with the organization's saved name."
+        )
+
+
 def configured_local_org_id() -> str:
     """Resolve the local launcher's namespace for config and storage."""
     reject_removed_env(os.environ, canonical="config bind-local")
     address = local_instance_env_path()
     bound = _read_binding(_instance_file(address))
     if bound is None:
-        user_address = get_env_path().absolute()
-        if address != user_address and _read_binding(_instance_file(user_address)):
-            raise LocalInstanceError(
-                "This project's dotenv needs its own local instance binding. "
-                "Run reflexio config bind-local with the organization's saved name."
-            )
+        _require_explicit_project_selection(address)
         return DEFAULT_ORG_ID
     _verify_bound_config(bound)
     return bound
@@ -147,7 +151,8 @@ def _bind_local_instance(
     )
 
     reject_removed_env(os.environ, canonical="config bind-local")
-    instance = _instance_file(local_instance_env_path())
+    address = local_instance_env_path()
+    instance = _instance_file(address)
     if instance.parent.is_symlink():
         raise LocalInstanceError("Local instance records must not be linked.")
     instance.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -165,6 +170,8 @@ def _bind_local_instance(
             raise LocalInstanceError(
                 "The existing binding belongs to a different organization."
             )
+        if bound is None and selected_org is None:
+            _require_explicit_project_selection(address)
         org_id = bound or (selected_org if selected_org is not None else DEFAULT_ORG_ID)
         if bound is not None:
             _verify_bound_config(bound)

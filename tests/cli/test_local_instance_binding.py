@@ -237,12 +237,56 @@ def test_worker_keeps_project_dotenv_and_its_bound_dataset_together(installation
     assert run(projects[1], worker) == "second self-host-org"
 
 
+def test_worker_inherits_the_parent_binding_when_project_dotenv_reappears(
+    installation, monkeypatch
+):
+    from reflexio.cli.run_services import build_backend_service
+
+    monkeypatch.chdir(installation.parent)
+    monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
+    policy = {"type": "postgres", "db_url": "postgresql://local:fixture@localhost/db"}
+    for org in ("project", "user"):
+        _config(installation, org, policy)
+    assert bind_local_instance("user") == "user"
+    dotenv = installation.parent / ".env"
+    dotenv.write_text("REFLEXIO_PROJECT_TEST_MARKER=project\n")
+    assert bind_local_instance("project") == "project"
+    dotenv.unlink()
+
+    backend = build_backend_service({"backend": 8061}, workers=2, reload=False)
+    assert backend.env is not None
+    dotenv.write_text("REFLEXIO_PROJECT_TEST_MARKER=replacement\n")
+    result = subprocess.run(  # noqa: S603 -- isolated worker and fixture settings.
+        [
+            sys.executable,
+            "-c",
+            "import os; from reflexio.server import api, auth; "
+            "app = api.create_app(mount_data_plane=False); "
+            "print(os.environ['REFLEXIO_PROJECT_TEST_MARKER'], "
+            "app.dependency_overrides[auth.default_get_org_id]())",
+        ],
+        cwd=installation.parent,
+        env={
+            **os.environ,
+            **backend.env,
+            "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+            "REFLEXIO_PROJECT_TEST_MARKER": "inherited",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    assert result.stdout.splitlines()[-1] == "inherited user"
+
+
 def test_project_with_a_legacy_user_binding_requires_explicit_selection(
     installation, monkeypatch
 ):
     monkeypatch.chdir(installation.parent)
     policy = {"type": "postgres", "db_url": "postgresql://local:fixture@localhost/db"}
     _config(installation, "plugin", policy)
+    _config(installation, "self-host-org", policy)
     assert bind_local_instance("plugin") == "plugin"
 
     monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
@@ -251,6 +295,10 @@ def test_project_with_a_legacy_user_binding_requires_explicit_selection(
         LocalInstanceError, match="needs its own local instance binding"
     ):
         configured_local_org_id()
+    with pytest.raises(
+        LocalInstanceError, match="needs its own local instance binding"
+    ):
+        bind_local_instance()
     assert bind_local_instance("plugin") == "plugin"
     assert configured_local_org_id() == "plugin"
 

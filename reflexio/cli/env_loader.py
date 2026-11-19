@@ -186,6 +186,14 @@ def local_instance_env_path() -> Path:
     return (selected or user_env_file()).absolute()
 
 
+def local_worker_env() -> dict[str, str]:
+    """Pass the selected launch address and use inherited values in workers."""
+    return {
+        "REFLEXIO_ENV_FILE": str(local_instance_env_path()),
+        "PYTHON_DOTENV_DISABLED": "1",
+    }
+
+
 def _dotenv_disabled() -> bool:
     return os.environ.get("PYTHON_DOTENV_DISABLED", "").casefold() in {
         "1",
@@ -196,7 +204,12 @@ def _dotenv_disabled() -> bool:
     }
 
 
-def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> None:
+def _load_dotenv_pruned(
+    path: Path | StringIO,
+    *,
+    override: bool = False,
+    only_keys: set[str] | None = None,
+) -> None:
     """Load a .env file, treating blank assignments (``KEY=``) as unset.
 
     python-dotenv exports a blank ``KEY=`` line as ``os.environ["KEY"] = ""``
@@ -215,6 +228,7 @@ def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> Non
         path: An existing .env path or in-memory bundled preset.
         override: Passed to ``DotEnv`` resolution and assignment. When False (default) the existing
             process environment wins over the file's values.
+        only_keys: Limit publication to settings explicitly updated by the caller.
     """
     reject_removed_env(os.environ)
     # Preserve python-dotenv's existing opt-out: disabled files cannot supply
@@ -230,6 +244,8 @@ def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> Non
     ).dict()
     reject_removed_env(file_vals)
     for key, value in file_vals.items():
+        if only_keys is not None and key not in only_keys:
+            continue
         # The launch environment selects the user-level file. Assignments in
         # the file cannot retarget later loads, setup writes, or child workers.
         if key == "REFLEXIO_ENV_FILE" or key in TOKENIZER_ENV_OUTPUTS or value is None:

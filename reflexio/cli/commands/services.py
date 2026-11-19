@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from dotenv import dotenv_values
 
 from reflexio.cli import run_services as run_mod
 from reflexio.cli import stop_services as stop_mod
@@ -52,6 +53,7 @@ def _ensure_llm_configured(env_path: Path) -> None:
         typer.Exit: When stdin is not a TTY and no LLM key is configured.
     """
     from reflexio.cli.commands.setup_cmd import (
+        _PROVIDERS,
         _prompt_embedding_provider,
         _prompt_llm_provider,
     )
@@ -102,6 +104,8 @@ def _ensure_llm_configured(env_path: Path) -> None:
         )
         raise typer.Exit(1)
 
+    provider_keys = {provider["env_var"] for provider in _PROVIDERS.values()}
+    before = dotenv_values(env_path, interpolate=False)
     if not has_generation:
         typer.echo(
             "\nWelcome to Reflexio! Let's pick an LLM provider before "
@@ -123,14 +127,12 @@ def _ensure_llm_configured(env_path: Path) -> None:
         )
         _prompt_embedding_provider(env_path, non_embedding_provider)
 
-    # override=True is required here: the wizard wrote the operator's chosen key
-    # to the .env FILE only (via set_env_var), never to os.environ. A fresh
-    # install ships an empty OPENAI_API_KEY placeholder already in os.environ, so
-    # with override=False this reload would skip the (present-but-empty) var and
-    # the key just entered would never reach the process env. For this OSS local
-    # first-run path the file value must win. (The enterprise mode-file path uses
-    # override=False in load_reflexio_env_for_mode and is unaffected.)
-    _load_dotenv_pruned(env_path, override=True)
+    # Publish only the credentials entered by this wizard. Existing process
+    # values, including the local service API key, keep their precedence.
+    after = dotenv_values(env_path, interpolate=False)
+    changed = {key for key in provider_keys if before.get(key) != after.get(key)}
+    if changed:
+        _load_dotenv_pruned(env_path, override=True, only_keys=changed)
     typer.echo()
 
 
@@ -226,7 +228,7 @@ def start(
     ] = 30,
 ) -> None:
     """Start Reflexio services (backend, docs)."""
-    from reflexio.cli.env_loader import get_env_path, load_reflexio_env
+    from reflexio.cli.env_loader import load_reflexio_env, local_instance_env_path
 
     # Load .env BEFORE resolve_storage so env vars from ~/.reflexio/.env
     # (e.g. REFLEXIO_STORAGE=supabase) are visible to the resolution chain.
@@ -238,7 +240,7 @@ def start(
     # current env (no LLM key, or no embedding-capable provider), prompt now
     # so users see a friendly wizard instead of a lifespan traceback.
     if "backend" in selected_services:
-        _ensure_llm_configured(get_env_path())
+        _ensure_llm_configured(local_instance_env_path())
 
     args = argparse.Namespace(
         backend_host=backend_host,

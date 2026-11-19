@@ -328,7 +328,9 @@ setup, CLI commands, and server starts. Later startups use that source's
 saved binding. If your project previously inherited a user-level binding,
 bind its existing organization explicitly from that project directory.
 An already bound installation can retry `reflexio config bind-local`
-without supplying the organization again.
+without supplying the organization again. Local server workers inherit the
+launch settings and binding from their parent. Restart the local backend
+after editing its dotenv file.
 
 The command verifies the existing SQLite owner claim. For a database with a
 matching creation record, the command can establish the claim in place. For

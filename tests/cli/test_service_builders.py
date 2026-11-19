@@ -188,7 +188,10 @@ class TestBuildBackendService:
             {"backend": 8081}, reload=False, app_module="embedded:app"
         )
 
-        assert local.env == {"REFLEXIO_ENV_FILE": str(selected)}
+        assert local.env == {
+            "REFLEXIO_ENV_FILE": str(selected),
+            "PYTHON_DOTENV_DISABLED": "1",
+        }
         assert embedded.env is None
 
     def test_reload_true_adds_reload_flag(self) -> None:
