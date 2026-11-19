@@ -198,7 +198,6 @@ def test_unhealthy_cached_reranker_refresh_retains_its_budget(
         "REFLEXIO_EMBEDDING_SERVICE_URL": shared if attached else None,
         "REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS": milliseconds,
         "REFLEXIO_QUERY_EMBEDDING_SERVICE_URL": query,
-        "REFLEXIO_SEARCH_RERANK_SERVICE_URL": query,
     }.items():
         if value is None:
             monkeypatch.delenv(key, raising=False)

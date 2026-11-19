@@ -48,6 +48,7 @@ EmbeddingProviderMode = Literal["cloud", "local_service", "internal_service", "o
 _ENV_PROVIDER = "REFLEXIO_EMBEDDING_PROVIDER"
 _ENV_SERVICE_URL = "REFLEXIO_EMBEDDING_SERVICE_URL"
 _ENV_QUERY_URL = "REFLEXIO_QUERY_EMBEDDING_SERVICE_URL"
+
 _query_contract_cache: dict[tuple[int, str, str], tuple[str, str, int]] = {}
 _query_contract_lock = threading.Lock()
 _ENV_TIMEOUT_MS = "REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS"
@@ -191,7 +192,10 @@ def cached_inference_service_capabilities() -> InferenceServiceCapabilities | No
 
 
 def resolve_inference_service_capabilities(
-    *, advertised: dict[str, Any] | None = None, service_url: str | None = None
+    *,
+    advertised: dict[str, Any] | None = None,
+    service_url: str | None = None,
+    query_worker: bool = False,
 ) -> InferenceServiceCapabilities:
     """Discover and process-cache both models with one ``/health`` request.
 
@@ -265,6 +269,12 @@ def resolve_inference_service_capabilities(
         reranker_model = body.get("configured_reranker_model")
         if not isinstance(reranker_model, str) or not reranker_model.strip():
             reranker_model = None
+        workload = body.get("workload", "shared")
+        roles = ("query", "search") if query_worker else ("shared", "query", "search")
+        if not isinstance(workload, str) or workload not in roles:
+            raise EmbeddingUnavailableError(
+                "Inference worker advertised an invalid workload"
+            )
         capabilities = InferenceServiceCapabilities(
             configured_model=configured_model.strip(),
             configured_reranker_model=(
@@ -272,7 +282,7 @@ def resolve_inference_service_capabilities(
             ),
             reranker_enabled=body.get("reranker_enabled") is True,
             reranker_ready=body.get("reranker_ready") is True,
-            workload=body.get("workload", "shared"),
+            workload=workload,
         )
         checkpoint()
         _configured_model_cache[cache_key] = capabilities
@@ -412,44 +422,38 @@ def should_use_embedding_service(model: str) -> bool:
 
 def query_embedding_service_url() -> str:
     """Optional isolated query service; an empty value retains shared routing."""
+    reject_removed_env(os.environ, canonical=_ENV_QUERY_URL)
     return env_str(_ENV_QUERY_URL, "").rstrip("/")
-
-
-def search_reranker_service_url() -> str:
-    """Optional search-only reranker; generic reranking keeps shared routing."""
-    return env_str("REFLEXIO_SEARCH_RERANK_SERVICE_URL", "").rstrip("/")
 
 
 def validate_search_reranker_service(
     *, advertised: dict[str, Any] | None = None
 ) -> str:
-    """Bind reserved reranking to immutable models and current operational health.
+    """Resolve search routing from the isolated worker's admitted workload.
 
-    Readiness supplies fresh bounded health. Healthy request-path discovery stays
-    cached; an unhealthy first discovery is retried without changing model identity.
+    The vector contract identifies compatible query embeddings. The workload
+    in its separate health response binds reranking ownership across worker
+    versions. Readiness may refresh operational health without changing that
+    workload or either model identity.
     """
-    endpoint = search_reranker_service_url()
-    if not endpoint:
-        return inference_service_url()
-    if endpoint != query_embedding_service_url() or endpoint == inference_service_url():
-        raise EmbeddingUnavailableError(
-            "Search reranking must use the isolated query worker"
-        )
+    shared_url = inference_service_url()
+    if not query_embedding_service_url():
+        return shared_url
     shared = resolve_inference_service_capabilities()
-    validate_query_embedding_service(shared.configured_model, None)
+    endpoint = validate_query_embedding_service(shared.configured_model, None)
     cached = _configured_model_cache.get((os.getpid(), endpoint))
     isolated = resolve_inference_service_capabilities(
-        advertised=advertised, service_url=endpoint
+        advertised=advertised, service_url=endpoint, query_worker=True
     )
-    if (
-        advertised is None
-        and cached is not None
-        and (
-            isolated.workload != "search"
-            or isolated.configured_model != shared.configured_model
-            or not isolated.reranker_enabled
-            or not isolated.reranker_ready
+    if isolated.workload not in {"query", "search"}:
+        raise EmbeddingUnavailableError(
+            "Query worker did not advertise a valid workload"
         )
+    if (
+        isolated.workload == "search"
+        and advertised is None
+        and cached is not None
+        and not isolated.reranker_ready
     ):
         advertised = _inference_service_health(
             endpoint, seconds=embedding_service_timeout_seconds()
@@ -459,22 +463,23 @@ def validate_search_reranker_service(
             advertised.get("configured_model") != isolated.configured_model
             or advertised.get("configured_reranker_model")
             != isolated.configured_reranker_model
+            or advertised.get("workload") != isolated.workload
         ):
             raise EmbeddingUnavailableError(
-                "Search worker model identity changed; restart API required"
+                "Search worker model or workload changed; restart API required"
             )
-        # Only operational state may refresh; the two model identities remain
-        # bound to this API process even across temporary reranker failures.
+        # Operational health refreshes independently of the admitted workload
+        # and model identities.
         isolated = replace(
             isolated,
-            workload=advertised.get("workload", "shared"),
             reranker_enabled=advertised.get("reranker_enabled") is True,
             reranker_ready=advertised.get("reranker_ready") is True,
         )
         _configured_model_cache[(os.getpid(), endpoint)] = isolated
+    if isolated.workload == "query":
+        return shared_url
     if (
-        isolated.workload != "search"
-        or isolated.configured_model != shared.configured_model
+        isolated.configured_model != shared.configured_model
         or not isolated.reranker_enabled
         or not isolated.reranker_ready
         or not isolated.configured_reranker_model
