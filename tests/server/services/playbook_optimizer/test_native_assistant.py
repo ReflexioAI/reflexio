@@ -81,6 +81,57 @@ def _request(**changes):
     }
 
 
+@pytest.mark.skipif(os.name == "nt", reason="uses an executable POSIX script")
+@pytest.mark.parametrize("model", [None, "provider/model#low"])
+def test_native_opencode_executes_under_sdk_ownership(tmp_path, model):
+    from reflexio.server.services.playbook_optimizer.assistant_webhook import (
+        LocalScriptFailedError,
+    )
+
+    cli = tmp_path / "opencode"
+    cli.write_text(
+        f"#!{sys._base_executable}\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "if sys.argv[2:] == ['--help']:\n"
+        "    print('--model\\n--agent\\n--format\\n--title\\n--attach\\n--variant')\n"
+        "    sys.exit()\n"
+        "work = Path.cwd()\n"
+        "policy = json.loads((work / '.opencode/opencode.json').read_text())\n"
+        "agent = sys.argv[sys.argv.index('--agent') + 1]\n"
+        "reply = [sys.argv[2:], sys.stdin.read(), str(work), os.environ['PWD'], "
+        "policy['agent'][agent]['permission'], os.environ['CLAUDE_SMART_INTERNAL']]\n"
+        "print(json.dumps({'type': 'text', 'text': json.dumps(reply)}))\n",
+        encoding="utf-8",
+    )
+    cli.chmod(0o700)
+    request = _request(protocol="opencode-json", executable=str(cli), model=model)
+    assistant = _compiler(
+        tmp_path,
+        "import json,os\n"
+        f"header=json.loads(os.environ[{HEADER!r}])\n"
+        "assert 'opencode-json' in header['transports']\n"
+        f"print({json.dumps({'native_cli_v1': request})!r})",
+    )
+
+    args, prompt, cwd, pwd, permission, internal = json.loads(assistant([], []))
+    assert prompt == "synthetic system\n\n## Task\nsynthetic task"
+    assert cwd == pwd
+    assert not Path(cwd).exists()
+    assert permission == "deny" and internal == "1"
+    model_flags = [arg for arg in args if arg.startswith(("--model", "--variant"))]
+    assert model_flags == (
+        [] if model is None else ["--model=provider/model", "--variant=low"]
+    )
+
+    invalid = dict(request, model="provider/model#")
+    rejected = _compiler(tmp_path, f"print({json.dumps({'native_cli_v1': invalid})!r})")
+    with pytest.raises(
+        LocalScriptFailedError, match="native assistant execution failed"
+    ):
+        rejected([], [])
+
+
 @pytest.mark.parametrize(
     "changes",
     [

@@ -8,7 +8,6 @@ import re
 import shutil
 import subprocess
 import tempfile
-import time
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +15,6 @@ from reflexio.server.llm._litellm_types import LLMHardTimeoutError
 from reflexio.server.llm._native_cli import (
     native_cli_directory,
     remaining_native_time,
-    request_timeout_seconds,
     run_native_cli,
 )
 from reflexio.server.llm._native_model_ref import reject_native_selection
@@ -150,10 +148,9 @@ def run_opencode(
     system_prompt: str,
     dialogue: str,
     model: str | None,
-    timeout_seconds: float,
+    deadline: float,
 ) -> ParseResult:
     """Launch the actual native executable; retain delegated scratch with its owner."""
-    deadline = time.monotonic() + request_timeout_seconds(timeout_seconds)
     owner = native_cli_directory()
     directory: Path | None = None
     try:

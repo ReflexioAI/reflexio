@@ -38,6 +38,7 @@ from reflexio.server.llm._litellm_types import LLMHardTimeoutError
 from reflexio.server.llm._native_cli import request_timeout_seconds, run_native_cli
 
 from .assistant_native import (
+    NATIVE_ASSISTANT_TRANSPORTS,
     NativeAssistantError,
     NativeAssistantRequest,
     remaining_assistant_time,
@@ -169,7 +170,11 @@ class LocalScriptAssistant:
         env = {
             **os.environ,
             "_REFLEXIO_ASSISTANT_INVOCATION": json.dumps(
-                {"protocol": "native-cli/v1", "deadline_monotonic": deadline}
+                {
+                    "protocol": "native-cli/v1",
+                    "deadline_monotonic": deadline,
+                    "transports": NATIVE_ASSISTANT_TRANSPORTS,
+                }
             ),
         }
         try:

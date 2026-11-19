@@ -443,7 +443,7 @@ def _run_cli_stream(
                 system_prompt=system_prompt,
                 dialogue=dialogue,
                 model=model,
-                timeout_seconds=timeout_seconds,
+                deadline=time.monotonic() + request_timeout_seconds(timeout_seconds),
             )
         except OpenCodeCLIError as exc:
             raise ClaudeCodeCLIError(str(exc)) from None
