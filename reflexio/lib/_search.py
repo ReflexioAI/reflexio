@@ -212,11 +212,13 @@ class SearchMixin(ReflexioBase):
             search_mode=request.search_mode,
         ):
             config = self.request_context.configurator.get_config()
-            pre_retrieval_model_name = resolve_model_name(
-                ModelRole.PRE_RETRIEVAL,
-                llm_config=config.llm_config if config else None,
-                api_key_config=config.api_key_config if config else None,
-            )
+            pre_retrieval_model_name = None
+            if request.enable_reformulation and request.query:
+                pre_retrieval_model_name = resolve_model_name(
+                    ModelRole.PRE_RETRIEVAL,
+                    llm_config=config.llm_config if config else None,
+                    api_key_config=config.api_key_config if config else None,
+                )
             storage = self._get_storage()
             prompt_manager = self.request_context.prompt_manager
             retrieval_floor = config.retrieval_floor if config else None

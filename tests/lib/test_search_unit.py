@@ -19,6 +19,7 @@ from reflexio.models.api_schema.retriever_schema import (
     UnifiedSearchResponse,
 )
 from reflexio.models.api_schema.service_schemas import Interaction, Request
+from reflexio.models.config_schema import SearchMode
 from reflexio.server.tracing import configure_tracer
 
 # ---------------------------------------------------------------------------
@@ -224,8 +225,9 @@ class TestGetRequests:
 
 
 class TestUnifiedSearch:
-    def test_delegation_to_service(self):
-        """Delegates to run_unified_search service function."""
+    @patch("reflexio.lib._search.resolve_model_name")
+    def test_fts_without_reformulation_skips_model_resolution(self, resolve_model):
+        """A provider is unnecessary for full-text search without reformulation."""
         mixin = _make_mixin()
         mixin.llm_client = MagicMock()
         mock_config = MagicMock()
@@ -240,15 +242,18 @@ class TestUnifiedSearch:
             "reflexio.server.services.unified_search_service.run_unified_search",
             return_value=expected_response,
         ) as mock_run:
-            request = UnifiedSearchRequest(query="test query")
+            request = UnifiedSearchRequest(
+                query="test query", search_mode=SearchMode.FTS
+            )
             response = mixin.unified_search(request, org_id="org_1")
 
         assert response.success is True
+        resolve_model.assert_not_called()
         mock_run.assert_called_once()
         call_kwargs = mock_run.call_args[1]
         assert call_kwargs["org_id"] == "org_1"
         assert call_kwargs["llm_client"] is mixin.llm_client
-        assert "pre_retrieval_model_name" in call_kwargs
+        assert call_kwargs["pre_retrieval_model_name"] is None
 
     def test_prepare_span_wraps_setup_before_service_dispatch(self):
         """Emits a setup span before the first phase-A search span."""
