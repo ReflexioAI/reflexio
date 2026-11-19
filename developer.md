@@ -493,8 +493,9 @@ or model-policy change, let in-flight ordinary profile work finish on its
 original runtime, even when no settings need to move.
 
 If you customized the former bundled `llm_model_setting.json`, record the
-effective model for each role and organization before upgrading. Prepare the
-updated policy from those effective choices. Leave already effective
+effective model for each role and organization before upgrading. Keep a copy
+of the old bundled file and each organization's model policy. Prepare the
+updated policy from the effective choices. Leave already effective
 organization settings in place and skip bundled defaults they overrode.
 Stop all old writers, then publish generation and evaluation together through
 the upgraded writer. Reload the policy and verify both resolved models before
@@ -512,9 +513,11 @@ When copying a custom generation default, also set
 if it was different. This includes a provider-selected evaluation default.
 Otherwise evaluation inherits the configured generation model as before.
 The shipped blank defaults require no migration. Source-package retries keep
-their saved model ladder. A rollback of a customized deployment needs its
-previous bundled values and a compatible configuration reconciled with newer
-edits. Reverting the binary alone can lose a distinct evaluator.
+their saved model ladder. To roll back a customized deployment, restore the
+old bundled defaults and reconcile the current organization policy with the
+pre-upgrade copy. Undo generation overrides introduced only by the migration
+so the old runtime can use its original evaluation default. Preserve unrelated
+newer edits and verify both resolved models before resuming work.
 Use the provider prefix shown above (e.g., `anthropic/` for Anthropic models). Set the corresponding API key in your `.env` file.
 
 Retryable physical-request warnings record only the error type, reason and
