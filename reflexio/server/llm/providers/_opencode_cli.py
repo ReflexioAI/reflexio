@@ -33,6 +33,47 @@ class OpenCodeCLIError(RuntimeError):
     """Metadata-only transport failure; never includes captured model/error text."""
 
 
+def _npm_opencode_executable(shim: Path) -> Path | None:
+    """Recognize npm's forwarding-only launcher without running batch code."""
+    if shim.name.lower() != "opencode.cmd" or not shim.is_file():
+        return None
+    local = (
+        shim.parent.name.lower() == ".bin"
+        and shim.parent.parent.name.lower() == "node_modules"
+    )
+    prefix = ("..",) if local else ("node_modules",)
+    suffix = ("opencode-ai", "bin", "opencode.exe")
+    target = "\\".join((*prefix, *suffix))
+    try:
+        with shim.open("rb") as source:
+            raw = source.read(2049)
+        if len(raw) > 2048:
+            return None
+        commands = (
+            raw.decode("ascii").replace("\r\n", "\n").lower().rstrip("\n").split("\n")
+        )
+        if commands[:-1] != [
+            "@echo off",
+            "goto start",
+            ":find_dp0",
+            "set dp0=%~dp0",
+            "exit /b",
+            ":start",
+            "setlocal",
+            "call :find_dp0",
+        ] or commands[-1].split() != [f'"%dp0%\\{target}"', "%*"]:
+            return None
+        parent = shim.parent.parent if local else shim.parent / "node_modules"
+        executable = parent.joinpath(*suffix)
+        if executable.is_file():
+            with executable.open("rb") as binary:
+                if binary.read(2) == b"MZ":
+                    return executable
+    except (OSError, UnicodeError):
+        return None
+    return None
+
+
 def resolve_executable(cli_path: str) -> Path:
     """Resolve only the selected path, preserving a bridge symlink's basename."""
     path = Path(cli_path)
@@ -46,7 +87,10 @@ def resolve_executable(cli_path: str) -> Path:
         # search; which still supplies platform PATHEXT handling.
         found = shutil.which(str(candidate.absolute()), path="")
         if found:
-            return Path(found).absolute()
+            executable = Path(found).absolute()
+            if os.name == "nt":
+                return _npm_opencode_executable(executable) or executable
+            return executable
     raise OpenCodeCLIError("OpenCode selected executable is unavailable")
 
 
@@ -161,7 +205,7 @@ def run_opencode(
         if os.name == "nt" and executable.suffix.lower() != ".exe":
             raise OpenCodeCLIError(
                 "Native OpenCode requires an .exe; select it with CLAUDE_SMART_CLI_PATH. "
-                "Batch shims require the existing compatibility bridge."
+                "Use a supported npm launcher or the existing compatibility bridge for custom batch wrappers."
             )
         directory = Path(tempfile.mkdtemp(prefix="opencode-", dir=owner)).resolve()
         config_dir = directory / ".opencode"

@@ -41,6 +41,10 @@ An explicitly configured fallback ladder may advance after an authorized
 operational failure; authorization and adoption errors are terminal, including
 when LiteLLM or a spawned worker wraps them.
 
+On Windows, native OpenCode accepts npm's standard global and project-local
+opencode.cmd launchers. The SDK resolves their installed package executable
+directly. Custom batch wrappers can still use the compatibility bridge.
+
 Known OpenCode compatibility bridges receive the selected native model in their
 child environment, with stale bridge model/variant hints cleared. A host-only
 reference delegates to OpenCode's own configuration. The parent environment and
