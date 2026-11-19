@@ -163,7 +163,7 @@ elif mode == "reentrant":
         logger.removeHandler(handler)
         os.environ.pop("REFLEXIO_RESUME_POLL_INTERVAL_SECONDS")
     runtime.initialize_server_runtime()
-    expected_calls = 2
+    expected_calls = 1  # Runtime retries keep the already loaded launch source.
 elif mode == "logging_retry":
     import reflexio.server as runtime
 
@@ -192,7 +192,7 @@ elif mode == "logging_retry":
     )
     assert roles["console"] == roles["devlog"] == roles["llmio"] == 1
     assert attempts == 3
-    expected_calls = 2
+    expected_calls = 1  # Runtime retries keep the already loaded launch source.
 elif mode == "reload":
     import importlib
 
@@ -214,7 +214,7 @@ elif mode == "reload":
         & vars(runtime).keys()
     )
     assert expected_key == runtime.OPENAI_API_KEY
-    expected_calls = 2
+    expected_calls = 1  # Runtime retries keep the already loaded launch source.
 elif mode == "legacy_attributes":
     import reflexio.server as runtime
 

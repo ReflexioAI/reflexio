@@ -92,7 +92,9 @@ def _set_env_var(env_path: Path, key: str, value: str) -> None:
     set_env_var(env_path, key, value)
 
 
-def _prompt_llm_provider(env_path: Path) -> tuple[str, str, str]:
+def _prompt_llm_provider(
+    env_path: Path, *, activate: bool = False
+) -> tuple[str, str, str]:
     """Interactively prompt the user to choose an LLM provider and API key.
 
     Args:
@@ -126,6 +128,8 @@ def _prompt_llm_provider(env_path: Path) -> tuple[str, str, str]:
         typer.echo("Error: API key cannot be empty")
         raise typer.Exit(1)
     _set_env_var(env_path, env_var, api_key)
+    if activate:
+        os.environ[env_var] = api_key
 
     return display_name, model, selected_key
 
@@ -196,7 +200,9 @@ def _is_non_interactive() -> bool:
     return not sys.stdin.isatty()
 
 
-def _prompt_embedding_provider(env_path: Path, llm_provider_key: str) -> str | None:
+def _prompt_embedding_provider(
+    env_path: Path, llm_provider_key: str, *, activate: bool = False
+) -> str | None:
     """Prompt for an embedding-capable API key if the LLM provider lacks embedding support.
 
     Skips the prompt when the LLM provider already supports embeddings, or
@@ -252,6 +258,8 @@ def _prompt_embedding_provider(env_path: Path, llm_provider_key: str) -> str | N
         typer.echo("Error: API key cannot be empty")
         raise typer.Exit(1)
     _set_env_var(env_path, env_var, api_key)
+    if activate:
+        os.environ[env_var] = api_key
 
     return _provider_display(provider_key)
 
@@ -267,7 +275,9 @@ def _provider_display(provider_key: str) -> str:
     return _PROVIDERS[provider_key]["display"]
 
 
-def _write_embedding_model_to_org_config(model_name: str) -> None:
+def _write_embedding_model_to_org_config(
+    model_name: str, *, env_path: Path | None = None
+) -> None:
     """Persist the user's embedding choice to the default-org config file.
 
     Loads the existing config, updates ``llm_config.embedding_model_name``,
@@ -284,7 +294,10 @@ def _write_embedding_model_to_org_config(model_name: str) -> None:
         LocalFileConfigStorage,
     )
 
-    storage = LocalFileConfigStorage(default_org_id())
+    org_id = (
+        default_org_id(address=env_path.absolute()) if env_path else default_org_id()
+    )
+    storage = LocalFileConfigStorage(org_id)
     config = storage.load_config()
     if config.llm_config is None:
         config.llm_config = LLMConfig(embedding_model_name=model_name)
@@ -346,7 +359,9 @@ def _choose_embedding_provider(env_path: Path, *, embedding_flag: str) -> str | 
                     "openai/gemini/auto."
                 )
                 raise typer.Exit(1)
-        _write_embedding_model_to_org_config(_EMBEDDING_MODEL_NAMES[embedding_flag])
+        _write_embedding_model_to_org_config(
+            _EMBEDDING_MODEL_NAMES[embedding_flag], env_path=env_path
+        )
         return _provider_display(embedding_flag)
 
     # embedding_flag == "auto" from here on.
@@ -385,7 +400,9 @@ def _choose_embedding_provider(env_path: Path, *, embedding_flag: str) -> str | 
             raise typer.Exit(1)
         _set_env_var(env_path, env_var, api_key)
 
-    _write_embedding_model_to_org_config(_EMBEDDING_MODEL_NAMES[provider_key])
+    _write_embedding_model_to_org_config(
+        _EMBEDDING_MODEL_NAMES[provider_key], env_path=env_path
+    )
     return _provider_display(provider_key)
 
 

@@ -11,7 +11,11 @@ import time
 from pathlib import Path
 
 import reflexio
-from reflexio.cli.env_loader import get_env_path, load_reflexio_env
+from reflexio.cli.env_loader import (
+    load_local_launch_env,
+    local_instance_env_path,
+    local_worker_env,
+)
 from reflexio.cli.utils import ServiceConfig, get_env_port, run_services
 from reflexio.inference_launch import ordinary_inference_launch
 
@@ -241,10 +245,7 @@ def build_backend_service(
         cmd.extend(["--graceful-shutdown-sec", str(graceful_shutdown_sec)])
     env = None
     if app_module == "reflexio.server.api:app":
-        # Carry the launcher's lexical path into a fresh process. The child
-        # can have a different default home, and resolving symlinks here
-        # would turn credential-file rotation into a change of address.
-        env = {"REFLEXIO_ENV_FILE": str(get_env_path().absolute())}
+        env = local_worker_env()
     return ServiceConfig(name="backend", command=cmd, env=env)
 
 
@@ -289,6 +290,9 @@ def build_embedding_service(
             "--port",
             str(ports["embedding"]),
         ],
+        env=local_worker_env()
+        if app_module == "reflexio.server.llm.embedding_service:app"
+        else None,
     )
 
 
@@ -332,7 +336,7 @@ def _ensure_nextjs_dependencies(project_dir: Path) -> bool:
 
 def execute(args: argparse.Namespace, *, storage: str | None = None) -> None:
     """Execute the run-services command."""
-    load_reflexio_env()
+    load_local_launch_env()
 
     # Banner so any captured stdout (e.g. ~/.reflexio/logs/server.log via the
     # Claude Code session-start hook) clearly marks the start of a new server
@@ -377,7 +381,7 @@ def execute(args: argparse.Namespace, *, storage: str | None = None) -> None:
                 # A missing DSN makes selection a no-op; normal preparation still
                 # belongs to backend startup, without an old native rewrite.
                 prepare_local_config()
-            env_path = get_env_path()
+            env_path = local_instance_env_path()
             if env_path.exists():
                 set_env_var(env_path, "REFLEXIO_STORAGE", resolved)
 

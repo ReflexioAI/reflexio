@@ -28,7 +28,6 @@ from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 def installation(monkeypatch, tmp_path):
     monkeypatch.setenv("REFLEXIO_LOG_DIR", str(tmp_path))
     monkeypatch.setenv("REFLEXIO_ENV_FILE", str(tmp_path / "plugin.env"))
-    monkeypatch.setenv("REFLEXIO_DEFAULT_ORG_ID", "plugin")
     return tmp_path / ".reflexio"
 
 
@@ -53,15 +52,12 @@ def _dataset(path, org):
     return path
 
 
-def test_binding_survives_missing_legacy_override_in_cli_and_app(
-    installation, monkeypatch
-):
+def test_saved_binding_reopens_dataset_in_cli_and_app(installation, monkeypatch):
     db = _dataset(installation / "data" / "reflexio.db", "plugin")
     original = _config(installation, "plugin", {"type": "sqlite", "db_path": str(db)})
     before_cfg, before_db = original.read_bytes(), db.read_bytes()
 
-    assert bind_local_instance() == "plugin"
-    monkeypatch.delenv("REFLEXIO_DEFAULT_ORG_ID")
+    assert bind_local_instance("plugin") == "plugin"
     assert configured_local_org_id() == bind_local_instance() == "plugin"
     assert default_config_path() == original
     assert original.read_bytes() == before_cfg
@@ -77,7 +73,7 @@ def test_binding_survives_missing_legacy_override_in_cli_and_app(
     assert TestClient(app).get("/test-bound-instance").json() == "plugin"
 
     monkeypatch.setenv("REFLEXIO_DEFAULT_ORG_ID", "unrelated")
-    with pytest.raises(LocalInstanceError, match="conflicts"):
+    with pytest.raises(ValueError, match="Removed env.*REFLEXIO_DEFAULT_ORG_ID"):
         api.create_app()
     api.create_app(get_org_id=lambda: "authenticated")
 
@@ -93,7 +89,7 @@ def test_implicit_legacy_file_stays_selected_if_a_derived_file_appears_later(
     original = _config(installation, "plugin", {"type": "sqlite"})
     before_db = legacy.read_bytes()
 
-    assert bind_local_instance() == "plugin"
+    assert bind_local_instance("plugin") == "plugin"
     assert str(legacy) in original.read_text()
     _dataset(root / "reflexio_plugin.db", "plugin")
     assert configured_local_org_id() == "plugin"
@@ -119,7 +115,7 @@ def test_binding_refuses_an_unverified_sqlite_file(installation, ownership):
     with pytest.raises(
         LocalInstanceError, match="different organization|no matching creation proof"
     ):
-        bind_local_instance()
+        bind_local_instance("plugin")
     assert not list((installation / "instances").glob("*.json"))
     assert original.read_bytes() == before_cfg
     assert db.read_bytes() == before_db
@@ -128,9 +124,7 @@ def test_binding_refuses_an_unverified_sqlite_file(installation, ownership):
 @pytest.mark.parametrize(
     "case", ["original", "copy", "foreign creator", "foreign rows"]
 )
-def test_explicit_file_claim_requires_untouched_creation_scope(
-    installation, monkeypatch, case
-):
+def test_explicit_file_claim_requires_untouched_creation_scope(installation, case):
     db = installation / "data" / "original.db"
     store = SQLiteStorage(
         org_id="other" if case == "foreign creator" else "plugin", db_path=str(db)
@@ -164,14 +158,13 @@ def test_explicit_file_claim_requires_untouched_creation_scope(
 
     before_data = snapshot()
     if case == "original":
-        assert bind_local_instance() == "plugin"
+        assert bind_local_instance("plugin") == "plugin"
         assert snapshot() == before_data
         with closing(sqlite3.connect(db)) as conn:
             assert conn.execute("SELECT org_id FROM _dataset_identity").fetchall() == [
                 ("plugin",)
             ]
-        monkeypatch.delenv("REFLEXIO_DEFAULT_ORG_ID")
-        assert configured_local_org_id() == "plugin"
+            assert configured_local_org_id() == "plugin"
         claimed = db.read_bytes()
         assert bind_local_instance() == "plugin"
         assert db.read_bytes() == claimed
@@ -180,7 +173,7 @@ def test_explicit_file_claim_requires_untouched_creation_scope(
             LocalInstanceError,
             match="no matching creation proof|different organization",
         ):
-            bind_local_instance()
+            bind_local_instance("plugin")
         assert not list((installation / "instances").glob("*.json"))
         assert snapshot() == before_data
         assert db.read_bytes() == before_db
@@ -195,14 +188,179 @@ def test_two_env_addresses_keep_separate_instances_in_one_home(
     _config(installation, "standalone", policy)
     first = installation.parent / "plugin.env"
     second = installation.parent / "standalone.env"
-    assert bind_local_instance() == "plugin"
+    assert bind_local_instance("plugin") == "plugin"
     monkeypatch.setenv("REFLEXIO_ENV_FILE", str(second))
-    monkeypatch.setenv("REFLEXIO_DEFAULT_ORG_ID", "standalone")
-    assert bind_local_instance() == "standalone"
-    monkeypatch.delenv("REFLEXIO_DEFAULT_ORG_ID")
+    assert bind_local_instance("standalone") == "standalone"
     assert configured_local_org_id() == "standalone"
     monkeypatch.setenv("REFLEXIO_ENV_FILE", str(first))
     assert configured_local_org_id() == "plugin"
+
+
+def test_worker_keeps_project_dotenv_and_its_bound_dataset_together(installation):
+    database = _dataset(installation / "data" / "project.db", "project")
+    _config(installation, "project", {"type": "sqlite", "db_path": str(database)})
+    projects = [installation.parent / name for name in ("first", "second")]
+    for project in projects:
+        project.mkdir()
+        (project / ".env").write_text(f"REFLEXIO_PROJECT_TEST_MARKER={project.name}\n")
+
+    env = dict(os.environ)
+    env.pop("PYTHON_DOTENV_DISABLED", None)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
+    env["LITELLM_LOCAL_MODEL_COST_MAP"] = "true"
+    env.pop("REFLEXIO_PROJECT_TEST_MARKER", None)
+
+    def run(project, script):
+        return subprocess.run(  # noqa: S603 -- Isolated local worker startup.
+            [sys.executable, "-c", script],
+            cwd=project,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        ).stdout.splitlines()[-1]
+
+    run(
+        projects[0],
+        "from reflexio.cli.env_loader import load_existing_reflexio_env; "
+        "from reflexio.local_instance import bind_local_instance; "
+        "load_existing_reflexio_env(); print(bind_local_instance('project'))",
+    )
+    worker = (
+        "import os; from reflexio.server import api, auth; "
+        "app = api.create_app(mount_data_plane=False); "
+        "print(os.environ['REFLEXIO_PROJECT_TEST_MARKER'], "
+        "app.dependency_overrides[auth.default_get_org_id]())"
+    )
+    assert run(projects[0], worker) == "first project"
+    assert run(projects[1], worker) == "second self-host-org"
+
+
+def test_worker_inherits_the_parent_binding_when_project_dotenv_reappears(
+    installation, monkeypatch
+):
+    from reflexio.cli.env_loader import load_local_launch_env
+    from reflexio.cli.run_services import build_backend_service, build_embedding_service
+
+    monkeypatch.chdir(installation.parent)
+    monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
+    policy = {"type": "postgres", "db_url": "postgresql://local:fixture@localhost/db"}
+    for org in ("project", "user"):
+        _config(installation, org, policy)
+    assert bind_local_instance("user") == "user"
+    dotenv = installation.parent / ".env"
+    dotenv.write_text("REFLEXIO_PROJECT_TEST_MARKER=project\n")
+    assert bind_local_instance("project") == "project"
+    dotenv.unlink()
+    load_local_launch_env(provision=False)
+
+    # The project source returns before the parent finishes preparing workers.
+    dotenv.write_text("REFLEXIO_PROJECT_TEST_MARKER=replacement\n")
+    load_local_launch_env()
+    assert configured_local_org_id() == "user"
+    backend = build_backend_service({"backend": 8061}, workers=2, reload=False)
+    assert backend.env is not None
+    assert build_embedding_service({"embedding": 8069}).env == backend.env
+    result = subprocess.run(  # noqa: S603 -- isolated worker and fixture settings.
+        [
+            sys.executable,
+            "-c",
+            "import os; from reflexio.server import api, auth; "
+            "app = api.create_app(mount_data_plane=False); "
+            "print(os.environ['REFLEXIO_PROJECT_TEST_MARKER'], "
+            "app.dependency_overrides[auth.default_get_org_id]())",
+        ],
+        cwd=installation.parent,
+        env={
+            **os.environ,
+            **backend.env,
+            "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+            "REFLEXIO_PROJECT_TEST_MARKER": "inherited",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    assert result.stdout.splitlines()[-1] == "inherited user"
+
+
+def test_project_with_a_legacy_user_binding_requires_explicit_selection(
+    installation, monkeypatch
+):
+    monkeypatch.chdir(installation.parent)
+    policy = {"type": "postgres", "db_url": "postgresql://local:fixture@localhost/db"}
+    _config(installation, "plugin", policy)
+    _config(installation, "self-host-org", policy)
+    assert bind_local_instance("plugin") == "plugin"
+
+    monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
+    (installation.parent / ".env").touch()
+    with pytest.raises(
+        LocalInstanceError, match="needs its own local instance binding"
+    ):
+        configured_local_org_id()
+    with pytest.raises(
+        LocalInstanceError, match="needs its own local instance binding"
+    ):
+        bind_local_instance()
+    assert bind_local_instance("plugin") == "plugin"
+    assert configured_local_org_id() == "plugin"
+
+
+def test_user_setup_uses_its_own_credentials_and_saved_configuration(
+    installation, monkeypatch
+):
+    monkeypatch.chdir(installation.parent)
+    script = """
+from unittest.mock import patch
+from reflexio.cli.__main__ import main
+
+with (
+    patch("sys.stdin.isatty", return_value=True),
+    patch("typer.prompt", side_effect=[1, 1, "owned-setup-key"]),
+    patch(
+        "reflexio.cli.commands.setup_cmd._build_embedding_choices",
+        return_value=[("openai", "OPENAI_API_KEY", "OpenAI")],
+    ),
+):
+    main(["--server-url", "setup", "setup", "--", "init", "--skip-llm"])
+"""
+
+    def sqlite_config(org):
+        database = _dataset(installation / "data" / f"{org}.db", org)
+        return _config(installation, org, {"type": "sqlite", "db_path": str(database)})
+
+    user = sqlite_config("user")
+    project = sqlite_config("project")
+    assert bind_local_instance("user") == "user"
+    dotenv = installation.parent / ".env"
+    project_settings = "OPENAI_API_KEY=owned-project-key\n"
+    dotenv.write_text(project_settings)
+    assert bind_local_instance("project") == "project"
+    project_before = project.read_bytes()
+    env = dict(os.environ)
+    for name in ("OPENAI_API_KEY", "PYTHON_DOTENV_DISABLED", "REFLEXIO_NONINTERACTIVE"):
+        env.pop(name, None)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
+    result = subprocess.run(  # noqa: S603 -- isolated setup and fixture settings.
+        [sys.executable, "-c", script],
+        cwd=installation.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "text-embedding-3-small" in user.read_text()
+    assert (
+        'OPENAI_API_KEY="owned-setup-key"' in Path(env["REFLEXIO_ENV_FILE"]).read_text()
+    )
+    assert project.read_bytes() == project_before
+    assert dotenv.read_text() == project_settings
 
 
 def test_competing_processes_keep_the_first_binding(installation):
@@ -220,21 +378,20 @@ def test_competing_processes_keep_the_first_binding(installation):
     ]
     env = {**os.environ, "PYTHON_DOTENV_DISABLED": "1"}
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
-    # Both processes address the same file, but still use their independently
-    # selected legacy organization. Publishing must never replace the winner.
+    # The two migrations name different organizations for the same binding.
     with (
         subprocess.Popen(  # noqa: S603 -- Fixed local CLI command and isolated fixture.
-            argv,
+            [*argv, "plugin"],
             cwd=installation.parent,
-            env={**env, "REFLEXIO_DEFAULT_ORG_ID": "plugin"},
+            env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         ) as first,
         subprocess.Popen(  # noqa: S603 -- Fixed local CLI command and isolated fixture.
-            argv,
+            [*argv, "standalone"],
             cwd=installation.parent,
-            env={**env, "REFLEXIO_DEFAULT_ORG_ID": "standalone"},
+            env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -247,7 +404,7 @@ def test_competing_processes_keep_the_first_binding(installation):
     assert [code == 0 for _, _, code in outcomes].count(True) == 1, outcomes
     winner = "plugin" if first.returncode == 0 else "standalone"
     loser = outcomes[1 if winner == "plugin" else 0]
-    assert "conflicts" in loser[1]
+    assert "different organization" in loser[1]
     assert [
         record.read_text().strip()
         for record in (installation / "instances").glob("*.json")
@@ -259,7 +416,6 @@ def test_first_install_resumes_its_reservation_after_config_publication_failure(
 ):
     from reflexio.config_file import LocalConfigFile
 
-    monkeypatch.delenv("REFLEXIO_DEFAULT_ORG_ID")
     db = installation / "data" / "first.db"
     original_publisher = LocalConfigFile.publish_document
 
@@ -296,10 +452,7 @@ def test_first_install_resumes_its_reservation_after_config_publication_failure(
     assert not db.exists()
 
 
-def test_first_install_never_attaches_an_unproven_existing_database(
-    installation, monkeypatch
-):
-    monkeypatch.delenv("REFLEXIO_DEFAULT_ORG_ID")
+def test_first_install_never_attaches_an_unproven_existing_database(installation):
     db = _dataset(installation / "data" / "existing.db", "plugin")
     before = db.read_bytes()
     with pytest.raises(LocalInstanceError, match="fresh SQLite installation"):
@@ -309,8 +462,7 @@ def test_first_install_never_attaches_an_unproven_existing_database(
     assert not list((installation / "instances").glob("*.json"))
 
 
-def test_host_preparation_keeps_the_existing_saved_target(installation, monkeypatch):
-    monkeypatch.delenv("REFLEXIO_DEFAULT_ORG_ID")
+def test_host_preparation_keeps_the_existing_saved_target(installation):
     db = _dataset(installation / "data" / "saved.db", "plugin")
     original = _config(installation, "plugin", {"type": "sqlite", "db_path": str(db)})
     before = original.read_bytes()
@@ -321,10 +473,7 @@ def test_host_preparation_keeps_the_existing_saved_target(installation, monkeypa
     assert not unused.exists()
 
 
-def test_host_can_bind_saved_non_sqlite_config_without_a_fresh_target(
-    installation, monkeypatch
-):
-    monkeypatch.delenv("REFLEXIO_DEFAULT_ORG_ID")
+def test_host_can_bind_saved_non_sqlite_config_without_a_fresh_target(installation):
     original = _config(
         installation,
         "plugin",

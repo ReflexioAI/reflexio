@@ -36,15 +36,16 @@ def main(argv: list[str] | None = None) -> None:
     ``reflexio.cli`` entry-point group before falling back to the
     default open-source app factory.
     """
-    from reflexio.cli.offline import dispatch_offline
+    from reflexio.cli.offline import cli_command_path, dispatch_offline
 
     args = argv if argv is not None else sys.argv[1:]
-    if dispatch_offline(args):
+    route = cli_command_path(args)
+    if dispatch_offline(args, command_path=route):
         return
 
     from reflexio.cli.env_loader import (
         block_implicit_dotenv_walkup,
-        load_reflexio_env,
+        load_local_launch_env,
     )
 
     # Stop third-party import-time ``load_dotenv()`` calls (notably litellm)
@@ -53,7 +54,8 @@ def main(argv: list[str] | None = None) -> None:
     # ``open_source/reflexio`` submodule. Must precede any import that pulls in
     # litellm. Reflexio's own scoped loader runs right after.
     block_implicit_dotenv_walkup()
-    load_reflexio_env()
+    if route not in (("setup", "init"), ("setup", "openclaw")):
+        load_local_launch_env()
 
     from importlib.metadata import entry_points
 

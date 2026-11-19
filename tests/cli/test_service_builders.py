@@ -188,7 +188,10 @@ class TestBuildBackendService:
             {"backend": 8081}, reload=False, app_module="embedded:app"
         )
 
-        assert local.env == {"REFLEXIO_ENV_FILE": str(selected)}
+        assert local.env == {
+            "REFLEXIO_ENV_FILE": str(selected),
+            "PYTHON_DOTENV_DISABLED": "1",
+        }
         assert embedded.env is None
 
     def test_reload_true_adds_reload_flag(self) -> None:
@@ -200,7 +203,8 @@ class TestBuildBackendService:
 
         assert svc.name == "embedding"
         assert "reflexio.server.llm.embedding_service:app" in svc.command
-        assert svc.env is None
+        assert svc.env is not None
+        assert svc.env["PYTHON_DOTENV_DISABLED"] == "1"
 
     def test_build_embedding_service_accepts_app_module_override(self) -> None:
         svc = build_embedding_service(

@@ -110,10 +110,12 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.app == "reflexio.server.api:app":
         from reflexio.cli.config_upgrade import prepare_local_config
+        from reflexio.cli.env_loader import local_worker_env
         from reflexio.cli.utils import ensure_requested_ports_available
 
         ensure_requested_ports_available({"backend": args.port}, host=args.host)
         prepare_local_config()
+        os.environ.update(local_worker_env())
 
     if args.workers > 1:
         logger.warning(

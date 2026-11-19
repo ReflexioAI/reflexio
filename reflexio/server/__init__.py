@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import colorlog
 
-from reflexio.cli.env_loader import load_existing_reflexio_env
+from reflexio.cli.env_loader import load_local_launch_env
 from reflexio.cli.paths import reflexio_home
 from reflexio.durable_learning_policy import (
     validate_aggregation_timing_env,
@@ -533,7 +533,7 @@ def initialize_server_runtime() -> LoggingReport:
             raise RuntimeError("Server runtime initialization cannot reenter")
         _runtime_initializing = True
         try:
-            load_existing_reflexio_env()
+            load_local_launch_env(provision=False)
             validate_discovery_timing_env(os.environ)
             validate_aggregation_timing_env(os.environ)
             warn_retired_resume_timing(os.environ)

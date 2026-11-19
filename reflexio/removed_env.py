@@ -8,6 +8,7 @@ REMOVED_ENV_ALIASES = {
     "REFLEXIO_LLM_SEED": "",
     "REFLEXIO_AGENT_VERSION": "",
     "REFLEXIO_INSTANCE_ID": "",
+    "REFLEXIO_DEFAULT_ORG_ID": "config bind-local",
     "REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS": "",
     "REFLEXIO_LEARNING_ALARM_SUPPRESS_SECONDS": "",
     "POOLED_CREDITS_ENABLED": "BILLING_ENFORCEMENT_MODE",
@@ -50,6 +51,12 @@ REMOVED_ENV_ALIASES = {
 
 
 _REMOVED_ENV_GUIDANCE = {
+    "REFLEXIO_DEFAULT_ORG_ID": (
+        "; stop the local backend. For a custom installation keep its saved config "
+        "and database, remove the assignment, and run reflexio config bind-local "
+        "with the previous organization as the argument before starting services. "
+        "Use the same launch environment file to preserve its identity"
+    ),
     "REFLEXIO_EMBEDDING_REGENERATION_BATCH_SIZE": (
         "; preserve the intended size in the existing regeneration request "
         "batch_size field before removing this assignment. The request owns "

@@ -313,13 +313,24 @@ uv run reflexio user-playbooks delete <playbook-id>
 ## Config
 
 
-Run `reflexio config bind-local` with the existing local launch environment
-after stopping the local backend. It remembers which saved organization this
-launch uses. Use the same `REFLEXIO_ENV_FILE` path for setup, CLI commands, and
-server starts. You can remove `REFLEXIO_DEFAULT_ORG_ID` from this launch after
-binding, once every launcher that uses the installation supports saved
-bindings. If an older launcher still supplies the setting, the organization
-must match.
+Before upgrading an installation that uses `REFLEXIO_DEFAULT_ORG_ID`, stop
+the local backend with the previous CLI or the service manager that started
+it. Keep the original configuration and database. If the saved
+configuration needs file preparation, run
+`reflexio config upgrade-file <saved-config> --output <prepared-copy>`, review
+the copy, and install it at the saved config path while the backend is
+stopped. Then remove the old assignment and run
+`reflexio config bind-local <organization>` with the previous organization.
+
+Run binding and startup from the same project directory if it supplies
+`./.env`. Otherwise, use the same user-level `REFLEXIO_ENV_FILE` path for
+setup, CLI commands, and server starts. Later startups use that source's
+saved binding. If your project previously inherited a user-level binding,
+bind its existing organization explicitly from that project directory.
+An already bound installation can retry `reflexio config bind-local`
+without supplying the organization again. Local server workers inherit the
+launch settings and binding from their parent. Restart the local backend
+after editing its dotenv file.
 
 The command verifies the existing SQLite owner claim. For a database with a
 matching creation record, the command can establish the claim in place. For

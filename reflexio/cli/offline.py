@@ -108,29 +108,35 @@ def create_data_app() -> typer.Typer:
     return app
 
 
-def dispatch_offline(argv: list[str]) -> bool:
-    """Run the explicit converter without loading dotenv, services, or clients.
+def cli_command_path(argv: list[str]) -> tuple[str, ...]:
+    """Resolve root and group arguments before selecting a bootstrap source."""
+    context_settings = {"allow_extra_args": True, "allow_interspersed_args": False}
+    root = get_command(create_root_app())
+    # Typer vendors Click in newer versions. Parse both levels with the
+    # same command class, including the group-level `--` option separator.
+    parser = TyperCommand(
+        "reflexio", params=root.params, context_settings=context_settings
+    )
+    with parser.make_context("reflexio", list(argv), resilient_parsing=True) as ctx:
+        if not ctx.args:
+            return ()
+        group, *args = ctx.args
+    group_parser = TyperCommand(group, context_settings=context_settings)
+    with group_parser.make_context(group, args, resilient_parsing=True) as ctx:
+        return (group, *ctx.args[:1])
 
-    Typer's command parser reads the shared global option definitions before
-    selecting a route; option values that happen to equal command names never
-    become commands.
-    Other routes retain their usual operator environment bootstrap.
-    """
+
+def dispatch_offline(
+    argv: list[str], *, command_path: tuple[str, ...] | None = None
+) -> bool:
+    """Run the explicit converter without loading dotenv, services, or clients."""
+    route = cli_command_path(argv) if command_path is None else command_path
+    if route not in (("config", "upgrade-file"), ("data", "upgrade-local")):
+        return False
     app = create_root_app()
     config_app = typer.Typer()
     config_app.command(name="upgrade-file")(upgrade_file)
     app.add_typer(config_app, name="config")
     app.add_typer(create_data_app(), name="data")
-    root = get_command(app)
-    # Build the parser from Typer's own command class: Typer 0.26+ vendors
-    # click, so its parameters are not interchangeable with click.Command's.
-    parser = TyperCommand(
-        "reflexio",
-        params=root.params,
-        context_settings={"allow_extra_args": True, "allow_interspersed_args": False},
-    )
-    with parser.make_context("reflexio", list(argv), resilient_parsing=True) as ctx:
-        if ctx.args[:2] not in (["config", "upgrade-file"], ["data", "upgrade-local"]):
-            return False
     app(argv, standalone_mode=True)
     return True

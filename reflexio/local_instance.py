@@ -8,6 +8,9 @@ import os
 import re
 from pathlib import Path
 
+from reflexio.cli.env_loader import get_env_path, local_instance_env_path
+from reflexio.removed_env import reject_removed_env
+
 DEFAULT_ORG_ID = "self-host-org"
 _ORG_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 
@@ -21,16 +24,10 @@ def is_valid_local_org_id(org_id: str) -> bool:
     return _ORG_ID.fullmatch(org_id) is not None
 
 
-def _legacy_org_id() -> str | None:
-    return os.environ.get("REFLEXIO_DEFAULT_ORG_ID", "").strip() or None
-
-
-def _instance_file() -> Path:
-    from reflexio.cli.env_loader import get_env_path
+def _instance_file(address: Path) -> Path:
     from reflexio.cli.paths import reflexio_home
 
-    address = os.fsencode(get_env_path().absolute())
-    key = hashlib.sha256(address).hexdigest()
+    key = hashlib.sha256(os.fsencode(address)).hexdigest()
     return reflexio_home() / "instances" / f"{key}.json"
 
 
@@ -68,16 +65,23 @@ def _read_binding(path: Path) -> str | None:
     return record["org_id"]
 
 
-def configured_local_org_id() -> str:
-    """Resolve the local launcher's namespace for config and storage."""
-    legacy = _legacy_org_id()
-    bound = _read_binding(_instance_file())
-    if bound is None:
-        return legacy or DEFAULT_ORG_ID
-    if legacy is not None and legacy != bound:
+def _require_explicit_project_selection(address: Path) -> None:
+    user_address = get_env_path().absolute()
+    if address != user_address and _read_binding(_instance_file(user_address)):
         raise LocalInstanceError(
-            "The legacy organization selector conflicts with this local instance."
+            "This project's dotenv needs its own local instance binding. "
+            "Run reflexio config bind-local with the organization's saved name."
         )
+
+
+def configured_local_org_id(*, address: Path | None = None) -> str:
+    """Resolve the local launcher's namespace for config and storage."""
+    reject_removed_env(os.environ, canonical="config bind-local")
+    address = address if address is not None else local_instance_env_path()
+    bound = _read_binding(_instance_file(address))
+    if bound is None:
+        _require_explicit_project_selection(address)
+        return DEFAULT_ORG_ID
     _verify_bound_config(bound)
     return bound
 
@@ -125,17 +129,19 @@ def _verify_sqlite(
         raise LocalInstanceError(str(exc)) from exc
 
 
-def bind_local_instance() -> str:
-    """Persist the currently selected installation's organization after verification."""
-    return _bind_local_instance()
+def bind_local_instance(org_id: str | None = None) -> str:
+    """Bind an existing organization, or retain the current installation's binding."""
+    return _bind_local_instance(org_id)
 
 
 def prepare_local_sqlite_instance(org_id: str, db_path: Path | None = None) -> str:
     """Bind saved config, creating SQLite only if a fresh path is supplied."""
-    return _bind_local_instance((org_id, db_path))
+    return _bind_local_instance(org_id, db_path=db_path)
 
 
-def _bind_local_instance(first_install: tuple[str, Path | None] | None = None) -> str:
+def _bind_local_instance(
+    selected_org: str | None, *, db_path: Path | None = None
+) -> str:
     from filelock import FileLock, Timeout
 
     from reflexio.config_file import LocalConfigFile, _publish_bytes, _sync_directory
@@ -144,7 +150,9 @@ def _bind_local_instance(first_install: tuple[str, Path | None] | None = None) -
         validate_stored_config,
     )
 
-    instance = _instance_file()
+    reject_removed_env(os.environ, canonical="config bind-local")
+    address = local_instance_env_path()
+    instance = _instance_file(address)
     if instance.parent.is_symlink():
         raise LocalInstanceError("Local instance records must not be linked.")
     instance.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -157,25 +165,20 @@ def _bind_local_instance(first_install: tuple[str, Path | None] | None = None) -
             "Local instance binding is already in progress."
         ) from exc
     try:
-        if first_install is None:
-            org_id = configured_local_org_id()
-        else:
-            selected_org, first_db_path = first_install
-            legacy = _legacy_org_id()
-            bound = _read_binding(instance)
-            if (legacy is not None and legacy != selected_org) or (
-                bound is not None and bound != selected_org
-            ):
-                raise LocalInstanceError(
-                    "The saved or legacy organization conflicts with this installation."
-                )
-            org_id = selected_org
-            if bound is not None:
-                _verify_bound_config(bound)
-            else:
-                config_path = _config_file(org_id, require_exists=False)
-                if not config_path.exists() and first_db_path is not None:
-                    _prepare_first_sqlite_config(org_id, config_path, first_db_path)
+        bound = _read_binding(instance)
+        if bound is not None and selected_org not in (None, bound):
+            raise LocalInstanceError(
+                "The existing binding belongs to a different organization."
+            )
+        if bound is None and selected_org is None:
+            _require_explicit_project_selection(address)
+        org_id = bound or (selected_org if selected_org is not None else DEFAULT_ORG_ID)
+        if bound is not None:
+            _verify_bound_config(bound)
+        elif db_path is not None:
+            config_path = _config_file(org_id, require_exists=False)
+            if not config_path.exists():
+                _prepare_first_sqlite_config(org_id, config_path, db_path)
         config = validate_stored_config(
             LocalConfigFile(_config_file(org_id)).read_document()
         )

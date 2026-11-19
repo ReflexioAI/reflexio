@@ -18,10 +18,9 @@ def saved_local_config(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("REFLEXIO_LOG_DIR", str(tmp_path))
-    monkeypatch.setenv("REFLEXIO_DEFAULT_ORG_ID", "startup-owner")
     monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://127.0.0.1:9")
     monkeypatch.delenv("REFLEXIO_STORAGE", raising=False)
-    monkeypatch.setattr(run_services, "load_reflexio_env", lambda: None)
+    monkeypatch.setattr(run_services, "load_local_launch_env", lambda: None)
     fixture = Path(__file__).parents[1] / "fixtures/local_config_generation0.json"
     data = json.loads(fixture.read_text())
     data["storage_config"]["db_path"] = str(tmp_path / "owned.sqlite")
@@ -170,6 +169,31 @@ def test_ordinary_restart_preserves_database_and_unrelated_raw_fields(
     assert len(launches) == 2
 
 
+def test_explicit_storage_writes_only_to_the_selected_project_dotenv(
+    saved_local_config, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
+    project = tmp_path / ".env"
+    project.write_text("PROJECT_SETTING=project\n")
+    user = tmp_path / "user.env"
+    original = "USER_SETTING=user\n"
+    user.write_text(original)
+    monkeypatch.setenv("REFLEXIO_ENV_FILE", str(user))
+    monkeypatch.setattr(run_services, "run_services", lambda *_: None)
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    args = run_services._build_run_services_parser().parse_args(
+        ["--only", "backend", "--backend-port", str(port), "--no-reload"]
+    )
+
+    run_services.execute(args, storage="sqlite")
+
+    assert 'REFLEXIO_STORAGE="sqlite"' in project.read_text()
+    assert user.read_text() == original
+
+
 def test_real_server_upgrades_before_serving_and_keeps_owned_dataset(
     saved_local_config,
     tmp_path,
@@ -191,7 +215,7 @@ def test_real_server_upgrades_before_serving_and_keeps_owned_dataset(
 
     # This test upgrades saved settings around an already qualified dataset.
     # Historical data without authority requires explicit maintenance first.
-    storage = SQLiteStorage(org_id="startup-owner", db_path=database)
+    storage = SQLiteStorage(org_id="self-host-org", db_path=database)
     storage.conn.close()
     with sqlite3.connect(database) as connection:
         connection.execute("CREATE TABLE upgrade_identity (value TEXT)")
@@ -218,7 +242,6 @@ def test_real_server_upgrades_before_serving_and_keeps_owned_dataset(
         USERPROFILE=str(tmp_path),
         REFLEXIO_LOG_DIR=str(tmp_path),
         REFLEXIO_ENV_FILE=str(empty_env),
-        REFLEXIO_DEFAULT_ORG_ID="startup-owner",
         LOCAL_STORAGE_PATH=str(tmp_path / "sqlite"),
         REFLEXIO_STORAGE="sqlite",
         PYTHONPATH=str(Path(__file__).parents[2]),
