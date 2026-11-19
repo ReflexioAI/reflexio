@@ -211,9 +211,6 @@ def _attributed_cursors(
     )
     unsafe = (
         # Full-source guard is not narrowed by the caller's after cursor.
-        f"EXISTS(SELECT 1 FROM {cursors} c WHERE "
-        "(c.project_id=scope.project_id OR c.project_id IS NULL) AND "
-        "(c.user_id IS NULL OR c.kind IS NULL OR c.project_id IS NULL)) OR "
         f"EXISTS(SELECT 1 FROM {cursors} c WHERE COALESCE(c.project_id,'')='' "
         "AND scope.project_id<>'') OR "
         f"EXISTS(SELECT 1 FROM {runs} a WHERE a.org_id<>scope.org_id "
@@ -331,8 +328,7 @@ def _projection(db: StreamSQL, source: InventorySource, now: float) -> tuple:
             f"AND w.completed_at>=0 AND w.completed_at<={now!r} "
             "AND w.predecessor>=0 AND w.end_seq>w.predecessor "
             f"AND ({window_proof()}) "
-            f"AND NOT EXISTS(SELECT 1 FROM {receipts} p WHERE p.run_id=r.id AND p.org_id=r.org_id "
-            "AND p.row_kind='output') "
+            f"AND NOT EXISTS(SELECT 1 FROM {receipts} p WHERE p.run_id=r.id AND p.org_id=r.org_id) "
             f"AND NOT EXISTS(SELECT 1 FROM {db.table('extraction_cursors')} c "
             "WHERE c.window_id=w.window_id))"
             if callable(window_proof)
@@ -666,19 +662,11 @@ def read_transition_inventory_page_db(
         f"SELECT {key_columns},{project_column},{columns} FROM {table} r "
         f"WHERE {scope}{project}{cursor_sql} ORDER BY {','.join(keys)} LIMIT ?"
     )
-    # A NULL key is retained corruption, not the outer join's empty-page row.
-    # Check the full scoped source before keyset filtering: NULL comparisons can
-    # otherwise hide it even when the caller's cursor is beyond every valid key.
-    invalid_keys = (
-        f"EXISTS(SELECT 1 FROM {table} r WHERE {scope}{project} AND ("
-        + " OR ".join(f"{key} IS NULL" for key in keys)
-        + "))"
-    )
     guarded = db.query(
-        f"SELECT page.*,(({ambiguity}) OR ({invalid_keys})) AS inventory_unsafe FROM (SELECT 1) guard "
+        f"SELECT page.*,({ambiguity}) AS inventory_unsafe FROM (SELECT 1) guard "
         f"LEFT JOIN ({page_statement}) page ON 1=1 ORDER BY "
         + ",".join(f"page.key{i}" for i in range(len(keys))),
-        (*ambiguity_params, org_id, project_id, *params, limit),
+        (*ambiguity_params, *params, limit),
     )
     if not guarded or any(row["inventory_unsafe"] for row in guarded):
         raise TransitionInventoryScopeError(
