@@ -757,17 +757,18 @@ when a slow prediction continues after its health request times out. The worker
 remains unready until a real prediction succeeds.
 
 Point `REFLEXIO_QUERY_EMBEDDING_SERVICE_URL` at the worker for reserved search.
-A search worker advertises its reranking role in `/health/model`. The client
-binds that role along with the immutable vector contract and verifies that the
+The client binds the workload advertised by `/health` and the immutable vector
+contract in `/health/model`. It verifies that the
 reserved worker has the same configured reranker as the shared worker. Generic
 reranks use the shared service. A query-only worker leaves search reranking
 on the shared service too. Failed reserved reranks retain the existing
 unavailable-reranker behavior and deadlines.
 
-Upgrade the reserved worker before upgrading its client and remove the retired
-`REFLEXIO_SEARCH_RERANK_SERVICE_URL` assignment, including any blank assignment.
-Deploy the worker with the query workload if you previously used a search
-worker for query embeddings alone. Restart clients when changing worker roles.
+Remove the retired `REFLEXIO_SEARCH_RERANK_SERVICE_URL` assignment, including
+any blank assignment. Deploy the worker with the query workload if you
+previously used a search worker for query embeddings alone. Custom query
+workers must expose a query or search workload in `/health`. Restart clients
+when changing worker roles.
 
 Local inference uses one CPU numerical-library budget, `REFLEXIO_NATIVE_COMPUTE_THREADS`
 (positive integer, default **2**). The owner in `reflexio/native_compute.py`

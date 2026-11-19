@@ -16,7 +16,7 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from ipaddress import ip_address
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 import httpx
@@ -49,15 +49,7 @@ _ENV_PROVIDER = "REFLEXIO_EMBEDDING_PROVIDER"
 _ENV_SERVICE_URL = "REFLEXIO_EMBEDDING_SERVICE_URL"
 _ENV_QUERY_URL = "REFLEXIO_QUERY_EMBEDDING_SERVICE_URL"
 
-
-class _QueryWorkerContract(NamedTuple):
-    model: str
-    revision: str
-    dimensions: int
-    owns_search_reranking: bool
-
-
-_query_contract_cache: dict[tuple[int, str, str], _QueryWorkerContract] = {}
+_query_contract_cache: dict[tuple[int, str, str], tuple[str, str, int]] = {}
 _query_contract_lock = threading.Lock()
 _ENV_TIMEOUT_MS = "REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS"
 CUSTOM_EMBEDDING_MODEL = "custom"
@@ -428,32 +420,31 @@ def query_embedding_service_url() -> str:
 def validate_search_reranker_service(
     *, advertised: dict[str, Any] | None = None
 ) -> str:
-    """Bind reserved reranking to immutable models and current operational health.
+    """Resolve search routing from the isolated worker's admitted workload.
 
-    Readiness supplies fresh bounded health. Healthy request-path discovery stays
-    cached; an unhealthy first discovery is retried without changing model identity.
+    The vector contract identifies compatible query embeddings. The workload
+    in its separate health response binds reranking ownership across worker
+    versions. Readiness may refresh operational health without changing that
+    workload or either model identity.
     """
     shared_url = inference_service_url()
     if not query_embedding_service_url():
         return shared_url
     shared = resolve_inference_service_capabilities()
     endpoint = validate_query_embedding_service(shared.configured_model, None)
-    contract = _query_contract_cache[(os.getpid(), shared_url, endpoint)]
-    if not contract.owns_search_reranking:
-        return shared_url
     cached = _configured_model_cache.get((os.getpid(), endpoint))
     isolated = resolve_inference_service_capabilities(
         advertised=advertised, service_url=endpoint
     )
-    if (
-        advertised is None
-        and cached is not None
-        and (
-            isolated.workload != "search"
-            or isolated.configured_model != shared.configured_model
-            or not isolated.reranker_enabled
-            or not isolated.reranker_ready
+    if isolated.workload not in {"query", "search"}:
+        raise EmbeddingUnavailableError(
+            "Query worker did not advertise a valid workload"
         )
+    if (
+        isolated.workload == "search"
+        and advertised is None
+        and cached is not None
+        and not isolated.reranker_ready
     ):
         advertised = _inference_service_health(
             endpoint, seconds=embedding_service_timeout_seconds()
@@ -463,22 +454,23 @@ def validate_search_reranker_service(
             advertised.get("configured_model") != isolated.configured_model
             or advertised.get("configured_reranker_model")
             != isolated.configured_reranker_model
+            or advertised.get("workload") != isolated.workload
         ):
             raise EmbeddingUnavailableError(
-                "Search worker model identity changed; restart API required"
+                "Search worker model or workload changed; restart API required"
             )
-        # Only operational state may refresh; the two model identities remain
-        # bound to this API process even across temporary reranker failures.
+        # Operational health refreshes independently of the admitted workload
+        # and model identities.
         isolated = replace(
             isolated,
-            workload=advertised.get("workload", "shared"),
             reranker_enabled=advertised.get("reranker_enabled") is True,
             reranker_ready=advertised.get("reranker_ready") is True,
         )
         _configured_model_cache[(os.getpid(), endpoint)] = isolated
+    if isolated.workload == "query":
+        return shared_url
     if (
-        isolated.workload != "search"
-        or isolated.configured_model != shared.configured_model
+        isolated.configured_model != shared.configured_model
         or not isolated.reranker_enabled
         or not isolated.reranker_ready
         or not isolated.configured_reranker_model
@@ -573,27 +565,20 @@ def validate_query_embedding_service(
                     bodies = list(advertised)
                 if any(not isinstance(body, dict) for body in bodies):
                     raise EmbeddingUnavailableError("Incomplete vector contract")
-                vectors = _vector_contract(bodies[0], query=False)
-                if vectors != _vector_contract(bodies[1], query=True):
+                contract = _vector_contract(bodies[0], query=False)
+                if contract != _vector_contract(bodies[1], query=True):
                     raise EmbeddingUnavailableError(
                         "Query and document vector contracts differ"
                     )
-                # Older query workers do not advertise a reserved reranker.
-                reserved = bodies[1].get("search_rerank", False)
-                if type(reserved) is not bool:
-                    raise EmbeddingUnavailableError("Invalid search reranker contract")
-                contract = _QueryWorkerContract(*vectors, reserved)
                 if cached is not None and cached != contract:
                     raise EmbeddingUnavailableError(
-                        "Query worker contract changed; restart API required"
+                        "Vector contract changed; restart API required"
                     )
                 checkpoint()
                 _query_contract_cache[key] = contract
         finally:
             _query_contract_lock.release()
-    if contract.model != model or (
-        dimensions is not None and contract.dimensions != dimensions
-    ):
+    if contract[0] != model or (dimensions is not None and contract[2] != dimensions):
         raise EmbeddingUnavailableError(
             "Query vector contract differs from requested model/dimensions"
         )
@@ -724,7 +709,7 @@ def _post_embedding_batch(
                             embedding_service_url(mode),
                             query_embedding_service_url(),
                         )
-                    ].dimensions
+                    ][2]
                 )
                 if any(
                     len(vector) != expected

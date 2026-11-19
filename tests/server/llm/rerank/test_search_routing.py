@@ -19,7 +19,6 @@ def endpoints(monkeypatch):
     calls = []
     settings = {
         "workload": "search",
-        "search_rerank": True,
         "ready": True,
         "status": 200,
         "model": "paired-reranker",
@@ -36,11 +35,6 @@ def endpoints(monkeypatch):
                     "revision": "same",
                     "dimensions": 2,
                     "workload": "query" if reserved else "shared",
-                    **(
-                        {"search_rerank": settings["search_rerank"]}
-                        if reserved and "search_rerank" in settings
-                        else {}
-                    ),
                 },
             )
         if request.url.path == "/health":
@@ -91,7 +85,7 @@ def test_only_search_reranking_uses_reserved_capacity(endpoints):
 
 
 @pytest.mark.parametrize(
-    "change", [{"workload": "query"}, {"ready": False}, {"model": "other"}]
+    "change", [{"workload": "shared"}, {"ready": False}, {"model": "other"}]
 )
 def test_search_route_rejects_incompatible_or_unready_worker(endpoints, change):
     calls, settings = endpoints
@@ -111,7 +105,6 @@ def test_reserved_rerank_failure_does_not_send_work_to_shared(endpoints):
 
 def test_legacy_query_only_contract_retains_shared_route(endpoints):
     calls, settings = endpoints
-    del settings["search_rerank"]
     settings["workload"] = "query"
     assert reranker.score_search_pairs_with_model("q", ["a", "b"]) == (
         "paired-reranker",
@@ -162,7 +155,7 @@ def test_search_worker_counter_proves_successful_nonempty_reserved_scoring(
 ):
     calls, settings = endpoints
     if route == "shared_search":
-        del settings["search_rerank"]
+        settings["workload"] = "query"
     if route == "reserved_failure":
         settings["status"] = 503
     score = (
@@ -191,15 +184,9 @@ def test_search_worker_counter_proves_successful_nonempty_reserved_scoring(
 def test_ready_refresh_cannot_switch_reserved_reranking_to_shared(endpoints):
     calls, _ = endpoints
     reranker.score_search_pairs("q", ["a", "b"])
-    document = {"model": "local/pinned", "revision": "same", "dimensions": 2}
-    with pytest.raises(provider.EmbeddingUnavailableError, match="contract changed"):
-        provider.validate_query_embedding_service(
-            "local/pinned",
-            2,
-            advertised=(
-                {"workload": "shared", **document},
-                {"workload": "query", **document},
-            ),
+    with pytest.raises(provider.EmbeddingUnavailableError, match="workload changed"):
+        provider.validate_search_reranker_service(
+            advertised={"workload": "query"},
         )
     reranker.score_search_pairs("q", ["a", "b"])
     assert calls == ["http://reserved/v1/rerank"] * 2
@@ -211,7 +198,7 @@ def test_obsolete_reranker_url_refuses_before_network_use(
 ):
     calls, _ = endpoints
     monkeypatch.setenv("REFLEXIO_SEARCH_RERANK_SERVICE_URL", value)
-    with pytest.raises(ValueError, match="upgrade its worker first") as caught:
+    with pytest.raises(ValueError, match="remove the duplicate assignment") as caught:
         provider.validate_search_reranker_service()
     assert "hidden.invalid" not in str(caught.value)
     assert not calls

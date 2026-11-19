@@ -218,9 +218,7 @@ def test_unhealthy_cached_reranker_refresh_retains_its_budget(
         },
     )
     monkeypatch.setattr(
-        service,
-        "_query_contract_cache",
-        {(pid, shared, query): service._QueryWorkerContract(model, "pinned", 2, True)},
+        service, "_query_contract_cache", {(pid, shared, query): (model, "pinned", 2)}
     )
     requests = []
 

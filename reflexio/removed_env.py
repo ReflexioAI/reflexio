@@ -53,8 +53,8 @@ REMOVED_ENV_ALIASES = {
 
 _REMOVED_ENV_GUIDANCE = {
     "REFLEXIO_SEARCH_RERANK_SERVICE_URL": (
-        "; remove the duplicate assignment. Keep the query URL and upgrade "
-        "its worker first. Use the search workload for reserved reranking "
+        "; remove the duplicate assignment and keep the query URL. "
+        "Use the search workload for reserved reranking "
         "or the query workload for query embeddings alone"
     ),
     "REFLEXIO_DEFAULT_ORG_ID": (
