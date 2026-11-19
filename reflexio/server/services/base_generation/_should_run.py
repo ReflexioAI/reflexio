@@ -336,24 +336,19 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
         """
         Resolve the model name for should_run/should_generate LLM checks.
 
-        Uses LLM config override if available, falls back to site var setting.
+        Uses the configured role, gateway generation model, or provider default.
 
         Returns:
             str: Model name for the should_run check
         """
         from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
-        from reflexio.server.site_var.site_var_manager import SiteVarManager
 
         root_config = self.request_context.configurator.get_config()
         llm_config = root_config.llm_config if root_config else None
         api_key_config = root_config.api_key_config if root_config else None
 
-        model_setting = SiteVarManager().get_site_var("llm_model_setting")
-        site_var = model_setting if isinstance(model_setting, dict) else {}
-
         return resolve_model_name(
             ModelRole.SHOULD_RUN,
-            site_var_value=site_var.get("should_run_model_name"),
             llm_config=llm_config,
             api_key_config=api_key_config,
         )
