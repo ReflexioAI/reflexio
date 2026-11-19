@@ -325,6 +325,7 @@ const gatewayConfig = configSchema.hydrateConfig({
 	},
 	llm_config: {
 		generation_model_name: "openai/chosen",
+		evaluation_model_name: "openai/judge",
 		should_run_model_name: "openai/check",
 		embedding_model_name: "local/minilm-l6-v2",
 	},
@@ -333,6 +334,7 @@ const gatewayConfig = configSchema.hydrateConfig({
 const gatewaySaved = configSchema.serializeConfig(gatewayConfig);
 assert.equal("model" in gatewaySaved.api_key_config.custom_endpoint, false);
 assert.equal(gatewaySaved.llm_config.generation_model_name, "openai/chosen");
+assert.equal(gatewaySaved.llm_config.evaluation_model_name, "openai/judge");
 assert.equal(gatewaySaved.llm_config.should_run_model_name, "openai/check");
 assert.deepEqual(gatewaySaved.opaque, { keep: true });
 assert.throws(

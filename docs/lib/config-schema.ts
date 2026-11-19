@@ -48,6 +48,7 @@ export interface APIKeyConfig {
 export interface LLMConfig {
 	should_run_model_name: string | null;
 	generation_model_name: string | null;
+	evaluation_model_name?: string | null;
 	embedding_model_name: string | null;
 	pre_retrieval_model_name: string | null;
 	// Must stay listed in cleanLlm below: /api/set_config is a full replacement,
@@ -269,6 +270,7 @@ export function serializeConfig(config: ReflexioConfig) {
 			...llm,
 			should_run_model_name: clean(llm.should_run_model_name),
 			generation_model_name: clean(llm.generation_model_name),
+			evaluation_model_name: clean(llm.evaluation_model_name),
 			embedding_model_name: clean(llm.embedding_model_name),
 			pre_retrieval_model_name: clean(llm.pre_retrieval_model_name),
 			generation_timeout_seconds: clean(llm.generation_timeout_seconds),

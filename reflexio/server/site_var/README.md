@@ -18,11 +18,10 @@ Description: File-backed model and retrieval defaults with an in-memory cache.
 Embedding model selection belongs to `LLMConfig.embedding_model_name`; without
 an override, OSS uses `local/minilm-l6-v2`. The former
 `llm_model_setting.embedding_model_name` sitevar was ignored and is no longer
-advertised. Existing copies containing that key remain harmless. Generation,
-query reformulation, and the extraction check use their organization-level model,
-gateway, or provider defaults. The evaluation model sitevar remains supported.
-See the [upgrade instructions](../../../developer.md#supported-llm-providers)
-if you customized a retired bundled model.
+advertised. Generation, evaluation, query reformulation, and the extraction
+check use organization model configuration and provider defaults. See the
+[upgrade instructions](../../../developer.md#supported-llm-providers) if you
+customized the retired bundled model file.
 
 Recency uses `RecencyConfig.from_env()` and three
 `REFLEXIO_SEARCH_RECENCY_*` variables: pool size and the two penalty scales.
@@ -58,7 +57,7 @@ before removing a saved denial policy.
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 
 manager = SiteVarManager()
-config = manager.get_site_var("llm_model_setting")  # Returns dict or string
+config = manager.get_site_var("search_settings")  # Returns dict or string
 ```
 
 ## File Structure
@@ -68,7 +67,6 @@ config = manager.get_site_var("llm_model_setting")  # Returns dict or string
 site_var/
 ├── site_var_manager.py        # SiteVarManager (per-instance cache)
 └── site_var_sources/
-    ├── llm_model_setting.json # Provider/model defaults
     └── search_settings.json   # Relative weighting for hybrid search
 ```
 

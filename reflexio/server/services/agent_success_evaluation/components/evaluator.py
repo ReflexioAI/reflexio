@@ -31,7 +31,6 @@ from reflexio.server.services.service_utils import (
     log_llm_messages,
     log_model_response,
 )
-from reflexio.server.site_var.site_var_manager import SiteVarManager
 
 if TYPE_CHECKING:
     from reflexio.server.services.agent_success_evaluation.service import (
@@ -82,14 +81,10 @@ class AgentSuccessEvaluator:
         config = self.request_context.configurator.get_config()
         llm_config = config.llm_config if config else None
 
-        # Resolve model name: config override → site var → auto-detect
-        model_setting = SiteVarManager().get_site_var("llm_model_setting")
-        site_var = model_setting if isinstance(model_setting, dict) else {}
-        api_key_config = self.request_context.configurator.get_config().api_key_config
+        api_key_config = config.api_key_config if config else None
 
         self.default_evaluate_model_name = resolve_model_name(
             ModelRole.EVALUATION,
-            site_var_value=site_var.get("default_evaluate_model_name"),
             llm_config=llm_config,
             api_key_config=api_key_config,
         )

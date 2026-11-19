@@ -883,15 +883,16 @@ class LLMConfig(BaseModel):
     """
     LLM model configuration overrides.
 
-    These settings override the llm_model_setting.json site-variable defaults.
-    Custom gateways require a generation model; omitted text-role choices
-    inherit it. Other providers use the site-variable default for an unset role.
+    Evaluation inherits an explicit generation model when its own model is
+    unset. Custom gateways require a generation model, which omitted text
+    roles inherit. Otherwise the available provider supplies role defaults.
     Embedding selection is independent of the custom text gateway.
     """
 
     should_run_model_name: str | None = None  # Model for "should run extraction" checks
-    generation_model_name: str | None = (
-        None  # Model for generation and evaluation tasks
+    generation_model_name: str | None = None  # Model for generation tasks
+    evaluation_model_name: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
     )
     embedding_model_name: str | None = None  # Model for embedding generation
     pre_retrieval_model_name: str | None = (

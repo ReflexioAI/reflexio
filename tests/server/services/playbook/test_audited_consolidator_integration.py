@@ -92,10 +92,9 @@ def consolidator(storage, tmp_path, monkeypatch):
     context.storage = storage
     context.prompt_manager = MagicMock()
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o", fallback_models=[]))
-    config = context.configurator.get_config().model_copy(
-        update={"llm_config": LLMConfig(generation_model_name="gpt-4o")}
+    context.configurator.set_config_by_name(
+        "llm_config", LLMConfig(generation_model_name="gpt-4o")
     )
-    monkeypatch.setattr(context.configurator, "get_config", lambda: config)
     yield PlaybookConsolidator(context, client, DeduplicationConfig())
 
 
