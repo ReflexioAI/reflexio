@@ -14,12 +14,12 @@ def endpoints(monkeypatch):
     monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "internal_service")
     monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://shared")
     monkeypatch.setenv("REFLEXIO_QUERY_EMBEDDING_SERVICE_URL", "http://reserved")
-    monkeypatch.setenv("REFLEXIO_SEARCH_RERANK_SERVICE_URL", "http://reserved")
     monkeypatch.setattr(provider, "_configured_model_cache", {})
     monkeypatch.setattr(provider, "_query_contract_cache", {})
     calls = []
     settings = {
         "workload": "search",
+        "search_rerank": True,
         "ready": True,
         "status": 200,
         "model": "paired-reranker",
@@ -36,6 +36,11 @@ def endpoints(monkeypatch):
                     "revision": "same",
                     "dimensions": 2,
                     "workload": "query" if reserved else "shared",
+                    **(
+                        {"search_rerank": settings["search_rerank"]}
+                        if reserved and "search_rerank" in settings
+                        else {}
+                    ),
                 },
             )
         if request.url.path == "/health":
@@ -69,7 +74,6 @@ def test_shared_worker_distinguishes_search_from_other_interactive_reranks(
     endpoints, monkeypatch
 ):
     calls, settings = endpoints
-    monkeypatch.delenv("REFLEXIO_SEARCH_RERANK_SERVICE_URL")
     monkeypatch.delenv("REFLEXIO_QUERY_EMBEDDING_SERVICE_URL")
     assert reranker.score_search_pairs("q", ["a", "b"]) == [4.0, -2.0]
     assert reranker.score_pairs("q", ["a", "b"]) == [4.0, -2.0]
@@ -105,9 +109,10 @@ def test_reserved_rerank_failure_does_not_send_work_to_shared(endpoints):
     assert calls == ["http://reserved/v1/rerank"]
 
 
-def test_unconfigured_search_reranking_retains_shared_route(endpoints, monkeypatch):
-    calls, _ = endpoints
-    monkeypatch.delenv("REFLEXIO_SEARCH_RERANK_SERVICE_URL")
+def test_legacy_query_only_contract_retains_shared_route(endpoints):
+    calls, settings = endpoints
+    del settings["search_rerank"]
+    settings["workload"] = "query"
     assert reranker.score_search_pairs_with_model("q", ["a", "b"]) == (
         "paired-reranker",
         [4.0, -2.0],
@@ -157,7 +162,7 @@ def test_search_worker_counter_proves_successful_nonempty_reserved_scoring(
 ):
     calls, settings = endpoints
     if route == "shared_search":
-        monkeypatch.delenv("REFLEXIO_SEARCH_RERANK_SERVICE_URL")
+        del settings["search_rerank"]
     if route == "reserved_failure":
         settings["status"] = 503
     score = (
@@ -181,3 +186,32 @@ def test_search_worker_counter_proves_successful_nonempty_reserved_scoring(
         )
     finally:
         search_runtime._scope.reset(token)
+
+
+def test_ready_refresh_cannot_switch_reserved_reranking_to_shared(endpoints):
+    calls, _ = endpoints
+    reranker.score_search_pairs("q", ["a", "b"])
+    document = {"model": "local/pinned", "revision": "same", "dimensions": 2}
+    with pytest.raises(provider.EmbeddingUnavailableError, match="contract changed"):
+        provider.validate_query_embedding_service(
+            "local/pinned",
+            2,
+            advertised=(
+                {"workload": "shared", **document},
+                {"workload": "query", **document},
+            ),
+        )
+    reranker.score_search_pairs("q", ["a", "b"])
+    assert calls == ["http://reserved/v1/rerank"] * 2
+
+
+@pytest.mark.parametrize("value", ["", "https://hidden.invalid"])
+def test_obsolete_reranker_url_refuses_before_network_use(
+    endpoints, monkeypatch, value
+):
+    calls, _ = endpoints
+    monkeypatch.setenv("REFLEXIO_SEARCH_RERANK_SERVICE_URL", value)
+    with pytest.raises(ValueError, match="upgrade its worker first") as caught:
+        provider.validate_search_reranker_service()
+    assert "hidden.invalid" not in str(caught.value)
+    assert not calls

@@ -75,7 +75,9 @@ def test_search_worker_admits_query_and_rerank_but_rejects_documents(monkeypatch
         workload="search",
     )
     with TestClient(app) as client:
-        assert client.get("/health/model").json()["workload"] == "query"
+        model_contract = client.get("/health/model").json()
+        assert model_contract["workload"] == "query"
+        assert model_contract["search_rerank"] is True
         assert client.get("/health").json()["workload"] == "search"
         assert client.get("/health").json()["reranker_ready"] is True
         assert (

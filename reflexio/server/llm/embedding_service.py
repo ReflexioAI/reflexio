@@ -272,7 +272,10 @@ def _model_health(
     # Existing clients bind query-only embedding admission through this contract.
     # Search adds a separately advertised rerank capability without changing it.
     embedding_workload = "query" if workload == "search" else workload
-    return {**model_contract(), "workload": embedding_workload}
+    contract = {**model_contract(), "workload": embedding_workload}
+    if workload == "search":
+        contract["search_rerank"] = True
+    return contract
 
 
 def _workload(query_only: bool, workload: str | None) -> str:

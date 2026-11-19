@@ -756,14 +756,18 @@ supplied; overlapping health probes never run overlapping warmups, including
 when a slow prediction continues after its health request times out. The worker
 remains unready until a real prediction succeeds.
 
-Set `REFLEXIO_SEARCH_RERANK_SERVICE_URL` to the same endpoint as
-`REFLEXIO_QUERY_EMBEDDING_SERVICE_URL` to route retrieval relevance scoring there.
-The client verifies matching immutable vector contracts, the same configured
-reranker as the shared worker, and a ready search workload. Generic
-`score_pairs`/`score_pairs_with_model` calls keep shared routing; retrieval uses
-the explicit `score_search_pairs` helpers. Unset search routing preserves the
-existing path. Failed isolated calls do not retry against the shared worker;
-retrieval retains its existing unavailable-reranker behavior and deadlines.
+Point `REFLEXIO_QUERY_EMBEDDING_SERVICE_URL` at the worker for reserved search.
+A search worker advertises its reranking role in `/health/model`. The client
+binds that role along with the immutable vector contract and verifies that the
+reserved worker has the same configured reranker as the shared worker. Generic
+reranks use the shared service. A query-only worker leaves search reranking
+on the shared service too. Failed reserved reranks retain the existing
+unavailable-reranker behavior and deadlines.
+
+Upgrade the reserved worker before upgrading its client and remove the retired
+`REFLEXIO_SEARCH_RERANK_SERVICE_URL` assignment, including any blank assignment.
+Deploy the worker with the query workload if you previously used a search
+worker for query embeddings alone. Restart clients when changing worker roles.
 
 Local inference uses one CPU numerical-library budget, `REFLEXIO_NATIVE_COMPUTE_THREADS`
 (positive integer, default **2**). The owner in `reflexio/native_compute.py`

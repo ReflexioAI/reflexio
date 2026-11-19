@@ -23,6 +23,7 @@ REMOVED_ENV_ALIASES = {
     "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_EVENTS": "REFLEXIO_ROW_LIMIT_PLAYBOOK_OPTIMIZATION_HISTORY",
     "REFLEXIO_API_QUERY_EMBEDDING_ENABLED": "REFLEXIO_INFERENCE_WORKLOAD",
     "NOMIC_EMBED_DEVICE": "REFLEXIO_EMBEDDING_DEVICE",
+    "REFLEXIO_SEARCH_RERANK_SERVICE_URL": "REFLEXIO_QUERY_EMBEDDING_SERVICE_URL",
     "REFLEXIO_SEARCH_DEADLINE_ENABLED": "REFLEXIO_SEARCH_TIMEOUT_SECONDS",
     "REFLEXIO_SEARCH_CONCURRENCY_TIMEOUT_SECONDS": "REFLEXIO_SEARCH_TIMEOUT_SECONDS",
     "REFLEXIO_POSTGRES_STATEMENT_TIMEOUT_MS": "REFLEXIO_DB_LEASE_TIMEOUT_SECONDS",
@@ -51,6 +52,11 @@ REMOVED_ENV_ALIASES = {
 
 
 _REMOVED_ENV_GUIDANCE = {
+    "REFLEXIO_SEARCH_RERANK_SERVICE_URL": (
+        "; remove the duplicate assignment. Keep the query URL and upgrade "
+        "its worker first. Use the search workload for reserved reranking "
+        "or the query workload for query embeddings alone"
+    ),
     "REFLEXIO_DEFAULT_ORG_ID": (
         "; stop the local backend. For a custom installation keep its saved config "
         "and database, remove the assignment, and run reflexio config bind-local "

@@ -16,7 +16,6 @@ from reflexio.server.llm.providers.embedding_service_provider import (
     remaining,
     resolve_inference_service_capabilities,
     resolve_service_configured_reranker_model,
-    search_reranker_service_url,
     validate_search_reranker_service,
 )
 from reflexio.server.llm.rerank.common import (
@@ -44,7 +43,7 @@ def score_pairs(query: str, docs: list[str]) -> list[float]:
 
 def score_pairs_with_model(query: str, docs: list[str]) -> tuple[str, list[float]]:
     """Score pairs and return the discovered model used for the logits."""
-    return _score_pairs_with_model(query, docs, isolated=False)
+    return _score_pairs_with_model(query, docs)
 
 
 def score_search_pairs(query: str, docs: list[str]) -> list[float]:
@@ -55,25 +54,29 @@ def score_search_pairs(query: str, docs: list[str]) -> list[float]:
 def score_search_pairs_with_model(
     query: str, docs: list[str]
 ) -> tuple[str, list[float]]:
-    """Preserve shared routing unless search isolation was explicitly configured."""
-    return _score_pairs_with_model(
-        query, docs, isolated=bool(search_reranker_service_url()), search=True
-    )
+    """Use the query worker's reserved reranker when its role owns it."""
+    return _score_pairs_with_model(query, docs, search=True)
 
 
 def _score_pairs_with_model(
-    query: str, docs: list[str], *, isolated: bool, search: bool = False
+    query: str, docs: list[str], *, search: bool = False
 ) -> tuple[str, list[float]]:
     if not reranker_enabled():
         raise CrossEncoderUnavailableError(
             f"Reranker is disabled by {RERANK_ENABLED_ENV_VAR}"
         )
     checkpoint()
-    service_url = inference_service_url()
-    expected_local_unavailability = not isolated and _is_colocated_service(service_url)
+    shared_url = inference_service_url()
+    service_url = shared_url
+    expected_local_unavailability = not search and _is_colocated_service(shared_url)
     try:
-        if isolated:
+        if search:
             service_url = validate_search_reranker_service()
+        isolated = service_url != shared_url
+        expected_local_unavailability = not isolated and _is_colocated_service(
+            service_url
+        )
+        if isolated:
             model = resolve_inference_service_capabilities(
                 service_url=service_url
             ).configured_reranker_model
