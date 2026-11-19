@@ -298,6 +298,7 @@ def test_windows_opencode_uses_package_binary_for_both_launches(
     shim, executable = _npm_install(tmp_path, local)
     monkeypatch.setenv("PATH", str(shim.parent))
     monkeypatch.setenv("PATHEXT", ".EXE;.CMD")
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/opencode")
     launch = Mock(
         side_effect=[
             subprocess.CompletedProcess(
@@ -307,14 +308,12 @@ def test_windows_opencode_uses_package_binary_for_both_launches(
         ]
     )
     monkeypatch.setattr(native, "run_native_cli", launch)
-    result = native.run_opencode(
-        cli_path="opencode",
-        system_prompt="",
-        dialogue="owned",
-        model=None,
-        timeout_seconds=1,
+    result = provider.NativeCLILLM(cli_path="opencode").completion(
+        model="local-cli/opencode",
+        messages=[{"role": "user", "content": "owned"}],
+        timeout=1,
     )
-    assert result.success
+    assert result.choices[0].message.content == "owned"
     assert launch.call_count == 2
     assert all(Path(call.args[0][0]) == executable for call in launch.call_args_list)
 
