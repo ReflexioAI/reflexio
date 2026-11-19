@@ -278,6 +278,22 @@ class SQLiteStreamSQL:
         values = {
             "output_id": "json_extract(r.committed_output,'$.publication.id')",
             "preparation_id": "json_extract(r.preparation,'$.output_id')",
+            "v1_window_publication": (
+                "w.project_id='' "
+                "AND json_extract(w.effects,'$.acknowledged_window_run_id')=r.id "
+                "AND json_type(w.effects,'$.version')='integer' "
+                "AND json_extract(w.effects,'$.version')=1 AND json_type(w.effects,'$.skipped')='true' "
+                "AND json_type(w.manifest)='array' AND json_array_length(w.manifest)=0 "
+                "AND json_type(r.generation_request_snapshot,'$.overflow.version')='integer' "
+                "AND json_extract(r.generation_request_snapshot,'$.overflow.version')=1 "
+                "AND json_extract(r.generation_request_snapshot,'$.overflow.checkpoint.stage')='recovered' "
+                "AND length(json_extract(r.generation_request_snapshot,'$.overflow.source_digest'))=64 "
+                "AND json_extract(r.generation_request_snapshot,'$.overflow.source_digest') NOT GLOB '*[^a-f0-9]*' "
+                "AND json_type(r.committed_output,'$._reflexio_envelope_version')='integer' "
+                "AND json_extract(r.committed_output,'$._reflexio_envelope_version')=1 "
+                "AND json_type(r.committed_output,'$.output')='object' "
+                "AND json_type(r.committed_output,'$.publication') IS NULL"
+            ),
             "overflow_stage": "json_extract(r.generation_request_snapshot,'$.overflow.checkpoint.stage')",
         }
         return values[field]
