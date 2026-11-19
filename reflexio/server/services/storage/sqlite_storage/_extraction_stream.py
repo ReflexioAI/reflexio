@@ -51,6 +51,20 @@ CREATE INDEX IF NOT EXISTS extraction_windows_effects ON extraction_windows(comp
 """
 
 
+def register_window_delivery_validator(conn: sqlite3.Connection) -> None:
+    """Install the inventory validator before the connection starts serving queries."""
+    from reflexio.server.services.extraction.publication_receipts import (
+        valid_window_delivery_payload,
+    )
+
+    conn.create_function(
+        "reflexio_valid_window_delivery",
+        2,
+        valid_window_delivery_payload,
+        deterministic=True,
+    )
+
+
 def migrate_extraction_stream(conn: sqlite3.Connection) -> None:
     for table, column, sql_type in (
         ("interactions", "ingestion_seq", "INTEGER"),
@@ -289,17 +303,6 @@ class SQLiteStreamSQL:
         return values[field]
 
     def transition_window_publication_proof(self) -> str:
-        from reflexio.server.services.extraction.publication_receipts import (
-            valid_window_delivery_payload,
-        )
-
-        # Also used with the raw connection during a stopped-file upgrade.
-        self.conn.create_function(
-            "reflexio_valid_window_delivery",
-            2,
-            valid_window_delivery_payload,
-            deterministic=True,
-        )
         # Older JSON1 scalar extraction can truncate strings at an escaped NUL.
         # The first durable-window writer already emitted v1 envelopes. A raw
         # payload may be readable during recovery but cannot prove this lineage.

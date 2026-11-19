@@ -198,7 +198,7 @@ def upgrade_existing_sqlite_dataset(
     """
     from ..storage_base.transition_closure import derive_project_transition_closure_db
     from ._dataset_path import _claim_or_read_identity_db
-    from ._extraction_stream import SQLiteStreamSQL
+    from ._extraction_stream import SQLiteStreamSQL, register_window_delivery_validator
 
     if not path.is_absolute():
         raise _upgrade_refused("an explicit absolute existing file is required")
@@ -219,6 +219,7 @@ def upgrade_existing_sqlite_dataset(
             raise _upgrade_refused("the selected file changed")
 
     try:
+        register_window_delivery_validator(conn)
         check_target()
         conn.execute("BEGIN IMMEDIATE")
         check_target()

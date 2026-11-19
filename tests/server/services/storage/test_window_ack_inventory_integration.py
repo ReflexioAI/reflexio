@@ -64,7 +64,7 @@ def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(
         monkeypatch.delattr(SQLiteStreamSQL, "transition_window_publication_proof")
     window_id = "compatibility-window"
     run_id = f"window:{window_id}"
-    output = {"_reflexio_envelope_version": 1, "output": {}}
+    output: dict[str, object] = {"_reflexio_envelope_version": 1, "output": {}}
     if case == "pre_envelope_output":
         output = {"profiles": []}
     if case == "mismatched_output":
@@ -100,7 +100,7 @@ def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(
         billing["input_tokens"] = -1
     if case == "wrong_billing_pipeline":
         billing["pipeline"] = "playbook"
-    effects = {
+    effects: dict[str, object] = {
         "extraction_run_ids": ["wrong-run" if case == "wrong_effect_run" else run_id]
     }
     if case != "missing_billing":
@@ -233,3 +233,11 @@ def test_billing_validator_accepts_sqlite_database_encodings(encoding):
             (json.dumps({"billing": billing}, ensure_ascii=False),),
         ).fetchone()
     assert valid_window_delivery_payload("profile", payload) == 1
+
+
+def test_window_inventory_preserves_open_read_cursor(storage):
+    storage.transition_inventory_page("runs")
+    with closing(storage.conn.execute("SELECT 1 UNION ALL SELECT 2")) as cursor:
+        assert cursor.fetchone()[0] == 1
+        storage.transition_inventory_page("runs")
+        assert cursor.fetchone()[0] == 2

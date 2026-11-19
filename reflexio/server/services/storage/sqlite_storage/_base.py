@@ -1145,6 +1145,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         )
         from reflexio.server.site_var.site_var_manager import SiteVarManager
 
+        from ._extraction_stream import register_window_delivery_validator
+
         super().__init__(org_id)
         self.api_key_config = api_key_config
         self._enable_document_expansion = enable_document_expansion
@@ -1197,6 +1199,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             if db_path == ":memory:":
                 retain_private_memory_creation(self.conn, org_id)
             register_unicode_lexical_index_function(self.conn)
+            register_window_delivery_validator(self.conn)
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA foreign_keys=ON")
 
