@@ -324,7 +324,7 @@ async def test_queue_timeout_stays_owned_and_attributed():
 
         async def app(scope, receive, send):
             states.append(runtime.current())
-            _submit_with_current_context(executor, lambda: executed.append(True))
+            _submit_with_current_context(executor.submit, lambda: executed.append(True))
             await asyncio.sleep(0.04)
 
         middleware = runtime.SearchRuntimeMiddleware(app, timeout=0.01, capacity=1)
@@ -661,7 +661,7 @@ def test_failed_worker_submission_closes_queue_interval():
     token = runtime._scope.set(scope)
     try:
         with pytest.raises(RuntimeError):
-            _submit_with_current_context(executor, lambda: None)
+            _submit_with_current_context(executor.submit, lambda: None)
     finally:
         runtime._scope.reset(token)
     assert not scope.active
