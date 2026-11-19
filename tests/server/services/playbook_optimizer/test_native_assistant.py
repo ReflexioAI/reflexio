@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -82,20 +83,31 @@ def _request(**changes):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="uses an executable POSIX script")
+@pytest.mark.parametrize("protocol", ["opencode-json", "opencode-compat-json"])
 @pytest.mark.parametrize("model", [None, "provider/model#low"])
-def test_native_opencode_executes_under_sdk_ownership(tmp_path, model):
+def test_native_opencode_executes_under_sdk_ownership(tmp_path, protocol, model):
     from reflexio.server.services.playbook_optimizer.assistant_webhook import (
         LocalScriptFailedError,
     )
 
+    legacy_wire = protocol == "opencode-compat-json"
+    help_text = (
+        "--variant"
+        if legacy_wire
+        else "--model\n--agent\n--format\n--title\n--attach\n--variant"
+    )
     cli = tmp_path / "opencode"
+    calls = tmp_path / "cli-calls"
     cli.write_text(
         f"#!{sys._base_executable}\n"
         "import json, os, sys\n"
         "from pathlib import Path\n"
+        f"with Path({str(calls)!r}).open('a') as out: out.write(sys.argv[-1] + '\\n')\n"
         "if sys.argv[2:] == ['--help']:\n"
-        "    print('--model\\n--agent\\n--format\\n--title\\n--attach\\n--variant')\n"
+        f"    print({help_text!r})\n"
         "    sys.exit()\n"
+        f"if {legacy_wire!r} and any(arg.startswith(('--model=', '--variant=')) for arg in sys.argv):\n"
+        "    sys.exit(2)\n"
         "work = Path.cwd()\n"
         "policy = json.loads((work / '.opencode/opencode.json').read_text())\n"
         "agent = sys.argv[sys.argv.index('--agent') + 1]\n"
@@ -105,12 +117,12 @@ def test_native_opencode_executes_under_sdk_ownership(tmp_path, model):
         encoding="utf-8",
     )
     cli.chmod(0o700)
-    request = _request(protocol="opencode-json", executable=str(cli), model=model)
+    request = _request(protocol=protocol, executable=str(cli), model=model)
     assistant = _compiler(
         tmp_path,
         "import json,os\n"
         f"header=json.loads(os.environ[{HEADER!r}])\n"
-        "assert 'opencode-json' in header['transports']\n"
+        f"assert {protocol!r} in header['transports']\n"
         f"print({json.dumps({'native_cli_v1': request})!r})",
     )
 
@@ -119,10 +131,16 @@ def test_native_opencode_executes_under_sdk_ownership(tmp_path, model):
     assert cwd == pwd
     assert not Path(cwd).exists()
     assert permission == "deny" and internal == "1"
-    model_flags = [arg for arg in args if arg.startswith(("--model", "--variant"))]
-    assert model_flags == (
-        [] if model is None else ["--model=provider/model", "--variant=low"]
+    assert ("--title" in args) is not legacy_wire
+    assert calls.read_text().splitlines().count("--help") == int(
+        not legacy_wire or model is not None
     )
+    if model is None:
+        assert not any(arg.startswith(("--model", "--variant")) for arg in args)
+    elif legacy_wire:
+        assert args[-4:] == ["--model", "provider/model", "--variant", "low"]
+    else:
+        assert args[-2:] == ["--model=provider/model", "--variant=low"]
 
     invalid = dict(request, model="provider/model#")
     rejected = _compiler(tmp_path, f"print({json.dumps({'native_cli_v1': invalid})!r})")
@@ -130,6 +148,22 @@ def test_native_opencode_executes_under_sdk_ownership(tmp_path, model):
         LocalScriptFailedError, match="native assistant execution failed"
     ):
         rejected([], [])
+
+
+def test_open_code_compatibility_optimizer_keeps_the_explicit_bridge_cap(monkeypatch):
+    from reflexio.server.llm.providers import _opencode_cli
+    from reflexio.server.services.playbook_optimizer import assistant_native
+
+    monkeypatch.setattr(assistant_native.time, "monotonic", lambda: 20.0)
+    monkeypatch.setenv("CLAUDE_SMART_CLI_TIMEOUT", "1.5")
+    reply = SimpleNamespace(success=True, terminal_text="result")
+    launch = Mock(return_value=reply)
+    monkeypatch.setattr(_opencode_cli, "run_opencode", launch)
+    request = assistant_native.NativeAssistantRequest.model_validate(
+        _request(protocol="opencode-compat-json")
+    )
+    assert assistant_native.run_native_assistant(request, 28.0) == "result"
+    assert launch.call_args.kwargs["deadline"] == 21.5
 
 
 @pytest.mark.parametrize(
