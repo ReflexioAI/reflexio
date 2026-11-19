@@ -51,6 +51,20 @@ CREATE INDEX IF NOT EXISTS extraction_windows_effects ON extraction_windows(comp
 """
 
 
+def register_window_delivery_validator(conn: sqlite3.Connection) -> None:
+    """Install the inventory validator before the connection starts serving queries."""
+    from reflexio.server.services.extraction.publication_receipts import (
+        valid_window_delivery_payload,
+    )
+
+    conn.create_function(
+        "reflexio_valid_window_delivery",
+        2,
+        valid_window_delivery_payload,
+        deterministic=True,
+    )
+
+
 def migrate_extraction_stream(conn: sqlite3.Connection) -> None:
     for table, column, sql_type in (
         ("interactions", "ingestion_seq", "INTEGER"),
@@ -296,7 +310,9 @@ class SQLiteStreamSQL:
             "CASE WHEN json_valid(w.effects) AND json_valid(w.manifest) THEN ("
             "w.project_id='' AND typeof(w.predecessor)='integer' AND typeof(w.end_seq)='integer' "
             "AND (w.effects -> '$.acknowledged_window_run_id')=json_quote(r.id) "
-            "AND json_type(w.effects,'$.billing')='object' "
+            "AND reflexio_valid_window_delivery("
+            "CASE w.kind WHEN 'profile' THEN 'profile' WHEN 'playbook' THEN 'playbook' END,"
+            "CAST(w.effects -> '$.billing' AS BLOB))=1 "
             "AND json_type(w.effects,'$.version')='integer' "
             "AND json_extract(w.effects,'$.version')=1 AND json_type(w.effects,'$.skipped')='true' "
             "AND json_type(w.manifest)='array' AND json_array_length(w.manifest)=0 "
