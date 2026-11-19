@@ -463,7 +463,9 @@ def _retain_creation(conn: sqlite3.Connection, path: str, org_id: str) -> None:
         raise
 
 
-def reserve_new_sqlite_dataset(path: str, org_id: str) -> None:
+def reserve_new_sqlite_dataset(
+    path: str, org_id: str, *, claim_owner: bool = False
+) -> None:
     """Publish a self-contained SEALED file with exclusive create semantics.
 
     A private same-directory file retains the proof and is checkpointed/closed
@@ -488,6 +490,12 @@ def reserve_new_sqlite_dataset(path: str, org_id: str) -> None:
             if conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
                 raise RuntimeError("SQLite creation requires its supported WAL owner")
             _retain_creation(conn, str(temporary), org_id)
+            if claim_owner:
+                from ._dataset_path import _claim_or_read_identity_db
+
+                conn.execute("BEGIN IMMEDIATE")
+                _claim_or_read_identity_db(conn, org_id)
+                conn.commit()
             if conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] != 0:
                 raise RuntimeError("SQLite creation proof could not be checkpointed")
         finally:
@@ -508,6 +516,54 @@ def reserve_new_sqlite_dataset(path: str, org_id: str) -> None:
         if temporary is not None:
             for suffix in ("", "-wal", "-shm", "-journal"):
                 Path(str(temporary) + suffix).unlink(missing_ok=True)
+
+
+def verify_sqlite_creation_reservation(path: Path, org_id: str) -> None:
+    """Admit an owned, uninitialized reservation for first config publication."""
+    from ._dataset_path import DatasetIdentityError
+    from ._extraction_stream import SQLiteStreamSQL
+
+    target = path.resolve(strict=True)
+    conn = sqlite3.connect(target.as_uri() + "?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("BEGIN")
+        objects = {
+            (row["type"], row["name"])
+            for row in conn.execute(
+                "SELECT type, name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'"
+            )
+        }
+        if (
+            objects
+            != {
+                ("table", "_learning_policy_authority"),
+                ("table", "_dataset_identity"),
+            }
+            or _upgrade_identity(conn) != org_id
+        ):
+            raise DatasetIdentityError(
+                "The selected SQLite file is not an owned first-install reservation."
+            )
+        authority = LearningPolicyAuthority.from_dict(
+            SQLiteStreamSQL(conn).read_learning_policy_authority()
+        )
+        if (
+            authority.initialization_kind != "first_dataset"
+            or authority.phase != "sealed"
+            or not authority.bootstrap
+            or authority.active_policy != PROFILE_AUTHORING_POLICY
+            or authority.target_policy != PROFILE_AUTHORING_POLICY
+            or authority.operation_id
+            != "sqlite-first:" + authority.initialization_nonce
+            or authority.provenance_sha256
+            != _provenance(str(target), org_id, authority.initialization_nonce)
+        ):
+            raise DatasetIdentityError(
+                "The selected SQLite reservation does not match this installation."
+            )
+    finally:
+        conn.close()
 
 
 def retain_private_memory_creation(conn: sqlite3.Connection, org_id: str) -> None:
