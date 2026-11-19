@@ -18,11 +18,11 @@ Description: File-backed model and retrieval defaults with an in-memory cache.
 Embedding model selection belongs to `LLMConfig.embedding_model_name`; without
 an override, OSS uses `local/minilm-l6-v2`. The former
 `llm_model_setting.embedding_model_name` sitevar was ignored and is no longer
-advertised. Existing copies containing that key remain harmless. Generation,
-evaluation, and should-run model sitevars remain supported. Query reformulation
-uses the organization’s `llm_config.pre_retrieval_model_name`, gateway, or
-provider defaults. See the [upgrade instructions](../../../developer.md#supported-llm-providers)
-if you customized the bundled reformulation model.
+advertised. Existing copies containing that key remain harmless. Generation
+and evaluation model sitevars remain supported. Query reformulation and the
+extraction check use their organization-level model, gateway, or provider
+defaults. See the [upgrade instructions](../../../developer.md#supported-llm-providers)
+if you customized either bundled model.
 
 Recency uses `RecencyConfig.from_env()` and three
 `REFLEXIO_SEARCH_RECENCY_*` variables: pool size and the two penalty scales.

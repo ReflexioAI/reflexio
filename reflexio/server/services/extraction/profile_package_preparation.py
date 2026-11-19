@@ -313,8 +313,7 @@ def prepare_profile_package(
     extractor_config: ProfileExtractorConfig,
     existing_profiles: list[UserProfile],
     agent_context: str,
-    gate_enabled: bool,
-    gate_model: str,
+    gate_model: str | None,
     dedup_model: str,
     prior_context: CapturedPriorKnowledge | None = None,
     pending_tools_active: bool = False,
@@ -324,14 +323,14 @@ def prepare_profile_package(
 ) -> ProfilePackagePreparation:
     """Price full gate/agent input across native ladders before compression.
 
-    ``gate_enabled`` and ``pending_tools_active`` are the caller's already
-    resolved feature/configuration decisions. ``source`` is the actual run's
-    triggering source, including None for reruns, not the newest original row.
-    Existing-profile selection belongs
-    to the caller; pass the same selected context as the actual extractor.
+    ``gate_model`` is the chosen model for an active gate or None to skip it.
+    ``pending_tools_active`` is the caller's resolved tool policy.
+    ``source`` is the run's triggering source, including None for reruns.
+    Pass the same existing profiles selected for the actual extractor.
     Dedup's dynamic NEW/OLD prompt must still be frozen and checked at dispatch.
     This is preparation, not a complete consumer/runtime qualification.
     """
+    gate_enabled = gate_model is not None
     context_limits = dict(context_limits)
     config = extractor_config.model_copy(deep=True)
     config_snapshot = _extractor_snapshot(config, frozen_extractor_config)

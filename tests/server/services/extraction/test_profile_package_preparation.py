@@ -180,7 +180,6 @@ def preparation(monkeypatch, **overrides: Any):
             ),
             "existing_profiles": [],
             "agent_context": "Agent context",
-            "gate_enabled": True,
             "gate_model": model,
             "dedup_model": model,
             **overrides,
@@ -280,10 +279,10 @@ def test_original_lookup_seed_matches_existing_extractor_before_overflow_policy(
 
 
 def test_pending_tools_are_real_and_counted_with_the_actual_schema(monkeypatch):
-    plain, _ = preparation(monkeypatch, gate_enabled=False)
+    plain, _ = preparation(monkeypatch, gate_model=None)
     prepared, client = preparation(
         monkeypatch,
-        gate_enabled=False,
+        gate_model=None,
         pending_tools_active=True,
         pending_tool_config=PendingToolCallConfig(),
         prior_context=empty_prior_capture(monkeypatch),

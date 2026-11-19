@@ -191,11 +191,10 @@ class ProfilePackageWindowExecutor(WindowExecutor):
                     for key, value in snapshot["templates"].items()
                 },
             )
-            gate_enabled = snapshot["consumer"]["gate_enabled"]
             gate_model = (
                 snapshot["consumer"]["ladders"]["gate"][0]
-                if gate_enabled
-                else service._resolve_should_run_model()
+                if snapshot["consumer"]["gate_enabled"]
+                else None
             )
             dedup_model = snapshot["consumer"]["ladders"]["dedup"][0]
             tools_active = snapshot["pending_tool_config"] is not None
@@ -233,7 +232,7 @@ class ProfilePackageWindowExecutor(WindowExecutor):
             gate_enabled = not (
                 window.force or window.policy.get("skip_should_run_check", False)
             )
-            gate_model = service._resolve_should_run_model()
+            gate_model = service._resolve_should_run_model() if gate_enabled else None
             # Resolve the same native dedup model as the ordinary service.
             from reflexio.server.services.profile.components.consolidator import (
                 ProfileConsolidator,
@@ -272,7 +271,6 @@ class ProfilePackageWindowExecutor(WindowExecutor):
             extractor_config=config,
             existing_profiles=profiles,
             agent_context=context,
-            gate_enabled=gate_enabled,
             gate_model=gate_model,
             dedup_model=dedup_model,
             prior_context=prior,

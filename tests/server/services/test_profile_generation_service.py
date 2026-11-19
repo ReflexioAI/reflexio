@@ -30,7 +30,7 @@ from reflexio.models.api_schema.service_schemas import (
     Request,
     RerunProfileGenerationRequest,
 )
-from reflexio.models.config_schema import ProfileExtractorConfig
+from reflexio.models.config_schema import LLMConfig, ProfileExtractorConfig
 from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.generation_service import GenerationService
@@ -1380,7 +1380,17 @@ def test_should_run_before_extraction_includes_extractor_definition_and_override
             ),
         )
 
+        config = service.request_context.configurator.get_config().model_copy(
+            update={"llm_config": LLMConfig(should_run_model_name="openai/check")}
+        )
         with (
+            patch.object(
+                service.request_context.configurator, "get_config", return_value=config
+            ),
+            patch(
+                "reflexio.server.site_var.site_var_manager.SiteVarManager.get_site_var",
+                side_effect=AssertionError("Extraction check read bundled settings"),
+            ),
             patch.object(
                 service,
                 "_collect_scoped_interactions_for_precheck",
@@ -1400,6 +1410,7 @@ def test_should_run_before_extraction_includes_extractor_definition_and_override
 
         assert should_run is True
         mock_generate.assert_called_once()
+        assert mock_generate.call_args.kwargs["model"] == "openai/check"
         prompt = mock_generate.call_args.kwargs["messages"][0]["content"]
         assert "career goals and projects" in prompt
         assert "work projects, deadlines, or role changes" in prompt

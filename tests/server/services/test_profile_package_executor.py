@@ -28,6 +28,7 @@ def setup(
     monkeypatch,
     *,
     gate=True,
+    force=False,
     profiles=True,
     source_text=None,
     source_role="User",
@@ -49,7 +50,7 @@ def setup(
     monkeypatch.setattr(
         ProfileGenerationService, "_resolve_should_run_model", lambda _: "gpt-4o-mini"
     )
-    source = durable.payload("package-parent")
+    source = durable.payload("package-parent", force=force)
     for interaction in source["interaction_data_list"]:
         interaction["role"] = source_role
     if source_text is not None:
@@ -184,6 +185,36 @@ def test_actual_package_parent_publishes_once(
     if not gate:
         assert effects[0][1]["billing"]["ids"] == []
         assert effects[0][1]["billing"]["input_tokens"] == 0
+
+
+def test_forced_package_skips_gate_model_resolution_even_on_retry(
+    pipeline, monkeypatch
+):
+    engine, storage, window, token, client, calls = setup(
+        pipeline, monkeypatch, force=True
+    )
+    assert window.force
+    resolve = Mock(side_effect=AssertionError("Forced package resolved a gate model"))
+    monkeypatch.setattr(ProfileGenerationService, "_resolve_should_run_model", resolve)
+    publish = storage.complete_extraction
+    monkeypatch.setattr(
+        storage, "complete_extraction", Mock(side_effect=RuntimeError("commit failure"))
+    )
+    executor = ProfilePackageWindowExecutor(engine.request_context, client)
+    with pytest.raises(RuntimeError, match="commit failure"):
+        executor.execute(window, token)
+    parent = storage.get_agent_run(f"window:{window.window_id}")
+    consumer = parent.generation_request_snapshot["profile_package_preparation"][
+        "consumer"
+    ]
+    assert consumer["ladders"]["gate"] == []
+    assert len(calls) == 2
+
+    monkeypatch.setattr(storage, "complete_extraction", publish)
+    executor.execute(storage.prepare_extraction("u", token), token)
+    resolve.assert_not_called()
+    assert len(calls) == 2
+    assert storage.extraction_status("u", "package-parent")["status"] == "done"
 
 
 def test_cached_write_plan_cannot_change_profile_content(pipeline, monkeypatch):
@@ -374,8 +405,11 @@ def test_retired_name_resume_keeps_frozen_profile_candidates_and_paid_calls(
     monkeypatch.setattr(
         window_executor, "ProfileExtractorConfig", ProfileExtractorConfig
     )
+    resolve = Mock(side_effect=AssertionError("Replay resolved a new gate model"))
+    monkeypatch.setattr(ProfileGenerationService, "_resolve_should_run_model", resolve)
     resumed = storage.prepare_extraction("u", token)
     executor.execute(resumed, token)
+    resolve.assert_not_called()
     saved = storage.get_agent_run(parent_id)
     assert saved.binding.extractor_config_hash == original_hash
     assert (

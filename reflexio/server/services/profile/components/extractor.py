@@ -250,17 +250,11 @@ class ProfileExtractor:
         config = self.request_context.configurator.get_config()
         llm_config = config.llm_config if config else None
 
-        # Resolve model names: config override → site var → auto-detect
+        # Resolve the generation model from configuration and provider policy.
         model_setting = SiteVarManager().get_site_var("llm_model_setting")
         site_var = model_setting if isinstance(model_setting, dict) else {}
-        api_key_config = self.request_context.configurator.get_config().api_key_config
+        api_key_config = config.api_key_config if config else None
 
-        self.should_run_model_name = resolve_model_name(
-            ModelRole.SHOULD_RUN,
-            site_var_value=site_var.get("should_run_model_name"),
-            llm_config=llm_config,
-            api_key_config=api_key_config,
-        )
         self.default_generation_model_name = resolve_model_name(
             ModelRole.GENERATION,
             site_var_value=site_var.get("default_generation_model_name"),
