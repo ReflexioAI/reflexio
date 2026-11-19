@@ -1,6 +1,8 @@
 """Compatibility window closure is proved by the leased effects ACK."""
 
 import json
+import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -28,6 +30,7 @@ pytestmark = pytest.mark.integration
         "empty_billing_after_ack",
         "partial_billing_after_ack",
         "wrong_billing_type_after_ack",
+        "invalid_utf8_billing_after_ack",
         "historical_compacted",
         "no_derived_claim",
         "active_cursor",
@@ -146,18 +149,21 @@ def test_compatibility_window_ack_proves_only_its_fenced_legacy_parent(
         )
         storage.release_user_extraction("user", token)
     damaged_billing = {
-        "null_billing_after_ack": None,
-        "empty_billing_after_ack": {},
-        "partial_billing_after_ack": {
-            key: value for key, value in billing.items() if key != "ids"
-        },
-        "wrong_billing_type_after_ack": {**billing, "platform_llm": 0},
+        "null_billing_after_ack": "null",
+        "empty_billing_after_ack": "{}",
+        "partial_billing_after_ack": json.dumps(
+            {key: value for key, value in billing.items() if key != "ids"}
+        ),
+        "wrong_billing_type_after_ack": json.dumps({**billing, "platform_llm": 0}),
+        "invalid_utf8_billing_after_ack": json.dumps({**billing, "ids": ["bad_id"]})
+        .encode("utf-8")
+        .replace(b"bad_id", b"\xff"),
     }
     if case in damaged_billing:
         with storage.commit_scope():
             storage.conn.execute(
-                "UPDATE extraction_windows SET effects=json_set(effects, '$.billing', json(?)) WHERE window_id=?",
-                (json.dumps(damaged_billing[case]), window_id),
+                "UPDATE extraction_windows SET effects=json_set(effects, '$.billing', json(CAST(? AS TEXT))) WHERE window_id=?",
+                (damaged_billing[case], window_id),
             )
     if case == "nul_ack":
         with storage.commit_scope():
@@ -203,3 +209,27 @@ def test_window_inventory_uses_output_receipt_index(storage):
         and "(org_id=? AND run_id=?)" in step
         for step in plan
     )
+
+
+@pytest.mark.parametrize("encoding", ["UTF-8", "UTF-16le", "UTF-16be"])
+def test_billing_validator_accepts_sqlite_database_encodings(encoding):
+    from reflexio.server.services.extraction.publication_receipts import (
+        valid_window_delivery_payload,
+    )
+
+    billing = {
+        "ids": ["référence"],
+        "created_at": 0,
+        "platform_llm": False,
+        "input_tokens": 1,
+        "prompt_tokens": 2,
+        "completion_tokens": 3,
+    }
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute(f"PRAGMA encoding='{encoding}'")
+        conn.execute("CREATE TABLE fixture (id INTEGER)")
+        (payload,) = conn.execute(
+            "SELECT CAST(? -> '$.billing' AS BLOB)",
+            (json.dumps({"billing": billing}, ensure_ascii=False),),
+        ).fetchone()
+    assert valid_window_delivery_payload("profile", payload) == 1
