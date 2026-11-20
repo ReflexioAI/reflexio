@@ -109,6 +109,7 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch):
     for key in (
         "callbacks",
         "success_callback",
+        "service_callback",
         "_async_input_callback",
         "_async_success_callback",
         "_async_failure_callback",
