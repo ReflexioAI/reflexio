@@ -794,10 +794,13 @@ class TestSetConfigRoute:
 
         response = client.post("/api/set_config", json=payload)
 
-        assert response.status_code == 200, response.text
-        [saved] = mock_reflexio.set_config.call_args.args
-        expected = None if explicit_clear else ["assistant", "--mode", "local"]
-        assert saved.playbook_optimizer_config.assistant_command == expected
+        if explicit_clear:
+            assert response.status_code == 200, response.text
+            [saved] = mock_reflexio.set_config.call_args.args
+            assert saved.playbook_optimizer_config.assistant_command is None
+        else:
+            assert response.status_code == 409, response.text
+            mock_reflexio.set_config.assert_not_called()
 
     def test_unknown_field_returns_422_before_set_config(
         self, client, patched_reflexio, mock_reflexio

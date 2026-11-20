@@ -436,8 +436,9 @@ For saved local configurations, startup preparation moves a previously selected
 vector. Argument order, spaces, and empty arguments are preserved. New API
 writes use the vector. The configuration API discards an older client's
 `assistant_script_path: null` and `assistant_script_args: []` defaults on writes.
-An older client that omits a saved command leaves it in place. Send
-`assistant_command: null` explicitly to clear it in a current-schema write.
+A replacement that omits an existing assistant command returns HTTP 409
+when submitted by an older client. Use the current schema to preserve it or
+send `assistant_command: null` to clear it explicitly.
 Use the existing offline configuration upgrade when a historical file cannot
 be prepared automatically.
 

@@ -65,10 +65,16 @@ def _normalize_legacy_optimizer_write(
     if partial and not cleaned:
         del normalized["playbook_optimizer_config"]
         return normalized
-    # Older readers cannot round-trip a command that their schema did not know.
-    # An explicit current-schema null still clears the command.
-    if command := existing.playbook_optimizer_config.assistant_command:
-        cleaned.setdefault("assistant_command", command)
+    # An older full document cannot express the current command. Reject the
+    # ambiguous replacement instead of copying a possibly stale command back.
+    if (
+        existing.playbook_optimizer_config.assistant_command
+        and "assistant_command" not in cleaned
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Upgrade the SDK before updating a configured optimizer assistant command.",
+        )
     normalized["playbook_optimizer_config"] = cleaned
     return normalized
 
