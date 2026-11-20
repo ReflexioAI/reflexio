@@ -726,6 +726,48 @@ class TestSetConfigRoute:
         mock_reflexio.set_config.assert_called_once_with(normalized)
         assert mock_reflexio.set_config.call_args.args[0] is normalized
 
+    @pytest.mark.parametrize(
+        ("legacy_optimizer", "expected_status"),
+        [
+            ({"assistant_script_path": None, "assistant_script_args": []}, 200),
+            (
+                {
+                    "assistant_script_path": "/opt/assistant",
+                    "assistant_script_args": [],
+                },
+                422,
+            ),
+            ({"assistant_script_path": None, "assistant_script_args": ["--flag"]}, 422),
+        ],
+    )
+    def test_older_sdk_can_echo_inert_optimizer_fields(
+        self, client, patched_reflexio, mock_reflexio, legacy_optimizer, expected_status
+    ):
+        current = Config(storage_config=StorageConfigSQLite())
+        configurator = mock_reflexio.request_context.configurator
+        configurator.get_config.return_value = current
+        configurator.normalize_config_payload.side_effect = lambda payload: payload
+        mock_reflexio.set_config.return_value = SetConfigResponse(
+            success=True, msg="Configuration set successfully"
+        )
+        payload = current.model_dump(mode="json")
+        optimizer = payload["playbook_optimizer_config"]
+        optimizer.update(
+            legacy_optimizer, webhook_url="https://optimizer.example.com/run"
+        )
+
+        response = client.post("/api/set_config", json=payload)
+
+        assert response.status_code == expected_status, response.text
+        if expected_status == 200:
+            [saved] = mock_reflexio.set_config.call_args.args
+            assert saved["playbook_optimizer_config"] == {
+                **current.model_dump()["playbook_optimizer_config"],
+                "webhook_url": "https://optimizer.example.com/run",
+            }
+        else:
+            mock_reflexio.set_config.assert_not_called()
+
     def test_unknown_field_returns_422_before_set_config(
         self, client, patched_reflexio, mock_reflexio
     ):

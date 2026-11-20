@@ -434,8 +434,10 @@ organization storage, and the SDK performs no automatic fleet conversion.
 For saved local configurations, startup preparation moves a previously selected
 `assistant_script_path` and `assistant_script_args` into one `assistant_command`
 vector. Argument order, spaces, and empty arguments are preserved. New API
-writes use the vector. Use the existing offline configuration upgrade when a
-historical file cannot be prepared automatically.
+writes use the vector. The configuration API discards an older client's
+`assistant_script_path: null` and `assistant_script_args: []` defaults on writes.
+Use the existing offline configuration upgrade when a historical file cannot
+be prepared automatically.
 
 ### 6.3 Validator
 

@@ -43,6 +43,29 @@ _RETRIEVAL_EXPERIMENT_FIELDS = frozenset(
 )
 
 
+def _discard_inert_optimizer_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    """Allow older clients to echo disabled defaults on API writes."""
+    optimizer = payload.get("playbook_optimizer_config")
+    if not isinstance(optimizer, dict):
+        return payload
+    inert = {
+        name
+        for name, default in (
+            ("assistant_script_path", None),
+            ("assistant_script_args", []),
+        )
+        if name in optimizer and optimizer[name] == default
+    }
+    if not inert:
+        return payload
+    return {
+        **payload,
+        "playbook_optimizer_config": {
+            name: value for name, value in optimizer.items() if name not in inert
+        },
+    }
+
+
 def _reject_direct_experiment_mutation(
     payload: dict[str, Any], existing: Config, *, preserve_missing: bool
 ) -> dict[str, Any]:
@@ -124,7 +147,9 @@ def set_config(
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
     configurator = reflexio.request_context.configurator
     config = _reject_direct_experiment_mutation(
-        config, configurator.get_org_config(), preserve_missing=True
+        _discard_inert_optimizer_fields(config),
+        configurator.get_org_config(),
+        preserve_missing=True,
     )
     try:
         normalized_config = configurator.normalize_config_payload(config)
@@ -202,7 +227,9 @@ def update_config(
     configurator = reflexio.request_context.configurator
     existing_config = configurator.get_org_config()
     partial = _reject_direct_experiment_mutation(
-        partial, existing_config, preserve_missing=False
+        _discard_inert_optimizer_fields(partial),
+        existing_config,
+        preserve_missing=False,
     )
     existing = existing_config.model_dump(mode="python")
     # Convert ValidationError into 422 so callers passing a partial that
