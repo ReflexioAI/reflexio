@@ -22,14 +22,17 @@ import reflexio.provider_bootstrap  # noqa: F401
 
 # isort: split
 
+import json
 import logging
 import multiprocessing
 import pickle
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from multiprocessing.process import BaseProcess
 from typing import Any, NoReturn
+from uuid import uuid4
 
 import litellm
 from litellm.exceptions import ContextWindowExceededError
@@ -411,10 +414,11 @@ def _litellm_completion_worker(
                 **params,
                 "timeout": min(float(params.get("timeout", remaining)), remaining),
             }
-            if params.pop("reflexio_private_provider_io", False):
-                _disable_private_provider_diagnostics(params)
+            private = params.pop("reflexio_private_provider_io", False)
             native_cli_worker(native_context, result_queue, deadline)
-            response = model_completion(params)
+            response = (
+                _private_completion(params) if private else model_completion(params)
+            )
             authority.raise_if_rejected()
             result_queue.put(("ok", _picklable_completion_result(response)))
         except BaseException as exc:
@@ -423,7 +427,7 @@ def _litellm_completion_worker(
             )
 
 
-def _disable_private_provider_diagnostics(params: dict[str, Any]) -> None:
+def _private_completion(params: dict[str, Any]) -> Any:
     """Silence hooks in the per-call child before any private provider I/O."""
     # LiteLLM's no-log covers ordinary outcome callbacks, but its raw pre/post
     # hooks can still invoke integrations or print request and response bodies.
@@ -436,15 +440,35 @@ def _disable_private_provider_diagnostics(params: dict[str, Any]) -> None:
     litellm.success_callback = []
     litellm.failure_callback = []
     litellm.service_callback = []
+    litellm.client_session = None
+    litellm.aclient_session = None
     litellm._async_input_callback = []
     litellm._async_success_callback = []
     litellm._async_failure_callback = []
-    for key in (
-        "callbacks",
-        "input_callback",
-        "success_callback",
-        "failure_callback",
-        "logger_fn",
-        "litellm_logging_obj",
-    ):
-        params.pop(key, None)
+    from litellm.litellm_core_utils.rules import Rules
+    from litellm.utils import function_setup
+
+    finish_reasons: list[str | None] = []
+
+    def capture_finish(original_response: Any, *_args: Any, **_kwargs: Any) -> None:
+        # LiteLLM normalizes null and unfamiliar reasons to "stop". Keep
+        # only the raw reason from the native OpenAI-compatible response.
+        if not isinstance(original_response, str) or len(original_response) > 1_000_000:
+            return
+        try:
+            raw = json.loads(original_response)["choices"][0].get("finish_reason")
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+            return
+        finish_reasons.append(raw if raw in ("stop", "length") else None)
+
+    params.setdefault("litellm_call_id", str(uuid4()))
+    logging_obj, request = function_setup(
+        "completion", Rules(), datetime.now(), is_async_call=False, **params
+    )
+    logging_obj.post_call = capture_finish
+    response = model_completion({**request, "litellm_logging_obj": logging_obj})
+    if isinstance(response, litellm.ModelResponse):
+        response._hidden_params["reflexio_provider_finish_reason"] = (
+            finish_reasons[0] if len(finish_reasons) == 1 else None
+        )
+    return response
