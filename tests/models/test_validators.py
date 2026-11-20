@@ -882,24 +882,22 @@ class TestCrossFieldValidators:
         config = PlaybookOptimizerConfig(webhook_url="https://assistant.example.test")
 
         assert config.webhook_url == "https://assistant.example.test"
-        assert config.assistant_script_path is None
+        assert config.assistant_command is None
 
     def test_playbook_optimizer_accepts_script_backend(self):
         """PlaybookOptimizerConfig: script-only assistant backend is valid."""
         config = PlaybookOptimizerConfig(
-            assistant_script_path="/usr/bin/python3",
-            assistant_script_args=["assistant.py"],
+            assistant_command=["/usr/bin/python3", "assistant.py"],
         )
 
-        assert config.assistant_script_path == "/usr/bin/python3"
-        assert config.assistant_script_args == ["assistant.py"]
+        assert config.assistant_command == ["/usr/bin/python3", "assistant.py"]
 
     def test_playbook_optimizer_accepts_no_assistant_backend(self):
         """PlaybookOptimizerConfig: no backend is valid so optimizer can skip."""
         config = PlaybookOptimizerConfig()
 
         assert config.webhook_url is None
-        assert config.assistant_script_path is None
+        assert config.assistant_command is None
         assert config.metric_call_budget == 0
         assert config.max_turns == 4
         assert "early_stop_score" not in config.model_dump()
@@ -920,7 +918,7 @@ class TestCrossFieldValidators:
         with pytest.raises(ValidationError, match="only one"):
             PlaybookOptimizerConfig(
                 webhook_url="https://assistant.example.test",
-                assistant_script_path="/usr/bin/python3",
+                assistant_command=["/usr/bin/python3"],
             )
 
 

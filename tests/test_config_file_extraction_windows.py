@@ -8,7 +8,11 @@ import pytest
 
 from reflexio.config_document import decode_config_document, encode_config_document
 from reflexio.config_env import StoredConfigurationError
-from reflexio.config_file import FILE_FORMAT_VERSION, LocalConfigFile
+from reflexio.config_file import (
+    EXTRACTION_WINDOW_POLICY_VERSION,
+    FILE_FORMAT_VERSION,
+    LocalConfigFile,
+)
 from reflexio.extraction_window_migration import EXTRACTION_WINDOW_FIELDS
 from reflexio.models.config_schema import validate_stored_config
 
@@ -60,14 +64,14 @@ def test_preparation_keeps_original_and_admits_storage_before_generation15(
         tmp_path / ".config-migrations/config.json" / f"{digest}.json"
     ).read_bytes() == original
     assert decode_config_document(path.read_text())["_reflexio_config_file"] == {
-        "version": 15,
+        "version": FILE_FORMAT_VERSION,
         "original_sha256": digest,
     }
     before = path.read_bytes(), path.stat().st_mtime_ns
     assert owner.prepare(admit=admission) is False
     assert (path.read_bytes(), path.stat().st_mtime_ns) == before
     admission.assert_called_once()
-    assert FILE_FORMAT_VERSION == 15
+    assert EXTRACTION_WINDOW_POLICY_VERSION == 15
 
 
 def test_admission_failure_preserves_the_original_file_without_backup(tmp_path):

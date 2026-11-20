@@ -335,17 +335,17 @@ call inside `PlaybookOptimizer._create_assistant`:
 def _create_assistant(self, config) -> AssistantCallable | None:
     if config.webhook_url:
         return WebhookAssistant(...)
-    if config.assistant_script_path:
+    if config.assistant_command:
         return LocalScriptAssistant(...)
     return None
 ```
 
-| Config state                                     | Result                                                                                                                              |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `webhook_url` set, `assistant_script_path` unset | Webhook backend                                                                                                                     |
-| `assistant_script_path` set, `webhook_url` unset | Script backend                                                                                                                      |
-| Both set                                         | **Rejected at config load time** by a Pydantic validator (`ValueError: Configure only one playbook optimizer assistant backend...`) |
-| Neither set                                      | Optimizer logs `Skipping playbook optimization: no assistant backend configured` and returns without creating a job                 |
+| Config state                                 | Result                                                                                                                              |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `webhook_url` set, `assistant_command` unset | Webhook backend                                                                                                                     |
+| `assistant_command` set, `webhook_url` unset | Script backend                                                                                                                      |
+| Both set                                     | **Rejected at config load time** by a Pydantic validator (`ValueError: Configure only one playbook optimizer assistant backend...`) |
+| Neither set                                  | Optimizer logs `Skipping playbook optimization: no assistant backend configured` and returns without creating a job                 |
 
 The backend check happens _before_ loading the incumbent or resolving scenario
 windows, so an unconfigured optimizer short-circuits cheaply when there is no
@@ -361,11 +361,10 @@ All fields live on `PlaybookOptimizerConfig` (in `reflexio/models/config_schema.
 
 ### 6.1 New fields
 
-| Field                    | Type          | Default | Purpose                                                                                                   |
-| ------------------------ | ------------- | ------- | --------------------------------------------------------------------------------------------------------- |
-| `assistant_script_path`  | `str \| None` | `None`  | Absolute path to the executable. Set this to enable the script backend.                                   |
-| `assistant_script_args`  | `list[str]`   | `[]`    | Extra argv tokens passed after `assistant_script_path`.                                                   |
-| `max_validation_windows` | `int > 0`     | 2       | Maximum source windows held out for validation; all remaining source windows form the GEPA training pool. |
+| Field                    | Type                | Default | Purpose                                                                                                   |
+| ------------------------ | ------------------- | ------- | --------------------------------------------------------------------------------------------------------- |
+| `assistant_command`      | `list[str] \| None` | `None`  | Nonempty argument vector starting with the executable path.                                               |
+| `max_validation_windows` | `int > 0`           | 2       | Maximum source windows held out for validation; all remaining source windows form the GEPA training pool. |
 
 Reflexio always passes `cache_evaluation=True` to GEPA so the same accepted
 candidate/window pair is never scored twice across iterations.
@@ -432,15 +431,21 @@ tracks that path. Do not integrate the strict SDK into an older host without its
 qualified upgrade owner. The standalone file command does not publish to
 organization storage, and the SDK performs no automatic fleet conversion.
 
+For saved local configurations, startup preparation moves a previously selected
+`assistant_script_path` and `assistant_script_args` into one `assistant_command`
+vector. Argument order, spaces, and empty arguments are preserved. New API
+writes use the vector. Use the existing offline configuration upgrade when a
+historical file cannot be prepared automatically.
+
 ### 6.3 Validator
 
 ```python
 @model_validator(mode="after")
 def check_single_assistant_backend(self) -> Self:
-    if self.webhook_url and self.assistant_script_path:
+    if self.webhook_url and self.assistant_command:
         raise ValueError(
             "Configure only one playbook optimizer assistant backend: "
-            "webhook_url or assistant_script_path"
+            "webhook_url or assistant_command"
         )
     return self
 ```
@@ -460,8 +465,7 @@ playbook_optimizer_config:
 playbook_optimizer_config:
   metric_call_budget: 20
   user_playbooks_enabled: true
-  assistant_script_path: /usr/bin/python3
-  assistant_script_args: [/path/to/echo_assistant.py]
+  assistant_command: [/usr/bin/python3, /path/to/echo_assistant.py]
   webhook_timeout_seconds: 30
 ```
 
@@ -514,12 +518,12 @@ authority retains its recorded policy independently of later config changes.
 
 ### Other touched files
 
-| File                                                          | What changed                                                                                |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `reflexio/server/services/playbook_optimizer/optimizer.py`    | New `_create_assistant` method; `optimize()` short-circuits when no backend is configured.  |
-| `reflexio/server/services/playbook_optimizer/gepa_adapter.py` | Catches `AssistantFailedError` (the new common base) instead of `WebhookFailedError` only.  |
-| `reflexio/models/config_schema.py`                            | Adds `assistant_script_path`, `assistant_script_args`, plus the mutual-exclusion validator. |
-| `tests/models/test_validators.py`                             | Four new tests for the validator (see §9).                                                  |
+| File                                                          | What changed                                                                               |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `reflexio/server/services/playbook_optimizer/optimizer.py`    | New `_create_assistant` method; `optimize()` short-circuits when no backend is configured. |
+| `reflexio/server/services/playbook_optimizer/gepa_adapter.py` | Catches `AssistantFailedError` (the new common base) instead of `WebhookFailedError` only. |
+| `reflexio/models/config_schema.py`                            | Defines `assistant_command` and the mutual-exclusion validator.                            |
+| `tests/models/test_validators.py`                             | Four new tests for the validator (see §9).                                                 |
 
 ---
 
@@ -529,7 +533,7 @@ authority retains its recorded policy independently of later config changes.
 
 | Test                                                          | Asserts                                                                           |
 | ------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `test_playbook_optimizer_accepts_webhook_backend`             | Webhook-only config is valid; `assistant_script_path is None`.                    |
+| `test_playbook_optimizer_accepts_webhook_backend`             | Webhook-only config is valid; `assistant_command is None`.                        |
 | `test_playbook_optimizer_accepts_script_backend`              | Script-only config round-trips path + args.                                       |
 | `test_playbook_optimizer_accepts_no_assistant_backend`        | Default config (neither set) is valid; the optimizer is responsible for skipping. |
 | `test_playbook_optimizer_rejects_multiple_assistant_backends` | Both set → `ValidationError` matching `"only one"`.                               |
@@ -544,7 +548,7 @@ The existing tests in `tests/server/services/playbook_optimizer/test_playbook_op
 
 | Topic                   | Notes                                                                                                                                                                                                             |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Trust boundary**      | The script backend executes whatever `assistant_script_path` points to with the same privileges as the optimizer process. Treat it like any other piece of config that names a binary.                            |
+| **Trust boundary**      | The script backend executes the executable in `assistant_command` with the same privileges as the optimizer process. Treat it like any other piece of config that names a binary.                                 |
 | **Shell injection**     | None. The command is a list, `shell=True` is not used.                                                                                                                                                            |
 | **Credentials in logs** | Only `str(last_error)` from the exception chain is logged. Authorization headers are never logged or echoed back.                                                                                                 |
 | **Data residency**      | Webhook traffic goes wherever `webhook_url` points — operators are responsible for choosing an appropriate endpoint. The script backend is local and never leaves the host.                                       |
