@@ -49,6 +49,7 @@ from reflexio.server.llm._azure_transport import normalize_azure_v1_endpoints
 from reflexio.server.llm._litellm_subprocess import (
     _litellm_completion_worker,
     _raise_completion_error,
+    require_private_provider_rules,
     retire_completion_worker,
 )
 from reflexio.server.llm._litellm_types import (
@@ -83,11 +84,18 @@ from reflexio.server.llm._provider_concurrency import (
     provider_slot,
 )
 from reflexio.server.llm.call_deadline import model_call_deadline, remaining_call_time
-from reflexio.server.llm.completion_io import intercept_completion_io
+from reflexio.server.llm.completion_io import (
+    intercept_completion_io,
+    require_no_completion_io_hook,
+)
 from reflexio.server.llm.failure import (
+    TRANSIENT_ERROR_NAMES,
+    TRANSIENT_UPSTREAM_STATUS_CODES,
+    LLMFailureVerdict,
     OutageWait,
     Transient,
     classify_llm_failure,
+    exception_chain,
 )
 from reflexio.server.llm.image_utils import (
     SUPPORTED_IMAGE_MIME_TYPES,
@@ -562,6 +570,7 @@ class _StructuredAttempt:
     model: str
     provenance: ModelProvenance | None = None
     usage: Any | None = None
+    has_tool_calls: bool = False
 
 
 # A timeout is evidence of a provider outage only when the attempt was given at
@@ -569,6 +578,50 @@ class _StructuredAttempt:
 # 25 s and degrades to plain full-text search) it says the provider was slower
 # than that caller allowed, not that it is down for callers that wait longer.
 _OUTAGE_EVIDENCE_MIN_TIMEOUT_SECONDS = 60.0
+
+
+def _upstream_http_status(error: BaseException) -> int | None:
+    status = getattr(error, "upstream_status_code", None)
+    if status is None:
+        status = getattr(error, "status_code", None)
+    return status if type(status) is int and 100 <= status <= 599 else None
+
+
+def _private_provider_failure(
+    error: Exception, verdict: LLMFailureVerdict
+) -> LiteLLMClientError:
+    error_type = getattr(error, "upstream_error_type", None) or type(error).__name__
+    status = _upstream_http_status(error)
+    if isinstance(verdict, Transient):
+        if verdict.timed_out:
+            error_type = "APITimeoutError"
+        else:
+            error_type = next(
+                (
+                    name
+                    for link in exception_chain(error)
+                    if (
+                        name := getattr(link, "upstream_error_type", None)
+                        or type(link).__name__
+                    )
+                    in TRANSIENT_ERROR_NAMES
+                ),
+                "APIConnectionError",
+            )
+        status = next(
+            (
+                status
+                for link in exception_chain(error)
+                if (status := _upstream_http_status(link))
+                in TRANSIENT_UPSTREAM_STATUS_CODES
+            ),
+            status,
+        )
+    return LiteLLMClientError(
+        "Provider request failed",
+        upstream_error_type=error_type,
+        upstream_status_code=status,
+    )
 
 
 def _reserved_attempt_id(unreserved: dict[str, Any] | None) -> str | None:
@@ -1664,6 +1717,16 @@ class TextGenerationMixin:
         provider_request_guard: ProviderRequestGuard | None = kwargs.pop(
             "provider_request_guard", None
         )
+        redact_provider_errors = kwargs.pop("redact_provider_errors", False)
+        if redact_provider_errors and (
+            kwargs.get("parse_structured_output") is not False
+            or kwargs.get("tools") is not None
+            or kwargs.get("client") is not None
+        ):
+            raise ValueError("Private requests require plain responses and native IO")
+        if redact_provider_errors:
+            require_private_provider_rules()
+            require_no_completion_io_hook()
         original_kwargs = dict(kwargs)
 
         def _finish(
@@ -1682,6 +1745,8 @@ class TextGenerationMixin:
                 attempt.provenance,
                 usage=attempt.usage,
                 thinking_disabled=thinking_disabled,
+                finish_reason=attempt.finish_reason,
+                has_tool_calls=attempt.has_tool_calls,
             )
 
         if structured_output_validator is not None and (
@@ -1754,6 +1819,20 @@ class TextGenerationMixin:
                 **_detach_request_state(dict(turn_kwargs)),
             )
             params["num_retries"] = 0
+            if redact_provider_errors:
+                # Strip per-request hooks before the worker arguments are
+                # serialized. The child clears inherited global hooks.
+                for name in (
+                    "callbacks",
+                    "input_callback",
+                    "success_callback",
+                    "failure_callback",
+                    "logger_fn",
+                    "litellm_logging_obj",
+                ):
+                    params.pop(name, None)
+                params["no-log"] = True
+                params["reflexio_private_provider_io"] = True
             params.pop("fallbacks", None)  # owned walk: never delegate to litellm
             per_attempt = self._coerce_timeout_seconds(params)
             remaining = walk_deadline - time.monotonic()
@@ -1898,6 +1977,10 @@ class TextGenerationMixin:
                 message = response.choices[0].message  # type: ignore[reportAttributeAccessIssue]
                 content = message.content
                 finish_reason = response.choices[0].finish_reason  # type: ignore[reportAttributeAccessIssue]
+                if redact_provider_errors:
+                    finish_reason = _response_hidden_params(response).get(
+                        "reflexio_provider_finish_reason"
+                    )
                 self.logger.info(
                     "event=llm_request_end model=%s timeout=%s has_response_format=%s elapsed_seconds=%.3f success=%s",
                     turn_params.get("model"),
@@ -1960,6 +2043,7 @@ class TextGenerationMixin:
                         model=str(turn_params.get("model")),
                         provenance=provenance,
                         usage=getattr(response, "usage", None),
+                        has_tool_calls=bool(tool_calls),
                     )
 
                 try:
@@ -1987,6 +2071,7 @@ class TextGenerationMixin:
                     model=str(turn_params.get("model")),
                     provenance=provenance,
                     usage=getattr(response, "usage", None),
+                    has_tool_calls=bool(getattr(message, "tool_calls", None)),
                 )
             except (
                 ProviderRequestGuardError,
@@ -2028,14 +2113,12 @@ class TextGenerationMixin:
                     and allowance < _OUTAGE_EVIDENCE_MIN_TIMEOUT_SECONDS
                 ):
                     circuit_call.failed(quota_exhausted=exhausted)
+                status = _upstream_http_status(e)
                 if transient:
                     # This is a physical attempt, not the logical operation's
                     # outcome: another credential/rung or the caller may recover.
                     # Provider exception text can contain credentials/content and
                     # makes a handled WARNING look like an exception alarm.
-                    status = getattr(e, "upstream_status_code", None)
-                    if status is None:
-                        status = getattr(e, "status_code", None)
                     self.logger.warning(
                         "event=llm_request_end model=%s elapsed_seconds=%.3f success=False "
                         "error_type=%s reason=%s upstream_status_code=%s",
@@ -2043,9 +2126,7 @@ class TextGenerationMixin:
                         time.perf_counter() - request_start,
                         type(e).__name__,
                         "quota_exhausted" if exhausted else "transient_provider_error",
-                        status
-                        if type(status) is int and 100 <= status <= 599
-                        else None,
+                        status,
                     )
                 else:
                     self.logger.error(
@@ -2053,17 +2134,24 @@ class TextGenerationMixin:
                         turn_params.get("model"),
                         time.perf_counter() - request_start,
                         type(e).__name__,
-                        e,
+                        "redacted" if redact_provider_errors else e,
                     )
-                failure = LiteLLMClientError(f"API call failed: {e}")
+                failure = (
+                    _private_provider_failure(e, verdict)
+                    if redact_provider_errors
+                    else LiteLLMClientError(f"API call failed: {e}")
+                )
                 # Which breaker decides whether durable work is charged for it.
                 failure.circuit_route = circuit_call.route
                 failure.quota_exhausted = exhausted
-                failure.__cause__ = e  # classified below before it is raised
-                _report_reserved_failure(reserved_attempt_id, failure)
-                raise failure from e
+                if not redact_provider_errors:
+                    failure.__cause__ = e  # classify before it is raised
+                    _report_reserved_failure(reserved_attempt_id, failure)
+                    raise failure from e
             finally:
                 circuit_call.close()
+            _report_reserved_failure(reserved_attempt_id, failure)
+            raise failure from None
 
         def _call_and_parse(
             turn_params: dict[str, Any],

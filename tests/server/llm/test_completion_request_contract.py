@@ -1,4 +1,15 @@
-"""The public identity seam matches actual builder policy, never provider I/O."""
+"""Completion identity, response metadata, and private request behavior."""
+
+import json
+import logging
+import multiprocessing
+import pickle
+import time
+import traceback
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from queue import SimpleQueue
+from threading import Thread
+from unittest.mock import Mock
 
 import pytest
 from pydantic import HttpUrl
@@ -8,10 +19,323 @@ from reflexio.models.config_schema import (
     CustomEndpointConfig,
     OpenAIConfig,
 )
-from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.llm.failure import Terminal, Transient, classify_llm_failure
+from reflexio.server.llm.litellm_client import (
+    LiteLLMClient,
+    LiteLLMClientError,
+    LiteLLMConfig,
+    ProviderRequestGuardError,
+)
 from reflexio.server.llm.model_defaults import ModelRole
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize(
+    "status,upstream_type,verdict",
+    [
+        (400, None, Terminal),
+        (529, None, Transient),
+        (None, "RateLimitError", Transient),
+    ],
+)
+def test_private_provider_failure_keeps_classification_without_body(
+    monkeypatch, caplog, status, upstream_type, verdict
+):
+    client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
+    private_marker = "synthetic provider echoed customer evidence"
+
+    def reject(params, _timeout):
+        assert "redact_provider_errors" not in params
+        assert params["no-log"] is True
+        raise LiteLLMClientError(private_marker) from LiteLLMClientError(
+            private_marker,
+            upstream_status_code=status,
+            upstream_error_type=upstream_type,
+        )
+
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", reject)
+    with pytest.raises(LiteLLMClientError, match="Provider request failed") as caught:
+        client._make_request(
+            [],
+            redact_provider_errors=True,
+            parse_structured_output=False,
+            fallback_models=[],
+        )
+    assert private_marker not in caplog.text
+    assert private_marker not in "".join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None
+    classified = classify_llm_failure(caught.value, consult_breaker=False)
+    assert isinstance(classified, verdict)
+    if upstream_type is not None:
+        assert caught.value.upstream_error_type == upstream_type
+
+
+def test_plain_completion_preserves_finish_reason_and_unsolicited_tool_call(
+    monkeypatch,
+):
+    client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
+    from litellm import ModelResponse
+
+    response = ModelResponse(
+        model="gpt-4o",
+        choices=[
+            {
+                "finish_reason": "length",
+                "message": {
+                    "role": "assistant",
+                    "content": "synthetic body",
+                    "tool_calls": [
+                        {
+                            "id": "synthetic",
+                            "type": "function",
+                            "function": {"name": "synthetic", "arguments": "{}"},
+                        }
+                    ],
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", lambda *_: response)
+    result = client._make_request([])
+    assert result.value == "synthetic body"
+    assert result.finish_reason == "length"
+    assert result.has_tool_calls
+
+
+def test_private_request_skips_litellm_failure_callback(monkeypatch, capsys):
+    import httpx
+    import litellm
+    from litellm import utils
+    from litellm.caching.caching import Cache
+    from litellm.integrations.custom_logger import CustomLogger
+    from litellm.litellm_core_utils import litellm_logging
+
+    from reflexio.server.llm._litellm_subprocess import (
+        _litellm_completion_worker,
+        _raise_completion_error,
+    )
+    from reflexio.server.llm._litellm_text_generation import _run_isolated_completion
+    from reflexio.test_support.llm_mock import unpatched_litellm
+
+    seen = []
+
+    class TransportSpy(httpx.HTTPTransport):
+        def handle_request(self, request):
+            seen.append("sync-transport")
+            return super().handle_request(request)
+
+    class FailureSpy(CustomLogger):
+        def log_failure_event(self, *_args, **_kwargs):
+            seen.append("failure")
+
+        def log_post_api_call(self, *_args, **_kwargs):
+            seen.append("body")
+
+    for key in (
+        "callbacks",
+        "success_callback",
+        "service_callback",
+        "_async_input_callback",
+        "_async_success_callback",
+        "_async_failure_callback",
+    ):
+        monkeypatch.setattr(litellm, key, [])
+    monkeypatch.setattr(litellm, "failure_callback", [FailureSpy()])
+    monkeypatch.setattr(litellm, "input_callback", [FailureSpy()])
+    monkeypatch.setattr(litellm, "suppress_debug_info", True)
+    monkeypatch.setattr(litellm, "set_verbose", False)
+    monkeypatch.setattr(litellm, "global_disable_no_log_param", True)
+    monkeypatch.setattr(litellm, "force_ipv4", False)
+    monkeypatch.setattr(litellm, "pre_call_rules", [])
+    monkeypatch.setattr(litellm, "post_call_rules", [])
+    monkeypatch.setattr(litellm, "model_alias_map", {})
+
+    def breadcrumb(**_kwargs):
+        seen.append("sentry")
+
+    for target in (utils, litellm_logging):
+        monkeypatch.setattr(target, "add_breadcrumb", breadcrumb)
+        monkeypatch.setattr(target, "capture_exception", None, raising=False)
+
+    response_reasons = []
+    wire_models = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            wire_models.append(request["model"])
+            if response_reasons:
+                body = json.dumps(
+                    {
+                        "model": "MiniMax-M3",
+                        "id": "synthetic",
+                        "object": "chat.completion",
+                        "created": 1,
+                        "usage": {
+                            "prompt_tokens": 2,
+                            "completion_tokens": 3,
+                            "total_tokens": 5,
+                        },
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {
+                                    "content": "synthetic answer",
+                                    "role": "assistant",
+                                },
+                                "finish_reason": response_reasons.pop(0),
+                            }
+                        ],
+                    }
+                ).encode()
+                self.send_response(200)
+            else:
+                body = b'{"error":{"message":"synthetic provider error"}}'
+                self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
+
+    def run_test_worker(params, timeout):
+        queue = SimpleQueue()
+        previous_logging = logging.root.manager.disable
+        try:
+            _litellm_completion_worker(params, queue, time.monotonic() + timeout)
+        finally:
+            logging.disable(previous_logging)
+        status, value = queue.get_nowait()
+        if status == "error":
+            _raise_completion_error(value)
+        return pickle.loads(pickle.dumps(value))  # noqa: S301 -- local worker fixture
+
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", run_test_worker)
+    with (
+        unpatched_litellm(),
+        ThreadingHTTPServer(("127.0.0.1", 0), Handler) as provider,
+        httpx.Client(
+            event_hooks={"request": [lambda _: seen.append("http-hook")]}
+        ) as http,
+        TransportSpy() as inherited_transport,
+    ):
+        monkeypatch.setattr(litellm, "client_session", http)
+        monkeypatch.setattr(litellm, "aclient_session", None)
+        thread = Thread(target=provider.serve_forever, daemon=True)
+        thread.start()
+        try:
+            messages = [{"role": "user", "content": "synthetic evidence"}]
+            params = {
+                "api_base": f"http://127.0.0.1:{provider.server_port}/v1",
+                "api_key": "synthetic-key",
+                "fallback_models": [],
+                "logger_fn": lambda _: seen.append("per-request"),
+            }
+            with pytest.raises(LiteLLMClientError):
+                client._make_request(messages, **params)
+            assert {"failure", "body", "per-request", "http-hook", "sentry"} <= set(
+                seen
+            )
+            monkeypatch.setattr(
+                litellm, "sync_transport", inherited_transport, raising=False
+            )
+            response_reasons.append("stop")
+            client._make_request(messages, model="minimax/MiniMax-M3", **params)
+            assert "sync-transport" in seen
+            seen.clear()
+            capsys.readouterr()
+            with pytest.raises(LiteLLMClientError, match="Provider request failed"):
+                client._make_request(
+                    messages,
+                    redact_provider_errors=True,
+                    parse_structured_output=False,
+                    **params,
+                )
+            assert seen == []
+            for raw_reason, expected in [
+                ("stop", "stop"),
+                ("length", "length"),
+                (None, None),
+                ("error", None),
+            ]:
+                monkeypatch.setattr(litellm, "sync_transport", inherited_transport)
+                monkeypatch.setattr(utils, "add_breadcrumb", breadcrumb)
+                monkeypatch.setattr(
+                    litellm,
+                    "model_alias_map",
+                    {"minimax/MiniMax-M3": "minimax/MiniMax-M2.7"},
+                )
+                monkeypatch.setenv("LITELLM_PRINT_STANDARD_LOGGING_PAYLOAD", "1")
+                cache = Mock(spec=Cache)
+                monkeypatch.setattr(litellm, "cache", cache)
+                response_reasons.append(raw_reason)
+                result = client._make_request(
+                    messages,
+                    redact_provider_errors=True,
+                    parse_structured_output=False,
+                    model="minimax/MiniMax-M3",
+                    caching=True,
+                    **params,
+                )
+                assert result.value == "synthetic answer"
+                assert result.finish_reason == expected
+                assert not cache.mock_calls
+                assert wire_models[-1] == "MiniMax-M3"
+            assert seen == []
+            assert "synthetic evidence" not in capsys.readouterr().out
+
+            spawned_client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
+            get_context = multiprocessing.get_context
+            with monkeypatch.context() as spawn_patch:
+                spawn_patch.setattr(
+                    multiprocessing,
+                    "get_context",
+                    lambda method=None: get_context(method or "spawn"),
+                )
+                spawn_patch.setattr(
+                    spawned_client, "_run_completion", _run_isolated_completion
+                )
+                response_reasons.append("stop")
+                result = spawned_client._make_request(
+                    messages,
+                    redact_provider_errors=True,
+                    parse_structured_output=False,
+                    **params,
+                )
+                assert result.finish_reason == "stop"
+
+                def raw_rule(_content):
+                    pytest.fail("Private request exposed content to a global rule")
+
+                spawn_patch.setattr(litellm, "pre_call_rules", [raw_rule])
+                with pytest.raises(
+                    ProviderRequestGuardError, match="global raw-content rules"
+                ):
+                    spawned_client._make_request(
+                        messages,
+                        redact_provider_errors=True,
+                        parse_structured_output=False,
+                        **params,
+                    )
+                assert len(wire_models) == 8
+
+            with pytest.raises(ValueError, match="native IO"):
+                client._make_request(
+                    messages,
+                    redact_provider_errors=True,
+                    parse_structured_output=False,
+                    client=object(),
+                    **params,
+                )
+        finally:
+            provider.shutdown()
+            thread.join()
+
 
 KEYS = (
     "model",

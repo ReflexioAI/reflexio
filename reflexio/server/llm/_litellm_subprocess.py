@@ -22,14 +22,20 @@ import reflexio.provider_bootstrap  # noqa: F401
 
 # isort: split
 
+import json
 import logging
 import multiprocessing
+import os
 import pickle
 import threading
 import time
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
+from datetime import datetime
 from multiprocessing.process import BaseProcess
+from pathlib import Path
 from typing import Any, NoReturn
+from uuid import uuid4
 
 import litellm
 from litellm.exceptions import ContextWindowExceededError
@@ -411,11 +417,93 @@ def _litellm_completion_worker(
                 **params,
                 "timeout": min(float(params.get("timeout", remaining)), remaining),
             }
+            private = params.pop("reflexio_private_provider_io", False)
             native_cli_worker(native_context, result_queue, deadline)
-            response = model_completion(params)
+            response = (
+                _private_completion(params) if private else model_completion(params)
+            )
             authority.raise_if_rejected()
             result_queue.put(("ok", _picklable_completion_result(response)))
         except BaseException as exc:
             result_queue.put(
                 ("error", _snapshot_completion_error(authority.error or exc, params))
             )
+
+
+def require_private_provider_rules() -> None:
+    # These rules can enforce required request/response policy. A private
+    # request cannot share raw content with them or silently bypass them.
+    if litellm.pre_call_rules or litellm.post_call_rules:
+        raise ProviderRequestGuardError(
+            "Private provider I/O cannot run with global raw-content rules"
+        )
+
+
+def _private_completion(params: dict[str, Any]) -> Any:
+    """Isolate the per-call child before any private provider I/O."""
+    from litellm import utils
+    from litellm.litellm_core_utils import litellm_logging
+    from litellm.litellm_core_utils.rules import Rules
+
+    require_private_provider_rules()
+    # LiteLLM's no-log covers ordinary outcome callbacks, but its raw pre/post
+    # hooks can still invoke integrations or print request and response bodies.
+    # The child serves one completion and owns these inherited settings.
+    logging.disable(logging.CRITICAL)
+    os.environ.pop("LITELLM_PRINT_STANDARD_LOGGING_PAYLOAD", None)
+    litellm.suppress_debug_info = True
+    # Older supported LiteLLM versions also print directly under this flag.
+    litellm.set_verbose = False  # pyright: ignore[reportPrivateImportUsage]
+    litellm.callbacks = []
+    litellm.input_callback = []
+    litellm.success_callback = []
+    litellm.failure_callback = []
+    litellm.service_callback = []
+    litellm.cache = None
+    litellm.model_alias_map = {}
+    params["caching"] = False
+    litellm.client_session = None
+    litellm.aclient_session = None
+    for transport in ("sync_transport", "async_transport"):
+        setattr(litellm, transport, None)
+    for diagnostic_module in (utils, litellm_logging):
+        for hook in ("add_breadcrumb", "capture_exception"):
+            setattr(diagnostic_module, hook, None)
+    litellm._async_input_callback = []
+    litellm._async_success_callback = []
+    litellm._async_failure_callback = []
+    finish_reasons: list[str | None] = []
+
+    def capture_finish(original_response: Any, *_args: Any, **_kwargs: Any) -> None:
+        # LiteLLM normalizes null and unfamiliar reasons to "stop". Keep
+        # only the raw reason from the native OpenAI-compatible response.
+        try:
+            if (
+                isinstance(original_response, str)
+                and len(original_response) <= 1_000_000
+            ):
+                original_response = json.loads(original_response)
+            if not isinstance(original_response, dict):
+                return
+            raw = original_response["choices"][0].get("finish_reason")
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+            return
+        finish_reasons.append(raw if raw in ("stop", "length") else None)
+
+    params.setdefault("litellm_call_id", str(uuid4()))
+    # LiteLLM can print a raw standard payload directly, outside logging.
+    with (
+        Path(os.devnull).open("w", encoding="utf-8") as sink,
+        redirect_stdout(sink),
+        redirect_stderr(sink),
+    ):
+        logging_obj, request = utils.function_setup(
+            "completion", Rules(), datetime.now(), is_async_call=False, **params
+        )
+        logging_obj.post_call = capture_finish
+        response = model_completion({**request, "litellm_logging_obj": logging_obj})
+    if isinstance(response, litellm.ModelResponse):
+        response._hidden_params["reflexio_provider_finish_reason"] = (
+            finish_reasons[0] if len(finish_reasons) == 1 else None
+        )
+    return response
