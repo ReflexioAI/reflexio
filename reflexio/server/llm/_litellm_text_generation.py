@@ -80,9 +80,12 @@ from reflexio.server.llm._provider_concurrency import (
 from reflexio.server.llm.call_deadline import model_call_deadline, remaining_call_time
 from reflexio.server.llm.completion_io import intercept_completion_io
 from reflexio.server.llm.failure import (
+    TRANSIENT_UPSTREAM_STATUS_CODES,
+    LLMFailureVerdict,
     OutageWait,
     Transient,
     classify_llm_failure,
+    exception_chain,
 )
 from reflexio.server.llm.image_utils import (
     SUPPORTED_IMAGE_MIME_TYPES,
@@ -558,11 +561,34 @@ class _StructuredAttempt:
 _OUTAGE_EVIDENCE_MIN_TIMEOUT_SECONDS = 60.0
 
 
-def _upstream_http_status(error: Exception) -> int | None:
+def _upstream_http_status(error: BaseException) -> int | None:
     status = getattr(error, "upstream_status_code", None)
     if status is None:
         status = getattr(error, "status_code", None)
     return status if type(status) is int and 100 <= status <= 599 else None
+
+
+def _private_provider_failure(
+    error: Exception, verdict: LLMFailureVerdict
+) -> LiteLLMClientError:
+    error_type = getattr(error, "upstream_error_type", None) or type(error).__name__
+    status = _upstream_http_status(error)
+    if isinstance(verdict, Transient):
+        error_type = "APITimeoutError" if verdict.timed_out else "APIConnectionError"
+        status = next(
+            (
+                status
+                for link in exception_chain(error)
+                if (status := _upstream_http_status(link))
+                in TRANSIENT_UPSTREAM_STATUS_CODES
+            ),
+            status,
+        )
+    return LiteLLMClientError(
+        "Provider request failed",
+        upstream_error_type=error_type,
+        upstream_status_code=status,
+    )
 
 
 def _reserved_attempt_id(unreserved: dict[str, Any] | None) -> str | None:
@@ -1618,6 +1644,10 @@ class TextGenerationMixin:
             "provider_request_guard", None
         )
         redact_provider_errors = kwargs.pop("redact_provider_errors", False)
+        if redact_provider_errors and (
+            kwargs.get("parse_structured_output") is not False or kwargs.get("tools")
+        ):
+            raise ValueError("Private requests require unparsed, tool-free responses")
         original_kwargs = dict(kwargs)
 
         def _finish(
@@ -1710,6 +1740,8 @@ class TextGenerationMixin:
                 **_detach_request_state(dict(turn_kwargs)),
             )
             params["num_retries"] = 0
+            if redact_provider_errors:
+                params["no-log"] = True
             params.pop("fallbacks", None)  # owned walk: never delegate to litellm
             per_attempt = self._coerce_timeout_seconds(params)
             remaining = walk_deadline - time.monotonic()
@@ -2009,29 +2041,22 @@ class TextGenerationMixin:
                         type(e).__name__,
                         "redacted" if redact_provider_errors else e,
                     )
-                if redact_provider_errors:
-                    failure = LiteLLMClientError(
-                        "Provider request failed",
-                        upstream_error_type=(
-                            "APITimeoutError"
-                            if isinstance(verdict, Transient) and verdict.timed_out
-                            else getattr(e, "upstream_error_type", None)
-                            or type(e).__name__
-                        ),
-                        upstream_status_code=status,
-                    )
-                else:
-                    failure = LiteLLMClientError(f"API call failed: {e}")
+                failure = (
+                    _private_provider_failure(e, verdict)
+                    if redact_provider_errors
+                    else LiteLLMClientError(f"API call failed: {e}")
+                )
                 # Which breaker decides whether durable work is charged for it.
                 failure.circuit_route = circuit_call.route
                 failure.quota_exhausted = exhausted
-                cause = None if redact_provider_errors else e
-                failure.__cause__ = cause  # classified below before it is raised
-                failure.__suppress_context__ = True
-                _report_reserved_failure(reserved_attempt_id, failure)
-                raise failure from cause
+                if not redact_provider_errors:
+                    failure.__cause__ = e  # classify before it is raised
+                    _report_reserved_failure(reserved_attempt_id, failure)
+                    raise failure from e
             finally:
                 circuit_call.close()
+            _report_reserved_failure(reserved_attempt_id, failure)
+            raise failure from None
 
         def _call_and_parse(
             turn_params: dict[str, Any],
