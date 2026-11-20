@@ -1,6 +1,9 @@
 """Completion identity, response metadata, and private request behavior."""
 
+import logging
+import time
 import traceback
+from queue import SimpleQueue
 
 import pytest
 from pydantic import HttpUrl
@@ -80,6 +83,89 @@ def test_plain_completion_preserves_finish_reason_and_unsolicited_tool_call(
     assert result.value == "synthetic body"
     assert result.finish_reason == "length"
     assert result.has_tool_calls
+
+
+def test_private_request_skips_litellm_failure_callback(monkeypatch):
+    import httpx
+    import litellm
+    from litellm.integrations.custom_logger import CustomLogger
+    from openai import OpenAI
+
+    from reflexio.server.llm._litellm_subprocess import (
+        _litellm_completion_worker,
+        _raise_completion_error,
+    )
+    from reflexio.test_support.llm_mock import unpatched_litellm
+
+    seen = []
+
+    class FailureSpy(CustomLogger):
+        def log_failure_event(self, *_args, **_kwargs):
+            seen.append("failure")
+
+        def log_post_api_call(self, *_args, **_kwargs):
+            seen.append("body")
+
+    for key in (
+        "callbacks",
+        "success_callback",
+        "_async_input_callback",
+        "_async_success_callback",
+        "_async_failure_callback",
+    ):
+        monkeypatch.setattr(litellm, key, [])
+    monkeypatch.setattr(litellm, "failure_callback", [FailureSpy()])
+    monkeypatch.setattr(litellm, "input_callback", [FailureSpy()])
+    monkeypatch.setattr(litellm, "suppress_debug_info", True)
+    monkeypatch.setattr(litellm, "set_verbose", False)
+    monkeypatch.setattr(litellm, "global_disable_no_log_param", True)
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            400, json={"error": {"message": "synthetic provider error"}}
+        )
+    )
+    client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
+
+    def run_test_worker(params, timeout):
+        queue = SimpleQueue()
+        previous_logging = logging.root.manager.disable
+        try:
+            _litellm_completion_worker(params, queue, time.monotonic() + timeout)
+        finally:
+            logging.disable(previous_logging)
+        status, value = queue.get_nowait()
+        if status == "error":
+            _raise_completion_error(value)
+        return value
+
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", run_test_worker)
+    with unpatched_litellm(), httpx.Client(transport=transport) as http:
+        sdk = OpenAI(
+            api_key="synthetic-key",
+            base_url="https://example.invalid/v1",
+            http_client=http,
+            max_retries=0,
+        )
+        messages = [{"role": "user", "content": "synthetic evidence"}]
+        with pytest.raises(LiteLLMClientError):
+            client._make_request(
+                messages,
+                client=sdk,
+                fallback_models=[],
+                logger_fn=lambda _: seen.append("per-request"),
+            )
+        assert {"failure", "body", "per-request"} <= set(seen)
+        seen.clear()
+        with pytest.raises(LiteLLMClientError, match="Provider request failed"):
+            client._make_request(
+                messages,
+                client=sdk,
+                fallback_models=[],
+                redact_provider_errors=True,
+                parse_structured_output=False,
+                logger_fn=lambda _: seen.append("per-request"),
+            )
+        assert seen == []
 
 
 KEYS = (

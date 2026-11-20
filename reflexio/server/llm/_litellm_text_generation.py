@@ -1645,7 +1645,8 @@ class TextGenerationMixin:
         )
         redact_provider_errors = kwargs.pop("redact_provider_errors", False)
         if redact_provider_errors and (
-            kwargs.get("parse_structured_output") is not False or kwargs.get("tools")
+            kwargs.get("parse_structured_output") is not False
+            or kwargs.get("tools") is not None
         ):
             raise ValueError("Private requests require unparsed, tool-free responses")
         original_kwargs = dict(kwargs)
@@ -1742,6 +1743,7 @@ class TextGenerationMixin:
             params["num_retries"] = 0
             if redact_provider_errors:
                 params["no-log"] = True
+                params["reflexio_private_provider_io"] = True
             params.pop("fallbacks", None)  # owned walk: never delegate to litellm
             per_attempt = self._coerce_timeout_seconds(params)
             remaining = walk_deadline - time.monotonic()
