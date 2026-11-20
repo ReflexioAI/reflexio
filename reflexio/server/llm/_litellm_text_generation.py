@@ -49,6 +49,7 @@ from reflexio.server.llm._azure_transport import normalize_azure_v1_endpoints
 from reflexio.server.llm._litellm_subprocess import (
     _litellm_completion_worker,
     _raise_completion_error,
+    require_private_provider_rules,
     retire_completion_worker,
 )
 from reflexio.server.llm._litellm_types import (
@@ -83,7 +84,10 @@ from reflexio.server.llm._provider_concurrency import (
     provider_slot,
 )
 from reflexio.server.llm.call_deadline import model_call_deadline, remaining_call_time
-from reflexio.server.llm.completion_io import intercept_completion_io
+from reflexio.server.llm.completion_io import (
+    intercept_completion_io,
+    require_no_completion_io_hook,
+)
 from reflexio.server.llm.failure import (
     TRANSIENT_ERROR_NAMES,
     TRANSIENT_UPSTREAM_STATUS_CODES,
@@ -1720,6 +1724,9 @@ class TextGenerationMixin:
             or kwargs.get("client") is not None
         ):
             raise ValueError("Private requests require plain responses and native IO")
+        if redact_provider_errors:
+            require_private_provider_rules()
+            require_no_completion_io_hook()
         original_kwargs = dict(kwargs)
 
         def _finish(

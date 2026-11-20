@@ -2,6 +2,7 @@
 
 import json
 import logging
+import multiprocessing
 import pickle
 import time
 import traceback
@@ -102,7 +103,7 @@ def test_plain_completion_preserves_finish_reason_and_unsolicited_tool_call(
     assert result.has_tool_calls
 
 
-def test_private_request_skips_litellm_failure_callback(monkeypatch):
+def test_private_request_skips_litellm_failure_callback(monkeypatch, capsys):
     import httpx
     import litellm
     from litellm import utils
@@ -114,6 +115,7 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch):
         _litellm_completion_worker,
         _raise_completion_error,
     )
+    from reflexio.server.llm._litellm_text_generation import _run_isolated_completion
     from reflexio.test_support.llm_mock import unpatched_litellm
 
     seen = []
@@ -147,6 +149,7 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch):
     monkeypatch.setattr(litellm, "force_ipv4", False)
     monkeypatch.setattr(litellm, "pre_call_rules", [])
     monkeypatch.setattr(litellm, "post_call_rules", [])
+    monkeypatch.setattr(litellm, "model_alias_map", {})
 
     def breadcrumb(**_kwargs):
         seen.append("sentry")
@@ -156,10 +159,12 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch):
         monkeypatch.setattr(target, "capture_exception", None, raising=False)
 
     response_reasons = []
+    wire_models = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
-            self.rfile.read(int(self.headers["Content-Length"]))
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            wire_models.append(request["model"])
             if response_reasons:
                 body = json.dumps(
                     {
@@ -243,6 +248,7 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch):
             client._make_request(messages, model="minimax/MiniMax-M3", **params)
             assert "sync-transport" in seen
             seen.clear()
+            capsys.readouterr()
             with pytest.raises(LiteLLMClientError, match="Provider request failed"):
                 client._make_request(
                     messages,
@@ -259,6 +265,12 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch):
             ]:
                 monkeypatch.setattr(litellm, "sync_transport", inherited_transport)
                 monkeypatch.setattr(utils, "add_breadcrumb", breadcrumb)
+                monkeypatch.setattr(
+                    litellm,
+                    "model_alias_map",
+                    {"minimax/MiniMax-M3": "minimax/MiniMax-M2.7"},
+                )
+                monkeypatch.setenv("LITELLM_PRINT_STANDARD_LOGGING_PAYLOAD", "1")
                 cache = Mock(spec=Cache)
                 monkeypatch.setattr(litellm, "cache", cache)
                 response_reasons.append(raw_reason)
@@ -273,21 +285,45 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch):
                 assert result.value == "synthetic answer"
                 assert result.finish_reason == expected
                 assert not cache.mock_calls
+                assert wire_models[-1] == "MiniMax-M3"
             assert seen == []
+            assert "synthetic evidence" not in capsys.readouterr().out
 
-            def raw_rule(_content):
-                pytest.fail("Private request exposed content to a global rule")
-
-            monkeypatch.setattr(litellm, "pre_call_rules", [raw_rule])
-            with pytest.raises(
-                ProviderRequestGuardError, match="global raw-content rules"
-            ):
-                client._make_request(
+            spawned_client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
+            get_context = multiprocessing.get_context
+            with monkeypatch.context() as spawn_patch:
+                spawn_patch.setattr(
+                    multiprocessing,
+                    "get_context",
+                    lambda method=None: get_context(method or "spawn"),
+                )
+                spawn_patch.setattr(
+                    spawned_client, "_run_completion", _run_isolated_completion
+                )
+                response_reasons.append("stop")
+                result = spawned_client._make_request(
                     messages,
                     redact_provider_errors=True,
                     parse_structured_output=False,
                     **params,
                 )
+                assert result.finish_reason == "stop"
+
+                def raw_rule(_content):
+                    pytest.fail("Private request exposed content to a global rule")
+
+                spawn_patch.setattr(litellm, "pre_call_rules", [raw_rule])
+                with pytest.raises(
+                    ProviderRequestGuardError, match="global raw-content rules"
+                ):
+                    spawned_client._make_request(
+                        messages,
+                        redact_provider_errors=True,
+                        parse_structured_output=False,
+                        **params,
+                    )
+                assert len(wire_models) == 8
+
             with pytest.raises(ValueError, match="native IO"):
                 client._make_request(
                     messages,
