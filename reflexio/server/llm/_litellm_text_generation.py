@@ -1647,8 +1647,9 @@ class TextGenerationMixin:
         if redact_provider_errors and (
             kwargs.get("parse_structured_output") is not False
             or kwargs.get("tools") is not None
+            or kwargs.get("client") is not None
         ):
-            raise ValueError("Private requests require unparsed, tool-free responses")
+            raise ValueError("Private requests require plain responses and native IO")
         original_kwargs = dict(kwargs)
 
         def _finish(
@@ -1742,6 +1743,17 @@ class TextGenerationMixin:
             )
             params["num_retries"] = 0
             if redact_provider_errors:
+                # Strip per-request hooks before the worker arguments are
+                # serialized. The child clears inherited global hooks.
+                for name in (
+                    "callbacks",
+                    "input_callback",
+                    "success_callback",
+                    "failure_callback",
+                    "logger_fn",
+                    "litellm_logging_obj",
+                ):
+                    params.pop(name, None)
                 params["no-log"] = True
                 params["reflexio_private_provider_io"] = True
             params.pop("fallbacks", None)  # owned walk: never delegate to litellm
@@ -1888,6 +1900,10 @@ class TextGenerationMixin:
                 message = response.choices[0].message  # type: ignore[reportAttributeAccessIssue]
                 content = message.content
                 finish_reason = response.choices[0].finish_reason  # type: ignore[reportAttributeAccessIssue]
+                if redact_provider_errors:
+                    finish_reason = _response_hidden_params(response).get(
+                        "reflexio_provider_finish_reason"
+                    )
                 self.logger.info(
                     "event=llm_request_end model=%s timeout=%s has_response_format=%s elapsed_seconds=%.3f success=%s",
                     turn_params.get("model"),

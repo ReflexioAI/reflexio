@@ -1,9 +1,13 @@
 """Completion identity, response metadata, and private request behavior."""
 
+import json
 import logging
+import pickle
 import time
 import traceback
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue import SimpleQueue
+from threading import Thread
 
 import pytest
 from pydantic import HttpUrl
@@ -89,7 +93,6 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch):
     import httpx
     import litellm
     from litellm.integrations.custom_logger import CustomLogger
-    from openai import OpenAI
 
     from reflexio.server.llm._litellm_subprocess import (
         _litellm_completion_worker,
@@ -120,11 +123,48 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch):
     monkeypatch.setattr(litellm, "suppress_debug_info", True)
     monkeypatch.setattr(litellm, "set_verbose", False)
     monkeypatch.setattr(litellm, "global_disable_no_log_param", True)
-    transport = httpx.MockTransport(
-        lambda _request: httpx.Response(
-            400, json={"error": {"message": "synthetic provider error"}}
-        )
-    )
+
+    response_reasons = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            if response_reasons:
+                body = json.dumps(
+                    {
+                        "model": "MiniMax-M3",
+                        "id": "synthetic",
+                        "object": "chat.completion",
+                        "created": 1,
+                        "usage": {
+                            "prompt_tokens": 2,
+                            "completion_tokens": 3,
+                            "total_tokens": 5,
+                        },
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {
+                                    "content": "synthetic answer",
+                                    "role": "assistant",
+                                },
+                                "finish_reason": response_reasons.pop(0),
+                            }
+                        ],
+                    }
+                ).encode()
+                self.send_response(200)
+            else:
+                body = b'{"error":{"message":"synthetic provider error"}}'
+                self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
 
     def run_test_worker(params, timeout):
@@ -137,36 +177,68 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch):
         status, value = queue.get_nowait()
         if status == "error":
             _raise_completion_error(value)
-        return value
+        return pickle.loads(pickle.dumps(value))  # noqa: S301 -- local worker fixture
 
     monkeypatch.setattr(client, "_completion_with_hard_timeout", run_test_worker)
-    with unpatched_litellm(), httpx.Client(transport=transport) as http:
-        sdk = OpenAI(
-            api_key="synthetic-key",
-            base_url="https://example.invalid/v1",
-            http_client=http,
-            max_retries=0,
-        )
-        messages = [{"role": "user", "content": "synthetic evidence"}]
-        with pytest.raises(LiteLLMClientError):
-            client._make_request(
-                messages,
-                client=sdk,
-                fallback_models=[],
-                logger_fn=lambda _: seen.append("per-request"),
-            )
-        assert {"failure", "body", "per-request"} <= set(seen)
-        seen.clear()
-        with pytest.raises(LiteLLMClientError, match="Provider request failed"):
-            client._make_request(
-                messages,
-                client=sdk,
-                fallback_models=[],
-                redact_provider_errors=True,
-                parse_structured_output=False,
-                logger_fn=lambda _: seen.append("per-request"),
-            )
-        assert seen == []
+    with (
+        unpatched_litellm(),
+        ThreadingHTTPServer(("127.0.0.1", 0), Handler) as provider,
+        httpx.Client(
+            event_hooks={"request": [lambda _: seen.append("http-hook")]}
+        ) as http,
+    ):
+        monkeypatch.setattr(litellm, "client_session", http)
+        monkeypatch.setattr(litellm, "aclient_session", None)
+        thread = Thread(target=provider.serve_forever, daemon=True)
+        thread.start()
+        try:
+            messages = [{"role": "user", "content": "synthetic evidence"}]
+            params = {
+                "api_base": f"http://127.0.0.1:{provider.server_port}/v1",
+                "api_key": "synthetic-key",
+                "fallback_models": [],
+                "logger_fn": lambda _: seen.append("per-request"),
+            }
+            with pytest.raises(LiteLLMClientError):
+                client._make_request(messages, **params)
+            assert {"failure", "body", "per-request", "http-hook"} <= set(seen)
+            seen.clear()
+            with pytest.raises(LiteLLMClientError, match="Provider request failed"):
+                client._make_request(
+                    messages,
+                    redact_provider_errors=True,
+                    parse_structured_output=False,
+                    **params,
+                )
+            assert seen == []
+            for raw_reason, expected in [
+                ("stop", "stop"),
+                ("length", "length"),
+                (None, None),
+                ("error", None),
+            ]:
+                response_reasons.append(raw_reason)
+                result = client._make_request(
+                    messages,
+                    redact_provider_errors=True,
+                    parse_structured_output=False,
+                    model="minimax/MiniMax-M3",
+                    **params,
+                )
+                assert result.value == "synthetic answer"
+                assert result.finish_reason == expected
+            assert seen == []
+            with pytest.raises(ValueError, match="native IO"):
+                client._make_request(
+                    messages,
+                    redact_provider_errors=True,
+                    parse_structured_output=False,
+                    client=object(),
+                    **params,
+                )
+        finally:
+            provider.shutdown()
+            thread.join()
 
 
 KEYS = (
