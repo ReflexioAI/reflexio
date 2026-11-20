@@ -43,7 +43,9 @@ _RETRIEVAL_EXPERIMENT_FIELDS = frozenset(
 )
 
 
-def _discard_inert_optimizer_fields(payload: dict[str, Any]) -> dict[str, Any]:
+def _normalize_legacy_optimizer_write(
+    payload: dict[str, Any], existing: Config, *, partial: bool
+) -> dict[str, Any]:
     """Allow older clients to echo disabled defaults on API writes."""
     optimizer = payload.get("playbook_optimizer_config")
     if not isinstance(optimizer, dict):
@@ -58,12 +60,17 @@ def _discard_inert_optimizer_fields(payload: dict[str, Any]) -> dict[str, Any]:
     }
     if not inert:
         return payload
-    return {
-        **payload,
-        "playbook_optimizer_config": {
-            name: value for name, value in optimizer.items() if name not in inert
-        },
-    }
+    cleaned = {name: value for name, value in optimizer.items() if name not in inert}
+    normalized = dict(payload)
+    if partial and not cleaned:
+        del normalized["playbook_optimizer_config"]
+        return normalized
+    # Older readers cannot round-trip a command that their schema did not know.
+    # An explicit current-schema null still clears the command.
+    if command := existing.playbook_optimizer_config.assistant_command:
+        cleaned.setdefault("assistant_command", command)
+    normalized["playbook_optimizer_config"] = cleaned
+    return normalized
 
 
 def _reject_direct_experiment_mutation(
@@ -146,9 +153,10 @@ def set_config(
     # Create Reflexio instance to access the configurator through request_context
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
     configurator = reflexio.request_context.configurator
+    existing = configurator.get_org_config()
     config = _reject_direct_experiment_mutation(
-        _discard_inert_optimizer_fields(config),
-        configurator.get_org_config(),
+        _normalize_legacy_optimizer_write(config, existing, partial=False),
+        existing,
         preserve_missing=True,
     )
     try:
@@ -227,7 +235,7 @@ def update_config(
     configurator = reflexio.request_context.configurator
     existing_config = configurator.get_org_config()
     partial = _reject_direct_experiment_mutation(
-        _discard_inert_optimizer_fields(partial),
+        _normalize_legacy_optimizer_write(partial, existing_config, partial=True),
         existing_config,
         preserve_missing=False,
     )
