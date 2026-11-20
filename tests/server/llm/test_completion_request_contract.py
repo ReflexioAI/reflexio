@@ -3,7 +3,6 @@
 import traceback
 
 import pytest
-from litellm import ModelResponse
 from pydantic import HttpUrl
 
 from reflexio.models.config_schema import (
@@ -31,13 +30,22 @@ def test_private_provider_failure_keeps_classification_without_body(
 
     def reject(params, _timeout):
         assert "redact_provider_errors" not in params
-        raise LiteLLMClientError(private_marker, upstream_status_code=status)
+        assert params["no-log"] is True
+        raise LiteLLMClientError(private_marker) from LiteLLMClientError(
+            private_marker, upstream_status_code=status
+        )
 
     monkeypatch.setattr(client, "_completion_with_hard_timeout", reject)
     with pytest.raises(LiteLLMClientError, match="Provider request failed") as caught:
-        client._make_request([], redact_provider_errors=True, fallback_models=[])
+        client._make_request(
+            [],
+            redact_provider_errors=True,
+            parse_structured_output=False,
+            fallback_models=[],
+        )
     assert private_marker not in caplog.text
     assert private_marker not in "".join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None
     classified = classify_llm_failure(caught.value, consult_breaker=False)
     assert isinstance(classified, verdict)
 
@@ -46,6 +54,8 @@ def test_plain_completion_preserves_finish_reason_and_unsolicited_tool_call(
     monkeypatch,
 ):
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
+    from litellm import ModelResponse
+
     response = ModelResponse(
         model="gpt-4o",
         choices=[

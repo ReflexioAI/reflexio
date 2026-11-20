@@ -380,6 +380,8 @@ class LiteLLMClient(TextGenerationMixin, EmbeddingMixin, StructuredOutputMixin):
             "fallbacks",
             "structured_output_validator",
             "provider_request_guard",
+            "redact_provider_errors",
+            "no-log",
         }
         policy = {key: value for key, value in params.items() if key not in excluded}
         if is_pydantic_model(policy.get("response_format")):
