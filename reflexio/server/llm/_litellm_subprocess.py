@@ -434,7 +434,8 @@ def _private_completion(params: dict[str, Any]) -> Any:
     # The child serves one completion and owns these inherited settings.
     logging.disable(logging.CRITICAL)
     litellm.suppress_debug_info = True
-    litellm.set_verbose = False
+    # Older supported LiteLLM versions also print directly under this flag.
+    litellm.set_verbose = False  # pyright: ignore[reportPrivateImportUsage]
     litellm.callbacks = []
     litellm.input_callback = []
     litellm.success_callback = []
