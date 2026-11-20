@@ -435,6 +435,7 @@ def _disable_private_provider_diagnostics(params: dict[str, Any]) -> None:
     litellm.input_callback = []
     litellm.success_callback = []
     litellm.failure_callback = []
+    litellm.service_callback = []
     litellm._async_input_callback = []
     litellm._async_success_callback = []
     litellm._async_failure_callback = []
