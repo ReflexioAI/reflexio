@@ -23,6 +23,7 @@ from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
     LiteLLMConfig,
+    ProviderRequestGuardError,
 )
 from reflexio.server.llm.model_defaults import ModelRole
 
@@ -104,8 +105,10 @@ def test_plain_completion_preserves_finish_reason_and_unsolicited_tool_call(
 def test_private_request_skips_litellm_failure_callback(monkeypatch):
     import httpx
     import litellm
+    from litellm import utils
     from litellm.caching.caching import Cache
     from litellm.integrations.custom_logger import CustomLogger
+    from litellm.litellm_core_utils import litellm_logging
 
     from reflexio.server.llm._litellm_subprocess import (
         _litellm_completion_worker,
@@ -142,6 +145,15 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch):
     monkeypatch.setattr(litellm, "set_verbose", False)
     monkeypatch.setattr(litellm, "global_disable_no_log_param", True)
     monkeypatch.setattr(litellm, "force_ipv4", False)
+    monkeypatch.setattr(litellm, "pre_call_rules", [])
+    monkeypatch.setattr(litellm, "post_call_rules", [])
+
+    def breadcrumb(**_kwargs):
+        seen.append("sentry")
+
+    for target in (utils, litellm_logging):
+        monkeypatch.setattr(target, "add_breadcrumb", breadcrumb)
+        monkeypatch.setattr(target, "capture_exception", None, raising=False)
 
     response_reasons = []
 
@@ -221,7 +233,9 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch):
             }
             with pytest.raises(LiteLLMClientError):
                 client._make_request(messages, **params)
-            assert {"failure", "body", "per-request", "http-hook"} <= set(seen)
+            assert {"failure", "body", "per-request", "http-hook", "sentry"} <= set(
+                seen
+            )
             monkeypatch.setattr(
                 litellm, "sync_transport", inherited_transport, raising=False
             )
@@ -244,6 +258,7 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch):
                 ("error", None),
             ]:
                 monkeypatch.setattr(litellm, "sync_transport", inherited_transport)
+                monkeypatch.setattr(utils, "add_breadcrumb", breadcrumb)
                 cache = Mock(spec=Cache)
                 monkeypatch.setattr(litellm, "cache", cache)
                 response_reasons.append(raw_reason)
@@ -259,6 +274,20 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch):
                 assert result.finish_reason == expected
                 assert not cache.mock_calls
             assert seen == []
+
+            def raw_rule(_content):
+                pytest.fail("Private request exposed content to a global rule")
+
+            monkeypatch.setattr(litellm, "pre_call_rules", [raw_rule])
+            with pytest.raises(
+                ProviderRequestGuardError, match="global raw-content rules"
+            ):
+                client._make_request(
+                    messages,
+                    redact_provider_errors=True,
+                    parse_structured_output=False,
+                    **params,
+                )
             with pytest.raises(ValueError, match="native IO"):
                 client._make_request(
                     messages,

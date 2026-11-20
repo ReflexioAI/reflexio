@@ -429,6 +429,16 @@ def _litellm_completion_worker(
 
 def _private_completion(params: dict[str, Any]) -> Any:
     """Silence hooks in the per-call child before any private provider I/O."""
+    from litellm import utils
+    from litellm.litellm_core_utils import litellm_logging
+    from litellm.litellm_core_utils.rules import Rules
+
+    # These rules can enforce required request/response policy. A private
+    # request cannot share raw content with them or silently bypass them.
+    if litellm.pre_call_rules or litellm.post_call_rules:
+        raise ProviderRequestGuardError(
+            "Private provider I/O cannot run with global raw-content rules"
+        )
     # LiteLLM's no-log covers ordinary outcome callbacks, but its raw pre/post
     # hooks can still invoke integrations or print request and response bodies.
     # The child serves one completion and owns these inherited settings.
@@ -447,12 +457,12 @@ def _private_completion(params: dict[str, Any]) -> Any:
     litellm.aclient_session = None
     for transport in ("sync_transport", "async_transport"):
         setattr(litellm, transport, None)
+    for diagnostic_module in (utils, litellm_logging):
+        for hook in ("add_breadcrumb", "capture_exception"):
+            setattr(diagnostic_module, hook, None)
     litellm._async_input_callback = []
     litellm._async_success_callback = []
     litellm._async_failure_callback = []
-    from litellm.litellm_core_utils.rules import Rules
-    from litellm.utils import function_setup
-
     finish_reasons: list[str | None] = []
 
     def capture_finish(original_response: Any, *_args: Any, **_kwargs: Any) -> None:
@@ -472,7 +482,7 @@ def _private_completion(params: dict[str, Any]) -> Any:
         finish_reasons.append(raw if raw in ("stop", "length") else None)
 
     params.setdefault("litellm_call_id", str(uuid4()))
-    logging_obj, request = function_setup(
+    logging_obj, request = utils.function_setup(
         "completion", Rules(), datetime.now(), is_async_call=False, **params
     )
     logging_obj.post_call = capture_finish
