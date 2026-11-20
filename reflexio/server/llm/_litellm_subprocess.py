@@ -411,6 +411,8 @@ def _litellm_completion_worker(
                 **params,
                 "timeout": min(float(params.get("timeout", remaining)), remaining),
             }
+            if params.pop("reflexio_private_provider_io", False):
+                _disable_private_provider_diagnostics(params)
             native_cli_worker(native_context, result_queue, deadline)
             response = model_completion(params)
             authority.raise_if_rejected()
@@ -419,3 +421,29 @@ def _litellm_completion_worker(
             result_queue.put(
                 ("error", _snapshot_completion_error(authority.error or exc, params))
             )
+
+
+def _disable_private_provider_diagnostics(params: dict[str, Any]) -> None:
+    """Silence hooks in the per-call child before any private provider I/O."""
+    # LiteLLM's no-log covers ordinary outcome callbacks, but its raw pre/post
+    # hooks can still invoke integrations or print request and response bodies.
+    # The child serves one completion and owns these inherited settings.
+    logging.disable(logging.CRITICAL)
+    litellm.suppress_debug_info = True
+    litellm.set_verbose = False
+    litellm.callbacks = []
+    litellm.input_callback = []
+    litellm.success_callback = []
+    litellm.failure_callback = []
+    litellm._async_input_callback = []
+    litellm._async_success_callback = []
+    litellm._async_failure_callback = []
+    for key in (
+        "callbacks",
+        "input_callback",
+        "success_callback",
+        "failure_callback",
+        "logger_fn",
+        "litellm_logging_obj",
+    ):
+        params.pop(key, None)
