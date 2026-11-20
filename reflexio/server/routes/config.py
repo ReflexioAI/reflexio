@@ -43,6 +43,42 @@ _RETRIEVAL_EXPERIMENT_FIELDS = frozenset(
 )
 
 
+def _normalize_legacy_optimizer_write(
+    payload: dict[str, Any], existing: Config, *, partial: bool
+) -> dict[str, Any]:
+    """Allow older clients to echo disabled defaults on API writes."""
+    optimizer = payload.get("playbook_optimizer_config")
+    if not isinstance(optimizer, dict):
+        return payload
+    inert = {
+        name
+        for name, default in (
+            ("assistant_script_path", None),
+            ("assistant_script_args", []),
+        )
+        if name in optimizer and optimizer[name] == default
+    }
+    if not inert:
+        return payload
+    cleaned = {name: value for name, value in optimizer.items() if name not in inert}
+    normalized = dict(payload)
+    if partial and not cleaned:
+        del normalized["playbook_optimizer_config"]
+        return normalized
+    # An older full document cannot express the current command. Reject the
+    # ambiguous replacement instead of copying a possibly stale command back.
+    if (
+        existing.playbook_optimizer_config.assistant_command
+        and "assistant_command" not in cleaned
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Upgrade the SDK before updating a configured optimizer assistant command.",
+        )
+    normalized["playbook_optimizer_config"] = cleaned
+    return normalized
+
+
 def _reject_direct_experiment_mutation(
     payload: dict[str, Any], existing: Config, *, preserve_missing: bool
 ) -> dict[str, Any]:
@@ -123,8 +159,11 @@ def set_config(
     # Create Reflexio instance to access the configurator through request_context
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
     configurator = reflexio.request_context.configurator
+    existing = configurator.get_org_config()
     config = _reject_direct_experiment_mutation(
-        config, configurator.get_org_config(), preserve_missing=True
+        _normalize_legacy_optimizer_write(config, existing, partial=False),
+        existing,
+        preserve_missing=True,
     )
     try:
         normalized_config = configurator.normalize_config_payload(config)
@@ -202,7 +241,9 @@ def update_config(
     configurator = reflexio.request_context.configurator
     existing_config = configurator.get_org_config()
     partial = _reject_direct_experiment_mutation(
-        partial, existing_config, preserve_missing=False
+        _normalize_legacy_optimizer_write(partial, existing_config, partial=True),
+        existing_config,
+        preserve_missing=False,
     )
     existing = existing_config.model_dump(mode="python")
     # Convert ValidationError into 422 so callers passing a partial that

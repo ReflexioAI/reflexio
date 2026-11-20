@@ -726,6 +726,82 @@ class TestSetConfigRoute:
         mock_reflexio.set_config.assert_called_once_with(normalized)
         assert mock_reflexio.set_config.call_args.args[0] is normalized
 
+    @pytest.mark.parametrize(
+        ("legacy_optimizer", "expected_status"),
+        [
+            ({"assistant_script_path": None, "assistant_script_args": []}, 200),
+            (
+                {
+                    "assistant_script_path": "/opt/assistant",
+                    "assistant_script_args": [],
+                },
+                422,
+            ),
+            ({"assistant_script_path": None, "assistant_script_args": ["--flag"]}, 422),
+        ],
+    )
+    def test_older_sdk_can_echo_inert_optimizer_fields(
+        self, client, patched_reflexio, mock_reflexio, legacy_optimizer, expected_status
+    ):
+        current = Config(storage_config=StorageConfigSQLite())
+        configurator = mock_reflexio.request_context.configurator
+        configurator.get_config.return_value = current
+        configurator.normalize_config_payload.side_effect = lambda payload: payload
+        mock_reflexio.set_config.return_value = SetConfigResponse(
+            success=True, msg="Configuration set successfully"
+        )
+        payload = current.model_dump(mode="json")
+        optimizer = payload["playbook_optimizer_config"]
+        optimizer.update(
+            legacy_optimizer, webhook_url="https://optimizer.example.com/run"
+        )
+
+        response = client.post("/api/set_config", json=payload)
+
+        assert response.status_code == expected_status, response.text
+        if expected_status == 200:
+            [saved] = mock_reflexio.set_config.call_args.args
+            assert saved["playbook_optimizer_config"] == {
+                **current.model_dump()["playbook_optimizer_config"],
+                "webhook_url": "https://optimizer.example.com/run",
+            }
+        else:
+            mock_reflexio.set_config.assert_not_called()
+
+    @pytest.mark.parametrize("explicit_clear", [False, True])
+    def test_older_sdk_cannot_inadvertently_clear_a_saved_command(
+        self, client, patched_reflexio, mock_reflexio, explicit_clear
+    ):
+        current = Config(storage_config=StorageConfigSQLite())
+        current.playbook_optimizer_config.assistant_command = [
+            "assistant",
+            "--mode",
+            "local",
+        ]
+        configurator = mock_reflexio.request_context.configurator
+        configurator.get_config.return_value = current
+        configurator.normalize_config_payload.side_effect = Config.model_validate
+        mock_reflexio.set_config.return_value = SetConfigResponse(
+            success=True, msg="Configuration set successfully"
+        )
+        payload = current.model_dump(mode="json")
+        optimizer = payload["playbook_optimizer_config"]
+        optimizer.update(assistant_script_path=None, assistant_script_args=[])
+        if explicit_clear:
+            optimizer["assistant_command"] = None
+        else:
+            del optimizer["assistant_command"]
+
+        response = client.post("/api/set_config", json=payload)
+
+        if explicit_clear:
+            assert response.status_code == 200, response.text
+            [saved] = mock_reflexio.set_config.call_args.args
+            assert saved.playbook_optimizer_config.assistant_command is None
+        else:
+            assert response.status_code == 409, response.text
+            mock_reflexio.set_config.assert_not_called()
+
     def test_unknown_field_returns_422_before_set_config(
         self, client, patched_reflexio, mock_reflexio
     ):
@@ -852,6 +928,30 @@ class TestUpdateConfigRoute:
 
         # Cache invalidated on success.
         mock_invalidate.assert_called_once_with(org_id="test-org")
+
+    def test_optimizer_patch_with_only_legacy_defaults_leaves_settings_intact(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        existing = self._existing_config()
+        existing.playbook_optimizer_config.metric_call_budget = 25
+        existing.playbook_optimizer_config.assistant_command = ["assistant"]
+        self._wire_mock(mock_reflexio, existing)
+
+        response = client.post(
+            "/api/update_config",
+            json={
+                "profile_window_size": 27,
+                "playbook_optimizer_config": {
+                    "assistant_script_path": None,
+                    "assistant_script_args": [],
+                },
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        [saved] = mock_reflexio.set_config.call_args.args
+        assert saved.profile_window_size == 27
+        assert saved.playbook_optimizer_config == existing.playbook_optimizer_config
 
     def test_retired_shadow_patch_is_rejected_without_writing(
         self, client, patched_reflexio, mock_reflexio
