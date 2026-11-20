@@ -8,6 +8,7 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue import SimpleQueue
 from threading import Thread
+from unittest.mock import Mock
 
 import pytest
 from pydantic import HttpUrl
@@ -28,9 +29,16 @@ from reflexio.server.llm.model_defaults import ModelRole
 pytestmark = pytest.mark.unit
 
 
-@pytest.mark.parametrize("status,verdict", [(400, Terminal), (529, Transient)])
+@pytest.mark.parametrize(
+    "status,upstream_type,verdict",
+    [
+        (400, None, Terminal),
+        (529, None, Transient),
+        (None, "RateLimitError", Transient),
+    ],
+)
 def test_private_provider_failure_keeps_classification_without_body(
-    monkeypatch, caplog, status, verdict
+    monkeypatch, caplog, status, upstream_type, verdict
 ):
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
     private_marker = "synthetic provider echoed customer evidence"
@@ -39,7 +47,9 @@ def test_private_provider_failure_keeps_classification_without_body(
         assert "redact_provider_errors" not in params
         assert params["no-log"] is True
         raise LiteLLMClientError(private_marker) from LiteLLMClientError(
-            private_marker, upstream_status_code=status
+            private_marker,
+            upstream_status_code=status,
+            upstream_error_type=upstream_type,
         )
 
     monkeypatch.setattr(client, "_completion_with_hard_timeout", reject)
@@ -55,6 +65,8 @@ def test_private_provider_failure_keeps_classification_without_body(
     assert caught.value.__context__ is None
     classified = classify_llm_failure(caught.value, consult_breaker=False)
     assert isinstance(classified, verdict)
+    if upstream_type is not None:
+        assert caught.value.upstream_error_type == upstream_type
 
 
 def test_plain_completion_preserves_finish_reason_and_unsolicited_tool_call(
@@ -92,6 +104,7 @@ def test_plain_completion_preserves_finish_reason_and_unsolicited_tool_call(
 def test_private_request_skips_litellm_failure_callback(monkeypatch):
     import httpx
     import litellm
+    from litellm.caching.caching import Cache
     from litellm.integrations.custom_logger import CustomLogger
 
     from reflexio.server.llm._litellm_subprocess import (
@@ -101,6 +114,11 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch):
     from reflexio.test_support.llm_mock import unpatched_litellm
 
     seen = []
+
+    class TransportSpy(httpx.HTTPTransport):
+        def handle_request(self, request):
+            seen.append("sync-transport")
+            return super().handle_request(request)
 
     class FailureSpy(CustomLogger):
         def log_failure_event(self, *_args, **_kwargs):
@@ -123,6 +141,7 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch):
     monkeypatch.setattr(litellm, "suppress_debug_info", True)
     monkeypatch.setattr(litellm, "set_verbose", False)
     monkeypatch.setattr(litellm, "global_disable_no_log_param", True)
+    monkeypatch.setattr(litellm, "force_ipv4", False)
 
     response_reasons = []
 
@@ -186,6 +205,7 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch):
         httpx.Client(
             event_hooks={"request": [lambda _: seen.append("http-hook")]}
         ) as http,
+        TransportSpy() as inherited_transport,
     ):
         monkeypatch.setattr(litellm, "client_session", http)
         monkeypatch.setattr(litellm, "aclient_session", None)
@@ -202,6 +222,12 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch):
             with pytest.raises(LiteLLMClientError):
                 client._make_request(messages, **params)
             assert {"failure", "body", "per-request", "http-hook"} <= set(seen)
+            monkeypatch.setattr(
+                litellm, "sync_transport", inherited_transport, raising=False
+            )
+            response_reasons.append("stop")
+            client._make_request(messages, model="minimax/MiniMax-M3", **params)
+            assert "sync-transport" in seen
             seen.clear()
             with pytest.raises(LiteLLMClientError, match="Provider request failed"):
                 client._make_request(
@@ -217,16 +243,21 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch):
                 (None, None),
                 ("error", None),
             ]:
+                monkeypatch.setattr(litellm, "sync_transport", inherited_transport)
+                cache = Mock(spec=Cache)
+                monkeypatch.setattr(litellm, "cache", cache)
                 response_reasons.append(raw_reason)
                 result = client._make_request(
                     messages,
                     redact_provider_errors=True,
                     parse_structured_output=False,
                     model="minimax/MiniMax-M3",
+                    caching=True,
                     **params,
                 )
                 assert result.value == "synthetic answer"
                 assert result.finish_reason == expected
+                assert not cache.mock_calls
             assert seen == []
             with pytest.raises(ValueError, match="native IO"):
                 client._make_request(

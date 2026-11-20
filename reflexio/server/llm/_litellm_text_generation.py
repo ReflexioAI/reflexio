@@ -85,6 +85,7 @@ from reflexio.server.llm._provider_concurrency import (
 from reflexio.server.llm.call_deadline import model_call_deadline, remaining_call_time
 from reflexio.server.llm.completion_io import intercept_completion_io
 from reflexio.server.llm.failure import (
+    TRANSIENT_ERROR_NAMES,
     TRANSIENT_UPSTREAM_STATUS_CODES,
     LLMFailureVerdict,
     OutageWait,
@@ -588,7 +589,21 @@ def _private_provider_failure(
     error_type = getattr(error, "upstream_error_type", None) or type(error).__name__
     status = _upstream_http_status(error)
     if isinstance(verdict, Transient):
-        error_type = "APITimeoutError" if verdict.timed_out else "APIConnectionError"
+        if verdict.timed_out:
+            error_type = "APITimeoutError"
+        else:
+            error_type = next(
+                (
+                    name
+                    for link in exception_chain(error)
+                    if (
+                        name := getattr(link, "upstream_error_type", None)
+                        or type(link).__name__
+                    )
+                    in TRANSIENT_ERROR_NAMES
+                ),
+                "APIConnectionError",
+            )
         status = next(
             (
                 status

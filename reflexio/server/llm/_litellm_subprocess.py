@@ -441,8 +441,12 @@ def _private_completion(params: dict[str, Any]) -> Any:
     litellm.success_callback = []
     litellm.failure_callback = []
     litellm.service_callback = []
+    litellm.cache = None
+    params["caching"] = False
     litellm.client_session = None
     litellm.aclient_session = None
+    for transport in ("sync_transport", "async_transport"):
+        setattr(litellm, transport, None)
     litellm._async_input_callback = []
     litellm._async_success_callback = []
     litellm._async_failure_callback = []
@@ -454,10 +458,15 @@ def _private_completion(params: dict[str, Any]) -> Any:
     def capture_finish(original_response: Any, *_args: Any, **_kwargs: Any) -> None:
         # LiteLLM normalizes null and unfamiliar reasons to "stop". Keep
         # only the raw reason from the native OpenAI-compatible response.
-        if not isinstance(original_response, str) or len(original_response) > 1_000_000:
-            return
         try:
-            raw = json.loads(original_response)["choices"][0].get("finish_reason")
+            if (
+                isinstance(original_response, str)
+                and len(original_response) <= 1_000_000
+            ):
+                original_response = json.loads(original_response)
+            if not isinstance(original_response, dict):
+                return
+            raw = original_response["choices"][0].get("finish_reason")
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
             return
         finish_reasons.append(raw if raw in ("stop", "length") else None)
