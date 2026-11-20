@@ -548,6 +548,7 @@ class _StructuredAttempt:
     model: str
     provenance: ModelProvenance | None = None
     usage: Any | None = None
+    has_tool_calls: bool = False
 
 
 # A timeout is evidence of a provider outage only when the attempt was given at
@@ -555,6 +556,13 @@ class _StructuredAttempt:
 # 25 s and degrades to plain full-text search) it says the provider was slower
 # than that caller allowed, not that it is down for callers that wait longer.
 _OUTAGE_EVIDENCE_MIN_TIMEOUT_SECONDS = 60.0
+
+
+def _upstream_http_status(error: Exception) -> int | None:
+    status = getattr(error, "upstream_status_code", None)
+    if status is None:
+        status = getattr(error, "status_code", None)
+    return status if type(status) is int and 100 <= status <= 599 else None
 
 
 def _reserved_attempt_id(unreserved: dict[str, Any] | None) -> str | None:
@@ -1609,6 +1617,7 @@ class TextGenerationMixin:
         provider_request_guard: ProviderRequestGuard | None = kwargs.pop(
             "provider_request_guard", None
         )
+        redact_provider_errors = kwargs.pop("redact_provider_errors", False)
         original_kwargs = dict(kwargs)
 
         def _finish(
@@ -1627,6 +1636,8 @@ class TextGenerationMixin:
                 attempt.provenance,
                 usage=attempt.usage,
                 thinking_disabled=thinking_disabled,
+                finish_reason=attempt.finish_reason,
+                has_tool_calls=attempt.has_tool_calls,
             )
 
         if structured_output_validator is not None and (
@@ -1905,6 +1916,7 @@ class TextGenerationMixin:
                         model=str(turn_params.get("model")),
                         provenance=provenance,
                         usage=getattr(response, "usage", None),
+                        has_tool_calls=bool(tool_calls),
                     )
 
                 try:
@@ -1932,6 +1944,7 @@ class TextGenerationMixin:
                     model=str(turn_params.get("model")),
                     provenance=provenance,
                     usage=getattr(response, "usage", None),
+                    has_tool_calls=bool(getattr(message, "tool_calls", None)),
                 )
             except (
                 ProviderRequestGuardError,
@@ -1973,14 +1986,12 @@ class TextGenerationMixin:
                     and allowance < _OUTAGE_EVIDENCE_MIN_TIMEOUT_SECONDS
                 ):
                     circuit_call.failed(quota_exhausted=exhausted)
+                status = _upstream_http_status(e)
                 if transient:
                     # This is a physical attempt, not the logical operation's
                     # outcome: another credential/rung or the caller may recover.
                     # Provider exception text can contain credentials/content and
                     # makes a handled WARNING look like an exception alarm.
-                    status = getattr(e, "upstream_status_code", None)
-                    if status is None:
-                        status = getattr(e, "status_code", None)
                     self.logger.warning(
                         "event=llm_request_end model=%s elapsed_seconds=%.3f success=False "
                         "error_type=%s reason=%s upstream_status_code=%s",
@@ -1988,9 +1999,7 @@ class TextGenerationMixin:
                         time.perf_counter() - request_start,
                         type(e).__name__,
                         "quota_exhausted" if exhausted else "transient_provider_error",
-                        status
-                        if type(status) is int and 100 <= status <= 599
-                        else None,
+                        status,
                     )
                 else:
                     self.logger.error(
@@ -1998,15 +2007,29 @@ class TextGenerationMixin:
                         turn_params.get("model"),
                         time.perf_counter() - request_start,
                         type(e).__name__,
-                        e,
+                        "redacted" if redact_provider_errors else e,
                     )
-                failure = LiteLLMClientError(f"API call failed: {e}")
+                if redact_provider_errors:
+                    failure = LiteLLMClientError(
+                        "Provider request failed",
+                        upstream_error_type=(
+                            "APITimeoutError"
+                            if isinstance(verdict, Transient) and verdict.timed_out
+                            else getattr(e, "upstream_error_type", None)
+                            or type(e).__name__
+                        ),
+                        upstream_status_code=status,
+                    )
+                else:
+                    failure = LiteLLMClientError(f"API call failed: {e}")
                 # Which breaker decides whether durable work is charged for it.
                 failure.circuit_route = circuit_call.route
                 failure.quota_exhausted = exhausted
-                failure.__cause__ = e  # classified below before it is raised
+                cause = None if redact_provider_errors else e
+                failure.__cause__ = cause  # classified below before it is raised
+                failure.__suppress_context__ = True
                 _report_reserved_failure(reserved_attempt_id, failure)
-                raise failure from e
+                raise failure from cause
             finally:
                 circuit_call.close()
 

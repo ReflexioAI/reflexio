@@ -46,6 +46,8 @@ class CompletionResult[T]:
     # True when this value came from the reasoning-exhausted retry, which
     # resent the request with thinking disabled. Kept for quality audits.
     thinking_disabled: bool = False
+    finish_reason: str | None = None
+    has_tool_calls: bool = False
 
 
 @dataclass

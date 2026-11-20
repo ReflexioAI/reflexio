@@ -1,6 +1,9 @@
-"""The public identity seam matches actual builder policy, never provider I/O."""
+"""Completion identity, response metadata, and private request behavior."""
+
+import traceback
 
 import pytest
+from litellm import ModelResponse
 from pydantic import HttpUrl
 
 from reflexio.models.config_schema import (
@@ -8,10 +11,66 @@ from reflexio.models.config_schema import (
     CustomEndpointConfig,
     OpenAIConfig,
 )
-from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.llm.failure import Terminal, Transient, classify_llm_failure
+from reflexio.server.llm.litellm_client import (
+    LiteLLMClient,
+    LiteLLMClientError,
+    LiteLLMConfig,
+)
 from reflexio.server.llm.model_defaults import ModelRole
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize("status,verdict", [(400, Terminal), (529, Transient)])
+def test_private_provider_failure_keeps_classification_without_body(
+    monkeypatch, caplog, status, verdict
+):
+    client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
+    private_marker = "synthetic provider echoed customer evidence"
+
+    def reject(params, _timeout):
+        assert "redact_provider_errors" not in params
+        raise LiteLLMClientError(private_marker, upstream_status_code=status)
+
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", reject)
+    with pytest.raises(LiteLLMClientError, match="Provider request failed") as caught:
+        client._make_request([], redact_provider_errors=True, fallback_models=[])
+    assert private_marker not in caplog.text
+    assert private_marker not in "".join(traceback.format_exception(caught.value))
+    classified = classify_llm_failure(caught.value, consult_breaker=False)
+    assert isinstance(classified, verdict)
+
+
+def test_plain_completion_preserves_finish_reason_and_unsolicited_tool_call(
+    monkeypatch,
+):
+    client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
+    response = ModelResponse(
+        model="gpt-4o",
+        choices=[
+            {
+                "finish_reason": "length",
+                "message": {
+                    "role": "assistant",
+                    "content": "synthetic body",
+                    "tool_calls": [
+                        {
+                            "id": "synthetic",
+                            "type": "function",
+                            "function": {"name": "synthetic", "arguments": "{}"},
+                        }
+                    ],
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", lambda *_: response)
+    result = client._make_request([])
+    assert result.value == "synthetic body"
+    assert result.finish_reason == "length"
+    assert result.has_tool_calls
+
 
 KEYS = (
     "model",
