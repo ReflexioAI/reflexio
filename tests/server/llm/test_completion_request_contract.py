@@ -152,7 +152,7 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch, capsys):
     monkeypatch.setattr(litellm, "model_alias_map", {})
 
     def breadcrumb(**_kwargs):
-        seen.append("sentry")
+        seen.append("breadcrumb")
 
     for target in (utils, litellm_logging):
         monkeypatch.setattr(target, "add_breadcrumb", breadcrumb)
@@ -238,7 +238,7 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch, capsys):
             }
             with pytest.raises(LiteLLMClientError):
                 client._make_request(messages, **params)
-            assert {"failure", "body", "per-request", "http-hook", "sentry"} <= set(
+            assert {"failure", "body", "per-request", "http-hook", "breadcrumb"} <= set(
                 seen
             )
             monkeypatch.setattr(
