@@ -444,7 +444,9 @@ def _run_cli_stream(
                 dialogue=dialogue,
                 model=model,
                 deadline=time.monotonic() + request_timeout_seconds(timeout_seconds),
-                legacy_wire=os.environ.get(PLUGIN_OPENCODE_EXECUTABLE_ENV) == cli_path,
+                wire="plugin"
+                if os.environ.get(PLUGIN_OPENCODE_EXECUTABLE_ENV) == cli_path
+                else "native",
             )
         except OpenCodeCLIError as exc:
             raise ClaudeCodeCLIError(str(exc)) from None

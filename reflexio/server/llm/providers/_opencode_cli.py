@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from reflexio.opencode_executable import OpenCodeCLIError, resolve_executable
 from reflexio.server.llm._litellm_types import LLMHardTimeoutError
@@ -58,10 +58,14 @@ def _wire_argument(option: str, value: str, *, legacy_wire: bool) -> list[str]:
 
 
 def _model_arguments(
-    model: str | None, options: set[str], *, legacy_wire: bool
+    model: str | None,
+    options: set[str],
+    *,
+    wire: Literal["native", "plugin", "optimizer"],
 ) -> list[str]:
     if not model:
         return []
+    legacy_wire = wire != "native"
     selected, separator, variant = model.partition("#")
     if separator and ("--standalone" not in options or not selected):
         if "--variant" not in options:
@@ -73,8 +77,9 @@ def _model_arguments(
             if selected
             else []
         )
-        # The plugin bridge sends the discovered variant as one argument.
-        return [*flags, f"--variant={variant}"]
+        return flags + _wire_argument(
+            "--variant", variant, legacy_wire=wire == "optimizer"
+        )
     return _wire_argument("--model", model, legacy_wire=legacy_wire)
 
 
@@ -162,9 +167,10 @@ def run_opencode(
     dialogue: str,
     model: str | None,
     deadline: float,
-    legacy_wire: bool = False,
+    wire: Literal["native", "plugin", "optimizer"] = "native",
 ) -> ParseResult:
     """Launch the actual native executable; retain delegated scratch with its owner."""
+    legacy_wire = wire != "native"
     selected, separator, variant = (model or "").partition("#")
     if separator and ((selected and not selected.strip()) or not variant.strip()):
         reject_native_selection("OpenCode model variant reference is invalid")
@@ -242,7 +248,7 @@ def run_opencode(
                 argv.extend(["--title", _AGENT])
                 if standalone:
                     argv.append("--standalone")
-            argv.extend(_model_arguments(model, options, legacy_wire=legacy_wire))
+            argv.extend(_model_arguments(model, options, wire=wire))
             result = run_native_cli(
                 argv,
                 input=prompt,

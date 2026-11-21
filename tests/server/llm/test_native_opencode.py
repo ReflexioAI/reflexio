@@ -624,13 +624,14 @@ def test_plugin_bridge_keeps_variant_inline(monkeypatch, model, expected):
         )
 
     monkeypatch.setattr(native, "run_native_cli", run)
-    result = native.run_opencode(
+    monkeypatch.setenv(provider.PLUGIN_OPENCODE_EXECUTABLE_ENV, sys.executable)
+    result = provider._run_cli_stream(
         cli_path=sys.executable,
         system_prompt="owned context",
         dialogue="owned task",
         model=model,
-        deadline=time.monotonic() + 1,
-        legacy_wire=True,
+        timeout_seconds=8,
+        host="opencode",
     )
     assert result.success
 
@@ -703,7 +704,7 @@ def test_empty_variant_components_refuse_before_any_launch(
             dialogue="owned task",
             model=model,
             deadline=time.monotonic() + 1,
-            legacy_wire=legacy_wire,
+            wire="plugin" if legacy_wire else "native",
         )
     assert "private-canary" not in str(failure.value)
     dispatch.assert_not_called()
