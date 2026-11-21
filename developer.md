@@ -291,6 +291,19 @@ helpers still install indexes/triggers and upgrade older or partial database
 files. The fresh-schema regression checks real SQLite authorization events;
 legacy-schema tests continue exercising the upgrade paths.
 
+SQLite schema upgrades run once per database behind `PRAGMA user_version`. The
+ordered, append-only step list is `MIGRATION_STEPS` in
+`reflexio/server/services/storage/sqlite_storage/migrations/__init__.py`; the
+step bodies are in `migrations/_steps.py`. A database at version 0 (every database
+created before the ledger) runs the whole sequence once and is stamped; a later
+open reads the version and returns. To change the schema, append a step; never
+reorder or edit the meaning of a numbered step, because stamped databases skip
+it. A step that derives its target from code (such as the optimizer job `CHECK`
+literals) no longer re-runs when that code changes, so widening that input needs a
+new step. A test that fabricates a legacy schema and reopens it must reset
+`PRAGMA user_version = 0`. `test_schema_ledger.py` upgrades databases built from
+historical DDL through the ledger.
+
 
 ### Why this matters
 
