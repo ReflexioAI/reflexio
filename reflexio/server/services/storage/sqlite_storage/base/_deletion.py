@@ -64,7 +64,7 @@ class SQLiteDeletionMixin:
     ) -> int:
         # Interrupted GEPA jobs whose lease expired since migrate become
         # terminal first, so this pass can reclaim them without a reopen.
-        self._retire_unfinished_gepa_jobs()
+        self._retire_unfinished_gepa_jobs()  # type: ignore[reportAttributeAccessIssue]
         # BEGIN IMMEDIATE serializes selection, physical-row accounting and
         # root/cascade deletion with every other connection's writer.
         weight_sql = "1 + " + " + ".join(
