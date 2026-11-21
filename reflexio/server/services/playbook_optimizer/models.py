@@ -8,7 +8,7 @@ and are populated from these models inside the GEPA adapter.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -81,11 +81,6 @@ class EvaluationTrajectory(BaseModel):
     scenario: ScenarioWindow
     candidate_content: str
     output: CandidateEvaluationOutput
-
-
-class GEPAEventPayload(BaseModel):
-    event: str
-    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 def _normalize_role(role: str) -> Literal["user", "assistant", "system"]:

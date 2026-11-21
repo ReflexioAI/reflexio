@@ -805,7 +805,7 @@ Key files:
 - `playbook_optimizer/scheduler.py` and `rollout.py`: Scheduling and rollout helpers
 - `playbook_optimizer/judge.py`, `models.py`, `scenario_resolver.py`: Evaluation and scenario resolution models
 - `playbook_optimizer/assistant_webhook.py`: Assistant-facing webhook entry point for optimizer runs
-- `braintrust/service.py`, `braintrust/client.py`, `_cron.py`: Braintrust export/sync support
+- `braintrust/service.py`, `braintrust/client.py`: Braintrust export/sync support
 
 GEPA search and publication share `gepa_winner_adoption_result` for quality.
 The adapter retains successfully persisted evaluation facts for its run-local

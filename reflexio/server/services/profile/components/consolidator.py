@@ -411,14 +411,6 @@ class ProfileConsolidator(BaseDeduplicator):
         """Get the prompt ID for profile deduplication."""
         return self.DEDUPLICATION_PROMPT_ID
 
-    def _get_item_count_key(self) -> str:
-        """Get the key name for item count in prompt variables."""
-        return "new_profile_count"
-
-    def _get_items_key(self) -> str:
-        """Get the key name for items in prompt variables."""
-        return "new_profiles"
-
     def _get_output_schema_class(self) -> type[BaseModel]:
         """Get the profile-specific output schema with NEW/EXISTING format."""
         return ProfileDeduplicationOutput

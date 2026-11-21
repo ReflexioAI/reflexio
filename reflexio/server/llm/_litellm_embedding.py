@@ -2,8 +2,8 @@
 
 ``EmbeddingMixin`` holds the three ``self``-bound embedding methods
 (``_resolve_default_embedding_model``, ``get_embedding``, ``get_embeddings``); the
-four stateless token-budget helpers (``_get_embedding_limit``,
-``_get_embedding_encoding``, ``_reject_cloud_mode``, ``_truncate_for_embedding``),
+three stateless token-budget helpers (``_get_embedding_limit``,
+``_get_embedding_encoding``, ``_truncate_for_embedding``),
 the module-level ``_TRUNCATION_WARNED_MODELS`` set and the budget constants live
 alongside them at module scope.
 
@@ -135,23 +135,6 @@ def _get_embedding_encoding(model: str) -> tiktoken.Encoding:
         return tiktoken.encoding_for_model(model)
     except KeyError:
         return tiktoken.get_encoding("cl100k_base")
-
-
-def _reject_cloud_mode(embedding_model: str, mode: str) -> None:
-    """
-    Raise when a local-only embedding model is configured for cloud mode.
-
-    Args:
-        embedding_model (str): The resolved embedding model name.
-        mode (str): The resolved embedding provider mode.
-
-    Raises:
-        EmbeddingUnavailableError: If ``mode`` is ``"cloud"``.
-    """
-    if mode == "cloud":
-        raise EmbeddingUnavailableError(
-            f"Local embedding model {embedding_model!r} cannot use cloud mode"
-        )
 
 
 def _truncate_for_embedding(

@@ -17,7 +17,10 @@ from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.llm_utils import positive_int_env
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.configurator.base_configurator import BaseConfigurator
-from reflexio.server.services.storage.storage_base import BaseStorage
+from reflexio.server.services.storage.storage_base import (
+    BaseStorage,
+    storage_backend_name,
+)
 from reflexio.server.tracing import profile_step
 
 logger = logging.getLogger(__name__)
@@ -116,15 +119,6 @@ def _require_storage[T: BaseModel](
         return wrapper
 
     return decorator
-
-
-def _storage_backend_name(storage: BaseStorage) -> str:
-    class_name = storage.__class__.__name__.lower()
-    if "postgres" in class_name:
-        return "postgres"
-    if "supabase" in class_name:
-        return "supabase"
-    return class_name
 
 
 class ReflexioBase:
@@ -233,7 +227,7 @@ class ReflexioBase:
             return None
         with profile_step(
             "search.embedding",
-            backend=_storage_backend_name(storage),
+            backend=storage_backend_name(storage),
             search_mode=search_mode,
             purpose="query",
         ) as span:

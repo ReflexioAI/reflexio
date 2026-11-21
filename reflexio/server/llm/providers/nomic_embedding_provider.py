@@ -28,7 +28,6 @@ comparable. Quality on retrieval tasks at 512 dim is ~95% of the full
 from __future__ import annotations
 
 import math
-from typing import Any
 
 from reflexio.server.llm.sentence_encoder import SentenceEncoder
 
@@ -83,15 +82,6 @@ def _truncate_and_renormalise(vec: list[float]) -> list[float]:
     if norm <= 0:
         return sliced
     return [x / norm for x in sliced]
-
-
-def _embedding_dimension(model: Any) -> int:
-    get_embedding_dimension = getattr(model, "get_embedding_dimension", None)
-    if callable(get_embedding_dimension):
-        dimension = get_embedding_dimension()
-    else:
-        dimension = model.get_sentence_embedding_dimension()
-    return int(dimension)  # type: ignore[arg-type]
 
 
 def is_nomic_model(model: str) -> bool:

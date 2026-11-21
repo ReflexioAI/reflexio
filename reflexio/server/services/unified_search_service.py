@@ -79,7 +79,10 @@ from reflexio.server.services.retrieval.user_context_guard import (
 )
 from reflexio.server.services.retrieval.user_selection import select_user_playbooks
 from reflexio.server.services.storage.error import ReadinessUnavailableError
-from reflexio.server.services.storage.storage_base import BaseStorage
+from reflexio.server.services.storage.storage_base import (
+    BaseStorage,
+    storage_backend_name,
+)
 from reflexio.server.tracing import profile_step, set_span_data
 
 if TYPE_CHECKING:
@@ -275,7 +278,7 @@ def _run_unified_search(
         logger.warning(
             "event=search_degraded_to_fts reason=embedding_generation_failed "
             "backend=%s requested_mode=%s",
-            _storage_backend_name(storage),
+            storage_backend_name(storage),
             request.search_mode.value,
         )
     window_start, window_end = window_bounds(
@@ -824,7 +827,7 @@ def _run_phase_a(
     if supports_embedding and search_mode != SearchMode.FTS:
         with profile_step(
             "search.embedding",
-            backend=_storage_backend_name(storage),
+            backend=storage_backend_name(storage),
             purpose="query",
         ) as span:
             try:
@@ -943,7 +946,7 @@ def _run_phase_b(
     try:
         with profile_step(
             "search.phase_b",
-            backend=_storage_backend_name(storage),
+            backend=storage_backend_name(storage),
             entity_types=sorted(entity_types),
             top_k=top_k,
         ) as span:
@@ -1564,7 +1567,7 @@ def _search_agent_playbooks_via_storage(
     """
     with profile_step(
         "search.branch.agent_playbooks",
-        backend=_storage_backend_name(storage),
+        backend=storage_backend_name(storage),
         top_k=top_k,
     ) as span:
         statuses = (
@@ -1639,7 +1642,7 @@ def _search_profiles_via_storage(
     """
     with profile_step(
         "search.branch.profiles",
-        backend=_storage_backend_name(storage),
+        backend=storage_backend_name(storage),
         top_k=top_k,
     ) as span:
         if not user_id:
@@ -1676,7 +1679,7 @@ def _search_user_playbooks_via_storage(
 ) -> list[UserPlaybook]:
     with profile_step(
         "search.branch.user_playbooks",
-        backend=_storage_backend_name(storage),
+        backend=storage_backend_name(storage),
         top_k=request.top_k,
     ) as span:
         user_playbooks = storage.search_user_playbooks(request, options)
@@ -1742,15 +1745,6 @@ def _submit_with_current_context[T: (Future[Any], Future[Any] | None)](
 def try_submit_search_work(fn: Callable[[], object]) -> Future[Any] | None:
     """Start optional work only when no accepted work needs the slot."""
     return _submit_with_current_context(_SEARCH_FANOUT_EXECUTOR.submit_if_idle, fn)
-
-
-def _storage_backend_name(storage: BaseStorage) -> str:
-    class_name = storage.__class__.__name__.lower()
-    if "postgres" in class_name:
-        return "postgres"
-    if "supabase" in class_name:
-        return "supabase"
-    return class_name
 
 
 class UnifiedSearchService:
