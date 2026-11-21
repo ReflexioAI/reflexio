@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -285,6 +285,8 @@ class PlaybookReviewOutcome:
 
     output: PlaybookCandidateReviewOutput
     units_by_candidate: dict[str, list[CandidateEvidenceUnit]]
+    # Retained until the enterprise paired_reviewer_ab.py read is dropped.
+    supporting_evidence: list[Any] = field(default_factory=list)
 
 
 def _append_review_note(
