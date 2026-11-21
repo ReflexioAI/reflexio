@@ -23,6 +23,7 @@ from .._ddl import (
     _TERMINAL_OUTCOME_LITERALS,
     PROVISIONAL_STAGING_COLUMNS,
     PUBLICATION_RESULTS_DDL,
+    VEC_PENDING_DDL,
 )
 from .._row_mappers import _json_loads
 from .._search_ranking import _UNICODE_LEXICAL_INDEX_VERSION
@@ -77,11 +78,7 @@ class SQLiteSchemaMigrationsMixin:
 
     def _create_vec_pending_table(self) -> None:
         with self._lock:
-            self.conn.execute(
-                "CREATE TABLE IF NOT EXISTS vec_pending ("
-                "table_name TEXT NOT NULL, row_id INTEGER NOT NULL, "
-                "PRIMARY KEY (table_name, row_id)) WITHOUT ROWID"
-            )
+            self.conn.execute(VEC_PENDING_DDL)
             self.conn.commit()
 
     def _repair_pending_vectors(self) -> None:

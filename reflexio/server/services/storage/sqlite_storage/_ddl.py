@@ -910,3 +910,11 @@ CREATE INDEX IF NOT EXISTS idx_lineage_entity ON lineage_event (entity_type, ent
     )
     .replace("__PUBLICATION_RESULTS_DDL__", PUBLICATION_RESULTS_DDL)
 )
+
+
+#: Sidecar vector writes queued by a commit scope and not yet confirmed.
+VEC_PENDING_DDL = (
+    "CREATE TABLE IF NOT EXISTS vec_pending ("
+    "table_name TEXT NOT NULL, row_id INTEGER NOT NULL, "
+    "PRIMARY KEY (table_name, row_id)) WITHOUT ROWID"
+)

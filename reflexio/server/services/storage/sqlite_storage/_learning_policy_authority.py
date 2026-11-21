@@ -68,18 +68,26 @@ def _owned_identifier(name: str) -> str:
 def _check_upgrade_schema(
     conn: sqlite3.Connection, contract: dict[str, Any]
 ) -> tuple[bool, bool, list[dict[str, Any]]]:
+    from ._ddl import VEC_PENDING_DDL
     from ._extraction_stream import CURSOR_WINDOW_INDEX_DDL, CURSOR_WINDOW_INDEX_NAME
 
     expected = contract["catalog"]
-    # The authority and the optional index may coexist. Read one more row so
-    # neither addition can hide an unsupported trailing catalog object.
-    observed = _catalog(conn, len(expected) + 3)
+    # The authority, the optional index and the vector-pending table may coexist.
+    # Read one more row so no addition can hide an unsupported trailing catalog
+    # object.
+    observed = _catalog(conn, len(expected) + 4)
     window_index = {
         "type": "index",
         "name": CURSOR_WINDOW_INDEX_NAME,
         "table": "extraction_cursors",
         # SQLite removes IF NOT EXISTS in the stored definition.
         "sql": CURSOR_WINDOW_INDEX_DDL.replace(" IF NOT EXISTS", "", 1),
+    }
+    vec_pending = {
+        "type": "table",
+        "name": "vec_pending",
+        "table": "vec_pending",
+        "sql": VEC_PENDING_DDL.replace(" IF NOT EXISTS", "", 1),
     }
     authority_objects = [
         row for row in observed if row["table"] == "_learning_policy_authority"
@@ -97,7 +105,9 @@ def _check_upgrade_schema(
     if not has_identity:
         expected = [row for row in expected if row["table"] != "_dataset_identity"]
     historical_objects = [
-        row for row in observed if row not in authority_objects and row != window_index
+        row
+        for row in observed
+        if row not in authority_objects and row not in (window_index, vec_pending)
     ]
     if historical_objects != expected:
         raise _upgrade_refused("unsupported historical schema")
