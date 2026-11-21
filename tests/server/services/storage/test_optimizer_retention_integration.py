@@ -196,3 +196,54 @@ def test_job_activation_commits_before_waiting_capacity_cleanup(store):
             writer.commit()
         assert cleanup.result(timeout=5) == 0
     assert store.get_playbook_optimization_job(job.job_id).status == "running"
+
+
+@pytest.mark.parametrize("hold", ["running_publishing", "claim"])
+def test_migrate_retires_interrupted_gepa_jobs_so_retention_can_reclaim(store, hold):
+    job = seed(store, "running", 1)
+    store.conn.execute(
+        "UPDATE playbook_optimization_jobs SET lease_expires_at = ?, "
+        "stage = ?, lease_owner = 'dead-worker' WHERE job_id = ?",
+        (int(time.time()) - 60, "publishing" if hold != "claim" else None, job.job_id),
+    )
+    if hold == "claim":
+        store.conn.execute(
+            "UPDATE playbook_optimization_jobs SET status = 'completed' "
+            "WHERE job_id = ?",
+            (job.job_id,),
+        )
+        store.conn.execute(
+            "INSERT INTO user_playbook_publication_claims "
+            "(optimizer_kind, job_id, owner, publication_fence, worker_fence, "
+            "updated_at) VALUES ('gepa', ?, 'dead-worker', 1, 1, 1)",
+            (job.job_id,),
+        )
+    store.conn.commit()
+    assert store.delete_oldest_retention_target_rows(GRAPH, 1) == 0
+
+    store.migrate()
+
+    row = store.conn.execute(
+        "SELECT status, stage, decision_reason, lease_owner "
+        "FROM playbook_optimization_jobs WHERE job_id = ?",
+        (job.job_id,),
+    ).fetchone()
+    assert row["stage"] == "failed" and row["decision_reason"] == "retired_gepa"
+    assert row["status"] in {"failed", "completed"} and row["lease_owner"] is None
+    assert store.delete_oldest_retention_target_rows(GRAPH, 1) == 4
+
+
+def test_migrate_never_retires_a_live_gepa_lease(store):
+    job = seed(store, "running", 1)
+    store.conn.execute(
+        "UPDATE playbook_optimization_jobs SET lease_expires_at = ?, "
+        "stage = 'publishing' WHERE job_id = ?",
+        (int(time.time()) + 3600, job.job_id),
+    )
+    store.conn.commit()
+    store.migrate()
+    row = store.conn.execute(
+        "SELECT status, stage FROM playbook_optimization_jobs WHERE job_id = ?",
+        (job.job_id,),
+    ).fetchone()
+    assert (row["status"], row["stage"]) == ("running", "publishing")

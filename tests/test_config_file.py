@@ -46,6 +46,27 @@ def test_saved_retired_optimizer_block_loads_and_is_dropped_on_preparation(tmp_p
     assert owner.prepare() is False
 
 
+def test_current_generation_file_with_retired_block_keeps_original_backup(tmp_path):
+    path = tmp_path / "config.json"
+    original = encode_config_document(
+        {
+            "_reflexio_config_file": {"version": FILE_FORMAT_VERSION},
+            "storage_config": None,
+            "playbook_optimizer_config": {"metric_call_budget": 5},
+        }
+    ).encode()
+    path.write_bytes(original)
+    owner = LocalConfigFile(path)
+
+    assert owner.prepare() is True
+    assert "playbook_optimizer_config" not in owner.read_document()
+    digest = hashlib.sha256(original).hexdigest()
+    assert (
+        tmp_path / ".config-migrations/config.json" / f"{digest}.json"
+    ).read_bytes() == original
+    assert owner.prepare() is False
+
+
 def test_generation_15_evaluator_requires_explicit_conversion(tmp_path):
     from reflexio.cli.config_upgrade import convert_config_file
 

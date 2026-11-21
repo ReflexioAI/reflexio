@@ -250,7 +250,9 @@ def _prepare_document(data: dict[str, Any], version: int) -> dict[str, Any]:
     )
 
     if version == FILE_FORMAT_VERSION:
-        return deepcopy(data)
+        current = deepcopy(data)
+        current.pop("playbook_optimizer_config", None)
+        return current
     _reject_ambiguous_policy(data, version)
     if version >= EXTRACTION_WINDOW_POLICY_VERSION:
         _require_prepared_extraction_windows(data, version)
@@ -538,7 +540,13 @@ class LocalConfigFile:
                 # before publishing, including already-prepared generation14.
                 incompatible=version < EXTRACTION_WINDOW_POLICY_VERSION,
             )
-            if version == FILE_FORMAT_VERSION or original is None:
+            # A current-generation file that still carries the retired optimizer
+            # block is rewritten through the backup path, so its saved policy
+            # stays recoverable for rollback to the previous SDK.
+            retired_block = "playbook_optimizer_config" in data
+            if (version == FILE_FORMAT_VERSION and not retired_block) or (
+                original is None
+            ):
                 if (
                     self._target() != target
                     or (target.read_bytes() if target.exists() else None) != original

@@ -1280,7 +1280,7 @@ def test_legacy_optimizer_rows_are_classified_mutually_exclusively(
         "skipped",
         "retired_by_replay_redesign",
     )
-    assert rows[1]["status"] == "pending"
+    assert rows[1]["status"] == "failed"
     assert rows[2]["status"] == "skipped"
     assert rows[3]["status"] == "skipped"
     assert rows[4]["status"] == "completed"
@@ -1346,7 +1346,7 @@ def test_legacy_duplicate_active_gepa_jobs_are_deterministically_retired(
         store.conn.close()
 
     assert [(row["job_id"], row["status"]) for row in rows] == [
-        (2, "pending"),
+        (2, "failed"),
         (7, "skipped"),
     ]
     assert rows[1]["optimizer_kind"] == "gepa"
@@ -1397,7 +1397,7 @@ def test_legacy_duplicate_active_gepa_job_keys_are_deterministically_retired(
         store.conn.close()
 
     assert [(row["job_id"], row["status"]) for row in rows] == [
-        (2, "pending"),
+        (2, "failed"),
         (7, "skipped"),
     ]
     assert rows[1]["decision_reason"] == "retired_duplicate_legacy_active_job"
