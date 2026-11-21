@@ -1,6 +1,8 @@
 """The SQLite schema ledger: ordering, historical upgrades and the warm open."""
 
+import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -14,7 +16,26 @@ from reflexio.server.services.storage.sqlite_storage._base import (
 from reflexio.server.services.storage.sqlite_storage.migrations import (
     LATEST_VERSION,
     MIGRATION_STEPS,
+    VEC_STEP,
     stored_version,
+)
+
+
+def _sqlite_vec_loads() -> bool:
+    try:
+        import sqlite_vec
+
+        conn = sqlite3.connect(":memory:")
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        return True
+    except (ImportError, OSError, AttributeError, sqlite3.OperationalError):
+        return False
+
+
+requires_vec = pytest.mark.skipif(
+    not _sqlite_vec_loads(),
+    reason="the ledger stamps the sqlite-vec step only where the extension loads",
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -60,6 +81,7 @@ def test_steps_are_consecutive_and_resolve_to_methods() -> None:
         assert callable(getattr(SQLiteStorage, name)), name
 
 
+@requires_vec
 def test_fresh_database_is_stamped_latest(tmp_path: Path) -> None:
     storage = _open(tmp_path / "fresh.db")
     try:
@@ -78,6 +100,7 @@ def test_derived_step_inputs_are_pinned() -> None:
     assert _RETIRED_ARTIFACT_KIND_LITERALS == ("'replay_manifest'",)
 
 
+@requires_vec
 @pytest.mark.parametrize("ddl", HISTORICAL_DDL, ids=lambda p: p.stem)
 def test_historical_database_upgrades_to_current_schema(
     ddl: Path, tmp_path: Path, fresh_schema: dict[str, object]
@@ -109,6 +132,7 @@ def test_historical_database_upgrades_to_current_schema(
     } == set()
 
 
+@requires_vec
 def test_pre_ledger_current_database_is_stamped_without_schema_change(
     tmp_path: Path, fresh_schema: dict[str, object]
 ) -> None:
@@ -125,6 +149,7 @@ def test_pre_ledger_current_database_is_stamped_without_schema_change(
         storage.conn.close()
 
 
+@requires_vec
 def test_warm_open_runs_no_schema_step(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "warm.db"
     _open(path).conn.close()
@@ -152,6 +177,7 @@ def test_warm_open_runs_no_schema_step(tmp_path: Path, monkeypatch) -> None:
     assert "PRAGMA user_version" in statements
 
 
+@requires_vec
 def test_interrupted_upgrade_resumes_after_last_stamped_step(tmp_path: Path) -> None:
     path = tmp_path / "resume.db"
     storage = _open(path)
@@ -244,6 +270,7 @@ EXPECTED_DIVERGENCE: dict[str, tuple[set[str], set[str]]] = {
 }
 
 
+@requires_vec
 def test_receipt_functions_exist_on_a_reopened_stamped_database(
     tmp_path: Path,
 ) -> None:
@@ -269,25 +296,36 @@ def test_receipt_functions_exist_on_a_reopened_stamped_database(
         storage.conn.close()
 
 
-def test_vec_step_is_not_stamped_without_the_extension(
+def test_without_the_extension_later_steps_run_and_the_stamp_stops_at_the_vec_step(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "novec.db"
     monkeypatch.setattr(SQLiteStorage, "_try_load_sqlite_vec", lambda _self: False)
     storage = _open(path)
     try:
-        assert stored_version(storage) == 10
+        assert stored_version(storage) == VEC_STEP - 1
+        tables = {
+            row[0]
+            for row in storage.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        # Steps after the vec step ran: their tables exist.
+        assert {"extraction_windows", "user_playbook_publication_results"} <= tables
+        assert "profiles_vec" not in tables
     finally:
         storage.conn.close()
     monkeypatch.undo()
 
-    storage = _open(path)
-    try:
-        assert stored_version(storage) == LATEST_VERSION
-    finally:
-        storage.conn.close()
+    if _sqlite_vec_loads():
+        storage = _open(path)
+        try:
+            assert stored_version(storage) == LATEST_VERSION
+        finally:
+            storage.conn.close()
 
 
+@requires_vec
 def test_interrupted_vec_backfill_is_retried(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -324,6 +362,7 @@ def test_interrupted_vec_backfill_is_retried(
         storage.conn.close()
 
 
+@requires_vec
 def test_stamp_never_lowers_a_version_another_opener_advanced(
     tmp_path: Path,
 ) -> None:
@@ -343,3 +382,130 @@ def test_stamp_never_lowers_a_version_another_opener_advanced(
     finally:
         first.conn.close()
         second.conn.close()
+
+
+@requires_vec
+def test_sidecar_rows_written_while_the_extension_was_missing_are_reconciled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+
+    path = tmp_path / "roundtrip.db"
+    _open(path).conn.close()  # vec loaded, stamped latest
+
+    embedding = json.dumps([0.25] * EMBEDDING_DIMENSIONS)
+    with monkeypatch.context() as patched:
+        patched.setattr(SQLiteStorage, "_try_load_sqlite_vec", lambda _self: False)
+        fallback = _open(path)  # takes the vec step back before any write
+        try:
+            assert stored_version(fallback) == VEC_STEP - 1
+            fallback.conn.execute(
+                "INSERT INTO profiles (profile_id, user_id, last_modified_timestamp, "
+                "embedding) VALUES ('p1', 'u1', 1, ?)",
+                (embedding,),
+            )
+            fallback.conn.commit()
+        finally:
+            fallback.conn.close()
+
+    storage = _open(path)
+    try:
+        assert stored_version(storage) == LATEST_VERSION
+        assert (
+            storage.conn.execute("SELECT COUNT(*) FROM profiles_vec").fetchone()[0] == 1
+        )
+    finally:
+        storage.conn.close()
+
+
+_LEGACY_REQUESTS = (
+    "CREATE TABLE requests (request_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, "
+    "created_at TEXT NOT NULL, source TEXT, agent_version TEXT, session_id TEXT)"
+)
+_REQUEST_INDEXES = {
+    "idx_requests_user_id",
+    "idx_requests_session_id",
+    "idx_requests_created_at",
+    "idx_requests_session_created_at_asc",
+    "idx_requests_retrieval_experiment",
+    "idx_requests_governance_subject_ref",
+}
+
+
+@requires_vec
+@pytest.mark.parametrize(
+    ("action", "denied"),
+    [
+        (sqlite3.SQLITE_ALTER_TABLE, "requests_new"),
+        (sqlite3.SQLITE_CREATE_INDEX, "idx_requests_session_created_at_asc"),
+    ],
+    ids=["after-drop-before-rename", "after-rename-during-indexes"],
+)
+def test_interrupted_requests_rebuild_is_atomic_and_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: int, denied: str
+) -> None:
+    path = tmp_path / "requests.db"
+    storage = _open(path)
+    storage.conn.execute("DROP TABLE requests")
+    storage.conn.execute(_LEGACY_REQUESTS)
+    storage.conn.execute(
+        "INSERT INTO requests VALUES ('r1', 'u1', '2026-01-01', 's', 'v', NULL)"
+    )
+    storage.conn.execute("PRAGMA user_version = 0")
+    storage.conn.commit()
+    storage.conn.close()
+
+    armed = False
+    real_connect = sqlite3.connect
+    real_step = SQLiteStorage._migrate_request_session_id_required
+
+    def authorizer(code, arg1, arg2, _db, _source):
+        if (
+            armed
+            and code == action
+            and (arg2 if action == sqlite3.SQLITE_ALTER_TABLE else arg1) == denied
+        ):
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    def connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        conn.set_authorizer(authorizer)
+        return conn
+
+    def arming_step(self):
+        nonlocal armed
+        armed = True
+        try:
+            real_step(self)
+        finally:
+            armed = False
+
+    with monkeypatch.context() as patched:
+        patched.setattr(sqlite3, "connect", connect)
+        patched.setattr(
+            SQLiteStorage, "_migrate_request_session_id_required", arming_step
+        )
+        with pytest.raises(sqlite3.DatabaseError):
+            _open(path)
+
+    with closing(sqlite3.connect(path)) as probe:
+        assert probe.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == 1
+
+    storage = _open(path)
+    try:
+        assert stored_version(storage) == LATEST_VERSION
+        indexes = {
+            row[0]
+            for row in storage.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' "
+                "AND tbl_name = 'requests'"
+            )
+        }
+        assert indexes >= _REQUEST_INDEXES
+        row = storage.conn.execute(
+            "SELECT request_id, session_id FROM requests"
+        ).fetchone()
+        assert row[0] == "r1" and row[1].startswith("legacy-")
+    finally:
+        storage.conn.close()

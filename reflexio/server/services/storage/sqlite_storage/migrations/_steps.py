@@ -372,7 +372,12 @@ class SQLiteSchemaMigrationsMixin:
             self.conn.commit()
 
     def _migrate_vec_tables(self) -> None:
-        """Backfill vec tables from existing embedding TEXT columns (idempotent)."""
+        """Reconcile vec tables with the embedding TEXT columns (idempotent).
+
+        Adds the rows a process without sqlite-vec wrote while it could not
+        index them, and drops rows whose main row it deleted meanwhile. A row
+        whose embedding it changed keeps its old vector.
+        """
         entity_map = [
             ("interactions", "interactions_vec", "interaction_id"),
             ("profiles", "profiles_vec", "profile_id"),
@@ -380,11 +385,16 @@ class SQLiteSchemaMigrationsMixin:
             ("agent_playbooks", "agent_playbooks_vec", "agent_playbook_id"),
         ]
         for main_table, vec_table, _id_col in entity_map:
-            row = self._fetchone(f"SELECT COUNT(*) as cnt FROM {vec_table}")
-            if row and row["cnt"] > 0:
-                continue  # Already populated
+            with self._lock:
+                self.conn.execute(
+                    f"DELETE FROM {vec_table} WHERE rowid NOT IN "  # noqa: S608
+                    f"(SELECT rowid FROM {main_table})"
+                )
+                self.conn.commit()
             rows = self._fetchall(
-                f"SELECT rowid AS rid, embedding FROM {main_table} WHERE embedding IS NOT NULL"
+                f"SELECT rowid AS rid, embedding FROM {main_table} "  # noqa: S608
+                f"WHERE embedding IS NOT NULL AND rowid NOT IN "
+                f"(SELECT rowid FROM {vec_table})"
             )
             for r in rows:
                 emb = _json_loads(r["embedding"])
@@ -1933,8 +1943,11 @@ class SQLiteSchemaMigrationsMixin:
         # NOTE: this rebuild hardcodes the full `requests` column set. If a
         # future migration adds a column to `requests`, it MUST be added here
         # too (and to the SELECT below) or the rebuild will silently drop it.
-        self.conn.executescript(
-            f"""
+        # One transaction: copy, drop, rename and indexes commit together, so an
+        # interrupted run leaves the old table and a retry starts from it.
+        rebuild = f"""
+            BEGIN IMMEDIATE;
+            DROP TABLE IF EXISTS requests_new;
             CREATE TABLE requests_new (
                 request_id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
@@ -1987,9 +2000,14 @@ class SQLiteSchemaMigrationsMixin:
                 ON requests(retrieval_experiment_id, user_id, session_id, created_at, request_id);
             CREATE INDEX IF NOT EXISTS idx_requests_governance_subject_ref
                 ON requests(governance_subject_ref);
+            COMMIT;
             """
-        )
-        self.conn.commit()
+        try:
+            self.conn.executescript(rebuild)
+        except BaseException:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            raise
         logger.info("Migrated requests.session_id to required non-empty values")
 
     def _migrate_eval_result_user_id(self) -> None:

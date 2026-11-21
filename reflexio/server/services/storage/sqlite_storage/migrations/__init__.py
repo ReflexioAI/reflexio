@@ -88,6 +88,7 @@ MIGRATION_STEPS: tuple[tuple[int, str], ...] = (
 )
 
 LATEST_VERSION = MIGRATION_STEPS[-1][0]
+VEC_STEP = next(v for v, n in MIGRATION_STEPS if n == "_create_and_backfill_vec_tables")
 
 
 def stored_version(storage: SQLiteSchemaMigrationsMixin) -> int:
@@ -96,17 +97,20 @@ def stored_version(storage: SQLiteSchemaMigrationsMixin) -> int:
         return int(storage.conn.execute("PRAGMA user_version").fetchone()[0])
 
 
-def _stamp(storage: SQLiteSchemaMigrationsMixin, version: int) -> None:
-    """Raise the stored version to ``version`` under one write transaction.
+def _stamp(
+    storage: SQLiteSchemaMigrationsMixin, version: int, *, lower: bool = False
+) -> None:
+    """Move the stored version to ``version`` under one write transaction.
 
     The read and the write share ``BEGIN IMMEDIATE`` so a concurrent opener
-    that is further along cannot be lowered between them.
+    that is further along cannot be lowered between them, unless ``lower`` asks
+    for exactly that.
     """
     with storage._lock:
         storage.conn.commit()
         storage.conn.execute("BEGIN IMMEDIATE")
         try:
-            if stored_version(storage) < version:
+            if lower or stored_version(storage) < version:
                 storage.conn.execute(f"PRAGMA user_version = {version}")
             storage.conn.commit()
         except BaseException:
@@ -122,6 +126,11 @@ def run_pending_migrations(storage: SQLiteSchemaMigrationsMixin) -> None:
     from that step on is stamped, so a process that can run it does.
     """
     current = stored_version(storage)
+    if not storage._has_sqlite_vec and current >= VEC_STEP:
+        # This process will write embeddings its sidecar index cannot see. Take
+        # the vec step back so the next process that loads sqlite-vec reconciles.
+        _stamp(storage, VEC_STEP - 1, lower=True)
+        current = VEC_STEP - 1
     if current >= LATEST_VERSION:
         return
     stamping = True
