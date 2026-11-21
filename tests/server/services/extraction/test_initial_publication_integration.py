@@ -384,19 +384,10 @@ def test_initial_playbook_dispatch_uses_database_assigned_ids(publication, monke
         "_dispatch_playbook_schedulers",
         MethodType(_REAL_PLAYBOOK_DISPATCH, service),
     )
-    seen = []
-    monkeypatch.setattr(
-        service,
-        "_enqueue_user_playbook_optimization",
-        lambda rows: seen.extend(row.user_playbook_id for row in rows),
-    )
     monkeypatch.setattr(service, "_trigger_playbook_aggregation", lambda: None)
     _run_initial(service, request)
     ids = [row.user_playbook_id for row in base._learnings(storage, kind)]
     assert len(ids) == 1 and ids[0] > 0
-    assert seen == ids, (
-        "Dispatch must see the actual persisted plan, not pre-insert ID zero"
-    )
 
 
 @pytest.mark.parametrize("failure_stage", ["dispatch", "delivery"])

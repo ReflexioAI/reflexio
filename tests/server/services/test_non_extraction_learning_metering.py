@@ -188,9 +188,6 @@ def test_aggregation_emits_no_learnings_generated(
         "_generate_playbooks_with_source_clusters",
         lambda *_args, **_kwargs: [(generated, user_playbooks, None)],
     )
-    monkeypatch.setattr(
-        aggregator, "_enqueue_playbook_optimization", lambda _items: None
-    )
 
     stats = aggregator.run(PlaybookAggregatorRequest(agent_version="v1", rerun=True))
 

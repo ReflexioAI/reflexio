@@ -1530,16 +1530,7 @@ and content digest. Historical verdict labels remain unchanged and are not
 relabelled as verified template identities. Explicit PromptManager overrides
 remain actual prompt-selection policy.
 
-### Local file upgrades and optimizer consent
-
-The server owns optimizer admission and adoption. `enabled` remains the master
-switch; `agent_playbooks_enabled` and `user_playbooks_enabled` are independent,
-default-off target opt-ins. Agent admission and winner adoption consult the
-same `allows_target` policy. The former agent switches
-`optimize_agent_playbooks` (default false) and
-`auto_update_pending_agent_playbooks` (default true) both gated the same work;
-the upgrade preserves their conjunction. Explicit budgets, assistant backend,
-quality thresholds and user consent remain separate policy.
+### Local file upgrades
 
 `reflexio/config_file.py::LocalConfigFile` owns the local file format, strict
 reads, publication and pre-launch preparation. The logical schema owner may
@@ -1811,20 +1802,6 @@ Unicode-index trigger function; they must not bypass that lock during concurrent
 publish/read requests. Standalone connection helpers leave synchronization to
 their caller. This changes no notification policy, SQL or timeout.
 
-### Optimizer work-budget authority
-
-Local-file generation5 replaces optimizer `enabled` plus `max_metric_calls`
-with the nonnegative `metric_call_budget`. Fresh policy defaults to zero.
-Positive budgets select GEPA’s candidate/window metric-call stopping threshold;
-GEPA can finish a validation batch before checking it. The relevant user/agent
-target permission remains required. The explicit historical
-converter preserves disabled policies as zero and enabled policies with their
-old validated limit; it retains originals and rejects malformed/conflicting
-inputs. Normal runtime readers reject both old names. Old SDKs reject the new
-file generation, so stop old writers before upgrade. Remote saved configuration
-needs its separately qualified enterprise image migration. See the
-[assistant backend guide](docs/playbook_optimizer_assistant_backends.md#work-budget-migration).
-
 ### Source provenance lifetime
 
 Agent-to-user playbook source links determine source-filtered search. They are
@@ -1844,19 +1821,6 @@ migration is needed. Link storage can now grow with valid relationships until
 parent cleanup; independent link truncation is no longer a supported capacity
 backstop. Managed customer-data holds/alert policy must not be bypassed by
 classifying this provenance as disposable metadata.
-
-### Optimizer dispatch upgrade
-
-Local-file generation6 retires `scheduler_jitter_seconds` through the existing
-prelaunch `prepare_local_config` owner. It validates historical jitter and removes
-only that field before atomic publication with original preservation. Ordinary
-reads reject obsolete jitter. Custom abort thresholds, cooldowns, work budgets and
-opaque data survive. The optimizer now uses keyed work in the shared bounded
-callback executor: one active callback plus one queued successor per target,
-immediately eligible instead of delayed by a timer. Queue overflow stays
-best-effort/drop-oldest. Stop old writers before preparation; enterprise remote
-configuration uses its separate canonical-v9 startup migration owner.
-
 
 ### Pending-question lifetime
 
@@ -1934,8 +1898,7 @@ Legacy `claude-code/*` suffixes were opaque role labels and cannot be converted
 into physical models by guessing. Adopt the new native reference explicitly.
 The requested model does not establish observed model/provider provenance.
 
-An explicitly configured optimizer script/compile result retains its separate
-native authority and saved learning-model selection. Released plugin bundles
+Released plugin bundles
 remain on their existing pinned SDK until a matching producer migration is
 qualified; this SDK change does not update or migrate installed plugin files.
 Codex uses the canonical `CLAUDE_SMART_CLI_PATH` or PATH; `CLAUDE_SMART_CODEX_PATH`
@@ -2309,13 +2272,3 @@ Frozen windows and snapshots retain captured policy, identities and original
 hashes rather than being rewritten as fresh configuration.
 
 
-### Caller-owned native optimizer execution
-
-The local assistant adapter can accept a compile-only `native_cli_v1` result.
-The script prepares prompts; the SDK owns the actual Claude JSON or Codex
-invocation and spends the existing caller timeout across both phases. The
-private capability/deadline header is generated per invocation, never selected
-from user configuration. Generic content-returning scripts and HTTP payloads
-retain their contract. See [assistant backend protocol](docs/playbook_optimizer_assistant_backends.md#compile-only-native-assistant-results)
-for permission, version-compatibility and immediate-child ownership limits.
-This prerequisite does not retire CLI timeout settings or change OpenCode.

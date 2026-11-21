@@ -17,7 +17,6 @@ from reflexio.server.services.playbook.publication import canonical_json_bytes
 from reflexio.server.services.storage.error import (
     OptimizationArtifactIntegrityError,
     OptimizationJobIdentityConflictError,
-    OptimizationJobLeaseLiveError,
     StorageError,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
@@ -132,22 +131,6 @@ def _durable_job(
     )
 
 
-def _gepa_user_publication_job(target_id: int = 41) -> schemas.PlaybookOptimizationJob:
-    return schemas.PlaybookOptimizationJob(
-        optimizer_kind="gepa",
-        target_kind="user_playbook",
-        target_id=target_id,
-        status="running",
-        stage="publishing",
-        best_candidate_id=17,
-        metadata_json="{}",
-        attempt_key="gepa-user-attempt",
-        lease_owner="worker-a",
-        lease_fence=1,
-        lease_expires_at=2_000,
-    )
-
-
 def _artifact(
     *,
     job_id: int,
@@ -204,32 +187,6 @@ def test_sqlite_persists_open_world_optimizer_jobs(storage: BaseStorage) -> None
     saved = storage.create_or_get_playbook_optimization_job(open_world_job)
 
     assert saved.optimizer_kind == "offline_tuner_open_world"
-
-
-def test_gepa_publication_reclaim_contract_has_none_live_and_reclaimed_outcomes(
-    storage: BaseStorage,
-) -> None:
-    assert (
-        storage.reclaim_gepa_user_playbook_publishing_job(
-            41, "worker-b", lease_seconds=60, now=2_001
-        )
-        is None
-    )
-
-    job = storage.create_playbook_optimization_job(_gepa_user_publication_job())
-    with pytest.raises(OptimizationJobLeaseLiveError):
-        storage.reclaim_gepa_user_playbook_publishing_job(
-            41, "worker-b", lease_seconds=60, now=1_999
-        )
-
-    reclaimed = storage.reclaim_gepa_user_playbook_publishing_job(
-        41, "worker-b", lease_seconds=60, now=2_001
-    )
-    assert reclaimed is not None
-    assert reclaimed.job_id == job.job_id
-    assert reclaimed.lease_owner == "worker-b"
-    assert reclaimed.lease_fence == 2
-    assert reclaimed.lease_expires_at == 2_061
 
 
 def test_stale_lease_fence_cannot_advance_stage(storage: BaseStorage) -> None:

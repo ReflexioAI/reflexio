@@ -151,8 +151,7 @@ class PlaybookWritePlan:
     ids) then ``_apply_consolidation_lineage`` (which MUST see those ids, so it
     runs AFTER the save).
 
-    The off-thread schedulers (``_enqueue_user_playbook_optimization`` +
-    ``_trigger_playbook_aggregation``) are NOT part of persist — they fire
+    The off-thread scheduler (``_trigger_playbook_aggregation``) is NOT part of persist — they fire
     post-commit in ``emit_generation_side_effects`` (durable / ``.run()`` path)
     or right after persist in the permanent ``_finalize_extracted_items``
     wrapper (synchronous resume/manual path). ``output_pending_status`` /

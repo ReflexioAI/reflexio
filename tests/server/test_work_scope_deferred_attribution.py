@@ -36,7 +36,6 @@ from reflexio.server.callback_executor import BoundedCallbackExecutor
 from reflexio.server.extensions import register_service
 from reflexio.server.services import generation_service as generation_service_module
 from reflexio.server.services.generation_service import GenerationService
-from reflexio.server.services.playbook_optimizer import scheduler as pb_sched
 from reflexio.server.services.shadow_comparison import worker as shadow_worker
 from reflexio.server.services.tagging import tagging_scheduler
 from reflexio.server.work_scope import (
@@ -205,42 +204,6 @@ def test_group_evaluation_key_keeps_projects_distinct(
         "two projects sharing org/user/session produced the same group-evaluation "
         f"key, so they would collapse into one fire: {keys}"
     )
-
-
-def test_playbook_optimization_enqueue_keeps_projects_distinct(
-    provider: _FakeProvider,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    scheduler = pb_sched.PlaybookOptimizationScheduler()
-    executor = BoundedCallbackExecutor(workers=1, queue_size=4)
-    monkeypatch.setattr(pb_sched, "submit_callback", executor.submit)
-    target = pb_sched.PlaybookOptimizationTarget(kind="user_playbook", target_id=7)
-    fired: list[str | None] = []
-    occupied = threading.Event()
-    release = threading.Event()
-
-    def occupy():
-        occupied.set()
-        assert release.wait(5)
-
-    def callback():
-        fired.append(current_project_id())
-
-    executor.submit("occupy", occupy)
-    assert occupied.wait(3)
-    try:
-        # Both callbacks must be queued together, so a missing project key really
-        # would coalesce them rather than pass by lucky immediate execution.
-        for project in ("proj-a", "proj-b"):
-            with bind_work_scope(WorkScope(org_id="org-1", project_id=project)):
-                scheduler.enqueue(org_id="org-1", target=target, callback=callback)
-    finally:
-        release.set()
-    assert executor.drain(timeout_seconds=5)
-    assert sorted(project for project in fired if project is not None) == [
-        "proj-a",
-        "proj-b",
-    ]
 
 
 def test_enqueue_time_project_is_captured_not_fire_time(

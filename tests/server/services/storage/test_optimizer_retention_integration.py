@@ -11,9 +11,6 @@ from unittest.mock import patch
 import pytest
 
 from reflexio.models.api_schema.domain import (
-    PlaybookOptimizationCandidate,
-    PlaybookOptimizationEvaluation,
-    PlaybookOptimizationEvent,
     PlaybookOptimizationJob,
 )
 from reflexio.server.services.storage.error import StorageError
@@ -58,26 +55,37 @@ def seed(
             created_at=created_at,
         )
     )
-    candidate = store.insert_playbook_optimization_candidate(
-        PlaybookOptimizationCandidate(
-            job_id=job.job_id, content="owned evidence", created_at=created_at
-        )
+    candidate_id = store.conn.execute(
+        """INSERT INTO playbook_optimization_candidates
+           (job_id, candidate_index, content, parent_candidate_ids,
+            aggregate_score, is_winner, metadata_json, created_at)
+           VALUES (?, 0, 'owned evidence', '[]', NULL, 0, '{}', ?)""",
+        (job.job_id, created_at),
+    ).lastrowid
+    store.conn.execute(
+        """INSERT INTO playbook_optimization_evaluations
+           (job_id, candidate_id, target_kind, target_id,
+            scenario_user_playbook_id, source_interaction_ids, score, verdict,
+            likert, rationale, asi_json, incumbent_rollout_json,
+            candidate_rollout_json, created_at)
+           VALUES (?, ?, 'agent_playbook', 1, NULL, '[]', 0.0, 'tie', 0, '',
+                   '{}', '[]', '[]', ?)""",
+        (job.job_id, candidate_id, created_at),
     )
-    store.insert_playbook_optimization_evaluation(
-        PlaybookOptimizationEvaluation(
-            job_id=job.job_id,
-            candidate_id=candidate.candidate_id,
-            target_kind="agent_playbook",
-            target_id=1,
-            created_at=created_at,
-        )
-    )
-    store.insert_playbook_optimization_event(
-        PlaybookOptimizationEvent(
-            job_id=job.job_id, event_type="evaluation", created_at=created_at
-        )
-    )
+    store.conn.commit()
+    insert_event(store, job.job_id, "evaluation", created_at)
     return job
+
+
+def insert_event(
+    store: SQLiteStorage, job_id: int, event_type: str, created_at: int
+) -> None:
+    store.conn.execute(
+        """INSERT INTO playbook_optimization_events
+           (job_id, event_type, payload_json, created_at) VALUES (?, ?, '{}', ?)""",
+        (job_id, event_type, created_at),
+    )
+    store.conn.commit()
 
 
 def snapshot(store: SQLiteStorage, job_id: int) -> list[list[tuple]]:

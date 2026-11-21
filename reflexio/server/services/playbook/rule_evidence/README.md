@@ -64,7 +64,7 @@ Postgres reconstruct this source/receipt graph independently. A no-op requires
 both original fields unchanged. Trigger-only, Content-only and joint edits are
 published through one atomic successor/vector/lexical-index/lifecycle transaction.
 If a required stage fails, the incumbent is unchanged. Historical v1 records and
-GEPA retain their original Content-only/preserved-Trigger contracts and bytes.
+GEPA publications retain their original Content-only/preserved-Trigger contracts and bytes.
 Enterprise requires the additive v2 contract/readiness migration before new calls.
 
 The native input profile `trigger-maintenance-native-source-only-v1` omits the

@@ -123,7 +123,7 @@ def test_inline_aggregation_default_path_schedules_durably():
     _storage(service).schedule_playbook_aggregation.assert_called_once_with("v1")
 
 
-def test_post_persist_scheduler_failures_are_best_effort(caplog):
+def test_post_persist_scheduler_failure_is_best_effort(caplog):
     configurator = MagicMock()
     configurator.get_config.return_value = _aggregation_enabled_config()
     service = _service_for_inline_aggregation(configurator)
@@ -131,20 +131,13 @@ def test_post_persist_scheduler_failures_are_best_effort(caplog):
     plan.new_playbooks = [MagicMock()]
     plan.output_pending_status = False
     plan.skip_aggregation = False
-    service._enqueue_user_playbook_optimization = MagicMock(
-        side_effect=RuntimeError("optimization unavailable")
-    )
     service._trigger_playbook_aggregation = MagicMock(
         side_effect=RuntimeError("aggregation unavailable")
     )
 
     service._dispatch_playbook_schedulers(plan)
 
-    service._enqueue_user_playbook_optimization.assert_called_once_with(
-        plan.new_playbooks
-    )
     service._trigger_playbook_aggregation.assert_called_once_with()
-    assert "optimization unavailable" in caplog.text
     assert "aggregation unavailable" in caplog.text
 
 
@@ -521,9 +514,6 @@ def test_finalize_drops_empty_and_same_batch_duplicates_with_dedup_flag_off():
                 _storage(playbook_generation_service),
                 "save_user_playbooks",
             ) as save_user_playbooks,
-            patch.object(
-                playbook_generation_service, "_enqueue_user_playbook_optimization"
-            ),
         ):
             mock_dedup_cls.return_value.deduplicate.side_effect = (
                 lambda results, *_args, **_kwargs: (
@@ -577,7 +567,6 @@ def test_finalize_without_provenance_emits_create_with_null_model_fields():
                 "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator",
             ) as mock_dedup_cls,
             patch.object(_storage(service), "save_user_playbooks") as save,
-            patch.object(service, "_enqueue_user_playbook_optimization"),
         ):
             mock_dedup_cls.return_value.deduplicate.return_value = (
                 [playbook],

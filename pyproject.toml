@@ -45,11 +45,6 @@ dependencies = [
     "httpx>=0.28.1",
     "pydantic[email]>=2.13.0",
     "json-repair>=0.60.1",
-    # Ceiling: gepa is pre-1.0 and a 0.x minor may change the optimizer API
-    # (gepa.api.optimize, gepa.EvaluationBatch, and the type-only
-    # gepa.core.adapter.ProposalFn / gepa.core.state.GEPAState). Widen once the
-    # weekly upstream-canary workflow passes its next-major check for 0.2.
-    "gepa>=0.1.1,<0.2",
     # CLI
     "typer>=0.15.0",
     "rich>=13.0.0",

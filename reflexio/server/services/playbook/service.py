@@ -720,23 +720,16 @@ class PlaybookGenerationService(
             raise
 
     def _dispatch_playbook_schedulers(self, plan: PlaybookWritePlan) -> None:
-        """Fire the off-thread optimization + aggregation schedulers post-persist.
+        """Fire the off-thread aggregation scheduler post-persist.
 
         Phantom-billing gate: on the durable / ``.run()`` path this is invoked
         from ``emit_generation_side_effects`` (post-commit), so a fence-lost
-        (superseded) job never enqueues optimization or triggers aggregation. On
+        (superseded) job never triggers aggregation. On
         the synchronous direct-mutation path ``_finalize_extracted_items`` invokes
         it after persistence. Dispatch is best-effort and at most once per
         committed finalization attempt; derived scheduler work has no durable
         replay idempotency.
         """
-        try:
-            self._enqueue_user_playbook_optimization(plan.new_playbooks)
-        except Exception:
-            logger.exception(
-                "Failed to schedule post-persist playbook optimization for request %s",
-                sanitise_for_log(plan.request_id),
-            )
         if not plan.output_pending_status and not plan.skip_aggregation:
             try:
                 logger.info("Trigger playbook aggregation")
@@ -866,43 +859,6 @@ class PlaybookGenerationService(
             except Exception:
                 logger.exception("Failed to supersede split-source existing entries")
                 raise
-
-    def _enqueue_user_playbook_optimization(
-        self, saved_playbooks: list[UserPlaybook]
-    ) -> None:
-        config = self.configurator.get_config().playbook_optimizer_config
-        if config.allows_target("user_playbook") is not True or not saved_playbooks:
-            return
-        from reflexio.server.services.playbook_optimizer import (
-            PlaybookOptimizationScheduler,
-            PlaybookOptimizationTarget,
-            PlaybookOptimizer,
-        )
-
-        scheduler = PlaybookOptimizationScheduler.get_instance()
-        from reflexio.server.services.playbook.source_quoted_overflow import (
-            is_source_quoted_playbook,
-        )
-
-        for playbook in saved_playbooks:
-            if (
-                not playbook.user_playbook_id
-                or playbook.status is not None
-                or not playbook.source_interaction_ids
-                or is_source_quoted_playbook(playbook)
-            ):
-                continue
-            target = PlaybookOptimizationTarget(
-                kind="user_playbook", target_id=playbook.user_playbook_id
-            )
-            scheduler.enqueue(
-                org_id=self.request_context.org_id,
-                target=target,
-                policy=config.scheduling_policy,
-                callback=lambda target=target: PlaybookOptimizer(
-                    self.request_context, self.client
-                ).optimize(target),
-            )
 
     def _get_extractor_state_service_name(self) -> str:
         """
