@@ -373,19 +373,25 @@ class SQLiteSchemaMigrationsMixin:
                 )
             self.conn.commit()
 
-    def _indexable_embedding(self, text: str | None) -> list[float] | None:
+    def _indexable_embedding(self, text: str | bytes | None) -> list[float] | None:
         """Return the vector a sidecar row can hold, or None to skip the row."""
         try:
-            emb = _json_loads(text)
-        except json.JSONDecodeError:
+            emb = _json_loads(text)  # type: ignore[arg-type]
+        except ValueError:  # JSONDecodeError and UnicodeDecodeError
             return None
         if not isinstance(emb, list) or len(emb) != self.embedding_dimensions:
             return None
-        # bool is an int to Python and a type error to sqlite-vec.
-        if not all(
-            isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v)
-            for v in emb
-        ):
+        try:
+            # bool is an int to Python and a type error to sqlite-vec; an
+            # integer beyond float range overflows isfinite.
+            if not all(
+                isinstance(v, int | float)
+                and not isinstance(v, bool)
+                and math.isfinite(v)
+                for v in emb
+            ):
+                return None
+        except OverflowError:
             return None
         return emb
 
@@ -407,21 +413,34 @@ class SQLiteSchemaMigrationsMixin:
         ]
         batch_size = 256
         for main_table, vec_table, _id_col in entity_map:
+            with self._lock:
+                self.conn.commit()
+                self.conn.execute("BEGIN IMMEDIATE")
+                try:
+                    self.conn.execute(
+                        f"DELETE FROM {vec_table} WHERE rowid NOT IN "  # noqa: S608
+                        f"(SELECT rowid FROM {main_table})"
+                    )
+                    self.conn.commit()
+                except BaseException:
+                    self.conn.rollback()
+                    raise
             cursor = -(2**63)
             while True:
                 with self._lock:
                     self.conn.commit()
                     self.conn.execute("BEGIN IMMEDIATE")
                     try:
-                        self.conn.execute(
-                            f"DELETE FROM {vec_table} WHERE rowid NOT IN "  # noqa: S608
-                            f"(SELECT rowid FROM {main_table})"
-                        )
+                        # CAST: text that is not valid UTF-8 comes back as bytes
+                        # instead of failing the whole read.
                         rows = self.conn.execute(
-                            f"SELECT rowid AS rid, embedding FROM {main_table} "  # noqa: S608
-                            f"WHERE embedding IS NOT NULL AND rowid > ? AND rowid "
-                            f"NOT IN (SELECT rowid FROM {vec_table}) "
-                            "ORDER BY rowid LIMIT ?",
+                            "SELECT t.rowid AS rid, "
+                            "CAST(t.embedding AS BLOB) AS embedding "
+                            f"FROM {main_table} t "  # noqa: S608
+                            "WHERE t.embedding IS NOT NULL AND t.rowid > ? "
+                            f"AND NOT EXISTS (SELECT 1 FROM {vec_table} v "
+                            "WHERE v.rowid = t.rowid) "
+                            "ORDER BY t.rowid LIMIT ?",
                             (cursor, batch_size),
                         ).fetchall()
                         for r in rows:

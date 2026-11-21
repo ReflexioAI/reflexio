@@ -523,6 +523,8 @@ def test_unindexable_embeddings_do_not_stop_an_upgrade(tmp_path: Path) -> None:
         ("bools", json.dumps([True] * EMBEDDING_DIMENSIONS)),
         ("text", "not json"),
         ("short", json.dumps([1.0])),
+        ("blob", b"\xff\xfe\xfa"),
+        ("huge", "[" + "9" * 400 + ", 0.5" * (EMBEDDING_DIMENSIONS - 1) + "]"),
     ):
         storage.conn.execute(
             "INSERT INTO profiles (profile_id, user_id, last_modified_timestamp, "
@@ -621,6 +623,81 @@ def test_fallback_writes_after_a_native_stamp_are_reconciled(
     reopened = _open(path)
     try:
         assert stored_version(reopened) == LATEST_VERSION
+        assert (
+            reopened.conn.execute("SELECT COUNT(*) FROM profiles_vec").fetchone()[0]
+            == 1
+        )
+    finally:
+        reopened.conn.close()
+
+
+@requires_vec
+def test_a_reused_statement_still_marks_the_sidecar_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+
+    path = tmp_path / "reuse.db"
+    _open(path).conn.close()
+    insert = (
+        "INSERT INTO profiles (profile_id, user_id, last_modified_timestamp, "
+        "embedding) VALUES (?, 'u', 1, ?)"
+    )
+    embedding = json.dumps([0.5] * EMBEDDING_DIMENSIONS)
+    with monkeypatch.context() as patched:
+        patched.setattr(SQLiteStorage, "_try_load_sqlite_vec", lambda _self: False)
+        fallback = _open(path)
+    try:
+        fallback.conn.execute(insert, ("first", embedding))
+        fallback.conn.commit()
+        native = _open(path)  # reconciles "first" and stamps the latest version
+        native.conn.close()
+        assert stored_version(fallback) == LATEST_VERSION
+        fallback.conn.execute(insert, ("second", embedding))  # same SQL text
+        fallback.conn.commit()
+        assert stored_version(fallback) == VEC_STEP - 1
+    finally:
+        fallback.conn.close()
+
+    reopened = _open(path)
+    try:
+        assert (
+            reopened.conn.execute("SELECT COUNT(*) FROM profiles_vec").fetchone()[0]
+            == 2
+        )
+    finally:
+        reopened.conn.close()
+
+
+@requires_vec
+def test_a_failed_deferred_index_write_marks_the_sidecar_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+    from reflexio.server.services.storage.error import PostCommitStorageError
+
+    path = tmp_path / "deferred.db"
+    storage = _open(path)
+
+    def failing_flush(_self, _kind, _args):
+        raise RuntimeError("index write failed")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(SQLiteStorage, "_flush_index_op", failing_flush)
+        with pytest.raises(PostCommitStorageError), storage.commit_scope():
+            storage.conn.execute(
+                "INSERT INTO profiles (profile_id, user_id, last_modified_timestamp, "
+                "embedding) VALUES ('p', 'u', 1, ?)",
+                (json.dumps([0.5] * EMBEDDING_DIMENSIONS),),
+            )
+            storage._deferred_index_ops.append(("vec_upsert", ("profiles_vec", 1, [])))
+    try:
+        assert stored_version(storage) == VEC_STEP - 1
+    finally:
+        storage.conn.close()
+
+    reopened = _open(path)
+    try:
         assert (
             reopened.conn.execute("SELECT COUNT(*) FROM profiles_vec").fetchone()[0]
             == 1

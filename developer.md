@@ -304,6 +304,18 @@ new step. A test that fabricates a legacy schema and reopens it must reset
 `PRAGMA user_version = 0`. `test_schema_ledger.py` upgrades databases built from
 historical DDL through the ledger.
 
+The vector sidecar (`*_vec` tables) follows the same stamp. A process that cannot
+load sqlite-vec takes the stamp back to just before the vec step, at open and
+inside any commit that wrote an embedding table; a native open that finds the
+stamp below that step reconciles the sidecar (adds missing rows, drops orphans)
+and stamps again. A native commit whose deferred index write fails after the
+primary rows committed does the same. Known limits: a fallback process that
+commits an embedding between two batches of a native opener's reconciliation
+(after that table was scanned, before the step is stamped) is missed until the
+next fallback write lowers the stamp again, and an embedding changed in fallback
+mode keeps its old vector. Running native and fallback processes against one
+file is not a supported steady state.
+
 
 ### Why this matters
 

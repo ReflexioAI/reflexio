@@ -17,6 +17,8 @@ from reflexio.server.services.storage.error import (
     StorageError,
 )
 
+from .migrations import VEC_STEP
+
 logger = logging.getLogger(__name__)
 
 # 3.35 brought RETURNING and DROP COLUMN; 3.38 brought unixepoch(), which the
@@ -66,7 +68,9 @@ class VecAwareConnection(sqlite3.Connection):
 
     def mark_sidecar_stale_on_embedding_writes(self, stale_stamp: int) -> None:
         self._stale_stamp = stale_stamp
+        self._arm_authorizer()
 
+    def _arm_authorizer(self) -> None:
         def authorize(action: int, table: Any, *_rest: Any) -> int:
             if action in (
                 sqlite3.SQLITE_INSERT,
@@ -76,7 +80,17 @@ class VecAwareConnection(sqlite3.Connection):
                 self._writes_embeddings = True
             return sqlite3.SQLITE_OK
 
+        # The authorizer runs when a statement is PREPARED, and the statement
+        # cache reuses prepared statements. Installing the callback again
+        # expires them, so every statement after a commit is prepared, and
+        # authorized, again.
         self.set_authorizer(authorize)
+
+    def take_stamp_back(self, stamp: int) -> None:
+        """Lower the schema stamp to ``stamp`` and commit it."""
+        if self.execute("PRAGMA user_version").fetchone()[0] > stamp:
+            self.execute(f"PRAGMA user_version = {int(stamp)}")
+        super().commit()
 
     def _lower_stamp(self) -> None:
         if (
@@ -90,6 +104,8 @@ class VecAwareConnection(sqlite3.Connection):
         self._lower_stamp()
         super().commit()
         self._writes_embeddings = False
+        if self._stale_stamp is not None:
+            self._arm_authorizer()
 
     def rollback(self) -> None:
         super().rollback()
@@ -100,6 +116,8 @@ class VecAwareConnection(sqlite3.Connection):
             self._lower_stamp()
         result = super().__exit__(exc_type, exc_value, traceback)
         self._writes_embeddings = False
+        if self._stale_stamp is not None:
+            self._arm_authorizer()
         return result
 
 
@@ -218,6 +236,14 @@ class SQLiteConnectionMixin:
                     for kind, args in ops:
                         self._flush_index_op(kind, args)
                 except Exception as error:
+                    # The primary rows are committed and their index rows are
+                    # not: have the next sqlite-vec open rebuild the sidecar.
+                    try:
+                        self.conn.take_stamp_back(VEC_STEP - 1)
+                    except Exception:
+                        logger.warning(
+                            "Could not mark the vec sidecar stale", exc_info=True
+                        )
                     raise PostCommitStorageError(
                         "Primary rows committed; deferred index update failed"
                     ) from error
