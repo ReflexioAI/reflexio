@@ -599,6 +599,43 @@ def test_plugin_owned_generation_uses_compatible_cli_inside_request(monkeypatch,
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("provider/model#low", ["--model", "provider/model", "--variant=low"]),
+        ("#low", ["--variant=low"]),
+    ],
+)
+def test_plugin_bridge_keeps_variant_inline(monkeypatch, model, expected):
+    def run(argv, **kwargs):
+        if argv[-1] == "--help":
+            return subprocess.CompletedProcess(argv, 0, LEGACY, "")
+        assert argv == [
+            sys.executable,
+            "run",
+            "--format",
+            "json",
+            "--agent",
+            native._AGENT,
+            *expected,
+        ]
+        return subprocess.CompletedProcess(
+            argv, 0, '{"type":"text","text":"owned reply"}', ""
+        )
+
+    monkeypatch.setattr(native, "run_native_cli", run)
+    result = native.run_opencode(
+        cli_path=sys.executable,
+        system_prompt="owned context",
+        dialogue="owned task",
+        model=model,
+        deadline=time.monotonic() + 1,
+        legacy_wire=True,
+    )
+    assert result.success
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("private", [False, True])
 @pytest.mark.parametrize("model", [None, "opaque/nested/model", "opaque/model#variant"])
 def test_discovery_and_execution_spend_one_original_deadline(

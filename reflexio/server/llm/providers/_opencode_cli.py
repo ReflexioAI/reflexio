@@ -73,7 +73,8 @@ def _model_arguments(
             if selected
             else []
         )
-        return flags + _wire_argument("--variant", variant, legacy_wire=legacy_wire)
+        # The plugin bridge sends the discovered variant as one argument.
+        return [*flags, f"--variant={variant}"]
     return _wire_argument("--model", model, legacy_wire=legacy_wire)
 
 
