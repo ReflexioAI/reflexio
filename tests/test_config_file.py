@@ -105,23 +105,62 @@ def test_generation_15_evaluator_requires_explicit_conversion(tmp_path):
     assert path.read_text() == original
 
 
-def test_generation_15_without_an_evaluator_prepares_normally(tmp_path):
+@pytest.mark.parametrize("evaluator", [None, ""])
+def test_generation_15_without_an_evaluator_prepares_normally(tmp_path, evaluator):
+    from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
+
     path = tmp_path / "config.json"
     path.write_text(
         encode_config_document(
             {
                 "_reflexio_config_file": {"version": 15},
                 "storage_config": None,
-                "llm_config": {"generation_model_name": "openai/generator"},
+                "llm_config": {
+                    "generation_model_name": "openai/generator",
+                    "evaluation_model_name": evaluator,
+                },
             }
         )
     )
     owner = LocalConfigFile(path)
     assert owner.prepare()
+    config = validate_stored_config(owner.read_document())
+    assert (
+        resolve_model_name(ModelRole.EVALUATION, llm_config=config.llm_config)
+        == "openai/generator"
+    )
+    assert not owner.prepare()
+
+
+def test_explicit_legacy_evaluator_replacement_preserves_storage_admission(tmp_path):
+    path = tmp_path / "config.json"
+    source = {"type": "sqlite", "db_path": str(tmp_path / "old.db")}
+    target = {"type": "sqlite", "db_path": str(tmp_path / "new.db")}
+    path.write_text(
+        encode_config_document(
+            {
+                "_reflexio_config_file": {"version": 15},
+                "storage_config": source,
+                "llm_config": {"evaluation_model_name": "anthropic/legacy"},
+            }
+        )
+    )
+    owner = LocalConfigFile(path)
+    admitted = []
+    assert owner.publish_document(
+        encode_config_document(
+            {
+                "storage_config": target,
+                "llm_config": {"generation_model_name": "openai/generator"},
+            }
+        ),
+        admit=admitted.append,
+    )
+    assert [document["storage_config"] for document in admitted] == [source, target]
+    assert "evaluation_model_name" not in admitted[0]["llm_config"]
     assert owner.read_document()["llm_config"] == {
         "generation_model_name": "openai/generator"
     }
-    assert not owner.prepare()
 
 
 def test_preparation_preserves_original_policy_and_precision(tmp_path):

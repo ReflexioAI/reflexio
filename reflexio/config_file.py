@@ -137,7 +137,7 @@ def _reject_ambiguous_evaluation_model(data: dict[str, Any], version: int) -> No
     if (
         version < EVALUATION_MODEL_POLICY_VERSION
         and isinstance(llm, dict)
-        and llm.get("evaluation_model_name") is not None
+        and llm.get("evaluation_model_name") not in (None, "")
     ):
         raise StoredConfigurationError(
             "Older configuration contains evaluation_model_name without a known "
@@ -504,6 +504,14 @@ class LocalConfigFile:
                 source_version = metadata.get("version", 0)
                 metadata = {**metadata, "version": FILE_FORMAT_VERSION}
             if admit is not None:
+                if (
+                    previous is not None
+                    and source_version < EVALUATION_MODEL_POLICY_VERSION
+                    and isinstance(previous_llm := previous.get("llm_config"), dict)
+                ):
+                    # Storage admission needs the old dataset, not an
+                    # ambiguous role value from the replaced document.
+                    previous_llm.pop("evaluation_model_name", None)
                 _admit_storage_transition(
                     admit,
                     _prepare_document(previous, source_version)
