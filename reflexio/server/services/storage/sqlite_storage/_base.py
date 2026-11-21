@@ -1486,6 +1486,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_user_playbook_publication_results_shape()
         self._classify_legacy_playbook_optimization_jobs()
         self._enforce_playbook_optimization_job_constraints()
+        with self._lock:
+            # Close any implicit migration transaction so the scope can begin.
+            self.conn.commit()
         self._retire_unfinished_gepa_jobs()
         self._enforce_playbook_optimization_artifact_constraints()
         self._migrate_retire_profile_change_logs()
@@ -1512,8 +1515,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         taken by another connection is never cleared. Idempotent. Reuses an
         existing terminal outcome, so no CHECK is rebuilt.
         """
-        if self._scope_depth == 0 and self.conn.in_transaction:
-            self.conn.commit()
+        # Never commits outside commit_scope(): the scope takes the connection
+        # lock, so another thread's open transaction finishes first.
         with self.commit_scope():
             tables = {
                 row["name"]
@@ -1527,7 +1530,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             claims = "user_playbook_publication_claims" in tables
             unconsumed = (
                 " OR EXISTS (SELECT 1 FROM user_playbook_publication_claims c "
-                "WHERE c.job_id = playbook_optimization_jobs.job_id "
+                "WHERE c.optimizer_kind = 'gepa' "
+                "AND c.job_id = playbook_optimization_jobs.job_id "
                 "AND c.consumed = 0)"
                 if claims
                 else ""
@@ -1548,7 +1552,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 if claims:
                     self.conn.execute(
                         "UPDATE user_playbook_publication_claims SET consumed = 1, "  # noqa: S608
-                        "updated_at = ? WHERE consumed = 0 AND job_id = ? AND "
+                        "updated_at = ? WHERE consumed = 0 AND optimizer_kind = 'gepa' "
+                        "AND job_id = ? AND "
                         "EXISTS (SELECT 1 FROM playbook_optimization_jobs j WHERE "
                         "j.job_id = user_playbook_publication_claims.job_id AND "
                         "j.optimizer_kind = 'gepa' AND "

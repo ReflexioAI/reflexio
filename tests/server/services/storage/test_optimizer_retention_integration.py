@@ -323,3 +323,53 @@ def test_retirement_holds_the_writer_lock_so_no_claim_can_interleave(store, tmp_
         (job.job_id,),
     ).fetchone()
     assert row["lease_owner"] is None and row["decision_reason"] == "retired_gepa"
+
+
+def test_retention_never_commits_another_threads_open_transaction(store):
+    job = seed(store, "completed", 1)
+    store.conn.execute(
+        "UPDATE playbook_optimization_jobs SET lease_expires_at = ? WHERE job_id = ?",
+        (int(time.time()) - 1, job.job_id),
+    )
+    store.conn.commit()
+    live = seed(store, "running", 2)
+    started, release = Event(), Event()
+    result: list[int] = []
+
+    def writer() -> None:
+        with store._lock:
+            store.conn.execute("BEGIN IMMEDIATE")
+            store.conn.execute(
+                "UPDATE playbook_optimization_jobs SET decision_reason = 'uncommitted' "
+                "WHERE job_id = ?",
+                (live.job_id,),
+            )
+            started.set()
+            assert release.wait(timeout=10)
+            store.conn.rollback()
+
+    def cleanup() -> None:
+        store._retire_unfinished_gepa_jobs()
+        result.append(store.delete_oldest_retention_target_rows(GRAPH, 1))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a = pool.submit(writer)
+        assert started.wait(timeout=5)
+        b = pool.submit(cleanup)
+        time.sleep(0.5)
+        release.set()
+        a.result(timeout=10)
+        b.result(timeout=10)
+    # The writer's rolled-back change never became durable, and the cleanup ran
+    # only after the writer released the connection.
+    assert result == [4]
+    with sqlite3.connect(
+        store.conn.execute("PRAGMA database_list").fetchone()[2]
+    ) as fresh:
+        assert (
+            fresh.execute(
+                "SELECT COUNT(*) FROM playbook_optimization_jobs "
+                "WHERE decision_reason = 'uncommitted'"
+            ).fetchone()[0]
+            == 0
+        )
