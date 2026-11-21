@@ -49,6 +49,12 @@ def _content_digest(content: Any) -> str:
     ).hexdigest()
 
 
+class _PlanChangedError(ProviderRequestGuardError):
+    def __init__(self, saved: SharedReceipt):
+        super().__init__("Shared compaction frozen plan changed")
+        self.saved = saved
+
+
 class SharedCompactionJournal:
     """One job-local reservation ledger; cached choices never authorize calls."""
 
@@ -98,8 +104,32 @@ class SharedCompactionJournal:
             expected_digest=digest(previous) if previous is not None else None,
         )
 
-    def bind(self, plan: ClientCompressionPlan) -> None:
+    def bind(
+        self,
+        plan: ClientCompressionPlan,
+        *,
+        legacy_plan: Callable[[], ClientCompressionPlan] | None = None,
+    ) -> ClientCompressionPlan:
+        """Select legacy execution only by its full immutable saved witness.
+
+        Build the fallback outside the storage transaction. The second bind
+        revalidates the same authority and spent allowance; missing roots must
+        never turn recovery into admission of a fresh legacy budget.
+        """
+        self.plan = None
+        try:
+            self._bind(plan)
+        except _PlanChangedError as changed:
+            if legacy_plan is None:
+                raise
+            plan = legacy_plan()
+            self._bind(plan, previous=changed.saved)
         self.plan = plan
+        return plan
+
+    def _bind(
+        self, plan: ClientCompressionPlan, *, previous: SharedReceipt | None = None
+    ) -> None:
         expected = Root(
             source_digest=plan.compression.source_digest,
             plan_witness=plan.witness,
@@ -110,16 +140,31 @@ class SharedCompactionJournal:
         with self.storage.commit_scope():
             saved = self._read(self.identity)
             if saved is None:
+                if previous is not None:
+                    raise ProviderRequestGuardError(
+                        "Shared compaction legacy root disappeared"
+                    )
                 self._write(receipt(self.identity, expected, complete=False))
             else:
-                known = SharedReceipt.model_validate(saved).payload
+                record = SharedReceipt.model_validate(saved)
+                known = record.payload
+                if previous is not None:
+                    before = previous.payload
+                    if (
+                        not isinstance(before, Root)
+                        or not isinstance(known, Root)
+                        or known.model_copy(update={"calls": before.calls}) != before
+                        or known.calls < before.calls
+                        or (previous.complete and not record.complete)
+                    ):
+                        raise ProviderRequestGuardError(
+                            "Shared compaction legacy root authority changed"
+                        )
                 if (
                     not isinstance(known, Root)
                     or known.model_copy(update={"calls": 0}) != expected
                 ):
-                    raise ProviderRequestGuardError(
-                        "Shared compaction frozen plan changed"
-                    )
+                    raise _PlanChangedError(record)
 
     def inspect(self, node: CompressionNodeInput) -> None:
         self.authorize()

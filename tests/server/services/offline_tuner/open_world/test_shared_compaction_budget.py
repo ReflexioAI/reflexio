@@ -1,5 +1,6 @@
 """Wider offline leaves retain native admission and immutable journal budgets."""
 
+from copy import deepcopy
 from dataclasses import replace
 from hashlib import sha256
 
@@ -14,9 +15,15 @@ from reflexio.server.llm.litellm_client import (
 from reflexio.server.services.input_compression import (
     CompressionBudget,
     CompressionError,
+    CompressionNodeInput,
     EvidenceSource,
 )
 from reflexio.server.services.input_compression_llm import plan_with_client
+from reflexio.server.services.offline_tuner.evidence.shared_compaction_checkpoint import (
+    Root,
+    SharedReceipt,
+    receipt,
+)
 from reflexio.server.services.offline_tuner.open_world.shared_compaction import (
     SharedCompactionJournal,
 )
@@ -49,7 +56,7 @@ def test_task_budget_is_context_bounded_without_changing_shared_limits(
     assert CompressionBudget(output_tokens=1234).input_tokens == 32_768
 
 
-def plan(text, budget, *, context=1_000_000):
+def plan(text, budget, *, context=1_000_000, _admission_version=None):
     return plan_with_client(
         [
             EvidenceSource(
@@ -71,6 +78,7 @@ def plan(text, budget, *, context=1_000_000):
             )
         ),
         context_limits={"minimax/MiniMax-M3": context},
+        _admission_version=_admission_version,
     )
 
 
@@ -111,6 +119,119 @@ def test_budget_change_cannot_rebind_an_existing_journal():
     with pytest.raises(ProviderRequestGuardError, match="frozen plan changed"):
         journal.bind(plan("Original evidence", _compression_budget(512, 1_000_000)))
     assert storage.rows == saved
+
+
+def _legacy_journal(*, calls=127):
+    storage = MemoryCheckpoints()
+    legacy = plan(
+        "Original evidence",
+        CompressionBudget(output_tokens=512),
+        _admission_version="v6",
+    )
+    current = plan("Original evidence", CompressionBudget(output_tokens=512))
+    assert legacy.witness != current.witness
+    journal = SharedCompactionJournal(
+        storage,
+        job_id=7,
+        fence=1,
+        identity="a" * 64,
+        before_call=lambda: None,
+        now=lambda: 1,
+        limit=128,
+    )
+    root = Root(
+        source_digest=legacy.compression.source_digest,
+        plan_witness=legacy.witness,
+        request_contract_digest=legacy.request_contract_digest,
+        limit=128,
+        calls=calls,
+    )
+    storage.rows[(7, "a" * 64)] = receipt("a" * 64, root, complete=False)
+    return journal, storage, legacy, current
+
+
+def test_exact_legacy_witness_keeps_the_spent_physical_allowance():
+    journal, storage, legacy, current = _legacy_journal()
+    saved = deepcopy(storage.rows)
+
+    assert journal.bind(current, legacy_plan=lambda: legacy) is legacy
+    assert storage.rows == saved
+    journal.inspect(CompressionNodeInput("b" * 64, "c" * 64))
+    journal.guard({"model": "test"})
+    root = SharedReceipt.model_validate(storage.rows[(7, "a" * 64)]).payload
+    assert isinstance(root, Root) and root.calls == root.limit == 128
+    with pytest.raises(ProviderRequestGuardError, match="allowance exhausted"):
+        journal.guard({"model": "test"})
+    assert SharedReceipt.model_validate(storage.rows[(7, "a" * 64)]).payload == root
+
+
+@pytest.mark.parametrize(
+    "change", ["missing", "refunded", "source", "limit", "reopened"]
+)
+def test_legacy_rebuild_cannot_recreate_or_weaken_a_saved_root(change):
+    journal, storage, legacy, current = _legacy_journal()
+    if change == "reopened":
+        storage.rows[(7, "a" * 64)]["complete"] = True
+
+    def rebuild():
+        row = storage.rows[(7, "a" * 64)]
+        if change == "missing":
+            del storage.rows[(7, "a" * 64)]
+        elif change == "refunded":
+            row["payload"]["calls"] -= 1
+            row["batches"] -= 1
+        elif change == "source":
+            row["payload"]["source_digest"] = "f" * 64
+        elif change == "limit":
+            row["payload"]["limit"] -= 1
+        else:
+            row["complete"] = False
+        return legacy
+
+    with pytest.raises(ProviderRequestGuardError, match="legacy root"):
+        journal.bind(current, legacy_plan=rebuild)
+    assert journal.plan is None
+    if change == "missing":
+        assert (7, "a" * 64) not in storage.rows
+
+
+def test_legacy_rebuild_accepts_only_monotonic_call_advancement():
+    journal, storage, legacy, current = _legacy_journal()
+
+    def rebuild():
+        storage.rows[(7, "a" * 64)]["payload"]["calls"] = 128
+        storage.rows[(7, "a" * 64)]["batches"] = 128
+        return legacy
+
+    assert journal.bind(current, legacy_plan=rebuild) is legacy
+    journal.inspect(CompressionNodeInput("b" * 64, "c" * 64))
+    with pytest.raises(ProviderRequestGuardError, match="allowance exhausted"):
+        journal.guard({"model": "test"})
+
+
+def test_unknown_saved_witness_is_not_a_legacy_admission_override():
+    journal, storage, legacy, current = _legacy_journal()
+    storage.rows[(7, "a" * 64)]["payload"]["plan_witness"] = "f" * 64
+    saved = deepcopy(storage.rows)
+    with pytest.raises(ProviderRequestGuardError, match="frozen plan changed"):
+        journal.bind(current, legacy_plan=lambda: legacy)
+    assert storage.rows == saved and journal.plan is None
+
+
+def test_new_root_uses_current_plan_without_constructing_legacy():
+    journal, storage, _legacy, current = _legacy_journal()
+    storage.rows.clear()
+
+    def forbidden():
+        pytest.fail("New admission must not build a legacy plan")
+
+    assert journal.bind(current, legacy_plan=forbidden) is current
+    root = SharedReceipt.model_validate(storage.rows[(7, "a" * 64)]).payload
+    assert (
+        isinstance(root, Root)
+        and root.plan_witness == current.witness
+        and root.calls == 0
+    )
 
 
 @pytest.mark.parametrize(

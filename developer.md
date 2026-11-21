@@ -454,12 +454,15 @@ not model tokens or the required evidence. Native unit/adapter and saved-respons
 qualification must establish parity before release; benchmark results are local,
 not a promise of online speedup.
 
-Reduction admission also accounts for the complete variable request envelope:
-evidence reference lists and source/origin aliases grow with the evidence
-population. Intermediate products reserve that overhead before they can feed a
-parent request. The complete request guard still runs before dispatch. Changed
-compression contracts invalidate old plan/cache identities; never reset a durable
-attempt budget to force an old journal through a new plan.
+New offline tuning plans use the v8 reduction budget. They reserve space for
+evidence reference lists, source and origin aliases, and any extra tokens from
+replacing repeated text with a reference. The complete request guard still runs
+before dispatch. Profile extraction keeps its v6 plan and cache identities.
+
+An offline tuning job with a saved v6 reservation root can resume with its old
+plan only if rebuilding that plan matches the complete saved witness and native
+request contract. The job keeps its existing root, call limit and spent calls.
+An unrecognized witness fails before provider dispatch.
 
 For open-world tuning, classified transient provider errors (such as a hard
 timeout or HTTP 529) return existing scheduler-retry eligibility. The failed job

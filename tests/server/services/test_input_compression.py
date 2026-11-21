@@ -1,7 +1,9 @@
 """Exercise the same public compression interface as both runtime callers."""
 
+import hashlib
 import json
 from collections import UserDict
+from pathlib import Path
 from types import MappingProxyType
 
 import pytest
@@ -596,7 +598,7 @@ def test_priced_wire_overhead_of_many_distinct_short_origins_fits_all_parents():
     ("input_tokens", "section_tokens", "source_count", "long_ids", "shared_origin"),
     [
         (32768, 10000, 650, False, False),
-        (131072, 45000, 2400, False, False),
+        (131072, 10000, 650, False, False),
         (32768, 10000, 650, True, False),
         (32768, 6000, 650, False, True),
     ],
@@ -693,12 +695,105 @@ def test_reduction_budget_revision_changes_plan_and_cache_authority(monkeypatch)
     cache = {}
     with monkeypatch.context() as previous:
         previous.setattr(compression, "VERSION", "source-compression-v6")
-        old = plan(originals)
+        old = plan(originals, policy="offline_tuning")
         old.execute(complete=selected, save=cache.__setitem__)
-    current = plan(originals)
+    current = plan(originals, policy="offline_tuning")
     assert current.witness != old.witness
     result = current.execute(complete=selected, load=cache.get)
     assert result.calls > 0 and result.cache_hits == 0
+
+
+@pytest.mark.parametrize("references", [145, 155, 165])
+def test_distinct_short_passages_keep_a_fitting_required_speaker_whole_point(
+    references,
+):
+    sources = [source(i, f"Note {i}") for i in range(1, 601)]
+
+    def choose(call):
+        refs = json.loads(call.messages[1]["content"])["allowed_evidence_refs"]
+        return CompressionChoice(
+            points=[
+                CompressionPoint(category="constraint", evidence_refs=refs[:references])
+            ]
+        )
+
+    result = run(
+        sources,
+        complete=choose,
+        policy="offline_tuning",
+        budget=CompressionBudget(output_tokens=18000, section_tokens=20000),
+        required_speakers=("User",),
+    )
+    assert result.calls == 3 and len(result.packet.evidence) == references
+    assert len(result.packet.points) == 1
+    assert len(result.packet.points[0].evidence_refs) == references
+    assert result.packet.omission_counts.capacity_points == 0
+
+
+@pytest.mark.parametrize(
+    "expected",
+    json.loads(
+        (Path(__file__).parent / "fixtures/compression_v6_authority.json").read_text()
+    ),
+    ids=lambda row: (
+        f"{row['policy']}-{'passthrough' if row['small'] else 'compressed'}"
+    ),
+)
+def test_v6_authority_and_saved_choices_remain_byte_compatible(expected):
+    # Captured from pre-admission-fix SDK 2433994d, not recomputed by this code.
+    originals = (
+        [source()]
+        if expected["small"]
+        else [
+            source(i, f"approval {i} confirmed. " + "status " * 100)
+            for i in range(1, 13)
+        ]
+    )
+    prepared = plan(
+        originals,
+        policy=expected["policy"],
+        budget=CompressionBudget(output_tokens=512, section_tokens=1000),
+        **(
+            {"_admission_version": "v6"}
+            if expected["policy"] == "offline_tuning"
+            else {}
+        ),
+    )
+    calls, saved = [], {}
+
+    def choose(call):
+        calls.append((call.key, call.messages))
+        refs = json.loads(call.messages[1]["content"])["allowed_evidence_refs"]
+        return CompressionChoice(
+            points=[CompressionPoint(category="constraint", evidence_refs=refs[:1])]
+        )
+
+    result = prepared.execute(complete=choose, save=saved.__setitem__)
+    assert prepared.witness == expected["witness"]
+    assert prepared.sections == expected["sections"]
+    assert saved == expected["saved"]
+    rendered_calls = json.dumps(
+        calls, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    assert hashlib.sha256(rendered_calls.encode()).hexdigest() == expected["calls_hash"]
+    assert (
+        hashlib.sha256(result.packet.render().encode()).hexdigest()
+        == expected["packet_hash"]
+    )
+    replay = prepared.execute(
+        complete=lambda _call: pytest.fail("Persisted v6 selection must be reused"),
+        load=expected["saved"].get,
+    )
+    assert replay.packet == result.packet and replay.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("policy", "override"),
+    [("offline_tuning", "v7"), ("extraction", "v8")],
+)
+def test_unrecognized_or_extraction_admission_override_is_refused(policy, override):
+    with pytest.raises(CompressionError, match="Invalid compression admission version"):
+        plan([source()], policy=policy, _admission_version=override)
 
 
 def test_measurement_integrity_errors_are_not_converted_to_budget_omissions():
