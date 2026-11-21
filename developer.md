@@ -501,6 +501,12 @@ the upgraded writer, including on installations using shipped defaults. Save
 generation and evaluation together when migrating distinct models. With the
 upgraded release, verify every affected role before resuming work.
 
+A local file written before format 16 can contain an evaluator that its writer
+ignored. If startup refuses that file, stop the old writers and run
+`reflexio config upgrade-file INPUT --output OUTPUT` to make a separate copy.
+Check the evaluator in that copy against the effective policy you recorded.
+Install the reviewed copy only after deciding whether to keep the evaluator.
+
 | Former key | Organization field |
 | --- | --- |
 | `default_generation_model_name` | `llm_config.generation_model_name` |
