@@ -382,8 +382,15 @@ def validate_publication_cutover(
         _require_current_learning_authority(conn)
 
 
-def migrate_publication_receipts(conn: sqlite3.Connection, *, org_id: str) -> None:
-    """Install atomically; current startup is read-only and never rewrites history."""
+def register_publication_receipt_functions(
+    conn: sqlite3.Connection, *, org_id: str
+) -> None:
+    """Register the receipt SQL functions the guards call.
+
+    Registrations belong to one connection, so every new connection makes them
+    before it can run a statement that fires a guard; the schema ledger skips
+    ``migrate_publication_receipts`` on a stamped database.
+    """
     conn.create_function(
         "reflexio_valid_publication_receipt",
         5,
@@ -394,6 +401,11 @@ def migrate_publication_receipts(conn: sqlite3.Connection, *, org_id: str) -> No
     conn.create_function(
         "reflexio_window_handoff_matches", 4, window_handoff_matches, deterministic=True
     )
+
+
+def migrate_publication_receipts(conn: sqlite3.Connection, *, org_id: str) -> None:
+    """Install atomically; current startup is read-only and never rewrites history."""
+    register_publication_receipt_functions(conn, org_id=org_id)
     if conn.in_transaction:
         raise ValueError("Publication receipt migration requires its own transaction")
     installed, window_scope_ready = _installed_receipt_sql(conn)

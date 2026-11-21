@@ -50,8 +50,7 @@ MIGRATION_STEPS: tuple[tuple[int, str], ...] = (
     (8, "_apply_base_ddl"),
     (9, "_apply_attention_ddl"),
     (10, "_migrate_session_outcomes_schema"),
-    # Needs the sqlite-vec extension; ``migrate`` repeats it when the extension
-    # becomes available after the database was stamped without it.
+    # Needs the sqlite-vec extension; without it the ledger stops stamping here.
     (11, "_create_and_backfill_vec_tables"),
     (12, "_apply_publication_receipts_migration"),
     (13, "_apply_publication_preparations_migration"),
@@ -97,18 +96,39 @@ def stored_version(storage: SQLiteSchemaMigrationsMixin) -> int:
         return int(storage.conn.execute("PRAGMA user_version").fetchone()[0])
 
 
-def run_pending_migrations(storage: SQLiteSchemaMigrationsMixin) -> None:
-    """Apply every step above the stored version, stamping after each one."""
-    current = stored_version(storage)
-    if current >= LATEST_VERSION:
-        return
-    for version, method_name in MIGRATION_STEPS:
-        if version <= current:
-            continue
-        getattr(storage, method_name)()
-        with storage._lock:
-            storage.conn.commit()
-            # A concurrent opener may already be further along; never lower it.
+def _stamp(storage: SQLiteSchemaMigrationsMixin, version: int) -> None:
+    """Raise the stored version to ``version`` under one write transaction.
+
+    The read and the write share ``BEGIN IMMEDIATE`` so a concurrent opener
+    that is further along cannot be lowered between them.
+    """
+    with storage._lock:
+        storage.conn.commit()
+        storage.conn.execute("BEGIN IMMEDIATE")
+        try:
             if stored_version(storage) < version:
                 storage.conn.execute(f"PRAGMA user_version = {version}")
             storage.conn.commit()
+        except BaseException:
+            storage.conn.rollback()
+            raise
+
+
+def run_pending_migrations(storage: SQLiteSchemaMigrationsMixin) -> None:
+    """Apply every step above the stored version, stamping after each one.
+
+    A step returning ``False`` could not run in this process (sqlite-vec is not
+    loaded). Later steps still run, as they did before the ledger, but nothing
+    from that step on is stamped, so a process that can run it does.
+    """
+    current = stored_version(storage)
+    if current >= LATEST_VERSION:
+        return
+    stamping = True
+    for version, method_name in MIGRATION_STEPS:
+        if version <= current:
+            continue
+        if getattr(storage, method_name)() is False:
+            stamping = False
+        if stamping:
+            _stamp(storage, version)

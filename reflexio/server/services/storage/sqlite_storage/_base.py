@@ -165,6 +165,7 @@ class SQLiteStorageBase(
         )
 
         from ._extraction_stream import register_window_delivery_validator
+        from ._publication_receipts import register_publication_receipt_functions
 
         super().__init__(org_id)
         self.api_key_config = api_key_config
@@ -219,6 +220,7 @@ class SQLiteStorageBase(
                 retain_private_memory_creation(self.conn, org_id)
             register_unicode_lexical_index_function(self.conn)
             register_window_delivery_validator(self.conn)
+            register_publication_receipt_functions(self.conn, org_id=org_id)
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA foreign_keys=ON")
 

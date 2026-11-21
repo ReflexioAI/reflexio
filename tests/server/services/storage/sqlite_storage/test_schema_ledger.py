@@ -91,9 +91,14 @@ def test_historical_database_upgrades_to_current_schema(
     try:
         assert stored_version(storage) == LATEST_VERSION
         upgraded = _schema(storage.conn)
+        # Every table rebuild must leave what the base DDL declares in place:
+        # the DDL no longer re-runs on each open to repair a dropped index.
+        storage._apply_base_ddl()
+        assert _schema(storage.conn) == upgraded
     finally:
         storage.conn.close()
 
+    assert "index:idx_requests_session_created_at_asc" in upgraded
     extra_expected, missing_expected = EXPECTED_DIVERGENCE[ddl.stem]
     assert set(upgraded) - set(fresh_schema) == extra_expected
     assert set(fresh_schema) - set(upgraded) == missing_expected
@@ -207,9 +212,9 @@ PINNED_RETIRED_JOB = (
 
 # What a historical database legitimately differs by, identical to what the
 # pre-ledger code produced (verified by running both on these fixtures).
-# Extras are retired objects the upgrade deliberately keeps; the one object
-# missing everywhere is created only when a dataset is created, never on an
-# upgrade; the oldest shape also lacks a request index no step adds.
+# Extras are retired objects the upgrade deliberately keeps;
+# the one object missing everywhere is created only when a dataset is created,
+# never on an upgrade. the oldest shape also lacks a request index no step adds.
 _RETIRED_CHANGE_LOGS = {
     "index:idx_pacl_agent_version",
     "index:idx_pacl_playbook_name",
@@ -222,7 +227,7 @@ _CREATION_ONLY = {"index:extraction_cursors_window_lookup"}
 EXPECTED_DIVERGENCE: dict[str, tuple[set[str], set[str]]] = {
     "historical_ddl_899ead79": (
         _RETIRED_CHANGE_LOGS,
-        _CREATION_ONLY | {"index:idx_requests_session_created_at_asc"},
+        _CREATION_ONLY,
     ),
     "historical_ddl_751275d5": (
         _RETIRED_CHANGE_LOGS | {"index:idx_share_links_resource", "table:share_links"},
@@ -237,3 +242,104 @@ EXPECTED_DIVERGENCE: dict[str, tuple[set[str], set[str]]] = {
         _CREATION_ONLY,
     ),
 }
+
+
+def test_receipt_functions_exist_on_a_reopened_stamped_database(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "functions.db"
+    _open(path, "fn-org").conn.close()
+
+    storage = _open(path, "fn-org")  # stamped: the receipt step does not run
+    try:
+        assert stored_version(storage) == LATEST_VERSION
+        assert (
+            storage.conn.execute("SELECT reflexio_publication_org()").fetchone()[0]
+            == "fn-org"
+        )
+        for sql in (
+            "SELECT reflexio_valid_publication_receipt('x', 'y', '[]', 'pending', '{}')",
+            "SELECT reflexio_window_handoff_matches('k', '{}', '{}', '{}')",
+        ):
+            try:
+                storage.conn.execute(sql).fetchone()
+            except sqlite3.Error as error:
+                assert "no such function" not in str(error)
+    finally:
+        storage.conn.close()
+
+
+def test_vec_step_is_not_stamped_without_the_extension(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "novec.db"
+    monkeypatch.setattr(SQLiteStorage, "_try_load_sqlite_vec", lambda _self: False)
+    storage = _open(path)
+    try:
+        assert stored_version(storage) == 10
+    finally:
+        storage.conn.close()
+    monkeypatch.undo()
+
+    storage = _open(path)
+    try:
+        assert stored_version(storage) == LATEST_VERSION
+    finally:
+        storage.conn.close()
+
+
+def test_interrupted_vec_backfill_is_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "vec.db"
+    monkeypatch.setattr(SQLiteStorage, "_try_load_sqlite_vec", lambda _self: False)
+    _open(path).conn.close()
+    monkeypatch.undo()
+
+    calls: list[str] = []
+
+    def interrupted(self) -> None:
+        calls.append("interrupted")
+        raise RuntimeError("stopped after the vec tables were created")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(SQLiteStorage, "_migrate_vec_tables", interrupted)
+        with pytest.raises(RuntimeError):
+            _open(path)
+    assert calls == ["interrupted"]
+
+    backfilled: list[str] = []
+    original = SQLiteStorage._migrate_vec_tables
+
+    def recording(self) -> None:
+        backfilled.append("ran")
+        original(self)
+
+    monkeypatch.setattr(SQLiteStorage, "_migrate_vec_tables", recording)
+    storage = _open(path)
+    try:
+        assert backfilled == ["ran"]
+        assert stored_version(storage) == LATEST_VERSION
+    finally:
+        storage.conn.close()
+
+
+def test_stamp_never_lowers_a_version_another_opener_advanced(
+    tmp_path: Path,
+) -> None:
+    from reflexio.server.services.storage.sqlite_storage.migrations import _stamp
+
+    path = tmp_path / "stamp.db"
+    first = _open(path)
+    second = _open(path)
+    try:
+        assert stored_version(second) == LATEST_VERSION
+        statements: list[str] = []
+        second.conn.set_trace_callback(statements.append)
+        _stamp(second, 5)
+        assert not any("user_version =" in s for s in statements)
+        assert any("BEGIN IMMEDIATE" in s for s in statements)
+        assert stored_version(first) == LATEST_VERSION
+    finally:
+        first.conn.close()
+        second.conn.close()

@@ -60,21 +60,7 @@ class SQLiteSchemaMigrationsMixin:
     def migrate(self) -> bool:
         """Apply every schema step above the database's ``PRAGMA user_version``."""
         run_pending_migrations(self)
-        # The vec tables depend on the loadable extension, not only on the
-        # ledger: an extension that was missing when the database was stamped
-        # still needs them once it loads.
-        if self._has_sqlite_vec and not self._vec_tables_present():
-            self._create_and_backfill_vec_tables()
         return True
-
-    def _vec_tables_present(self) -> bool:
-        with self._lock:
-            row = self.conn.execute(
-                "SELECT COUNT(*) FROM sqlite_master WHERE name IN "
-                "('interactions_vec', 'profiles_vec', 'user_playbooks_vec', "
-                "'agent_playbooks_vec', 'playbook_aggregation_clusters_vec')"
-            ).fetchone()
-        return int(row[0]) == 5
 
     def _backfill_columns_indexed_by_base_ddl(self) -> None:
         with self._lock:
@@ -180,11 +166,19 @@ class SQLiteSchemaMigrationsMixin:
         with self._lock:
             self.conn.executescript(ATTENTION_DDL)
 
-    def _create_and_backfill_vec_tables(self) -> None:
-        if self._has_sqlite_vec:
-            self._create_vec_tables()
-            self._migrate_vec_tables()
-            self._migrate_playbook_aggregation_agent_centroids()
+    def _create_and_backfill_vec_tables(self) -> bool:
+        """Create and backfill the vec tables; False when sqlite-vec is not loaded.
+
+        The ledger does not stamp this step, or any step after it, while the
+        extension is missing, so the next open that can load it runs the step
+        again. An interrupted run leaves the stamp unwritten for the same reason.
+        """
+        if not self._has_sqlite_vec:
+            return False
+        self._create_vec_tables()
+        self._migrate_vec_tables()
+        self._migrate_playbook_aggregation_agent_centroids()
+        return True
 
     def _apply_publication_receipts_migration(self) -> None:
         from .._publication_receipts import migrate_publication_receipts
@@ -1987,6 +1981,8 @@ class SQLiteSchemaMigrationsMixin:
             CREATE INDEX IF NOT EXISTS idx_requests_user_id ON requests(user_id);
             CREATE INDEX IF NOT EXISTS idx_requests_session_id ON requests(session_id);
             CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at);
+            CREATE INDEX IF NOT EXISTS idx_requests_session_created_at_asc
+                ON requests(session_id, created_at ASC, request_id ASC);
             CREATE INDEX IF NOT EXISTS idx_requests_retrieval_experiment
                 ON requests(retrieval_experiment_id, user_id, session_id, created_at, request_id);
             CREATE INDEX IF NOT EXISTS idx_requests_governance_subject_ref
