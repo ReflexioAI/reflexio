@@ -11,14 +11,10 @@ NONE (no direct test existed):
   - ``count_user_playbooks_by_session``
   - ``has_user_playbooks_with_status``
   - ``get_user_playbooks_by_ids_any_user``
-  - ``insert_playbook_optimization_event``
   - ``delete_all_agent_success_evaluation_results``
 
 INDIRECT (service-level tests existed; direct storage tests added here):
   - ``update_playbook_optimization_job``
-  - ``update_playbook_optimization_candidate``
-  - ``insert_playbook_optimization_evaluation``
-  - ``list_playbook_optimization_evaluations``
 """
 
 from __future__ import annotations
@@ -27,9 +23,6 @@ import pytest
 
 from reflexio.models.api_schema.domain.entities import (
     AgentSuccessEvaluationResult,
-    PlaybookOptimizationCandidate,
-    PlaybookOptimizationEvaluation,
-    PlaybookOptimizationEvent,
     PlaybookOptimizationJob,
     Request,
     UserPlaybook,
@@ -90,23 +83,6 @@ def _make_eval_result(
 def _make_job(*, target_id: int = 1) -> PlaybookOptimizationJob:
     return PlaybookOptimizationJob(
         optimizer_kind="gepa", target_kind="agent_playbook", target_id=target_id
-    )
-
-
-def _make_candidate(
-    *, job_id: int, content: str = "c"
-) -> PlaybookOptimizationCandidate:
-    return PlaybookOptimizationCandidate(job_id=job_id, content=content)
-
-
-def _make_evaluation(
-    *, job_id: int, candidate_id: int
-) -> PlaybookOptimizationEvaluation:
-    return PlaybookOptimizationEvaluation(
-        job_id=job_id,
-        candidate_id=candidate_id,
-        target_kind="agent_playbook",
-        target_id=1,
     )
 
 
@@ -336,60 +312,6 @@ class TestGetUserPlaybooksByIdsAnyUser:
 
 
 # ---------------------------------------------------------------------------
-# insert_playbook_optimization_event
-# ---------------------------------------------------------------------------
-
-
-class TestInsertPlaybookOptimizationEvent:
-    """Round-trip characterization for insert_playbook_optimization_event."""
-
-    def test_event_id_assigned_after_insert(self, tmp_path):
-        """Returned event has event_id > 0 (storage assigned PK)."""
-        s = _store(tmp_path)
-        job = s.create_playbook_optimization_job(_make_job())
-        event = PlaybookOptimizationEvent(
-            job_id=job.job_id, event_type="candidate_generated", payload_json='{"n": 1}'
-        )
-        returned = s.insert_playbook_optimization_event(event)
-        assert returned.event_id > 0
-
-    def test_fields_round_trip_correctly(self, tmp_path):
-        """All fields survive the INSERT → SELECT cycle intact."""
-        s = _store(tmp_path)
-        job = s.create_playbook_optimization_job(_make_job())
-        payload = '{"key": "value"}'
-        event = PlaybookOptimizationEvent(
-            job_id=job.job_id,
-            event_type="evaluation_complete",
-            payload_json=payload,
-        )
-        returned = s.insert_playbook_optimization_event(event)
-
-        row = s.conn.execute(
-            "SELECT * FROM playbook_optimization_events WHERE event_id = ?",
-            (returned.event_id,),
-        ).fetchone()
-        assert row is not None
-        assert row["job_id"] == job.job_id
-        assert row["event_type"] == "evaluation_complete"
-        assert row["payload_json"] == payload
-
-    def test_multiple_events_stored_per_job(self, tmp_path):
-        """Multiple events for the same job are all persisted."""
-        s = _store(tmp_path)
-        job = s.create_playbook_optimization_job(_make_job())
-        for i in range(3):
-            s.insert_playbook_optimization_event(
-                PlaybookOptimizationEvent(job_id=job.job_id, event_type=f"ev_{i}")
-            )
-        count = s.conn.execute(
-            "SELECT COUNT(*) FROM playbook_optimization_events WHERE job_id = ?",
-            (job.job_id,),
-        ).fetchone()[0]
-        assert count == 3
-
-
-# ---------------------------------------------------------------------------
 # delete_all_agent_success_evaluation_results
 # ---------------------------------------------------------------------------
 
@@ -535,19 +457,6 @@ class TestUpdatePlaybookOptimizationJob:
 
         assert self._read_job(s, job.job_id)["status"] == "running"
 
-    def test_best_candidate_id_updated(self, tmp_path):
-        s = _store(tmp_path)
-        job = s.create_playbook_optimization_job(_make_job())
-        cand = s.insert_playbook_optimization_candidate(
-            _make_candidate(job_id=job.job_id)
-        )
-
-        s.update_playbook_optimization_job(
-            job.job_id, best_candidate_id=cand.candidate_id
-        )
-
-        assert self._read_job(s, job.job_id)["best_candidate_id"] == cand.candidate_id
-
     def test_decision_reason_and_metadata_updated(self, tmp_path):
         s = _store(tmp_path)
         job = s.create_playbook_optimization_job(_make_job())
@@ -574,196 +483,3 @@ class TestUpdatePlaybookOptimizationJob:
         """Updating a job_id that does not exist raises no error."""
         s = _store(tmp_path)
         s.update_playbook_optimization_job(99999, status="completed")  # must not raise
-
-
-# ---------------------------------------------------------------------------
-# update_playbook_optimization_candidate (INDIRECT → direct storage test)
-# ---------------------------------------------------------------------------
-
-
-class TestUpdatePlaybookOptimizationCandidate:
-    """Direct storage characterization for update_playbook_optimization_candidate."""
-
-    def test_aggregate_score_updated(self, tmp_path):
-        s = _store(tmp_path)
-        job = s.create_playbook_optimization_job(_make_job())
-        cand = s.insert_playbook_optimization_candidate(
-            _make_candidate(job_id=job.job_id)
-        )
-        assert cand.aggregate_score is None
-
-        s.update_playbook_optimization_candidate(
-            cand.candidate_id, aggregate_score=0.85
-        )
-
-        [updated] = s.list_playbook_optimization_candidates(job.job_id)
-        assert updated.aggregate_score == pytest.approx(0.85)
-
-    def test_is_winner_updated(self, tmp_path):
-        s = _store(tmp_path)
-        job = s.create_playbook_optimization_job(_make_job())
-        cand = s.insert_playbook_optimization_candidate(
-            _make_candidate(job_id=job.job_id)
-        )
-        assert cand.is_winner is False
-
-        s.update_playbook_optimization_candidate(cand.candidate_id, is_winner=True)
-
-        [updated] = s.list_playbook_optimization_candidates(job.job_id)
-        assert updated.is_winner is True
-
-    def test_both_fields_updated_together(self, tmp_path):
-        s = _store(tmp_path)
-        job = s.create_playbook_optimization_job(_make_job())
-        cand = s.insert_playbook_optimization_candidate(
-            _make_candidate(job_id=job.job_id)
-        )
-
-        s.update_playbook_optimization_candidate(
-            cand.candidate_id, aggregate_score=0.72, is_winner=True
-        )
-
-        [updated] = s.list_playbook_optimization_candidates(job.job_id)
-        assert updated.aggregate_score == pytest.approx(0.72)
-        assert updated.is_winner is True
-
-    def test_no_kwargs_is_noop(self, tmp_path):
-        """Calling with no fields to update raises no error and leaves row unchanged."""
-        s = _store(tmp_path)
-        job = s.create_playbook_optimization_job(_make_job())
-        cand = s.insert_playbook_optimization_candidate(
-            _make_candidate(job_id=job.job_id, content="unchanged")
-        )
-
-        s.update_playbook_optimization_candidate(cand.candidate_id)
-
-        [still_there] = s.list_playbook_optimization_candidates(job.job_id)
-        assert still_there.content == "unchanged"
-        assert still_there.is_winner is False
-
-    def test_nonexistent_candidate_id_is_noop(self, tmp_path):
-        s = _store(tmp_path)
-        s.update_playbook_optimization_candidate(99999, aggregate_score=1.0)
-
-
-# ---------------------------------------------------------------------------
-# insert_playbook_optimization_evaluation (INDIRECT → direct storage test)
-# ---------------------------------------------------------------------------
-
-
-class TestInsertPlaybookOptimizationEvaluation:
-    """Direct storage characterization for insert_playbook_optimization_evaluation."""
-
-    def test_evaluation_id_assigned_after_insert(self, tmp_path):
-        s = _store(tmp_path)
-        job = s.create_playbook_optimization_job(_make_job())
-        cand = s.insert_playbook_optimization_candidate(
-            _make_candidate(job_id=job.job_id)
-        )
-
-        ev = s.insert_playbook_optimization_evaluation(
-            _make_evaluation(job_id=job.job_id, candidate_id=cand.candidate_id)
-        )
-        assert ev.evaluation_id > 0
-
-    def test_fields_round_trip_correctly(self, tmp_path):
-        """All key fields survive INSERT → list round-trip."""
-        s = _store(tmp_path)
-        job = s.create_playbook_optimization_job(_make_job())
-        cand = s.insert_playbook_optimization_candidate(
-            _make_candidate(job_id=job.job_id)
-        )
-        ev_in = PlaybookOptimizationEvaluation(
-            job_id=job.job_id,
-            candidate_id=cand.candidate_id,
-            target_kind="agent_playbook",
-            target_id=1,
-            score=0.9,
-            verdict="candidate",
-            likert=4,
-            rationale="better output",
-        )
-        returned = s.insert_playbook_optimization_evaluation(ev_in)
-
-        [ev_out] = s.list_playbook_optimization_evaluations(job.job_id)
-        assert ev_out.evaluation_id == returned.evaluation_id
-        assert ev_out.job_id == job.job_id
-        assert ev_out.candidate_id == cand.candidate_id
-        assert ev_out.score == pytest.approx(0.9)
-        assert ev_out.verdict == "candidate"
-        assert ev_out.likert == 4
-        assert ev_out.rationale == "better output"
-
-    def test_multiple_evaluations_linked_to_job(self, tmp_path):
-        s = _store(tmp_path)
-        job = s.create_playbook_optimization_job(_make_job())
-        cand = s.insert_playbook_optimization_candidate(
-            _make_candidate(job_id=job.job_id)
-        )
-
-        for _ in range(3):
-            s.insert_playbook_optimization_evaluation(
-                _make_evaluation(job_id=job.job_id, candidate_id=cand.candidate_id)
-            )
-
-        evs = s.list_playbook_optimization_evaluations(job.job_id)
-        assert len(evs) == 3
-
-
-# ---------------------------------------------------------------------------
-# list_playbook_optimization_evaluations (INDIRECT → direct storage test)
-# ---------------------------------------------------------------------------
-
-
-class TestListPlaybookOptimizationEvaluations:
-    """Direct storage characterization for list_playbook_optimization_evaluations."""
-
-    def test_empty_when_no_evaluations(self, tmp_path):
-        s = _store(tmp_path)
-        job = s.create_playbook_optimization_job(_make_job())
-        assert s.list_playbook_optimization_evaluations(job.job_id) == []
-
-    def test_evaluations_ordered_by_evaluation_id_asc(self, tmp_path):
-        """Rows returned in ascending evaluation_id order (ORDER BY evaluation_id ASC)."""
-        s = _store(tmp_path)
-        job = s.create_playbook_optimization_job(_make_job())
-        cand = s.insert_playbook_optimization_candidate(
-            _make_candidate(job_id=job.job_id)
-        )
-
-        ids_inserted: list[int] = []
-        for _ in range(4):
-            ev = s.insert_playbook_optimization_evaluation(
-                _make_evaluation(job_id=job.job_id, candidate_id=cand.candidate_id)
-            )
-            ids_inserted.append(ev.evaluation_id)
-
-        evs = s.list_playbook_optimization_evaluations(job.job_id)
-        assert [e.evaluation_id for e in evs] == sorted(ids_inserted)
-
-    def test_scoped_to_job_id(self, tmp_path):
-        """list_playbook_optimization_evaluations filters by job_id only."""
-        s = _store(tmp_path)
-        job_a = s.create_playbook_optimization_job(_make_job(target_id=1))
-        job_b = s.create_playbook_optimization_job(_make_job(target_id=2))
-        cand_a = s.insert_playbook_optimization_candidate(
-            _make_candidate(job_id=job_a.job_id)
-        )
-        cand_b = s.insert_playbook_optimization_candidate(
-            _make_candidate(job_id=job_b.job_id)
-        )
-
-        for _ in range(2):
-            s.insert_playbook_optimization_evaluation(
-                _make_evaluation(job_id=job_a.job_id, candidate_id=cand_a.candidate_id)
-            )
-        s.insert_playbook_optimization_evaluation(
-            _make_evaluation(job_id=job_b.job_id, candidate_id=cand_b.candidate_id)
-        )
-
-        assert len(s.list_playbook_optimization_evaluations(job_a.job_id)) == 2
-        assert len(s.list_playbook_optimization_evaluations(job_b.job_id)) == 1
-
-    def test_unknown_job_id_returns_empty(self, tmp_path):
-        s = _store(tmp_path)
-        assert s.list_playbook_optimization_evaluations(99999) == []

@@ -13,7 +13,7 @@ WORKFLOW = yaml.safe_load(
 )
 # PyYAML reads the ``on`` key as boolean True.
 TRIGGERS = WORKFLOW[True]
-WATCHED = {"litellm", "gepa"}
+WATCHED = {"litellm"}
 
 
 def test_every_watched_package_has_existing_contract_tests() -> None:

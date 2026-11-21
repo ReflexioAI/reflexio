@@ -29,7 +29,6 @@ from reflexio.models.config_schema import (
     SINGLETON_USER_PLAYBOOK_NAME,
     PlaybookAggregatorConfig,
     PlaybookConfig,
-    PlaybookOptimizerConfig,
 )
 from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.services.playbook.aggregation_prompt_processing import (
@@ -2525,16 +2524,12 @@ def test_playbook_aggregation_prompt_preserves_distinct_orientations():
 # call ORDER, so a reordered-but-eventually-consistent refactor of run() would
 # stay e2e-green. This suite records EVERY observable side effect on ONE ordered
 # ``call_log`` (a single MagicMock storage + patched module-level
-# ``record_usage_event`` / ``capture_anomaly`` + the optimization scheduler),
+# ``record_usage_event`` / ``capture_anomaly``),
 # then asserts the exact interleaving the aggregation lineage invariant depends
 # on. Each assertion is written to FAIL if that specific ordering/guard breaks.
 # ---------------------------------------------------------------------------
 
 _AGG_MODULE = "reflexio.server.services.playbook.components.aggregator"
-_SCHEDULER_GET_INSTANCE = (
-    "reflexio.server.services.playbook_optimizer."
-    "PlaybookOptimizationScheduler.get_instance"
-)
 
 
 class _EmptyStrUUID:
@@ -2559,11 +2554,6 @@ def _make_ordered_aggregator(call_log: list[tuple[str, Any]]) -> Any:
     )
     cfg = agg.configurator.get_config.return_value
     cfg.user_playbook_extractor_config = afc
-    # A real optimizer config (not a MagicMock) so the enqueue gate — which uses
-    # ``is not True`` identity checks — actually passes and the scheduler fires.
-    cfg.playbook_optimizer_config = PlaybookOptimizerConfig(
-        metric_call_budget=20, agent_playbooks_enabled=True
-    )
 
     agg.storage.count_user_playbooks.return_value = 5
     agg.storage.get_agent_playbooks.return_value = []
@@ -2618,11 +2608,11 @@ def _instrument_run(
     *,
     uuid_side_effect: Any | None = None,
 ):
-    """Patch the module-level collaborators (usage events, anomaly capture,
-    optimization scheduler) and the LLM-generation / clustering / state-manager
-    seams so every side effect lands on ``call_log`` in call order.
+    """Patch the module-level collaborators (usage events, anomaly capture)
+    and the LLM-generation / clustering / state-manager seams so every side
+    effect lands on ``call_log`` in call order.
 
-    Yields (capture_anomaly_mock, scheduler_mock).
+    Yields the capture_anomaly mock.
     """
     with ExitStack() as stack:
         record = stack.enter_context(patch(f"{_AGG_MODULE}.record_usage_event"))
@@ -2632,12 +2622,6 @@ def _instrument_run(
         anomaly.side_effect = lambda *a, **_k: call_log.append(
             ("anomaly", a[0] if a else None)
         )
-
-        scheduler = MagicMock()
-        scheduler.enqueue.side_effect = lambda **kw: call_log.append(
-            ("enqueue", kw["target"].target_id)
-        )
-        stack.enter_context(patch(_SCHEDULER_GET_INSTANCE, return_value=scheduler))
 
         stack.enter_context(
             patch.object(PlaybookAggregator, "get_clusters", return_value=clusters)
@@ -2663,7 +2647,7 @@ def _instrument_run(
                 patch(f"{_AGG_MODULE}.uuid.uuid4", side_effect=uuid_side_effect)
             )
 
-        yield anomaly, scheduler
+        yield anomaly
 
 
 def _first_index(call_log: list[tuple[str, Any]], name: str) -> int:
@@ -2730,28 +2714,6 @@ class TestRunSideEffectOrder:
                     f"got {nxt_detail!r}"
                 )
 
-    def test_enqueue_after_last_supersede_before_succeeded(self):
-        """(c) _enqueue_playbook_optimization fires AFTER the last supersede and
-        BEFORE the aggregation_succeeded usage event."""
-        call_log: list[tuple[str, Any]] = []
-        agg = _make_ordered_aggregator(call_log)
-        clusters, generated_pairs = self._two_pairs()
-
-        with _instrument_run(call_log, clusters, generated_pairs) as (_a, scheduler):
-            agg.run(PlaybookAggregatorRequest(agent_version="v1", rerun=True))
-
-        assert scheduler.enqueue.call_count == 2, call_log
-        i_last_supersede = _last_index(
-            call_log, "supersede_by_name", "supersede_by_ids"
-        )
-        i_enqueue = _first_index(call_log, "enqueue")
-        i_succeeded = next(
-            i
-            for i, (n, d) in enumerate(call_log)
-            if n == "usage" and d == "aggregation_succeeded"
-        )
-        assert i_last_supersede < i_enqueue < i_succeeded, call_log
-
     def test_empty_run_id_takes_capture_anomaly_guard_branch(self):
         """(d) When _run_id is falsy the supersede-guard captures an anomaly and
         SKIPS the (unreconstructable) soft-supersede — never silently removes.
@@ -2766,7 +2728,7 @@ class TestRunSideEffectOrder:
             clusters,
             generated_pairs,
             uuid_side_effect=lambda: _EmptyStrUUID(),
-        ) as (anomaly, _scheduler):
+        ) as anomaly:
             agg.run(PlaybookAggregatorRequest(agent_version="v1", rerun=True))
 
         anomaly.assert_called_once()
@@ -2781,11 +2743,11 @@ class TestRunSideEffectOrder:
         agg.storage.supersede_agent_playbooks_by_playbook_name.assert_not_called()
         agg.storage.supersede_agent_playbooks_by_ids.assert_not_called()
 
-    def test_mid_run_failure_emits_failed_restores_and_skips_enqueue(self):
+    def test_mid_run_failure_emits_failed_and_restores(self):
         """(e) A failure mid-run (here: set_source_windows raises, after archive
-        and the first save, before supersede/enqueue) emits aggregation_failed,
-        restores the archived state, re-raises — and NEVER enqueues optimization
-        or emits aggregation_succeeded."""
+        and the first save, before supersede) emits aggregation_failed,
+        restores the archived state, re-raises — and NEVER emits
+        aggregation_succeeded."""
         call_log: list[tuple[str, Any]] = []
         agg = _make_ordered_aggregator(call_log)
         clusters, generated_pairs = self._two_pairs()
@@ -2799,7 +2761,7 @@ class TestRunSideEffectOrder:
         )
 
         with (
-            _instrument_run(call_log, clusters, generated_pairs) as (_a, scheduler),
+            _instrument_run(call_log, clusters, generated_pairs),
             pytest.raises(RuntimeError, match="boom in set_source_windows"),
         ):
             agg.run(PlaybookAggregatorRequest(agent_version="v1", rerun=True))
@@ -2807,10 +2769,8 @@ class TestRunSideEffectOrder:
         names = [name for name, _ in call_log]
         assert ("usage", "aggregation_failed") in call_log, call_log
         assert ("usage", "aggregation_succeeded") not in call_log, call_log
-        # Full-archive restore ran; optimization never enqueued.
+        # Full-archive restore ran.
         assert "restore" in names, call_log
-        assert "enqueue" not in names, call_log
-        scheduler.enqueue.assert_not_called()
         # The failure was reached only after archive + at least one save.
         assert names.index("archive") < names.index("save"), call_log
 
@@ -2832,10 +2792,7 @@ class TestLazyArchivePreservesExisting:
         agg = _make_ordered_aggregator(call_log)
         clusters = {0: [_raw(rid=1)]}
 
-        with _instrument_run(call_log, clusters, generated_pairs=[]) as (
-            _a,
-            scheduler,
-        ):
+        with _instrument_run(call_log, clusters, generated_pairs=[]):
             agg.run(PlaybookAggregatorRequest(agent_version="v1", rerun=True))
 
         # Archive skipped because the LLM produced no replacements.
@@ -2845,5 +2802,3 @@ class TestLazyArchivePreservesExisting:
         agg.storage.supersede_agent_playbooks_by_playbook_name.assert_not_called()
         agg.storage.supersede_agent_playbooks_by_ids.assert_not_called()
         agg.storage.restore_archived_agent_playbooks_by_playbook_name.assert_not_called()
-        # Nothing saved -> nothing enqueued.
-        scheduler.enqueue.assert_not_called()

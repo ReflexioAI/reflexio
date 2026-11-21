@@ -73,21 +73,21 @@ def test_nonfinite_or_non_json_values_cannot_be_published(value):
 
 @pytest.mark.parametrize("score", [0.1, 1e-6, 1.0])
 def test_actual_model_float_and_opaque_decimal_have_stable_readback(score):
-    from reflexio.models.config_schema import PlaybookOptimizerConfig
+    from reflexio.models.config_schema import RetrievalFloorConfig
 
     payload = {
-        "playbook_optimizer_config": PlaybookOptimizerConfig(
-            min_commit_score=score
-        ).model_dump(mode="json"),
+        "retrieval_floor": RetrievalFloorConfig(user_playbook_floor=score).model_dump(
+            mode="json"
+        ),
         "extension": {"fraction": Decimal("0.12345678901234567890123456789")},
     }
     encoded = encode_config_document(payload)
     decoded = decode_config_document(encoded)
     assert encode_config_document(decoded) == encoded
     assert (
-        PlaybookOptimizerConfig.model_validate(
-            decoded["playbook_optimizer_config"]
-        ).min_commit_score
+        RetrievalFloorConfig.model_validate(
+            decoded["retrieval_floor"]
+        ).user_playbook_floor
         == score
     )
     assert (

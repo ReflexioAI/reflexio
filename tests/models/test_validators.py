@@ -56,7 +56,6 @@ from reflexio.models.config_schema import (
     PendingToolCallToolOverrideConfig,
     PlaybookAggregatorConfig,
     PlaybookConfig,
-    PlaybookOptimizerConfig,
     ProfileExtractorConfig,
     StorageConfigManagedSupabase,
     StorageConfigSQLite,
@@ -876,50 +875,6 @@ class TestCrossFieldValidators:
         dumped = config.model_dump()
         assert config.agent_success_config == success_config
         assert "evaluation_name" not in dumped["agent_success_config"]
-
-    def test_playbook_optimizer_accepts_webhook_backend(self):
-        """PlaybookOptimizerConfig: webhook-only assistant backend is valid."""
-        config = PlaybookOptimizerConfig(webhook_url="https://assistant.example.test")
-
-        assert config.webhook_url == "https://assistant.example.test"
-        assert config.assistant_command is None
-
-    def test_playbook_optimizer_accepts_script_backend(self):
-        """PlaybookOptimizerConfig: script-only assistant backend is valid."""
-        config = PlaybookOptimizerConfig(
-            assistant_command=["/usr/bin/python3", "assistant.py"],
-        )
-
-        assert config.assistant_command == ["/usr/bin/python3", "assistant.py"]
-
-    def test_playbook_optimizer_accepts_no_assistant_backend(self):
-        """PlaybookOptimizerConfig: no backend is valid so optimizer can skip."""
-        config = PlaybookOptimizerConfig()
-
-        assert config.webhook_url is None
-        assert config.assistant_command is None
-        assert config.metric_call_budget == 0
-        assert config.max_turns == 4
-        assert "early_stop_score" not in config.model_dump()
-        assert config.max_validation_windows == 2
-
-    def test_playbook_optimizer_rejects_invalid_early_stop_score(self):
-        """Malformed obsolete settings must not be silently discarded."""
-        with pytest.raises(ValidationError):
-            PlaybookOptimizerConfig.model_validate({"early_stop_score": 1.1})
-
-    def test_playbook_optimizer_rejects_invalid_max_validation_windows(self):
-        """PlaybookOptimizerConfig: validation window cap must be positive."""
-        with pytest.raises(ValidationError):
-            PlaybookOptimizerConfig(max_validation_windows=0)
-
-    def test_playbook_optimizer_rejects_multiple_assistant_backends(self):
-        """PlaybookOptimizerConfig: webhook and script are mutually exclusive."""
-        with pytest.raises(ValidationError, match="only one"):
-            PlaybookOptimizerConfig(
-                webhook_url="https://assistant.example.test",
-                assistant_command=["/usr/bin/python3"],
-            )
 
 
 # =============================================================================
