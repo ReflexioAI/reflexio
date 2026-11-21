@@ -704,3 +704,151 @@ def test_a_failed_deferred_index_write_marks_the_sidecar_stale(
         )
     finally:
         reopened.conn.close()
+
+
+@requires_vec
+def test_a_retried_write_after_rollback_still_marks_the_sidecar_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+
+    path = tmp_path / "rollback.db"
+    _open(path).conn.close()
+    insert = (
+        "INSERT INTO profiles (profile_id, user_id, last_modified_timestamp, "
+        "embedding) VALUES (?, 'u', 1, ?)"
+    )
+    embedding = json.dumps([0.5] * EMBEDDING_DIMENSIONS)
+    with monkeypatch.context() as patched:
+        patched.setattr(SQLiteStorage, "_try_load_sqlite_vec", lambda _self: False)
+        fallback = _open(path)
+    try:
+        fallback.conn.execute(insert, ("p", embedding))
+        fallback.conn.rollback()
+        _open(path).conn.close()  # a native open stamps the latest version
+        assert stored_version(fallback) == LATEST_VERSION
+        fallback.conn.execute(insert, ("p", embedding))  # same SQL text again
+        fallback.conn.commit()
+        assert stored_version(fallback) == VEC_STEP - 1
+    finally:
+        fallback.conn.close()
+
+
+def _profile_vector(path: Path, rowid: int) -> tuple[float, ...]:
+    import struct
+
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+
+    storage = _open(path)
+    try:
+        blob = storage.conn.execute(
+            "SELECT embedding FROM profiles_vec WHERE rowid = ?", (rowid,)
+        ).fetchone()[0]
+        return struct.unpack(f"{EMBEDDING_DIMENSIONS}f", blob)
+    finally:
+        storage.conn.close()
+
+
+@requires_vec
+def test_a_failed_vector_replacement_leaves_the_new_embedding_after_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+    from reflexio.server.services.storage.error import PostCommitStorageError
+
+    path = tmp_path / "replace.db"
+    storage = _open(path)
+    old = json.dumps([0.25] * EMBEDDING_DIMENSIONS)
+    new = [0.75] * EMBEDDING_DIMENSIONS
+    storage.conn.execute(
+        "INSERT INTO profiles (profile_id, user_id, last_modified_timestamp, "
+        "embedding) VALUES ('p', 'u', 1, ?)",
+        (old,),
+    )
+    rowid = storage.conn.execute("SELECT rowid FROM profiles").fetchone()[0]
+    storage.conn.execute(
+        "INSERT INTO profiles_vec(rowid, embedding) VALUES (?, ?)", (rowid, old)
+    )
+    storage.conn.commit()
+
+    def failing_flush(_self, _kind, _args):
+        raise RuntimeError("index write failed")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(SQLiteStorage, "_flush_index_op", failing_flush)
+        with pytest.raises(PostCommitStorageError), storage.commit_scope():
+            storage.conn.execute(
+                "UPDATE profiles SET embedding = ? WHERE rowid = ?",
+                (json.dumps(new), rowid),
+            )
+            storage._deferred_index_ops.append(
+                ("vec_upsert", ("profiles_vec", rowid, new))
+            )
+    storage.conn.close()
+
+    assert _profile_vector(path, rowid) == pytest.approx(tuple(new))
+
+
+@requires_vec
+def test_a_crash_between_the_commit_and_the_vector_flush_is_repaired(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+
+    class Crash(BaseException):
+        pass
+
+    path = tmp_path / "crash.db"
+    storage = _open(path)
+    assert stored_version(storage) == LATEST_VERSION
+
+    def crashing_flush(_self, _kind, _args):
+        raise Crash
+
+    embedding = [0.5] * EMBEDDING_DIMENSIONS
+    with monkeypatch.context() as patched:
+        patched.setattr(SQLiteStorage, "_flush_index_op", crashing_flush)
+        with pytest.raises(Crash), storage.commit_scope():
+            storage.conn.execute(
+                "INSERT INTO profiles (profile_id, user_id, last_modified_timestamp, "
+                "embedding) VALUES ('p', 'u', 1, ?)",
+                (json.dumps(embedding),),
+            )
+            storage._deferred_index_ops.append(
+                ("vec_upsert", ("profiles_vec", 1, embedding))
+            )
+    storage.conn.close()  # the process "dies": nothing restores the stamp
+
+    reopened = _open(path)
+    try:
+        assert stored_version(reopened) == LATEST_VERSION
+        assert (
+            reopened.conn.execute("SELECT COUNT(*) FROM profiles_vec").fetchone()[0]
+            == 1
+        )
+    finally:
+        reopened.conn.close()
+
+
+@requires_vec
+def test_a_successful_vector_scope_restores_the_stamp(tmp_path: Path) -> None:
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+
+    storage = _open(tmp_path / "restore.db")
+    embedding = [0.5] * EMBEDDING_DIMENSIONS
+    try:
+        with storage.commit_scope():
+            storage.conn.execute(
+                "INSERT INTO profiles (profile_id, user_id, last_modified_timestamp, "
+                "embedding) VALUES ('p', 'u', 1, ?)",
+                (json.dumps(embedding),),
+            )
+            storage._deferred_index_ops.append(
+                ("vec_upsert", ("profiles_vec", 1, embedding))
+            )
+        assert stored_version(storage) == LATEST_VERSION
+        assert (
+            storage.conn.execute("SELECT COUNT(*) FROM profiles_vec").fetchone()[0] == 1
+        )
+    finally:
+        storage.conn.close()

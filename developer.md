@@ -316,6 +316,17 @@ next fallback write lowers the stamp again, and an embedding changed in fallback
 mode keeps its old vector. Running native and fallback processes against one
 file is not a supported steady state.
 
+A native commit scope that queues vector work lowers the stamp to just before the
+vec step inside its own transaction and restores it after the work is flushed
+(only when no other scope on that database is still pending in this process), so
+a crash between the commit and the flush is repaired by the next open. A failed
+flush also deletes the sidecar rows it was replacing so the repair re-inserts
+them from the stored embedding. Cost: each committed embedding write pays one
+extra header write, and the restore is one more small commit. Two native
+processes writing one file concurrently can still lose a vector if one restores
+the stamp while the other's flush is pending and that other process then
+crashes; the pending counter covers one process only.
+
 
 ### Why this matters
 
