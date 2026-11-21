@@ -232,7 +232,7 @@ def test_pinned_legacy_contract_and_adopted_schema_keep_their_shapes():
         StructuredPlaybookList,
     )
 
-    manager = PromptManager(version_override={"playbook_extraction_context": "4.5.0"})
+    manager = PromptManager(version_override={"playbook_extraction_context": "4.4.0"})
     contract = build_playbook_extraction_contract(
         manager, expert=False, evidence_sources={}
     )

@@ -106,13 +106,6 @@ def test_http_mixed_image_keeps_native_prompt_and_persistence_without_overflow(
                     }
                 ]
             }
-            if "supporting_evidence" in prompt:
-                output["supporting_evidence"] = [
-                    {
-                        "id": "C1",
-                        "excerpts": [{"evidence_id": "C1-E1", "text": CAPTION}],
-                    }
-                ]
         elif kind == "profile":
             output = {
                 "profiles": [
