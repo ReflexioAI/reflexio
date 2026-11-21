@@ -27,6 +27,8 @@ PENDING_CREATION_VERSION = 13
 STORAGE_QUEUE_BUDGET_VERSION = 14
 EXTRACTION_WINDOW_POLICY_VERSION = 15
 OPTIMIZER_ASSISTANT_COMMAND_VERSION = 16
+# Generation 15 was written both before and after evaluator support.
+EVALUATION_MODEL_POLICY_VERSION = 16
 FILE_FORMAT_VERSION = OPTIMIZER_ASSISTANT_COMMAND_VERSION
 _METADATA_KEY = "_reflexio_config_file"
 
@@ -130,9 +132,25 @@ def _reject_ignored_optimizer_command(data: dict[str, Any], version: int) -> Non
         )
 
 
+def _reject_ambiguous_evaluation_model(data: dict[str, Any], version: int) -> None:
+    llm = data.get("llm_config")
+    if (
+        version < EVALUATION_MODEL_POLICY_VERSION
+        and isinstance(llm, dict)
+        and llm.get("evaluation_model_name") is not None
+    ):
+        raise StoredConfigurationError(
+            "Older configuration contains evaluation_model_name without a known "
+            "evaluation-aware file generation. Stop old writers and review the "
+            "effective evaluator. Use config upgrade-file to publish an explicit "
+            "policy in a separate file."
+        )
+
+
 def _reject_ambiguous_policy(data: dict[str, Any], version: int) -> None:
     _reject_ignored_extraction_windows(data, version)
     _reject_ambiguous_output_policy(data, version)
+    _reject_ambiguous_evaluation_model(data, version)
     _reject_ignored_optimizer_command(data, version)
     retention = data.get("governance_retention")
     if (
@@ -412,6 +430,7 @@ class LocalConfigFile:
         _require_prepared_pending_creation(document, metadata.get("version", 0))
         _require_prepared_storage_queue(document)
         _reject_ambiguous_output_policy(document, metadata.get("version", 0))
+        _reject_ambiguous_evaluation_model(document, metadata.get("version", 0))
         _reject_ignored_optimizer_command(document, metadata.get("version", 0))
         optimizer = document.get("playbook_optimizer_config")
         if isinstance(optimizer, dict) and {
@@ -461,6 +480,9 @@ class LocalConfigFile:
             data, supplied_metadata.get("version", FILE_FORMAT_VERSION)
         )
         _reject_ignored_optimizer_command(
+            data, supplied_metadata.get("version", FILE_FORMAT_VERSION)
+        )
+        _reject_ambiguous_evaluation_model(
             data, supplied_metadata.get("version", FILE_FORMAT_VERSION)
         )
         self._validate(data)

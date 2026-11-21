@@ -71,6 +71,59 @@ def test_preparation_never_activates_command_ignored_by_older_model(tmp_path):
     assert not (tmp_path / ".config-migrations").exists()
 
 
+def test_generation_15_evaluator_requires_explicit_conversion(tmp_path):
+    from reflexio.cli.config_upgrade import convert_config_file
+
+    path = tmp_path / "config.json"
+    output = tmp_path / "converted.json"
+    original = encode_config_document(
+        {
+            "_reflexio_config_file": {"version": 15},
+            "storage_config": None,
+            "llm_config": {
+                "generation_model_name": "openai/generator",
+                "evaluation_model_name": "anthropic/evaluator",
+            },
+        }
+    )
+    path.write_text(original)
+    owner = LocalConfigFile(path)
+    for operation in (
+        owner.read_document,
+        owner.prepare,
+        lambda: owner.edit_document(lambda _data: None),
+        lambda: owner.publish_document(original),
+    ):
+        with pytest.raises(StoredConfigurationError, match="evaluation_model_name"):
+            operation()
+        assert path.read_text() == original
+    assert not (tmp_path / ".config-migrations").exists()
+
+    convert_config_file(path, output)
+    converted = LocalConfigFile(output).read_document()
+    assert converted["llm_config"]["evaluation_model_name"] == "anthropic/evaluator"
+    assert path.read_text() == original
+
+
+def test_generation_15_without_an_evaluator_prepares_normally(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        encode_config_document(
+            {
+                "_reflexio_config_file": {"version": 15},
+                "storage_config": None,
+                "llm_config": {"generation_model_name": "openai/generator"},
+            }
+        )
+    )
+    owner = LocalConfigFile(path)
+    assert owner.prepare()
+    assert owner.read_document()["llm_config"] == {
+        "generation_model_name": "openai/generator"
+    }
+    assert not owner.prepare()
+
+
 def test_preparation_preserves_original_policy_and_precision(tmp_path):
     path = tmp_path / "config.json"
     original = b'{"storage_config":{"type":"sqlite","db_path":"owned.db"},"playbook_optimizer_config":{"enabled":false,"optimize_agent_playbooks":true,"auto_update_pending_agent_playbooks":false},"opaque":{"number":1.00000000000000000000001}}'
