@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 from ._base import (
     SQLiteStorageBase,
     _cosine_similarity,
@@ -81,6 +83,8 @@ class SQLiteStorage(
     SQLiteStorageBase,
 ):
     """SQLite-based storage with FTS5 and hybrid search."""
+
+    backend_name: ClassVar[str] = "sqlite"
 
     def ordinary_profile_source_digest(self) -> str | None:
         if type(self) is not SQLiteStorage:

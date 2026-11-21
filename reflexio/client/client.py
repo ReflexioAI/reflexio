@@ -271,19 +271,6 @@ class ReflexioClient:
         """
         return SessionScopedClient(self, session_id)
 
-    def _get_auth_headers(self) -> dict:
-        """Get authentication headers with Bearer token if api_key is configured.
-
-        Returns:
-            dict: Headers with Authorization bearer token, or empty dict if no api_key
-        """
-        if self.api_key:
-            return {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            }
-        return {}
-
     def _get_headers(self) -> dict:
         """Get default headers for API requests.
 

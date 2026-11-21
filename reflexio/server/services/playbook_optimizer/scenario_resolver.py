@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from reflexio.models.api_schema.domain import Status
 from reflexio.server.services.storage.storage_base import BaseStorage
 
 from .models import ScenarioWindow
@@ -87,7 +86,3 @@ class ScenarioResolver:
                 interactions=interactions,
             )
         ]
-
-
-def is_current_status(status: Status | None) -> bool:
-    return status is None

@@ -279,23 +279,7 @@ class TestPromptManager:
             pytest.fail("Validation errors:\n" + "\n".join(errors))
 
     def test_exactly_one_active_per_prompt(self):
-        """Test that each prompt directory has exactly one active version.
-
-        Fully-deprecated prompt directories (every version marked
-        ``active: false``) are allowed and are listed in
-        ``deprecated_prompt_dirs``. They are kept on disk as a historical
-        record so verdicts produced by retired prompts can still be traced in
-        audit logs, but they no longer drive any production code path.
-        """
-        # F1 cleanup: the session-level shadow comparison code path was
-        # retracted because multi-turn shadow content suffers from
-        # trajectory contamination. Both prompts that backed that path are
-        # kept as historical records with every version marked inactive.
-        deprecated_prompt_dirs = {
-            "agent_success_evaluation_with_comparison",
-            "shadow_content_evaluation",
-        }
-
+        """Test that each prompt directory has exactly one active version."""
         current_dir = Path(prompt.__file__).parent
         prompt_bank_path = (current_dir / "prompt_bank").resolve()
 
@@ -320,11 +304,9 @@ class TestPromptManager:
                 except ValueError:
                     pass
 
-            expected_active = 0 if prompt_dir.name in deprecated_prompt_dirs else 1
-            if active_count != expected_active:
+            if active_count != 1:
                 errors.append(
-                    f"{prompt_dir.name}: {active_count} active versions "
-                    f"(expected {expected_active})"
+                    f"{prompt_dir.name}: {active_count} active versions (expected 1)"
                 )
 
         if errors:

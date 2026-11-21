@@ -1,3 +1,5 @@
+from typing import Any, ClassVar
+
 from reflexio.models.api_schema.domain.enums import Status
 
 from ._agent_run import (
@@ -65,6 +67,15 @@ from .resume_selection import ResumeSelectionStore
 from .transition_inventory import TransitionInventoryStore
 
 
+def storage_backend_name(storage: object) -> str:
+    """Return the telemetry label of ``storage``'s backend.
+
+    Reads ``BaseStorage.backend_name``; objects that are not storage adapters
+    (test doubles) fall back to their lower-cased class name.
+    """
+    return getattr(type(storage), "backend_name", type(storage).__name__.lower())
+
+
 class BaseStorage(
     ProfileLifecycleStoreMixin,
     PendingToolExpiryStore,
@@ -95,6 +106,16 @@ class BaseStorage(
     BaseStorageCore,
 ):
     """Base class for storage."""
+
+    #: Short backend label used in telemetry (``sqlite``, ``postgres``,
+    #: ``supabase``). Concrete adapters named ``<Backend>Storage`` get it from
+    #: their class name; set it explicitly to override.
+    backend_name: ClassVar[str] = "base"
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        if "backend_name" not in cls.__dict__ and cls.__name__.endswith("Storage"):
+            cls.backend_name = cls.__name__.removesuffix("Storage").lower()
 
     def ordinary_profile_source_digest(self) -> str | None:
         """Contribute adapter source to an ordinary continuation witness.
@@ -318,6 +339,7 @@ __all__ = [
     "USER_WORK_CLAIM_PROTOCOL",
     "USER_WORK_CLAIM_PROTOCOL_SETTING",
     "StreamSQL",
+    "storage_backend_name",
     "lock_user_work_row",
     "ResumeClass",
     "ResumeCursor",

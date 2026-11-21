@@ -51,13 +51,6 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     # sessions publishing interactions with ``retrieved_learnings``.
     "retrieved_learning_relevance": ("v1.0.0", "retrieved_learning_relevance"),
     "retrieved_learning_impact": ("v1.1.0", "retrieved_learning_impact"),
-    # F1 cleanup: the session-level shadow comparison branch was retracted.
-    # The prompt directories remain on disk (marked active: false in their
-    # frontmatter) as historical records, but they no longer drive any
-    # production code path, and the ``agent_success_evaluation_comparison``
-    # registry key was removed, so they are mapped without a registry key.
-    "agent_success_evaluation_with_comparison": ("v1.0.0", None),
-    "shadow_content_evaluation": ("v1.0.0", None),
     # v2.1.0: structured output + source-language/script preservation (window,
     # recency_dominant, wants_current) in the same pre-search LLM call.
     "query_reformulation": ("v2.1.0", "query_reformulation"),
