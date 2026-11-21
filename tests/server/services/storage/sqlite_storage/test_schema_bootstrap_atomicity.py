@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from reflexio.server.services.storage.sqlite_storage import SQLiteStorage, _base
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage, _ddl
+from reflexio.server.services.storage.sqlite_storage.migrations import _steps
 
 
 @pytest.mark.parametrize("existing_data", [False, True])
@@ -22,7 +23,7 @@ def test_failed_base_schema_is_rolled_back_and_can_retry(
             connection.commit()
 
     with monkeypatch.context() as broken:
-        broken.setattr(_base, "_DDL", _base._DDL + "\nINVALID SQL;")
+        broken.setattr(_steps, "_DDL", _ddl._DDL + "\nINVALID SQL;")
         with pytest.raises(sqlite3.OperationalError, match="syntax error"):
             SQLiteStorage(org_id="bootstrap-test", db_path=str(database))
 
