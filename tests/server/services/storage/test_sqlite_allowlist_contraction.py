@@ -358,7 +358,7 @@ def test_the_destroyed_replay_artifacts_are_logged_with_their_count(
 
     with caplog.at_level(
         logging.WARNING,
-        logger="reflexio.server.services.storage.sqlite_storage._base",
+        logger="reflexio.server.services.storage.sqlite_storage.migrations._steps",
     ):
         storage = SQLiteStorage(org_id="legacy-artifact-log", db_path=str(db_path))
         storage.conn.close()

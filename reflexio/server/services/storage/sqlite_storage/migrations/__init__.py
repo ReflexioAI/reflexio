@@ -25,7 +25,7 @@ Rules for changing this list:
   "no such column", leaving the database permanently stuck. Steps after 8 may
   assume every base table exists.
 
-Each step is the name of a ``SQLiteStorageBase`` method taking no arguments.
+Each step is the name of a ``SQLiteSchemaMigrationsMixin`` method taking no arguments.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .._base import SQLiteStorageBase
+    from ._steps import SQLiteSchemaMigrationsMixin
 
 logger = logging.getLogger(__name__)
 
@@ -91,13 +91,13 @@ MIGRATION_STEPS: tuple[tuple[int, str], ...] = (
 LATEST_VERSION = MIGRATION_STEPS[-1][0]
 
 
-def stored_version(storage: SQLiteStorageBase) -> int:
+def stored_version(storage: SQLiteSchemaMigrationsMixin) -> int:
     """Return the schema version stamped on the open database."""
     with storage._lock:
         return int(storage.conn.execute("PRAGMA user_version").fetchone()[0])
 
 
-def run_pending_migrations(storage: SQLiteStorageBase) -> None:
+def run_pending_migrations(storage: SQLiteSchemaMigrationsMixin) -> None:
     """Apply every step above the stored version, stamping after each one."""
     current = stored_version(storage)
     if current >= LATEST_VERSION:

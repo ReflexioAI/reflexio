@@ -792,7 +792,7 @@ class TestVectorRankRowsLogging:
         ]
         with caplog.at_level(
             "INFO",
-            logger="reflexio.server.services.storage.sqlite_storage._base",
+            logger="reflexio.server.services.storage.sqlite_storage._search_ranking",
         ):
             _vector_rank_rows(
                 rows,
@@ -812,7 +812,7 @@ class TestVectorRankRowsLogging:
         """Empty candidate set produces no log line so noise stays bounded."""
         with caplog.at_level(
             "INFO",
-            logger="reflexio.server.services.storage.sqlite_storage._base",
+            logger="reflexio.server.services.storage.sqlite_storage._search_ranking",
         ):
             _vector_rank_rows(
                 [],
@@ -840,7 +840,7 @@ class TestVectorRankRowsLogging:
         rows = [self._row([1.0, 0.0] + [0.0] * 510) for _ in range(50)]
         with caplog.at_level(
             "INFO",
-            logger="reflexio.server.services.storage.sqlite_storage._base",
+            logger="reflexio.server.services.storage.sqlite_storage._search_ranking",
         ):
             _vector_rank_rows(
                 rows,
