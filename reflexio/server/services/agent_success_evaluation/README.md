@@ -41,6 +41,7 @@ success while excluding them from the separate behavior-success denominator.
 
 
 - Owns `agent_success_evaluation`, `retrieved_learning_relevance`, and `retrieved_learning_impact`.
+- Keeps historical/configured prompt ID `agent_success_evaluation_with_comparison` stable where prompt mapping tests require it.
 
 ## Requirements / Problems to Avoid
 
