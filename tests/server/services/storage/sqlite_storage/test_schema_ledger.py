@@ -670,43 +670,6 @@ def test_a_reused_statement_still_marks_the_sidecar_stale(
 
 
 @requires_vec
-def test_a_failed_deferred_index_write_marks_the_sidecar_stale(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
-    from reflexio.server.services.storage.error import PostCommitStorageError
-
-    path = tmp_path / "deferred.db"
-    storage = _open(path)
-
-    def failing_flush(_self, _kind, _args):
-        raise RuntimeError("index write failed")
-
-    with monkeypatch.context() as patched:
-        patched.setattr(SQLiteStorage, "_flush_index_op", failing_flush)
-        with pytest.raises(PostCommitStorageError), storage.commit_scope():
-            storage.conn.execute(
-                "INSERT INTO profiles (profile_id, user_id, last_modified_timestamp, "
-                "embedding) VALUES ('p', 'u', 1, ?)",
-                (json.dumps([0.5] * EMBEDDING_DIMENSIONS),),
-            )
-            storage._deferred_index_ops.append(("vec_upsert", ("profiles_vec", 1, [])))
-    try:
-        assert stored_version(storage) == VEC_STEP - 1
-    finally:
-        storage.conn.close()
-
-    reopened = _open(path)
-    try:
-        assert (
-            reopened.conn.execute("SELECT COUNT(*) FROM profiles_vec").fetchone()[0]
-            == 1
-        )
-    finally:
-        reopened.conn.close()
-
-
-@requires_vec
 def test_a_retried_write_after_rollback_still_marks_the_sidecar_stale(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -749,106 +712,179 @@ def _profile_vector(path: Path, rowid: int) -> tuple[float, ...]:
         storage.conn.close()
 
 
+class _Crash(BaseException):
+    """Stands in for a process dying between a commit and its index flush."""
+
+
+def _pending(path: Path) -> list[tuple[str, int]]:
+    with closing(sqlite3.connect(path)) as raw:
+        return [
+            tuple(r) for r in raw.execute("SELECT table_name, row_id FROM vec_pending")
+        ]
+
+
+def _sidecar(path: Path, rowid: int) -> tuple[float, ...] | None:
+    import struct
+
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+
+    storage = _open(path)  # repairs whatever is pending
+    try:
+        row = storage.conn.execute(
+            "SELECT embedding FROM profiles_vec WHERE rowid = ?", (rowid,)
+        ).fetchone()
+        return (
+            None if row is None else struct.unpack(f"{EMBEDDING_DIMENSIONS}f", row[0])
+        )
+    finally:
+        storage.conn.close()
+
+
+def _queue_profile(
+    storage: SQLiteStorage, pid: str, vector: list[float], *, replace=False
+):
+    if replace:
+        storage.conn.execute(
+            "UPDATE profiles SET embedding = ? WHERE profile_id = ?",
+            (json.dumps(vector), pid),
+        )
+    else:
+        storage.conn.execute(
+            "INSERT INTO profiles (profile_id, user_id, last_modified_timestamp, "
+            "embedding) VALUES (?, 'u', 1, ?)",
+            (pid, json.dumps(vector)),
+        )
+    rowid = storage.conn.execute(
+        "SELECT rowid FROM profiles WHERE profile_id = ?", (pid,)
+    ).fetchone()[0]
+    storage._deferred_index_ops.append(("vec_upsert", ("profiles_vec", rowid, vector)))
+    return rowid
+
+
 @requires_vec
-def test_a_failed_vector_replacement_leaves_the_new_embedding_after_repair(
+def test_a_crash_between_commit_and_flush_is_repaired_for_an_insert(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+
+    path = tmp_path / "crash-insert.db"
+    storage = _open(path)
+    vector = [0.5] * EMBEDDING_DIMENSIONS
+
+    def crash(_self, _kind, _args):
+        raise _Crash
+
+    with monkeypatch.context() as patched:
+        patched.setattr(SQLiteStorage, "_flush_index_op", crash)
+        with pytest.raises(_Crash), storage.commit_scope():
+            rowid = _queue_profile(storage, "p", vector)
+    storage.conn.close()  # the process "dies"
+
+    assert _pending(path) == [("profiles_vec", rowid)]
+    assert _sidecar(path, rowid) == pytest.approx(tuple(vector))
+    assert _pending(path) == []
+
+
+@requires_vec
+def test_a_crash_between_commit_and_flush_is_repaired_for_a_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+
+    path = tmp_path / "crash-replace.db"
+    storage = _open(path)
+    old = [0.25] * EMBEDDING_DIMENSIONS
+    new = [0.75] * EMBEDDING_DIMENSIONS
+    with storage.commit_scope():
+        rowid = _queue_profile(storage, "p", old)
+    assert storage.conn.execute("SELECT COUNT(*) FROM profiles_vec").fetchone()[0] == 1
+
+    def crash(_self, _kind, _args):
+        raise _Crash
+
+    with monkeypatch.context() as patched:
+        patched.setattr(SQLiteStorage, "_flush_index_op", crash)
+        with pytest.raises(_Crash), storage.commit_scope():
+            _queue_profile(storage, "p", new, replace=True)
+    storage.conn.close()
+
+    assert _sidecar(path, rowid) == pytest.approx(tuple(new))
+    assert _pending(path) == []
+
+
+@requires_vec
+def test_overlapping_scopes_on_two_instances_repair_only_the_crashed_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+    from reflexio.server.services.storage.sqlite_storage.base._fts_vec import (
+        SQLiteFtsVecMixin,
+    )
+
+    path = tmp_path / "two.db"
+    first = _open(path, "one")
+    second = _open(path, "two")
+    real_flush = SQLiteFtsVecMixin._flush_index_op
+    other: dict[str, int] = {}
+    crashed = False
+
+    def flush(self, kind, args):
+        nonlocal crashed
+        if self is first and not crashed:
+            crashed = True
+            # The second instance commits AND flushes while the first is pending.
+            with second.commit_scope():
+                other["rowid"] = _queue_profile(
+                    second, "q", [0.125] * EMBEDDING_DIMENSIONS
+                )
+            raise _Crash
+        return real_flush(self, kind, args)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(SQLiteStorage, "_flush_index_op", flush)
+        with pytest.raises(_Crash), first.commit_scope():
+            crashed_rowid = _queue_profile(first, "p", [0.5] * EMBEDDING_DIMENSIONS)
+    first.conn.close()
+    second.conn.close()
+
+    assert _pending(path) == [("profiles_vec", crashed_rowid)]
+    assert _sidecar(path, crashed_rowid) == pytest.approx((0.5,) * EMBEDDING_DIMENSIONS)
+    assert _sidecar(path, other["rowid"]) == pytest.approx(
+        (0.125,) * EMBEDDING_DIMENSIONS
+    )
+    assert _pending(path) == []
+
+
+@requires_vec
+def test_a_flush_failing_on_the_second_op_leaves_only_that_op_pending(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
     from reflexio.server.services.storage.error import PostCommitStorageError
+    from reflexio.server.services.storage.sqlite_storage.base._fts_vec import (
+        SQLiteFtsVecMixin,
+    )
 
-    path = tmp_path / "replace.db"
+    path = tmp_path / "second.db"
     storage = _open(path)
-    old = json.dumps([0.25] * EMBEDDING_DIMENSIONS)
-    new = [0.75] * EMBEDDING_DIMENSIONS
-    storage.conn.execute(
-        "INSERT INTO profiles (profile_id, user_id, last_modified_timestamp, "
-        "embedding) VALUES ('p', 'u', 1, ?)",
-        (old,),
-    )
-    rowid = storage.conn.execute("SELECT rowid FROM profiles").fetchone()[0]
-    storage.conn.execute(
-        "INSERT INTO profiles_vec(rowid, embedding) VALUES (?, ?)", (rowid, old)
-    )
-    storage.conn.commit()
+    real_flush = SQLiteFtsVecMixin._flush_index_op
+    calls = 0
 
-    def failing_flush(_self, _kind, _args):
-        raise RuntimeError("index write failed")
+    def flush(self, kind, args):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("index write failed")
+        return real_flush(self, kind, args)
 
     with monkeypatch.context() as patched:
-        patched.setattr(SQLiteStorage, "_flush_index_op", failing_flush)
+        patched.setattr(SQLiteStorage, "_flush_index_op", flush)
         with pytest.raises(PostCommitStorageError), storage.commit_scope():
-            storage.conn.execute(
-                "UPDATE profiles SET embedding = ? WHERE rowid = ?",
-                (json.dumps(new), rowid),
-            )
-            storage._deferred_index_ops.append(
-                ("vec_upsert", ("profiles_vec", rowid, new))
-            )
+            first = _queue_profile(storage, "a", [0.5] * EMBEDDING_DIMENSIONS)
+            second = _queue_profile(storage, "b", [0.25] * EMBEDDING_DIMENSIONS)
     storage.conn.close()
 
-    assert _profile_vector(path, rowid) == pytest.approx(tuple(new))
-
-
-@requires_vec
-def test_a_crash_between_the_commit_and_the_vector_flush_is_repaired(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
-
-    class Crash(BaseException):
-        pass
-
-    path = tmp_path / "crash.db"
-    storage = _open(path)
-    assert stored_version(storage) == LATEST_VERSION
-
-    def crashing_flush(_self, _kind, _args):
-        raise Crash
-
-    embedding = [0.5] * EMBEDDING_DIMENSIONS
-    with monkeypatch.context() as patched:
-        patched.setattr(SQLiteStorage, "_flush_index_op", crashing_flush)
-        with pytest.raises(Crash), storage.commit_scope():
-            storage.conn.execute(
-                "INSERT INTO profiles (profile_id, user_id, last_modified_timestamp, "
-                "embedding) VALUES ('p', 'u', 1, ?)",
-                (json.dumps(embedding),),
-            )
-            storage._deferred_index_ops.append(
-                ("vec_upsert", ("profiles_vec", 1, embedding))
-            )
-    storage.conn.close()  # the process "dies": nothing restores the stamp
-
-    reopened = _open(path)
-    try:
-        assert stored_version(reopened) == LATEST_VERSION
-        assert (
-            reopened.conn.execute("SELECT COUNT(*) FROM profiles_vec").fetchone()[0]
-            == 1
-        )
-    finally:
-        reopened.conn.close()
-
-
-@requires_vec
-def test_a_successful_vector_scope_restores_the_stamp(tmp_path: Path) -> None:
-    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
-
-    storage = _open(tmp_path / "restore.db")
-    embedding = [0.5] * EMBEDDING_DIMENSIONS
-    try:
-        with storage.commit_scope():
-            storage.conn.execute(
-                "INSERT INTO profiles (profile_id, user_id, last_modified_timestamp, "
-                "embedding) VALUES ('p', 'u', 1, ?)",
-                (json.dumps(embedding),),
-            )
-            storage._deferred_index_ops.append(
-                ("vec_upsert", ("profiles_vec", 1, embedding))
-            )
-        assert stored_version(storage) == LATEST_VERSION
-        assert (
-            storage.conn.execute("SELECT COUNT(*) FROM profiles_vec").fetchone()[0] == 1
-        )
-    finally:
-        storage.conn.close()
+    assert _pending(path) == [("profiles_vec", second)]
+    assert _sidecar(path, first) == pytest.approx((0.5,) * EMBEDDING_DIMENSIONS)
+    assert _pending(path) == []
+    assert _sidecar(path, second) == pytest.approx((0.25,) * EMBEDDING_DIMENSIONS)

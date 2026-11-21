@@ -17,14 +17,7 @@ from reflexio.server.services.storage.error import (
     StorageError,
 )
 
-from .migrations import LATEST_VERSION, VEC_STEP
-
 logger = logging.getLogger(__name__)
-
-# Commit scopes with queued vector work, by database path: the stamp is restored
-# only when the last one finishes.
-_PENDING_LOCK = threading.Lock()
-_PENDING_VECTOR_SCOPES: dict[str, int] = {}
 
 # 3.35 brought RETURNING and DROP COLUMN; 3.38 brought unixepoch(), which the
 # aggregation, lineage and open-world tables use.
@@ -51,6 +44,8 @@ def _get_sqlite_initialization_lock(db_path: str) -> threading.Lock:
         hash(normalized_path) % _SQLITE_INITIALIZATION_LOCK_STRIPES
     ]
 
+
+_VEC_OP_KINDS = frozenset({"vec_upsert", "vec_delete"})
 
 _EMBEDDING_TABLES = frozenset(
     {"interactions", "profiles", "user_playbooks", "agent_playbooks"}
@@ -90,12 +85,6 @@ class VecAwareConnection(sqlite3.Connection):
         # expires them, so every statement after a commit is prepared, and
         # authorized, again.
         self.set_authorizer(authorize)
-
-    def take_stamp_back(self, stamp: int) -> None:
-        """Lower the schema stamp to ``stamp`` and commit it."""
-        if self.execute("PRAGMA user_version").fetchone()[0] > stamp:
-            self.execute(f"PRAGMA user_version = {int(stamp)}")
-        super().commit()
 
     def _lower_stamp(self) -> None:
         if (
@@ -233,31 +222,28 @@ class SQLiteConnectionMixin:
                     raise StorageError(
                         "Nested operation marked transaction for rollback"
                     )
-                # Queued vector work lowers the stamp in THIS transaction, so a
-                # crash between the commit and the flush still leaves a stamp
-                # that makes the next sqlite-vec open rebuild the sidecar.
-                lowered = self._lower_stamp_for_deferred_vectors()
-                flushed = False
+                # Queued vector work is recorded in THIS transaction, so a crash
+                # between the commit and the flush leaves a durable list of the
+                # sidecar rows to rebuild on the next open.
+                self._record_pending_vector_ops()
+                # The COMMIT itself. Separated from the scope's other work
+                # because `commit_scope_ms` reported 15.6s on prod of which
+                # 11.7s was outside every phase it contains -- this says how
+                # much of that is the commit rather than the writes.
+                with publish_timing.phase("scope_commit"):
+                    self.conn.commit()
+                ops, self._deferred_index_ops = self._deferred_index_ops, []
                 try:
-                    # The COMMIT itself. Separated from the scope's other work
-                    # because `commit_scope_ms` reported 15.6s on prod of which
-                    # 11.7s was outside every phase it contains -- this says how
-                    # much of that is the commit rather than the writes.
-                    with publish_timing.phase("scope_commit"):
-                        self.conn.commit()
-                    ops, self._deferred_index_ops = self._deferred_index_ops, []
-                    try:
-                        for kind, args in ops:
-                            self._flush_index_op(kind, args)
-                    except Exception as error:
-                        self._mark_vec_sidecar_stale(ops)
-                        raise PostCommitStorageError(
-                            "Primary rows committed; deferred index update failed"
-                        ) from error
-                    flushed = True
-                finally:
-                    if lowered:
-                        self._release_deferred_vectors(restore=flushed)
+                    for kind, args in ops:
+                        self._flush_index_op(kind, args)
+                        if kind in _VEC_OP_KINDS:
+                            self._clear_pending_vector_op(args[0], args[1])
+                except Exception as error:
+                    # Ops not flushed stay in vec_pending; the next open
+                    # rebuilds exactly those sidecar rows.
+                    raise PostCommitStorageError(
+                        "Primary rows committed; deferred index update failed"
+                    ) from error
             except BaseException:
                 try:
                     self.conn.rollback()
@@ -269,59 +255,21 @@ class SQLiteConnectionMixin:
                 self._scope_depth = 0
                 self._scope_rollback_only = False
 
-    def _lower_stamp_for_deferred_vectors(self) -> bool:
-        """Take the stamp back inside the open transaction when vector work is queued."""
-        if not any(kind.startswith("vec_") for kind, _ in self._deferred_index_ops):
-            return False
-        if self.conn.execute("PRAGMA user_version").fetchone()[0] != LATEST_VERSION:
-            return False
-        with _PENDING_LOCK:
-            _PENDING_VECTOR_SCOPES[self.db_path] = (
-                _PENDING_VECTOR_SCOPES.get(self.db_path, 0) + 1
+    def _record_pending_vector_ops(self) -> None:
+        for kind, args in self._deferred_index_ops:
+            if kind in _VEC_OP_KINDS:
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO vec_pending(table_name, row_id) VALUES (?, ?)",
+                    (args[0], args[1]),
+                )
+
+    def _clear_pending_vector_op(self, table: str, rowid: int) -> None:
+        with self._lock:
+            self.conn.execute(
+                "DELETE FROM vec_pending WHERE table_name = ? AND row_id = ?",
+                (table, rowid),
             )
-        self.conn.execute(f"PRAGMA user_version = {VEC_STEP - 1}")
-        return True
-
-    def _release_deferred_vectors(self, *, restore: bool) -> None:
-        """Count one scope's vector work as done; restore the stamp after the last."""
-        with _PENDING_LOCK:
-            remaining = _PENDING_VECTOR_SCOPES.get(self.db_path, 1) - 1
-            if remaining <= 0:
-                _PENDING_VECTOR_SCOPES.pop(self.db_path, None)
-            else:
-                _PENDING_VECTOR_SCOPES[self.db_path] = remaining
-        if restore and remaining <= 0:
-            try:
-                if (
-                    self.conn.execute("PRAGMA user_version").fetchone()[0]
-                    == VEC_STEP - 1
-                ):
-                    self.conn.execute(f"PRAGMA user_version = {LATEST_VERSION}")
-                    self.conn.commit()
-            except Exception:
-                logger.warning("Could not restore the schema stamp", exc_info=True)
-
-    def _mark_vec_sidecar_stale(self, ops: list[tuple[str, Any]]) -> None:
-        """After a failed deferred index write, make the next open rebuild the sidecar.
-
-        Rows whose replacement failed still hold the old vector, which the
-        repair would keep, so delete them first; it re-inserts from the stored
-        embedding.
-        """
-        try:
-            for kind, args in ops:
-                if kind == "vec_upsert":
-                    table, rowid = args[0], args[1]
-                    self.conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))  # noqa: S608
             self.conn.commit()
-        except Exception:
-            logger.warning("Could not clear stale vec sidecar rows", exc_info=True)
-            with contextlib.suppress(Exception):
-                self.conn.rollback()
-        try:
-            self.conn.take_stamp_back(VEC_STEP - 1)
-        except Exception:
-            logger.warning("Could not mark the vec sidecar stale", exc_info=True)
 
     def _try_load_sqlite_vec(self) -> bool:
         """Attempt to load the sqlite-vec extension for native KNN search.

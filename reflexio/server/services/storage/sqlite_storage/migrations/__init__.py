@@ -85,6 +85,8 @@ MIGRATION_STEPS: tuple[tuple[int, str], ...] = (
     # Fresh databases gain windows after the run/receipt schema; this installs
     # their guards.
     (42, "_apply_publication_receipts_migration"),
+    # Sidecar rows whose index write was queued but may not have happened.
+    (43, "_create_vec_pending_table"),
 )
 
 LATEST_VERSION = MIGRATION_STEPS[-1][0]

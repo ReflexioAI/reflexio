@@ -304,28 +304,28 @@ new step. A test that fabricates a legacy schema and reopens it must reset
 `PRAGMA user_version = 0`. `test_schema_ledger.py` upgrades databases built from
 historical DDL through the ledger.
 
-The vector sidecar (`*_vec` tables) follows the same stamp. A process that cannot
-load sqlite-vec takes the stamp back to just before the vec step, at open and
-inside any commit that wrote an embedding table; a native open that finds the
-stamp below that step reconciles the sidecar (adds missing rows, drops orphans)
-and stamps again. A native commit whose deferred index write fails after the
-primary rows committed does the same. Known limits: a fallback process that
-commits an embedding between two batches of a native opener's reconciliation
-(after that table was scanned, before the step is stamped) is missed until the
-next fallback write lowers the stamp again, and an embedding changed in fallback
-mode keeps its old vector. Running native and fallback processes against one
-file is not a supported steady state.
+The vector sidecar (`*_vec` tables) has two repair paths.
 
-A native commit scope that queues vector work lowers the stamp to just before the
-vec step inside its own transaction and restores it after the work is flushed
-(only when no other scope on that database is still pending in this process), so
-a crash between the commit and the flush is repaired by the next open. A failed
-flush also deletes the sidecar rows it was replacing so the repair re-inserts
-them from the stored embedding. Cost: each committed embedding write pays one
-extra header write, and the restore is one more small commit. Two native
-processes writing one file concurrently can still lose a vector if one restores
-the stamp while the other's flush is pending and that other process then
-crashes; the pending counter covers one process only.
+Native processes record every queued sidecar write (table and rowid) in
+`vec_pending` inside the same transaction as the primary rows, and clear that row
+right after the sidecar write succeeds. A crash between the commit and the flush,
+or a flush that fails part-way, leaves exactly the unfinished rowids pending. Each
+native open reads `vec_pending` (one SELECT when empty) and, per row, deletes the
+sidecar row, re-inserts it from the stored embedding if the primary row still
+exists and the embedding is indexable, and clears the pending row, in one write
+transaction. Cost: one extra insert and one delete per queued sidecar write.
+
+Processes that cannot load sqlite-vec write embeddings without touching
+`vec_pending`; they take the schema stamp back to just before the vec step at open
+and inside any commit that wrote an embedding table (their connection re-arms its
+authorizer after each commit or rollback because the statement cache outlives it).
+The next native open then reruns the vec step, which adds missing sidecar rows and
+drops orphans. Known limits: a fallback process that commits an embedding between
+two batches of a native opener's reconciliation (after that table was scanned,
+before the step is stamped) is missed until the next fallback write lowers the
+stamp again, and an embedding changed in fallback mode keeps its old vector.
+Running native and fallback processes against one file is not a supported steady
+state.
 
 
 ### Why this matters
