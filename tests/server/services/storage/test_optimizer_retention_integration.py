@@ -74,6 +74,14 @@ def seed(
     )
     store.conn.commit()
     insert_event(store, job.job_id, "evaluation", created_at)
+    if status in ("pending", "running"):
+        # Live work holds a lease; an unleased GEPA job is abandoned and retired.
+        store.conn.execute(
+            "UPDATE playbook_optimization_jobs SET lease_owner = 'owned-worker', "
+            "lease_fence = 1, lease_expires_at = ? WHERE job_id = ?",
+            (int(time.time()) + 3600, job.job_id),
+        )
+        store.conn.commit()
     return job
 
 
@@ -151,6 +159,12 @@ def test_optimizer_cascade_rolls_back_if_parent_delete_fails(store, monkeypatch)
 @pytest.mark.parametrize("hold", ["publishing", "claim", "open_world"])
 def test_publication_evidence_is_not_capacity_evictable(store, hold):
     job = seed(store, "completed", 1)
+    if hold != "open_world":
+        store.conn.execute(
+            "UPDATE playbook_optimization_jobs SET lease_expires_at = ? "
+            "WHERE job_id = ?",
+            (int(time.time()) + 3600, job.job_id),
+        )
     if hold == "claim":
         store.conn.execute(
             "INSERT INTO user_playbook_publication_claims "
@@ -184,8 +198,9 @@ def test_job_activation_commits_before_waiting_capacity_cleanup(store):
     with sqlite3.connect(filename) as writer, ThreadPoolExecutor(max_workers=1) as pool:
         writer.execute("BEGIN IMMEDIATE")
         writer.execute(
-            "UPDATE playbook_optimization_jobs SET status = 'running' WHERE job_id = ?",
-            (job.job_id,),
+            "UPDATE playbook_optimization_jobs SET status = 'running', "
+            "lease_expires_at = ? WHERE job_id = ?",
+            (int(time.time()) + 3600, job.job_id),
         )
         cleanup = pool.submit(store.delete_oldest_retention_target_rows, GRAPH, 1)
         try:
@@ -219,7 +234,6 @@ def test_migrate_retires_interrupted_gepa_jobs_so_retention_can_reclaim(store, h
             (job.job_id,),
         )
     store.conn.commit()
-    assert store.delete_oldest_retention_target_rows(GRAPH, 1) == 0
 
     store.migrate()
 
@@ -247,3 +261,65 @@ def test_migrate_never_retires_a_live_gepa_lease(store):
         (job.job_id,),
     ).fetchone()
     assert (row["status"], row["stage"]) == ("running", "publishing")
+
+
+def test_future_lease_survives_migrate_then_is_retired_by_retention_without_reopen(
+    store,
+):
+    job = seed(store, "running", 1)
+    store.conn.execute(
+        "UPDATE playbook_optimization_jobs SET lease_expires_at = ?, "
+        "stage = 'publishing', lease_owner = 'worker' WHERE job_id = ?",
+        (int(time.time()) + 3600, job.job_id),
+    )
+    store.conn.commit()
+    store.migrate()
+    assert store.delete_oldest_retention_target_rows(GRAPH, 1) == 0
+    row = store.conn.execute(
+        "SELECT status, stage FROM playbook_optimization_jobs WHERE job_id = ?",
+        (job.job_id,),
+    ).fetchone()
+    assert (row["status"], row["stage"]) == ("running", "publishing")
+
+    store.conn.execute(
+        "UPDATE playbook_optimization_jobs SET lease_expires_at = ? WHERE job_id = ?",
+        (int(time.time()) - 1, job.job_id),
+    )
+    store.conn.commit()
+    assert store.delete_oldest_retention_target_rows(GRAPH, 1) == 4
+
+
+def test_retirement_holds_the_writer_lock_so_no_claim_can_interleave(store, tmp_path):
+    job = seed(store, "running", 1)
+    store.conn.execute(
+        "UPDATE playbook_optimization_jobs SET lease_expires_at = ? WHERE job_id = ?",
+        (int(time.time()) - 60, job.job_id),
+    )
+    store.conn.commit()
+    other = sqlite3.connect(str(tmp_path / "owned.db"), timeout=0)
+    outcomes: list[str] = []
+    real_time = time.time
+
+    def probe() -> float:
+        try:
+            other.execute(
+                "UPDATE playbook_optimization_jobs SET lease_owner = 'thief', "
+                "lease_expires_at = ? WHERE job_id = ?",
+                (int(real_time()) + 3600, job.job_id),
+            )
+            outcomes.append("claimed")
+        except sqlite3.OperationalError:
+            outcomes.append("locked")
+        return real_time()
+
+    with patch("reflexio.server.services.storage.sqlite_storage._base.time") as clock:
+        clock.time.side_effect = probe
+        store._retire_unfinished_gepa_jobs()
+    other.close()
+    assert outcomes == ["locked"]
+    row = store.conn.execute(
+        "SELECT lease_owner, decision_reason FROM playbook_optimization_jobs "
+        "WHERE job_id = ?",
+        (job.job_id,),
+    ).fetchone()
+    assert row["lease_owner"] is None and row["decision_reason"] == "retired_gepa"

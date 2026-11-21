@@ -1505,11 +1505,16 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         A job interrupted before the optimizer was retired keeps a
         pending/running status (possibly in ``publishing``) and an unconsumed
         publication claim, and retention refuses both. Only jobs whose lease has
-        expired are touched, so live work is never interrupted. Idempotent: a
-        retired job no longer matches. Reuses an existing terminal outcome, so
-        no CHECK is rebuilt.
+        expired are touched, so live work is never interrupted. Runs at migrate
+        and before every capacity cleanup, because a lease can expire after the
+        database was opened. Selection and both updates share one writer
+        transaction, and each update re-checks the lease predicate, so a claim
+        taken by another connection is never cleared. Idempotent. Reuses an
+        existing terminal outcome, so no CHECK is rebuilt.
         """
-        with self._lock:
+        if self._scope_depth == 0 and self.conn.in_transaction:
+            self.conn.commit()
+        with self.commit_scope():
             tables = {
                 row["name"]
                 for row in self.conn.execute(
@@ -1527,35 +1532,39 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 if claims
                 else ""
             )
+            expired = "(lease_expires_at IS NULL OR lease_expires_at <= ?)"
             job_ids = [
                 int(row["job_id"])
                 for row in self.conn.execute(
                     "SELECT job_id FROM playbook_optimization_jobs "  # noqa: S608
-                    "WHERE optimizer_kind = 'gepa' "
-                    "AND (lease_expires_at IS NULL OR lease_expires_at <= ?) "
+                    f"WHERE optimizer_kind = 'gepa' AND {expired} "
                     "AND (status IN ('pending', 'running') "
                     f"OR stage = 'publishing'{unconsumed})",
                     (now,),
                 )
             ]
             for job_id in job_ids:
+                guard = f"job_id = ? AND optimizer_kind = 'gepa' AND {expired}"
                 if claims:
                     self.conn.execute(
-                        "UPDATE user_playbook_publication_claims SET consumed = 1, "
-                        "updated_at = ? WHERE job_id = ? AND consumed = 0",
-                        (now, job_id),
+                        "UPDATE user_playbook_publication_claims SET consumed = 1, "  # noqa: S608
+                        "updated_at = ? WHERE consumed = 0 AND job_id = ? AND "
+                        "EXISTS (SELECT 1 FROM playbook_optimization_jobs j WHERE "
+                        "j.job_id = user_playbook_publication_claims.job_id AND "
+                        "j.optimizer_kind = 'gepa' AND "
+                        "(j.lease_expires_at IS NULL OR j.lease_expires_at <= ?))",
+                        (now, job_id, now),
                     )
                 self.conn.execute(
-                    "UPDATE playbook_optimization_jobs SET "
+                    "UPDATE playbook_optimization_jobs SET "  # noqa: S608
                     "status = CASE WHEN status IN ('pending', 'running') "
                     "THEN 'failed' ELSE status END, stage = 'failed', "
                     "terminal_outcome = COALESCE(terminal_outcome, "
                     "'infrastructure_failure'), decision_reason = 'retired_gepa', "
                     "lease_owner = NULL, lease_expires_at = NULL, updated_at = ? "
-                    "WHERE job_id = ?",
-                    (now, job_id),
+                    f"WHERE {guard}",
+                    (now, job_id, now),
                 )
-            self.conn.commit()
 
     def _migrate_playbook_diagnosis(self) -> None:
         """Add diagnostic evidence without changing optimizer jobs or old results."""
