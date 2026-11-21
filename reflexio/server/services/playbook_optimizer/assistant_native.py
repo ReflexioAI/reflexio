@@ -98,7 +98,7 @@ def run_native_assistant(request: NativeAssistantRequest, deadline: float) -> st
                 dialogue=request.dialogue,
                 model=request.model,
                 deadline=deadline,
-                legacy_wire=legacy_wire,
+                wire="optimizer" if legacy_wire else "native",
             )
             if not result.success:
                 raise NativeAssistantError("native assistant execution failed")
