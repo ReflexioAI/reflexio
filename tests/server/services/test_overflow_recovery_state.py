@@ -75,13 +75,6 @@ def _prepare_failed_saved_output(pipeline, monkeypatch, *, kind, cached):
                     }
                 ]
             }
-            if "supporting_evidence" in prompt:
-                result["supporting_evidence"] = [
-                    {
-                        "id": "C1",
-                        "excerpts": [{"evidence_id": "C1-E1", "text": span.text}],
-                    }
-                ]
         elif "unique_ids" in prompt:
             stages.append("dedup")
             result = {"duplicate_groups": [], "unique_ids": ["NEW-0"], "deletions": []}

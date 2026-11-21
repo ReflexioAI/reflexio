@@ -112,7 +112,7 @@ def test_strict_evidence_schema_follows_selected_candidate_prompt_version():
 
     manager = PromptManager(
         version_override={
-            "playbook_extraction_context": "4.5.0",
+            "playbook_extraction_context": "4.4.0",
         }
     )
     assert not uses_evidence_grounded_extraction(manager, expert=False)

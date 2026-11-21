@@ -4526,11 +4526,7 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
         if "Select original evidence needed" in prompt:
             name = "ProtectedRecordSelection"
         elif "reason_code" in prompt:
-            name = (
-                "EvidenceFirstReviewOutput"
-                if "supporting_evidence" in prompt
-                else "ReviewOutput"
-            )
+            name = "ReviewOutput"
         elif "unique_ids" in prompt:
             name = "ProfileDeduplicationOutput"
         schemas.append(name)
@@ -4577,13 +4573,6 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
                         "rationale": "The model inferred a new approval rule.",
                     },
                 )
-            if "EvidenceFirstReviewOutput" in name:
-                result["supporting_evidence"] = [
-                    {
-                        "id": "C1",
-                        "excerpts": [{"evidence_id": "C1-E1", "text": span.text}],
-                    }
-                ]
         elif "ProfileDeduplicationOutput" in name or any(
             "unique_ids" in str(message.get("content", ""))
             for message in params["messages"]
