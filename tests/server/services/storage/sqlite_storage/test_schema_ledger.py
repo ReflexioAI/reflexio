@@ -509,3 +509,121 @@ def test_interrupted_requests_rebuild_is_atomic_and_retried(
         assert row[0] == "r1" and row[1].startswith("legacy-")
     finally:
         storage.conn.close()
+
+
+@requires_vec
+def test_unindexable_embeddings_do_not_stop_an_upgrade(tmp_path: Path) -> None:
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+
+    path = tmp_path / "malformed.db"
+    storage = _open(path)
+    good = json.dumps([0.5] * EMBEDDING_DIMENSIONS)
+    for pid, embedding in (
+        ("good", good),
+        ("bools", json.dumps([True] * EMBEDDING_DIMENSIONS)),
+        ("text", "not json"),
+        ("short", json.dumps([1.0])),
+    ):
+        storage.conn.execute(
+            "INSERT INTO profiles (profile_id, user_id, last_modified_timestamp, "
+            "embedding) VALUES (?, 'u', 1, ?)",
+            (pid, embedding),
+        )
+    storage.conn.execute(
+        "INSERT INTO profiles_vec(rowid, embedding) "
+        "SELECT rowid, embedding FROM profiles WHERE profile_id = 'good'"
+    )
+    storage.conn.execute("PRAGMA user_version = 0")
+    storage.conn.commit()
+    storage.conn.close()
+
+    reopened = _open(path)
+    try:
+        assert stored_version(reopened) == LATEST_VERSION
+        assert (
+            reopened.conn.execute("SELECT COUNT(*) FROM profiles_vec").fetchone()[0]
+            == 1
+        )
+    finally:
+        reopened.conn.close()
+
+
+@requires_vec
+def test_backfill_batch_reads_and_writes_under_one_write_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+    from reflexio.server.services.storage.sqlite_storage.migrations import _steps
+
+    path = tmp_path / "erasure.db"
+    storage = _open(path)
+    storage.conn.execute(
+        "INSERT INTO profiles (profile_id, user_id, last_modified_timestamp, "
+        "embedding) VALUES ('p1', 'u', 1, ?)",
+        (json.dumps([0.5] * EMBEDDING_DIMENSIONS),),
+    )
+    storage.conn.commit()
+    storage.conn.close()
+    with closing(sqlite3.connect(path)) as raw:
+        raw.execute("PRAGMA user_version = 0")
+        raw.commit()
+
+    outcomes: list[str] = []
+    real_loads = _steps._json_loads
+
+    def erasing_loads(text):
+        # Runs after the batch read, before its write: a competing eraser on
+        # another connection must be refused, not interleaved.
+        with closing(sqlite3.connect(path, timeout=0.2)) as other:
+            try:
+                other.execute("DELETE FROM profiles WHERE profile_id = 'p1'")
+                other.commit()
+                outcomes.append("erased")
+            except sqlite3.OperationalError:
+                outcomes.append("blocked")
+        return real_loads(text)
+
+    monkeypatch.setattr(_steps, "_json_loads", erasing_loads)
+    reopened = _open(path)
+    try:
+        assert "blocked" in outcomes and "erased" not in outcomes
+    finally:
+        reopened.conn.close()
+
+
+@requires_vec
+def test_fallback_writes_after_a_native_stamp_are_reconciled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+
+    path = tmp_path / "mixed.db"
+    _open(path).conn.close()
+    with monkeypatch.context() as patched:
+        patched.setattr(SQLiteStorage, "_try_load_sqlite_vec", lambda _self: False)
+        fallback = _open(path)  # opened first, then a native process stamps LATEST
+    native = _open(path)
+    try:
+        assert stored_version(native) == LATEST_VERSION
+    finally:
+        native.conn.close()
+    try:
+        fallback.conn.execute(
+            "INSERT INTO profiles (profile_id, user_id, last_modified_timestamp, "
+            "embedding) VALUES ('late', 'u', 1, ?)",
+            (json.dumps([0.5] * EMBEDDING_DIMENSIONS),),
+        )
+        fallback.conn.commit()
+        assert stored_version(fallback) == VEC_STEP - 1
+    finally:
+        fallback.conn.close()
+
+    reopened = _open(path)
+    try:
+        assert stored_version(reopened) == LATEST_VERSION
+        assert (
+            reopened.conn.execute("SELECT COUNT(*) FROM profiles_vec").fetchone()[0]
+            == 1
+        )
+    finally:
+        reopened.conn.close()

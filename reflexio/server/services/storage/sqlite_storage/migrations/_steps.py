@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import sqlite3
 import threading
 from collections.abc import Callable
@@ -13,6 +14,7 @@ from reflexio.server.services.storage.session_outcome_identity import (
     outcome_contract_digest,
 )
 
+from .._connection import VecAwareConnection
 from .._ddl import (
     _DDL,
     _RETIRED_ARTIFACT_KIND_LITERALS,
@@ -42,7 +44,7 @@ logger = logging.getLogger(__name__)
 class SQLiteSchemaMigrationsMixin:
     """The ordered schema steps of a local SQLite database."""
 
-    conn: sqlite3.Connection
+    conn: VecAwareConnection
     _lock: threading.RLock
     org_id: str
     _has_sqlite_vec: bool
@@ -371,13 +373,31 @@ class SQLiteSchemaMigrationsMixin:
                 )
             self.conn.commit()
 
+    def _indexable_embedding(self, text: str | None) -> list[float] | None:
+        """Return the vector a sidecar row can hold, or None to skip the row."""
+        try:
+            emb = _json_loads(text)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(emb, list) or len(emb) != self.embedding_dimensions:
+            return None
+        # bool is an int to Python and a type error to sqlite-vec.
+        if not all(
+            isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v)
+            for v in emb
+        ):
+            return None
+        return emb
+
     def _migrate_vec_tables(self) -> None:
         """Reconcile vec tables with the embedding TEXT columns (idempotent).
 
         Adds the rows a process without sqlite-vec wrote while it could not
         index them, and drops rows whose main row it deleted meanwhile. A row
         whose embedding it changed keeps its old vector, and an embedding that
-        is unreadable or has the wrong dimension is skipped.
+        is unreadable or not indexable is skipped. Each batch reads its primary
+        rows and writes their sidecar rows inside one write transaction, so an
+        erasure cannot land between the read and the write.
         """
         entity_map = [
             ("interactions", "interactions_vec", "interaction_id"),
@@ -385,29 +405,40 @@ class SQLiteSchemaMigrationsMixin:
             ("user_playbooks", "user_playbooks_vec", "user_playbook_id"),
             ("agent_playbooks", "agent_playbooks_vec", "agent_playbook_id"),
         ]
+        batch_size = 256
         for main_table, vec_table, _id_col in entity_map:
-            with self._lock:
-                self.conn.execute(
-                    f"DELETE FROM {vec_table} WHERE rowid NOT IN "  # noqa: S608
-                    f"(SELECT rowid FROM {main_table})"
-                )
-                self.conn.commit()
-            rows = self._fetchall(
-                f"SELECT rowid AS rid, embedding FROM {main_table} "  # noqa: S608
-                f"WHERE embedding IS NOT NULL AND rowid NOT IN "
-                f"(SELECT rowid FROM {vec_table})"
-            )
-            for r in rows:
-                try:
-                    emb = _json_loads(r["embedding"])
-                except json.JSONDecodeError:
-                    continue  # unreadable text is never indexed
-                if (
-                    isinstance(emb, list)
-                    and len(emb) == self.embedding_dimensions
-                    and all(isinstance(value, int | float) for value in emb)
-                ):
-                    self._vec_upsert(vec_table, r["rid"], emb)
+            cursor = -(2**63)
+            while True:
+                with self._lock:
+                    self.conn.commit()
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        self.conn.execute(
+                            f"DELETE FROM {vec_table} WHERE rowid NOT IN "  # noqa: S608
+                            f"(SELECT rowid FROM {main_table})"
+                        )
+                        rows = self.conn.execute(
+                            f"SELECT rowid AS rid, embedding FROM {main_table} "  # noqa: S608
+                            f"WHERE embedding IS NOT NULL AND rowid > ? AND rowid "
+                            f"NOT IN (SELECT rowid FROM {vec_table}) "
+                            "ORDER BY rowid LIMIT ?",
+                            (cursor, batch_size),
+                        ).fetchall()
+                        for r in rows:
+                            emb = self._indexable_embedding(r["embedding"])
+                            if emb is not None:
+                                self.conn.execute(
+                                    f"INSERT INTO {vec_table}(rowid, embedding) "  # noqa: S608
+                                    "VALUES (?, ?)",
+                                    (r["rid"], json.dumps(emb)),
+                                )
+                        self.conn.commit()
+                    except BaseException:
+                        self.conn.rollback()
+                        raise
+                if len(rows) < batch_size:
+                    break
+                cursor = rows[-1]["rid"]
 
     def _session_outcomes_schema_is_canonical(self) -> bool:
         table_info = self.conn.execute("PRAGMA table_info(session_outcomes)").fetchall()

@@ -45,10 +45,68 @@ def _get_sqlite_initialization_lock(db_path: str) -> threading.Lock:
     ]
 
 
+_EMBEDDING_TABLES = frozenset(
+    {"interactions", "profiles", "user_playbooks", "agent_playbooks"}
+)
+
+
+class VecAwareConnection(sqlite3.Connection):
+    """A connection that can mark the vector sidecar stale.
+
+    A process without sqlite-vec writes embeddings its sidecar cannot index.
+    Once ``mark_sidecar_stale_on_embedding_writes`` is called, every commit
+    that follows a write to an embedding table first takes the schema stamp
+    back to ``stale_stamp``, inside the same transaction, so the next process
+    that loads sqlite-vec reconciles the sidecar. Reading the flag costs
+    nothing for connections that never enable it.
+    """
+
+    _writes_embeddings = False
+    _stale_stamp: int | None = None
+
+    def mark_sidecar_stale_on_embedding_writes(self, stale_stamp: int) -> None:
+        self._stale_stamp = stale_stamp
+
+        def authorize(action: int, table: Any, *_rest: Any) -> int:
+            if action in (
+                sqlite3.SQLITE_INSERT,
+                sqlite3.SQLITE_UPDATE,
+                sqlite3.SQLITE_DELETE,
+            ) and (table in _EMBEDDING_TABLES):
+                self._writes_embeddings = True
+            return sqlite3.SQLITE_OK
+
+        self.set_authorizer(authorize)
+
+    def _lower_stamp(self) -> None:
+        if (
+            self._stale_stamp is not None
+            and self._writes_embeddings
+            and self.execute("PRAGMA user_version").fetchone()[0] > self._stale_stamp
+        ):
+            self.execute(f"PRAGMA user_version = {int(self._stale_stamp)}")
+
+    def commit(self) -> None:
+        self._lower_stamp()
+        super().commit()
+        self._writes_embeddings = False
+
+    def rollback(self) -> None:
+        super().rollback()
+        self._writes_embeddings = False
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> Any:
+        if exc_type is None:
+            self._lower_stamp()
+        result = super().__exit__(exc_type, exc_value, traceback)
+        self._writes_embeddings = False
+        return result
+
+
 class SQLiteConnectionMixin:
     """Connection ownership, the commit scope and low-level query helpers."""
 
-    conn: sqlite3.Connection
+    conn: VecAwareConnection
     _lock: threading.RLock
     _scope_depth: int
     _scope_rollback_only: bool

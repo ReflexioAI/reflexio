@@ -31,6 +31,9 @@ from reflexio.server.services.storage.error import (
 from reflexio.server.services.storage.retention_mixin import RetentionMixin
 from reflexio.server.services.storage.storage_base import BaseStorage
 
+from ._connection import VecAwareConnection
+from .migrations import VEC_STEP
+
 # isort: off
 # Moved out of this module; kept importable from here for the rest of the
 # package, its tests and enterprise code.
@@ -214,7 +217,9 @@ class SQLiteStorageBase(
         # parallel.
         with initialization_lock:
             reserve_new_sqlite_dataset(db_path, org_id)
-            self.conn = sqlite3.connect(db_path, check_same_thread=False)
+            self.conn = sqlite3.connect(
+                db_path, check_same_thread=False, factory=VecAwareConnection
+            )
             self.conn.row_factory = sqlite3.Row
             if db_path == ":memory:":
                 retain_private_memory_creation(self.conn, org_id)
@@ -256,6 +261,8 @@ class SQLiteStorageBase(
 
         # Optionally load sqlite-vec for native KNN vector search
         self._has_sqlite_vec = self._try_load_sqlite_vec()
+        if not self._has_sqlite_vec:
+            self.conn.mark_sidecar_stale_on_embedding_writes(VEC_STEP - 1)
 
         # Migrations use an instance-local lock, so separate storage instances
         # for the same file also need the shared path lock.
