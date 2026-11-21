@@ -376,7 +376,8 @@ class SQLiteSchemaMigrationsMixin:
 
         Adds the rows a process without sqlite-vec wrote while it could not
         index them, and drops rows whose main row it deleted meanwhile. A row
-        whose embedding it changed keeps its old vector.
+        whose embedding it changed keeps its old vector, and an embedding that
+        is unreadable or has the wrong dimension is skipped.
         """
         entity_map = [
             ("interactions", "interactions_vec", "interaction_id"),
@@ -397,8 +398,15 @@ class SQLiteSchemaMigrationsMixin:
                 f"(SELECT rowid FROM {vec_table})"
             )
             for r in rows:
-                emb = _json_loads(r["embedding"])
-                if emb:
+                try:
+                    emb = _json_loads(r["embedding"])
+                except json.JSONDecodeError:
+                    continue  # unreadable text is never indexed
+                if (
+                    isinstance(emb, list)
+                    and len(emb) == self.embedding_dimensions
+                    and all(isinstance(value, int | float) for value in emb)
+                ):
                     self._vec_upsert(vec_table, r["rid"], emb)
 
     def _session_outcomes_schema_is_canonical(self) -> bool:
