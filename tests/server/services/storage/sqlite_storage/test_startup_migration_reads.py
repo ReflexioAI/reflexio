@@ -103,6 +103,7 @@ def test_initialization_restores_missing_stall_singleton(tmp_path):
     try:
         store.conn.execute("DELETE FROM stall_state")
         store.conn.commit()
+        store.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
         store.migrate()
         assert tuple(
             store.conn.execute("SELECT id, stalled FROM stall_state").fetchone()

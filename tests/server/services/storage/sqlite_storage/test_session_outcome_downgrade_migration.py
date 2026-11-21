@@ -76,6 +76,7 @@ def test_identity_schema_is_preserved_and_current_writes_resume(tmp_path) -> Non
         ],
     )
     storage.conn.commit()
+    storage.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     storage.conn.close()
 
     migrated = _storage(db_path)
@@ -166,6 +167,7 @@ def test_legacy_schema_backfills_required_subject_ref(
         values,
     )
     storage.conn.commit()
+    storage.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     storage.conn.close()
 
     migrated = _storage(db_path)
@@ -203,6 +205,7 @@ def test_identity_empty_subject_default_is_rebuilt_without_changing_identity(
         ("a" * 64, "b" * 64),
     )
     storage.conn.commit()
+    storage.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     storage.conn.close()
 
     migrated = _storage(db_path)

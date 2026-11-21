@@ -335,6 +335,7 @@ def test_upgraded_database_gains_cutover_columns(tmp_path) -> None:
         ("agent_success_evaluation_result", "trajectory_interaction_count"),
     ):
         conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+    conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     conn.commit()
     conn.close()
 

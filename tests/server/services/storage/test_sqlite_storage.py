@@ -403,6 +403,9 @@ def test_unicode_lexical_index_backfills_existing_records_on_upgrade():
                DROP TABLE agent_playbooks_unicode_fts;
                DELETE FROM interactions_unicode_fts WHERE rowid = -1;"""
         )
+        original.conn.execute(
+            "PRAGMA user_version = 0"
+        )  # emulate a pre-ledger database
         original.conn.close()
 
         upgraded = SQLiteStorage(org_id="0", db_path=db_path)

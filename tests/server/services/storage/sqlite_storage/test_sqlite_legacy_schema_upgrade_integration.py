@@ -63,6 +63,7 @@ def test_interactions_regain_columns_added_after_creation(store):
         "token_count",
     ]
     _drop_columns(store, "interactions", added)
+    store.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     store.migrate()
     assert set(added) <= _columns(store, "interactions")
 
@@ -79,6 +80,7 @@ def test_runtime_tables_regain_resumable_and_supersession_columns(store):
         "user_playbook_publication_staging",
         ["incumbent_content_digest", "incumbent_trigger", "incumbent_semantic_digest"],
     )
+    store.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     store.migrate()
     assert "max_steps_remaining" in _columns(store, "_agent_runs")
     assert "superseded_by" in _columns(store, "_pending_tool_calls")
@@ -113,6 +115,7 @@ def test_profiles_regain_expanded_terms(store):
         store.conn.execute(f"DROP TRIGGER {name}")  # noqa: S608
     for table in tables:
         _drop_columns(store, table, ["expanded_terms"])
+    store.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     store.migrate()
     for table in tables:
         assert "expanded_terms" in _columns(store, table)
@@ -129,6 +132,7 @@ def test_retired_polarity_column_is_dropped_and_rows_kept(store):
         "ALTER TABLE user_playbooks ADD COLUMN polarity TEXT DEFAULT 'positive'"
     )
     store.conn.commit()
+    store.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     store.migrate()
     assert "polarity" not in _columns(store, "user_playbooks")
     assert [row.content for row in store.get_user_playbooks()] == ["keep me"]
@@ -137,6 +141,7 @@ def test_retired_polarity_column_is_dropped_and_rows_kept(store):
 def test_renamed_profile_column_is_restored_to_its_current_name(store):
     store.conn.execute("ALTER TABLE profiles RENAME COLUMN content TO profile_content")
     store.conn.commit()
+    store.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     store.migrate()
     columns = _columns(store, "profiles")
     assert "content" in columns
@@ -151,6 +156,7 @@ def test_legacy_fts_column_name_recreates_the_fts_tables(store):
         """
     )
     store.conn.commit()
+    store.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     store.migrate()
     assert "search_text" in _columns(store, "user_playbooks_fts")
     assert "feedback_content" not in _columns(store, "user_playbooks_fts")
@@ -212,6 +218,7 @@ def test_vector_index_is_backfilled_from_stored_embeddings(store):
     )
     store.conn.execute("DELETE FROM user_playbooks_vec")
     store.conn.commit()
+    store.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     store.migrate()
     rowids = [
         row[0] for row in store.conn.execute("SELECT rowid FROM user_playbooks_vec")
@@ -251,6 +258,7 @@ def test_legacy_vector_sum_clusters_adopt_their_agent_embedding(store):
         (json.dumps(embedding),),
     )
     store.conn.commit()
+    store.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     store.migrate()
     clusters = {
         row["cluster_id"]: row

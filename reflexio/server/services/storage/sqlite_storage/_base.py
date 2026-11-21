@@ -80,6 +80,7 @@ from ._subject_write_gate import (
     backfill_user_playbook_subject_refs,
     init_subject_write_barrier_table,
 )
+from .migrations import run_pending_migrations
 
 logger = logging.getLogger(__name__)
 
@@ -1334,25 +1335,25 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
     # ------------------------------------------------------------------
 
     def migrate(self) -> bool:
-        # Import lazily: the aggregation mixin shares this base and importing its
-        # package while ``_base`` is still initializing would create a cycle.
-        from .playbook._aggregation import init_playbook_aggregation_tables
+        """Apply every schema step above the database's ``PRAGMA user_version``."""
+        run_pending_migrations(self)
+        # The vec tables depend on the loadable extension, not only on the
+        # ledger: an extension that was missing when the database was stamped
+        # still needs them once it loads.
+        if self._has_sqlite_vec and not self._vec_tables_present():
+            self._create_and_backfill_vec_tables()
+        return True
 
-        self._migrate_feedback_schema()
-        self._migrate_interactions_schema()
-        # Backfill columns that _DDL indexes depend on BEFORE running _DDL.
-        # _DDL builds idx_eval_identity_created_at_desc on
-        # agent_success_evaluation_result(user_id, ...). On a pre-existing DB that
-        # table predates user_id, so executescript(_DDL) raises "no such column:
-        # user_id" and migrate() never reaches the backfill below — leaving the DB
-        # permanently stuck. The helper is guarded (no-ops when the table is
-        # absent), so running it before _DDL is safe on fresh databases too.
-        self._migrate_eval_result_user_id()
-        self._migrate_retrieved_learning_interaction_identity()
-        self._migrate_playbook_optimization_job_columns()
-        # _DDL creates an index over these columns. Upgrade legacy request tables
-        # before executescript so index creation cannot fail on missing columns.
-        self._migrate_request_retrieval_experiment()
+    def _vec_tables_present(self) -> bool:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name IN "
+                "('interactions_vec', 'profiles_vec', 'user_playbooks_vec', "
+                "'agent_playbooks_vec', 'playbook_aggregation_clusters_vec')"
+            ).fetchone()
+        return int(row[0]) == 5
+
+    def _backfill_columns_indexed_by_base_ddl(self) -> None:
         with self._lock:
             session_outcome_columns = {
                 row["name"]
@@ -1433,6 +1434,13 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                         "ALTER TABLE agent_success_evaluation_result "
                         f"ADD COLUMN {column} {column_type}"
                     )
+
+    def _apply_base_ddl(self) -> None:
+        # Import lazily: the aggregation mixin shares this base and importing its
+        # package while ``_base`` is still initializing would create a cycle.
+        from .playbook._aggregation import init_playbook_aggregation_tables
+
+        with self._lock:
             cur = self.conn.cursor()
             # executescript does not open a transaction: otherwise each schema
             # statement commits separately. Roll back the whole base DDL on error.
@@ -1442,60 +1450,42 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             init_playbook_aggregation_tables(self.conn)
             self.conn.commit()
             backfill_user_playbook_subject_refs(self.conn, self.org_id)
+
+    def _apply_attention_ddl(self) -> None:
         from .profiles._attention import ATTENTION_DDL
 
         with self._lock:
             self.conn.executescript(ATTENTION_DDL)
-        self._migrate_session_outcomes_schema()
+
+    def _create_and_backfill_vec_tables(self) -> None:
         if self._has_sqlite_vec:
             self._create_vec_tables()
             self._migrate_vec_tables()
             self._migrate_playbook_aggregation_agent_centroids()
-        # Run after DDL so tables exist on fresh databases
+
+    def _apply_publication_receipts_migration(self) -> None:
         from ._publication_receipts import migrate_publication_receipts
 
         migrate_publication_receipts(self.conn, org_id=self.org_id)
+
+    def _apply_publication_preparations_migration(self) -> None:
         from ._publication_preparations import migrate_publication_preparations
 
         migrate_publication_preparations(self.conn)
+
+    def _apply_open_world_migration(self) -> None:
         from ._open_world import migrate_open_world
 
         with self._lock:
             migrate_open_world(self.conn)
-        self._migrate_agent_runs_schema()
-        self._migrate_pending_tool_calls_schema()
-        self._migrate_expanded_terms()
-        self._migrate_unicode_lexical_indexes()
-        self._migrate_tags()
-        self._migrate_profile_source_interaction_ids()
-        self._migrate_interaction_window_indexes()
-        self._migrate_agentic_signals()
-        self._migrate_agent_playbook_source_windows()
-        self._migrate_request_evaluation_only()
-        self._migrate_request_session_id_required()
-        # _migrate_eval_result_user_id() runs before _DDL (see above).
-        self._migrate_shadow_comparison_verdicts()
-        self._migrate_user_playbook_polarity()
-        self._migrate_lineage()
-        self._migrate_retired_at()
-        self._migrate_lineage_event_table()
-        self._migrate_playbook_diagnosis()
-        self._migrate_playbook_optimization_candidate_metadata()
-        self._migrate_user_playbook_publication_staging_columns()
-        self._migrate_user_playbook_publication_results_shape()
-        self._classify_legacy_playbook_optimization_jobs()
-        self._enforce_playbook_optimization_job_constraints()
-        self._enforce_playbook_optimization_artifact_constraints()
-        self._migrate_retire_profile_change_logs()
-        self._migrate_retire_playbook_aggregation_change_logs()
+
+    def _init_stall_state(self) -> None:
         init_stall_state_table(self.conn)
+
+    def _apply_extraction_stream_migration(self) -> None:
         from ._extraction_stream import migrate_extraction_stream
 
         migrate_extraction_stream(self.conn)
-        # Fresh databases gain windows after the run/receipt schema. Install
-        # their guards now; current schemas perform only metadata reads.
-        migrate_publication_receipts(self.conn, org_id=self.org_id)
-        return True
 
     def _migrate_playbook_diagnosis(self) -> None:
         """Add diagnostic evidence without changing optimizer jobs or old results."""
