@@ -133,6 +133,20 @@ def authorize_native_model(
     return requested
 
 
+# "ANTHROPIC_DEFAULT_SONNET_MODEL" etc. remap what an alias of that family
+# resolves to; the launch identity binds them (the `ANTHROPIC_` namespace).
+_CLAUDE_CODE_FAMILY_MODEL_ENV = "ANTHROPIC_DEFAULT_{family}_MODEL"
+
+
+def claude_code_alias_remap(family: str) -> str | None:
+    """Return the id a Claude Code alias of ``family`` launches, when remapped.
+
+    The native layer owns the CLI's environment, so callers that judge a served
+    model ask here instead of reading the environment themselves.
+    """
+    return env_str(_CLAUDE_CODE_FAMILY_MODEL_ENV.format(family=family.upper())) or None
+
+
 def native_policy_digest() -> str:
     """Bind native intent and launch context without reading account contents."""
     target = configured_native_model()
