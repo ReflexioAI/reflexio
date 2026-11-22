@@ -1132,18 +1132,57 @@ _DEFAULT_OPENAI_ROUTE = "openai-default"
 # client and never contacts a provider at all, so it grades the harness, not the
 # model.
 #
-# What still protects a call is unchanged and lives below: the observed-provider
-# and observed-model echo checks reject a substitution WITHIN a request, and
-# post-composition drift detection rejects a transport whose live config moved.
+# What still protects a call lives below: the observed-provider echo check and
+# the served-model admission (`_served_model_admitted`) reject a substitution
+# WITHIN a request, and post-composition drift detection rejects a transport
+# whose live config moved. The served model is admitted when it is the
+# configured id exactly, or the configured id followed by one provider date
+# stamp (`gpt-4o` served as `gpt-4o-2024-08-06`, `claude-x` as
+# `claude-x-20250101`) -- that is how a provider resolves an alias. Anything
+# else (`gpt-4o-mini` for `gpt-4o`, a partial `-2024-08`, another family) is
+# refused. The recorded identity stays the CONFIGURED id, so an alias moving
+# to a newer snapshot does not churn qualification caches; the concrete served
+# model is kept as diagnostic data in `usage_json["served_model"]`.
 # Model-quality risk is carried by the pipeline harness and by the tuner's
 # own next evidence pass, which revises a published playbook (the 14-day
 # observation window that once auto-restored one is deleted).
+#
+# The native `local-cli/<host>[/model]` route is NOT admitted by this rule and
+# still fails the echo checks: its provenance carries only what the CLI itself
+# reports (`reflexio_served_provider` / `reflexio_served_model`), which for
+# most hosts is absent and is never the composed `local-cli` route label.
+
+
+_PROVIDER_DATE_STAMP = re.compile(
+    r"-(?:\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])"
+    r"|\d{4}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))"
+)
 
 
 def _strip_route_prefix(model: str, *, route: str) -> str:
     """Drop a leading litellm ``route/`` qualifier from a model identifier."""
     prefix = f"{route}/"
     return model.removeprefix(prefix)
+
+
+def _served_model_admitted(*, configured_bare: str, observed_bare: str) -> bool:
+    """Decide whether a served model is the configured revision.
+
+    Args:
+        configured_bare (str): Configured model id without its route prefix.
+        observed_bare (str): Served model id without its route prefix.
+
+    Returns:
+        bool: True for an exact match, or for the configured id followed by
+            exactly one ``-YYYY-MM-DD`` / ``-YYYYMMDD`` provider date stamp.
+    """
+    if observed_bare == configured_bare:
+        return True
+    # An unchanged string means the configured id is not a prefix (or is empty).
+    suffix = observed_bare.removeprefix(configured_bare)
+    return (
+        suffix != observed_bare and _PROVIDER_DATE_STAMP.fullmatch(suffix) is not None
+    )
 
 
 def _credential_drift_fingerprint(credential: str | None) -> str | None:
@@ -1920,10 +1959,15 @@ class _LiteLLMOpenWorldModelClient:
             )
         # Silent substitution: the provider answered with a model other than the
         # qualified revision. Refuse rather than record an invocation whose
-        # provenance disagrees with the identity that authorized it.
-        if (
-            _strip_route_prefix(observed_model.strip(), route=self._transport.route)
-            != self._transport.bare_model_revision
+        # provenance disagrees with the identity that authorized it. A dated
+        # snapshot of the configured alias is the same revision; see
+        # `_served_model_admitted`.
+        served_model = _strip_route_prefix(
+            observed_model.strip(), route=self._transport.route
+        )
+        if not _served_model_admitted(
+            configured_bare=self._transport.bare_model_revision,
+            observed_bare=served_model,
         ):
             raise ValueError(
                 "provider served a different model than the qualified revision"
@@ -1941,6 +1985,10 @@ class _LiteLLMOpenWorldModelClient:
                     {
                         "scope": "final successful response plus observed-response lower bounds; unavailable usage remains unknown",
                         "final_response": final_usage,
+                        # Diagnostic, not identity: the concrete model that
+                        # answered. `observed_model_revision` stays the
+                        # configured id.
+                        "served_model": served_model,
                         "usage_observed_responses": usage_responses,
                         "observed_response_token_lower_bounds": {
                             **dataclasses.asdict(usage),
@@ -1949,7 +1997,9 @@ class _LiteLLMOpenWorldModelClient:
                         },
                     }
                 ).decode()
-                if usage_responses or raw_usage is not None
+                if usage_responses
+                or raw_usage is not None
+                or served_model != self._transport.bare_model_revision
                 else None
             ),
         )
