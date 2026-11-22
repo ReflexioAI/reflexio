@@ -1779,6 +1779,9 @@ Requests must match that full reference before any native work. See the
 Set the existing
 `CLAUDE_SMART_CLI_PATH` to its native executable, or let PATH resolve `opencode`.
 Relative executable paths are anchored before entering the private workdir.
+A bare-name override is looked up on PATH, as the launcher would; the one
+absolute path that results is both launched and bound into the analyst's
+native launch identity.
 Windows native execution requires the actual `.exe`; batch shims continue to
 use the existing plugin bridge. No shell is introduced.
 

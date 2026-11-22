@@ -1166,8 +1166,10 @@ _DEFAULT_OPENAI_ROUTE = "openai-default"
 # One exception: an EXPLICIT pin (`local-cli/<host>/<model>`) is the physical
 # selection, so a reported served model that contradicts it is refused under
 # the same rules as any other route (exact, or a dated snapshot of an undated
-# pin) -- except a Claude Code alias pin (`sonnet`, `opus`, `haiku`), which
-# names a family and admits `claude-<alias>-...`. A missing stamp is still
+# pin) -- except Claude Code's documented aliases (`sonnet`, `opus`, `best`,
+# `haiku`, `fable`, `opusplan`, any with `[1m]`), which name a family and
+# admit `claude-<family>-...`, and its `default`, which delegates. Every
+# physical response is checked, not only the final one. A missing stamp is still
 # admitted, and a host-only reference
 # (`local-cli/<host>`) delegates the model to the CLI and admits anything.
 # Every other route keeps the strict echo checks, including refusing a
@@ -2009,6 +2011,7 @@ class _LiteLLMOpenWorldModelClient:
                         for message in messages
                     ],
                     provider_request_guard=guard_exact_request,
+                    provider_response_guard=self._admit_each_response,
                     **options,
                 )
             except Exception as exc:
@@ -2030,32 +2033,12 @@ class _LiteLLMOpenWorldModelClient:
             break
         if type(result.value) is not response_format:
             raise TypeError("provider returned the wrong structured output type")
-        observed_provider = result.provenance.provider
-        observed_model = result.provenance.model_name
-        if self._transport.route == _NATIVE_CLI_ROUTE:
-            served = _native_cli_served_stamps(
-                provider=observed_provider, model=observed_model
-            )
-            # An explicit pin is the physical selection, so a reported served
-            # model must be that pin (same rules as any other route). A missing
-            # stamp proves nothing either way and stays admitted, and a
-            # host-only reference delegates the choice to the CLI entirely.
-            if (
-                self._native_pin is not None
-                and "served_model" in served
-                and not _native_served_model_admitted(
-                    host=self._native_host,
-                    pin=self._native_pin,
-                    served=served["served_model"],
-                )
-            ):
-                raise ValueError(
-                    "provider served a different model than the qualified revision"
-                )
-        else:
-            served = self._admit_served_model(
-                observed_provider=observed_provider, observed_model=observed_model
-            )
+        # Every physical response already passed `admit_each_response`; this
+        # recomputes the diagnostics of the one that is recorded.
+        served = self._admit_served(
+            observed_provider=result.provenance.provider,
+            observed_model=result.provenance.model_name,
+        )
         raw_usage = result.usage
         final_usage = _final_response_usage(raw_usage)
         return ObservedStructuredCompletion(
@@ -2084,6 +2067,70 @@ class _LiteLLMOpenWorldModelClient:
                 else None
             ),
         )
+
+    def _admit_each_response(self, provenance: ModelProvenance) -> None:
+        """Refuse a physical response before it is parsed or can trigger a retry.
+
+        The shared client calls this for EVERY provider response, including
+        one without usage metadata and one that later fails structured
+        validation. Checking only the final response would accept an attempt
+        whose earlier crossing already reported a substitution, once a
+        re-issue or corrective turn answered with the expected model.
+
+        Args:
+            provenance (ModelProvenance): What this one response reported.
+
+        Raises:
+            ProviderRequestGuardError: When the response's provenance is
+                refused; the walk then stops without another dispatch.
+        """
+        try:
+            self._admit_served(
+                observed_provider=provenance.provider,
+                observed_model=provenance.model_name,
+            )
+        except ValueError as exc:
+            raise ProviderRequestGuardError(str(exc)) from exc
+
+    def _admit_served(
+        self, *, observed_provider: str | None, observed_model: str | None
+    ) -> dict[str, str]:
+        """Admit one response's provenance and return its served diagnostics.
+
+        Args:
+            observed_provider (str | None): Provider label the response carried.
+            observed_model (str | None): Model the response says served it.
+
+        Returns:
+            dict[str, str]: Non-identity ``served_*`` diagnostics.
+
+        Raises:
+            ValueError: When the provenance is refused.
+        """
+        if self._transport.route != _NATIVE_CLI_ROUTE:
+            return self._admit_served_model(
+                observed_provider=observed_provider, observed_model=observed_model
+            )
+        served = _native_cli_served_stamps(
+            provider=observed_provider, model=observed_model
+        )
+        # An explicit pin is the physical selection, so a reported served
+        # model must be that pin (same rules as any other route). A missing
+        # stamp proves nothing either way and stays admitted, and a host-only
+        # reference delegates the choice to the CLI entirely.
+        if (
+            self._native_pin is not None
+            and "served_model" in served
+            and not _native_served_model_admitted(
+                host=self._native_host,
+                pin=self._native_pin,
+                served=served["served_model"],
+            )
+        ):
+            raise ValueError(
+                "provider served a different model than the qualified revision"
+            )
+        return served
 
     def _admit_served_model(
         self, *, observed_provider: str | None, observed_model: str | None
@@ -2156,18 +2203,37 @@ def _native_pinned_model(reference: str) -> str | None:
     return model or None
 
 
-# Claude Code's model aliases: `--model sonnet` runs the CLI's current Sonnet,
-# which reports itself by its full id (`claude-sonnet-4-5-20250929`). No list
-# exists in this codebase to derive it from, so it is spelled here.
-_CLAUDE_CODE_MODEL_ALIASES = frozenset({"sonnet", "opus", "haiku"})
+# Claude Code's documented model aliases (code.claude.com/docs/en/model-config,
+# "Model aliases"), each mapped to the model FAMILIES it may resolve to. An
+# alias resolves to a concrete id the CLI then reports (`--model sonnet` ->
+# `claude-sonnet-4-5-20250929`), so an alias pin can only be checked by
+# family. `best` "uses the same model as `opus`"; `opusplan` "uses `opus`
+# during plan mode, then switches to `sonnet`". No list exists in this
+# codebase to derive it from, so it is spelled here.
+_CLAUDE_CODE_ALIAS_FAMILIES: dict[str, tuple[str, ...]] = {
+    "sonnet": ("sonnet",),
+    "opus": ("opus",),
+    "best": ("opus",),
+    "haiku": ("haiku",),
+    "fable": ("fable",),
+    "opusplan": ("opus", "sonnet"),
+}
+# "Special value that clears any model override and reverts to the runtime
+# default for your account. Not itself a model alias" -- the CLI chooses.
+_CLAUDE_CODE_DEFAULT_MODEL = "default"
+# "append the `[1m]` suffix to a model alias or a full model name" to select
+# the 1M-context variant; the reported id names the underlying model.
+_CLAUDE_CODE_EXTENDED_CONTEXT_SUFFIX = "[1m]"
 
 
 def _native_served_model_admitted(*, host: str | None, pin: str, served: str) -> bool:
     """Decide whether a CLI-reported served model honours an explicit pin.
 
-    A Claude Code alias pin (``sonnet``, ``opus``, ``haiku``; any case) names a
-    FAMILY: it admits ``claude-<alias>-...`` and nothing else. Every other pin,
-    and every other host, uses ``_served_model_admitted``.
+    For Claude Code only: a ``[1m]`` extended-context suffix is not part of the
+    compared id; ``default`` delegates to the account default and admits any
+    model; a documented alias (any case) names its families and admits
+    ``claude-<family>-...``. Every other pin, and every other host, uses
+    ``_served_model_admitted``.
 
     Args:
         host (str | None): The native host of the configured reference.
@@ -2177,9 +2243,18 @@ def _native_served_model_admitted(*, host: str | None, pin: str, served: str) ->
     Returns:
         bool: Whether ``served`` is the pinned model.
     """
-    alias = pin.casefold()
-    if host == "claude-code" and alias in _CLAUDE_CODE_MODEL_ALIASES:
-        return served.casefold().startswith(f"claude-{alias}-")
+    if host == "claude-code":
+        suffix = _CLAUDE_CODE_EXTENDED_CONTEXT_SUFFIX
+        if pin.casefold().endswith(suffix):
+            pin = pin[: -len(suffix)]
+        alias = pin.casefold()
+        if alias == _CLAUDE_CODE_DEFAULT_MODEL:
+            return True
+        families = _CLAUDE_CODE_ALIAS_FAMILIES.get(alias)
+        if families is not None:
+            return any(
+                served.casefold().startswith(f"claude-{family}-") for family in families
+            )
     return _served_model_admitted(configured_bare=pin, observed_bare=served)
 
 

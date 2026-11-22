@@ -197,16 +197,36 @@ def _resolve_cli_path(host: str) -> str | None:
                 )
             return None
     if override:
-        candidate = Path(_resolve_cli_override_path(override))
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
+        selected = _anchored_override(_resolve_cli_override_path(override))
+        if selected is not None:
+            return selected
         _LOGGER.warning(
             "%s is not an executable file; falling back to PATH",
             _ENV_CLI_PATH,
         )
-    if host == _HOST_CODEX:
-        return shutil.which("codex")
-    return shutil.which("claude")
+    return _absolute(shutil.which("codex" if host == _HOST_CODEX else "claude"))
+
+
+def _absolute(path: str | None) -> str | None:
+    """Anchor a resolved executable without following symlinks."""
+    return str(Path(path).absolute()) if path else None
+
+
+def _anchored_override(override: str) -> str | None:
+    """Resolve an override to the ONE absolute path that will be launched.
+
+    A bare name is what ``subprocess`` would look up on PATH, so it is looked
+    up on PATH here too, never as a file in the working directory; a path is
+    anchored against the working directory. The result is what dispatch runs
+    AND what the native launch identity fingerprints, so the two cannot name
+    different files.
+    """
+    if Path(override).name == override:
+        return _absolute(shutil.which(override))
+    candidate = Path(override)
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate.absolute())
+    return None
 
 
 def _codex_migration_error(host: str, explicit_path: str | None = None) -> str | None:

@@ -20,7 +20,6 @@ from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.llm._native_model_ref import (
     CLI_TIMEOUT_ENV,
     ENV_NATIVE_MODEL,
-    PLUGIN_OPENCODE_EXECUTABLE_ENV,
 )
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
@@ -35,6 +34,11 @@ from reflexio.server.services.offline_tuner.open_world.analyst import (
     _native_cli_served_stamps,
     _native_pinned_model,
     _served_model_admitted,
+)
+from tests.server.llm.test_native_launch_identity import (
+    own_launch_environment,
+    set_home,
+    stub_executable,
 )
 
 
@@ -168,17 +172,19 @@ def test_alias_served_as_snapshot_records_configured_identity(
     ],
 )
 def test_substituted_model_is_refused_through_the_transport(monkeypatch, model, served):
-    with pytest.raises(ValueError, match="served a different model"):
+    with pytest.raises(ProviderRequestGuardError, match="served a different model"):
         _complete(monkeypatch, model=model, served=served)
 
 
 def test_non_native_route_without_provider_stamp_still_raises(monkeypatch):
-    with pytest.raises(ValueError, match="immutable observed provenance"):
+    with pytest.raises(
+        ProviderRequestGuardError, match="immutable observed provenance"
+    ):
         _complete(monkeypatch, model="gpt-4o", served="gpt-4o", hidden={})
 
 
 def test_non_native_route_with_foreign_provider_still_raises(monkeypatch):
-    with pytest.raises(ValueError, match="does not match the composed"):
+    with pytest.raises(ProviderRequestGuardError, match="does not match the composed"):
         _complete(
             monkeypatch,
             model="gpt-4o",
@@ -192,18 +198,8 @@ def _native(monkeypatch, host: str, pin: str | None = None) -> str:
     # Own every input native selection reads, so a developer's own CLI setup
     # cannot fail a case before admission. The operator-configured native
     # target gate stays in force; satisfy it.
+    own_launch_environment(monkeypatch)
     monkeypatch.setenv(ENV_NATIVE_MODEL, model)
-    for name in (
-        "CLAUDE_SMART_USE_LOCAL_CLI",
-        "CLAUDE_SMART_CLI_MODEL",
-        "CLAUDE_SMART_CLI_PATH",
-        "CLAUDE_SMART_CODEX_PATH",
-        PLUGIN_OPENCODE_EXECUTABLE_ENV,
-        CLI_TIMEOUT_ENV,
-        "CLAUDE_CONFIG_DIR",
-        "CODEX_HOME",
-    ):
-        monkeypatch.delenv(name, raising=False)
     return model
 
 
@@ -477,7 +473,7 @@ def test_explicit_native_pin_refuses_a_contradicting_stamp(
     if stamp is not None:
         hidden["reflexio_served_model"] = stamp
     if not admitted:
-        with pytest.raises(ValueError, match="served a different model"):
+        with pytest.raises(ProviderRequestGuardError, match="served a different model"):
             _complete(monkeypatch, model=model, served=model, hidden=hidden)
         return
     completion = _complete(monkeypatch, model=model, served=model, hidden=hidden)
@@ -526,10 +522,7 @@ def test_non_native_identity_is_unchanged(monkeypatch, model, provider):
 
 def _claude_on_path(monkeypatch, directory) -> None:
     """Put an owned executable `claude` first and alone on PATH."""
-    directory.mkdir(parents=True, exist_ok=True)
-    binary = directory / "claude"
-    binary.write_text("#!/bin/sh\nexit 0\n")
-    binary.chmod(0o755)
+    stub_executable(directory)
     monkeypatch.setenv("PATH", str(directory))
 
 
@@ -549,7 +542,7 @@ def test_native_launch_identity_is_part_of_the_persisted_identity(
     monkeypatch, tmp_path, change, moves
 ):
     model = _native(monkeypatch, "claude-code")
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    set_home(monkeypatch, tmp_path / "home")
     monkeypatch.chdir(tmp_path)
     _claude_on_path(monkeypatch, tmp_path / "bin")
     before = _provider(monkeypatch, model)
@@ -559,7 +552,7 @@ def test_native_launch_identity_is_part_of_the_persisted_identity(
     elif change == "claude-config-dir":
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "account-b"))
     elif change == "home":
-        monkeypatch.setenv("HOME", str(tmp_path / "other-home"))
+        set_home(monkeypatch, tmp_path / "other-home")
     elif change == "other-binary-on-path":
         _claude_on_path(monkeypatch, tmp_path / "other-bin")
     elif change == "cwd":
@@ -627,7 +620,7 @@ def test_claude_code_alias_pin_matches_its_family(monkeypatch, pin, stamp, admit
     if stamp is not None:
         hidden["reflexio_served_model"] = stamp
     if not admitted:
-        with pytest.raises(ValueError, match="served a different model"):
+        with pytest.raises(ProviderRequestGuardError, match="served a different model"):
             _complete(monkeypatch, model=model, served=model, hidden=hidden)
         return
     completion = _complete(monkeypatch, model=model, served=model, hidden=hidden)
@@ -648,3 +641,130 @@ def test_alias_handling_is_claude_code_only():
     assert not _native_served_model_admitted(
         host="opencode", pin="sonnet", served="claude-sonnet-4-5"
     )
+
+
+def _client_answering(monkeypatch, model: str, answers):
+    """Compose a client whose physical responses are ``answers``, in order.
+
+    Each answer is ``(served, hidden, content, with_usage)``.
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-synthetic-test")
+    dispatched: list[str] = []
+
+    def dispatch(self, params, deadline):
+        del self, deadline
+        served, hidden, content, with_usage = answers[len(dispatched)]
+        dispatched.append(params["model"])
+        response = litellm.ModelResponse(
+            model=served,
+            choices=[
+                {
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop",
+                }
+            ],
+            usage={"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+        )
+        response._hidden_params = dict(hidden)
+        if not with_usage:
+            setattr(response, "usage", None)  # noqa: B010 - untyped on ModelResponse
+        return response
+
+    monkeypatch.setattr(LiteLLMClient, "_run_completion", dispatch)
+    client = _LiteLLMOpenWorldModelClient(
+        LiteLLMClient(LiteLLMConfig(model=model, max_tokens=512, fallback_models=[]))
+    )
+    return client, dispatched
+
+
+_INVALID = '{"unexpected": 1}'
+_VALID = '{"answer": "ok"}'
+
+
+@pytest.mark.parametrize("with_usage", [True, False])
+def test_a_contradicting_native_stamp_is_refused_before_any_retry(
+    monkeypatch, with_usage
+):
+    model = _native(monkeypatch, "claude-code", "claude-x")
+    native = {"reflexio_provider": "local-cli"}
+    client, dispatched = _client_answering(
+        monkeypatch,
+        model,
+        [
+            # Contradicts the pin AND fails validation, which would otherwise
+            # earn a corrective turn ...
+            (
+                model,
+                {**native, "reflexio_served_model": "claude-y"},
+                _INVALID,
+                with_usage,
+            ),
+            # ... whose matching answer must not be what gets accepted.
+            (model, {**native, "reflexio_served_model": "claude-x"}, _VALID, True),
+        ],
+    )
+    with pytest.raises(ProviderRequestGuardError, match="served a different model"):
+        _call(client, model)
+    assert len(dispatched) == 1
+
+
+def test_a_substituted_http_model_is_refused_before_any_retry(monkeypatch):
+    hidden = {"custom_llm_provider": "openai"}
+    client, dispatched = _client_answering(
+        monkeypatch,
+        "gpt-4o",
+        [
+            ("gpt-4o-mini", hidden, _INVALID, False),
+            ("gpt-4o", hidden, _VALID, True),
+        ],
+    )
+    with pytest.raises(ProviderRequestGuardError, match="served a different model"):
+        _call(client, "gpt-4o")
+    assert len(dispatched) == 1
+
+
+def test_an_admitted_invalid_answer_still_earns_its_retry(monkeypatch):
+    model = _native(monkeypatch, "claude-code", "claude-x")
+    native = {"reflexio_provider": "local-cli", "reflexio_served_model": "claude-x"}
+    client, dispatched = _client_answering(
+        monkeypatch,
+        model,
+        [(model, native, _INVALID, False), (model, native, _VALID, True)],
+    )
+    assert _call(client, model).observed_model_revision == model
+    assert len(dispatched) == 2
+
+
+@pytest.mark.parametrize(
+    ("host", "pin", "stamp", "admitted"),
+    [
+        # `[1m]` selects the 1M-context variant of the same model.
+        ("claude-code", "sonnet[1m]", "claude-sonnet-4-5-20250929", True),
+        ("claude-code", "SONNET[1M]", "claude-sonnet-4-5-20250929", True),
+        ("claude-code", "opus[1m]", "claude-opus-4-1-20250805", True),
+        ("claude-code", "sonnet[1m]", "claude-opus-4-1-20250805", False),
+        ("claude-code", "claude-sonnet-4-6[1m]", "claude-sonnet-4-6", True),
+        ("claude-code", "claude-sonnet-4-6[1m]", "claude-sonnet-4-5", False),
+        # `best` uses the same model as `opus`.
+        ("claude-code", "best", "claude-opus-4-1-20250805", True),
+        ("claude-code", "best", "claude-sonnet-4-5", False),
+        ("claude-code", "fable", "claude-fable-5-2", True),
+        ("claude-code", "fable", "claude-opus-5-5", False),
+        # `opusplan` runs opus in plan mode and sonnet otherwise.
+        ("claude-code", "opusplan", "claude-opus-4-1", True),
+        ("claude-code", "opusplan", "claude-sonnet-4-5", True),
+        ("claude-code", "opusplan[1m]", "claude-sonnet-4-5", True),
+        ("claude-code", "opusplan", "claude-haiku-4-5", False),
+        # `default` reverts to the account default: the CLI chooses.
+        ("claude-code", "default", "claude-haiku-4-5", True),
+        # Only Claude Code has these aliases.
+        ("codex", "sonnet[1m]", "claude-sonnet-4-5", False),
+        ("codex", "default", "synthetic-model", False),
+    ],
+)
+def test_claude_code_documented_aliases(monkeypatch, host, pin, stamp, admitted):
+    from reflexio.server.services.offline_tuner.open_world.analyst import (
+        _native_served_model_admitted,
+    )
+
+    assert _native_served_model_admitted(host=host, pin=pin, served=stamp) is admitted

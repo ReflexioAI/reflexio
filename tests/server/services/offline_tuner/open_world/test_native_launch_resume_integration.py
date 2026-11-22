@@ -44,6 +44,7 @@ from reflexio.test_support.open_world_attempt_contract import (
     GroundedTransport,
     _attempt,
 )
+from tests.server.llm.test_native_launch_identity import set_home
 from tests.server.services.offline_tuner.open_world.test_served_model_admission import (
     _claude_on_path,
     _native,
@@ -93,7 +94,7 @@ def _store(attempt, transport: GroundedTransport) -> RuleEvidenceAnalysisStore:
 def _launch(monkeypatch, tmp_path) -> str:
     """Own every launch input: target, HOME, cwd and a `claude` on PATH."""
     model = _native(monkeypatch, "claude-code")
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    set_home(monkeypatch, tmp_path / "home")
     monkeypatch.chdir(tmp_path)
     _claude_on_path(monkeypatch, tmp_path / "bin")
     return model
@@ -154,7 +155,7 @@ def test_resume_under_a_changed_launch_identity_is_refused(
     elif change == "claude-config-dir":
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "account-b"))
     elif change == "home":
-        monkeypatch.setenv("HOME", str(tmp_path / "other-home"))
+        set_home(monkeypatch, tmp_path / "other-home")
     else:
         model = _native(monkeypatch, "claude-code", "claude-x")
     moved = _transport(monkeypatch, model, called_at=attempt.now)
