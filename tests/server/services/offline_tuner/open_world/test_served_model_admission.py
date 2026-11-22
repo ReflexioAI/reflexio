@@ -629,10 +629,12 @@ def test_claude_code_alias_pin_matches_its_family(monkeypatch, pin, stamp, admit
     assert completion.observed_model_revision == model
 
 
-def test_alias_handling_is_claude_code_only():
+def test_alias_handling_is_claude_code_only(monkeypatch):
     from reflexio.server.services.offline_tuner.open_world.analyst import (
         _native_served_model_admitted,
     )
+
+    own_launch_environment(monkeypatch)
 
     assert _native_served_model_admitted(
         host="claude-code", pin="sonnet", served="claude-sonnet-4-5"

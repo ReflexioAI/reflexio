@@ -1989,12 +1989,13 @@ class TextGenerationMixin:
                 # Nothing here needs the parsed body: `_log_token_usage` reads
                 # only `response.usage`, and returns early when it is absent.
                 self._log_token_usage(turn_params, response)
-                check_turn_deadline()
                 provenance = self._build_model_provenance(response)
-                # Every physical response, before it is parsed: a response the
-                # caller refuses must not be able to trigger a re-issue or a
-                # corrective turn whose answer would then be accepted instead.
+                # Every physical response, before it is parsed and before the
+                # deadline check: a response the caller refuses must not be
+                # able to trigger a re-issue, a corrective turn, or (arriving
+                # late) a fallback rung whose answer would then be accepted.
                 provider_response_guard(provenance)
+                check_turn_deadline()
                 message = response.choices[0].message  # type: ignore[reportAttributeAccessIssue]
                 content = message.content
                 finish_reason = response.choices[0].finish_reason  # type: ignore[reportAttributeAccessIssue]
