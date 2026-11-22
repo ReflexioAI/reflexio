@@ -4,6 +4,7 @@ import pytest
 
 from reflexio.server.services.storage.retention import get_row_retention_limits
 from tests.server.services.storage.test_optimizer_retention_integration import (
+    insert_event,
     seed,
     snapshot,
     store,  # noqa: F401
@@ -89,13 +90,9 @@ def test_actual_sweep_enforces_one_graph_budget(store, monkeypatch, budget, dele
 
 
 def test_variable_fanout_never_leaves_a_partial_history(store):  # noqa: F811
-    from reflexio.models.api_schema.domain import PlaybookOptimizationEvent
-
     first = seed(store, "completed", 1)
     second = seed(store, "completed", 2)
-    store.insert_playbook_optimization_event(
-        PlaybookOptimizationEvent(job_id=first.job_id, event_type="extra", created_at=1)
-    )
+    insert_event(store, first.job_id, "extra", 1)
     assert store.count_retention_target_rows(GRAPH) == 9
     assert store.delete_oldest_retention_target_rows(GRAPH, 4) == 5
     assert all(not rows for rows in snapshot(store, first.job_id))

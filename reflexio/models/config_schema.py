@@ -37,22 +37,6 @@ from .extraction_window import (
     DEFAULT_WINDOW_SIZE,
 )
 
-DEFAULT_MAX_MERGE_INVOCATIONS = 5
-_SchedulerThreshold = Annotated[int, Field(ge=1)]
-_SchedulerCooldown = Annotated[int, Field(ge=0, le=threading.TIMEOUT_MAX)]
-
-
-class OptimizerSchedulingPolicy(BaseModel):
-    """Validated, immutable admission-time policy for deferred optimizer work."""
-
-    model_config = ConfigDict(frozen=True, hide_input_in_errors=True, extra="forbid")
-    abort_cooldown_threshold: _SchedulerThreshold = 2
-    cooldown_after_aborts_seconds: _SchedulerCooldown = 3600
-
-
-_DEFAULT_OPTIMIZER_SCHEDULING_POLICY = OptimizerSchedulingPolicy()
-
-
 # Embedding vector dimensions. Changing this requires a DB migration and re-embedding,
 # so it is intentionally a constant rather than a configurable setting.
 EMBEDDING_DIMENSIONS = 512
@@ -636,105 +620,6 @@ class RetrievalFloorConfig(BaseModel):
         return _reject_obsolete_fields(data, ("enabled", "pool_size"))
 
 
-class PlaybookOptimizerConfig(BaseModel):
-    """Configuration for GEPA-backed playbook content optimization.
-
-    The optimizer is opt-in (a zero work budget by default) and requires
-    *exactly one* assistant backend to actually do anything. The two
-    backends are mutually exclusive — see ``check_single_assistant_backend``
-    below.
-    """
-
-    model_config = ConfigDict(hide_input_in_errors=True)
-
-    # --- gating ------------------------------------------------------------
-    agent_playbooks_enabled: bool = False
-    user_playbooks_enabled: bool = False
-
-    # --- GEPA budget -------------------------------------------------------
-    # One policy owns admission and evaluation work; zero disables new runs.
-    metric_call_budget: int = Field(default=0, ge=0)
-    max_turns: int = Field(default=4, gt=0)
-    reflection_minibatch_size: int = Field(default=2, gt=0)
-    max_validation_windows: int = Field(default=2, gt=0)
-    min_commit_windows: int = Field(default=2, gt=0)
-    min_commit_score: float = Field(default=0.75, ge=0.0, le=1.0)
-    min_commit_likert: int = Field(default=4, ge=1, le=5)
-    # One budget owns both merge admission and its limit; zero disables merging.
-    max_merge_invocations: int = Field(default=DEFAULT_MAX_MERGE_INVOCATIONS, ge=0)
-    reflection_model: str | None = None
-
-    # --- assistant backend: webhook ---------------------------------------
-    webhook_url: str | None = None
-    webhook_auth_header: str | None = None
-    # Timeout applies to both transports; integrations own safe retry behavior.
-    webhook_timeout_seconds: int = Field(default=60, gt=0)
-
-    # --- assistant backend: local script ----------------------------------
-    # One argv vector: the executable followed by its exact arguments.
-    # No argument is split or passed through a shell.
-    assistant_command: Annotated[list[str], Field(min_length=1)] | None = None
-
-    # Scheduling and optimizer search budgets have separate owners.
-    abort_cooldown_threshold: _SchedulerThreshold = (
-        _DEFAULT_OPTIMIZER_SCHEDULING_POLICY.abort_cooldown_threshold
-    )
-    cooldown_after_aborts_seconds: _SchedulerCooldown = (
-        _DEFAULT_OPTIMIZER_SCHEDULING_POLICY.cooldown_after_aborts_seconds
-    )
-
-    @property
-    def scheduling_policy(self) -> OptimizerSchedulingPolicy:
-        return OptimizerSchedulingPolicy(
-            abort_cooldown_threshold=self.abort_cooldown_threshold,
-            cooldown_after_aborts_seconds=self.cooldown_after_aborts_seconds,
-        )
-
-    @model_validator(mode="before")
-    @classmethod
-    def reject_obsolete_policy(cls, data: Any) -> Any:
-        return _reject_obsolete_fields(
-            data,
-            (
-                "optimize_user_playbooks",
-                "auto_update_user_playbooks",
-                "optimize_agent_playbooks",
-                "auto_update_pending_agent_playbooks",
-                "use_merge",
-                "early_stop_score",
-                "enabled",
-                "max_metric_calls",
-                "scheduler_jitter_seconds",
-                "webhook_max_retries",
-                "webhook_backoff_base_seconds",
-                "assistant_script_path",
-                "assistant_script_args",
-            ),
-        )
-
-    def allows_target(self, kind: Literal["agent_playbook", "user_playbook"]) -> bool:
-        """Admit only targets with an enabled optimization and adoption path."""
-        if self.metric_call_budget == 0:
-            return False
-        if kind == "agent_playbook":
-            return self.agent_playbooks_enabled
-        return self.user_playbooks_enabled
-
-    @model_validator(mode="after")
-    def check_single_assistant_backend(self) -> Self:
-        # Two backends configured at once would create ambiguous behavior
-        # (which one wins?), so reject at load time rather than picking one
-        # silently in _create_assistant.
-        if self.assistant_command and not self.assistant_command[0]:
-            raise ValueError("assistant_command requires a nonempty executable")
-        if self.webhook_url and self.assistant_command:
-            raise ValueError(
-                "Configure only one playbook optimizer assistant backend: "
-                "webhook_url or assistant_command"
-            )
-        return self
-
-
 class LineageGCConfig(BaseModel):
     """One Class A reclamation policy: zero holds; positive days set grace.
 
@@ -1001,10 +886,6 @@ class Config(BaseModel):
     )
     # Read-path relevance floor (per-arm cross-encoder score cutoff)
     retrieval_floor: RetrievalFloorConfig = Field(default_factory=RetrievalFloorConfig)
-    # Optional GEPA-backed playbook content optimizer
-    playbook_optimizer_config: PlaybookOptimizerConfig = Field(
-        default_factory=PlaybookOptimizerConfig
-    )
     # Class A reclamation consent and grace; zero holds (see LineageGCConfig)
     lineage_gc: LineageGCConfig = Field(default_factory=LineageGCConfig)
     # Direct-delete reclamation of expired plain rows (share links, pending tool calls)
@@ -1054,7 +935,6 @@ class Config(BaseModel):
                 "profile_stride_size",
                 "playbook_window_size",
                 "playbook_stride_size",
-                "playbook_optimizer_config",
                 "lineage_gc",
                 "expiry_reclamation",
                 "governance_retention",

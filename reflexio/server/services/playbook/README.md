@@ -377,7 +377,7 @@ plans without that receipt, changed text/vectors, and retirement/merge proposals
 refused. Existing drafts and attempt journals are not rewritten or reset. Copied
 rows receive their creation timestamp from the trusted clock at fenced persistence,
 so cached timestamps cannot alter chronology. Copied
-rules are excluded from automatic optimizer admission and GEPA publication;
+rules are excluded from automatic rewriting;
 later normal consolidation excludes them from retrieval and prefetched history,
 and persistence rejects cached plans that would overwrite or retire them.
 Ordinary human-reviewed agent aggregation remains a separate derived workflow.

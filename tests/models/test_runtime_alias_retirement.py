@@ -80,9 +80,9 @@ def test_normal_readers_reject_every_retired_alias(case, collision):
             reader(source)
 
 
-def test_frozen_manifest_has_169_unique_paths():
-    assert len(CASES) == 169
-    assert len({case["alias"] for case in CASES}) == 169
+def test_frozen_manifest_has_166_unique_paths():
+    assert len(CASES) == 166
+    assert len({case["alias"] for case in CASES}) == 166
 
 
 @pytest.mark.parametrize("value", [None, False, 0, "", {}, []])
@@ -92,7 +92,6 @@ def test_frozen_manifest_has_169_unique_paths():
         (None, "batch_size"),
         ("profile_extractor_config", "batch_size_override"),
         ("user_playbook_extractor_config", "feedback_aggregator_config"),
-        ("playbook_optimizer_config", "use_merge"),
         ("storage_config", "storage_type"),
     ],
 )
@@ -126,7 +125,6 @@ def test_opaque_lookalikes_are_not_configuration_paths():
 def test_direct_nested_model_rejection_is_value_free():
     from reflexio.models.config_schema import (
         PlaybookAggregatorConfig,
-        PlaybookOptimizerConfig,
         ProfileExtractorConfig,
         StorageConfigPostgres,
     )
@@ -140,7 +138,6 @@ def test_direct_nested_model_rejection_is_value_free():
             },
         ),
         (PlaybookAggregatorConfig, {"min_feedback_threshold": "private-secret"}),
-        (PlaybookOptimizerConfig, {"use_merge": "private-secret"}),
         (
             StorageConfigPostgres,
             {"db_url": "private-secret", "schema_name": "private-secret"},

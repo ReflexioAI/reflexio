@@ -80,27 +80,6 @@ _IMPORT_CONTRACTS = {
         "PlaybookGenerationServiceConfig",
         "read_user_playbook_as_of_for_learning",
     ),
-    "reflexio.server.services.playbook_optimizer": (
-        "PlaybookOptimizationScheduler",
-        "PlaybookOptimizationTarget",
-        "PlaybookOptimizer",
-    ),
-    "reflexio.server.services.playbook_optimizer.assistant_webhook": (
-        "LocalScriptAssistant",
-        "WebhookAssistant",
-    ),
-    "reflexio.server.services.playbook_optimizer.gepa_adapter": (
-        "ReflexioPlaybookGEPAAdapter",
-    ),
-    "reflexio.server.services.playbook_optimizer.judge": ("PairwiseJudge",),
-    "reflexio.server.services.playbook_optimizer.models": (
-        "CandidateEvaluationOutput",
-        "ScenarioWindow",
-    ),
-    "reflexio.server.services.playbook_optimizer.rollout": ("MultiTurnRollout",),
-    "reflexio.server.services.playbook_optimizer.scenario_resolver": (
-        "ScenarioResolver",
-    ),
     "reflexio.server.services.pre_retrieval": (
         "DocumentExpander",
         "ExpansionResult",
@@ -208,19 +187,6 @@ _LAYOUT_CONTRACTS = {
             "playbook_aggregator.py",
         },
     ),
-    "playbook_optimizer": (
-        {
-            "optimizer.py",
-            "scheduler.py",
-            "models.py",
-            "judge.py",
-            "rollout.py",
-            "gepa_adapter.py",
-            "assistant_webhook.py",
-            "scenario_resolver.py",
-        },
-        {"components"},
-    ),
     "pre_retrieval": (
         {"_query_reformulator.py", "_document_expander.py"},
         {"components"},
@@ -273,9 +239,6 @@ def test_durable_service_identifiers_remain_stable():
     from reflexio.server.services.playbook.playbook_service_constants import (
         PlaybookServiceConstants,
     )
-    from reflexio.server.services.playbook_optimizer.optimizer import (
-        optimizer_run_request_id,
-    )
     from reflexio.server.services.profile.components.consolidator import (
         ProfileConsolidator,
         ProfileDeduplicationOutput,
@@ -288,7 +251,6 @@ def test_durable_service_identifiers_remain_stable():
 
     assert HeroState.FULL == "full"
     assert Outcome.WIN == "win"
-    assert optimizer_run_request_id(7) == "optjob_7"
     assert (
         PlaybookServiceConstants.PLAYBOOK_SHOULD_GENERATE_PROMPT_ID
         == "playbook_should_generate"

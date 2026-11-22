@@ -813,7 +813,7 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
                         ),
                     )
                 )
-                optimize = aggregate = None
+                aggregate = None
             else:
                 stack.enter_context(
                     patch.object(
@@ -831,12 +831,6 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
                             [],
                             [],
                         ),
-                    )
-                )
-                optimize = stack.enter_context(
-                    patch.object(
-                        PlaybookGenerationService,
-                        "_enqueue_user_playbook_optimization",
                     )
                 )
                 aggregate = stack.enter_context(
@@ -929,8 +923,7 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
             durable_run_created_at.timestamp(),
         ]
         schedule_tagging.assert_called_once()
-        if optimize is not None and aggregate is not None:
-            optimize.assert_called_once()
+        if aggregate is not None:
             aggregate.assert_called_once()
     finally:
         configure_usage_event_recorder(None)
@@ -1150,16 +1143,11 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
             ),
             patch.object(
                 PlaybookGenerationService,
-                "_enqueue_user_playbook_optimization",
-            ) as enqueue_optimization,
-            patch.object(
-                PlaybookGenerationService,
                 "_trigger_playbook_aggregation",
             ) as trigger_aggregation,
         ):
 
             def assert_playbook_scheduler_calls() -> None:
-                enqueue_optimization.assert_called_once()
                 trigger_aggregation.assert_called_once()
 
             _run_failed_then_retried(
@@ -1406,9 +1394,6 @@ def test_empty_output_receipt_retries_without_redispatch(storage, kind):
             side_effect=service_type._resolve_write_plan,
         ) as resolve,
         patch.object(
-            PlaybookGenerationService, "_enqueue_user_playbook_optimization"
-        ) as optimize,
-        patch.object(
             PlaybookGenerationService, "_trigger_playbook_aggregation"
         ) as aggregate,
         patch(
@@ -1443,7 +1428,6 @@ def test_empty_output_receipt_retries_without_redispatch(storage, kind):
         no_dispatch.assert_not_called()
         tagging.assert_called_once()
         resolve.assert_called_once()
-        optimize.assert_not_called()
         aggregate.assert_not_called()
         assert (
             storage.get_agent_run_finalization_receipt(

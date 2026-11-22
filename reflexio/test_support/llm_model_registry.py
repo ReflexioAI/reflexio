@@ -46,7 +46,6 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
         PlaybookAggregationOutput,
         StructuredReferencedExtractedPlaybookList,
     )
-    from reflexio.server.services.playbook_optimizer.models import JudgeOutput
     from reflexio.server.services.profile.components.consolidator import (
         ProfileDeduplicationOutput,
     )
@@ -148,14 +147,6 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
         "tagging": ModelRegistryEntry(
             model_class=TagsOutput,
             minimal_valid={"tags": ["example_tag"]},
-        ),
-        "playbook_optimizer_judge": ModelRegistryEntry(
-            model_class=JudgeOutput,
-            minimal_valid={
-                "verdict": "candidate",
-                "score": 0.5,
-                "likert": 3,
-            },
         ),
         "shadow_comparison": ModelRegistryEntry(
             model_class=ShadowComparisonOutput,
