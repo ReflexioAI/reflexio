@@ -14,6 +14,8 @@ import math
 import os
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from ipaddress import ip_address
 from typing import Any, Literal
@@ -22,7 +24,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from reflexio.embedding_requests import embedding_request_max_texts
-from reflexio.inference_launch import api_owns_query_worker
+from reflexio.inference_launch import container_inference_launch
 from reflexio.inference_launch import (
     inference_service_url as resolve_inference_service_url,
 )
@@ -68,6 +70,7 @@ _http_client_pid: int | None = None
 _configured_model_cache: dict[tuple[int, str], InferenceServiceCapabilities] = {}
 _configured_model_lock = threading.Lock()
 _ADVERTISED_CAPABILITY_LOCK_SECONDS = 5
+_api_local_query_service_url: str | None = None
 
 
 class EmbeddingUnavailableError(RuntimeError):
@@ -427,6 +430,21 @@ def query_embedding_service_url() -> str:
     return env_str(_ENV_QUERY_URL, "").rstrip("/")
 
 
+@contextmanager
+def api_local_query_worker_reranking() -> Iterator[None]:
+    """Bind query-only ownership for the lifetime of a supervised API."""
+    global _api_local_query_service_url
+    plan = container_inference_launch(os.environ)
+    if plan.mode != "query" or plan.health_url is None:
+        raise RuntimeError("The launcher did not select the API-local query worker")
+    previous = _api_local_query_service_url
+    _api_local_query_service_url = plan.health_url.removesuffix("/health/model")
+    try:
+        yield
+    finally:
+        _api_local_query_service_url = previous
+
+
 def validate_search_reranker_service(
     *, advertised: dict[str, Any] | None = None
 ) -> str:
@@ -438,11 +456,12 @@ def validate_search_reranker_service(
     workload or either model identity.
     """
     shared_url = inference_service_url()
-    if not query_embedding_service_url():
+    query_url = query_embedding_service_url()
+    if not query_url:
         return shared_url
-    # The launcher already owns the local child's role. A request can route
-    # shared reranking without waiting for that child's embedding contract.
-    if advertised is None and api_owns_query_worker(os.environ):
+    # The supervised API has already bound this child's query-only role.
+    # Attached endpoints still need their advertised workload and vector contract.
+    if advertised is None and query_url == _api_local_query_service_url:
         return shared_url
     shared = resolve_inference_service_capabilities()
     endpoint = validate_query_embedding_service(shared.configured_model, None)

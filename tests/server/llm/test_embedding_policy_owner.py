@@ -1,5 +1,7 @@
 """Embedding selection must not need a second opt-in boolean."""
 
+from contextlib import nullcontext
+
 import pytest
 
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
@@ -178,6 +180,7 @@ def test_local_capability_never_grants_generation_or_cli_access(monkeypatch):
     [
         ("query", "http://127.0.0.1:8093", True),
         ("query", " http://127.0.0.1:8093/ ", True),
+        ("query", "http://127.0.0.1:8093", False),
         ("shared", "http://127.0.0.1:8093", False),
         ("shared", "http://query.invalid", False),
     ],
@@ -224,16 +227,20 @@ def test_cold_reranking_respects_api_query_worker_ownership(
 
     with httpx.Client(transport=httpx.MockTransport(health)) as client:
         monkeypatch.setattr(service, "_http_client", lambda: client)
-        if uses_shared:
-            assert service.validate_search_reranker_service() == shared
-            assert not requests
-        else:
-            with pytest.raises(
-                service.EmbeddingUnavailableError,
-                match="Could not verify isolated query embedding contract",
-            ):
-                service.validate_search_reranker_service()
-            assert requests[-1] == query_url.rstrip("/") + "/health/model"
+        ownership = (
+            service.api_local_query_worker_reranking() if uses_shared else nullcontext()
+        )
+        with ownership:
+            if uses_shared:
+                assert service.validate_search_reranker_service() == shared
+                assert not requests
+        # A standalone API or a closed lifespan does not keep the fast path.
+        with pytest.raises(
+            service.EmbeddingUnavailableError,
+            match="Could not verify isolated query embedding contract",
+        ):
+            service.validate_search_reranker_service()
+        assert requests[-1] == query_url.strip().rstrip("/") + "/health/model"
 
 
 @pytest.mark.parametrize(
