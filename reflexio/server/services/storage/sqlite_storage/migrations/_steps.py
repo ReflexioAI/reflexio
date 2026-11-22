@@ -44,6 +44,25 @@ logger = logging.getLogger(__name__)
 #: Primary rows examined per write transaction when backfilling a sidecar.
 _VEC_BACKFILL_PAGE = 2048
 
+
+def _backfill_page_sql(main_table: str, vec_table: str, *, after_cursor: bool) -> str:
+    """One keyset page of primary rows with their sidecar state.
+
+    The first page has no rowid predicate (so the minimum rowid is examined);
+    later pages use a plain ``t.rowid > ?``, which SQLite seeks. Wrapped in an
+    ``? IS NULL OR`` test it would scan from the start of the table every page.
+    """
+    return (
+        "SELECT t.rowid AS rid, "
+        "(t.embedding IS NOT NULL) AS has_embedding, "
+        f"EXISTS (SELECT 1 FROM {vec_table} v "  # noqa: S608
+        "WHERE v.rowid = t.rowid) AS indexed "
+        f"FROM {main_table} t "
+        + ("WHERE t.rowid > ? " if after_cursor else "")
+        + "ORDER BY t.rowid LIMIT ?"
+    )
+
+
 _VEC_TABLES = frozenset(
     {
         "interactions_vec",
@@ -505,14 +524,13 @@ class SQLiteSchemaMigrationsMixin:
                     self.conn.execute("BEGIN IMMEDIATE")
                     try:
                         page = self.conn.execute(
-                            "SELECT t.rowid AS rid, "
-                            "(t.embedding IS NOT NULL) AS has_embedding, "
-                            f"EXISTS (SELECT 1 FROM {vec_table} v "  # noqa: S608
-                            "WHERE v.rowid = t.rowid) AS indexed "
-                            f"FROM {main_table} t "
-                            "WHERE (? IS NULL OR t.rowid > ?) "
-                            "ORDER BY t.rowid LIMIT ?",
-                            (cursor, cursor, _VEC_BACKFILL_PAGE),
+                            _backfill_page_sql(
+                                main_table, vec_table, after_cursor=cursor is not None
+                            ),
+                            (
+                                *(() if cursor is None else (cursor,)),
+                                _VEC_BACKFILL_PAGE,
+                            ),
                         ).fetchall()
                         for r in page:
                             if not r["has_embedding"] or r["indexed"]:

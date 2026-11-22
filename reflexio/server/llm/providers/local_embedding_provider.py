@@ -15,6 +15,7 @@ this provider (mixing providers has always required a DB wipe).
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import logging
@@ -411,7 +412,11 @@ def _exclusive_file_lock(
                             1,
                         )
                         break
-                    except OSError:
+                    except OSError as error:
+                        # Only contention is worth waiting for; a filesystem
+                        # that rejects byte-range locks must fail startup.
+                        if error.errno != errno.EACCES:
+                            raise
                         time.sleep(0.1)
             else:
                 msvcrt.locking(  # type: ignore[reportAttributeAccessIssue]

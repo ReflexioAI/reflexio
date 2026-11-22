@@ -1,5 +1,6 @@
 """The SQLite schema ledger: ordering, historical upgrades and the warm open."""
 
+import errno
 import json
 import sqlite3
 from contextlib import closing
@@ -1069,6 +1070,23 @@ def test_backfill_examines_one_page_of_primary_rows_per_transaction(
         )
     finally:
         reopened.conn.close()
+    from reflexio.server.services.storage.sqlite_storage.migrations._steps import (
+        _backfill_page_sql,
+    )
+
+    check = _open(path)
+    try:
+        page_sql = _backfill_page_sql("profiles", "profiles_vec", after_cursor=True)
+        plan = " ".join(
+            row[3]
+            for row in check.conn.execute(
+                "EXPLAIN QUERY PLAN " + page_sql, (3,) * page_sql.count("?")
+            )
+        )
+    finally:
+        check.conn.close()
+    # Later pages must SEEK on the rowid, not scan from the start of the table.
+    assert "SEARCH" in plan and "SCAN t" not in plan, plan
     pages = [q for q in statements if "AS indexed FROM profiles t" in q]
     assert len(pages) == 4  # ceil(10 / 3): keyset pages, never more than 3 rows each
     assert all("LIMIT 3" in q for q in pages)
@@ -1230,7 +1248,12 @@ def test_a_symlink_and_the_real_path_share_one_migration_lock(tmp_path: Path) ->
     real = tmp_path / "real.db"
     link = tmp_path / "link.db"
     _open(real).conn.close()
-    link.symlink_to(real)
+    try:
+        link.symlink_to(real)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:  # no symlink privilege on Windows
+            pytest.skip("creating symlinks needs Developer Mode or elevation")
+        raise
     storage = _open(link)  # opened through the symlink
     reachable = stored_version(storage)
     with closing(sqlite3.connect(real)) as raw:
@@ -1254,12 +1277,8 @@ def test_a_symlink_and_the_real_path_share_one_migration_lock(tmp_path: Path) ->
         storage.conn.close()
 
 
-def test_a_windows_opener_retries_the_nonblocking_lock_until_it_holds_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from reflexio.server.llm.providers import local_embedding_provider as provider
-
-    calls: list[int] = []
+def _fake_msvcrt(calls: list[int], errors: list[int]):
+    """A fake msvcrt whose LK_NBLCK raises the queued errnos, then succeeds."""
 
     class FakeMsvcrt:
         LK_LOCK = 1
@@ -1269,18 +1288,50 @@ def test_a_windows_opener_retries_the_nonblocking_lock_until_it_holds_it(
         @staticmethod
         def locking(_fd: int, mode: int, _length: int) -> None:
             calls.append(mode)
+            if len(calls) > 5:
+                raise AssertionError("lock loop did not stop")
             if mode == FakeMsvcrt.LK_LOCK:
-                raise OSError("LK_LOCK gives up after about ten seconds")
-            if mode == FakeMsvcrt.LK_NBLCK and calls.count(FakeMsvcrt.LK_NBLCK) < 3:
-                raise OSError("held elsewhere")
+                raise OSError(errno.EDEADLK, "LK_LOCK gives up after about ten seconds")
+            if mode == FakeMsvcrt.LK_NBLCK and errors:
+                raise OSError(errors.pop(0), "refused")
 
+    return FakeMsvcrt
+
+
+def test_a_windows_opener_retries_contention_until_it_holds_the_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.server.llm.providers import local_embedding_provider as provider
+
+    calls: list[int] = []
     monkeypatch.setattr(provider, "fcntl", None)
-    monkeypatch.setattr(provider, "msvcrt", FakeMsvcrt)
+    monkeypatch.setattr(
+        provider, "msvcrt", _fake_msvcrt(calls, [errno.EACCES, errno.EACCES])
+    )
     monkeypatch.setattr(provider.time, "sleep", lambda _s: None)
 
     with provider._exclusive_file_lock(tmp_path / "w.lock", wait_forever=True):
-        assert calls == [2, 2, 2]  # two refusals, then held; LK_LOCK never used
-    assert calls[-1] == FakeMsvcrt.LK_UNLCK
+        assert calls == [2, 2, 2]  # two contention refusals, then held; LK_LOCK unused
+    assert calls[-1] == 3
+
+
+def test_a_windows_opener_does_not_retry_a_non_contention_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.server.llm.providers import local_embedding_provider as provider
+
+    calls: list[int] = []
+    monkeypatch.setattr(provider, "fcntl", None)
+    monkeypatch.setattr(provider, "msvcrt", _fake_msvcrt(calls, [errno.EINVAL]))
+    monkeypatch.setattr(provider.time, "sleep", lambda _s: None)
+
+    with (
+        pytest.raises(OSError) as raised,
+        provider._exclusive_file_lock(tmp_path / "w.lock", wait_forever=True),
+    ):
+        pass
+    assert raised.value.errno == errno.EINVAL
+    assert calls == [2]  # failed on the first attempt
 
 
 @requires_vec
