@@ -1,5 +1,7 @@
 """Embedding selection must not need a second opt-in boolean."""
 
+from contextlib import nullcontext
+
 import pytest
 
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
@@ -171,6 +173,74 @@ def test_local_capability_never_grants_generation_or_cli_access(monkeypatch):
     assert model_defaults.detect_available_providers() == ["local"]
     with pytest.raises(RuntimeError, match="No generation-capable"):
         model_defaults.validate_llm_availability()
+
+
+@pytest.mark.parametrize(
+    ("workload", "query_url", "uses_shared"),
+    [
+        ("query", "http://127.0.0.1:8093", True),
+        ("query", " http://127.0.0.1:8093/ ", True),
+        ("query", "http://127.0.0.1:8093", False),
+        ("shared", "http://127.0.0.1:8093", False),
+        ("shared", "http://query.invalid", False),
+    ],
+)
+def test_cold_reranking_respects_api_query_worker_ownership(
+    monkeypatch, workload, query_url, uses_shared
+):
+    import httpx
+
+    shared = "http://shared.invalid"
+    model = "local/minilm-l6-v2"
+    monkeypatch.setenv("REFLEXIO_INFERENCE_WORKLOAD", workload)
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "internal_service")
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", shared)
+    monkeypatch.setenv("REFLEXIO_QUERY_EMBEDDING_SERVICE_URL", query_url)
+    monkeypatch.setattr(service, "_configured_model_cache", {})
+    monkeypatch.setattr(service, "_query_contract_cache", {})
+    requests = []
+
+    def health(request):
+        requests.append(str(request.url))
+        if request.url.host != "shared.invalid":
+            raise httpx.ConnectError("query worker is offline")
+        if request.url.path == "/health/model":
+            return httpx.Response(
+                200,
+                json={
+                    "configured_model": model,
+                    "model_fingerprint": "pinned",
+                    "output_dimensions": 2,
+                },
+            )
+        assert request.url.path == "/health"
+        return httpx.Response(
+            200,
+            json={
+                "configured_model": model,
+                "configured_reranker_model": "local/reranker",
+                "workload": "shared",
+                "reranker_enabled": True,
+                "reranker_ready": True,
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(health)) as client:
+        monkeypatch.setattr(service, "_http_client", lambda: client)
+        ownership = (
+            service.api_local_query_worker_reranking() if uses_shared else nullcontext()
+        )
+        with ownership:
+            if uses_shared:
+                assert service.validate_search_reranker_service() == shared
+                assert not requests
+        # A standalone API or a closed lifespan does not keep the fast path.
+        with pytest.raises(
+            service.EmbeddingUnavailableError,
+            match="Could not verify isolated query embedding contract",
+        ):
+            service.validate_search_reranker_service()
+        assert requests[-1] == query_url.strip().rstrip("/") + "/health/model"
 
 
 @pytest.mark.parametrize(
