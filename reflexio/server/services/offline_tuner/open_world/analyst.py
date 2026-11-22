@@ -1869,10 +1869,24 @@ class _LiteLLMOpenWorldModelClient:
 
             Raises:
                 ProviderRequestGuardError: When the request is not the qualified
-                    one, or is a second DIFFERENT request rather than a re-issue
+                    one, is a second DIFFERENT request rather than a re-issue,
+                    or the composed transport (including the native launch
+                    policy) drifted since composition
             """
             nonlocal provider_attempts, first_messages
             del hard_timeout
+            # Re-checked immediately before EVERY physical dispatch -- the
+            # first crossing, a parse-retry re-issue, the corrective turn, a
+            # credential retry, each rate-limited re-crossing -- because the
+            # shared client calls this guard right before each one. A check
+            # made once before the loop cannot see a native launch input (the
+            # CLI executable, its timeout, PATH, ...) changed between
+            # crossings, which would then be recorded under the composed
+            # identity.
+            if _litellm_transport_identity(self._client) != self._transport:
+                raise ProviderRequestGuardError(
+                    "LiteLLM transport configuration changed after composition"
+                )
             provider_attempts += 1
             messages = params.get("messages")
             corrective = False

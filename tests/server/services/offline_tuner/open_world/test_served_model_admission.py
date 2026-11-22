@@ -21,7 +21,11 @@ from reflexio.server.llm._native_model_ref import (
     ENV_NATIVE_MODEL,
     PLUGIN_OPENCODE_EXECUTABLE_ENV,
 )
-from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.llm.litellm_client import (
+    LiteLLMClient,
+    LiteLLMConfig,
+    ProviderRequestGuardError,
+)
 from reflexio.server.services.offline_tuner.open_world.analyst import (
     ChatMessage,
     _is_provider_date_stamp,
@@ -361,3 +365,61 @@ def test_non_native_transport_does_not_bind_native_launch_policy(monkeypatch):
     monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/synthetic/other/claude")
     assert _call(client, "gpt-4o").observed_model_revision == "gpt-4o"
     assert dispatched == ["gpt-4o"]
+
+
+def _native_client_with_invalid_first_answer(monkeypatch, *, change_launch: bool):
+    """Compose a native client whose first answer fails structured validation."""
+    model = _native(monkeypatch, "claude-code")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-synthetic-test")
+    dispatched: list[list[dict[str, str]]] = []
+
+    def dispatch(self, params, deadline):
+        del self, deadline
+        dispatched.append(params["messages"])
+        content = '{"answer": "ok"}'
+        if len(dispatched) == 1:
+            content = '{"unexpected": 1}'
+            if change_launch:
+                # The CLI host re-reads this at its next dispatch.
+                monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/synthetic/other/claude")
+        response = litellm.ModelResponse(
+            model=model,
+            choices=[
+                {
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop",
+                }
+            ],
+            usage={"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+        )
+        response._hidden_params = {
+            "reflexio_provider": "local-cli",
+            "reflexio_served_model": "M-3",
+        }
+        return response
+
+    monkeypatch.setattr(LiteLLMClient, "_run_completion", dispatch)
+    client = _LiteLLMOpenWorldModelClient(
+        LiteLLMClient(LiteLLMConfig(model=model, max_tokens=512, fallback_models=[]))
+    )
+    return client, model, dispatched
+
+
+def test_corrective_retry_after_unchanged_launch_is_admitted(monkeypatch):
+    client, model, dispatched = _native_client_with_invalid_first_answer(
+        monkeypatch, change_launch=False
+    )
+    assert _call(client, model).observed_model_revision == model
+    # The invalid first answer really was followed by a second dispatch.
+    assert len(dispatched) == 2
+
+
+def test_launch_drift_before_a_retry_is_refused_without_dispatch(monkeypatch):
+    client, model, dispatched = _native_client_with_invalid_first_answer(
+        monkeypatch, change_launch=True
+    )
+    with pytest.raises(
+        ProviderRequestGuardError, match="transport configuration changed"
+    ):
+        _call(client, model)
+    assert len(dispatched) == 1
