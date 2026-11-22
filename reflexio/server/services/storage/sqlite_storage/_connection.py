@@ -65,26 +65,36 @@ class VecAwareConnection(sqlite3.Connection):
 
     _writes_embeddings = False
     _stale_stamp: int | None = None
+    _caller_authorizer: Callable[..., int] | None = None
 
     def mark_sidecar_stale_on_embedding_writes(self, stale_stamp: int) -> None:
         self._stale_stamp = stale_stamp
         self._arm_authorizer()
 
+    def set_authorizer(self, authorizer_callback: Callable[..., int] | None) -> None:
+        """Install a caller's authorizer; the sidecar tracker, when on, chains to it."""
+        self._caller_authorizer = authorizer_callback
+        if self._stale_stamp is not None:
+            self._arm_authorizer()
+        else:
+            super().set_authorizer(authorizer_callback)
+
     def _arm_authorizer(self) -> None:
-        def authorize(action: int, table: Any, *_rest: Any) -> int:
+        def authorize(action: int, table: Any, *rest: Any) -> int:
             if action in (
                 sqlite3.SQLITE_INSERT,
                 sqlite3.SQLITE_UPDATE,
                 sqlite3.SQLITE_DELETE,
             ) and (table in _EMBEDDING_TABLES):
                 self._writes_embeddings = True
-            return sqlite3.SQLITE_OK
+            caller = self._caller_authorizer
+            return sqlite3.SQLITE_OK if caller is None else caller(action, table, *rest)
 
         # The authorizer runs when a statement is PREPARED, and the statement
         # cache reuses prepared statements. Installing the callback again
         # expires them, so every statement after a commit is prepared, and
         # authorized, again.
-        self.set_authorizer(authorize)
+        super().set_authorizer(authorize)
 
     def _lower_stamp(self) -> None:
         if (

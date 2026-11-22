@@ -306,7 +306,7 @@ historical DDL through the ledger.
 
 The vector sidecar (`*_vec` tables) has two repair paths.
 
-Native processes record every queued sidecar write (table and rowid) in
+Every vector write runs inside a `commit_scope` (`_vec_upsert` and `_vec_delete` refuse to run outside one, so a new call site that forgets fails loudly instead of losing crash safety); the primary row and its queued vector write commit together. Native processes record every queued sidecar write (table and rowid) in
 `vec_pending` inside the same transaction as the primary rows, and clear that row
 right after the sidecar write succeeds. The write after a commit rebuilds the sidecar row from the current primary row rather than from the in-memory embedding, once per row, so a flush that finishes late can never overwrite or un-mark a newer commit's embedding. A crash between the commit and the flush,
 or a flush that fails part-way, leaves exactly the unfinished rowids pending. Each
@@ -314,6 +314,8 @@ native open reads `vec_pending` (one SELECT when empty) and, per row, deletes th
 sidecar row, re-inserts it from the stored embedding if the primary row still
 exists and the embedding is indexable, and clears the pending row, in one write
 transaction. Cost: one extra insert and one delete per queued sidecar write.
+
+On a fallback connection the sidecar tracker is an authorizer chained in front of any authorizer the caller installs with `set_authorizer`, so callers keep their own policy. The backfill pages over fixed primary-rowid ranges, one write transaction per page.
 
 Processes that cannot load sqlite-vec write embeddings without touching
 `vec_pending`; they take the schema stamp back to just before the vec step at open

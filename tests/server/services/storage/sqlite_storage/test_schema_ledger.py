@@ -953,3 +953,129 @@ def test_a_deeply_nested_embedding_is_skipped_not_fatal(tmp_path: Path) -> None:
         )
     finally:
         reopened.conn.close()
+
+
+@requires_vec
+def test_a_standalone_interaction_insert_is_crash_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import struct
+
+    from reflexio.models.api_schema.service_schemas import Interaction
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+
+    path = tmp_path / "interaction.db"
+    storage = _open(path)
+    vector = [0.5] * EMBEDDING_DIMENSIONS
+
+    def crash(_self, _table, _rowid):
+        raise _Crash
+
+    with monkeypatch.context() as patched:
+        patched.setattr(SQLiteStorage, "_reconcile_pending_vector", crash)
+        with pytest.raises(_Crash):
+            storage._insert_interaction(
+                Interaction(user_id="u", request_id="r", content="c", embedding=vector)
+            )
+    storage.conn.close()  # the process "dies" after the primary commit
+
+    assert _pending(path) == [("interactions_vec", 1)]
+    reopened = _open(path)  # repairs the pending row
+    try:
+        blob = reopened.conn.execute(
+            "SELECT embedding FROM interactions_vec WHERE rowid = 1"
+        ).fetchone()[0]
+        assert struct.unpack(f"{EMBEDDING_DIMENSIONS}f", blob) == pytest.approx(
+            tuple(vector)
+        )
+    finally:
+        reopened.conn.close()
+    assert _pending(path) == []
+
+
+@requires_vec
+def test_a_vector_write_outside_a_commit_scope_is_refused(tmp_path: Path) -> None:
+    storage = _open(tmp_path / "guard.db")
+    try:
+        with pytest.raises(RuntimeError, match="inside commit_scope"):
+            storage._vec_upsert("profiles_vec", 1, [0.0])
+        with pytest.raises(RuntimeError, match="inside commit_scope"):
+            storage._vec_delete("profiles_vec", 1)
+    finally:
+        storage.conn.close()
+
+
+def test_a_caller_authorizer_survives_the_fallback_trackers_rearm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(SQLiteStorage, "_try_load_sqlite_vec", lambda _self: False)
+    storage = _open(tmp_path / "authorizer.db")
+    try:
+
+        def deny_create(action, _arg1, _arg2, _db, _source):
+            if action == sqlite3.SQLITE_CREATE_TABLE:
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        storage.conn.set_authorizer(deny_create)
+        storage.conn.commit()  # re-arms the tracker, which must still chain
+        with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+            storage.conn.execute("CREATE TABLE denied_by_caller (x)")
+        storage.conn.set_authorizer(None)  # clears the caller, keeps the tracker
+        storage.conn.execute("CREATE TABLE allowed_after_clear (x)")
+    finally:
+        storage.conn.close()
+
+
+@requires_vec
+def test_backfill_examines_one_page_of_primary_rows_per_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+    from reflexio.server.services.storage.sqlite_storage.migrations import _steps
+
+    path = tmp_path / "paged.db"
+    storage = _open(path)
+    for number in range(1, 11):
+        storage.conn.execute(
+            "INSERT INTO profiles (profile_id, user_id, last_modified_timestamp, "
+            "embedding) VALUES (?, 'u', 1, ?)",
+            (f"p{number}", json.dumps([0.5] * EMBEDDING_DIMENSIONS)),
+        )
+    # Index everything except the last row, which sits in the last page.
+    storage.conn.execute(
+        "INSERT INTO profiles_vec(rowid, embedding) "
+        "SELECT rowid, embedding FROM profiles WHERE rowid < 10"
+    )
+    storage.conn.execute("PRAGMA user_version = 0")
+    storage.conn.commit()
+    storage.conn.close()
+
+    monkeypatch.setattr(_steps, "_VEC_BACKFILL_PAGE", 3)
+    statements: list[str] = []
+    real_connect = sqlite3.connect
+
+    def tracing_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", tracing_connect)
+    reopened = _open(path)
+    try:
+        assert (
+            reopened.conn.execute("SELECT COUNT(*) FROM profiles_vec").fetchone()[0]
+            == 10
+        )
+    finally:
+        reopened.conn.close()
+    pages = [s for s in statements if "FROM profiles t" in s]
+    assert len(pages) == 4  # rowids 1-10 in ranges of 3: ceil(10 / 3)
+    import re
+
+    spans = [
+        (int(m.group(1)), int(m.group(2)))
+        for q in pages
+        if (m := re.search(r"t\.rowid > (-?\d+) AND t\.rowid <= (-?\d+)", q))
+    ]
+    assert len(spans) == 4 and all(hi - lo == 3 for lo, hi in spans)

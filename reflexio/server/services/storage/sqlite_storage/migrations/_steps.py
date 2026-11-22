@@ -41,6 +41,9 @@ from ..migrations import run_pending_migrations
 
 logger = logging.getLogger(__name__)
 
+#: Primary rowids examined per write transaction when backfilling a sidecar.
+_VEC_BACKFILL_PAGE = 2048
+
 _VEC_TABLES = frozenset(
     {
         "interactions_vec",
@@ -478,7 +481,6 @@ class SQLiteSchemaMigrationsMixin:
             ("user_playbooks", "user_playbooks_vec", "user_playbook_id"),
             ("agent_playbooks", "agent_playbooks_vec", "agent_playbook_id"),
         ]
-        batch_size = 256
         for main_table, vec_table, _id_col in entity_map:
             with self._lock:
                 self.conn.commit()
@@ -492,8 +494,16 @@ class SQLiteSchemaMigrationsMixin:
                 except BaseException:
                     self.conn.rollback()
                     raise
-            cursor = -(2**63)
-            while True:
+            bounds = self._fetchone(
+                f"SELECT MIN(rowid) AS lo, MAX(rowid) AS hi FROM {main_table}"  # noqa: S608
+            )
+            if bounds is None or bounds["lo"] is None:
+                continue
+            # Fixed rowid ranges, so one write transaction examines at most one
+            # page of primary rows however large the table or sparse the rowids.
+            page_start = bounds["lo"] - 1
+            while page_start < bounds["hi"]:
+                page_end = page_start + _VEC_BACKFILL_PAGE
                 with self._lock:
                     self.conn.commit()
                     self.conn.execute("BEGIN IMMEDIATE")
@@ -504,11 +514,12 @@ class SQLiteSchemaMigrationsMixin:
                             "SELECT t.rowid AS rid, "
                             "CAST(t.embedding AS BLOB) AS embedding "
                             f"FROM {main_table} t "  # noqa: S608
-                            "WHERE t.embedding IS NOT NULL AND t.rowid > ? "
+                            "WHERE t.embedding IS NOT NULL "
+                            "AND t.rowid > ? AND t.rowid <= ? "
                             f"AND NOT EXISTS (SELECT 1 FROM {vec_table} v "
                             "WHERE v.rowid = t.rowid) "
-                            "ORDER BY t.rowid LIMIT ?",
-                            (cursor, batch_size),
+                            "ORDER BY t.rowid",
+                            (page_start, page_end),
                         ).fetchall()
                         for r in rows:
                             emb = self._indexable_embedding(r["embedding"])
@@ -522,9 +533,7 @@ class SQLiteSchemaMigrationsMixin:
                     except BaseException:
                         self.conn.rollback()
                         raise
-                if len(rows) < batch_size:
-                    break
-                cursor = rows[-1]["rid"]
+                page_start = page_end
 
     def _session_outcomes_schema_is_canonical(self) -> bool:
         table_info = self.conn.execute("PRAGMA table_info(session_outcomes)").fetchall()

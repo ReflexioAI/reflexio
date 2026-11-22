@@ -58,6 +58,7 @@ class InteractionStoreMixin:
     _subject_ref_for_user_id: Any
     _assert_subject_writable_locked: Any
     _own_transaction: Any
+    commit_scope: Any
     _record_published_exposures_locked: Any
 
     # ------------------------------------------------------------------
@@ -98,6 +99,12 @@ class InteractionStoreMixin:
         self._insert_interaction(interaction)
 
     def _insert_interaction(self, interaction: Interaction) -> int:
+        # The row and its queued index writes share one transaction, so a crash
+        # leaves the vector in vec_pending rather than silently unindexed.
+        with self.commit_scope():
+            return self._insert_interaction_row(interaction)
+
+    def _insert_interaction_row(self, interaction: Interaction) -> int:
         created_at_iso = _epoch_to_iso(interaction.created_at)
         interaction.token_count = count_input_tokens(interaction.content)
         subject_ref = self._subject_ref_for_user_id(interaction.user_id)
@@ -403,19 +410,15 @@ class InteractionStoreMixin:
         search path) and upserts the ``interactions_vec`` row via the same
         ``_vec_upsert`` helper the insert path uses.
 
-        Only commits when it owns the transaction (mirroring ``_insert_interaction``)
-        so it can never flush a partial outer transaction if ever called inside an
-        open ``commit_scope``; ``_vec_upsert`` likewise defers under an open scope.
+        Runs in one commit scope (joining an open one), so the column and the
+        queued vec write land in the same transaction.
         """
-        with self._lock:
-            own_txn = self._own_transaction()
+        with self.commit_scope():
             self.conn.execute(
                 "UPDATE interactions SET embedding = ? WHERE interaction_id = ?",
                 (_json_dumps(embedding), interaction_id),
             )
-            if own_txn:
-                self.conn.commit()
-        self._vec_upsert("interactions_vec", interaction_id, embedding)
+            self._vec_upsert("interactions_vec", interaction_id, embedding)
 
     @SQLiteStorageBase.handle_exceptions
     def delete_user_interaction(self, request: DeleteUserInteractionRequest) -> None:

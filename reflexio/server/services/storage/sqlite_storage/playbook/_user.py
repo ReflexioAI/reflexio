@@ -899,18 +899,18 @@ class UserPlaybookStoreMixin:
                         provider=lineage_context.provider,
                     )
 
-        for up, _lineage_context, _subject_ref, _created_at_iso in rows:
-            upid = up.user_playbook_id
-            fts_parts = [up.trigger or "", up.content or ""]
-            if up.expanded_terms:
-                fts_parts.append(up.expanded_terms)
-            self._fts_upsert(
-                "user_playbooks_fts",
-                upid,
-                search_text=" ".join(p for p in fts_parts if p) or "",
-            )
-            if up.embedding:
-                self._vec_upsert("user_playbooks_vec", upid, up.embedding)
+            for up, _lineage_context, _subject_ref, _created_at_iso in rows:
+                upid = up.user_playbook_id
+                fts_parts = [up.trigger or "", up.content or ""]
+                if up.expanded_terms:
+                    fts_parts.append(up.expanded_terms)
+                self._fts_upsert(
+                    "user_playbooks_fts",
+                    upid,
+                    search_text=" ".join(p for p in fts_parts if p) or "",
+                )
+                if up.embedding:
+                    self._vec_upsert("user_playbooks_vec", upid, up.embedding)
 
     @SQLiteStorageBase.handle_exceptions
     def get_user_playbooks(

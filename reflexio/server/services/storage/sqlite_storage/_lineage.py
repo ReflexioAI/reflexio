@@ -183,6 +183,7 @@ class SQLiteLineageMixin:
     _lock: threading.RLock
     org_id: str
     _own_transaction: Any
+    commit_scope: Any
 
     def append_lineage_event(self, event: LineageEvent) -> int:
         """Append an event; idempotent on (org_id, entity_type, entity_id, op, request_id).
@@ -489,7 +490,10 @@ class SQLiteLineageMixin:
         if sql is None:
             raise ValueError(f"purge_content: unsupported entity_type {entity_type!r}")
         table, pk = _resolve_table(entity_type)
-        with self._lock:
+        # One scope: the blanking, its lineage event and the queued index
+        # cleanup (recorded in vec_pending) commit together; the cleanup
+        # itself runs after the commit.
+        with self.commit_scope():
             row = self.conn.execute(
                 f"SELECT rowid AS _rowid FROM {table} WHERE {pk}=?",  # noqa: S608
                 (entity_id,),
@@ -513,9 +517,7 @@ class SQLiteLineageMixin:
                     request_id=f"purge_{entity_id}",  # deterministic → idempotent
                     reason="content_purge",
                 )
-            self.conn.commit()
-        # Post-commit index cleanup (self-committing helpers; idempotent/replayable).
-        self._purge_search_indexes(entity_type, entity_id, rowid)
+            self._purge_search_indexes(entity_type, entity_id, rowid)
         return True
 
     def _purge_search_indexes(
@@ -523,8 +525,9 @@ class SQLiteLineageMixin:
     ) -> None:
         """Remove FTS and vec index entries for a purged entity.
 
-        Called after the blanking commit so index cleanup never interleaves with
-        the atomic mutation+event transaction.
+        Called inside the blanking scope: the ops are deferred until after its
+        commit, so index cleanup never interleaves with the atomic
+        mutation+event transaction.
 
         Args:
             entity_type (EntityType): One of ``"user_playbook"`` or ``"profile"``.
