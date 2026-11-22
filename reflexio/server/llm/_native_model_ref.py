@@ -155,3 +155,47 @@ def native_policy_digest() -> str:
         },
     }
     return hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest()
+
+
+# Executable override and account-directory variables that decide which CLI
+# binary answers and under which account.
+_EXECUTABLE_OVERRIDE_ENVS = (
+    "CLAUDE_SMART_CLI_PATH",
+    PLUGIN_OPENCODE_EXECUTABLE_ENV,
+    "CLAUDE_SMART_CODEX_PATH",
+)
+_ACCOUNT_DIR_ENVS = ("CLAUDE_CONFIG_DIR", "CODEX_HOME")
+
+
+def native_launch_identity_digest() -> str:
+    """Digest only what decides WHO answers a native call: binary and account.
+
+    ``native_policy_digest`` binds the whole launch environment (cwd, PATH,
+    PATHEXT, timeout, ...) and suits a plan frozen for one job. A DURABLE
+    identity cannot: it must survive a plugin upgrade that moves the working
+    directory and a restart from another shell whose PATH differs but resolves
+    to the same binary. So this digest binds the configured native target, the
+    executable the native provider would launch (resolved by the provider's
+    own resolver; a PATH lookup contributes its absolute result, never PATH
+    itself), the account/config directories (HOME, ``CLAUDE_CONFIG_DIR``,
+    ``CODEX_HOME``) and the executable override variables -- and nothing else.
+
+    Returns:
+        str: Hex SHA-256 of the launch identity.
+    """
+    from reflexio.server.llm.providers.native_cli_provider import (
+        _resolve_cli_path,  # noqa: PLC2701 - the one resolver dispatch uses
+    )
+
+    target = configured_native_model()
+    executable = _resolve_cli_path(target.host) if target is not None else None
+    identity = {
+        "target": target.reference if target is not None else None,
+        # Absolute, but symlinks are NOT followed: the launch path is the
+        # identity, so an in-place CLI upgrade behind it does not move it.
+        "executable": str(Path(executable).absolute()) if executable else None,
+        "home": str(Path.home()),
+        "accounts": {name: os.environ.get(name) for name in _ACCOUNT_DIR_ENVS},
+        "overrides": {name: os.environ.get(name) for name in _EXECUTABLE_OVERRIDE_ENVS},
+    }
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()

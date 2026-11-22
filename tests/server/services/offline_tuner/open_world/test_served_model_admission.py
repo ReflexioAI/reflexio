@@ -11,6 +11,7 @@ import reflexio.provider_bootstrap  # noqa: F401
 # isort: split
 
 import json
+import os
 
 import litellm
 import pytest
@@ -199,6 +200,8 @@ def _native(monkeypatch, host: str, pin: str | None = None) -> str:
         "CLAUDE_SMART_CODEX_PATH",
         PLUGIN_OPENCODE_EXECUTABLE_ENV,
         CLI_TIMEOUT_ENV,
+        "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
     ):
         monkeypatch.delenv(name, raising=False)
     return model
@@ -521,20 +524,127 @@ def test_non_native_identity_is_unchanged(monkeypatch, model, provider):
     assert _provider(monkeypatch, model) == provider
 
 
+def _claude_on_path(monkeypatch, directory) -> None:
+    """Put an owned executable `claude` first and alone on PATH."""
+    directory.mkdir(parents=True, exist_ok=True)
+    binary = directory / "claude"
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o755)
+    monkeypatch.setenv("PATH", str(directory))
+
+
 @pytest.mark.parametrize(
-    ("name", "value"),
+    ("change", "moves"),
     [
-        ("CLAUDE_SMART_CLI_PATH", "/synthetic/other/claude"),
-        ("CLAUDE_CONFIG_DIR", "/synthetic/other-account"),
-        ("CLAUDE_SMART_CLI_TIMEOUT", "30"),
+        ("cli-path-override", True),
+        ("claude-config-dir", True),
+        ("home", True),
+        ("other-binary-on-path", True),
+        ("cwd", False),
+        ("path-same-binary", False),
+        ("timeout", False),
     ],
 )
-def test_native_launch_policy_is_part_of_the_persisted_identity(
-    monkeypatch, name, value
+def test_native_launch_identity_is_part_of_the_persisted_identity(
+    monkeypatch, tmp_path, change, moves
 ):
     model = _native(monkeypatch, "claude-code")
-    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    _claude_on_path(monkeypatch, tmp_path / "bin")
     before = _provider(monkeypatch, model)
     assert _provider(monkeypatch, model) == before, "recomposition is stable"
-    monkeypatch.setenv(name, value)
-    assert _provider(monkeypatch, model) != before
+    if change == "cli-path-override":
+        monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/synthetic/other/claude")
+    elif change == "claude-config-dir":
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "account-b"))
+    elif change == "home":
+        monkeypatch.setenv("HOME", str(tmp_path / "other-home"))
+    elif change == "other-binary-on-path":
+        _claude_on_path(monkeypatch, tmp_path / "other-bin")
+    elif change == "cwd":
+        (tmp_path / "elsewhere").mkdir()
+        monkeypatch.chdir(tmp_path / "elsewhere")
+    elif change == "path-same-binary":
+        (tmp_path / "empty").mkdir()
+        monkeypatch.setenv(
+            "PATH", os.pathsep.join([str(tmp_path / "empty"), str(tmp_path / "bin")])
+        )
+    else:
+        monkeypatch.setenv(CLI_TIMEOUT_ENV, "30")
+    assert (_provider(monkeypatch, model) != before) is moves
+
+
+def test_a_long_running_client_keeps_answering_across_an_inert_env_change(
+    monkeypatch, tmp_path
+):
+    # The in-process per-dispatch check compares the same narrow identity, so
+    # a daemon whose PATH or cwd changes but still resolves the same binary
+    # keeps answering instead of refusing every call.
+    model = _native(monkeypatch, "claude-code")
+    monkeypatch.chdir(tmp_path)
+    _claude_on_path(monkeypatch, tmp_path / "bin")
+    dispatched: list[str] = []
+    hidden = {"reflexio_provider": "local-cli"}
+    client = _compose(
+        monkeypatch, model=model, served=model, hidden=hidden, dispatched=dispatched
+    )
+    assert _call(client, model).observed_model_revision == model
+    (tmp_path / "empty").mkdir()
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join([str(tmp_path / "empty"), str(tmp_path / "bin")])
+    )
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    monkeypatch.setenv(CLI_TIMEOUT_ENV, "30")
+    assert _call(client, model).observed_model_revision == model
+    assert len(dispatched) == 2
+
+
+@pytest.mark.parametrize(
+    ("pin", "stamp", "admitted"),
+    [
+        ("sonnet", "claude-sonnet-4-5-20250929", True),
+        ("Sonnet", "claude-sonnet-4-5-20250929", True),
+        ("OPUS", "claude-opus-4-1-20250805", True),
+        ("haiku", "claude-haiku-4-5", True),
+        ("sonnet", None, True),
+        # Another family, or not a Claude id at all.
+        ("sonnet", "claude-opus-4-1-20250805", False),
+        ("opus", "claude-sonnet-4-5-20250929", False),
+        ("haiku", "claude-sonnet-4-5", False),
+        ("sonnet", "sonnet", False),
+        ("sonnet", "gpt-4o", False),
+        ("sonnet", "claude-sonnetx-1", False),
+        # A full-id pin keeps the strict rule.
+        ("claude-sonnet-4-5", "claude-sonnet-4-5-20250929", True),
+        ("claude-sonnet-4-5", "claude-sonnet-4-6", False),
+    ],
+)
+def test_claude_code_alias_pin_matches_its_family(monkeypatch, pin, stamp, admitted):
+    model = _native(monkeypatch, "claude-code", pin)
+    hidden = {"reflexio_provider": "local-cli"}
+    if stamp is not None:
+        hidden["reflexio_served_model"] = stamp
+    if not admitted:
+        with pytest.raises(ValueError, match="served a different model"):
+            _complete(monkeypatch, model=model, served=model, hidden=hidden)
+        return
+    completion = _complete(monkeypatch, model=model, served=model, hidden=hidden)
+    assert completion.observed_model_revision == model
+
+
+def test_alias_handling_is_claude_code_only():
+    from reflexio.server.services.offline_tuner.open_world.analyst import (
+        _native_served_model_admitted,
+    )
+
+    assert _native_served_model_admitted(
+        host="claude-code", pin="sonnet", served="claude-sonnet-4-5"
+    )
+    assert not _native_served_model_admitted(
+        host="codex", pin="sonnet", served="claude-sonnet-4-5"
+    )
+    assert not _native_served_model_admitted(
+        host="opencode", pin="sonnet", served="claude-sonnet-4-5"
+    )

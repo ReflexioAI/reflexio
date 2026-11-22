@@ -25,7 +25,7 @@ from reflexio.server.llm import ProviderRequestGuardError
 from reflexio.server.llm._azure_transport import normalize_azure_v1_endpoints
 from reflexio.server.llm._native_model_ref import PROVIDER_KEY as _NATIVE_CLI_ROUTE
 from reflexio.server.llm._native_model_ref import (
-    native_policy_digest,
+    native_launch_identity_digest,
     parse_native_model_ref,
 )
 from reflexio.server.llm.failure import (
@@ -1166,7 +1166,9 @@ _DEFAULT_OPENAI_ROUTE = "openai-default"
 # One exception: an EXPLICIT pin (`local-cli/<host>/<model>`) is the physical
 # selection, so a reported served model that contradicts it is refused under
 # the same rules as any other route (exact, or a dated snapshot of an undated
-# pin). A missing stamp is still admitted, and a host-only reference
+# pin) -- except a Claude Code alias pin (`sonnet`, `opus`, `haiku`), which
+# names a family and admits `claude-<alias>-...`. A missing stamp is still
+# admitted, and a host-only reference
 # (`local-cli/<host>`) delegates the model to the CLI and admits anything.
 # Every other route keeps the strict echo checks, including refusing a
 # response with no observed provider or model.
@@ -1280,8 +1282,9 @@ class _LiteLLMTransportIdentity:
     ``_credential_drift_fingerprint``.
 
     The native ``local-cli`` route is the one exception to "scope, never the
-    account": its digest also binds ``native_policy_digest()``, so the CLI
-    launch policy is PART of the persisted identity. See the payload below.
+    account": its digest also binds ``native_launch_identity_digest()`` (the
+    resolved executable and account directories), so who answers is PART of
+    the persisted identity. See the payload below.
     """
 
     provider: str
@@ -1386,15 +1389,17 @@ def _litellm_transport_identity(client: LiteLLMClient) -> _LiteLLMTransportIdent
     }
     if route == _NATIVE_CLI_ROUTE:
         # On the native route the CLI, not this client, owns dispatch: it
-        # re-resolves its executable, account directory and settings on every
-        # call. So the operator launch policy -- the same digest
-        # `PairwiseJudge` freezes -- is part of what this transport IS, and is
-        # bound into the persisted identity. A launch input changed after
-        # composition then fails the in-process drift checks before dispatch,
-        # and one changed across a restart fails the durable attempt-context
-        # binding instead of resuming under a different executable or account.
-        # Other routes add no key, so their digests are unchanged.
-        payload["native_launch_policy"] = native_policy_digest()
+        # re-resolves its executable and account on every call. So the native
+        # launch IDENTITY -- the resolved binary and account directories, not
+        # the wider environment (cwd, PATH, timeout) -- is part of what this
+        # transport IS and is bound into the persisted identity. One digest
+        # serves both checks: a change after composition fails the in-process
+        # drift checks before every dispatch, and one across a restart fails
+        # the durable attempt-context binding instead of resuming under a
+        # different executable or account. A PATH or cwd change that still
+        # resolves to the same binary changes neither. Other routes add no
+        # key, so their digests are unchanged.
+        payload["native_launch_identity"] = native_launch_identity_digest()
     digest = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
     return _LiteLLMTransportIdentity(
         provider=f"litellm:{route}:{digest}",
@@ -1612,10 +1617,12 @@ class _LiteLLMOpenWorldModelClient:
         self._transport = transport
         # The model an explicit native reference pins, or None when the
         # reference delegates to the CLI host's own default.
+        native = transport.route == _NATIVE_CLI_ROUTE
+        self._native_host = (
+            parse_native_model_ref(transport.model_revision).host if native else None
+        )
         self._native_pin = (
-            _native_pinned_model(transport.model_revision)
-            if transport.route == _NATIVE_CLI_ROUTE
-            else None
+            _native_pinned_model(transport.model_revision) if native else None
         )
         # Seconds of sleep this COMPOSED CLIENT may still spend absorbing
         # provider rate limits. Not reset per call: one composition is one
@@ -2036,9 +2043,10 @@ class _LiteLLMOpenWorldModelClient:
             if (
                 self._native_pin is not None
                 and "served_model" in served
-                and not _served_model_admitted(
-                    configured_bare=self._native_pin,
-                    observed_bare=served["served_model"],
+                and not _native_served_model_admitted(
+                    host=self._native_host,
+                    pin=self._native_pin,
+                    served=served["served_model"],
                 )
             ):
                 raise ValueError(
@@ -2146,6 +2154,33 @@ def _native_pinned_model(reference: str) -> str | None:
     if model is not None and ref.host == "opencode":
         model = model.partition("#")[0]
     return model or None
+
+
+# Claude Code's model aliases: `--model sonnet` runs the CLI's current Sonnet,
+# which reports itself by its full id (`claude-sonnet-4-5-20250929`). No list
+# exists in this codebase to derive it from, so it is spelled here.
+_CLAUDE_CODE_MODEL_ALIASES = frozenset({"sonnet", "opus", "haiku"})
+
+
+def _native_served_model_admitted(*, host: str | None, pin: str, served: str) -> bool:
+    """Decide whether a CLI-reported served model honours an explicit pin.
+
+    A Claude Code alias pin (``sonnet``, ``opus``, ``haiku``; any case) names a
+    FAMILY: it admits ``claude-<alias>-...`` and nothing else. Every other pin,
+    and every other host, uses ``_served_model_admitted``.
+
+    Args:
+        host (str | None): The native host of the configured reference.
+        pin (str): The pinned model id.
+        served (str): The model the CLI reported.
+
+    Returns:
+        bool: Whether ``served`` is the pinned model.
+    """
+    alias = pin.casefold()
+    if host == "claude-code" and alias in _CLAUDE_CODE_MODEL_ALIASES:
+        return served.casefold().startswith(f"claude-{alias}-")
+    return _served_model_admitted(configured_bare=pin, observed_bare=served)
 
 
 def _native_cli_served_stamps(

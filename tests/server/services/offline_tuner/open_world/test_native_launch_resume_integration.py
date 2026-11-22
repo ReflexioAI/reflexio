@@ -1,9 +1,11 @@
-"""A persisted local-cli attempt cannot resume under a changed launch policy.
+"""A persisted local-cli attempt resumes only under the same launch identity.
 
-The native launch policy is part of the composed transport's persisted
-identity, so a process recomposed with a different executable or account
-directory fails the durable attempt-context binding instead of resuming the
-stored invocations under a different CLI.
+The native launch identity (resolved executable, account directories, target)
+is part of the composed transport's persisted identity, so a process
+recomposed with a different executable or account fails the durable
+attempt-context binding instead of resuming the stored invocations under a
+different CLI -- while a restart from another directory or shell that still
+launches the same binary resumes normally.
 """
 
 # Complete provider initialization before importing the third-party library.
@@ -12,11 +14,13 @@ import reflexio.provider_bootstrap  # noqa: F401
 # isort: split
 
 import dataclasses
+import os
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from reflexio.server.llm._native_model_ref import CLI_TIMEOUT_ENV
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.offline_tuner.open_world.analyst import (
     _litellm_transport_identity,
@@ -41,6 +45,7 @@ from reflexio.test_support.open_world_attempt_contract import (
     _attempt,
 )
 from tests.server.services.offline_tuner.open_world.test_served_model_admission import (
+    _claude_on_path,
     _native,
 )
 from tests.server.services.storage.test_open_world_port_contract import (
@@ -85,15 +90,36 @@ def _store(attempt, transport: GroundedTransport) -> RuleEvidenceAnalysisStore:
     return store
 
 
-def test_resume_under_the_same_launch_policy_reuses_the_ledger(
-    port_harness, monkeypatch
-):
+def _launch(monkeypatch, tmp_path) -> str:
+    """Own every launch input: target, HOME, cwd and a `claude` on PATH."""
     model = _native(monkeypatch, "claude-code")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    _claude_on_path(monkeypatch, tmp_path / "bin")
+    return model
+
+
+@pytest.mark.parametrize("change", [None, "cwd", "path-same-binary", "timeout"])
+def test_resume_after_an_inert_environment_change_reuses_the_ledger(
+    port_harness, monkeypatch, tmp_path, change
+):
+    model = _launch(monkeypatch, tmp_path)
     original = _transport(monkeypatch, model, called_at=port_harness.now())
     attempt = _attempt(port_harness, transport=original)
     first = attempt.run()
     assert first.decision.decision == "accept"
 
+    # A restart from another directory or shell that launches the same binary.
+    if change == "cwd":
+        (tmp_path / "elsewhere").mkdir()
+        monkeypatch.chdir(tmp_path / "elsewhere")
+    elif change == "path-same-binary":
+        (tmp_path / "empty").mkdir()
+        monkeypatch.setenv(
+            "PATH", os.pathsep.join([str(tmp_path / "empty"), str(tmp_path / "bin")])
+        )
+    elif change == "timeout":
+        monkeypatch.setenv(CLI_TIMEOUT_ENV, "30")
     restarted = _transport(monkeypatch, model, called_at=attempt.now)
     second = attempt.run(_store(attempt, restarted))
 
@@ -101,15 +127,36 @@ def test_resume_under_the_same_launch_policy_reuses_the_ledger(
     assert restarted.calls == [], "no provider call is repeated"
 
 
-def test_resume_under_a_changed_launch_policy_is_refused(port_harness, monkeypatch):
-    model = _native(monkeypatch, "claude-code")
+@pytest.mark.parametrize(
+    "change",
+    [
+        "cli-path-override",
+        "other-binary-on-path",
+        "claude-config-dir",
+        "home",
+        "target",
+    ],
+)
+def test_resume_under_a_changed_launch_identity_is_refused(
+    port_harness, monkeypatch, tmp_path, change
+):
+    model = _launch(monkeypatch, tmp_path)
     original = _transport(monkeypatch, model, called_at=port_harness.now())
     attempt = _attempt(port_harness, transport=original)
     assert attempt.run().decision.decision == "accept"
     rows = port_harness.attempt_rows(attempt.job_id)
 
-    # The restarted process launches a different CLI executable.
-    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/synthetic/other/claude")
+    # The restarted process would launch a different CLI or account.
+    if change == "cli-path-override":
+        monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/synthetic/other/claude")
+    elif change == "other-binary-on-path":
+        _claude_on_path(monkeypatch, tmp_path / "other-bin")
+    elif change == "claude-config-dir":
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "account-b"))
+    elif change == "home":
+        monkeypatch.setenv("HOME", str(tmp_path / "other-home"))
+    else:
+        model = _native(monkeypatch, "claude-code", "claude-x")
     moved = _transport(monkeypatch, model, called_at=attempt.now)
     assert moved.transport_identity.provider != original.transport_identity.provider
     store = _store(attempt, moved)
@@ -123,7 +170,7 @@ def test_resume_under_a_changed_launch_policy_is_refused(port_harness, monkeypat
     )
 
     assert outcome == AttemptTerminalFailure(reason="infrastructure_failure")
-    assert moved.calls == [], "no provider call under the changed policy"
+    assert moved.calls == [], "no provider call under the changed identity"
     assert port_harness.attempt_rows(attempt.job_id) == rows
     jobs = port_harness.optimization_jobs(attempt.incumbent.user_playbook_id)
     assert [(job.stage, job.terminal_outcome) for job in jobs] == [
