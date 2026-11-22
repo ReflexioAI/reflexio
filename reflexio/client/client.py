@@ -155,7 +155,7 @@ from reflexio.models.api_schema.stall_state_schema import (
     MarkNotifiedResponse,
     StallStateResponse,
 )
-from reflexio.models.config_schema import Config
+from reflexio.models.config_schema import Config, LLMConfig
 
 from .cache import InMemoryCache
 
@@ -1762,10 +1762,14 @@ class ReflexioClient:
             dict: Response containing success status and message
         """
         if isinstance(config, Config):
-            llm = config.llm_config
             validated = Config.model_validate(
                 config.model_dump(mode="python"),
                 extra="ignore",
+            )
+            llm = (
+                config.llm_config
+                if isinstance(config.llm_config, LLMConfig)
+                else validated.llm_config
             )
         else:
             validated = self._convert_to_model(config, Config)

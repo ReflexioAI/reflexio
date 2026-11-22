@@ -86,7 +86,7 @@ def test_client_set_config_does_not_send_response_overlay(mock_session_class) ->
     assert "offline_tuner_config" not in kwargs["json"]
 
 
-@pytest.mark.parametrize("shape", ["raw", "typed", "mixed"])
+@pytest.mark.parametrize("shape", ["raw", "typed", "mixed", "copied"])
 @pytest.mark.parametrize("explicit", [False, True])
 @patch("reflexio.client.client.httpx.Client")
 def test_set_config_distinguishes_evaluator_reset_from_omission(
@@ -95,14 +95,19 @@ def test_set_config_distinguishes_evaluator_reset_from_omission(
     client = ReflexioClient(api_key="test_key", url_endpoint="http://localhost:8000")
     session = mock_session_class.return_value
     session.request.return_value = _json_response({"success": True})
-    llm = {"generation_model_name": "openai/gpt-4o"}
+    llm: dict[str, str | None] = {"generation_model_name": "openai/gpt-4o"}
     if explicit:
         llm["evaluation_model_name"] = None
-    raw = {"storage_config": None, "llm_config": llm}
+    raw: dict[str, object] = {"storage_config": None, "llm_config": llm}
 
     if shape == "mixed":
         raw["llm_config"] = LLMConfig.model_validate(llm)
-    client.set_config(Config.model_validate(raw) if shape == "typed" else raw)
+    if shape == "copied":
+        copied = Config(storage_config=None).model_copy(update={"llm_config": llm})
+        with pytest.warns(UserWarning, match="Pydantic serializer warnings"):
+            client.set_config(copied)
+    else:
+        client.set_config(Config.model_validate(raw) if shape == "typed" else raw)
 
     sent = session.request.call_args.kwargs["json"]["llm_config"]
     assert ("evaluation_model_name" in sent) is explicit
