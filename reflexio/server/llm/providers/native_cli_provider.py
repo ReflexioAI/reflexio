@@ -30,7 +30,7 @@ import shutil
 import subprocess  # noqa: S404 — subprocess is the integration point; inputs are sanitised.
 import tempfile
 import time
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -51,6 +51,7 @@ from reflexio.server.env_utils import env_str
 from reflexio.server.llm._litellm_types import LLMHardTimeoutError
 from reflexio.server.llm._native_cli import (
     native_cli_directory,
+    private_cli_directory,
     remaining_native_time,
     request_timeout_seconds,
     run_native_cli,
@@ -63,6 +64,7 @@ from reflexio.server.llm._native_model_ref import (
     PROVIDER_KEY,
     NativeModelRef,
     authorize_native_model,
+    native_child_path_environment,
     reject_native_selection,
 )
 from reflexio.server.llm.providers.claude_code_stream_parser import (
@@ -160,7 +162,9 @@ def _resolve_cli_override_path(cli_path: str) -> str:
     if not _is_windows():
         return cli_path
     path = Path(cli_path)
-    if path.suffix:
+    # A bare name is looked up on PATH (with these suffixes) by
+    # ``_which_on_path``; probing it here would test the working directory.
+    if path.suffix or path.name == cli_path:
         return cli_path
 
     # Windows package managers expose extensioned shims while users often
@@ -168,7 +172,9 @@ def _resolve_cli_override_path(cli_path: str) -> str:
     for suffix in _windows_cli_suffixes():
         candidate = path.with_suffix(suffix)
         if candidate.exists():
-            return str(candidate)
+            # pathlib drops a leading `.\`, so `.\tool` would come back as the
+            # bare `tool.exe` and be looked up on PATH instead; anchor it.
+            return str(candidate.absolute())
     return cli_path
 
 
@@ -197,16 +203,80 @@ def _resolve_cli_path(host: str) -> str | None:
                 )
             return None
     if override:
-        candidate = Path(_resolve_cli_override_path(override))
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
+        selected = _anchored_override(_resolve_cli_override_path(override))
+        if selected is not None:
+            return selected
         _LOGGER.warning(
             "%s is not an executable file; falling back to PATH",
             _ENV_CLI_PATH,
         )
-    if host == _HOST_CODEX:
-        return shutil.which("codex")
-    return shutil.which("claude")
+    return _which_on_path("codex" if host == _HOST_CODEX else "claude")
+
+
+def _anchored_executable(cli_path: str) -> str:
+    """Anchor a relative executable path to the caller's cwd before launch.
+
+    Native CLIs run from a private working directory, so a relative path with
+    a directory component (an explicit constructor path such as
+    ``./bin/claude``) would otherwise be looked up THERE. A bare name stays a
+    PATH lookup, exactly as before.
+    """
+    if Path(cli_path).name == cli_path:
+        return cli_path
+    return str(Path(cli_path).absolute())
+
+
+def _absolute(path: str | None) -> str | None:
+    """Anchor a resolved executable without following symlinks."""
+    return str(Path(path).absolute()) if path else None
+
+
+def _which_on_path(name: str) -> str | None:
+    """Look a bare executable name up on PATH only, never the working directory.
+
+    POSIX ``shutil.which`` searches the given PATH entries. On Windows it
+    also searches the current directory first (implicitly, even with an
+    explicit ``path=``), so there each PATH entry is probed by exact file
+    name, trying only the PATHEXT-derived shim suffixes for an extensionless
+    name (as ``shutil.which`` does there).
+    An entry that is itself relative is part of PATH and is anchored, as
+    before; an EMPTY entry (e.g. a trailing separator) is an implicit
+    working-directory search on every platform and is skipped.
+    """
+    if not _is_windows():
+        entries = [entry for entry in os.get_exec_path() if entry.strip()]
+        # An empty `path=` searches nothing (``shutil.which`` returns None).
+        return _absolute(shutil.which(name, path=os.pathsep.join(entries)))
+    names = (
+        (name,)
+        if Path(name).suffix
+        else tuple(name + suffix for suffix in _windows_cli_suffixes())
+    )
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory.strip():
+            continue
+        for candidate_name in names:
+            candidate = Path(directory, candidate_name)
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate.absolute())
+    return None
+
+
+def _anchored_override(override: str) -> str | None:
+    """Resolve an override to the ONE absolute path that will be launched.
+
+    A bare name is what ``subprocess`` would look up on PATH, so it is looked
+    up on PATH here too, never as a file in the working directory; a path is
+    anchored against the working directory. The result is what dispatch runs
+    AND what the native launch identity fingerprints, so the two cannot name
+    different files.
+    """
+    if Path(override).name == override:
+        return _which_on_path(override)
+    candidate = Path(override)
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate.absolute())
+    return None
 
 
 def _codex_migration_error(host: str, explicit_path: str | None = None) -> str | None:
@@ -223,10 +293,10 @@ def _codex_migration_error(host: str, explicit_path: str | None = None) -> str |
     # canonical env override also dominated the old key; preserve that choice.
     if explicit_path:
         return None
-    if canonical:
-        candidate = Path(_resolve_cli_override_path(canonical))
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return None
+    # Judge the canonical override with the very resolver launch uses: a bare
+    # name found only on PATH dominates, a working-directory file does not.
+    if canonical and _anchored_override(_resolve_cli_override_path(canonical)):
+        return None
     return (
         f"{_RETIRED_CODEX_PATH} no longer selects an executable. Preserve the "
         "intended path in CLAUDE_SMART_CLI_PATH before removing the old assignment, "
@@ -480,7 +550,7 @@ def _run_claude_stream(
         _is_windows() and len(system_prompt) > _WINDOWS_ARGV_SYSTEM_PROMPT_LIMIT
     )
     cmd = [
-        cli_path,
+        _anchored_executable(cli_path),
         "-p",
         "--output-format",
         "stream-json",
@@ -500,7 +570,8 @@ def _run_claude_stream(
     # and skip publishing — otherwise extractor system prompts get
     # re-published as user interactions and contaminate the corpus.
     # The host CLI owns retries; this invocation retains its SDK deadline.
-    env = os.environ.copy()
+    # Path variables reach the child anchored here, not in its private cwd.
+    env = {**os.environ, **native_child_path_environment()}
     if _compat_host(cli_path) == _HOST_OPENCODE:
         # The known wrapper otherwise prefers shared learning hints to --model.
         # Bind only this child to the native request; independently invoked
@@ -511,17 +582,22 @@ def _run_claude_stream(
     env["CLAUDE_SMART_INTERNAL"] = "1"
 
     try:
-        proc = run_native_cli(  # noqa: S603 — cmd is constructed from validated parts.
-            cmd,
-            input=stdin_text,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace" if _is_windows() else "strict",
-            timeout=timeout_seconds,
-            check=False,
-            env=env,
-        )
+        # A private empty cwd: the daemon's project `.claude/settings.json`
+        # must never select this call's model or endpoint.
+        with private_cli_directory("claude-") as workdir:
+            env["PWD"] = str(workdir)
+            proc = run_native_cli(  # noqa: S603 — cmd is constructed from validated parts.
+                cmd,
+                input=stdin_text,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace" if _is_windows() else "strict",
+                timeout=timeout_seconds,
+                check=False,
+                cwd=str(workdir),
+                env=env,
+            )
     except subprocess.TimeoutExpired as exc:
         raise ClaudeCodeCLITimeoutError(
             f"claude CLI timed out after {timeout_seconds}s"
@@ -552,7 +628,7 @@ def _run_codex_stream(
         remaining_native_time(deadline)
         output_path = _temporary_output_path()
         cmd = [
-            codex_path,
+            _anchored_executable(codex_path),
             "exec",
             "--sandbox",
             "read-only",
@@ -566,23 +642,33 @@ def _run_codex_stream(
         if model:
             cmd.extend(["--model", model])
         cmd.append("-")
-        env = os.environ.copy()
+        # Path variables reach the child anchored here, not in its private cwd.
+        env = {**os.environ, **native_child_path_environment()}
         env["CLAUDE_SMART_HOST"] = _HOST_CODEX
         env["CLAUDE_SMART_INTERNAL"] = "1"
         if optimizer:
             env["CLAUDE_CODE_ENTRYPOINT"] = "optimizer"
         prompt = _codex_prompt(prompt=dialogue, system_prompt=system_prompt)
-        proc = run_native_cli(  # noqa: S603 — fixed protocol plus selected executable/model.
-            cmd,
-            input=prompt,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace" if _is_windows() else "strict",
-            timeout=remaining_native_time(deadline),
-            check=False,
-            env=env,
-        )
+        # A generation call runs from a private empty cwd, so the daemon's
+        # project `.codex/config.toml` never selects its model or endpoint.
+        # The optimizer assistant keeps its existing working-directory contract.
+        with (
+            nullcontext(None) if optimizer else private_cli_directory("codex-")
+        ) as workdir:
+            if workdir is not None:
+                env["PWD"] = str(workdir)
+            proc = run_native_cli(  # noqa: S603 — fixed protocol plus selected executable/model.
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace" if _is_windows() else "strict",
+                timeout=remaining_native_time(deadline),
+                check=False,
+                cwd=None if workdir is None else str(workdir),
+                env=env,
+            )
         try:
             terminal_text = output_path.read_text(encoding="utf-8").strip()
         except OSError:

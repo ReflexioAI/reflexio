@@ -351,3 +351,9 @@ class StructuredOutputParseError(Exception):
 
 class LLMHardTimeoutError(TimeoutError):
     """Raised when an LLM call exceeds the client-side wall-clock timeout."""
+
+
+#: Invoked with the observed provenance of EVERY physical provider response,
+#: before that response is parsed or can trigger a re-issue or corrective turn.
+#: Raising ``ProviderRequestGuardError`` ends the walk without another dispatch.
+ProviderResponseGuard = Callable[[ModelProvenance], None]

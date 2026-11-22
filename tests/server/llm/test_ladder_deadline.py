@@ -350,3 +350,45 @@ def test_preparation_preserves_shorter_provider_timeout(monkeypatch) -> None:
     assert outcome == "from-fallback"
     assert calls[-1]["timeout"] == 1
     assert calls[-1]["hard"] == 1
+
+
+def test_a_late_refused_response_stops_the_walk_before_any_fallback(monkeypatch):
+    """The response guard sees a late answer before its deadline is enforced.
+
+    Otherwise the deadline error would advance the walk to the fallback rung and
+    the refused response's provenance would never be inspected.
+    """
+    from reflexio.server.llm._litellm_types import ProviderRequestGuardError
+
+    clock = _Clock()
+    monkeypatch.setattr(
+        ttg,
+        "time",
+        SimpleNamespace(
+            monotonic=clock.monotonic,
+            perf_counter=real_time.perf_counter,
+            sleep=real_time.sleep,
+            time=real_time.time,
+        ),
+    )
+    client = LiteLLMClient(
+        LiteLLMConfig(model="primary/a", timeout=30, fallback_models=["fallback/b"])
+    )
+    models: list[str] = []
+
+    def _fake(params, hard_timeout):
+        models.append(params["model"])
+        clock.now += hard_timeout + 1  # answers after its attempt deadline
+        return _response("late")
+
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", _fake)
+    seen: list[Any] = []
+
+    def _refuse(provenance):
+        seen.append(provenance)
+        raise ProviderRequestGuardError("served model refused")
+
+    with pytest.raises(ProviderRequestGuardError, match="served model refused"):
+        client.generate_chat_response(_MESSAGES, provider_response_guard=_refuse)
+    assert len(seen) == 1
+    assert models == ["primary/a"]

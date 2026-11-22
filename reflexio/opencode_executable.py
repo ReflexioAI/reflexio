@@ -54,7 +54,13 @@ def resolve_executable(cli_path: str) -> Path:
     """Resolve only the selected path, preserving a bridge symlink's basename."""
     path = Path(cli_path)
     candidates = (
-        (Path(directory) / path for directory in os.get_exec_path())
+        # An empty PATH entry (e.g. a trailing separator) would anchor to the
+        # working directory; a bare name is searched on real entries only.
+        (
+            Path(directory) / path
+            for directory in os.get_exec_path()
+            if directory.strip()
+        )
         if path.name == cli_path
         else (path,)
     )

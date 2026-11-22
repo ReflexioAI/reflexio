@@ -494,6 +494,13 @@ def _implementation_helper_identities() -> dict[str, dict[str, str]]:
         "native_cli.native_cli_worker": native_cli_module.native_cli_worker,
         "worker.native_cli_worker": worker_module.native_cli_worker,
         "native_cli.native_cli_directory": native_cli_module.native_cli_directory,
+        "native_cli.make_private_cli_directory": (
+            native_cli_module.make_private_cli_directory
+        ),
+        "native_cli.release_private_cli_directory": (
+            native_cli_module.release_private_cli_directory
+        ),
+        "native_cli.private_cli_directory": native_cli_module.private_cli_directory,
         "native_cli.remaining_native_time": native_cli_module.remaining_native_time,
         "native_cli._publish": native_cli_module._publish,
         "native_cli.NativeCLIContext": native_cli_module.NativeCLIContext,

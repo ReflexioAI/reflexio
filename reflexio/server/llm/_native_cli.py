@@ -12,13 +12,15 @@ import logging
 import math
 import os
 import pickle
+import shutil
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -72,6 +74,40 @@ def native_cli_worker(
 def native_cli_directory() -> str | None:
     """Keep provider output files alive after their isolated worker is killed."""
     return _worker_context.context.directory if _worker_context else None
+
+
+def make_private_cli_directory(prefix: str) -> Path:
+    """Create a fresh, empty working directory for one native CLI call.
+
+    A native CLI loads project configuration from its working directory
+    (Codex: `.codex/config.toml` from cwd up to the nearest `.git`; Claude
+    Code: `.claude/settings*.json`; OpenCode: `.opencode/`), so a call never
+    inherits the daemon's directory. Delegated calls create it inside the
+    parent-owned native scratch directory, which outlives a killed worker;
+    otherwise it lives in the system temporary directory. Neither is a
+    project directory, so no project configuration applies.
+    """
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=native_cli_directory())).resolve()
+
+
+def release_private_cli_directory(directory: Path) -> None:
+    """Remove a call's directory unless its parent owner retires it later.
+
+    Worker death cannot delete a running delegated CLI's cwd, so a delegated
+    directory belongs to the parent until its native retirement receipt.
+    """
+    if native_cli_directory() is None:
+        shutil.rmtree(directory)
+
+
+@contextmanager
+def private_cli_directory(prefix: str) -> Iterator[Path]:
+    """Own one native call's private working directory for its lifetime."""
+    directory = make_private_cli_directory(prefix)
+    try:
+        yield directory
+    finally:
+        release_private_cli_directory(directory)
 
 
 def request_timeout_seconds(value: Any) -> float:

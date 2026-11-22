@@ -59,6 +59,7 @@ from reflexio.server.llm._litellm_types import (
     ModelProvenance,
     ProviderRequestGuard,
     ProviderRequestGuardError,
+    ProviderResponseGuard,
     StructuredOutputParseError,
     StructuredOutputRepairError,
     ToolCallingChatResponse,
@@ -548,6 +549,11 @@ def _log_safe_validation_errors(exc: StructuredOutputParseError, schema: Any) ->
     return ",".join(rendered)
 
 
+def _admit_any_response(provenance: ModelProvenance) -> None:
+    """The default response guard: every response is admitted."""
+    del provenance
+
+
 def _nonempty_string(value: Any) -> str | None:
     """Return trustworthy string metadata without coercing mocks or objects."""
     if not isinstance(value, str):
@@ -931,6 +937,7 @@ class TextGenerationMixin:
         fallback_models: list[str] | None = None,
         structured_output_validator: StructuredOutputValidator | None = None,
         provider_request_guard: ProviderRequestGuard | None = None,
+        provider_response_guard: ProviderResponseGuard | None = None,
         caller_reports_repair_failure: bool = False,
         **kwargs: Any,
     ) -> str | BaseModel | ToolCallingChatResponse:
@@ -958,6 +965,9 @@ class TextGenerationMixin:
                 repair ladder for parse, blank, and semantic failures.
             provider_request_guard: Optional internal guard invoked on the exact
                 built params immediately before each provider attempt.
+            provider_response_guard: Optional internal guard invoked on the
+                observed provenance of each provider response, before it is
+                parsed or can trigger a re-issue or corrective turn.
             caller_reports_repair_failure: Set by a caller that salvages
                 ``StructuredOutputRepairError``. The client then leaves the
                 terminal ``llm.failures`` count to the caller, which records it
@@ -987,6 +997,7 @@ class TextGenerationMixin:
             fallback_models=fallback_models,
             structured_output_validator=structured_output_validator,
             provider_request_guard=provider_request_guard,
+            provider_response_guard=provider_response_guard,
             caller_reports_repair_failure=caller_reports_repair_failure,
             **kwargs,
         ).value
@@ -1003,6 +1014,7 @@ class TextGenerationMixin:
         fallback_models: list[str] | None = None,
         structured_output_validator: StructuredOutputValidator | None = None,
         provider_request_guard: ProviderRequestGuard | None = None,
+        provider_response_guard: ProviderResponseGuard | None = None,
         caller_reports_repair_failure: bool = False,
         **kwargs: Any,
     ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse]:
@@ -1046,6 +1058,8 @@ class TextGenerationMixin:
             kwargs["structured_output_validator"] = structured_output_validator
         if provider_request_guard is not None:
             kwargs["provider_request_guard"] = provider_request_guard
+        if provider_response_guard is not None:
+            kwargs["provider_response_guard"] = provider_response_guard
         if caller_reports_repair_failure:
             kwargs["caller_reports_repair_failure"] = caller_reports_repair_failure
 
@@ -1717,6 +1731,9 @@ class TextGenerationMixin:
         provider_request_guard: ProviderRequestGuard | None = kwargs.pop(
             "provider_request_guard", None
         )
+        provider_response_guard: ProviderResponseGuard = (
+            kwargs.pop("provider_response_guard", None) or _admit_any_response
+        )
         redact_provider_errors = kwargs.pop("redact_provider_errors", False)
         if redact_provider_errors and (
             kwargs.get("parse_structured_output") is not False
@@ -1972,8 +1989,13 @@ class TextGenerationMixin:
                 # Nothing here needs the parsed body: `_log_token_usage` reads
                 # only `response.usage`, and returns early when it is absent.
                 self._log_token_usage(turn_params, response)
-                check_turn_deadline()
                 provenance = self._build_model_provenance(response)
+                # Every physical response, before it is parsed and before the
+                # deadline check: a response the caller refuses must not be
+                # able to trigger a re-issue, a corrective turn, or (arriving
+                # late) a fallback rung whose answer would then be accepted.
+                provider_response_guard(provenance)
+                check_turn_deadline()
                 message = response.choices[0].message  # type: ignore[reportAttributeAccessIssue]
                 content = message.content
                 finish_reason = response.choices[0].finish_reason  # type: ignore[reportAttributeAccessIssue]

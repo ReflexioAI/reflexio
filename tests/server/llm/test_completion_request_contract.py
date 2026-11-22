@@ -9,6 +9,7 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue import SimpleQueue
 from threading import Thread
+from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
@@ -157,6 +158,12 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch, capsys):
     for target in (utils, litellm_logging):
         monkeypatch.setattr(target, "add_breadcrumb", breadcrumb)
         monkeypatch.setattr(target, "capture_exception", None, raising=False)
+    # The in-process worker closes LiteLLM's payload print path; restore it.
+    monkeypatch.setattr(
+        litellm_logging,
+        "emit_standard_logging_payload",
+        litellm_logging.emit_standard_logging_payload,
+    )
 
     response_reasons = []
     wire_models = []
@@ -207,7 +214,10 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch, capsys):
         queue = SimpleQueue()
         previous_logging = logging.root.manager.disable
         try:
-            _litellm_completion_worker(params, queue, time.monotonic() + timeout)
+            # A same-process stand-in for the multiprocessing result queue.
+            _litellm_completion_worker(
+                params, cast(Any, queue), time.monotonic() + timeout
+            )
         finally:
             logging.disable(previous_logging)
         status, value = queue.get_nowait()
@@ -287,6 +297,13 @@ def test_private_request_skips_litellm_failure_callback(monkeypatch, capsys):
                 assert not cache.mock_calls
                 assert wire_models[-1] == "MiniMax-M3"
             assert seen == []
+            # LiteLLM emits the payload later, from a background thread, on
+            # the flag's value THEN: emitting with the flag re-armed (as the
+            # loop does for the next request) must still print nothing.
+            monkeypatch.setenv("LITELLM_PRINT_STANDARD_LOGGING_PAYLOAD", "1")
+            litellm_logging.emit_standard_logging_payload(
+                cast(Any, {"messages": messages})
+            )
             assert "synthetic evidence" not in capsys.readouterr().out
 
             spawned_client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
