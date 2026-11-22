@@ -21,6 +21,12 @@ from reflexio.server.llm._native_model_ref import (
     CLI_TIMEOUT_ENV,
     ENV_NATIVE_MODEL,
 )
+from reflexio.server.llm._served_model_identity import (
+    _is_provider_date_stamp,
+)
+from reflexio.server.llm._served_model_identity import (
+    served_model_admitted as _served_model_admitted,
+)
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMConfig,
@@ -28,12 +34,10 @@ from reflexio.server.llm.litellm_client import (
 )
 from reflexio.server.services.offline_tuner.open_world.analyst import (
     ChatMessage,
-    _is_provider_date_stamp,
     _litellm_transport_identity,
     _LiteLLMOpenWorldModelClient,
     _native_cli_served_stamps,
     _native_pinned_model,
-    _served_model_admitted,
 )
 from tests.server.llm.test_native_launch_identity import (
     own_launch_environment,
@@ -630,8 +634,8 @@ def test_claude_code_alias_pin_matches_its_family(monkeypatch, pin, stamp, admit
 
 
 def test_alias_handling_is_claude_code_only(monkeypatch):
-    from reflexio.server.services.offline_tuner.open_world.analyst import (
-        _native_served_model_admitted,
+    from reflexio.server.llm._served_model_identity import (
+        native_served_model_admitted as _native_served_model_admitted,
     )
 
     own_launch_environment(monkeypatch)
@@ -771,8 +775,8 @@ def test_an_admitted_invalid_answer_still_earns_its_retry(monkeypatch):
     ],
 )
 def test_claude_code_documented_aliases(monkeypatch, host, pin, stamp, admitted):
-    from reflexio.server.services.offline_tuner.open_world.analyst import (
-        _native_served_model_admitted,
+    from reflexio.server.llm._served_model_identity import (
+        native_served_model_admitted as _native_served_model_admitted,
     )
 
     own_launch_environment(monkeypatch)
@@ -800,8 +804,8 @@ def test_claude_code_documented_aliases(monkeypatch, host, pin, stamp, admitted)
 def test_claude_code_alias_admits_cloud_qualified_ids(
     monkeypatch, pin, stamp, admitted
 ):
-    from reflexio.server.services.offline_tuner.open_world.analyst import (
-        _native_served_model_admitted,
+    from reflexio.server.llm._served_model_identity import (
+        native_served_model_admitted as _native_served_model_admitted,
     )
 
     own_launch_environment(monkeypatch)
@@ -841,8 +845,8 @@ def test_claude_code_alias_admits_cloud_qualified_ids(
 def test_a_remapped_alias_admits_exactly_the_configured_id(
     monkeypatch, family, pin, configured, stamp, admitted
 ):
-    from reflexio.server.services.offline_tuner.open_world.analyst import (
-        _native_served_model_admitted,
+    from reflexio.server.llm._served_model_identity import (
+        native_served_model_admitted as _native_served_model_admitted,
     )
 
     own_launch_environment(monkeypatch)
@@ -854,8 +858,8 @@ def test_a_remapped_alias_admits_exactly_the_configured_id(
 
 
 def test_a_blank_remap_keeps_the_family_rule(monkeypatch):
-    from reflexio.server.services.offline_tuner.open_world.analyst import (
-        _native_served_model_admitted,
+    from reflexio.server.llm._served_model_identity import (
+        native_served_model_admitted as _native_served_model_admitted,
     )
 
     own_launch_environment(monkeypatch)
