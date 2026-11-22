@@ -557,3 +557,86 @@ def test_existing_incompatible_authority_is_never_repaired_or_reopened(tmp_path,
             == encoded
         )
     assert business_snapshot(path) == before
+
+
+def test_window_cursor_index_installation_belongs_to_open_dataset(tmp_path):
+    from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+    from reflexio.server.services.storage.sqlite_storage._extraction_stream import (
+        CURSOR_WINDOW_INDEX_DDL,
+        CURSOR_WINDOW_INDEX_NAME,
+    )
+
+    def stored_index(connection):
+        row = connection.execute(
+            "SELECT sql FROM sqlite_schema WHERE type='index' AND name=?",
+            (CURSOR_WINDOW_INDEX_NAME,),
+        ).fetchone()
+        return None if row is None else row[0]
+
+    path = retained(tmp_path)
+    business_before = business_snapshot(path)
+    expected = CURSOR_WINDOW_INDEX_DDL.replace(" IF NOT EXISTS", "", 1)
+    prepared = SQLiteStorage(org_id="historical_http", db_path=str(path))
+    with closing(prepared.conn) as connection:
+        assert stored_index(connection) is None
+    qualified = owner.upgrade_existing_sqlite_dataset(path)
+    assert qualified.established
+    with closing(sqlite3.connect(path)) as connection:
+        assert stored_index(connection) is None
+    for _ in range(2):
+        storage = SQLiteStorage(org_id="historical_http", db_path=str(path))
+        with closing(storage.conn) as connection:
+            assert stored_index(connection) == expected
+    assert business_snapshot(path) == business_before
+    assert owner.upgrade_existing_sqlite_dataset(path).authority == qualified.authority
+
+    new_path = tmp_path / "new.sqlite"
+    fresh = SQLiteStorage(org_id="fresh-index", db_path=str(new_path))
+    with closing(fresh.conn) as connection:
+        assert stored_index(connection) == expected
+
+
+def test_known_preupgrade_index_is_included_in_catalog_provenance(tmp_path):
+    from reflexio.server.services.storage.sqlite_storage._extraction_stream import (
+        CURSOR_WINDOW_INDEX_DDL,
+    )
+
+    path = retained(tmp_path)
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute(CURSOR_WINDOW_INDEX_DDL)
+        catalog = owner._catalog(connection, len(CONTRACT["catalog"]) + 3)
+    result = owner.upgrade_existing_sqlite_dataset(path)
+    assert result.provenance is not None
+    assert (
+        result.provenance["source_catalog_sha256"]
+        == hashlib.sha256(
+            json.dumps(catalog, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "CREATE INDEX extraction_cursors_window_lookup ON extraction_cursors(user_id)",
+        "CREATE VIEW zz_unqualified_catalog_object AS SELECT 1",
+    ],
+)
+def test_extra_catalog_objects_refused_with_existing_authority(tmp_path, mutation):
+    from reflexio.server.services.storage.sqlite_storage._extraction_stream import (
+        CURSOR_WINDOW_INDEX_DDL,
+    )
+
+    path = retained(tmp_path)
+    owner.upgrade_existing_sqlite_dataset(path)
+    with closing(sqlite3.connect(path)) as connection, connection:
+        if mutation.startswith("CREATE VIEW"):
+            connection.execute(CURSOR_WINDOW_INDEX_DDL)
+        connection.execute(mutation)
+    before = path.read_bytes()
+    with pytest.raises(
+        LearningTransitionBlockedError, match="unsupported historical schema"
+    ):
+        owner.upgrade_existing_sqlite_dataset(path)
+    assert path.read_bytes() == before
