@@ -22,6 +22,7 @@ from pydantic import ValidationError
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.llm import ProviderRequestGuardError
 from reflexio.server.llm._azure_transport import normalize_azure_v1_endpoints
+from reflexio.server.llm._native_model_ref import PROVIDER_KEY as _NATIVE_CLI_ROUTE
 from reflexio.server.llm.failure import (
     OutageWait,
     Transient,
@@ -1147,10 +1148,18 @@ _DEFAULT_OPENAI_ROUTE = "openai-default"
 # own next evidence pass, which revises a published playbook (the 14-day
 # observation window that once auto-restored one is deleted).
 #
-# The native `local-cli/<host>[/model]` route is NOT admitted by this rule and
-# still fails the echo checks: its provenance carries only what the CLI itself
-# reports (`reflexio_served_provider` / `reflexio_served_model`), which for
-# most hosts is absent and is never the composed `local-cli` route label.
+# The native `local-cli/<host>[/model]` route (`_NATIVE_CLI_ROUTE`) has its own
+# rule: whatever the CLI reports is admitted, including nothing. There the
+# CLI, not Reflexio, picks the concrete model, and its provenance carries only
+# what the CLI host itself stamps (`reflexio_served_provider` /
+# `reflexio_served_model`). The claude-code host stamps an OPTIONAL provider
+# label from an open set (whatever backend the CLI talks to) and usually a
+# model; codex and opencode stamp neither. None of that can ever echo the
+# composed `local-cli` route, so an echo check there could only refuse every
+# call. Blank stamps count as missing; present stamps are kept as diagnostic
+# data in `usage_json`, and the recorded identity is still the configured id.
+# Every other route keeps the strict echo checks, including refusing a
+# response with no observed provider or model.
 
 
 _PROVIDER_DATE_STAMP = re.compile(
@@ -1940,6 +1949,59 @@ class _LiteLLMOpenWorldModelClient:
             raise TypeError("provider returned the wrong structured output type")
         observed_provider = result.provenance.provider
         observed_model = result.provenance.model_name
+        if self._transport.route == _NATIVE_CLI_ROUTE:
+            served = _native_cli_served_stamps(
+                provider=observed_provider, model=observed_model
+            )
+        else:
+            served = self._admit_served_model(
+                observed_provider=observed_provider, observed_model=observed_model
+            )
+        raw_usage = result.usage
+        final_usage = _final_response_usage(raw_usage)
+        return ObservedStructuredCompletion(
+            value=cast(StrictStructuredOutput, result.value),
+            observed_provider=self._transport.provider,
+            observed_model_revision=model_revision,
+            called_at=started_at,
+            latency_ms=max(0, int((time.perf_counter() - started) * 1000)),
+            usage_json=(
+                canonical_json_bytes(
+                    {
+                        "scope": "final successful response plus observed-response lower bounds; unavailable usage remains unknown",
+                        "final_response": final_usage,
+                        # Diagnostic, not identity: what actually answered.
+                        # `observed_model_revision` stays the configured id.
+                        **served,
+                        "usage_observed_responses": usage_responses,
+                        "observed_response_token_lower_bounds": {
+                            **dataclasses.asdict(usage),
+                            "total_tokens": usage.prompt_tokens
+                            + usage.completion_tokens,
+                        },
+                    }
+                ).decode()
+                if usage_responses or raw_usage is not None or served
+                else None
+            ),
+        )
+
+    def _admit_served_model(
+        self, *, observed_provider: str | None, observed_model: str | None
+    ) -> dict[str, str]:
+        """Apply the strict echo checks of every non-native route.
+
+        Args:
+            observed_provider (str | None): Provider label the response carried.
+            observed_model (str | None): Model the response says served it.
+
+        Returns:
+            dict[str, str]: ``{"served_model": <bare served model>}``.
+
+        Raises:
+            ValueError: When provenance is missing, the provider label does not
+                match the composed route, or a different model served the call.
+        """
         if observed_provider is None or observed_model is None:
             raise ValueError("provider did not return immutable observed provenance")
         # Two separate namespaces meet here. `observed_provider` is the
@@ -1972,37 +2034,28 @@ class _LiteLLMOpenWorldModelClient:
             raise ValueError(
                 "provider served a different model than the qualified revision"
             )
-        raw_usage = result.usage
-        final_usage = _final_response_usage(raw_usage)
-        return ObservedStructuredCompletion(
-            value=cast(StrictStructuredOutput, result.value),
-            observed_provider=self._transport.provider,
-            observed_model_revision=model_revision,
-            called_at=started_at,
-            latency_ms=max(0, int((time.perf_counter() - started) * 1000)),
-            usage_json=(
-                canonical_json_bytes(
-                    {
-                        "scope": "final successful response plus observed-response lower bounds; unavailable usage remains unknown",
-                        "final_response": final_usage,
-                        # Diagnostic, not identity: the concrete model that
-                        # answered. `observed_model_revision` stays the
-                        # configured id.
-                        "served_model": served_model,
-                        "usage_observed_responses": usage_responses,
-                        "observed_response_token_lower_bounds": {
-                            **dataclasses.asdict(usage),
-                            "total_tokens": usage.prompt_tokens
-                            + usage.completion_tokens,
-                        },
-                    }
-                ).decode()
-                if usage_responses
-                or raw_usage is not None
-                or served_model != self._transport.bare_model_revision
-                else None
-            ),
-        )
+        return {"served_model": served_model}
+
+
+def _native_cli_served_stamps(
+    *, provider: str | None, model: str | None
+) -> dict[str, str]:
+    """Keep whatever a native CLI host reported, treating blanks as missing.
+
+    Args:
+        provider (str | None): The CLI-reported served provider, if any.
+        model (str | None): The CLI-reported served model, if any.
+
+    Returns:
+        dict[str, str]: ``served_provider`` / ``served_model`` for each stamp
+            that is present and non-blank.
+    """
+    stamps = {"served_provider": provider, "served_model": model}
+    return {
+        key: value.strip()
+        for key, value in stamps.items()
+        if value is not None and value.strip()
+    }
 
 
 def _final_response_usage(raw_usage: Any) -> dict[str, int | None]:

@@ -15,6 +15,7 @@ from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.offline_tuner.open_world.analyst import (
     ChatMessage,
     _LiteLLMOpenWorldModelClient,
+    _native_cli_served_stamps,
     _served_model_admitted,
 )
 
@@ -65,10 +66,19 @@ class _Answer(StrictStructuredOutput):
     answer: str
 
 
-def _complete(monkeypatch, *, model: str, served: str):
+def _complete(
+    monkeypatch,
+    *,
+    model: str,
+    served: str,
+    hidden: dict[str, str] | None = None,
+    with_usage: bool = True,
+):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-synthetic-test")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-synthetic-test")
     route = model.split("/", 1)[0] if "/" in model else "openai"
+    if hidden is None:
+        hidden = {"custom_llm_provider": route}
 
     def dispatch(self, params, deadline):
         del self, params, deadline
@@ -82,7 +92,9 @@ def _complete(monkeypatch, *, model: str, served: str):
             ],
             usage={"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
         )
-        response._hidden_params = {"custom_llm_provider": route}
+        response._hidden_params = dict(hidden)
+        if not with_usage:
+            setattr(response, "usage", None)  # noqa: B010 - untyped on ModelResponse
         return response
 
     # The lowest dispatch seam: the reviewed generate/completion methods that
@@ -129,3 +141,105 @@ def test_alias_served_as_snapshot_records_configured_identity(
 def test_substituted_model_is_refused_through_the_transport(monkeypatch, model, served):
     with pytest.raises(ValueError, match="served a different model"):
         _complete(monkeypatch, model=model, served=served)
+
+
+def test_non_native_route_without_provider_stamp_still_raises(monkeypatch):
+    with pytest.raises(ValueError, match="immutable observed provenance"):
+        _complete(monkeypatch, model="gpt-4o", served="gpt-4o", hidden={})
+
+
+def test_non_native_route_with_foreign_provider_still_raises(monkeypatch):
+    with pytest.raises(ValueError, match="does not match the composed"):
+        _complete(
+            monkeypatch,
+            model="gpt-4o",
+            served="gpt-4o",
+            hidden={"custom_llm_provider": "minimax"},
+        )
+
+
+def _native(monkeypatch, host: str) -> str:
+    model = f"local-cli/{host}"
+    # The operator-configured native target gate stays in force; satisfy it.
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", model)
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_CLI_MODEL", raising=False)
+    return model
+
+
+@pytest.mark.parametrize(
+    ("host", "stamps", "expected"),
+    [
+        # claude-code with both stamps: a bridge backend's own labels.
+        (
+            "claude-code",
+            {"reflexio_served_provider": "minimax", "reflexio_served_model": "M-3"},
+            {"served_provider": "minimax", "served_model": "M-3"},
+        ),
+        # claude-code with a model only (no provider field in the stream).
+        (
+            "claude-code",
+            {"reflexio_served_model": "claude-x-20250101"},
+            {"served_model": "claude-x-20250101"},
+        ),
+        # codex and opencode stamp nothing.
+        ("codex", {}, {}),
+        ("opencode", {}, {}),
+        # Blank stamps are missing, not values.
+        (
+            "claude-code",
+            {"reflexio_served_provider": "  ", "reflexio_served_model": ""},
+            {},
+        ),
+    ],
+)
+def test_native_cli_admits_whatever_the_cli_reports(
+    monkeypatch, host, stamps, expected
+):
+    model = _native(monkeypatch, host)
+    completion = _complete(
+        monkeypatch,
+        model=model,
+        # Native routes echo the requested route here; it is never trusted.
+        served=model,
+        hidden={"reflexio_provider": "local-cli", **stamps},
+    )
+    assert completion.observed_model_revision == model
+    assert completion.usage_json is not None
+    usage = json.loads(completion.usage_json)
+    assert {
+        key: usage[key] for key in ("served_provider", "served_model") if key in usage
+    } == expected
+
+
+def test_native_cli_stamps_treat_blank_as_missing():
+    assert _native_cli_served_stamps(provider=" minimax ", model=" M-3 ") == {
+        "served_provider": "minimax",
+        "served_model": "M-3",
+    }
+    assert _native_cli_served_stamps(provider="  ", model="") == {}
+    assert _native_cli_served_stamps(provider=None, model=None) == {}
+    assert _native_cli_served_stamps(provider=None, model="M-3") == {
+        "served_model": "M-3"
+    }
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_served_diagnostics_survive_a_response_without_usage(monkeypatch, native):
+    if native:
+        model = _native(monkeypatch, "claude-code")
+        hidden = {"reflexio_provider": "local-cli", "reflexio_served_model": "M-3"}
+        expected = "M-3"
+    else:
+        model, hidden, expected = "gpt-4o", None, "gpt-4o-2024-08-06"
+    completion = _complete(
+        monkeypatch,
+        model=model,
+        served=expected if not native else model,
+        hidden=hidden,
+        with_usage=False,
+    )
+    assert completion.usage_json is not None
+    usage = json.loads(completion.usage_json)
+    assert usage["served_model"] == expected
+    assert usage["usage_observed_responses"] == 0
