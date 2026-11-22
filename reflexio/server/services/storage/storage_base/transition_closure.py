@@ -11,8 +11,9 @@ No connection, commit, execution, callback or user-supplied proof is introduced.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
+from itertools import chain
 from typing import Any
 
 from reflexio.server.work_scope import current_project_id
@@ -33,6 +34,9 @@ class ProjectTransitionClosure:
 
 
 _MAX_PAGES = 1000
+# Four bind parameters per check plus the shared scope and clock.
+_COVERAGE_BATCH_SIZE = 100
+_CoverageCheck = tuple[str, str, int, float]
 
 
 class _ObservationRefusedError(Exception):
@@ -102,22 +106,24 @@ def _covered(
     db: StreamSQL,
     org: str,
     project: str,
-    user: str,
-    kind: str,
-    seq: int,
-    admitted: float,
+    checks: Sequence[_CoverageCheck],
     now: float,
     *,
     exact: bool = False,
 ) -> bool:
+    if not checks:
+        return True
+    values = ",".join("(?,?,?,?)" for _ in checks)
+    end_match = "=" if exact else ">="
     rows = db.query(
-        f"SELECT EXISTS(SELECT 1 FROM {db.table('extraction_windows')} w "
-        "WHERE w.org_id=? AND w.project_id=? AND w.user_id=? AND w.kind=? "
+        f"WITH pending_coverage(user_id,kind,seq,admitted_at) AS (VALUES {values}) "
+        "SELECT NOT EXISTS(SELECT 1 FROM pending_coverage p WHERE NOT EXISTS("
+        f"SELECT 1 FROM {db.table('extraction_windows')} w "
+        "WHERE w.org_id=? AND w.project_id=? AND w.user_id=p.user_id AND w.kind=p.kind "
         "AND w.completed=1 AND w.invalidated=0 AND w.effects_done=1 "
-        "AND w.predecessor>=0 AND w.predecessor<? "
-        + ("AND w.end_seq=? " if exact else "AND w.end_seq>=? ")
-        + "AND w.completed_at>=? AND w.completed_at<=?) AS proven",
-        (org, project, user, kind, seq, seq, admitted, now),
+        f"AND w.predecessor>=0 AND w.predecessor<p.seq AND w.end_seq{end_match}p.seq "
+        "AND w.completed_at>=p.admitted_at AND w.completed_at<=?)) AS proven",
+        (*chain.from_iterable(checks), org, project, now),
     )
     return bool(rows[0]["proven"])
 
@@ -259,7 +265,7 @@ def _cursor_frontiers(
                 row["started"] == 1
                 and seq > 0
                 and _covered(
-                    db, org_id, project_id, user, kind, seq, 0, now, exact=True
+                    db, org_id, project_id, ((user, kind, seq, 0),), now, exact=True
                 )
             )
         if valid:
@@ -291,6 +297,13 @@ def _admissions(
         ]
     )
     counts["admissions"] = counts["queued_admissions"] = 0
+    coverage: list[_CoverageCheck] = []
+
+    def prove_coverage() -> None:
+        if not _covered(db, org_id, project_id, coverage, now):
+            blockers.add("processed_admission_coverage_unproven")
+        coverage.clear()
+
     for row in _pages(
         db,
         "requests",
@@ -351,14 +364,15 @@ def _admissions(
             if not admission[kind]["eligible"] or hi < lo:
                 continue
             processed = min(hi, frontier)
-            if processed >= lo and not _covered(
-                db, org_id, project_id, row["user_id"], kind, processed, stamp, now
-            ):
-                blockers.add("processed_admission_coverage_unproven")
+            if processed >= lo:
+                coverage.append((row["user_id"], kind, processed, stamp))
+                if len(coverage) == _COVERAGE_BATCH_SIZE:
+                    prove_coverage()
             if hi > frontier:
                 queued = True
         if queued:
             counts["queued_admissions"] += 1
+    prove_coverage()
 
 
 def _source_sanity(
