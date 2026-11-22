@@ -23,6 +23,8 @@ def test_explicit_upgrade_preserves_reviewed_policy(case):
     source = deepcopy(case["input"])
     converted = canonicalize_config_document(source)
     expected = deepcopy(case["expected"])
+    # Retire the whole GEPA policy without rewriting its frozen historical cases.
+    expected.pop("playbook_optimizer_config", None)
     # The frozen alias corpus predates retirement of the consolidation method
     # selector. Keep that historical witness; assert the new method upgrade
     # independently rather than changing its recorded expected document.
@@ -80,9 +82,9 @@ def test_normal_readers_reject_every_retired_alias(case, collision):
             reader(source)
 
 
-def test_frozen_manifest_has_166_unique_paths():
-    assert len(CASES) == 166
-    assert len({case["alias"] for case in CASES}) == 166
+def test_frozen_manifest_has_169_unique_paths():
+    assert len(CASES) == 169
+    assert len({case["alias"] for case in CASES}) == 169
 
 
 @pytest.mark.parametrize("value", [None, False, 0, "", {}, []])
