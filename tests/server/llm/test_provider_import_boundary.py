@@ -51,7 +51,6 @@ def test_server_environment_import_does_not_load_provider_clients(tmp_path):
     [
         "reflexio.server.llm.litellm_client",
         "reflexio.server.llm.providers.native_cli_provider",
-        "reflexio.server.services.playbook_optimizer.judge",
         "reflexio.server.services.offline_tuner.evidence.native_capacity",
     ],
 )
@@ -79,14 +78,13 @@ assert "openai" not in sys.modules
 modules = (
     "reflexio.server.llm.litellm_client",
     "reflexio.server.llm.providers.native_cli_provider",
-    "reflexio.server.services.playbook_optimizer.judge",
     "reflexio.server.services.offline_tuner.evidence.native_capacity",
 )
 barrier = Barrier(len(modules))
 def load(name):
     barrier.wait(timeout=5)
     return importlib.import_module(name).__name__
-with ThreadPoolExecutor(max_workers=4) as executor:
+with ThreadPoolExecutor(max_workers=3) as executor:
     assert tuple(executor.map(load, modules, timeout=25)) == modules
 """,
         tmp_path,

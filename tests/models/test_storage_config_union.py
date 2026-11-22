@@ -287,32 +287,6 @@ def test_stored_policy_error_and_traceback_omit_values_and_dynamic_keys(private_
         pytest.fail("invalid recognized saved policy was accepted")
 
 
-@pytest.mark.parametrize("value", [-1, "private-invalid-merge-budget"])
-def test_invalid_current_value_in_legacy_conversion_also_fails_closed(value):
-    import traceback
-
-    from reflexio.config_migration import canonicalize_config_document
-
-    def payload(budget: object) -> dict[str, object]:
-        return {
-            "storage_config": None,
-            "playbook_optimizer_config": {
-                "use_merge": True,
-                "max_merge_invocations": budget,
-            },
-        }
-
-    # Stored reads reject ``use_merge`` outright (#747); conversion is the
-    # explicit upgrade, which must reject the invalid current value value-free.
-    converted = canonicalize_config_document(payload(3))
-    assert converted["playbook_optimizer_config"] == {"max_merge_invocations": 3}
-    with pytest.raises(StoredConfigurationError) as error:
-        canonicalize_config_document(payload(value))
-    assert "private-invalid-merge-budget" not in "".join(
-        traceback.format_exception(error.value)
-    )
-
-
 @pytest.mark.parametrize(
     "read_url,read_key", [(None, None), ("https://unused.example", "unused"), ("", "")]
 )

@@ -14,15 +14,16 @@ from reflexio.models.config_schema import StorageConfigSQLite, validate_stored_c
 
 
 @pytest.mark.parametrize("includes_empty_command", [False, True])
-def test_prepare_optimizer_command_preserves_exact_argv_without_runtime_aliases(
-    tmp_path,
-    includes_empty_command,
+def test_saved_retired_optimizer_block_loads_and_is_dropped_on_preparation(
+    tmp_path, includes_empty_command
 ):
+    """The retired GEPA optimizer block never blocks an image-only upgrade."""
     path = tmp_path / "config.json"
     optimizer = {
         "assistant_script_path": "/path with spaces/executable",
         "assistant_script_args": ["--flag", "", "literal value"],
         "metric_call_budget": 5,
+        "webhook_url": "https://assistant.example.test",
     }
     if includes_empty_command:
         optimizer["assistant_command"] = None
@@ -36,23 +37,13 @@ def test_prepare_optimizer_command_preserves_exact_argv_without_runtime_aliases(
     path.write_bytes(original)
     owner = LocalConfigFile(path)
 
-    with pytest.raises(StoredConfigurationError, match="playbook_optimizer_config"):
-        validate_stored_config(
-            {"storage_config": None, "playbook_optimizer_config": optimizer}
-        )
-    with pytest.raises(StoredConfigurationError, match="startup preparation"):
-        owner.read_document()
-    assert path.read_bytes() == original
+    config = validate_stored_config(
+        {"storage_config": None, "playbook_optimizer_config": optimizer}
+    )
+    assert not hasattr(config, "playbook_optimizer_config")
+    assert "playbook_optimizer_config" not in config.model_dump()
     assert owner.prepare()
-    assert owner.read_document()["playbook_optimizer_config"] == {
-        "assistant_command": [
-            "/path with spaces/executable",
-            "--flag",
-            "",
-            "literal value",
-        ],
-        "metric_call_budget": 5,
-    }
+    assert "playbook_optimizer_config" not in owner.read_document()
     digest = hashlib.sha256(original).hexdigest()
     assert (
         tmp_path / ".config-migrations/config.json" / f"{digest}.json"
@@ -60,19 +51,25 @@ def test_prepare_optimizer_command_preserves_exact_argv_without_runtime_aliases(
     assert owner.prepare() is False
 
 
-def test_preparation_never_activates_command_ignored_by_older_model(tmp_path):
+def test_current_generation_file_with_retired_block_keeps_original_backup(tmp_path):
     path = tmp_path / "config.json"
     original = encode_config_document(
         {
-            "_reflexio_config_file": {"version": 15},
-            "playbook_optimizer_config": {"assistant_command": ["/path/executable"]},
+            "_reflexio_config_file": {"version": FILE_FORMAT_VERSION},
+            "storage_config": None,
+            "playbook_optimizer_config": {"metric_call_budget": 5},
         }
-    )
-    path.write_text(original)
-    with pytest.raises(StoredConfigurationError, match="explicitly select the command"):
-        LocalConfigFile(path).prepare()
-    assert path.read_text() == original
-    assert not (tmp_path / ".config-migrations").exists()
+    ).encode()
+    path.write_bytes(original)
+    owner = LocalConfigFile(path)
+
+    assert owner.prepare() is True
+    assert "playbook_optimizer_config" not in owner.read_document()
+    digest = hashlib.sha256(original).hexdigest()
+    assert (
+        tmp_path / ".config-migrations/config.json" / f"{digest}.json"
+    ).read_bytes() == original
+    assert owner.prepare() is False
 
 
 def test_generation_15_evaluator_requires_explicit_conversion(tmp_path):
@@ -172,16 +169,11 @@ def test_preparation_preserves_original_policy_and_precision(tmp_path):
     original = b'{"storage_config":{"type":"sqlite","db_path":"owned.db"},"playbook_optimizer_config":{"enabled":false,"optimize_agent_playbooks":true,"auto_update_pending_agent_playbooks":false},"opaque":{"number":1.00000000000000000000001}}'
     path.write_bytes(original)
     owner = LocalConfigFile(path)
-    with pytest.raises(StoredConfigurationError):
-        validate_stored_config(owner.read_document())
     assert path.read_bytes() == original
     assert owner.prepare() is True
     logical = owner.read_document()
     assert logical["storage_config"] == {"type": "sqlite", "db_path": "owned.db"}
-    assert logical["playbook_optimizer_config"] == {
-        "metric_call_budget": 0,
-        "agent_playbooks_enabled": False,
-    }
+    assert "playbook_optimizer_config" not in logical
     assert str(logical["opaque"]["number"]) == "1.00000000000000000000001"
     validate_stored_config(logical)
     digest = hashlib.sha256(original).hexdigest()
@@ -384,10 +376,7 @@ def test_frozen_generation_one_file_has_an_ordinary_upgrade_path(tmp_path):
     assert config.storage_config.db_path == "generation1-owned.sqlite"
     assert (config.profile_window_size, config.profile_stride_size) == (11, 3)
     assert (config.playbook_window_size, config.playbook_stride_size) == (11, 3)
-    assert config.playbook_optimizer_config.metric_call_budget == 7
-    assert config.playbook_optimizer_config.min_commit_windows == 4
-    assert config.playbook_optimizer_config.allows_target("agent_playbook") is False
-    assert config.playbook_optimizer_config.allows_target("user_playbook") is True
+    assert "playbook_optimizer_config" not in logical
     assert logical["opaque_extension"] == {"preserve": ["generation1", False]}
     assert "_reflexio_config_file" not in config.model_dump()
 
@@ -397,7 +386,6 @@ def test_frozen_generation_one_file_has_an_ordinary_upgrade_path(tmp_path):
     [
         {"storage_config": {"storage_type": "sqlite"}},
         {"batch_size": 10},
-        {"playbook_optimizer_config": {"optimize_user_playbooks": True}},
     ],
 )
 def test_unmarked_file_does_not_gain_unsupported_historical_aliases(tmp_path, payload):
@@ -410,27 +398,16 @@ def test_unmarked_file_does_not_gain_unsupported_historical_aliases(tmp_path, pa
     assert not (tmp_path / ".config-migrations").exists()
 
 
-def test_bad_agent_migration_never_echoes_values_or_publishes(tmp_path):
-    path = tmp_path / "config.json"
-    original = b'{"playbook_optimizer_config":{"optimize_agent_playbooks":"private-invalid-marker"}}'
-    path.write_bytes(original)
-    with pytest.raises(StoredConfigurationError) as error:
-        LocalConfigFile(path).prepare()
-    assert "private-invalid-marker" not in str(error.value)
-    assert path.read_bytes() == original
-    assert not (tmp_path / ".config-migrations").exists()
-
-
-def test_frozen_unmarked_generation_zero_retains_effective_agent_veto(tmp_path):
+def test_frozen_unmarked_generation_zero_file_prepares_without_the_optimizer_block(
+    tmp_path,
+):
     fixture = Path(__file__).parent / "fixtures/local_config_generation0.json"
     path = tmp_path / "config.json"
     path.write_bytes(fixture.read_bytes())
     owner = LocalConfigFile(path)
     assert owner.prepare() is True
     config = validate_stored_config(owner.read_document())
-    assert config.playbook_optimizer_config.allows_target("agent_playbook") is False
-    assert config.playbook_optimizer_config.allows_target("user_playbook") is True
-    assert config.playbook_optimizer_config.metric_call_budget == 7
+    assert "playbook_optimizer_config" not in owner.read_document()
     assert isinstance(config.storage_config, StorageConfigSQLite)
     assert config.storage_config.db_path == "generation1-owned.sqlite"
     assert owner.read_document()["opaque_extension"] == {
@@ -525,52 +502,6 @@ def test_backup_directory_sync_failure_keeps_original_config(tmp_path, monkeypat
     assert path.read_bytes() == original
 
 
-@pytest.mark.parametrize(
-    "legacy",
-    [
-        {},
-        {
-            "optimize_agent_playbooks": False,
-            "auto_update_pending_agent_playbooks": False,
-        },
-    ],
-)
-def test_automatic_upgrade_never_adopts_previously_ignored_consent(tmp_path, legacy):
-    from reflexio.cli.config_upgrade import convert_config_file
-
-    path = tmp_path / "unmarked.json"
-    original = json.dumps(
-        {
-            "storage_config": None,
-            "playbook_optimizer_config": {
-                "enabled": True,
-                "agent_playbooks_enabled": True,
-                **legacy,
-            },
-        }
-    ).encode()
-    path.write_bytes(original)
-    with pytest.raises(StoredConfigurationError, match="previous schema"):
-        LocalConfigFile(path).prepare()
-    assert path.read_bytes() == original
-    with pytest.raises(StoredConfigurationError, match="previous schema"):
-        LocalConfigFile(path).edit_document(
-            lambda data: data.update(profile_window_size=12)
-        )
-    assert path.read_bytes() == original
-    assert not (tmp_path / ".config-migrations").exists()
-    # A deliberately selected conversion can keep canonical precedence, and
-    # must produce an installable current file, not repeat the ambiguity.
-    output = tmp_path / "explicit-current.json"
-    convert_config_file(path, output)
-    current = LocalConfigFile(output)
-    assert current.prepare() is False
-    assert validate_stored_config(
-        current.read_document()
-    ).playbook_optimizer_config.allows_target("agent_playbook")
-    assert path.read_bytes() == original
-
-
 def test_schema_owner_validation_does_not_materialize_implicit_storage(tmp_path):
     path = tmp_path / "config.json"
     data = {
@@ -611,7 +542,7 @@ def test_schema_owner_validates_targeted_upgrade_without_changing_storage_identi
     tmp_path,
 ):
     path = tmp_path / "config.json"
-    original = b'{"window_size":23,"stride_size":7,"playbook_optimizer_config":{"optimize_agent_playbooks":true,"auto_update_pending_agent_playbooks":false}}'
+    original = b'{"window_size":23,"stride_size":7,"playbook_optimizer_config":{"metric_call_budget":5}}'
     path.write_bytes(original)
 
     def validate_enterprise_shape(raw):
@@ -624,7 +555,6 @@ def test_schema_owner_validates_targeted_upgrade_without_changing_storage_identi
         "profile_stride_size": 7,
         "playbook_window_size": 23,
         "playbook_stride_size": 7,
-        "playbook_optimizer_config": {"agent_playbooks_enabled": False},
     }
     assert "storage_config" not in decode_config_document(path.read_text())
     assert (
@@ -658,7 +588,7 @@ def test_retrieval_upgrade_retains_gate_capacity_original_and_generation(
     }
     if version:
         data["_reflexio_config_file"] = {"version": version}
-        data["playbook_optimizer_config"] = {"agent_playbooks_enabled": True}
+        data["opaque_marker"] = {"agent_playbooks_enabled": True}
     original = json.dumps(data).encode()
     path.write_bytes(original)
     owner = LocalConfigFile(path)
@@ -670,8 +600,6 @@ def test_retrieval_upgrade_retains_gate_capacity_original_and_generation(
     assert config.retrieval_floor.profile_floor is None
     assert current["storage_config"]["db_path"] == "original.sqlite"
     assert current["opaque"] == {"keep": True}
-    if version:
-        assert config.playbook_optimizer_config.agent_playbooks_enabled is True
     assert (
         path.parent.joinpath(
             ".config-migrations",
@@ -712,16 +640,6 @@ def test_old_generation_cannot_treat_ignored_candidate_key_as_authority(
             owner.edit_document(
                 lambda document: document.update(profile_window_size=19)
             )
-    assert path.read_bytes() == original
-    assert not (tmp_path / ".config-migrations").exists()
-
-
-def test_generation_one_does_not_replay_retired_agent_policy(tmp_path):
-    path = tmp_path / "config.json"
-    original = b'{"_reflexio_config_file":{"version":1},"storage_config":null,"playbook_optimizer_config":{"optimize_agent_playbooks":true},"retrieval_floor":{"enabled":true}}'
-    path.write_bytes(original)
-    with pytest.raises(StoredConfigurationError):
-        LocalConfigFile(path).prepare()
     assert path.read_bytes() == original
     assert not (tmp_path / ".config-migrations").exists()
 

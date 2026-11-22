@@ -1,10 +1,7 @@
 """Config route handlers (extracted from api.py, Tier3 A2)."""
 
 import logging
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    pass
+from typing import Any
 
 from fastapi import (
     APIRouter,
@@ -43,43 +40,9 @@ _RETRIEVAL_EXPERIMENT_FIELDS = frozenset(
 )
 
 
-def _normalize_legacy_optimizer_write(
-    payload: dict[str, Any], existing: Config, *, partial: bool
-) -> dict[str, Any]:
-    """Allow older clients to echo disabled defaults on API writes."""
-    optimizer = payload.get("playbook_optimizer_config")
-    if not isinstance(optimizer, dict):
-        return payload
-    inert = {
-        name
-        for name, default in (
-            ("assistant_script_path", None),
-            ("assistant_script_args", []),
-        )
-        if name in optimizer and optimizer[name] == default
-    }
-    if not inert:
-        return payload
-    cleaned = {name: value for name, value in optimizer.items() if name not in inert}
-    normalized = dict(payload)
-    # An old client can echo empty local-assistant defaults without knowing
-    # a saved command exists. Otherwise retain normal shallow replacement,
-    # including a request to clear an existing webhook configuration.
-    if partial and not cleaned and existing.playbook_optimizer_config.assistant_command:
-        del normalized["playbook_optimizer_config"]
-        return normalized
-    # An older full document cannot express the current command. Reject the
-    # ambiguous replacement instead of copying a possibly stale command back.
-    if (
-        existing.playbook_optimizer_config.assistant_command
-        and "assistant_command" not in cleaned
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Upgrade the SDK before updating a configured optimizer assistant command.",
-        )
-    normalized["playbook_optimizer_config"] = cleaned
-    return normalized
+def _drop_retired_optimizer_block(payload: dict[str, Any]) -> dict[str, Any]:
+    """Accept older clients that still echo the retired optimizer settings."""
+    return {k: v for k, v in payload.items() if k != "playbook_optimizer_config"}
 
 
 def _reject_direct_experiment_mutation(
@@ -164,7 +127,7 @@ def set_config(
     configurator = reflexio.request_context.configurator
     existing = configurator.get_org_config()
     config = _reject_direct_experiment_mutation(
-        _normalize_legacy_optimizer_write(config, existing, partial=False),
+        _drop_retired_optimizer_block(config),
         existing,
         preserve_missing=True,
     )
@@ -244,7 +207,7 @@ def update_config(
     configurator = reflexio.request_context.configurator
     existing_config = configurator.get_org_config()
     partial = _reject_direct_experiment_mutation(
-        _normalize_legacy_optimizer_write(partial, existing_config, partial=True),
+        _drop_retired_optimizer_block(partial),
         existing_config,
         preserve_missing=False,
     )

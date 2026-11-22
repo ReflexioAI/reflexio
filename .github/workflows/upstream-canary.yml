@@ -1,7 +1,7 @@
 name: Upstream dependency canary
 
-# Early evidence for the two runtime ceilings reflexio-ai keeps
-# (litellm <2, gepa <0.2; see pyproject.toml). Weekly, and on demand:
+# Early evidence for the LiteLLM ceiling (litellm <2; see pyproject.toml).
+# Weekly, and on demand:
 #
 # * in-range: the newest release the ceiling admits. If it is newer than
 #   uv.lock, upgrade only that package in the lock, run its contract tests and,
@@ -21,11 +21,6 @@ on:
   schedule:
     - cron: "23 7 * * 1"
   workflow_dispatch:
-    inputs:
-      packages:
-        description: Space-separated subset of "litellm gepa"
-        required: false
-        default: litellm gepa
 
 permissions:
   contents: read
@@ -39,33 +34,13 @@ env:
   PYTHON_DOTENV_DISABLED: "1"
 
 jobs:
-  plan:
-    runs-on: ubuntu-latest
-    outputs:
-      packages: ${{ steps.select.outputs.packages }}
-    steps:
-      - id: select
-        env:
-          REQUESTED: ${{ inputs.packages || 'litellm gepa' }}
-        run: |
-          selected=()
-          for package in $REQUESTED; do
-            case "$package" in
-              litellm|gepa) selected+=("\"$package\"") ;;
-              *) echo "::error::Unknown package $package"; exit 1 ;;
-            esac
-          done
-          (( ${#selected[@]} )) || { echo "::error::No package selected"; exit 1; }
-          echo "packages=[$(IFS=,; echo "${selected[*]}")]" >> "$GITHUB_OUTPUT"
-
   canary:
-    needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        package: ${{ fromJSON(needs.plan.outputs.packages) }}
+        package: [litellm]
         mode: [in-range, next-major]
     steps:
       - uses: actions/checkout@v4

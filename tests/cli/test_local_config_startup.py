@@ -115,19 +115,7 @@ def test_ordinary_restart_preserves_database_and_unrelated_raw_fields(
     logical = LocalConfigFile(saved_local_config).read_document()
     assert logical["storage_config"] == before["storage_config"]
     expected = dict(before)
-    optimizer = dict(expected["playbook_optimizer_config"])
-    optimizer.pop("optimize_agent_playbooks")
-    optimizer.pop("auto_update_pending_agent_playbooks")
-    optimizer["agent_playbooks_enabled"] = False
-    enabled = optimizer.pop("enabled")
-    limit = optimizer.pop("max_metric_calls")
-    optimizer["metric_call_budget"] = limit if enabled else 0
-    optimizer.pop("scheduler_jitter_seconds")
-    optimizer.pop("webhook_max_retries", None)
-    optimizer.pop("webhook_backoff_base_seconds", None)
-    assert optimizer.pop("assistant_script_path") is None
-    assert optimizer.pop("assistant_script_args") == []
-    expected["playbook_optimizer_config"] = optimizer
+    expected.pop("playbook_optimizer_config")
     floor = dict(expected["retrieval_floor"])
     assert floor.pop("enabled") is False
     assert floor.pop("pool_size") == 30
@@ -300,12 +288,7 @@ runpy.run_module("reflexio.server", run_name="__main__")
                 f"http://127.0.0.1:{port}/api/get_config", timeout=10
             ) as response:
                 config = json.load(response)
-            optimizer = config["playbook_optimizer_config"]
-            assert optimizer["agent_playbooks_enabled"] is False
-            assert optimizer["user_playbooks_enabled"] is True
-            assert optimizer["metric_call_budget"] == 7
-            assert "optimize_agent_playbooks" not in optimizer
-            assert "auto_update_pending_agent_playbooks" not in optimizer
+            assert "playbook_optimizer_config" not in config
             assert config["storage_config"]["db_path"] == database
             assert "_reflexio_config_file" not in config
             with sqlite3.connect(database) as connection:

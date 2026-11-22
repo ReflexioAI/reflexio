@@ -70,7 +70,7 @@ setup in actual model-client construction.
   - [Durable Learning Queue](#durable-learning-queue)
   - [Async Extraction](#async-extraction)
   - [Shadow Comparison and Evaluation Overview](#shadow-comparison-and-evaluation-overview)
-  - [Playbook Optimizer and Braintrust](#playbook-optimizer-and-braintrust)
+  - [Braintrust](#braintrust)
   - [Lineage](#lineage)
   - [Query Reformulator](#query-reformulator)
   - [Unified Search Service](#unified-search-service)
@@ -408,7 +408,7 @@ Access retrieval defaults with `SiteVarManager().get_site_var(key)`. Model selec
 - **Async clarification**: `extraction/` manages resumable agent runs, pending tool calls, and prior-answer search. Matching requests attach until the question expires. Saved base and per-tool `dedup_cache_seconds` values are obsolete. Resolved answers retain their own reuse lifetime.
 - **Search preparation**: `pre_retrieval/` and `unified_search_service.py` handle query reformulation, document expansion, embeddings, and cross-entity search orchestration.
 - **Retrieval experiments**: `retrieval_experiment.py` owns deterministic organization/experiment/user assignment, publish-attribution validation, and session-outcome metrics with user-clustered confidence intervals. Search routes bypass retrieval for holdout but return assignment metadata; publish persists only the experiment ID and assigned arm.
-- **Optimization/integrations**: `playbook_optimizer/` and `braintrust/` run candidate playbook optimization, rollout support, and Braintrust export/sync.
+- **Integrations**: `braintrust/` handles Braintrust export/sync.
 - **Lineage**: `lineage/` resolves active records across superseded chains and schedules tombstone garbage collection for profile/playbook storage.
 - **Governance**: `governance/` defines subject-reference contracts and retention/barrier policy helpers used by storage and lineage paths.
 - **Persistence/config**: `storage/`, `configurator/`, and `operation_state_utils.py` provide storage abstractions, config loading, locks, bookmarks, progress, and cancellation.
@@ -794,33 +794,15 @@ Key files:
 
 **Pattern**: Session-level agent success evaluation remains in `agent_success_evaluation/`; dashboard-facing rollups and per-turn shadow verdict analysis live in these companion directories.
 
-### Playbook Optimizer and Braintrust
+### Braintrust
 
-
-**Directories**: `services/playbook_optimizer/`, `services/braintrust/`
+**Directory**: `services/braintrust/`
 
 Key files:
 
-- `playbook_optimizer/optimizer.py`: Scenario-based playbook optimization loop
-- `playbook_optimizer/scheduler.py` and `rollout.py`: Scheduling and rollout helpers
-- `playbook_optimizer/judge.py`, `models.py`, `scenario_resolver.py`: Evaluation and scenario resolution models
-- `playbook_optimizer/assistant_webhook.py`: Assistant-facing webhook entry point for optimizer runs
 - `braintrust/service.py`, `braintrust/client.py`: Braintrust export/sync support
 
-GEPA search and publication share `gepa_winner_adoption_result` for quality.
-The adapter retains successfully persisted evaluation facts for its run-local
-stopping callback; it does not reread storage or score another rollout there.
-Train and validation loaders use disjoint IDs in GEPA's shared evaluation cache.
-Search returns its current eligible winner or exhausts the existing metric
-budget. Current readers reject retired `early_stop_score` input for both enabled
-and disabled policies. Historical conversion validates and removes it while
-preserving activation, budgets and metadata; old job-authority snapshots stay
-unchanged. Standalone caller-selected files use the explicit converter, while
-versioned hosts must own conversion before serving and close older writers.
-See `docs/playbook_optimizer_assistant_backends.md` for the exploration change
-and rollout requirements.
-
-**Pattern**: These are evaluation/optimization integrations around the core playbook pipeline. Keep production extraction changes in `services/playbook/`; use optimizer/Braintrust modules for experiments, rollouts, and external eval sync.
+**Pattern**: Braintrust is an evaluation integration around the core playbook pipeline. Keep production extraction changes in `services/playbook/`.
 
 ### Lineage
 

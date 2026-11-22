@@ -45,8 +45,7 @@ operational failure; authorization and adoption errors are terminal, including
 when LiteLLM or a spawned worker wraps them.
 
 When Claude Smart selects an executable for its bundled backend, the SDK
-owns the existing bridge-compatible OpenCode command directly. The optimizer
-can negotiate the same command through `opencode-compat-json`. With no variant
+owns the existing bridge-compatible OpenCode command directly. With no variant
 these requests launch generation once without a help probe. With a variant the
 help probe and generation share the caller's original deadline. An explicit
 shorter `CLAUDE_SMART_CLI_TIMEOUT` still caps execution. Explicit native SDK
@@ -60,8 +59,8 @@ can still use the compatibility bridge.
 
 Known OpenCode compatibility bridges receive the selected native model in their
 child environment, with stale bridge model/variant hints cleared. A host-only
-reference delegates to OpenCode's own configuration. The parent environment and
-independently invoked optimizer scripts retain their separate learning policy.
+reference delegates to OpenCode's own configuration. The parent environment retains its
+separate learning policy.
 
 The native host owns its internal retry policy. Reflexio inherits its environment
 without forcing a Claude retry count; an unset value delegates to the CLI's
@@ -83,8 +82,7 @@ Each native request must match the operator's full reference before role or
 gateway rewriting, before admission, and again inside the provider. An explicit
 `custom_llm_provider` cannot turn a reserved `local-cli/` reference into HTTP.
 `OPENCLAW_SMART_USE_LOCAL_CLI` independently grants the separate OpenClaw route;
-this target neither enables nor replaces it. An explicitly configured optimizer
-`LocalScriptAssistant` also retains its own script/compile authority.
+this target neither enables nor replaces it.
 
 ## Explicit upgrade from the previous native selectors
 
@@ -120,7 +118,4 @@ For a manually configured SDK native backend:
 6. Restart and verify the intended native route/model. A host-only reference
    does not pin or prove the model physically served.
 
-Do not regenerate backend policy from every coding session's host. An optimizer
-script may use its separately saved learning provider/model while the backend
-uses HTTP; the new native backend profile must not enable that script or alter
-its consent, custom webhook or script settings.
+Do not regenerate backend policy from every coding session's host.

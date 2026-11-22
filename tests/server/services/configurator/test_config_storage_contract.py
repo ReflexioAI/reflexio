@@ -278,9 +278,6 @@ def test_legacy_shadow_file_load_patch_save_roundtrip(tmp_path: Path) -> None:
     [
         ("pending_tool_call_config", "resume_poll_interval_seconds"),
         ("pending_tool_call_config", "resume_claim_ttl_seconds"),
-        ("playbook_optimizer_config", "scheduler_jitter_seconds"),
-        ("playbook_optimizer_config", "abort_cooldown_threshold"),
-        ("playbook_optimizer_config", "cooldown_after_aborts_seconds"),
         ("lineage_gc", "poll_interval_seconds"),
     ],
 )
@@ -375,39 +372,23 @@ def test_invalid_recognized_policy_preserves_file_and_blocks_cli_fallback(
     assert reloaded.governance_retention.audit_events_delete_batch_limit == 2
 
 
-@pytest.mark.parametrize("enabled", [False, True])
-def test_saved_optimizer_stopping_adoption_never_rewrites_on_read(tmp_path, enabled):
+def test_saved_retired_optimizer_block_loads_without_rewrite(tmp_path):
     storage = LocalFileConfigStorage(org_id="quality-policy", base_dir=str(tmp_path))
     path = Path(storage.config_file)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
+        "_reflexio_config_file": {"version": 16},
         "storage_config": None,
         "playbook_optimizer_config": {
-            "enabled": enabled,
-            "early_stop_score": 0.9,
+            "enabled": True,
             "max_metric_calls": 37,
+            "assistant_script_path": "/opt/assistant",
         },
     }
     encoded = json.dumps(payload).encode()
     path.write_bytes(encoded)
-    with pytest.raises(ValueError):
-        storage.load_config()
+    loaded = storage.load_config()
+    assert not hasattr(loaded, "playbook_optimizer_config")
     assert path.read_bytes() == encoded
-
-    # Explicit migration and publication are the only way past old input.
-    from reflexio.config_migration import canonicalize_config_document
-    from reflexio.models.config_schema import validate_stored_config
-
-    config = validate_stored_config(canonicalize_config_document(payload))
-    assert config.playbook_optimizer_config.metric_call_budget == (37 if enabled else 0)
-    assert path.read_bytes() == encoded
-    assert "early_stop_score" not in config.playbook_optimizer_config.model_dump()
-    storage.save_config(config)
-    assert (
-        "early_stop_score"
-        not in json.loads(path.read_text())["playbook_optimizer_config"]
-    )
-    config.playbook_optimizer_config.metric_call_budget = 37
-    storage.save_config(config)
-    loaded = storage.load_config().playbook_optimizer_config
-    assert loaded.metric_call_budget == 37
+    storage.save_config(loaded)
+    assert "playbook_optimizer_config" not in json.loads(path.read_text())

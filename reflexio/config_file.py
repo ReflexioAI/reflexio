@@ -26,10 +26,9 @@ LINEAGE_RETENTION_VERSION = 12
 PENDING_CREATION_VERSION = 13
 STORAGE_QUEUE_BUDGET_VERSION = 14
 EXTRACTION_WINDOW_POLICY_VERSION = 15
-OPTIMIZER_ASSISTANT_COMMAND_VERSION = 16
 # Generation 15 was written both before and after evaluator support.
 EVALUATION_MODEL_POLICY_VERSION = 16
-FILE_FORMAT_VERSION = OPTIMIZER_ASSISTANT_COMMAND_VERSION
+FILE_FORMAT_VERSION = EVALUATION_MODEL_POLICY_VERSION
 _METADATA_KEY = "_reflexio_config_file"
 
 
@@ -119,19 +118,6 @@ def _require_prepared_extraction_windows(data: dict[str, Any], version: int) -> 
         )
 
 
-def _reject_ignored_optimizer_command(data: dict[str, Any], version: int) -> None:
-    optimizer = data.get("playbook_optimizer_config")
-    if (
-        version < OPTIMIZER_ASSISTANT_COMMAND_VERSION
-        and isinstance(optimizer, dict)
-        and optimizer.get("assistant_command") is not None
-    ):
-        raise StoredConfigurationError(
-            "Older configuration contains assistant_command, which its schema ignored. "
-            "Use config upgrade-file to explicitly select the command."
-        )
-
-
 def _reject_ambiguous_evaluation_model(data: dict[str, Any], version: int) -> None:
     llm = data.get("llm_config")
     if (
@@ -151,7 +137,6 @@ def _reject_ambiguous_policy(data: dict[str, Any], version: int) -> None:
     _reject_ignored_extraction_windows(data, version)
     _reject_ambiguous_output_policy(data, version)
     _reject_ambiguous_evaluation_model(data, version)
-    _reject_ignored_optimizer_command(data, version)
     retention = data.get("governance_retention")
     if (
         version < 3
@@ -162,27 +147,6 @@ def _reject_ambiguous_policy(data: dict[str, Any], version: int) -> None:
             "Older configuration contains audit_events_max_age_days, which was "
             "ignored by its schema. Stop old writers and use config upgrade-file "
             "to explicitly select canonical policy."
-        )
-    optimizer = data.get("playbook_optimizer_config")
-    if (
-        version < 5
-        and isinstance(optimizer, dict)
-        and "metric_call_budget" in optimizer
-    ):
-        raise StoredConfigurationError(
-            "Older configuration contains metric_call_budget, which was ignored "
-            "by its schema. Stop old writers and use config upgrade-file to "
-            "explicitly select canonical policy."
-        )
-    if (
-        version == 0
-        and isinstance(optimizer, dict)
-        and "agent_playbooks_enabled" in optimizer
-    ):
-        raise StoredConfigurationError(
-            "Unmarked configuration contains agent_playbooks_enabled, which "
-            "was ignored by the previous schema. Stop old writers and use "
-            "config upgrade-file to explicitly select canonical policy."
         )
     floor = data.get("retrieval_floor")
     if version < 2 and isinstance(floor, dict) and "candidate_pool_size" in floor:
@@ -278,30 +242,25 @@ def _prepare_pending_creation(data: dict[str, Any], version: int) -> dict[str, A
 def _prepare_document(data: dict[str, Any], version: int) -> dict[str, Any]:
     """Transform only generations older than this artifact, without publishing."""
     from reflexio.config_migration import (
-        canonicalize_agent_optimizer_policy,
         canonicalize_audit_retention_policy,
         canonicalize_custom_endpoint_policy,
         canonicalize_lineage_retention_policy,
-        canonicalize_optimizer_assistant_command,
-        canonicalize_optimizer_work_budget,
         canonicalize_retrieval_floor_policy,
-        retire_optimizer_jitter_policy,
-        retire_optimizer_replay_policy,
         retire_playbook_consolidation_strategy,
     )
 
     if version == FILE_FORMAT_VERSION:
-        return deepcopy(data)
+        current = deepcopy(data)
+        current.pop("playbook_optimizer_config", None)
+        return current
     _reject_ambiguous_policy(data, version)
     if version >= EXTRACTION_WINDOW_POLICY_VERSION:
         _require_prepared_extraction_windows(data, version)
     # Apply only changes introduced after this file's generation.
     # Never replay the broad historical alias converter at startup.
     canonical = deepcopy(data)
-    if version == 0 and "playbook_optimizer_config" in canonical:
-        canonical["playbook_optimizer_config"] = canonicalize_agent_optimizer_policy(
-            canonical["playbook_optimizer_config"]
-        )
+    # The retired playbook optimizer block is dropped from every generation.
+    canonical.pop("playbook_optimizer_config", None)
     if version < 2 and "retrieval_floor" in canonical:
         canonical["retrieval_floor"] = canonicalize_retrieval_floor_policy(
             canonical["retrieval_floor"]
@@ -311,18 +270,6 @@ def _prepare_document(data: dict[str, Any], version: int) -> dict[str, Any]:
             canonical["governance_retention"]
         )
     canonical = canonicalize_custom_endpoint_policy(canonical)
-    if version < 5 and "playbook_optimizer_config" in canonical:
-        canonical["playbook_optimizer_config"] = canonicalize_optimizer_work_budget(
-            canonical["playbook_optimizer_config"]
-        )
-    if version < 6 and "playbook_optimizer_config" in canonical:
-        canonical["playbook_optimizer_config"] = retire_optimizer_jitter_policy(
-            canonical["playbook_optimizer_config"]
-        )
-    if version < 7 and "playbook_optimizer_config" in canonical:
-        canonical["playbook_optimizer_config"] = retire_optimizer_replay_policy(
-            canonical["playbook_optimizer_config"]
-        )
     if version < 8 and "user_playbook_extractor_config" in canonical:
         canonical["user_playbook_extractor_config"] = (
             retire_playbook_consolidation_strategy(
@@ -355,15 +302,6 @@ def _prepare_document(data: dict[str, Any], version: int) -> dict[str, Any]:
         )
 
         canonical = convert_canonical_legacy_extraction_windows(canonical)
-    if (
-        version < OPTIMIZER_ASSISTANT_COMMAND_VERSION
-        and "playbook_optimizer_config" in canonical
-    ):
-        canonical["playbook_optimizer_config"] = (
-            canonicalize_optimizer_assistant_command(
-                canonical["playbook_optimizer_config"]
-            )
-        )
     return canonical
 
 
@@ -431,15 +369,6 @@ class LocalConfigFile:
         _require_prepared_storage_queue(document)
         _reject_ambiguous_output_policy(document, metadata.get("version", 0))
         _reject_ambiguous_evaluation_model(document, metadata.get("version", 0))
-        _reject_ignored_optimizer_command(document, metadata.get("version", 0))
-        optimizer = document.get("playbook_optimizer_config")
-        if isinstance(optimizer, dict) and {
-            "assistant_script_path",
-            "assistant_script_args",
-        }.intersection(optimizer):
-            raise StoredConfigurationError(
-                "Saved optimizer assistant command requires startup preparation"
-            )
         _require_prepared_extraction_windows(document, metadata.get("version", 0))
         return document
 
@@ -477,9 +406,6 @@ class LocalConfigFile:
             data, supplied_metadata.get("version", FILE_FORMAT_VERSION)
         )
         _require_prepared_extraction_windows(
-            data, supplied_metadata.get("version", FILE_FORMAT_VERSION)
-        )
-        _reject_ignored_optimizer_command(
             data, supplied_metadata.get("version", FILE_FORMAT_VERSION)
         )
         _reject_ambiguous_evaluation_model(
@@ -614,7 +540,13 @@ class LocalConfigFile:
                 # before publishing, including already-prepared generation14.
                 incompatible=version < EXTRACTION_WINDOW_POLICY_VERSION,
             )
-            if version == FILE_FORMAT_VERSION or original is None:
+            # A current-generation file that still carries the retired optimizer
+            # block is rewritten through the backup path, so its saved policy
+            # stays recoverable for rollback to the previous SDK.
+            retired_block = "playbook_optimizer_config" in data
+            if (version == FILE_FORMAT_VERSION and not retired_block) or (
+                original is None
+            ):
                 if (
                     self._target() != target
                     or (target.read_bytes() if target.exists() else None) != original

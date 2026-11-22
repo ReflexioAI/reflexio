@@ -23,6 +23,8 @@ def test_explicit_upgrade_preserves_reviewed_policy(case):
     source = deepcopy(case["input"])
     converted = canonicalize_config_document(source)
     expected = deepcopy(case["expected"])
+    # Retire the whole GEPA policy without rewriting its frozen historical cases.
+    expected.pop("playbook_optimizer_config", None)
     # The frozen alias corpus predates retirement of the consolidation method
     # selector. Keep that historical witness; assert the new method upgrade
     # independently rather than changing its recorded expected document.
@@ -92,7 +94,6 @@ def test_frozen_manifest_has_169_unique_paths():
         (None, "batch_size"),
         ("profile_extractor_config", "batch_size_override"),
         ("user_playbook_extractor_config", "feedback_aggregator_config"),
-        ("playbook_optimizer_config", "use_merge"),
         ("storage_config", "storage_type"),
     ],
 )
@@ -126,7 +127,6 @@ def test_opaque_lookalikes_are_not_configuration_paths():
 def test_direct_nested_model_rejection_is_value_free():
     from reflexio.models.config_schema import (
         PlaybookAggregatorConfig,
-        PlaybookOptimizerConfig,
         ProfileExtractorConfig,
         StorageConfigPostgres,
     )
@@ -140,7 +140,6 @@ def test_direct_nested_model_rejection_is_value_free():
             },
         ),
         (PlaybookAggregatorConfig, {"min_feedback_threshold": "private-secret"}),
-        (PlaybookOptimizerConfig, {"use_merge": "private-secret"}),
         (
             StorageConfigPostgres,
             {"db_url": "private-secret", "schema_name": "private-secret"},

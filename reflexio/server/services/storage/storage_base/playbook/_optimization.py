@@ -9,9 +9,6 @@ from reflexio.models.api_schema.domain import (
     OptimizationJobStage,
     OptimizationTerminalOutcome,
     PlaybookOptimizationArtifact,
-    PlaybookOptimizationCandidate,
-    PlaybookOptimizationEvaluation,
-    PlaybookOptimizationEvent,
     PlaybookOptimizationJob,
 )
 
@@ -34,54 +31,6 @@ class OptimizationJobStoreMixin:
         self, job_id: int
     ) -> PlaybookOptimizationJob | None:
         """Load one optimizer job by its durable identity."""
-        raise NotImplementedError(
-            "Storage backend does not support replay-gated playbook optimization"
-        )
-
-    def prepare_gepa_user_playbook_publication(
-        self,
-        *,
-        job_id: int,
-        owner: str,
-        lease_seconds: int,
-        winner_candidate_id: int,
-        candidate_content_digest: str,
-        search_projection_digest: str,
-        publication_proof_digest: str,
-        projection_json: str,
-        decision_proof_json: str,
-        subject_epochs_json: str,
-        metadata_json: str,
-    ) -> PlaybookOptimizationJob:
-        """Fence and persist GEPA publication authority before staging."""
-        raise NotImplementedError(
-            "Storage backend does not support replay-gated playbook optimization"
-        )
-
-    def get_unconsumed_gepa_user_playbook_publishing_job(
-        self, target_id: int
-    ) -> PlaybookOptimizationJob | None:
-        """Load an active GEPA user publication job with no terminal result."""
-        raise NotImplementedError(
-            "Storage backend does not support replay-gated playbook optimization"
-        )
-
-    def reclaim_gepa_user_playbook_publishing_job(
-        self,
-        target_id: int,
-        owner: str,
-        lease_seconds: int,
-        *,
-        now: int | None = None,
-    ) -> PlaybookOptimizationJob | None:
-        """Recover one unconsumed GEPA user publication job.
-
-        Outcomes are part of the storage contract:
-        return the reclaimed job when an expired publishing lease is fenced to
-        the new owner, return ``None`` when no unconsumed publishing job exists,
-        and raise ``OptimizationJobLeaseLiveError`` when a matching job exists
-        but its optimizer lease is still live.
-        """
         raise NotImplementedError(
             "Storage backend does not support replay-gated playbook optimization"
         )
@@ -229,50 +178,4 @@ class OptimizationJobStoreMixin:
         metadata_json: str | None = None,
     ) -> None:
         """Update mutable fields on a playbook optimization job."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def insert_playbook_optimization_candidate(
-        self, candidate: PlaybookOptimizationCandidate
-    ) -> PlaybookOptimizationCandidate:
-        """Persist an optimizer candidate and return it with id populated."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def list_playbook_optimization_candidates(
-        self, job_id: int
-    ) -> list[PlaybookOptimizationCandidate]:
-        """List optimizer candidates for a job."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def update_playbook_optimization_candidate(
-        self,
-        candidate_id: int,
-        *,
-        aggregate_score: float | None = None,
-        is_winner: bool | None = None,
-    ) -> None:
-        """Update mutable optimizer candidate result fields."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def insert_playbook_optimization_evaluation(
-        self, evaluation: PlaybookOptimizationEvaluation
-    ) -> PlaybookOptimizationEvaluation:
-        """Persist an optimizer evaluation and return it with id populated."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def list_playbook_optimization_evaluations(
-        self, job_id: int
-    ) -> list[PlaybookOptimizationEvaluation]:
-        """List optimizer evaluations for a job."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def insert_playbook_optimization_event(
-        self, event: PlaybookOptimizationEvent
-    ) -> PlaybookOptimizationEvent:
-        """Persist an optimizer callback/event and return it with id populated."""
         raise NotImplementedError
