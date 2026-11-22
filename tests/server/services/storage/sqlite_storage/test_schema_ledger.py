@@ -1197,6 +1197,7 @@ def test_the_ledger_run_waits_for_the_cross_process_migration_lock(
 
     path = tmp_path / "locked.db"
     storage = _open(path)
+    reachable = stored_version(storage)  # LATEST natively, VEC_STEP - 1 in fallback
     with closing(sqlite3.connect(path)) as raw:
         raw.execute("PRAGMA user_version = 0")
         raw.commit()
@@ -1213,6 +1214,95 @@ def test_the_ledger_run_waits_for_the_cross_process_migration_lock(
             assert version() == 0  # blocked: nothing ran, nothing was stamped
         worker.join(timeout=120)
         assert not worker.is_alive()
-        assert version() == LATEST_VERSION
+        assert version() == reachable
     finally:
         storage.conn.close()
+
+
+def test_a_symlink_and_the_real_path_share_one_migration_lock(tmp_path: Path) -> None:
+    import threading
+    import time
+
+    from reflexio.server.services.storage.sqlite_storage.migrations import (
+        migration_lock,
+    )
+
+    real = tmp_path / "real.db"
+    link = tmp_path / "link.db"
+    _open(real).conn.close()
+    link.symlink_to(real)
+    storage = _open(link)  # opened through the symlink
+    reachable = stored_version(storage)
+    with closing(sqlite3.connect(real)) as raw:
+        raw.execute("PRAGMA user_version = 0")
+        raw.commit()
+
+    def version() -> int:
+        with closing(sqlite3.connect(real)) as raw:
+            return raw.execute("PRAGMA user_version").fetchone()[0]
+
+    worker = threading.Thread(target=storage.migrate)
+    try:
+        with migration_lock(str(real)):  # held through the real path
+            worker.start()
+            time.sleep(0.5)
+            assert version() == 0  # the symlink opener is blocked on the same lock
+        worker.join(timeout=120)
+        assert not worker.is_alive()
+        assert version() == reachable
+    finally:
+        storage.conn.close()
+
+
+def test_a_windows_opener_retries_the_nonblocking_lock_until_it_holds_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.server.llm.providers import local_embedding_provider as provider
+
+    calls: list[int] = []
+
+    class FakeMsvcrt:
+        LK_LOCK = 1
+        LK_NBLCK = 2
+        LK_UNLCK = 3
+
+        @staticmethod
+        def locking(_fd: int, mode: int, _length: int) -> None:
+            calls.append(mode)
+            if mode == FakeMsvcrt.LK_LOCK:
+                raise OSError("LK_LOCK gives up after about ten seconds")
+            if mode == FakeMsvcrt.LK_NBLCK and calls.count(FakeMsvcrt.LK_NBLCK) < 3:
+                raise OSError("held elsewhere")
+
+    monkeypatch.setattr(provider, "fcntl", None)
+    monkeypatch.setattr(provider, "msvcrt", FakeMsvcrt)
+    monkeypatch.setattr(provider.time, "sleep", lambda _s: None)
+
+    with provider._exclusive_file_lock(tmp_path / "w.lock", wait_forever=True):
+        assert calls == [2, 2, 2]  # two refusals, then held; LK_LOCK never used
+    assert calls[-1] == FakeMsvcrt.LK_UNLCK
+
+
+@requires_vec
+def test_backfill_repairs_a_row_at_the_minimum_rowid(tmp_path: Path) -> None:
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+
+    path = tmp_path / "minrowid.db"
+    storage = _open(path)
+    storage.conn.execute(
+        "INSERT INTO profiles (rowid, profile_id, user_id, last_modified_timestamp, "
+        "embedding) VALUES (?, 'p', 'u', 1, ?)",
+        (-(2**63), json.dumps([0.5] * EMBEDDING_DIMENSIONS)),
+    )
+    storage.conn.execute("PRAGMA user_version = 0")
+    storage.conn.commit()
+    storage.conn.close()
+
+    reopened = _open(path)
+    try:
+        assert (
+            reopened.conn.execute("SELECT COUNT(*) FROM profiles_vec").fetchone()[0]
+            == 1
+        )
+    finally:
+        reopened.conn.close()

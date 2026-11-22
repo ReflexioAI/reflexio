@@ -498,7 +498,7 @@ class SQLiteSchemaMigrationsMixin:
             # Keyset pages over EXISTING primary rowids: one write transaction
             # examines at most _VEC_BACKFILL_PAGE rows however sparse or large
             # the rowids are, and the cursor is only ever a bound parameter.
-            cursor = -(2**63)
+            cursor: int | None = None  # first page has no lower bound
             while True:
                 with self._lock:
                     self.conn.commit()
@@ -509,9 +509,10 @@ class SQLiteSchemaMigrationsMixin:
                             "(t.embedding IS NOT NULL) AS has_embedding, "
                             f"EXISTS (SELECT 1 FROM {vec_table} v "  # noqa: S608
                             "WHERE v.rowid = t.rowid) AS indexed "
-                            f"FROM {main_table} t WHERE t.rowid > ? "
+                            f"FROM {main_table} t "
+                            "WHERE (? IS NULL OR t.rowid > ?) "
                             "ORDER BY t.rowid LIMIT ?",
-                            (cursor, _VEC_BACKFILL_PAGE),
+                            (cursor, cursor, _VEC_BACKFILL_PAGE),
                         ).fetchall()
                         for r in page:
                             if not r["has_embedding"] or r["indexed"]:
