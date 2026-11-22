@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from reflexio.client import ConfigResponse, OfflineTunerConfigResponse, ReflexioClient
 from reflexio.models.config_schema import Config, StorageConfigSQLite
 
@@ -82,3 +84,25 @@ def test_client_set_config_does_not_send_response_overlay(mock_session_class) ->
     assert args[1].endswith("/api/set_config")
     assert "x_extension_config" not in kwargs["json"]
     assert "offline_tuner_config" not in kwargs["json"]
+
+
+@pytest.mark.parametrize("typed", [False, True])
+@pytest.mark.parametrize("explicit", [False, True])
+@patch("reflexio.client.client.httpx.Client")
+def test_set_config_distinguishes_evaluator_reset_from_omission(
+    mock_session_class, typed, explicit
+):
+    client = ReflexioClient(api_key="test_key", url_endpoint="http://localhost:8000")
+    session = mock_session_class.return_value
+    session.request.return_value = _json_response({"success": True})
+    llm = {"generation_model_name": "openai/gpt-4o"}
+    if explicit:
+        llm["evaluation_model_name"] = None
+    raw = {"storage_config": None, "llm_config": llm}
+
+    client.set_config(Config.model_validate(raw) if typed else raw)
+
+    sent = session.request.call_args.kwargs["json"]["llm_config"]
+    assert ("evaluation_model_name" in sent) is explicit
+    if explicit:
+        assert sent["evaluation_model_name"] is None

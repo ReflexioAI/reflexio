@@ -1762,20 +1762,30 @@ class ReflexioClient:
             dict: Response containing success status and message
         """
         if isinstance(config, Config):
-            config = Config.model_validate(
+            llm = config.llm_config
+            reset_evaluator = (
+                llm is not None
+                and llm.evaluation_model_name is None
+                and "evaluation_model_name" in llm.model_fields_set
+            )
+            validated = Config.model_validate(
                 config.model_dump(mode="python"),
                 extra="ignore",
             )
         else:
-            config = self._convert_to_model(  # type: ignore[reportAssignmentType]
-                config,
-                Config,
+            llm_payload = config.get("llm_config")
+            reset_evaluator = (
+                isinstance(llm_payload, dict)
+                and "evaluation_model_name" in llm_payload
+                and llm_payload["evaluation_model_name"] is None
             )
-        return self._make_request(
-            "POST",
-            "/api/set_config",
-            json=config.model_dump(mode="json"),  # type: ignore[reportAttributeAccessIssue]
-        )
+            validated = self._convert_to_model(config, Config)
+        payload = validated.model_dump(mode="json")
+        if reset_evaluator:
+            # The schema omits inactive settings in reads and stored documents.
+            # This is a write instruction, so preserve the intended reset.
+            payload["llm_config"]["evaluation_model_name"] = None
+        return self._make_request("POST", "/api/set_config", json=payload)
 
     def update_config(self, partial: dict) -> dict:
         """Apply a partial (PATCH-style) update to the org config.
