@@ -5,20 +5,21 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Any, Literal
 
 from reflexio.opencode_executable import OpenCodeCLIError, resolve_executable
 from reflexio.server.llm._litellm_types import LLMHardTimeoutError
 from reflexio.server.llm._native_cli import (
-    native_cli_directory,
+    make_private_cli_directory,
+    release_private_cli_directory,
     remaining_native_time,
     run_native_cli,
 )
 from reflexio.server.llm._native_model_ref import (
+    OPENCODE_CHILD_ENV,
+    native_child_path_environment,
     reject_native_selection,
 )
 from reflexio.server.llm.providers.claude_code_stream_parser import (
@@ -174,7 +175,6 @@ def run_opencode(
     selected, separator, variant = (model or "").partition("#")
     if separator and ((selected and not selected.strip()) or not variant.strip()):
         reject_native_selection("OpenCode model variant reference is invalid")
-    owner = native_cli_directory()
     directory: Path | None = None
     try:
         executable = resolve_executable(cli_path)
@@ -183,7 +183,7 @@ def run_opencode(
                 "Native OpenCode requires an .exe; select it with CLAUDE_SMART_CLI_PATH. "
                 "Use an npm package with a native .exe or keep the compatibility bridge for older and custom launchers."
             )
-        directory = Path(tempfile.mkdtemp(prefix="opencode-", dir=owner)).resolve()
+        directory = make_private_cli_directory("opencode-")
         config_dir = directory / ".opencode"
         config_dir.mkdir()
         (config_dir / "opencode.json").write_text(
@@ -205,8 +205,10 @@ def run_opencode(
         )
         env = {
             **os.environ,
+            # Path variables reach the child anchored here, not in its cwd.
+            **native_child_path_environment(),
             "PWD": str(directory),
-            "OPENCODE_PURE": "1",
+            **OPENCODE_CHILD_ENV,
             "CLAUDE_SMART_HOST": "opencode",
             "CLAUDE_SMART_INTERNAL": "1",
             "CLAUDE_CODE_ENTRYPOINT": "optimizer",
@@ -275,11 +277,9 @@ def run_opencode(
     except OSError:
         raise OpenCodeCLIError("OpenCode private workdir setup failed") from None
     finally:
-        # Worker death cannot delete a running delegated CLI's cwd. The parent
-        # owns the whole directory until its native retirement receipt.
-        if owner is None and directory is not None:
+        if directory is not None:
             try:
-                shutil.rmtree(directory)
+                release_private_cli_directory(directory)
             except OSError:
                 raise OpenCodeCLIError(
                     "OpenCode private workdir cleanup failed"

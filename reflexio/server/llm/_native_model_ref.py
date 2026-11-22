@@ -155,3 +155,240 @@ def native_policy_digest() -> str:
         },
     }
     return hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest()
+
+
+# Executable override variables: any of them can change which binary runs.
+# The retired `CLAUDE_SMART_CODEX_PATH` is not one: it never selects a binary,
+# it only refuses Codex selection until migrated (no launch, so no identity),
+# and is otherwise ignored. Its effect is already bound through the resolved
+# executable, so removing a stale assignment does not move the identity.
+_EXECUTABLE_OVERRIDE_ENVS = (
+    "CLAUDE_SMART_CLI_PATH",
+    PLUGIN_OPENCODE_EXECUTABLE_ENV,
+)
+# Per host: the account/configuration directories the CLI reads, each with its
+# documented default under HOME when unset.
+_HOST_ACCOUNT_DIRS: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
+    "claude-code": (("CLAUDE_CONFIG_DIR", (".claude",)),),
+    "codex": (("CODEX_HOME", (".codex",)),),
+    "opencode": (
+        ("XDG_DATA_HOME", (".local", "share")),
+        ("XDG_CONFIG_HOME", (".config",)),
+    ),
+}
+# Per host: the environment namespace the CLI reads to choose its backend,
+# endpoint, credential source and model -- e.g. Claude Code's
+# `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` (which "is used instead of your ...
+# subscription" in `-p` mode), `ANTHROPIC_DEFAULT_SONNET_MODEL` and the
+# `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/`_FOUNDRY` switches. Bound by prefix
+# rather than by a hand list, so a newly documented variable is covered.
+_HOST_ENV_NAMESPACES: dict[str, tuple[str, ...]] = {
+    "claude-code": ("ANTHROPIC_", "CLAUDE_CODE_USE_"),
+    "codex": ("CODEX_", "OPENAI_"),
+    "opencode": ("OPENCODE_",),
+}
+# Claude Code on a cloud provider (any `CLAUDE_CODE_USE_*` switch set) takes
+# its account and region from that cloud's own SDK variables (e.g. an AWS
+# profile or region for Bedrock). Bound only while such a switch is set, so an
+# unrelated cloud setting cannot refuse a direct-API daemon.
+_CLAUDE_CODE_CLOUD_SWITCH = "CLAUDE_CODE_USE_"
+_CLAUDE_CODE_CLOUD_NAMESPACES = ("AWS_", "GOOGLE_", "CLOUD_ML_")
+# Per host: variables outside its namespaces that still select its account.
+# Claude Code's `CLAUDE_CODE_OAUTH_TOKEN` is a subscription credential (bound
+# by presence through the secret rule below, never by value).
+_HOST_ENV_NAMES: dict[str, tuple[str, ...]] = {
+    "claude-code": ("CLAUDE_CODE_OAUTH_TOKEN",),
+    # OpenCode's own provider docs (opencode.ai/docs/providers) name these as
+    # what selects a provider's account, project, region or credential:
+    "opencode": (
+        # Google Vertex: "Point GOOGLE_APPLICATION_CREDENTIALS at the
+        # service-account JSON file" (a path); project from
+        # GOOGLE_VERTEX_PROJECT, GOOGLE_CLOUD_PROJECT, GCP_PROJECT or
+        # GCLOUD_PROJECT; location from GOOGLE_VERTEX_LOCATION,
+        # GOOGLE_CLOUD_LOCATION or VERTEX_LOCATION.
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GOOGLE_VERTEX_PROJECT",
+        "GOOGLE_CLOUD_PROJECT",
+        "GCP_PROJECT",
+        "GCLOUD_PROJECT",
+        "GOOGLE_VERTEX_LOCATION",
+        "GOOGLE_CLOUD_LOCATION",
+        "VERTEX_LOCATION",
+        # Amazon Bedrock: "A configured profile, AWS_PROFILE, AWS_ACCESS_KEY_ID,
+        # web identity token file ... activates the provider"; region from
+        # AWS_REGION then AWS_DEFAULT_REGION; API keys in
+        # AWS_BEARER_TOKEN_BEDROCK. The profile and token FILES are paths.
+        "AWS_PROFILE",
+        # Web-identity federation assumes this role, i.e. selects the account
+        # (the token FILE beside it is a path). AWS_ROLE_SESSION_NAME is only a
+        # session label and selects nothing, so it is not bound.
+        "AWS_ROLE_ARN",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "AWS_SHARED_CREDENTIALS_FILE",
+        "AWS_CONFIG_FILE",
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        # Azure: AZURE_RESOURCE_NAME "supplies the resource name"; the legacy
+        # AZURE_COGNITIVE_SERVICES_RESOURCE_NAME "also works".
+        "AZURE_RESOURCE_NAME",
+        "AZURE_COGNITIVE_SERVICES_RESOURCE_NAME",
+        # OpenRouter: "Provide OPENROUTER_API_KEY to the OpenCode server".
+        "OPENROUTER_API_KEY",
+    ),
+}
+# Codex injects these into every command it runs (codex-rs
+# `protocol/src/shell_environment.rs`, `core/src/exec_env.rs`): ids of the
+# PARENT Codex session, thread and tool call. A daemon started from inside a
+# Codex session inherits them; they select no model, endpoint or account, so a
+# restart from another session must not move the identity. Matched without
+# case, as Windows environment names are. Kept bound on purpose:
+# `CODEX_SANDBOX*` (changes how the launched CLI's HTTP client behaves) and
+# `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` (a stable wrapper label, not per
+# session).
+_PARENT_SESSION_ENVS = frozenset(
+    {"CODEX_SESSION_ID", "CODEX_THREAD_ID", "CODEX_TOOL_CALL_ID"}
+)
+# A credential's VALUE never enters an identity: rotating a key must not move
+# it. Only whether one is set (which selects the credential source) does.
+_SECRET_NAME_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "HEADERS")
+# Variables whose value is the PATH of a credential/config file, not a secret:
+# which file is read decides the account, so the resolved absolute path is
+# bound (the file is never opened). Checked before the secret rule, which
+# would otherwise reduce e.g. `GOOGLE_APPLICATION_CREDENTIALS` to presence.
+# Any `*_FILE` variable names a file the same way.
+_FILE_PATH_ENVS = frozenset({"GOOGLE_APPLICATION_CREDENTIALS"})
+_FILE_PATH_SUFFIX = "_FILE"
+
+
+# Variables every OpenCode launch sets in the CHILD, whatever the parent holds:
+# the direct launcher (and the plugin bridge) always run it pure. The identity
+# binds this effective value, so a parent assignment cannot move it.
+OPENCODE_CHILD_ENV: dict[str, str] = {"OPENCODE_PURE": "1"}
+_HOST_CHILD_ENV: dict[str, dict[str, str]] = {"opencode": OPENCODE_CHILD_ENV}
+
+
+def _file_path_env(name: str) -> bool:
+    upper = name.upper()
+    return upper in _FILE_PATH_ENVS or upper.endswith(_FILE_PATH_SUFFIX)
+
+
+_ACCOUNT_DIR_ENVS = frozenset(
+    name for directories in _HOST_ACCOUNT_DIRS.values() for name, _ in directories
+)
+
+
+def native_child_path_environment() -> dict[str, str]:
+    """Every path-valued launch variable, anchored ONCE to this process's cwd.
+
+    Native CLIs run from a private, empty per-call directory, so a relative
+    account directory or credential-file path left as written would resolve
+    THERE, losing the login or selecting another account. Each nonempty one
+    (account/configuration directories and credential/config FILE variables)
+    is expanded (``~``) and anchored here instead. The launchers pass exactly
+    these values to the child, and the launch identity binds the same values,
+    so what is fingerprinted is what the child reads.
+
+    Returns:
+        dict[str, str]: Variable name to absolute path, for set variables only.
+    """
+    return {
+        name: str(Path(value).expanduser().absolute())
+        for name, value in os.environ.items()
+        if value and (name.upper() in _ACCOUNT_DIR_ENVS or _file_path_env(name))
+    }
+
+
+def _bound_env_value(name: str, value: str, paths: dict[str, str]) -> str | bool | None:
+    """How one host variable enters the identity: path, presence or value.
+
+    A secret binds only NONEMPTY presence: a blank one selects no credential
+    source, so it is omitted (``None``) exactly as if unset.
+    """
+    if _file_path_env(name):
+        return paths.get(name, value)
+    if any(part in name.upper() for part in _SECRET_NAME_PARTS):
+        return True if value else None
+    return value
+
+
+def _account_dir(name: str, default: tuple[str, ...], paths: dict[str, str]) -> str:
+    """The directory a CLI actually uses for ``name``, as an absolute path:
+    the value its child receives, or the documented default under HOME."""
+    return paths.get(name) or str(Path.home().joinpath(*default))
+
+
+def _host_environment(host: str, paths: dict[str, str]) -> dict[str, str | bool]:
+    """The host's own namespace: values, file paths resolved, secrets by presence."""
+    bound = {name for name, _ in _HOST_ACCOUNT_DIRS.get(host, ())}
+    prefixes = _HOST_ENV_NAMESPACES.get(host, ())
+    names = _HOST_ENV_NAMES.get(host, ())
+    if host == "claude-code" and any(
+        name.upper().startswith(_CLAUDE_CODE_CLOUD_SWITCH) and value
+        for name, value in os.environ.items()
+    ):
+        prefixes = (*prefixes, *_CLAUDE_CODE_CLOUD_NAMESPACES)
+    environment: dict[str, str | bool] = {}
+    for name, value in sorted(os.environ.items()):
+        if (
+            (name.upper().startswith(prefixes) or name.upper() in names)
+            and name not in bound
+            and name.upper() not in _PARENT_SESSION_ENVS
+        ):
+            bound_value = _bound_env_value(name, value, paths)
+            if bound_value is not None:
+                environment[name] = bound_value
+    return {**environment, **_HOST_CHILD_ENV.get(host, {})}
+
+
+def native_launch_identity_digest() -> str:
+    """Digest only what decides WHO answers a native call: binary and account.
+
+    ``native_policy_digest`` binds the whole launch environment (cwd, PATH,
+    PATHEXT, timeout, ...) and suits a plan frozen for one job. A DURABLE
+    identity cannot: it must survive a plugin upgrade that moves the working
+    directory and a restart from another shell whose PATH differs but resolves
+    to the same binary. So this digest binds:
+
+    * the configured native target;
+    * the executable the native provider will launch -- the very absolute path
+      its resolver returns for dispatch, never PATH itself;
+    * HOME and the host's account/configuration directories at their
+      effective absolute locations (documented HOME-based defaults when
+      unset);
+    * the executable override variables;
+    * the host's own environment namespace (backend, endpoint, credential
+      source and model selection), with credentials bound by presence only,
+      credential/config FILE paths by their absolute location, and parent
+      Codex session ids excluded.
+
+    Excluded: cwd, PATH, PATHEXT and the timeout, except through what they
+    resolve to above. The cwd selects nothing: every native generation call
+    runs from a private, empty directory, so project settings
+    (`.claude/settings.json`, `.codex/config.toml`, `.opencode/`) never apply.
+
+    Returns:
+        str: Hex SHA-256 of the launch identity.
+    """
+    from reflexio.server.llm.providers.native_cli_provider import (
+        _resolve_cli_path,  # noqa: PLC2701 - the one resolver dispatch uses
+    )
+
+    target = configured_native_model()
+    host = target.host if target is not None else None
+    paths = native_child_path_environment()
+    identity = {
+        "target": target.reference if target is not None else None,
+        "executable": _resolve_cli_path(host) if host is not None else None,
+        "home": str(Path.home()),
+        "accounts": {
+            name: _account_dir(name, default, paths)
+            for name, default in _HOST_ACCOUNT_DIRS.get(host or "", ())
+        }
+        if host is not None
+        else {},
+        "overrides": {name: os.environ.get(name) for name in _EXECUTABLE_OVERRIDE_ENVS},
+        "environment": _host_environment(host, paths) if host is not None else {},
+    }
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()

@@ -439,6 +439,10 @@ def require_private_provider_rules() -> None:
         )
 
 
+def _emit_no_payload(_payload: Any) -> None:
+    """A private child never prints LiteLLM's raw standard logging payload."""
+
+
 def _private_completion(params: dict[str, Any]) -> Any:
     """Isolate the per-call child before any private provider I/O."""
     from litellm import utils
@@ -469,6 +473,11 @@ def _private_completion(params: dict[str, Any]) -> Any:
     for diagnostic_module in (utils, litellm_logging):
         for hook in ("add_breadcrumb", "capture_exception"):
             setattr(diagnostic_module, hook, None)
+    # LiteLLM prints the raw standard payload from its BACKGROUND success
+    # handler, after the stdout redirect below has ended, judged by whatever
+    # the print flag holds at that later moment. Popping the flag above cannot
+    # cover that thread, so its print path is closed itself.
+    litellm_logging.emit_standard_logging_payload = _emit_no_payload
     litellm._async_input_callback = []
     litellm._async_success_callback = []
     litellm._async_failure_callback = []

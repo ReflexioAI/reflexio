@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from unittest.mock import Mock
@@ -29,6 +30,7 @@ def test_executable_discovery_does_not_import_the_server_or_llm_providers():
     probe = """
 import importlib.abc
 import sys
+import tempfile
 from pathlib import Path
 
 class BlockRuntimeImports(importlib.abc.MetaPathFinder):
@@ -54,12 +56,12 @@ assert resolve_executable(sys.executable) == Path(sys.executable).absolute()
 @pytest.mark.unit
 @pytest.mark.parametrize("setting", ["path", "timeout"])
 def test_invalid_native_configuration_logs_names_without_values(
-    monkeypatch, caplog, setting
+    monkeypatch, caplog, tmp_path, setting
 ):
     if setting == "path":
         monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/" + "opencode")
         monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "private-canary-not-an-executable")
-        monkeypatch.setattr(provider.shutil, "which", lambda _name, **_kwargs: None)
+        monkeypatch.setenv("PATH", str(tmp_path))
         assert provider._resolve_cli_path("opencode") is None
     else:
         monkeypatch.setenv(
@@ -268,7 +270,9 @@ def test_native_relative_executable_is_anchored_before_changing_cwd(
     monkeypatch.setattr(native, "run_native_cli", launch)
     relative = str(executable.relative_to(tmp_path))
     if through_path:
-        monkeypatch.setattr(native.shutil, "which", lambda _name, **_kwargs: relative)
+        monkeypatch.setattr(
+            opencode_executable.shutil, "which", lambda _name, **_kwargs: relative
+        )
     native.run_opencode(
         cli_path="opencode" if through_path else relative,
         system_prompt="s",
@@ -378,7 +382,7 @@ def test_bridge_symlink_is_discriminated_before_native_path_canonicalization(
 @pytest.mark.unit
 def test_setup_failure_cannot_dispatch_or_expose_raw_error(monkeypatch):
     monkeypatch.setattr(
-        native.tempfile, "mkdtemp", Mock(side_effect=OSError("private-canary"))
+        tempfile, "mkdtemp", Mock(side_effect=OSError("private-canary"))
     )
     dispatch = Mock()
     monkeypatch.setattr(native, "run_native_cli", dispatch)
@@ -1064,3 +1068,28 @@ def test_nonbridge_claude_transport_preserves_independent_learning_environment(
     child = run.call_args.kwargs["env"]
     assert {name: child.get(name) for name in hints} == hints
     assert {name: os.environ.get(name) for name in hints} == hints
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX PATH semantics")
+@pytest.mark.parametrize("path", ["{bin}:", ":{bin}", ":"])
+def test_bare_opencode_selection_skips_empty_path_entries(monkeypatch, tmp_path, path):
+    # An empty PATH entry would anchor the bare name to the working directory.
+    work = tmp_path / "work"
+    work.mkdir()
+    (tmp_path / "bin").mkdir()
+    for directory in (work, tmp_path / "bin"):
+        if directory == tmp_path / "bin" and path == ":":
+            continue
+        stub = directory / "opencode"
+        stub.write_text("#!/bin/sh\nexit 0\n")
+        stub.chmod(0o755)
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("PATH", path.format(bin=tmp_path / "bin"))
+    if path == ":":
+        with pytest.raises(opencode_executable.OpenCodeCLIError):
+            opencode_executable.resolve_executable("opencode")
+    else:
+        assert opencode_executable.resolve_executable("opencode") == (
+            tmp_path / "bin" / "opencode"
+        )
