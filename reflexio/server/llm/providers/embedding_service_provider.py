@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from reflexio.embedding_requests import embedding_request_max_texts
+from reflexio.inference_launch import api_owns_query_worker
 from reflexio.inference_launch import (
     inference_service_url as resolve_inference_service_url,
 )
@@ -438,6 +439,10 @@ def validate_search_reranker_service(
     """
     shared_url = inference_service_url()
     if not query_embedding_service_url():
+        return shared_url
+    # The launcher already owns the local child's role. A request can route
+    # shared reranking without waiting for that child's embedding contract.
+    if advertised is None and api_owns_query_worker(os.environ):
         return shared_url
     shared = resolve_inference_service_capabilities()
     endpoint = validate_query_embedding_service(shared.configured_model, None)

@@ -71,10 +71,18 @@ def inference_workload(env: Mapping[str, str]) -> Literal["shared", "query"]:
     )
 
 
+def api_owns_query_worker(env: Mapping[str, str]) -> bool:
+    """The reserved API-local worker is launched with an embedding-only role."""
+    return (
+        env.get(_QUERY_URL, "").strip().rstrip("/") == _API_QUERY_URL
+        and inference_workload(env) == "query"
+    )
+
+
 def container_inference_launch(env: Mapping[str, str]) -> InferenceLaunchPlan:
     """Resolve Docker's independent query role before ordinary child ownership."""
     if inference_workload(env) == "query":
-        if env.get(_QUERY_URL, "").strip().rstrip("/") != _API_QUERY_URL:
+        if not api_owns_query_worker(env):
             raise ConfigurationMigrationError(
                 "API-local query mode requires its reserved loopback URL."
             )

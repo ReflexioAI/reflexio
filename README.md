@@ -761,8 +761,10 @@ The client binds the workload advertised by `/health` and the immutable vector
 contract in `/health/model`. It verifies that the
 reserved worker has the same configured reranker as the shared worker. Generic
 reranks use the shared service. A query-only worker leaves search reranking
-on the shared service too. Failed reserved reranks retain the existing
-unavailable-reranker behavior and deadlines.
+on the shared service too. The API's own query-only child has a fixed role at
+launch, so its load or availability does not affect shared reranking. Attached
+workers are qualified by their advertised workload. Failed reserved reranks
+retain the existing unavailable-reranker behavior and deadlines.
 
 Remove the retired `REFLEXIO_SEARCH_RERANK_SERVICE_URL` assignment, including
 any blank assignment. Deploy the worker with the query workload if you
