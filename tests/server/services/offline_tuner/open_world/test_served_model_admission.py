@@ -29,8 +29,10 @@ from reflexio.server.llm.litellm_client import (
 from reflexio.server.services.offline_tuner.open_world.analyst import (
     ChatMessage,
     _is_provider_date_stamp,
+    _litellm_transport_identity,
     _LiteLLMOpenWorldModelClient,
     _native_cli_served_stamps,
+    _native_pinned_model,
     _served_model_admitted,
 )
 
@@ -184,8 +186,8 @@ def test_non_native_route_with_foreign_provider_still_raises(monkeypatch):
         )
 
 
-def _native(monkeypatch, host: str) -> str:
-    model = f"local-cli/{host}"
+def _native(monkeypatch, host: str, pin: str | None = None) -> str:
+    model = f"local-cli/{host}" if pin is None else f"local-cli/{host}/{pin}"
     # Own every input native selection reads, so a developer's own CLI setup
     # cannot fail a case before admission. The operator-configured native
     # target gate stays in force; satisfy it.
@@ -423,3 +425,116 @@ def test_launch_drift_before_a_retry_is_refused_without_dispatch(monkeypatch):
     ):
         _call(client, model)
     assert len(dispatched) == 1
+
+
+@pytest.mark.parametrize(
+    ("reference", "pin"),
+    [
+        ("local-cli/claude-code", None),
+        ("local-cli/codex", None),
+        ("local-cli/opencode", None),
+        ("local-cli/claude-code/claude-x", "claude-x"),
+        ("local-cli/codex/synthetic-model", "synthetic-model"),
+        # OpenCode's `#variant` is not part of the model id.
+        ("local-cli/opencode/provider/model#high", "provider/model"),
+        ("local-cli/opencode/#high", None),
+        # Only OpenCode treats `#` as a variant separator.
+        ("local-cli/claude-code/claude-x#y", "claude-x#y"),
+    ],
+)
+def test_native_pinned_model(reference, pin):
+    assert _native_pinned_model(reference) == pin
+
+
+@pytest.mark.parametrize(
+    ("host", "pin", "stamp", "admitted"),
+    [
+        ("claude-code", "claude-x", "claude-x", True),
+        ("claude-code", "claude-x", "claude-x-20250101", True),
+        ("claude-code", "claude-x", "claude-x-2025-01-01", True),
+        ("claude-code", "claude-x", None, True),
+        ("claude-code", "claude-x", "claude-y", False),
+        ("claude-code", "claude-x", "claude-x-mini", False),
+        # A pinned snapshot needs an exact echo.
+        ("claude-code", "claude-x-20250101", "claude-x-20250101", True),
+        ("claude-code", "claude-x-20250101", "claude-x", False),
+        ("claude-code", "claude-x-20250101", "claude-x-20250101-20250601", False),
+        # Hosts that stamp nothing are admitted on an explicit pin.
+        ("codex", "synthetic-model", None, True),
+        ("opencode", "provider/model#high", None, True),
+        # A delegated default admits anything.
+        ("claude-code", None, "anything-at-all", True),
+    ],
+)
+def test_explicit_native_pin_refuses_a_contradicting_stamp(
+    monkeypatch, host, pin, stamp, admitted
+):
+    model = _native(monkeypatch, host, pin)
+    hidden = {"reflexio_provider": "local-cli"}
+    if stamp is not None:
+        hidden["reflexio_served_model"] = stamp
+    if not admitted:
+        with pytest.raises(ValueError, match="served a different model"):
+            _complete(monkeypatch, model=model, served=model, hidden=hidden)
+        return
+    completion = _complete(monkeypatch, model=model, served=model, hidden=hidden)
+    assert completion.observed_model_revision == model
+
+
+def _provider(monkeypatch, model: str) -> str:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-synthetic-test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-synthetic-test")
+    client = LiteLLMClient(
+        LiteLLMConfig(model=model, max_tokens=512, fallback_models=[])
+    )
+    return _litellm_transport_identity(client).provider
+
+
+@pytest.mark.parametrize(
+    ("model", "provider"),
+    [
+        # Captured by running the same composition against origin/main's
+        # analyst: binding the native launch policy must not move any
+        # non-native persisted identity (no qualification cache churn).
+        (
+            "gpt-4o",
+            "litellm:openai-default:"
+            "34feb85be62f049b2c162705dbf7c70ef12d912630ea8bbf878f82924394fd8c",
+        ),
+        (
+            "anthropic/claude-x-20250101",
+            "litellm:anthropic:"
+            "e5733a4bd8f9936419421c37c04d5d09a01ab4bcaafc06330b5332cc3350e2fa",
+        ),
+    ],
+)
+def test_non_native_identity_is_unchanged(monkeypatch, model, provider):
+    for name in (
+        "OPENAI_API_BASE",
+        "OPENAI_BASE_URL",
+        "ANTHROPIC_API_BASE",
+        "ANTHROPIC_BASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    # A native launch input must not leak into a non-native identity.
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/synthetic/other/claude")
+    assert _provider(monkeypatch, model) == provider
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("CLAUDE_SMART_CLI_PATH", "/synthetic/other/claude"),
+        ("CLAUDE_CONFIG_DIR", "/synthetic/other-account"),
+        ("CLAUDE_SMART_CLI_TIMEOUT", "30"),
+    ],
+)
+def test_native_launch_policy_is_part_of_the_persisted_identity(
+    monkeypatch, name, value
+):
+    model = _native(monkeypatch, "claude-code")
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    before = _provider(monkeypatch, model)
+    assert _provider(monkeypatch, model) == before, "recomposition is stable"
+    monkeypatch.setenv(name, value)
+    assert _provider(monkeypatch, model) != before

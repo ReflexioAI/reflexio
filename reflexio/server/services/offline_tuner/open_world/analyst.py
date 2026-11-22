@@ -24,7 +24,10 @@ from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.llm import ProviderRequestGuardError
 from reflexio.server.llm._azure_transport import normalize_azure_v1_endpoints
 from reflexio.server.llm._native_model_ref import PROVIDER_KEY as _NATIVE_CLI_ROUTE
-from reflexio.server.llm._native_model_ref import native_policy_digest
+from reflexio.server.llm._native_model_ref import (
+    native_policy_digest,
+    parse_native_model_ref,
+)
 from reflexio.server.llm.failure import (
     OutageWait,
     Transient,
@@ -1160,6 +1163,11 @@ _DEFAULT_OPENAI_ROUTE = "openai-default"
 # composed `local-cli` route, so an echo check there could only refuse every
 # call. Blank stamps count as missing; present stamps are kept as diagnostic
 # data in `usage_json`, and the recorded identity is still the configured id.
+# One exception: an EXPLICIT pin (`local-cli/<host>/<model>`) is the physical
+# selection, so a reported served model that contradicts it is refused under
+# the same rules as any other route (exact, or a dated snapshot of an undated
+# pin). A missing stamp is still admitted, and a host-only reference
+# (`local-cli/<host>`) delegates the model to the CLI and admits anything.
 # Every other route keeps the strict echo checks, including refusing a
 # response with no observed provider or model.
 
@@ -1269,10 +1277,11 @@ class _LiteLLMTransportIdentity:
     ``credential_fingerprint`` is NOT persisted and is not part of the digest.
     It exists only so dataclass equality still notices a credential that
     changed underneath a live composition; see
-    ``_credential_drift_fingerprint``. ``native_launch_policy`` is the same
-    kind of drift-only state for the native ``local-cli`` route: the operator
-    launch-policy digest, so a CLI launch input changed after composition is
-    refused before dispatch rather than recorded under the composed identity.
+    ``_credential_drift_fingerprint``.
+
+    The native ``local-cli`` route is the one exception to "scope, never the
+    account": its digest also binds ``native_policy_digest()``, so the CLI
+    launch policy is PART of the persisted identity. See the payload below.
     """
 
     provider: str
@@ -1282,7 +1291,6 @@ class _LiteLLMTransportIdentity:
     expected_observed_provider: str
     bare_model_revision: str
     credential_fingerprint: str | None
-    native_launch_policy: str | None
 
 
 def _litellm_transport_identity(client: LiteLLMClient) -> _LiteLLMTransportIdentity:
@@ -1376,6 +1384,17 @@ def _litellm_transport_identity(client: LiteLLMClient) -> _LiteLLMTransportIdent
         # the difference legible.
         "schema_version": "offline-tuner-litellm-transport-v3",
     }
+    if route == _NATIVE_CLI_ROUTE:
+        # On the native route the CLI, not this client, owns dispatch: it
+        # re-resolves its executable, account directory and settings on every
+        # call. So the operator launch policy -- the same digest
+        # `PairwiseJudge` freezes -- is part of what this transport IS, and is
+        # bound into the persisted identity. A launch input changed after
+        # composition then fails the in-process drift checks before dispatch,
+        # and one changed across a restart fails the durable attempt-context
+        # binding instead of resuming under a different executable or account.
+        # Other routes add no key, so their digests are unchanged.
+        payload["native_launch_policy"] = native_policy_digest()
     digest = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
     return _LiteLLMTransportIdentity(
         provider=f"litellm:{route}:{digest}",
@@ -1394,16 +1413,6 @@ def _litellm_transport_identity(client: LiteLLMClient) -> _LiteLLMTransportIdent
         # Excluded from `digest` above by construction; see the dataclass
         # docstring for why this is drift-only state.
         credential_fingerprint=_credential_drift_fingerprint(credential),
-        # Drift-only, like the credential fingerprint and likewise kept out of
-        # `digest`. On the native route the CLI host re-resolves its
-        # executable and launch settings at every dispatch, so a launch input
-        # changed after composition (executable path, timeout, PATH, ...)
-        # would otherwise be recorded under the composed identity. The same
-        # operator-policy digest `PairwiseJudge` freezes is captured here and
-        # compared by the pre-dispatch drift check in `complete()`.
-        native_launch_policy=(
-            native_policy_digest() if route == _NATIVE_CLI_ROUTE else None
-        ),
     )
 
 
@@ -1601,6 +1610,13 @@ class _LiteLLMOpenWorldModelClient:
             )
         self._client = client
         self._transport = transport
+        # The model an explicit native reference pins, or None when the
+        # reference delegates to the CLI host's own default.
+        self._native_pin = (
+            _native_pinned_model(transport.model_revision)
+            if transport.route == _NATIVE_CLI_ROUTE
+            else None
+        )
         # Seconds of sleep this COMPOSED CLIENT may still spend absorbing
         # provider rate limits. Not reset per call: one composition is one
         # attempt in both live callers, and the budget is deliberately shared
@@ -2013,6 +2029,21 @@ class _LiteLLMOpenWorldModelClient:
             served = _native_cli_served_stamps(
                 provider=observed_provider, model=observed_model
             )
+            # An explicit pin is the physical selection, so a reported served
+            # model must be that pin (same rules as any other route). A missing
+            # stamp proves nothing either way and stays admitted, and a
+            # host-only reference delegates the choice to the CLI entirely.
+            if (
+                self._native_pin is not None
+                and "served_model" in served
+                and not _served_model_admitted(
+                    configured_bare=self._native_pin,
+                    observed_bare=served["served_model"],
+                )
+            ):
+                raise ValueError(
+                    "provider served a different model than the qualified revision"
+                )
         else:
             served = self._admit_served_model(
                 observed_provider=observed_provider, observed_model=observed_model
@@ -2095,6 +2126,26 @@ class _LiteLLMOpenWorldModelClient:
                 "provider served a different model than the qualified revision"
             )
         return {"served_model": served_model}
+
+
+def _native_pinned_model(reference: str) -> str | None:
+    """Return the model an explicit native reference pins, if any.
+
+    ``local-cli/<host>`` delegates to the CLI's own default and pins nothing.
+    OpenCode's ``#variant`` suffix selects a reasoning variant, not a model, so
+    it is not part of the comparable model id; ``#high`` alone pins nothing.
+
+    Args:
+        reference (str): The configured ``local-cli/...`` model reference.
+
+    Returns:
+        str | None: The pinned model id, or None for a delegated default.
+    """
+    ref = parse_native_model_ref(reference)
+    model = ref.model
+    if model is not None and ref.host == "opencode":
+        model = model.partition("#")[0]
+    return model or None
 
 
 def _native_cli_served_stamps(
