@@ -225,6 +225,12 @@ def _canonical_trajectory_json(
     value: object, *, strings: dict[str, str], depth: int = 0
 ) -> str:
     """Encode trajectory JSON deterministically within a bounded nesting depth."""
+    # Skip redundant container checks for exact built-ins, not their subclasses.
+    kind = type(value)
+    if kind is str or kind is int or kind is bool or value is None:
+        return _trajectory_scalar_json(value, strings)
+    if kind is float:
+        return json.dumps(value, allow_nan=False, separators=(",", ":"))
     if (
         isinstance(value, tuple | list | Mapping)
         and depth >= MAX_CANONICAL_TRAJECTORY_JSON_DEPTH
