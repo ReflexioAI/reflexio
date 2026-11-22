@@ -274,37 +274,52 @@ def _file_path_env(name: str) -> bool:
     return upper in _FILE_PATH_ENVS or upper.endswith(_FILE_PATH_SUFFIX)
 
 
-def _bound_env_value(name: str, value: str) -> str | bool | None:
+_ACCOUNT_DIR_ENVS = frozenset(
+    name for directories in _HOST_ACCOUNT_DIRS.values() for name, _ in directories
+)
+
+
+def native_child_path_environment() -> dict[str, str]:
+    """Every path-valued launch variable, anchored ONCE to this process's cwd.
+
+    Native CLIs run from a private, empty per-call directory, so a relative
+    account directory or credential-file path left as written would resolve
+    THERE, losing the login or selecting another account. Each nonempty one
+    (account/configuration directories and credential/config FILE variables)
+    is expanded (``~``) and anchored here instead. The launchers pass exactly
+    these values to the child, and the launch identity binds the same values,
+    so what is fingerprinted is what the child reads.
+
+    Returns:
+        dict[str, str]: Variable name to absolute path, for set variables only.
+    """
+    return {
+        name: str(Path(value).expanduser().absolute())
+        for name, value in os.environ.items()
+        if value and (name.upper() in _ACCOUNT_DIR_ENVS or _file_path_env(name))
+    }
+
+
+def _bound_env_value(name: str, value: str, paths: dict[str, str]) -> str | bool | None:
     """How one host variable enters the identity: path, presence or value.
 
     A secret binds only NONEMPTY presence: a blank one selects no credential
     source, so it is omitted (``None``) exactly as if unset.
     """
     if _file_path_env(name):
-        return str(Path(value).expanduser().absolute()) if value else value
+        return paths.get(name, value)
     if any(part in name.upper() for part in _SECRET_NAME_PARTS):
         return True if value else None
     return value
 
 
-def _account_dir(host: str, name: str, default: tuple[str, ...]) -> str:
-    """The directory a CLI actually uses for ``name``, as an absolute path.
-
-    Claude Code and Codex run in this process's working directory, so a
-    relative value is anchored there. OpenCode runs in a private per-call
-    directory, so a relative value names no stable location and is bound
-    as written.
-    """
-    value = os.environ.get(name)
-    if not value:
-        return str(Path.home().joinpath(*default))
-    path = Path(value)
-    if path.is_absolute() or host == "opencode":
-        return str(path)
-    return str(path.absolute())
+def _account_dir(name: str, default: tuple[str, ...], paths: dict[str, str]) -> str:
+    """The directory a CLI actually uses for ``name``, as an absolute path:
+    the value its child receives, or the documented default under HOME."""
+    return paths.get(name) or str(Path.home().joinpath(*default))
 
 
-def _host_environment(host: str) -> dict[str, str | bool]:
+def _host_environment(host: str, paths: dict[str, str]) -> dict[str, str | bool]:
     """The host's own namespace: values, file paths resolved, secrets by presence."""
     bound = {name for name, _ in _HOST_ACCOUNT_DIRS.get(host, ())}
     prefixes = _HOST_ENV_NAMESPACES.get(host, ())
@@ -321,7 +336,7 @@ def _host_environment(host: str) -> dict[str, str | bool]:
             and name not in bound
             and name.upper() not in _PARENT_SESSION_ENVS
         ):
-            bound_value = _bound_env_value(name, value)
+            bound_value = _bound_env_value(name, value, paths)
             if bound_value is not None:
                 environment[name] = bound_value
     return {**environment, **_HOST_CHILD_ENV.get(host, {})}
@@ -362,17 +377,18 @@ def native_launch_identity_digest() -> str:
 
     target = configured_native_model()
     host = target.host if target is not None else None
+    paths = native_child_path_environment()
     identity = {
         "target": target.reference if target is not None else None,
         "executable": _resolve_cli_path(host) if host is not None else None,
         "home": str(Path.home()),
         "accounts": {
-            name: _account_dir(host, name, default)
+            name: _account_dir(name, default, paths)
             for name, default in _HOST_ACCOUNT_DIRS.get(host or "", ())
         }
         if host is not None
         else {},
         "overrides": {name: os.environ.get(name) for name in _EXECUTABLE_OVERRIDE_ENVS},
-        "environment": _host_environment(host) if host is not None else {},
+        "environment": _host_environment(host, paths) if host is not None else {},
     }
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()

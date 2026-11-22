@@ -19,6 +19,7 @@ from reflexio.server.llm.providers.native_cli_provider import (
     _split_system_and_dialogue,
     register_native_provider,
 )
+from tests.server.llm.test_native_launch_identity import stub_executable
 
 
 def _stream_json(result_text: str) -> str:
@@ -799,13 +800,16 @@ class TestExecutableResolution:
         monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", str(executable))
         assert ccp._resolve_cli_path("claude-code") == str(executable)
 
-    def test_explicit_host_resolves_matching_binary(self, monkeypatch):
+    def test_explicit_host_resolves_matching_binary(self, monkeypatch, tmp_path):
+        # A controlled PATH, not a mocked lookup: Windows resolves through its
+        # own PATH walk, which a `shutil.which` stub would never reach.
         monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
-        monkeypatch.setattr(
-            ccp.shutil, "which", lambda name, **_kwargs: f"/owned/{name}"
-        )
-        assert ccp._resolve_cli_path("codex") == "/owned/codex"
-        assert ccp._resolve_cli_path("claude-code") == "/owned/claude"
+        owned = tmp_path / "owned"
+        codex = stub_executable(owned, "codex")
+        claude = stub_executable(owned, "claude")
+        monkeypatch.setenv("PATH", str(owned))
+        assert ccp._resolve_cli_path("codex") == str(codex.absolute())
+        assert ccp._resolve_cli_path("claude-code") == str(claude.absolute())
 
 
 class TestRegisterIfEnabled:

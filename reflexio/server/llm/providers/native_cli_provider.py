@@ -64,6 +64,7 @@ from reflexio.server.llm._native_model_ref import (
     PROVIDER_KEY,
     NativeModelRef,
     authorize_native_model,
+    native_child_path_environment,
     reject_native_selection,
 )
 from reflexio.server.llm.providers.claude_code_stream_parser import (
@@ -210,6 +211,19 @@ def _resolve_cli_path(host: str) -> str | None:
             _ENV_CLI_PATH,
         )
     return _which_on_path("codex" if host == _HOST_CODEX else "claude")
+
+
+def _anchored_executable(cli_path: str) -> str:
+    """Anchor a relative executable path to the caller's cwd before launch.
+
+    Native CLIs run from a private working directory, so a relative path with
+    a directory component (an explicit constructor path such as
+    ``./bin/claude``) would otherwise be looked up THERE. A bare name stays a
+    PATH lookup, exactly as before.
+    """
+    if Path(cli_path).name == cli_path:
+        return cli_path
+    return str(Path(cli_path).absolute())
 
 
 def _absolute(path: str | None) -> str | None:
@@ -536,7 +550,7 @@ def _run_claude_stream(
         _is_windows() and len(system_prompt) > _WINDOWS_ARGV_SYSTEM_PROMPT_LIMIT
     )
     cmd = [
-        cli_path,
+        _anchored_executable(cli_path),
         "-p",
         "--output-format",
         "stream-json",
@@ -556,7 +570,8 @@ def _run_claude_stream(
     # and skip publishing — otherwise extractor system prompts get
     # re-published as user interactions and contaminate the corpus.
     # The host CLI owns retries; this invocation retains its SDK deadline.
-    env = os.environ.copy()
+    # Path variables reach the child anchored here, not in its private cwd.
+    env = {**os.environ, **native_child_path_environment()}
     if _compat_host(cli_path) == _HOST_OPENCODE:
         # The known wrapper otherwise prefers shared learning hints to --model.
         # Bind only this child to the native request; independently invoked
@@ -613,7 +628,7 @@ def _run_codex_stream(
         remaining_native_time(deadline)
         output_path = _temporary_output_path()
         cmd = [
-            codex_path,
+            _anchored_executable(codex_path),
             "exec",
             "--sandbox",
             "read-only",
@@ -627,7 +642,8 @@ def _run_codex_stream(
         if model:
             cmd.extend(["--model", model])
         cmd.append("-")
-        env = os.environ.copy()
+        # Path variables reach the child anchored here, not in its private cwd.
+        env = {**os.environ, **native_child_path_environment()}
         env["CLAUDE_SMART_HOST"] = _HOST_CODEX
         env["CLAUDE_SMART_INTERNAL"] = "1"
         if optimizer:

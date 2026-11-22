@@ -56,6 +56,22 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _no_cli_on_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """A controlled PATH holding no native CLI (no mocked lookup, which the
+    Windows PATH walk would bypass)."""
+    empty = tmp_path / "empty-bin"
+    empty.mkdir(exist_ok=True)
+    monkeypatch.setenv("PATH", str(empty))
+
+
+def _cli_on_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """A controlled PATH holding a stub ``claude`` for this platform."""
+    from tests.server.llm.test_native_launch_identity import stub_executable
+
+    stub_executable(tmp_path / "cli-bin")
+    monkeypatch.setenv("PATH", str(tmp_path / "cli-bin"))
+
+
 class TestDetectAvailableProviders:
     def test_no_keys(self) -> None:
         assert detect_available_providers() == []
@@ -94,49 +110,29 @@ class TestDetectAvailableProviders:
         assert "openai" in providers
 
     def test_claude_code_needs_env_and_cli(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
     ) -> None:
         """Configured native intent is reserved even when its binary is missing."""
-        from reflexio.server.llm.providers import native_cli_provider
-
         monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
-        monkeypatch.setattr(
-            native_cli_provider.shutil, "which", lambda _, **_kwargs: None
-        )
+        _no_cli_on_path(monkeypatch, tmp_path)
         assert detect_available_providers() == ["local-cli"]
 
-        monkeypatch.setattr(
-            native_cli_provider.shutil,
-            "which",
-            lambda _, **_kwargs: "/usr/local/bin/claude",
-        )
+        _cli_on_path(monkeypatch, tmp_path)
         assert detect_available_providers() == ["local-cli"]
 
     def test_claude_code_not_detected_without_env(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
     ) -> None:
         """Without CLAUDE_SMART_USE_LOCAL_CLI=1, the CLI alone is not enough."""
-        from reflexio.server.llm.providers import native_cli_provider
-
-        monkeypatch.setattr(
-            native_cli_provider.shutil,
-            "which",
-            lambda _, **_kwargs: "/usr/local/bin/claude",
-        )
+        _cli_on_path(monkeypatch, tmp_path)
         assert detect_available_providers() == []
 
     def test_claude_code_takes_priority_over_anthropic(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
     ) -> None:
-        from reflexio.server.llm.providers import native_cli_provider
-
         monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
-        monkeypatch.setattr(
-            native_cli_provider.shutil,
-            "which",
-            lambda _, **_kwargs: "/usr/local/bin/claude",
-        )
+        _cli_on_path(monkeypatch, tmp_path)
         providers = detect_available_providers()
         assert providers[0] == "local-cli"
         assert "anthropic" in providers
@@ -145,16 +141,12 @@ class TestDetectAvailableProviders:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
     ) -> None:
         """CLAUDE_SMART_CLI_PATH should be honoured when `claude` is not on PATH."""
-        from reflexio.server.llm.providers import native_cli_provider
-
         fake_cli = tmp_path / "claude"
         fake_cli.write_text("#!/bin/sh\n")
         fake_cli.chmod(0o755)
         monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
         monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", str(fake_cli))
-        monkeypatch.setattr(
-            native_cli_provider.shutil, "which", lambda _, **_kwargs: None
-        )
+        _no_cli_on_path(monkeypatch, tmp_path)
         assert "local-cli" in detect_available_providers()
 
 

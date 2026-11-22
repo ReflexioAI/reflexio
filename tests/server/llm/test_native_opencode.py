@@ -56,12 +56,12 @@ assert resolve_executable(sys.executable) == Path(sys.executable).absolute()
 @pytest.mark.unit
 @pytest.mark.parametrize("setting", ["path", "timeout"])
 def test_invalid_native_configuration_logs_names_without_values(
-    monkeypatch, caplog, setting
+    monkeypatch, caplog, tmp_path, setting
 ):
     if setting == "path":
         monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/" + "opencode")
         monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "private-canary-not-an-executable")
-        monkeypatch.setattr(provider.shutil, "which", lambda _name, **_kwargs: None)
+        monkeypatch.setenv("PATH", str(tmp_path))
         assert provider._resolve_cli_path("opencode") is None
     else:
         monkeypatch.setenv(

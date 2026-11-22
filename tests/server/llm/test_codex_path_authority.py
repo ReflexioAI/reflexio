@@ -32,11 +32,12 @@ class Answer(BaseModel):
 
 
 @pytest.fixture
-def client_transport(monkeypatch):
+def client_transport(monkeypatch, tmp_path):
     monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", TARGET)
     monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
-    monkeypatch.setattr(provider.shutil, "which", lambda _name, **_kwargs: None)
+    # A controlled, empty PATH (Windows walks PATH itself, past any stub).
+    monkeypatch.setenv("PATH", str(tmp_path / "no-cli"))
     monkeypatch.setattr(provider.litellm, "custom_provider_map", [])
     client = LiteLLMClient(
         LiteLLMConfig(model=TARGET, timeout=2, max_tokens=32, fallback_models=[])

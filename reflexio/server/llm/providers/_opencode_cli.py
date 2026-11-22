@@ -19,6 +19,7 @@ from reflexio.server.llm._native_cli import (
 )
 from reflexio.server.llm._native_model_ref import (
     OPENCODE_CHILD_ENV,
+    native_child_path_environment,
     reject_native_selection,
 )
 from reflexio.server.llm.providers.claude_code_stream_parser import (
@@ -204,6 +205,8 @@ def run_opencode(
         )
         env = {
             **os.environ,
+            # Path variables reach the child anchored here, not in its cwd.
+            **native_child_path_environment(),
             "PWD": str(directory),
             **OPENCODE_CHILD_ENV,
             "CLAUDE_SMART_HOST": "opencode",

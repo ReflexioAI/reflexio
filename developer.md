@@ -1790,7 +1790,11 @@ parent Codex session ids (`CODEX_THREAD_ID`, ...) and the retired, ignored
 directory. Native Claude Code, Codex and OpenCode generation calls run from a
 private, empty per-call directory, so the daemon's project settings
 (`.claude/settings.json`, `.codex/config.toml`) never apply and the working
-directory is not part of the identity.
+directory is not part of the identity. Relative account directories
+(`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, XDG dirs), credential-file variables and a
+relative executable path are anchored to the daemon's directory (`~`
+expanded) before launch; the child receives the same absolute paths the
+identity binds.
 Windows native execution requires the actual `.exe`; batch shims continue to
 use the existing plugin bridge. No shell is introduced.
 
