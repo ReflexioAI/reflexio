@@ -27,6 +27,18 @@ from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 pytestmark = pytest.mark.integration
 
 
+def _seed_vec(storage, table, rowid, vector):
+    """Seed a sidecar row directly; vector writes through the API need a commit scope."""
+    import json
+
+    storage.conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))  # noqa: S608
+    storage.conn.execute(
+        f"INSERT INTO {table}(rowid, embedding) VALUES (?, ?)",  # noqa: S608
+        (rowid, json.dumps(vector)),
+    )
+    storage.conn.commit()
+
+
 @pytest.fixture(autouse=True)
 def _service_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep storage atomicity tests independent of a live inference child."""
@@ -107,7 +119,7 @@ class TestDeleteUserProfileAtomic:
         ).fetchone()
         assert rowid_row is not None
         rowid = rowid_row["rowid"]
-        s._vec_upsert("profiles_vec", rowid, [0.1] * s.embedding_dimensions)
+        _seed_vec(s, "profiles_vec", rowid, [0.1] * s.embedding_dimensions)
         assert rowid in _vec_rowids(s)
 
         s.delete_user_profile(DeleteUserProfileRequest(user_id="u1", profile_id="a2"))
@@ -153,7 +165,7 @@ class TestDeleteAllProfilesForUserAtomic:
         ).fetchone()
         assert rowid_row is not None
         rowid = rowid_row["rowid"]
-        s._vec_upsert("profiles_vec", rowid, [0.1] * s.embedding_dimensions)
+        _seed_vec(s, "profiles_vec", rowid, [0.1] * s.embedding_dimensions)
         assert rowid in _vec_rowids(s)
 
         s.delete_all_profiles_for_user("u2")
@@ -207,7 +219,7 @@ class TestDeleteAllProfilesByStatusAtomic:
         ).fetchone()
         assert rowid_row is not None
         rowid = rowid_row["rowid"]
-        s._vec_upsert("profiles_vec", rowid, [0.1] * s.embedding_dimensions)
+        _seed_vec(s, "profiles_vec", rowid, [0.1] * s.embedding_dimensions)
         assert rowid in _vec_rowids(s)
 
         s.delete_all_profiles_by_status(Status.ARCHIVED)
@@ -252,7 +264,7 @@ class TestDeleteProfilesByIdsAtomic:
         ).fetchone()
         assert rowid_row is not None
         rowid = rowid_row["rowid"]
-        s._vec_upsert("profiles_vec", rowid, [0.1] * s.embedding_dimensions)
+        _seed_vec(s, "profiles_vec", rowid, [0.1] * s.embedding_dimensions)
         assert rowid in _vec_rowids(s)
 
         s.delete_profiles_by_ids(["d3"])
@@ -300,8 +312,8 @@ class TestDeleteAllProfilesVecWipe:
                 "SELECT rowid FROM profiles WHERE profile_id = ?", (pid,)
             ).fetchone()
             assert rowid_row is not None
-            s._vec_upsert(
-                "profiles_vec", rowid_row["rowid"], [0.1] * s.embedding_dimensions
+            _seed_vec(
+                s, "profiles_vec", rowid_row["rowid"], [0.1] * s.embedding_dimensions
             )
         assert len(_vec_rowids(s)) >= 2
 

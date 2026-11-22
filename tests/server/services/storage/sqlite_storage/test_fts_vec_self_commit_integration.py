@@ -52,8 +52,19 @@ def test_vec_upsert_is_visible_from_second_connection(tmp_path) -> None:
     if not storage._has_sqlite_vec:  # type: ignore[attr-defined]
         pytest.skip("sqlite-vec extension not loaded in this environment")
 
-    embedding = [0.0] * storage.embedding_dimensions
-    storage._vec_upsert("user_playbooks_vec", _ROWID, embedding)  # type: ignore[attr-defined]
+    from reflexio.models.api_schema.service_schemas import UserPlaybook
+
+    playbook = UserPlaybook(
+        user_id="u",
+        agent_version="v",
+        request_id="r",
+        content="c",
+        embedding=[0.0] * storage.embedding_dimensions,
+    )
+    # The save runs its vector write in a commit scope; it must be committed and
+    # visible to a second connection once the call returns.
+    storage.save_user_playbooks([playbook], skip_embedding=True)  # type: ignore[attr-defined]
+    rowid = playbook.user_playbook_id
 
     # A vec0 virtual table can only be queried with the extension loaded.
     import sqlite_vec  # type: ignore[import-untyped]
@@ -64,11 +75,11 @@ def test_vec_upsert_is_visible_from_second_connection(tmp_path) -> None:
         sqlite_vec.load(probe)
         probe.enable_load_extension(False)
         found = probe.execute(
-            "SELECT rowid FROM user_playbooks_vec WHERE rowid = ?", (_ROWID,)
+            "SELECT rowid FROM user_playbooks_vec WHERE rowid = ?", (rowid,)
         ).fetchall()
     finally:
         probe.close()
 
     assert len(found) == 1, (
-        "_vec_upsert must self-commit so the row is visible from a second connection"
+        "the scoped vector write must be committed and visible from a second connection"
     )

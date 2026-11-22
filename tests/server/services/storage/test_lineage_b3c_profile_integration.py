@@ -33,6 +33,18 @@ pytestmark = pytest.mark.integration
 # ---------------------------------------------------------------------------
 
 
+def _seed_vec(storage, table, rowid, vector):
+    """Seed a sidecar row directly; vector writes through the API need a commit scope."""
+    import json
+
+    storage.conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))  # noqa: S608
+    storage.conn.execute(
+        f"INSERT INTO {table}(rowid, embedding) VALUES (?, ?)",  # noqa: S608
+        (rowid, json.dumps(vector)),
+    )
+    storage.conn.commit()
+
+
 def _store(tmp_path) -> SQLiteStorage:
     s = SQLiteStorage(org_id="b3c-org", db_path=str(tmp_path / "b3c.db"))
     s.migrate()
@@ -102,7 +114,7 @@ class TestDeleteUserProfileSearchCleanup:
         ).fetchone()
         assert rowid_row is not None
         rowid = rowid_row["rowid"]
-        s._vec_upsert("profiles_vec", rowid, [0.1] * s.embedding_dimensions)
+        _seed_vec(s, "profiles_vec", rowid, [0.1] * s.embedding_dimensions)
         assert rowid in {
             r["rowid"]
             for r in s.conn.execute("SELECT rowid FROM profiles_vec").fetchall()
@@ -154,7 +166,7 @@ class TestDeleteAllProfilesForUserSearchCleanup:
         ).fetchone()
         assert rowid_row is not None
         rowid = rowid_row["rowid"]
-        s._vec_upsert("profiles_vec", rowid, [0.1] * s.embedding_dimensions)
+        _seed_vec(s, "profiles_vec", rowid, [0.1] * s.embedding_dimensions)
 
         s.delete_all_profiles_for_user("u2")
 
@@ -200,7 +212,7 @@ class TestDeleteAllProfilesByStatusSearchCleanup:
         ).fetchone()
         assert rowid_row is not None
         rowid = rowid_row["rowid"]
-        s._vec_upsert("profiles_vec", rowid, [0.1] * s.embedding_dimensions)
+        _seed_vec(s, "profiles_vec", rowid, [0.1] * s.embedding_dimensions)
 
         s.delete_all_profiles_by_status(Status.ARCHIVED)
 
@@ -248,7 +260,7 @@ class TestDeleteProfilesByIdsSearchCleanup:
         ).fetchone()
         assert rowid_row is not None
         rowid = rowid_row["rowid"]
-        s._vec_upsert("profiles_vec", rowid, [0.1] * s.embedding_dimensions)
+        _seed_vec(s, "profiles_vec", rowid, [0.1] * s.embedding_dimensions)
 
         s.delete_profiles_by_ids(["dpi4"])
 
