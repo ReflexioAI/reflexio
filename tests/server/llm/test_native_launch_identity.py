@@ -426,6 +426,7 @@ def test_opencode_binds_provider_credential_files_by_absolute_path(
         "GOOGLE_CLOUD_LOCATION",
         "VERTEX_LOCATION",
         "AWS_PROFILE",
+        "AWS_ROLE_ARN",
         "AWS_REGION",
         "AWS_DEFAULT_REGION",
         "AZURE_RESOURCE_NAME",
@@ -460,3 +461,17 @@ def test_opencode_ignores_undocumented_provider_variables(launch, monkeypatch):
     monkeypatch.setenv("GOOGLE_SYNTHETIC_SETTING", "synthetic")
     monkeypatch.setenv("SYNTHETIC_FILE", str(launch / "elsewhere.json"))
     assert native_launch_identity_digest() == before
+
+
+@pytest.mark.parametrize("parent", [None, "", "0", "1", "false"])
+def test_opencode_binds_its_effective_pure_mode_not_the_parents(
+    launch, monkeypatch, parent
+):
+    # Every OpenCode launch runs with OPENCODE_PURE=1 whatever the parent holds.
+    monkeypatch.setenv(ENV_NATIVE_MODEL, "local-cli/opencode")
+    unset = native_launch_identity_digest()
+    if parent is None:
+        monkeypatch.delenv("OPENCODE_PURE", raising=False)
+    else:
+        monkeypatch.setenv("OPENCODE_PURE", parent)
+    assert native_launch_identity_digest() == unset

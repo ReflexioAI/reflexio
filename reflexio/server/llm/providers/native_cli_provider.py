@@ -30,7 +30,7 @@ import shutil
 import subprocess  # noqa: S404 — subprocess is the integration point; inputs are sanitised.
 import tempfile
 import time
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -51,6 +51,7 @@ from reflexio.server.env_utils import env_str
 from reflexio.server.llm._litellm_types import LLMHardTimeoutError
 from reflexio.server.llm._native_cli import (
     native_cli_directory,
+    private_cli_directory,
     remaining_native_time,
     request_timeout_seconds,
     run_native_cli,
@@ -566,17 +567,22 @@ def _run_claude_stream(
     env["CLAUDE_SMART_INTERNAL"] = "1"
 
     try:
-        proc = run_native_cli(  # noqa: S603 — cmd is constructed from validated parts.
-            cmd,
-            input=stdin_text,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace" if _is_windows() else "strict",
-            timeout=timeout_seconds,
-            check=False,
-            env=env,
-        )
+        # A private empty cwd: the daemon's project `.claude/settings.json`
+        # must never select this call's model or endpoint.
+        with private_cli_directory("claude-") as workdir:
+            env["PWD"] = str(workdir)
+            proc = run_native_cli(  # noqa: S603 — cmd is constructed from validated parts.
+                cmd,
+                input=stdin_text,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace" if _is_windows() else "strict",
+                timeout=timeout_seconds,
+                check=False,
+                cwd=str(workdir),
+                env=env,
+            )
     except subprocess.TimeoutExpired as exc:
         raise ClaudeCodeCLITimeoutError(
             f"claude CLI timed out after {timeout_seconds}s"
@@ -627,17 +633,26 @@ def _run_codex_stream(
         if optimizer:
             env["CLAUDE_CODE_ENTRYPOINT"] = "optimizer"
         prompt = _codex_prompt(prompt=dialogue, system_prompt=system_prompt)
-        proc = run_native_cli(  # noqa: S603 — fixed protocol plus selected executable/model.
-            cmd,
-            input=prompt,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace" if _is_windows() else "strict",
-            timeout=remaining_native_time(deadline),
-            check=False,
-            env=env,
-        )
+        # A generation call runs from a private empty cwd, so the daemon's
+        # project `.codex/config.toml` never selects its model or endpoint.
+        # The optimizer assistant keeps its existing working-directory contract.
+        with (
+            nullcontext(None) if optimizer else private_cli_directory("codex-")
+        ) as workdir:
+            if workdir is not None:
+                env["PWD"] = str(workdir)
+            proc = run_native_cli(  # noqa: S603 — fixed protocol plus selected executable/model.
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace" if _is_windows() else "strict",
+                timeout=remaining_native_time(deadline),
+                check=False,
+                cwd=None if workdir is None else str(workdir),
+                env=env,
+            )
         try:
             terminal_text = output_path.read_text(encoding="utf-8").strip()
         except OSError:

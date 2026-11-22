@@ -1787,7 +1787,10 @@ credential-file variables by absolute path (OpenCode: the provider variables
 its provider docs name), secrets by nonempty presence only, and ignores the
 parent Codex session ids (`CODEX_THREAD_ID`, ...) and the retired, ignored
 `CLAUDE_SMART_CODEX_PATH`. An empty PATH entry never searches the working
-directory.
+directory. Native Claude Code, Codex and OpenCode generation calls run from a
+private, empty per-call directory, so the daemon's project settings
+(`.claude/settings.json`, `.codex/config.toml`) never apply and the working
+directory is not part of the identity.
 Windows native execution requires the actual `.exe`; batch shims continue to
 use the existing plugin bridge. No shell is introduced.
 

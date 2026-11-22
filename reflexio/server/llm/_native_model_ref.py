@@ -219,6 +219,10 @@ _HOST_ENV_NAMES: dict[str, tuple[str, ...]] = {
         # AWS_REGION then AWS_DEFAULT_REGION; API keys in
         # AWS_BEARER_TOKEN_BEDROCK. The profile and token FILES are paths.
         "AWS_PROFILE",
+        # Web-identity federation assumes this role, i.e. selects the account
+        # (the token FILE beside it is a path). AWS_ROLE_SESSION_NAME is only a
+        # session label and selects nothing, so it is not bound.
+        "AWS_ROLE_ARN",
         "AWS_ACCESS_KEY_ID",
         "AWS_WEB_IDENTITY_TOKEN_FILE",
         "AWS_SHARED_CREDENTIALS_FILE",
@@ -256,6 +260,13 @@ _SECRET_NAME_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "HEADE
 # Any `*_FILE` variable names a file the same way.
 _FILE_PATH_ENVS = frozenset({"GOOGLE_APPLICATION_CREDENTIALS"})
 _FILE_PATH_SUFFIX = "_FILE"
+
+
+# Variables every OpenCode launch sets in the CHILD, whatever the parent holds:
+# the direct launcher (and the plugin bridge) always run it pure. The identity
+# binds this effective value, so a parent assignment cannot move it.
+OPENCODE_CHILD_ENV: dict[str, str] = {"OPENCODE_PURE": "1"}
+_HOST_CHILD_ENV: dict[str, dict[str, str]] = {"opencode": OPENCODE_CHILD_ENV}
 
 
 def _file_path_env(name: str) -> bool:
@@ -313,7 +324,7 @@ def _host_environment(host: str) -> dict[str, str | bool]:
             bound_value = _bound_env_value(name, value)
             if bound_value is not None:
                 environment[name] = bound_value
-    return environment
+    return {**environment, **_HOST_CHILD_ENV.get(host, {})}
 
 
 def native_launch_identity_digest() -> str:
@@ -338,7 +349,9 @@ def native_launch_identity_digest() -> str:
       Codex session ids excluded.
 
     Excluded: cwd, PATH, PATHEXT and the timeout, except through what they
-    resolve to above.
+    resolve to above. The cwd selects nothing: every native generation call
+    runs from a private, empty directory, so project settings
+    (`.claude/settings.json`, `.codex/config.toml`, `.opencode/`) never apply.
 
     Returns:
         str: Hex SHA-256 of the launch identity.
