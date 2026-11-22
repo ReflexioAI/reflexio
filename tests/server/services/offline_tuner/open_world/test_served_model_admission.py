@@ -5,15 +5,26 @@ answer as ``gpt-4o-2024-08-06``. That is the configured revision; a different
 model (``gpt-4o-mini``, another family) is a substitution and is refused.
 """
 
+# Complete provider initialization before importing the third-party library.
+import reflexio.provider_bootstrap  # noqa: F401
+
+# isort: split
+
 import json
 
 import litellm
 import pytest
 
 from reflexio.models.structured_output import StrictStructuredOutput
+from reflexio.server.llm._native_model_ref import (
+    CLI_TIMEOUT_ENV,
+    ENV_NATIVE_MODEL,
+    PLUGIN_OPENCODE_EXECUTABLE_ENV,
+)
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.offline_tuner.open_world.analyst import (
     ChatMessage,
+    _is_provider_date_stamp,
     _LiteLLMOpenWorldModelClient,
     _native_cli_served_stamps,
     _served_model_admitted,
@@ -160,10 +171,19 @@ def test_non_native_route_with_foreign_provider_still_raises(monkeypatch):
 
 def _native(monkeypatch, host: str) -> str:
     model = f"local-cli/{host}"
-    # The operator-configured native target gate stays in force; satisfy it.
-    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", model)
-    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
-    monkeypatch.delenv("CLAUDE_SMART_CLI_MODEL", raising=False)
+    # Own every input native selection reads, so a developer's own CLI setup
+    # cannot fail a case before admission. The operator-configured native
+    # target gate stays in force; satisfy it.
+    monkeypatch.setenv(ENV_NATIVE_MODEL, model)
+    for name in (
+        "CLAUDE_SMART_USE_LOCAL_CLI",
+        "CLAUDE_SMART_CLI_MODEL",
+        "CLAUDE_SMART_CLI_PATH",
+        "CLAUDE_SMART_CODEX_PATH",
+        PLUGIN_OPENCODE_EXECUTABLE_ENV,
+        CLI_TIMEOUT_ENV,
+    ):
+        monkeypatch.delenv(name, raising=False)
     return model
 
 
@@ -243,3 +263,39 @@ def test_served_diagnostics_survive_a_response_without_usage(monkeypatch, native
     usage = json.loads(completion.usage_json)
     assert usage["served_model"] == expected
     assert usage["usage_observed_responses"] == 0
+
+
+@pytest.mark.parametrize(
+    ("served", "admitted"),
+    [
+        ("gpt-4o-2024-02-29", True),  # leap year
+        ("gpt-4o-20240229", True),
+        ("gpt-4o-2000-02-29", True),  # divisible by 400
+        ("gpt-4o-2025-02-28", True),
+        ("gpt-4o-2025-02-29", False),  # not a leap year
+        ("gpt-4o-20250229", False),
+        ("gpt-4o-1900-02-29", False),  # divisible by 100, not 400
+        ("gpt-4o-2025-02-31", False),
+        ("gpt-4o-20250231", False),
+        ("gpt-4o-2025-04-31", False),
+        ("gpt-4o-20250431", False),
+        ("gpt-4o-2025-00-10", False),
+        ("gpt-4o-2025-01-00", False),
+        ("gpt-4o-0000-01-01", False),
+        # Non-ASCII digits: Arabic-Indic and fullwidth, in both shapes.
+        ("gpt-4o-\u0662\u0660\u0662\u0664-08-06", False),
+        ("gpt-4o-\u0662\u0660\u0662\u0664\u0660\u0668\u0660\u0666", False),
+        ("gpt-4o-\uff12\uff10\uff12\uff14-\uff10\uff18-\uff10\uff16", False),
+        ("gpt-4o-\uff12\uff10\uff12\uff14\uff10\uff18\uff10\uff16", False),
+    ],
+)
+def test_date_stamp_must_name_a_real_ascii_calendar_date(served, admitted):
+    assert (
+        _served_model_admitted(configured_bare="gpt-4o", observed_bare=served)
+        is admitted
+    )
+
+
+def test_mixed_shape_stamp_is_refused():
+    assert not _is_provider_date_stamp("-2024-0806")
+    assert not _is_provider_date_stamp("-202408-06")

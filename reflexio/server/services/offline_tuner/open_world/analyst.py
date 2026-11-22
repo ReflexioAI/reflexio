@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import dataclasses
+import datetime
 import hashlib
 import hmac
 import json
@@ -1162,10 +1163,30 @@ _DEFAULT_OPENAI_ROUTE = "openai-default"
 # response with no observed provider or model.
 
 
+# ASCII digits only: `\d` would also match Arabic-Indic or fullwidth digits.
 _PROVIDER_DATE_STAMP = re.compile(
-    r"-(?:\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])"
-    r"|\d{4}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))"
+    r"-(?:([0-9]{4})-([0-9]{2})-([0-9]{2})|([0-9]{4})([0-9]{2})([0-9]{2}))"
 )
+
+
+def _is_provider_date_stamp(suffix: str) -> bool:
+    """Return whether ``suffix`` is one ``-YYYY-MM-DD`` / ``-YYYYMMDD`` real date.
+
+    Args:
+        suffix (str): Text following the configured model id.
+
+    Returns:
+        bool: True only for a well-formed stamp naming a valid calendar date.
+    """
+    match = _PROVIDER_DATE_STAMP.fullmatch(suffix)
+    if match is None:
+        return False
+    year, month, day = (int(part) for part in match.groups() if part is not None)
+    try:
+        datetime.date(year, month, day)
+    except ValueError:
+        return False
+    return True
 
 
 def _strip_route_prefix(model: str, *, route: str) -> str:
@@ -1183,15 +1204,13 @@ def _served_model_admitted(*, configured_bare: str, observed_bare: str) -> bool:
 
     Returns:
         bool: True for an exact match, or for the configured id followed by
-            exactly one ``-YYYY-MM-DD`` / ``-YYYYMMDD`` provider date stamp.
+            exactly one ``-YYYY-MM-DD`` / ``-YYYYMMDD`` stamp of a real date.
     """
     if observed_bare == configured_bare:
         return True
     # An unchanged string means the configured id is not a prefix (or is empty).
     suffix = observed_bare.removeprefix(configured_bare)
-    return (
-        suffix != observed_bare and _PROVIDER_DATE_STAMP.fullmatch(suffix) is not None
-    )
+    return suffix != observed_bare and _is_provider_date_stamp(suffix)
 
 
 def _credential_drift_fingerprint(credential: str | None) -> str | None:
