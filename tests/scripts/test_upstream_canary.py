@@ -30,7 +30,7 @@ def test_locked_version_is_admitted_and_the_next_major_is_not(package: str) -> N
     version = canary.locked(package)
     assert canary.admits(package, version)
     major, minor, *_ = (int(part) for part in version.split("."))
-    # litellm is 1.x (ceiling <2); gepa is 0.x (ceiling <0.2).
+    # LiteLLM is 1.x and the ceiling is below 2.
     beyond = f"{major + 1}.0.0" if major else f"0.{minor + 1}.0"
     assert not canary.admits(package, beyond)
 
@@ -46,16 +46,17 @@ def test_main_reports_lowercase_booleans() -> None:
 
 def test_canary_never_gates_pull_requests() -> None:
     assert set(TRIGGERS) == {"schedule", "workflow_dispatch"}
-    default = TRIGGERS["workflow_dispatch"]["inputs"]["packages"]["default"]
-    assert set(default.split()) == WATCHED
+    assert TRIGGERS["workflow_dispatch"] is None
+    matrix = WORKFLOW["jobs"]["canary"]["strategy"]["matrix"]
+    assert set(matrix["package"]) == WATCHED
+    assert set(matrix["mode"]) == {"in-range", "next-major"}
 
 
 def test_only_the_writing_jobs_hold_write_scopes() -> None:
     assert WORKFLOW["permissions"] == {"contents": "read"}
     jobs = WORKFLOW["jobs"]
     # Jobs that install and run upstream releases inherit the read-only token.
-    for name in ("plan", "canary"):
-        assert "permissions" not in jobs[name]
+    assert "permissions" not in jobs["canary"]
     checkout = next(
         step for step in jobs["canary"]["steps"] if "checkout" in step.get("uses", "")
     )
@@ -69,4 +70,4 @@ def test_only_the_writing_jobs_hold_write_scopes() -> None:
     for step in jobs["propose"]["steps"]:
         if "uv lock" in step.get("run", ""):
             assert step["env"]["UV_NO_BUILD"] == "1"
-    assert set(jobs) == {"plan", "canary", "propose", "report"}
+    assert set(jobs) == {"canary", "propose", "report"}
