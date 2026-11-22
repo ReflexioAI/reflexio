@@ -223,6 +223,7 @@ diagnostics never change product control flow; exceptions raised by code inside 
 Key files:
 
 - `litellm_client.py`: Stable import surface, client config/credential resolution, and `LiteLLMClient` facade
+- `_served_model_identity.py`: Shared exact/snapshot and native CLI alias admission. Host model remapping stays in the LLM layer; the open-world tuner consumes its decisions without reading deployment environment policy.
 - `_litellm_text_generation.py`, `_litellm_embedding.py`, `_litellm_structured_output.py`: Completion/tool-call, embedding, and structured-output mixins
 - `_model_compat.py`: Qualified provider capabilities, request parameter rules, and signed Claude tool-history preservation
 - `_azure_transport.py`: Explicit Azure v1 resource-base compilation shared by completion and embedding dispatch
