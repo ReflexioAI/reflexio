@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from reflexio.server.services._compression_token_counts import ExactTokenCounts
 
-VERSION = "source-compression-v7"
+VERSION = "source-compression-v8"
 CompressionPolicy = Literal["extraction", "offline_tuning"]
 logger = logging.getLogger(__name__)
 
@@ -449,7 +449,8 @@ def _evidence_aliases(packets: list[EvidencePacket]) -> dict[str, EvidenceSource
 def _parent_wire_tokens(
     payloads: list[dict[str, Any]],
     allowed: list[str],
-    maximum_alias_digits: int,
+    maximum_alias_tokens: int,
+    reference_growth: Mapping[str, int],
     count_tokens: Callable[[str], int],
 ) -> int:
     aliases = list(allowed)
@@ -460,22 +461,20 @@ def _parent_wire_tokens(
         for point in payload["points"]:
             aliases.extend(point["evidence_refs"])
     # A sibling renumbers both eN and oN aliases. Their numeric components
-    # are separate cl100k regex pieces, bounded by one token per digit.
+    # are separate cl100k regex pieces, bounded by the frozen population.
     # Charge the possible growth at EVERY occurrence, including allowed
     # selectors and origin-map keys, using the frozen source population.
     # A fixed reserve cannot cover this overhead for large source sets.
     alias_growth = sum(
-        max(0, maximum_alias_digits - count_tokens(alias[1:])) for alias in aliases
+        max(0, maximum_alias_tokens - count_tokens(alias[1:])) for alias in aliases
     )
-    # Deduplicating even a one-character text can GROW the request: text_ref
-    # has a longer key and a globally numbered selector. Reserve a complete
-    # escaped field for every row, without assuming any text-saving benefit.
-    # This is admission headroom only; actual requests retain exact pricing.
-    reference_field = (
-        count_tokens(_json(_json({"text_ref": "e"}))) + maximum_alias_digits
-    )
-    text_reference_growth = reference_field * sum(
-        len(payload["evidence"]) for payload in payloads
+    # A sibling can replace duplicated text with a globally numbered text_ref.
+    # Reserve only that replacement's positive growth, not the whole field on
+    # top of text already priced below. Distinct passages cannot be replaced.
+    text_reference_growth = sum(
+        reference_growth.get(source["source_id"], 0)
+        for payload in payloads
+        for source in payload["evidence"]
     )
     return (
         alias_growth
@@ -483,6 +482,83 @@ def _parent_wire_tokens(
         + count_tokens(
             _json(_json({"input_packets": payloads, "allowed_evidence_refs": allowed}))
         )
+    )
+
+
+def _duplicated_sources(fragments: Sequence[EvidenceSource]) -> set[str]:
+    """Mirror _packet_payloads' exact text-deduplication identity."""
+    first: dict[tuple[str, str, str, str], str] = {}
+    duplicated: set[str] = set()
+    for source in fragments:
+        identity = (source.text, source.speaker, source.field, source.request_source)
+        prior = first.setdefault(identity, source.source_id)
+        if prior != source.source_id:
+            duplicated.update((prior, source.source_id))
+    return duplicated
+
+
+def _reference_replacement_growth(
+    source: dict[str, Any],
+    maximum_alias_tokens: int,
+    count_tokens: Callable[[str], int],
+) -> int:
+    replacement = {key: value for key, value in source.items() if key != "text"}
+    replacement["text_ref"] = "e0"
+    # Other row fields are unchanged. The new reference has its own numeric
+    # width reserve; _parent_wire_tokens handles the original row's aliases.
+    return max(
+        0,
+        count_tokens(_json(_json(replacement)))
+        + maximum_alias_tokens
+        - count_tokens("0")
+        - count_tokens(_json(_json(source))),
+    )
+
+
+def _reference_growth_by_alias(
+    payload: dict[str, Any],
+    aliases: Mapping[str, EvidenceSource],
+    duplicated: set[str],
+    cached: dict[str, int],
+    maximum_alias_tokens: int,
+    count_tokens: Callable[[str], int],
+) -> dict[str, int]:
+    growth = {}
+    for source in payload["evidence"]:
+        alias = source["source_id"]
+        source_id = aliases[alias].source_id
+        if source_id in duplicated:
+            if source_id not in cached:
+                cached[source_id] = _reference_replacement_growth(
+                    source, maximum_alias_tokens, count_tokens
+                )
+            growth[alias] = cached[source_id]
+    return growth
+
+
+def _alias_token_bound(population: int, count_tokens: Callable[[str], int]) -> int:
+    # cl100k splits numeric strings into at most three-digit pieces. Price
+    # every possible piece, including leading zeroes, once per plan.
+    # This bounds any global selector without charging one token per digit.
+    piece = max(
+        count_tokens(f"{value:0{width}d}")
+        for width in (1, 2, 3)
+        for value in range(10**width)
+    )
+    return math.ceil(len(str(population)) / 3) * piece
+
+
+def _compression_version(
+    policy: CompressionPolicy, override: Literal["v6", "v8"] | None
+) -> str:
+    if override not in (None, "v6", "v8") or (
+        policy == "extraction" and override == "v8"
+    ):
+        raise CompressionError("Invalid compression admission version")
+    return (
+        "source-compression-v6"
+        if policy == "extraction" or override == "v6"
+        else VERSION
     )
 
 
@@ -872,6 +948,7 @@ def plan_compression_input(
     estimate_output: Callable[[EvidencePacket], int] | None = None,
     response_schema: Mapping[str, Any] | None = None,
     required_speakers: Sequence[str] = (),
+    _admission_version: Literal["v6", "v8"] | None = None,
 ) -> CompressionPlan:
     """Freeze exact section geometry without model, cache or storage access.
 
@@ -912,8 +989,11 @@ def plan_compression_input(
     source_digest = _digest(originals)
     original_packet = EvidencePacket(evidence=list(sources))
     original_size = measure_output(original_packet)
+    # Extraction's persisted v6 package/cache authority is a separate deployed
+    # contract. The corrected parent-admission policy applies only to tuning.
+    version = _compression_version(policy, _admission_version)
     contract = {
-        "version": VERSION,
+        "version": version,
         "scope": scope,
         "policy": policy,
         "source_digest": source_digest,
@@ -1011,7 +1091,12 @@ def plan_compression_input(
     if intermediate_limit <= 0:
         raise CompressionError("Fixed compression instructions exceed input budget")
 
-    maximum_alias_digits = len(str(len(fragments)))
+    legacy_admission = version == "source-compression-v6"
+    maximum_alias_tokens = (
+        0 if legacy_admission else _alias_token_bound(len(fragments), count_tokens)
+    )
+    duplicated = set() if legacy_admission else _duplicated_sources(fragments)
+    reference_growth: dict[str, int] = {}
 
     def parent_cost(packet: EvidencePacket) -> int:
         payloads = _priced_payloads(
@@ -1021,10 +1106,21 @@ def plan_compression_input(
             empty_cost,
             deduplicate=False,
         )
+        if legacy_admission:
+            return count_tokens(_json(_json(payloads)))
+        aliases = _evidence_aliases([packet])
         return _parent_wire_tokens(
             payloads,
-            list(_evidence_aliases([packet])),
-            maximum_alias_digits,
+            list(aliases),
+            maximum_alias_tokens,
+            _reference_growth_by_alias(
+                payloads[0],
+                aliases,
+                duplicated,
+                reference_growth,
+                maximum_alias_tokens,
+                count_tokens,
+            ),
             count_tokens,
         )
 
@@ -1072,7 +1168,7 @@ def plan_compression_input(
             )
             key = _digest(
                 {
-                    "version": VERSION,
+                    "version": version,
                     "scope": dict(scope),
                     "policy": policy,
                     "model_contract": model_contract,

@@ -8,7 +8,7 @@ import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -177,7 +177,8 @@ class ClientCompressionPlan:
     The native witness adds actual generation policy and capacity declarations
     to the core witness. ``_REFERENCE_CONTRACT`` binds selection-settlement
     semantics into both, so a change there retires older cache entries and
-    journal roots instead of mixing with them.
+    journal roots instead of mixing with them. An explicitly reconstructed
+    legacy plan may resume only when the journal validates its saved witness.
     Callers must still own source authorization and durable dispatch accounting.
     """
 
@@ -211,6 +212,7 @@ def plan_with_client(
     output_contract: str = "packet-json-v1",
     estimate_output: Callable[[EvidencePacket], int] | None = None,
     required_speakers: Sequence[str] = (),
+    _admission_version: Literal["v6", "v8"] | None = None,
 ) -> ClientCompressionPlan:
     """Prepare and price actual initial native requests without provider/cache I/O.
 
@@ -288,6 +290,7 @@ def plan_with_client(
         estimate_output=estimate_output,
         response_schema=_ReferenceSelection.model_json_schema(),
         required_speakers=required_speakers,
+        _admission_version=_admission_version,
     )
 
     def check_leaf_requests() -> tuple[tuple[str, int], ...]:
